@@ -580,6 +580,12 @@ fn resolve_memory_place(
     layouts: &LayoutInterner,
     place: &Place,
 ) -> Result<MemoryAccess, LoweringError> {
+    if let Projection::Field { index } = place.projection() {
+        let Some(ValueType::Ref(object_layout)) = function.value_types.get(&place.object()).copied() else {
+            return Err(LoweringError::UnsupportedLayout { function: function.id, operation: "object" });
+        };
+        return field_access(function.id, layouts, place.object(), object_layout, *index);
+    }
     let collection = resolve_collection_layout(function, layouts, place.object())?;
     match place.projection() {
         Projection::Header(field) => {
@@ -608,12 +614,61 @@ fn resolve_memory_place(
     }
 }
 
+/// A scalar field of a fixed-layout object: its address is the object plus
+/// the field's offset, with no index. The access carries the field's own
+/// stride so the shared address emitter needs no collection.
+fn field_access(
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    object: ValueId,
+    layout: crate::layout::LayoutId,
+    index: u32,
+) -> Result<MemoryAccess, LoweringError> {
+    let descriptor = layouts
+        .get(layout)
+        .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
+    let field = descriptor
+        .fields()
+        .get(index as usize)
+        .ok_or(LoweringError::UnsupportedLayout { function, operation: "field" })?;
+    let crate::layout::FieldKind::Scalar(scalar) = field.kind() else {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "pointer field" });
+    };
+    if !scalar.is_ordinary_lowering_target() {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "field scalar" });
+    }
+    let width = scalar.size();
+    Ok(MemoryAccess {
+        object,
+        collection: CollectionLayout {
+            layout,
+            length_offset: 0,
+            capacity_offset: None,
+            data_offset: field.offset(),
+            stride: width,
+            scalar,
+            pointer_layout: None,
+        },
+        offset: field.offset(),
+        width,
+        scalar,
+        pointer_layout: None,
+        index: None,
+    })
+}
+
 fn resolve_memory_place_for_values(
     function: FunctionId,
     value_types: &BTreeMap<ValueId, ValueType>,
     layouts: &LayoutInterner,
     place: &Place,
 ) -> Result<MemoryAccess, LoweringError> {
+    if let Projection::Field { index } = place.projection() {
+        let Some(ValueType::Ref(object_layout)) = value_types.get(&place.object()).copied() else {
+            return Err(LoweringError::UnsupportedLayout { function, operation: "object" });
+        };
+        return field_access(function, layouts, place.object(), object_layout, *index);
+    }
     let collection = resolve_collection_layout_for_values(function, value_types, layouts, place.object())?;
     match place.projection() {
         Projection::Header(field) => {
@@ -756,10 +811,16 @@ fn lower_operation(
             }
         }
         Operation::Alloc { destination, layout, extent, class } => {
-            if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted
-                || collection_layout(function, layouts, *layout).is_err()
-                || !matches!(extent, Extent::Counted { .. })
-            {
+            // A counted collection allocates by capacity; a fixed layout (a
+            // scalar record) allocates its constant size.
+            let supported = match extent {
+                Extent::Counted { .. } => collection_layout(function, layouts, *layout).is_ok(),
+                Extent::FixedBytes(bytes) => layouts
+                    .get(*layout)
+                    .is_some_and(|descriptor| matches!(descriptor.size(), LayoutSize::Fixed(size) if u64::from(size) == *bytes)),
+                Extent::HeaderPrefix { .. } => false,
+            };
+            if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted || !supported {
                 return Err(LoweringError::UnsupportedLayout { function, operation: "Alloc" });
             }
             ScalarInstruction::Alloc { destination: *destination, layout: *layout, extent: extent.clone(), class: *class }
@@ -1993,23 +2054,37 @@ fn emit_alloc(
     layout_id: crate::layout::LayoutId,
     extent: &Extent,
 ) -> Result<(), EncodeError> {
-    let collection = collection_layout(function.id, layouts, layout_id).map_err(EncodeError::Lowering)?;
-    let Extent::Counted { capacity, count, header_bytes, stride_bytes } = extent else {
-        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
+    // The object's byte size lands in scratch 0: a counted collection
+    // computes it from its capacity, a fixed layout (a record) is a constant.
+    let collection = match extent {
+        Extent::Counted { capacity, header_bytes, stride_bytes, .. } => {
+            let collection = collection_layout(function.id, layouts, layout_id).map_err(EncodeError::Lowering)?;
+            if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
+                return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
+            }
+            let maximum = (u32::MAX - collection.data_offset) / collection.stride;
+            emit_u32_trap_if_gt(body, layout, function.id, *capacity, maximum)?;
+            emit_get(body, layout, function.id, *capacity)?;
+            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.stride)));
+            body.instruction(&wasm_encoder::Instruction::I64Mul);
+            body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.data_offset)));
+            body.instruction(&wasm_encoder::Instruction::I64Add);
+            body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+            emit_set_index(body, scratch_index(layout, 0));
+            Some(collection)
+        }
+        Extent::FixedBytes(bytes) => {
+            let bytes = fixed_alloc_bytes(*bytes)
+                .ok_or(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" })?;
+            body.instruction(&wasm_encoder::Instruction::I32Const(bytes as i32));
+            emit_set_index(body, scratch_index(layout, 0));
+            None
+        }
+        Extent::HeaderPrefix { .. } => {
+            return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
+        }
     };
-    if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
-        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
-    }
-    let maximum = (u32::MAX - collection.data_offset) / collection.stride;
-    emit_u32_trap_if_gt(body, layout, function.id, *capacity, maximum)?;
-    emit_get(body, layout, function.id, *capacity)?;
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.stride)));
-    body.instruction(&wasm_encoder::Instruction::I64Mul);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.data_offset)));
-    body.instruction(&wasm_encoder::Instruction::I64Add);
-    body.instruction(&wasm_encoder::Instruction::I32WrapI64);
-    emit_set_index(body, scratch_index(layout, 0));
     body.instruction(&wasm_encoder::Instruction::GlobalGet(0));
     emit_set_index(body, scratch_index(layout, 1));
     // The object's end in bytes (64-bit, so the sum cannot wrap). When it
@@ -2065,19 +2140,27 @@ fn emit_alloc(
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, scratch_index(layout, 2));
     emit_set(body, layout, function.id, destination)?;
-    emit_get_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
-    body.instruction(&wasm_encoder::Instruction::I32Add);
-    emit_get(body, layout, function.id, *count)?;
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
-    if let Some(capacity_offset) = collection.capacity_offset {
+    if let (Some(collection), Extent::Counted { count, capacity, .. }) = (collection, extent) {
         emit_get_index(body, scratch_index(layout, 2));
-        body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
+        body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
         body.instruction(&wasm_encoder::Instruction::I32Add);
-        emit_get(body, layout, function.id, *capacity)?;
+        emit_get(body, layout, function.id, *count)?;
         body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+        if let Some(capacity_offset) = collection.capacity_offset {
+            emit_get_index(body, scratch_index(layout, 2));
+            body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_get(body, layout, function.id, *capacity)?;
+            body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+        }
     }
     Ok(())
+}
+
+/// A fixed layout's allocation size, when it and the allocator prefix fit
+/// the 32-bit address space.
+fn fixed_alloc_bytes(bytes: u64) -> Option<u32> {
+    u32::try_from(bytes).ok().filter(|bytes| *bytes <= u32::MAX - RC_PREFIX_BYTES)
 }
 
 fn emit_update_count(
@@ -4688,35 +4771,48 @@ fn expected_alloc_plan(
     plan: &mut Vec<PlanToken>,
     function: &Function,
     layout: &LocalLayout,
-    collection: CollectionLayout,
+    collection: Option<CollectionLayout>,
     destination: ValueId,
     extent: &Extent,
 ) -> Result<(), CanonicalAdmissionError> {
-    let Extent::Counted { capacity, count, header_bytes, stride_bytes } = extent else {
-        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    // Mirror of `emit_alloc`: the size in scratch 0 comes from the capacity
+    // of a counted collection or is a fixed layout's constant.
+    let collection = match extent {
+        Extent::Counted { capacity, header_bytes, stride_bytes, .. } => {
+            let collection = collection.ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
+                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            }
+            let maximum = (u32::MAX - collection.data_offset) / collection.stride;
+            push_get(plan, layout, *capacity)?;
+            plan.extend([
+                PlanToken::I64ExtendI32U,
+                PlanToken::I64Const(i64::from(maximum)),
+                PlanToken::I64GtU,
+                PlanToken::If("Empty".to_owned()),
+                PlanToken::Unreachable,
+                PlanToken::End,
+            ]);
+            push_get(plan, layout, *capacity)?;
+            plan.extend([
+                PlanToken::I64ExtendI32U,
+                PlanToken::I64Const(i64::from(collection.stride)),
+                PlanToken::I64Mul,
+                PlanToken::I64Const(i64::from(collection.data_offset)),
+                PlanToken::I64Add,
+                PlanToken::I32WrapI64,
+                PlanToken::LocalSet(layout.scratch[0]),
+            ]);
+            Some(collection)
+        }
+        Extent::FixedBytes(bytes) => {
+            let bytes = fixed_alloc_bytes(*bytes).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            plan.extend([PlanToken::I32Const(bytes as i32), PlanToken::LocalSet(layout.scratch[0])]);
+            None
+        }
+        Extent::HeaderPrefix { .. } => return Err(CanonicalAdmissionError::UnsupportedPlan),
     };
-    if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
-        return Err(CanonicalAdmissionError::UnsupportedPlan);
-    }
-    let maximum = (u32::MAX - collection.data_offset) / collection.stride;
-    push_get(plan, layout, *capacity)?;
     plan.extend([
-        PlanToken::I64ExtendI32U,
-        PlanToken::I64Const(i64::from(maximum)),
-        PlanToken::I64GtU,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Unreachable,
-        PlanToken::End,
-    ]);
-    push_get(plan, layout, *capacity)?;
-    plan.extend([
-        PlanToken::I64ExtendI32U,
-        PlanToken::I64Const(i64::from(collection.stride)),
-        PlanToken::I64Mul,
-        PlanToken::I64Const(i64::from(collection.data_offset)),
-        PlanToken::I64Add,
-        PlanToken::I32WrapI64,
-        PlanToken::LocalSet(layout.scratch[0]),
         PlanToken::GlobalGet(0),
         PlanToken::LocalSet(layout.scratch[1]),
     ]);
@@ -4777,20 +4873,24 @@ fn expected_alloc_plan(
     plan.extend([
         PlanToken::LocalGet(layout.scratch[2]),
         PlanToken::LocalSet(plan_local(layout, destination)?),
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I32Const(collection.length_offset as i32),
-        PlanToken::I32Add,
     ]);
-    push_get(plan, layout, *count)?;
-    push_store(plan);
-    if let Some(capacity_offset) = collection.capacity_offset {
+    if let (Some(collection), Extent::Counted { count, capacity, .. }) = (collection, extent) {
         plan.extend([
             PlanToken::LocalGet(layout.scratch[2]),
-            PlanToken::I32Const(capacity_offset as i32),
+            PlanToken::I32Const(collection.length_offset as i32),
             PlanToken::I32Add,
         ]);
-        push_get(plan, layout, *capacity)?;
+        push_get(plan, layout, *count)?;
         push_store(plan);
+        if let Some(capacity_offset) = collection.capacity_offset {
+            plan.extend([
+                PlanToken::LocalGet(layout.scratch[2]),
+                PlanToken::I32Const(capacity_offset as i32),
+                PlanToken::I32Add,
+            ]);
+            push_get(plan, layout, *capacity)?;
+            push_store(plan);
+        }
     }
     let _ = function;
     Ok(())
@@ -4964,8 +5064,7 @@ fn expected_linear_function_plan(
                 if *class != crate::canonical_safewir::AllocationClass::ReferenceCounted {
                     return Err(CanonicalAdmissionError::UnsupportedPlan);
                 }
-                let collection = collection_layout(function.id, layouts, *layout_id)
-                    .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+                let collection = collection_layout(function.id, layouts, *layout_id).ok();
                 expected_alloc_plan(&mut plan, function, &layout, collection, *destination, extent)?;
             }
             Operation::Load { destination, place, transfer }

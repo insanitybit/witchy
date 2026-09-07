@@ -275,6 +275,18 @@ fn admitted_float_conversions_bool_render_and_duration_identities_run() {
 }
 
 #[test]
+fn admitted_heap_records_construct_read_update_join_and_cross_calls() {
+    // An ordinary record with scalar fields is an immutable reference-counted
+    // heap aggregate: positional and named construction, field reads, spread
+    // update, a rebinding joined with a shared alias, and passage through
+    // parameters and results.
+    let output = run_admitted(
+        "type Point:\n    x: Int\n    y: Int\n\npub fn norm1(p: Point) -> Int:\n    p.x + p.y\n\npub fn shift(p: Point) -> Point:\n    Point(x: p.x + 1, y: p.y)\n\nfn main(console: Console):\n    let p = Point(x: 3, y: 4)\n    let q = Point(5, 6)\n    console.print(\"${p.x + q.y}\")\n    var r = p\n    if r.x > 2:\n        r = Point(x: 10, y: r.y)\n    console.print(\"${r.x + r.y} ${norm1(shift(p))} ${p.x}\")\n    let s = Point(y: 99, ..p)\n    console.print(\"${s.x} ${s.y}\")\n",
+    );
+    assert_eq!(output, vec!["9".to_string(), "14 8 3".to_string(), "3 99".to_string()]);
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

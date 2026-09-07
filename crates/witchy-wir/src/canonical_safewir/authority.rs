@@ -309,6 +309,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
+    let records = scalar_record_fields(source.typed_module().module());
     let mut bindings = BTreeMap::new();
     let mut bound_functions = BTreeMap::new();
     for binding in candidate.source_abi_bindings().entries() {
@@ -348,7 +349,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = source.closed_callable_signature(binding.source_declaration_ordinal()) else {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
         };
-        if !candidate_signature_matches_source(signature, source_signature, candidate) {
+        if !candidate_signature_matches_source_with_records(signature, source_signature, candidate, &records) {
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
@@ -360,14 +361,52 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     Ok(())
 }
 
+/// The scalar field types of every one-variant record the checked module
+/// declares, keyed by its bare and entry-qualified names. A nominal record
+/// parameter binds to a candidate reference whose layout carries exactly
+/// those fields.
+type ScalarRecordFields = BTreeMap<String, Vec<witchy_syntax::ast::Type>>;
+
+fn scalar_record_fields(module: &witchy_syntax::ast::Module) -> ScalarRecordFields {
+    let mut records = BTreeMap::new();
+    for item in &module.items {
+        let witchy_syntax::ast::Item::Type(definition) = item else { continue };
+        if !definition.params.is_empty() || definition.variants.len() != 1 {
+            continue;
+        }
+        let fields = definition.variants[0].fields.clone();
+        if !fields.iter().all(|field| matches!(field.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+            if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")))
+        {
+            continue;
+        }
+        if let Some(entry) = module.linked_entry.as_deref()
+            && !definition.name.contains('.')
+        {
+            records.insert(format!("{entry}.{}", definition.name), fields.clone());
+        }
+        records.insert(definition.name.clone(), fields);
+    }
+    records
+}
+
 fn candidate_signature_matches_source<S: ModuleStage>(
     actual: &super::FunctionSignature,
     source: &witchy_syntax::ast::Type,
     candidate: &CanonicalModule<S>,
 ) -> bool {
+    candidate_signature_matches_source_with_records(actual, source, candidate, &BTreeMap::new())
+}
+
+fn candidate_signature_matches_source_with_records<S: ModuleStage>(
+    actual: &super::FunctionSignature,
+    source: &witchy_syntax::ast::Type,
+    candidate: &CanonicalModule<S>,
+    records: &ScalarRecordFields,
+) -> bool {
     let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
-    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut BTreeSet::new())
+    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut BTreeSet::new(), records)
 }
 
 fn candidate_signature_matches_source_inner(
@@ -378,6 +417,7 @@ fn candidate_signature_matches_source_inner(
     layouts: &crate::layout::LayoutInterner,
     signatures: &[super::FunctionSignature],
     seen: &mut BTreeSet<super::FunctionSignatureId>,
+    records: &ScalarRecordFields,
 ) -> bool {
     if actual.parameters.len() != parameters.len() || actual.contract.parameters.len() != parameters.len() {
         return false;
@@ -387,13 +427,13 @@ fn candidate_signature_matches_source_inner(
         let convention = convention_at(index);
         (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
-            && value_type_matches_source(*actual, source, layouts, signatures, seen)
+            && value_type_matches_source(*actual, source, layouts, signatures, seen, records)
     }) { return false; }
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
         if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
-            || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen) { return false; }
+            || !value_type_matches_source(actual.value_type, source, layouts, signatures, seen, records) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (_, witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
@@ -408,9 +448,9 @@ fn candidate_signature_matches_source_inner(
         .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
         .collect::<Vec<_>>();
     (actual.results.len() == ordinary_results + write_back_parameters.len()
-        && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, seen))
+        && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, seen, records))
         && write_back_parameters.iter().enumerate().all(|(offset, (parameter, source))| {
-            value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, seen)
+            value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, seen, records)
                 && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack)
         })
         && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
@@ -438,6 +478,7 @@ fn value_type_matches_source(
     layouts: &crate::layout::LayoutInterner,
     signatures: &[super::FunctionSignature],
     seen: &mut BTreeSet<super::FunctionSignatureId>,
+    records: &ScalarRecordFields,
 ) -> bool {
     match source.unqualified() {
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
@@ -450,14 +491,18 @@ fn value_type_matches_source(
             // accepted at this source boundary.
             "Console" => actual == super::ValueType::Capability(super::CapabilityKindId::new(0)),
             "String" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
-            _ => false,
+            // A heap record: one reference to a fixed layout whose fields are
+            // exactly the declared scalar fields, in order.
+            name => records.get(name).is_some_and(|fields| {
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, fields, layouts))
+            }),
         },
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
         witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
             super::ValueType::Callable(id) if seen.insert(id) => {
                 let matched = signatures.iter().find(|signature| signature.id == id).is_some_and(|signature| {
                     let witchy_syntax::ast::Type::Fn(_, _, conventions, _) = source.unqualified() else { return false };
-                    candidate_signature_matches_source_inner(signature, parameters, result, conventions, layouts, signatures, seen)
+                    candidate_signature_matches_source_inner(signature, parameters, result, conventions, layouts, signatures, seen, records)
                 });
                 seen.remove(&id);
                 matched
@@ -466,6 +511,30 @@ fn value_type_matches_source(
         },
         _ => false,
     }
+}
+
+fn record_layout_matches(
+    layout: crate::layout::LayoutId,
+    fields: &[witchy_syntax::ast::Type],
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    use crate::layout::{LayoutKind, ScalarKind};
+    let Some(descriptor) = layouts.get(layout) else { return false };
+    let LayoutKind::PackedRecord { fields: actual } = descriptor.kind() else { return false };
+    actual.len() == fields.len()
+        && actual.iter().zip(fields).all(|(actual, field)| {
+            let Some(actual) = layouts.get(*actual) else { return false };
+            match field.unqualified() {
+                witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
+                    "Int" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Int)),
+                    "Duration" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Duration)),
+                    "Float" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Float)),
+                    "Bool" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
+                    _ => false,
+                },
+                _ => false,
+            }
+        })
 }
 
 fn layout_matches_source(
@@ -768,8 +837,8 @@ mod tests {
         ).unwrap();
         let source = checked.canonical_source().unwrap();
         let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
-        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new()));
-        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new()));
+        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new()));
+        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new()));
     }
 
     #[test]

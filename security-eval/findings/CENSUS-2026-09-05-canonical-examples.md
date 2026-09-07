@@ -754,3 +754,28 @@ route is 0/107.
 - Pinned by `admitted_float_conversions_bool_render_and_duration_identities_run`.
 - Census: 76 of 163 check; 20 runnable examples admit and agree under
   three-legged parity (`temperature` is new).
+
+## Progress (owner, 2026-09-07, twenty-second slice: heap records)
+
+- **Ordinary records are immutable reference-counted heap aggregates.** A
+  one-variant record with scalar fields (not declared `packed`) lowers to a
+  fixed-size RC allocation with a field store per field; a field read is a
+  field load; a spread update allocates a new record and loads the fields
+  it does not name; a copy is a reference clone; release placement drops it
+  like any other reference. The layout catalog resolves such a record as a
+  packed-record layout viewed as packed (the interner accepts only packed
+  one-variant definitions), so the inline and heap forms share one field
+  layout and differ only in value type (`InlineAggregate` versus `Ref`).
+- **Layers touched.** Checker: a scalar-field record or tuple drops by
+  reclaiming its bytes. Encoder and plan mirror: fixed-size allocations
+  (constant size, no header stores) and field projections (object plus
+  field offset, no index). ABI authority: a nominal record parameter or
+  result binds to a reference whose layout carries exactly the declared
+  scalar fields, looked up from the checked module's definitions. Lowering:
+  the record table now covers packed and heap records, the signature
+  derivation maps a heap record to a reference, and a rebound record joins
+  through a phi without count/capacity lanes.
+- Pinned by `admitted_heap_records_construct_read_update_join_and_cross_calls`.
+- Census: 79 of 163 check; 23 runnable examples admit and agree under
+  three-legged parity (`records`, `record_compiled` are new). `opt_mode`
+  stays out: it declares a `unique` record, a deferred v1 qualifier.

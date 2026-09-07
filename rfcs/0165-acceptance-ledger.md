@@ -26,6 +26,15 @@ Only `merged-green` completes a row.
 
 ## Known red tests on the branch (classified, not hidden)
 
+- `witchy-lower` (2026-09-07): 10 of 429 crate tests are red, all in the
+  legacy `codegen::assembly::checked_codegen_boundary_tests` and dict
+  fixtures (`forced_copy_dict_update_…`, `dynamic_descriptor_…`). They
+  compile modules without a checked source witness or outside the subset
+  and now refuse with `MissingCheckedSourceWitness` or an unsupported
+  layout: the production-policy class recorded in the landing
+  classification below, not a foundation defect. The foundation shard is
+  `cargo nextest run -p witchy-lower canonical` (92 green).
+
 - None as of 2026-09-06. The nine `witchy-wir` tests red at the handoff
   `HEAD` were fixtures predating the callee-drops ownership model; they are
   restored with their intent (see the census, twelfth slice). Restoring the

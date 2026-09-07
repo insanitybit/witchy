@@ -146,7 +146,7 @@ impl LayoutProjection {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
-                _ if self.definitions.get(name).is_some_and(is_v1_packed_scalar_record) => {
+                _ if self.definitions.get(name).is_some_and(is_v1_scalar_record) => {
                     self.roots.push(ty.clone());
                     Ok(())
                 }
@@ -246,7 +246,7 @@ fn intern_v1_layout(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     interner
-        .intern_type(ty, &V1Resolver { definitions })
+        .intern_type(ty, &V1Resolver::new(definitions))
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
@@ -262,7 +262,7 @@ fn intern_dictionary_slot(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     interner
-        .intern_type(ty, &V1Resolver { definitions })
+        .intern_type(ty, &V1Resolver::new(definitions))
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
@@ -293,6 +293,25 @@ fn requires_owned_pointer_slot(ty: &Type) -> bool {
 
 struct V1Resolver<'a> {
     definitions: &'a BTreeMap<String, TypeDef>,
+    /// Scalar records viewed as packed: the interner accepts only a packed
+    /// one-variant definition for a record layout, and a heap record has the
+    /// same field layout behind its reference.
+    packed_views: BTreeMap<String, TypeDef>,
+}
+
+impl<'a> V1Resolver<'a> {
+    fn new(definitions: &'a BTreeMap<String, TypeDef>) -> Self {
+        let packed_views = definitions
+            .iter()
+            .filter(|(_, definition)| is_v1_scalar_record(definition) && !definition.packed)
+            .map(|(name, definition)| {
+                let mut view = definition.clone();
+                view.packed = true;
+                (name.clone(), view)
+            })
+            .collect();
+        Self { definitions, packed_views }
+    }
 }
 
 impl ClosedTypeResolver for V1Resolver<'_> {
@@ -307,11 +326,27 @@ impl ClosedTypeResolver for V1Resolver<'_> {
             "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
             "Bool" => Some(ResolvedNamed::Scalar(ScalarKind::Bool)),
             "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
-            name => self.definitions.get(name).filter(|definition| is_v1_packed_scalar_record(definition)).map(ResolvedNamed::PackedRecord),
+            name => self
+                .packed_views
+                .get(name)
+                .or_else(|| self.definitions.get(name).filter(|definition| is_v1_scalar_record(definition)))
+                .map(ResolvedNamed::PackedRecord),
         }
     }
 }
 
+/// A one-variant record whose fields are all scalars. Declared `packed` it is
+/// an inline aggregate; otherwise it is an immutable reference-counted heap
+/// aggregate with the same field layout.
+pub(crate) fn is_v1_scalar_record(definition: &TypeDef) -> bool {
+    definition.params.is_empty()
+        && definition.variants.len() == 1
+        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+        ))
+}
+
+#[cfg(test)]
 fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
     definition.packed
         && definition.params.is_empty()

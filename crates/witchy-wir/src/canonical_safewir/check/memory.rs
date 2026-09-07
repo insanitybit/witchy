@@ -2807,6 +2807,11 @@ fn drop_ref_layout_supported(
     }
     let supported = layouts.get(layout).is_some_and(|descriptor| match descriptor.kind() {
         LayoutKind::Scalar(_) => true,
+        // A scalar-field record or tuple owns no children: dropping it is
+        // reclaiming its bytes.
+        LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields.iter().all(|field| {
+            layouts.get(*field).is_some_and(|field| matches!(field.kind(), LayoutKind::Scalar(_)))
+        }),
         LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => {
             layouts.get(*element).is_some_and(|element| match element.kind() {
                 LayoutKind::Scalar(_) => true,

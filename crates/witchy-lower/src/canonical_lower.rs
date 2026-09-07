@@ -123,7 +123,7 @@ pub fn lower_typed_module(
     // keeps its bare source name. Key both spellings to the one definition.
     let entry_module = typed.module().linked_entry.as_deref();
     let packed_records = typed.module().items.iter().filter_map(|item| match item {
-        Item::Type(definition) if is_v1_packed_scalar_record(definition) => Some(definition),
+        Item::Type(definition) if is_v1_scalar_record(definition) => Some(definition),
         _ => None,
     }).flat_map(|definition| {
         let qualified = entry_module
@@ -196,7 +196,7 @@ pub fn lower_typed_module(
         .iter()
         .map(|ty| {
             let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types)
+            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types, &packed_records)
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     let mut functions_by_name = HashMap::new();
@@ -261,6 +261,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &function_types,
+            &packed_records,
         )?;
     }
 
@@ -383,6 +384,7 @@ fn checked_signature(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
+    records: &HashMap<String, &TypeDef>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let checked = source
         .callable_signature(&function.name)
@@ -403,7 +405,7 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types)?;
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types, records)?;
     let value_parameters = checked_signature.parameters;
     let contract_parameters = checked_signature.contract.parameters;
     let parameter_effects = checked_signature.contract.parameter_effects;
@@ -433,6 +435,7 @@ fn signature_from_type(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
+    records: &HashMap<String, &TypeDef>,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let Type::Fn(parameters, result, conventions, _) = checked.unqualified() else {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
@@ -463,7 +466,7 @@ fn signature_from_type(
                 convention,
             });
         }
-        let value_type = source_value_type(parameter, layout_bundle, layouts, function_types)?;
+        let value_type = source_value_type(parameter, layout_bundle, layouts, function_types, records)?;
         // An explicit `let` (`Convention::Borrow`) has the default convention's
         // observable semantics; its no-escape rule is the type checker's. Under
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
@@ -490,7 +493,7 @@ fn signature_from_type(
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract { value_type, ownership });
     }
-    let result = source_value_type(result, layout_bundle, layouts, function_types)?;
+    let result = source_value_type(result, layout_bundle, layouts, function_types, records)?;
     let mut results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
     let mut result_contracts = results.iter().copied().map(|result| match result {
         ValueType::Ref(layout) => ResultContract::Shared { layout },
@@ -808,6 +811,14 @@ fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
 }
 
 /// See `plan_binding_lanes`.
+impl BindingLanePlan {
+    /// A phi over a collection carries count and capacity lanes; one over a
+    /// fixed layout carries none.
+    fn has_lanes(&self) -> bool {
+        self.phi.is_some() && self.extents.as_ref().is_some_and(|extents| !extents.is_empty())
+    }
+}
+
 struct BindingLanePlan {
     name: String,
     values: Vec<ValueId>,
@@ -858,6 +869,17 @@ struct FunctionLowerer<'a> {
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
     print_import: Option<witchy_wir::canonical_safewir::ImportId>,
     packed_records: &'a HashMap<String, &'a TypeDef>,
+}
+
+impl<'a> FunctionLowerer<'a> {
+    /// The scalar-record definition a type or constructor name denotes; the
+    /// checker's entry-qualified spelling and the bare source name both key it.
+    fn record_definition(&self, name: &str) -> Option<&'a TypeDef> {
+        self.packed_records
+            .get(name)
+            .or_else(|| name.rsplit('.').next().and_then(|bare| self.packed_records.get(bare)))
+            .copied()
+    }
 }
 
 impl FunctionLowerer<'_> {
@@ -1535,8 +1557,18 @@ impl FunctionLowerer<'_> {
             let all_tokens = self.materialize_mixed_lanes(&mut lanes)?;
             values = lanes.iter().map(|(_, value)| *value).collect();
             let eligible = values.iter().all(|value| self.shared_phi_eligible(*value));
+            // A fixed layout (a heap record) has no count or capacity: its phi
+            // carries no lanes. A collection's phi carries both lanes from
+            // every arm or none at all.
+            let fixed_layout = values.iter().all(|value| {
+                matches!(self.values[value], ValueType::Ref(layout)
+                    if matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_))))
+            });
             let mut extents = Vec::with_capacity(values.len());
             for ((end, _), value) in arms.iter().zip(&values) {
+                if fixed_layout {
+                    break;
+                }
                 let Some((count, capacity)) = self.dynamic_extent_lanes(*value) else {
                     extents.clear();
                     break;
@@ -1544,7 +1576,7 @@ impl FunctionLowerer<'_> {
                 self.current = *end;
                 extents.push(self.split_lanes(count, capacity)?);
             }
-            let phi = if eligible && extents.len() == values.len() {
+            let phi = if eligible && (fixed_layout || extents.len() == values.len()) {
                 if all_tokens && values.iter().all(|value| !self.known_shared_value(*value)) {
                     Some(Ownership::Unique)
                 } else {
@@ -1688,7 +1720,7 @@ impl FunctionLowerer<'_> {
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
-            if plan.phi.is_some() {
+            if plan.has_lanes() {
                 parameter_types.extend([ValueType::Size, ValueType::Size]);
             }
         }
@@ -1716,15 +1748,17 @@ impl FunctionLowerer<'_> {
             let parameter = join_parameters[parameter_index].value;
             if let (Some(phi), Some(extents)) = (plan.phi, &plan.extents) {
                 self.blocks[join_id.get() as usize].parameters[parameter_index].ownership = Some(phi);
-                then_arguments.extend([extents[0].0, extents[0].1]);
-                else_arguments.extend([extents[1].0, extents[1].1]);
-                let count = join_parameters[parameter_index + 1].value;
-                let capacity = join_parameters[parameter_index + 2].value;
-                self.record_joined_extent(parameter, count, capacity, &plan.values);
+                if plan.has_lanes() {
+                    then_arguments.extend([extents[0].0, extents[0].1]);
+                    else_arguments.extend([extents[1].0, extents[1].1]);
+                    let count = join_parameters[parameter_index + 1].value;
+                    let capacity = join_parameters[parameter_index + 2].value;
+                    self.record_joined_extent(parameter, count, capacity, &plan.values);
+                    parameter_index += 2;
+                }
                 if plan.all_tokens {
                     self.token_join_parameters.insert(parameter);
                 }
-                parameter_index += 2;
             } else if matches!(self.values[&parameter], ValueType::Ref(_)) {
                 rebound_references.push(parameter);
             }
@@ -1796,7 +1830,7 @@ impl FunctionLowerer<'_> {
         let outer = self.bindings.clone();
         let result_type = if with_value {
             let first = self.expression_type(&arms[0].body)?;
-            let first = source_value_type(&first, self.layout_bundle, self.layouts, &HashMap::new())?;
+            let first = source_value_type(&first, self.layout_bundle, self.layouts, &HashMap::new(), self.packed_records)?;
             if is_unit(first) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("unit match value"));
             }
@@ -1932,7 +1966,7 @@ impl FunctionLowerer<'_> {
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
-            if plan.phi.is_some() {
+            if plan.has_lanes() {
                 parameter_types.extend([ValueType::Size, ValueType::Size]);
             }
         }
@@ -1984,13 +2018,15 @@ impl FunctionLowerer<'_> {
             let parameter = join_parameters[parameter_index].value;
             if let (Some(phi), Some(_)) = (plan.phi, &plan.extents) {
                 self.blocks[join.get() as usize].parameters[parameter_index].ownership = Some(phi);
-                let count = join_parameters[parameter_index + 1].value;
-                let capacity = join_parameters[parameter_index + 2].value;
-                self.record_joined_extent(parameter, count, capacity, &plan.values);
+                if plan.has_lanes() {
+                    let count = join_parameters[parameter_index + 1].value;
+                    let capacity = join_parameters[parameter_index + 2].value;
+                    self.record_joined_extent(parameter, count, capacity, &plan.values);
+                    parameter_index += 2;
+                }
                 if plan.all_tokens {
                     self.token_join_parameters.insert(parameter);
                 }
-                parameter_index += 2;
             }
             merged.insert(plan.name.clone(), parameter);
             parameter_index += 1;
@@ -1999,7 +2035,7 @@ impl FunctionLowerer<'_> {
             let mut arguments = Vec::new();
             for plan in &plans {
                 arguments.push(plan.values[arm_index]);
-                if let Some(extents) = &plan.extents {
+                if let (true, Some(extents)) = (plan.has_lanes(), &plan.extents) {
                     arguments.extend([extents[arm_index].0, extents[arm_index].1]);
                 }
             }
@@ -3542,16 +3578,22 @@ impl FunctionLowerer<'_> {
             Expr::Str(value) => self.lower_string_literal(value),
             Expr::List(items) => self.lower_list_literal(expression, items),
             Expr::Tuple(_) => Err(CanonicalLoweringError::UnsupportedExpression("tuple")),
-            Expr::Ctor { name, args } => self.lower_packed_record_constructor(expression, name, args),
+            Expr::Ctor { name, args } => self.lower_record_constructor(expression, name, args),
             Expr::AnonCtor { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
             }
             Expr::Unary { op, expr } => self.lower_unary(*op, expr),
             Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
-            Expr::Field { base, field } => self.lower_inline_aggregate_field(base, field),
+            Expr::Field { base, field } => self.lower_record_field(base, field),
             Expr::Lambda { .. } => Err(CanonicalLoweringError::UnsupportedExpression("lambda")),
-            Expr::RecordUpdate { .. } | Expr::Record { .. } => {
-                Err(CanonicalLoweringError::UnsupportedExpression("record"))
+            Expr::Record { name, fields, spread } => {
+                self.lower_record_literal(expression, name, fields, spread.as_deref())
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                let Type::Named(name, _) = self.expression_type(expression)?.unqualified().clone() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("record update type"));
+                };
+                self.lower_record_literal(expression, &name, fields, Some(base))
             }
             Expr::Try(_) => Err(CanonicalLoweringError::UnsupportedExpression("try")),
             Expr::As { .. } => Err(CanonicalLoweringError::UnsupportedExpression("as")),
@@ -3588,6 +3630,158 @@ impl FunctionLowerer<'_> {
             .type_of(expression)
             .and_then(witchy_types::typeck::ty_to_ast)
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedExpressionType(format!("{expression:?}")))
+    }
+
+    fn lower_record_constructor(
+        &mut self,
+        expression: &Expr,
+        name: &str,
+        arguments: &[Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let definition = self.record_definition(name).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("non-record constructor"),
+        )?;
+        if definition.packed {
+            return self.lower_packed_record_constructor(expression, name, arguments);
+        }
+        let fields = definition.variants[0].fields.clone();
+        if arguments.len() != fields.len() {
+            return Err(CanonicalLoweringError::CallArityMismatch {
+                callee: name.to_owned(), expected: fields.len(), actual: arguments.len(),
+            });
+        }
+        let mut values = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            values.push(self.lower_expr(argument)?);
+        }
+        self.lower_heap_record(name, &fields, values)
+    }
+
+    /// A named-field record literal, with the fields not named taken from the
+    /// spread base (`Account(balance: n, ..acc)`).
+    fn lower_record_literal(
+        &mut self,
+        expression: &Expr,
+        name: &str,
+        fields: &[(String, Expr)],
+        spread: Option<&Expr>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let definition = self.record_definition(name).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("non-record literal"),
+        )?;
+        if definition.packed {
+            return Err(CanonicalLoweringError::UnsupportedExpression("packed record literal"));
+        }
+        let field_names = definition.variants[0].field_names.clone();
+        let field_types = definition.variants[0].fields.clone();
+        for (given, _) in fields {
+            if !field_names.iter().any(|candidate| candidate == given) {
+                return Err(CanonicalLoweringError::MissingBinding(given.clone()));
+            }
+        }
+        let base = match spread {
+            Some(base) => Some(self.lower_expr(base)?),
+            None => None,
+        };
+        let _ = expression;
+        let mut values = Vec::with_capacity(field_names.len());
+        for (index, field_name) in field_names.iter().enumerate() {
+            if let Some((_, value)) = fields.iter().find(|(given, _)| given == field_name) {
+                values.push(self.lower_expr(value)?);
+            } else if let Some(base) = base {
+                let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                values.push(self.load_record_field(base, index, scalar_type(&field_types[index as usize])?)?);
+            } else {
+                return Err(CanonicalLoweringError::MissingBinding(field_name.clone()));
+            }
+        }
+        self.lower_heap_record(name, &field_types, values)
+    }
+
+    /// Allocate an immutable reference-counted record and store its fields.
+    fn lower_heap_record(
+        &mut self,
+        name: &str,
+        field_types: &[Type],
+        values: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = packed_scalar_layout(field_types, self.layout_bundle, self.layouts)?;
+        let LayoutSize::Fixed(bytes) = self
+            .layouts
+            .get(layout)
+            .ok_or(CanonicalLoweringError::MissingLayout(Type::Named(name.to_owned(), Vec::new())))?
+            .size()
+        else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("record layout size"));
+        };
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::FixedBytes(u64::from(bytes)),
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        for (index, (value, field_type)) in values.into_iter().zip(field_types).enumerate() {
+            let expected = scalar_type(field_type)?;
+            let actual = self.values[&value];
+            if actual != expected {
+                return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                    callee: name.to_owned(), parameter: index, expected, actual,
+                });
+            }
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    Projection::Field { index: u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)? },
+                    expected,
+                    AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            });
+        }
+        Ok(object)
+    }
+
+    fn load_record_field(
+        &mut self,
+        object: ValueId,
+        index: u32,
+        value_type: ValueType,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(value_type)?;
+        self.push_operation(Operation::Load {
+            destination,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Field { index },
+                value_type,
+                AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        });
+        Ok(destination)
+    }
+
+    fn lower_record_field(&mut self, base: &Expr, field: &str) -> Result<ValueId, CanonicalLoweringError> {
+        let base_type = self.expression_type(base)?;
+        let Type::Named(name, _) = base_type.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("field base"));
+        };
+        let definition = self.record_definition(name).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("non-record field"),
+        )?;
+        if definition.packed {
+            return self.lower_inline_aggregate_field(base, field);
+        }
+        let index = definition.variants[0].field_names.iter().position(|candidate| candidate == field)
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
+        let value_type = scalar_type(&definition.variants[0].fields[index])?;
+        let object = self.lower_expr(base)?;
+        if !matches!(self.values[&object], ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("heap record field base"));
+        }
+        self.load_record_field(object, u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, value_type)
     }
 
     fn lower_packed_record_constructor(
@@ -5694,8 +5888,17 @@ fn source_value_type(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     function_types: &HashMap<Type, FunctionSignatureId>,
+    records: &HashMap<String, &TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
     match source.unqualified() {
+        // A heap record is one owned reference; a packed record stays an
+        // inline aggregate, which the ABI does not carry (`scalar_type`
+        // refuses it below).
+        Type::Named(name, arguments)
+            if arguments.is_empty() && records.get(name).is_some_and(|definition| !definition.packed) =>
+        {
+            packed_scalar_layout(&records[name].variants[0].fields, layout_bundle, layouts).map(ValueType::Ref)
+        }
         Type::Fn(..) => function_types
             .get(source)
             .or_else(|| function_types.get(source.unqualified()))
@@ -5750,6 +5953,17 @@ fn packed_scalar_layout(
     }
 }
 
+/// A one-variant record with scalar fields: inline when `packed`, otherwise
+/// an immutable reference-counted heap aggregate.
+fn is_v1_scalar_record(definition: &TypeDef) -> bool {
+    definition.params.is_empty()
+        && definition.variants.len() == 1
+        && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+        ))
+}
+
+#[allow(dead_code)]
 fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
     definition.packed
         && definition.params.is_empty()
