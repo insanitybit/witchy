@@ -719,3 +719,30 @@ fn admitted_ascii_case_mapping_writes_bytes_under_a_byte_bound() {
         vec!["HéLLO, WöRLD! 123 AZ".to_string(), "héllo, wörld! 123 az".to_string(), "|abc".to_string(), "PEAR,FIG".to_string()]
     );
 }
+
+#[test]
+fn admitted_nested_constructor_patterns_test_payloads_behind_the_tag() {
+    // A refutable payload pattern (`Some(Less)`, `Some(Circle(r))`) loads its
+    // slot only once the outer tag test selected the variant; the derived
+    // `PartialOrd` on a record is exactly this shape, and a list of records
+    // reads an element without a string-extent load.
+    let output = run_admitted(
+        "import cmp\n\ntype Version derive(PartialEq, Eq, PartialOrd, Ord):\n    major: Int\n    minor: Int\n\ntype Shape:\n    Circle(Int)\n    Square(Int)\n\nfn describe(o: Option(Ordering)) -> String:\n    match o:\n        Some(Less) -> \"less\"\n        Some(Greater) -> \"greater\"\n        Some(Equal) -> \"equal\"\n        None -> \"none\"\n\nfn area(s: Option(Shape)) -> Int:\n    match s:\n        Some(Circle(r)) -> 3 * r * r\n        Some(Square(w)) -> w * w\n        None -> 0\n\nfn top_major(xs: List(Version)) -> Int:\n    var best = xs.at(0)\n    for x in xs:\n        if x > best:\n            best = x\n    best.major\n\nfn main(console: Console):\n    console.print(describe(Version(1, 9).partial_compare(Version(2, 0))))\n    console.print(describe(Version(2, 1).partial_compare(Version(2, 0))))\n    console.print(describe(Version(2, 0).partial_compare(Version(2, 0))))\n    console.print(describe(None))\n    console.print(\"${Version(1, 12) > Version(1, 9)}\")\n    console.print(\"${area(Some(Circle(2)))} ${area(Some(Square(3)))} ${area(None)}\")\n    console.print(\"${top_major([Version(1, 9), Version(2, 0), Version(1, 12)])}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["less", "greater", "equal", "none", "true", "12 9 0", "2"].into_iter().map(str::to_string).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn admitted_record_write_back_in_a_loop_takes_a_shared_lane() {
+    // A record bound from a call result (a shared value) and advanced by a
+    // `var` write-back inside the loop is rebound by that call exactly as an
+    // assignment rebinds it: the lane is a shared phi and the write-back's
+    // unique result weakens into it on the back edge.
+    let output = run_admitted(
+        "type Counter:\n    n: Int\n\nfn bump(var c: Counter) -> Int:\n    c = Counter(n: c.n + 1)\n    c.n\n\nfn make() -> Counter:\n    Counter(n: 0)\n\nfn main(console: Console):\n    var c = make()\n    var i = 0\n    var total = 0\n    while i < 4:\n        total = total + bump(c)\n        i = i + 1\n    console.print(\"${total} ${c.n}\")\n    console.print([1, 2, 3].map(fn(n: Int): \"<${n}>\").join(\"\"))\n",
+    );
+    assert_eq!(output, vec!["10 4".to_string(), "<1><2><3>".to_string()]);
+}

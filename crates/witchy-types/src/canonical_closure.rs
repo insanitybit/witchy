@@ -300,6 +300,7 @@ impl<'a> Builder<'a> {
     fn is_authenticated_module_reference(&self, name: &str) -> bool {
         self.typed.table().function_type(name).is_some()
             || witchy_syntax::cap_ops::is_op_name(name)
+            || witchy_syntax::ast::is_render_intrinsic(name)
             || self.module.items.iter().any(|item| match item {
                 Item::Function(function) => function.name == name,
                 Item::Const { name: constant, .. } => constant == name,

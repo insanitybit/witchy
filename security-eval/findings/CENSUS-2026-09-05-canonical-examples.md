@@ -979,3 +979,18 @@ branch-free (the sign bit of `(b - low) | (high - b)` selects the shift). The ch
 a raw-byte element write as a `Size` store the path must prove fits a byte (`proven_at_most`
 on a guard against a constant), and the backend stores it with `i32.store8`. Newly agree:
 `text`. Census: 111/163 check, 55 runnable three-legged parity, 0 disagree.
+
+## Slice 34 (2026-09-07): `@render` in lambdas, nested constructor patterns, write-back lanes
+
+The render intrinsic referenced inside a lambda body is an authenticated intrinsic, not a
+lexical capture (the closure witness had refused `@render` as an unresolved capture). A
+refutable payload pattern (`Some(Less)`, `Some(Circle(r))`) tests its slot only once the
+outer tag test selected the variant: the payload test sits behind the tag test as a
+short-circuit conjunction (`short_circuit_and`), and the arm block binds nested payloads
+through their own slot loads. The derived `PartialOrd` on a record is exactly this shape.
+An element read from a list of records no longer loads a string extent (only a string
+element carries one). A `var` record a loop body passes to a write-back parameter is
+rebound by that call as an assignment rebinds it, so its header lane is a shared phi and
+the write-back's unique result weakens into it on the back edge. Newly agree: `dice`,
+`largest`, `list_ops`, `pipeline`, `sort`. Census: 116/163 check, 60 runnable three-legged
+parity, 0 disagree.

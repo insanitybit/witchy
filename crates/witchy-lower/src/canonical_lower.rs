@@ -2404,6 +2404,20 @@ impl FunctionLowerer<'_> {
                             let payload = self.load_record_field(scrutinee, slot, value_type)?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
+                        // A nested constructor payload binds through its own
+                        // slot load; the tag test that reached this arm has
+                        // already selected its variant.
+                        Pattern::Ctor { .. } => {
+                            let slot = variant.first_field + offset;
+                            let field_type = shape.fields[slot].clone();
+                            let value_type = self.field_value_type(&field_type)?;
+                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
+                        }
+                        // A literal payload binds nothing; its test ran in the
+                        // dispatch block.
+                        Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
                         _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern")),
                     }
                 }
@@ -2546,16 +2560,33 @@ impl FunctionLowerer<'_> {
                     Pattern::Tuple(items) => items.iter().all(|item| matches!(item, Pattern::Var(_) | Pattern::Wildcard)),
                     _ => false,
                 };
-                if !args.iter().all(irrefutable) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern"));
+                let (index, variant) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                if args.len() != variant.arity {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("constructor pattern arity"));
                 }
-                let (index, _) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                let first_field = variant.first_field;
+                let fields = shape.fields.clone();
+                let refutable: Vec<(usize, &Pattern)> = args
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, argument)| !irrefutable(argument))
+                    .collect();
                 if !shape.tagged {
-                    return Ok(None);
+                    return self.payload_pattern_conditions(scrutinee, first_field, &fields, &refutable);
                 }
                 let tag = self.load_record_field(scrutinee, 0, ValueType::Int)?;
                 let expected = self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-                return Ok(Some(self.push_compare(ComparisonOperator::Equal, tag, expected)?));
+                let tag_test = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
+                if refutable.is_empty() {
+                    return Ok(Some(tag_test));
+                }
+                // A refutable payload pattern tests its slot only once the tag
+                // test has selected the variant: another variant's slot is
+                // uninitialized, so the payload test sits behind the tag test
+                // as a short-circuit conjunction.
+                return Ok(Some(self.short_circuit_and(tag_test, |this| {
+                    this.payload_pattern_conditions(scrutinee, first_field, &fields, &refutable)
+                })?));
             }
             Pattern::Int(value) | Pattern::Duration(value) => {
                 let destination = self.fresh(ValueType::Int)?;
@@ -2610,6 +2641,91 @@ impl FunctionLowerer<'_> {
             right: value,
         });
         Ok(Some(condition))
+    }
+
+    /// The conjunction of the refutable payload patterns of one constructor
+    /// arm, each tested on its own slot load. Later payload tests evaluate
+    /// only when the earlier ones held, so a nested test's own guarded loads
+    /// stay behind every test that dominates them. `None` when no payload
+    /// test remains.
+    fn payload_pattern_conditions(
+        &mut self,
+        scrutinee: ValueId,
+        first_field: usize,
+        fields: &[Type],
+        refutable: &[(usize, &Pattern)],
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some(((offset, argument), rest)) = refutable.split_first() else {
+            return Ok(None);
+        };
+        let slot = first_field + offset;
+        let field_type = fields[slot].clone();
+        let value_type = self.field_value_type(&field_type)?;
+        let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let payload = self.load_record_field(scrutinee, slot, value_type)?;
+        let Some(test) = self.match_pattern_condition(payload, argument, &field_type)? else {
+            return self.payload_pattern_conditions(scrutinee, first_field, fields, rest);
+        };
+        if rest.is_empty() {
+            return Ok(Some(test));
+        }
+        Ok(Some(self.short_circuit_and(test, |this| {
+            this.payload_pattern_conditions(scrutinee, first_field, fields, rest)
+        })?))
+    }
+
+    /// `left && right` where `right` is lowered in its own block only when
+    /// `left` held; a `None` right operand holds trivially. The lowered right
+    /// operand may not change the binding environment.
+    fn short_circuit_and(
+        &mut self,
+        left: ValueId,
+        right: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if self.values[&left] != ValueType::Bool {
+            return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
+        }
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let evaluate_right = self.new_block(&[])?;
+        let decided = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Bool])?;
+        let result = self.blocks[join.get() as usize].parameters[0].value;
+        self.finish_current(Terminator::BranchIf {
+            condition: left,
+            then_target: evaluate_right,
+            then_arguments: Vec::new(),
+            else_target: decided,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = decided;
+        let decided_value = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: decided_value, value: false });
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![decided_value] })?;
+
+        self.current = evaluate_right;
+        self.bindings = bindings.clone();
+        let right = match right(self)? {
+            Some(right) => right,
+            None => {
+                let held = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::ConstBool { destination: held, value: true });
+                held
+            }
+        };
+        if self.values[&right] != ValueType::Bool {
+            return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
+        }
+        if self.bindings != bindings {
+            return Err(CanonicalLoweringError::UnsupportedExpression("binding change inside short-circuit operand"));
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![right] })?;
+
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        Ok(result)
     }
 
     /// A tail-site path for the statement at `statement` of this function's
@@ -2749,7 +2865,7 @@ impl FunctionLowerer<'_> {
         state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
         let header = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &self.loop_rebindings_with_write_backs(body));
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -2873,7 +2989,7 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &self.loop_rebindings_with_write_backs(body));
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -3014,7 +3130,7 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &self.loop_rebindings_with_write_backs(body));
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -3133,7 +3249,7 @@ impl FunctionLowerer<'_> {
         // in an `if` arm counts) is loop state; a top-level-only scan once
         // dropped a nested `n = n + 1` and the loop silently kept the entry
         // value.
-        let rebound = loop_rebindings(body);
+        let rebound = self.loop_rebindings_with_write_backs(body);
         let mut names = rebound
             .assigned
             .iter()
@@ -3586,6 +3702,29 @@ impl FunctionLowerer<'_> {
     /// string is a unique phi when it owns its token and a shared phi when it
     /// came from a shared source (the checker weakens a fresh concat result to
     /// shared at that phi). Untracked references stay unspecified.
+    /// The loop body's rebindings plus every `var` name the body passes to
+    /// a write-back parameter: the call's write-back result rebinds that
+    /// name exactly as an assignment does, so its lane needs the same phi.
+    fn loop_rebindings_with_write_backs(&self, body: &witchy_syntax::ast::Block) -> LoopRebindings {
+        let mut rebound = loop_rebindings(body);
+        let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut |expression| {
+            if let Expr::Call { name, args } = expression
+                && let Some((_, signature_id)) = self.functions.get(name.as_str())
+                && let Some(signature) = self.signatures.get(signature_id.get() as usize)
+            {
+                for (argument, contract) in args.iter().zip(&signature.contract.parameters) {
+                    if contract.ownership == ParameterOwnership::WriteBack
+                        && let Expr::Var(name) = argument
+                    {
+                        rebound.assigned.insert(name.clone());
+                    }
+                }
+            }
+            Ok(())
+        });
+        rebound
+    }
+
     fn mark_tracked_phi_parameters(
         &mut self,
         header: BlockId,
@@ -5802,7 +5941,11 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
             },
         });
-        if let ValueType::Ref(string_layout) = element_type {
+        // Only a string element carries a byte extent to authenticate here;
+        // an aggregate or nested-list element records nothing, its extent
+        // (if any) is loaded lazily at the first access that needs it.
+        let string = string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts).ok();
+        if let ValueType::Ref(element_layout) = element_type && Some(element_layout) == string {
             let length = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::Load {
                 destination: length,
@@ -5830,7 +5973,7 @@ impl FunctionLowerer<'_> {
                 condition: length_fits,
                 kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
             });
-            debug_assert_eq!(self.values[&destination], ValueType::Ref(string_layout));
+            debug_assert_eq!(self.values[&destination], ValueType::Ref(element_layout));
             self.string_lengths.insert(destination, length);
         }
         Ok(destination)
