@@ -1976,6 +1976,8 @@ mod tests {
                                 extent: supplied_extent,
                             }],
                         },
+                        // Callee-drops: the buffer is released after the host read.
+                        Operation::DropRef { object },
                     ],
                     terminator: Terminator::Return { values: vec![result] },
                 }],
@@ -2075,6 +2077,9 @@ mod tests {
                             ),
                             length,
                         },
+                        // Callee-drops: both buffers are released before exit.
+                        Operation::DropRef { object: source },
+                        Operation::DropRef { object: destination },
                     ],
                     terminator: Terminator::Return { values: Vec::new() },
                 }],
@@ -2295,7 +2300,8 @@ mod tests {
             HostBufferExtent::Slice,
             HostBufferExtent::Slice,
         );
-        assert!(super::check_initial_with_catalog(module, &catalog).is_ok());
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
@@ -2332,7 +2338,8 @@ mod tests {
 
     #[test]
     fn raw_byte_slice_copy_is_accepted() {
-        assert!(check_initial(byte_copy_module(true)).is_ok());
+        let result = check_initial(byte_copy_module(true));
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

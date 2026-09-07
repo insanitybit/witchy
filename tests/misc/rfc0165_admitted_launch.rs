@@ -269,3 +269,32 @@ fn admitted_list_patterns_run() {
         vec!["21".to_string(), "starts with 3".to_string(), "one: 42".to_string(), "empty".to_string()]
     );
 }
+
+#[test]
+fn admitted_bytes_launch_from_their_entry_section_without_the_artifact() {
+    // RFC-0165 B11: the admitted bytes carry `witchy.entry`; a launcher that
+    // only has the `.wasm` file enters through it, and the artifact's exact
+    // byte identity covers the section.
+    let checked = witchy::resolve_std_only_checked("fn main(console: Console) -> Int:\n    console.print(\"hi\")\n    40 + 2\n")
+        .expect("fixture checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("the foundation subset admits this fixture");
+    let from_bytes = witchy_wir::canonical_entry_from_wasm(artifact.wasm())
+        .expect("entry section decodes")
+        .expect("a program carries an entry");
+    assert_eq!(Some(&from_bytes), artifact.entry());
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn(
+            artifact.wasm(),
+            Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn admitted bytes");
+    vm.run().expect("run from the entry section");
+    assert_eq!(vm.output(), vec!["hi".to_string(), "42".to_string()]);
+    let mut mutated = artifact.wasm().to_vec();
+    let last = mutated.len() - 1;
+    mutated[last] ^= 2;
+    assert!(artifact.verify_exact_bytes(&mutated).is_err(), "a mutated entry section is not the admitted artifact");
+}

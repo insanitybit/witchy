@@ -498,3 +498,33 @@ route is 0/107.
 - Census: 69 of 163 check; 13 runnable examples admit and agree under parity
   (`listmatch` is new). `queens` stops only at `list.at`.
 
+## Progress (owner, 2026-09-06, twelfth slice)
+
+- **B11 launch entry bound into the bytes**: admission encodes the derived
+  `CanonicalEntry` (export, capability tags, result convention) as a
+  `witchy.entry` custom section, emits it after `witchy.launch`, and matches it
+  exactly during exact-byte admission (section order, payload), so the entry
+  is covered by the artifact's Wasm digest. A launcher that has only the
+  `.wasm` file reads it back (`witchy_wir::canonical_entry_from_wasm`, a
+  module outside the private encoder, which the route gate keeps to admission
+  alone); `Runtime::spawn` instantiates such bytes exactly (no Binaryen, no
+  cache) and enters through the entry, and the CLI's exit-code convention reads
+  the entry's result kind. `witchy compile --out app.wasm` then `witchy
+  app.wasm` prints and exits with the `Int` result.
+- **Historical reds restored, not hidden**: the nine `witchy-wir` tests red
+  at `HEAD` are green. Six shared an allocate-only fixture that predates
+  callee-drops (it now releases its token); the pointer-list fixture returns
+  its clone and drops the container; the reference-count boundary fixture
+  gets the destructor's five scratch slots; the two checker pins release the
+  buffers they allocate; the pointer-bearing catalog pin now asserts the
+  earlier checker refusal (no recursive destructor for that layout).
+- **Encoder defect found by the restored fixture**: the recursive destructor
+  stored a loaded child pointer in the current depth's fourth scratch slot
+  while the recursive drop read the next depth's first slot, which nothing
+  set, so a dropped list of owned pointers never released its children (a
+  leak, covered identically by the plan mirror and therefore admitted). Both
+  sides now store the child in the next depth's slot; the restored test pins
+  the child's count after the container's drop.
+- New in-subset refusal recorded: pushing into a `var` list of strings is
+  refused by the checker as `UpdateCount(pointer prefix missing)`.
+

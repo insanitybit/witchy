@@ -2056,11 +2056,19 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let wasm = wasm.as_ref();
-        // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
-        // every hit and miss still enters Wasmtime through safe `Module::new`.
-        let module = build_module(&self.engine, wasm, self.executable_cache)?;
+        // An admitted canonical artifact carries its launch entry in a custom
+        // section (RFC-0165 B11); its bytes are instantiated exactly, never
+        // optimized or cached, and entered through that entry.
+        let entry = witchy_wir::canonical_entry_from_wasm(wasm).map_err(Error::msg)?;
+        let module = if entry.is_some() {
+            build_admitted_module(&self.engine, wasm)?
+        } else {
+            // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
+            // every hit and miss still enters Wasmtime through safe `Module::new`.
+            build_module(&self.engine, wasm, self.executable_cache)?
+        };
 
-        self.instantiate_module(module, caps, memory_pages_max, None)
+        self.instantiate_module(module, caps, memory_pages_max, entry)
     }
 
     /// Spawn a VM from an admitted canonical SafeWIR artifact.

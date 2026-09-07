@@ -75,6 +75,11 @@ pub(crate) fn run_wasm_file(
 /// "no" — the value simply stays a trailing line, the pre-fix behavior.
 fn wasm_main_returns_int(bytes: &[u8]) -> bool {
     use wasmparser::{ExternalKind, Operator, Parser, Payload, TypeRef};
+    // An admitted canonical artifact states its result convention in its
+    // entry section; no `run` wrapper exists to inspect.
+    if let Ok(Some(entry)) = witchy_wir::canonical_entry_from_wasm(bytes) {
+        return entry.result() == witchy_wir::CanonicalEntryResult::Int;
+    }
     let mut func_imports = 0u32;
     let mut print_int_index: Option<u32> = None;
     let mut run_index: Option<u32> = None;

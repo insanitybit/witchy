@@ -191,6 +191,9 @@ struct WasmIr {
     revision: crate::canonical_safewir::Revision,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     launch_contract_payload: Vec<u8>,
+    /// The encoded launch entry (`witchy.entry`), present only for a program
+    /// with a validated `main`; derived inside admission, never from bytes.
+    entry_payload: Option<Vec<u8>>,
     static_data: Vec<WasmStaticData>,
     imports: Vec<WasmImport>,
     table: Option<WasmTable>,
@@ -1083,6 +1086,7 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
         revision: module.revision(),
         checked_source: module.checked_source(),
         launch_contract_payload: module.launch_contract_payload().to_vec(),
+        entry_payload: None,
         static_data,
         imports: module.imports().iter().map(|import| WasmImport { id: import.id, signature: import.signature }).collect(),
         table: has_function_table.then(|| WasmTable {
@@ -1381,7 +1385,70 @@ pub struct CanonicalEntry {
     result: CanonicalEntryResult,
 }
 
+/// Custom section carrying the encoded [`CanonicalEntry`] so a Tier-1
+/// `.wasm` file launches without the in-memory artifact. Admission emits it
+/// from the derived entry and matches it exactly, so its bytes are covered
+/// by the artifact's Wasm digest like every other section. Reading it back
+/// from bytes lives in `canonical_entry`, outside this private encoder.
+pub(crate) const ENTRY_SECTION: &str = "witchy.entry";
+const ENTRY_VERSION: u8 = 1;
+
 impl CanonicalEntry {
+    /// Wire form: version, export name (length-prefixed), capability tags
+    /// (count-prefixed), result tag. Every field is derived from the validated
+    /// signature; nothing here is authority on its own.
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut bytes = vec![ENTRY_VERSION];
+        let export = self.export.as_bytes();
+        bytes.push(u8::try_from(export.len()).expect("canonical export names are short"));
+        bytes.extend_from_slice(export);
+        bytes.push(u8::try_from(self.capabilities.len()).expect("entry capability count fits a byte"));
+        for capability in &self.capabilities {
+            bytes.push(match capability {
+                CanonicalEntryCapability::Console => 0,
+            });
+        }
+        bytes.push(match self.result {
+            CanonicalEntryResult::Unit => 0,
+            CanonicalEntryResult::Int => 1,
+            CanonicalEntryResult::Float => 2,
+        });
+        bytes
+    }
+
+    pub(crate) fn decode(data: &[u8]) -> Result<Self, String> {
+        let invalid = |detail: &str| format!("invalid `{ENTRY_SECTION}` metadata: {detail}");
+        let (&version, rest) = data.split_first().ok_or_else(|| invalid("truncated header"))?;
+        if version != ENTRY_VERSION {
+            return Err(invalid(&format!("unsupported version {version}")));
+        }
+        let (&export_len, rest) = rest.split_first().ok_or_else(|| invalid("truncated export name"))?;
+        if rest.len() < usize::from(export_len) {
+            return Err(invalid("truncated export name"));
+        }
+        let (export, rest) = rest.split_at(usize::from(export_len));
+        let export = std::str::from_utf8(export).map_err(|_| invalid("export name is not UTF-8"))?.to_owned();
+        let (&count, rest) = rest.split_first().ok_or_else(|| invalid("truncated capability count"))?;
+        if rest.len() != usize::from(count) + 1 {
+            return Err(invalid("capability count does not match the payload length"));
+        }
+        let (tags, result) = rest.split_at(usize::from(count));
+        let capabilities = tags
+            .iter()
+            .map(|tag| match tag {
+                0 => Ok(CanonicalEntryCapability::Console),
+                other => Err(invalid(&format!("unknown capability tag {other}"))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = match result[0] {
+            0 => CanonicalEntryResult::Unit,
+            1 => CanonicalEntryResult::Int,
+            2 => CanonicalEntryResult::Float,
+            other => return Err(invalid(&format!("unknown result tag {other}"))),
+        };
+        Ok(Self { export, capabilities, result })
+    }
+
     pub fn export(&self) -> &str {
         &self.export
     }
@@ -2139,8 +2206,14 @@ fn emit_drop_ref_local(
             body.instruction(&wasm_encoder::Instruction::I32Mul);
             body.instruction(&wasm_encoder::Instruction::I32Add);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-            emit_set_index(body, scratch_index(layout, base + 4));
-            emit_get_index(body, scratch_index(layout, base + 4));
+            // The loaded child pointer is the object of the next destructor
+            // depth: it lives in that depth's first scratch slot, where the
+            // recursive drop below reads it.
+            if base + 5 >= layout.scratch.len() {
+                return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
+            }
+            emit_set_index(body, scratch_index(layout, base + 5));
+            emit_get_index(body, scratch_index(layout, base + 5));
             body.instruction(&wasm_encoder::Instruction::I32Eqz);
             body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
             body.instruction(&wasm_encoder::Instruction::Unreachable);
@@ -3258,18 +3331,20 @@ fn encode_function(
 fn authorize_wasm_ir(
     validated: ValidatedSafeWir,
     source_witness: &witchy_types::pipeline::CanonicalCheckedSource,
+    entry: Option<&CanonicalEntry>,
 ) -> Result<CheckedWasmIr, EncodeError> {
-    authorize_wasm_ir_inner(validated, Some(source_witness))
+    authorize_wasm_ir_inner(validated, Some(source_witness), entry.map(CanonicalEntry::encode))
 }
 
 #[cfg(test)]
 fn authorize_wasm_ir_for_test(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, EncodeError> {
-    authorize_wasm_ir_inner(validated, None)
+    authorize_wasm_ir_inner(validated, None, None)
 }
 
 fn authorize_wasm_ir_inner(
     validated: ValidatedSafeWir,
     source_witness: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
+    entry_payload: Option<Vec<u8>>,
 ) -> Result<CheckedWasmIr, EncodeError> {
     validated.validate_pre_admission().map_err(|_| {
         EncodeError::Correspondence(CorrespondenceError::ModuleIdentityMismatch)
@@ -3283,7 +3358,8 @@ fn authorize_wasm_ir_inner(
     let checked_source = validated.checked_source();
     let final_module_digest = validated.final_module_digest();
     let authority_digest = validated.authority_digest();
-    let target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
+    let mut target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
+    target.entry_payload = entry_payload;
     let receipt = check_correspondence(&source, &target).map_err(EncodeError::Correspondence)?;
     if receipt.mappings.len() != expected_source_items(&source).len() {
         return Err(EncodeError::Correspondence(CorrespondenceError::MissingSourceItem(
@@ -3421,6 +3497,12 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
         name: Cow::Borrowed("witchy.launch"),
         data: Cow::Borrowed(&target.launch_contract_payload),
     });
+    if let Some(entry_payload) = &target.entry_payload {
+        module.section(&CustomSection {
+            name: Cow::Borrowed(ENTRY_SECTION),
+            data: Cow::Borrowed(entry_payload),
+        });
+    }
     let bytes = module.finish();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::TAIL_CALL)
         .validate_all(&bytes)
@@ -4259,8 +4341,8 @@ fn push_drop_ref_local_plan(
                 PlanToken::I32Mul,
                 PlanToken::I32Add,
                 PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-                PlanToken::LocalSet(layout.scratch[base + 4]),
-                PlanToken::LocalGet(layout.scratch[base + 4]),
+                PlanToken::LocalSet(*layout.scratch.get(base + 5).ok_or(CanonicalAdmissionError::UnsupportedPlan)?),
+                PlanToken::LocalGet(*layout.scratch.get(base + 5).ok_or(CanonicalAdmissionError::UnsupportedPlan)?),
                 PlanToken::I32Eqz,
                 PlanToken::If("Empty".to_owned()),
                 PlanToken::Unreachable,
@@ -5423,6 +5505,7 @@ fn decode_and_match_plan(
     let mut actual_table = None;
     let mut actual_elements = None;
     let mut actual_launch_contract = None;
+    let mut actual_entry: Option<Vec<u8>> = None;
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {
         match payload.map_err(|_| CanonicalAdmissionError::WasmValidation)? {
             wasmparser::Payload::Version { .. } => {}
@@ -5523,14 +5606,15 @@ fn decode_and_match_plan(
                     actual_data.push((offset, data.data.to_vec()));
                 }
             }
-            wasmparser::Payload::CustomSection(section) => {
-                if section.name() != "witchy.launch"
-                    || actual_launch_contract.replace(section.data().to_vec()).is_some()
-                {
-                    return Err(CanonicalAdmissionError::PlanMismatch("launch contract section"));
+            wasmparser::Payload::CustomSection(section) => match section.name() {
+                "witchy.launch" if actual_launch_contract.replace(section.data().to_vec()).is_none() => {
+                    section_order.push(10);
                 }
-                section_order.push(10);
-            }
+                ENTRY_SECTION if actual_entry.replace(section.data().to_vec()).is_none() => {
+                    section_order.push(11);
+                }
+                _ => return Err(CanonicalAdmissionError::PlanMismatch("launch contract section")),
+            },
             wasmparser::Payload::End(_) => {}
             _ => return Err(CanonicalAdmissionError::PlanMismatch("unexpected Wasm section")),
         }
@@ -5552,6 +5636,9 @@ fn decode_and_match_plan(
         expected_sections.push(9);
     }
     expected_sections.push(10);
+    if target.entry_payload.is_some() {
+        expected_sections.push(11);
+    }
     let expected_data = expected_static_data.iter().map(|segment| (segment.offset, segment.bytes.clone())).collect::<Vec<_>>();
     if section_order != expected_sections {
         return Err(CanonicalAdmissionError::SectionOrderMismatch {
@@ -5594,6 +5681,9 @@ fn decode_and_match_plan(
     }
     if actual_launch_contract.as_deref() != Some(target.launch_contract_payload.as_slice()) {
         return Err(CanonicalAdmissionError::PlanMismatch("launch contract payload"));
+    }
+    if actual_entry != target.entry_payload {
+        return Err(CanonicalAdmissionError::PlanMismatch("entry section payload"));
     }
     match &target.table {
         Some(table) => {
@@ -5768,7 +5858,7 @@ pub fn admit_canonical(
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
     let entry = derive_entry(&validated, source)?;
-    let checked = authorize_wasm_ir(validated, source).map_err(|error| match error {
+    let checked = authorize_wasm_ir(validated, source, entry.as_ref()).map_err(|error| match error {
         EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => {
             CanonicalAdmissionError::Lowering(format!("{error:?}"))
         }
@@ -7161,10 +7251,21 @@ mod tests {
         stride_bytes: u32,
         capacity_value: u64,
     ) -> ValidatedSafeWir {
+        finalize(alloc_only_candidate(layout, layouts, class, header_bytes, stride_bytes, capacity_value))
+    }
+
+    fn alloc_only_candidate(
+        layout: crate::layout::LayoutId,
+        layouts: LayoutBundle,
+        class: crate::canonical_safewir::AllocationClass,
+        header_bytes: u32,
+        stride_bytes: u32,
+        capacity_value: u64,
+    ) -> CanonicalModule<LoweredCandidate> {
         let count = ValueId::new(1);
         let capacity = ValueId::new(2);
         let object = ValueId::new(3);
-        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+        CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(32),
             checked_source: CheckedSourceIdentity::from_digest([0x32; 32]),
             layouts,
@@ -7178,16 +7279,24 @@ mod tests {
                 blocks: vec![BasicBlock {
                     id: crate::canonical_safewir::BlockId::new(32),
                     parameters: Vec::new(),
-                    operations: vec![
-                        Operation::ConstSize { destination: count, value: 0 },
-                        Operation::ConstSize { destination: capacity, value: capacity_value },
-                        Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes, count, capacity, stride_bytes }, class },
-                    ],
+                    operations: {
+                        // Callee-drops: a reference-counted token the function
+                        // neither returns nor transfers is released before exit.
+                        let mut operations = vec![
+                            Operation::ConstSize { destination: count, value: 0 },
+                            Operation::ConstSize { destination: capacity, value: capacity_value },
+                            Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes, count, capacity, stride_bytes }, class },
+                        ];
+                        if class == crate::canonical_safewir::AllocationClass::ReferenceCounted {
+                            operations.push(Operation::DropRef { object });
+                        }
+                        operations
+                    },
                     terminator: Terminator::Return { values: Vec::new() },
                 }],
             }],
             proper_tail_sites: Vec::new(),
-        }))
+        })
     }
 
     fn checked_int_list_fixture() -> ValidatedSafeWir {
@@ -7627,7 +7736,7 @@ mod tests {
         let layout = LocalLayout {
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
             extra_types: vec![ValType::I32; 5],
-            scratch: vec![2, 3, 4, 5],
+            scratch: vec![2, 3, 4, 5, 6],
         };
         let mut boundary = WasmFunctionEncoder::new(vec![(5, ValType::I32)]);
         if share {
@@ -7743,7 +7852,16 @@ mod tests {
         let container = ValueId::new(3);
         let in_bounds = ValueId::new(4);
         let loaded = ValueId::new(5);
-        let signature = scalar_signature_with(FunctionSignatureId::new(36), Vec::new(), Vec::new());
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(36),
+            parameters: Vec::new(),
+            results: vec![ValueType::Ref(string)],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Shared { layout: string }],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
         finalize(CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(36),
             checked_source: CheckedSourceIdentity::from_digest([0x36; 32]),
@@ -7819,8 +7937,12 @@ mod tests {
                             ),
                             transfer: LoadTransfer::CloneShared,
                         },
+                        // Callee-drops: the container's token is released (its
+                        // stored child once); the clone is returned and keeps
+                        // the child alive.
+                        Operation::DropRef { object: container },
                     ],
-                    terminator: Terminator::Return { values: Vec::new() },
+                    terminator: Terminator::Return { values: vec![loaded] },
                 }],
             }],
             proper_tail_sites: Vec::new(),
@@ -7836,11 +7958,16 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let run = instance.get_typed_func::<(), ()>(&mut store, "f36").unwrap();
-        run.call(&mut store, ()).unwrap();
+        let run = instance.get_typed_func::<(), i32>(&mut store, "f36").unwrap();
+        let retained = run.call(&mut store, ()).unwrap();
+        // The child is the first heap object: its reference count header sits
+        // at the heap start and its pointer eight bytes past it.
+        assert_eq!(retained, 24, "the returned clone is the child object");
         let memory = instance.get_memory(&mut store, "memory").unwrap();
+        // Move into the container, clone out, drop the container: the child
+        // keeps exactly the clone's reference.
         let rc = u32::from_le_bytes(memory.data(&store)[16..20].try_into().unwrap());
-        assert_eq!(rc, 2);
+        assert_eq!(rc, 1);
     }
 
     fn checked_guard_artifact() -> ValidatedSafeWir {
@@ -7895,6 +8022,30 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let result = instance.get_typed_func::<(), i64>(&mut store, "f36").unwrap().call(&mut store, ()).unwrap();
         assert_eq!(result, 19);
+    }
+
+    #[test]
+    fn foreign_entry_section_fails_admission() {
+        // The test admission path derives no entry, so an entry section in the
+        // bytes is not the encoder's and must be refused before launch.
+        let mut bytes = encode_validated(checked_scalar()).unwrap();
+        wasm_encoder::Section::append_to(
+            &CustomSection { name: Cow::Borrowed(ENTRY_SECTION), data: Cow::Owned(vec![1, 2, b'f', b'0', 0, 1]) },
+            &mut bytes,
+        );
+        assert!(admit_canonical_with_bytes_for_test(checked_scalar(), bytes).is_err());
+    }
+
+    #[test]
+    fn canonical_entry_round_trips_through_its_section_encoding() {
+        let entry = CanonicalEntry {
+            export: "f3".to_owned(),
+            capabilities: vec![CanonicalEntryCapability::Console],
+            result: CanonicalEntryResult::Int,
+        };
+        assert_eq!(CanonicalEntry::decode(&entry.encode()).unwrap(), entry);
+        assert!(CanonicalEntry::decode(&[2]).is_err());
+        assert!(CanonicalEntry::decode(&[1, 2, b'f', b'0', 1, 0]).is_err(), "count/payload mismatch");
     }
 
     #[test]
@@ -8087,15 +8238,20 @@ mod tests {
     }
 
     #[test]
-    fn pointer_bearing_catalog_layout_is_refused_by_canonical_backend() {
+    fn pointer_bearing_catalog_layout_is_refused_before_the_canonical_backend() {
+        // A pointer-bearing catalog buffer never reaches the encoder: under
+        // callee-drops its owned token must be released, and the initial
+        // checker has no recursive destructor for that layout, so the module
+        // fails closed one stage earlier than this test once pinned.
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
         let layout = interner.intern_runtime_pointer_buffer(element, PointerSlot::Owned).unwrap();
         let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
-        assert!(matches!(
-            encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 8, 1)),
-            Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { operation: "Alloc", .. }))
-        ));
+        let candidate = alloc_only_candidate(layout, bundle, crate::canonical_safewir::AllocationClass::ReferenceCounted, 4, 8, 1);
+        let Err(refusal) = check_initial_with_test_witness(candidate) else {
+            panic!("pointer-bearing catalog buffer must be refused");
+        };
+        assert!(format!("{refusal:?}").contains("pointer-bearing recursive destructor"), "{refusal:?}");
     }
 
     #[cfg(feature = "native")]
