@@ -1,0 +1,16 @@
+pub fn sum(xs: List(Int)) -> Int:
+    match xs:
+        [] -> 0
+        [head, ..tail] -> head + sum(tail)
+
+pub fn describe(xs: List(Int)) -> String:
+    match xs:
+        [] -> "empty"
+        [only] -> "one: ${only}"
+        [first, ..] -> "starts with ${first}"
+
+fn main(console: Console):
+    console.print("${sum([3, 7, 11])}")
+    console.print(describe([3, 7, 11]))
+    console.print(describe([42]))
+    console.print(describe([]))

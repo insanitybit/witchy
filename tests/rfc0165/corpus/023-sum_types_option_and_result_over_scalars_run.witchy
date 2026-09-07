@@ -1,0 +1,39 @@
+type Shape:
+    Circle(Int)
+    Square(Int)
+    Dot
+
+pub fn area(s: Shape) -> Int:
+    match s:
+        Circle(r) -> 3 * r * r
+        Square(w) -> w * w
+        Dot -> 0
+
+pub fn first(xs: List(Int)) -> Option(Int):
+    match xs:
+        [] -> None
+        [head, ..] -> Some(head)
+
+pub fn half(n: Int) -> Result(Int, Int):
+    if n % 2 == 0:
+        Ok(n / 2)
+    else:
+        Err(n)
+
+pub fn quarter(n: Int) -> Result(Int, Int):
+    let h = half(n)?
+    half(h)
+
+pub fn second(xs: List(Int)) -> Option(Int):
+    let a = first(xs)?
+    Some(a + 1)
+
+fn main(console: Console):
+    console.print("${area(Circle(2))} ${area(Square(3))} ${area(Dot)}")
+    console.print("${first([7, 8]) ?? 0} ${first([]) ?? 9} ${second([4]) ?? 0} ${second([]) ?? -1}")
+    match quarter(12):
+        Ok(v) -> console.print("ok ${v}")
+        Err(e) -> console.print("err ${e}")
+    match quarter(6):
+        Ok(v) -> console.print("ok ${v}")
+        Err(e) -> console.print("err ${e}")

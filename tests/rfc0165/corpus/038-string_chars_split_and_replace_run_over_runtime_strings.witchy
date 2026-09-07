@@ -1,0 +1,25 @@
+pub fn show(xs: List(String)) -> String:
+    "[" + xs.join("|") + "]"
+
+fn main(console: Console):
+    let word = "héllo→"
+    console.print(show(word.chars()))
+    console.print("${word.chars().length()}")
+    console.print(show("a,b,,c".split(",")))
+    console.print(show("a,b,c,".split(",")))
+    console.print(show("".split(",")))
+    console.print(show("abc".split("")))
+    console.print(show("é→".split("")))
+    console.print(show(("x" + "y").split("")))
+    console.print(show("no separators".split("xyz")))
+    console.print(show("aaa".split("aa")))
+    console.print("a-b-c".replace("-", "+"))
+    console.print("aaaa".replace("aa", "b"))
+    console.print("ab".replace("", "-"))
+    console.print("é→".replace("", "."))
+    console.print("keep".replace("zz", "y"))
+    console.print("hello world".replace("o", ""))
+    var acc = ""
+    for c in "xyz".chars():
+        acc = c + acc
+    console.print(acc)

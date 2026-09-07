@@ -1,0 +1,35 @@
+pub fn first_big(xs: List(Int), limit: Int) -> Int:
+    var found = -1
+    for x in xs:
+        if x > limit:
+            found = x
+            break
+    found
+
+pub fn evens_until(n: Int) -> List(Int):
+    var out = []
+    var i = 0
+    while true:
+        i = i + 1
+        if i > n:
+            break
+        if i % 2 == 1:
+            continue
+        out.push(i)
+    out
+
+pub fn skip_odd_sum(n: Int) -> Int:
+    var sum = 0
+    for i in 0..n:
+        if i % 2 == 1:
+            continue
+        sum = sum + i
+    sum
+
+fn main(console: Console):
+    console.print("${first_big([1, 5, 9, 3], 4)} ${first_big([1, 2], 4)}")
+    var rendered = ""
+    for e in evens_until(7):
+        rendered = rendered + "${e},"
+    console.print(rendered)
+    console.print("${skip_odd_sum(7)}")

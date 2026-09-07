@@ -1,0 +1,8 @@
+pub fn cls(code: Int) -> String:
+    match code:
+        x if x >= 200 && x <= 299 -> "success"
+        _ -> "unknown"
+
+fn main(console: Console):
+    console.print(cls(204))
+    console.print(cls(600))

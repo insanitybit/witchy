@@ -224,7 +224,7 @@ struct WasmStaticData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CorrespondenceRule {
+pub(crate) enum CorrespondenceRule {
     ScalarConstant,
     ScalarArithmetic,
     ScalarComparison,
@@ -1189,35 +1189,38 @@ fn static_data_plan(
     Ok((plan, heap_start))
 }
 
-fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
-    match operation {
-        Operation::ConstInt { .. }
-        | Operation::ConstFloat { .. }
-        | Operation::ConstBool { .. }
-        | Operation::ConstSize { .. } => Some(CorrespondenceRule::ScalarConstant),
-        Operation::Arithmetic { .. } => Some(CorrespondenceRule::ScalarArithmetic),
-        Operation::Compare { .. } => Some(CorrespondenceRule::ScalarComparison),
-        Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } => Some(CorrespondenceRule::ScalarConversion),
-        Operation::Guard { .. } => Some(CorrespondenceRule::ScalarGuard),
-        Operation::MoveValue { .. } => Some(CorrespondenceRule::ScalarMove),
-        Operation::MakeInlineAggregate { .. } | Operation::ExtractInlineField { .. } => Some(CorrespondenceRule::ScalarMove),
-        Operation::FunctionValue { .. } => Some(CorrespondenceRule::ScalarConstant),
-        Operation::Alloc { .. } => Some(CorrespondenceRule::MemoryAlloc),
-        Operation::StaticData { .. } => Some(CorrespondenceRule::MemoryStaticData),
-        Operation::Load { .. } => Some(CorrespondenceRule::MemoryLoad),
-        Operation::Store { .. } => Some(CorrespondenceRule::MemoryStore),
-        Operation::CopyBytes { .. } => Some(CorrespondenceRule::MemoryCopy),
-        Operation::MoveRange { .. } => Some(CorrespondenceRule::MemoryOwnership),
-        Operation::CloneRange { .. } => Some(CorrespondenceRule::MemoryCopy),
-        Operation::UpdateCount { .. } => Some(CorrespondenceRule::MemoryUpdateCount),
-        Operation::CloneRef { .. }
-        | Operation::Release { .. }
-        | Operation::DropRef { .. }
-        | Operation::Reclaim { .. } => Some(CorrespondenceRule::MemoryOwnership),
-        Operation::Call { .. } | Operation::VarCall { .. } => Some(CorrespondenceRule::ScalarCall),
-        Operation::HostCall { .. } => Some(CorrespondenceRule::HostCall),
-        Operation::Retain { .. } => None,
+/// The reviewed SafeWIR-to-WasmIR mapping, keyed by canonical rule: every
+/// rule is either mapped under one correspondence rule or refused by the
+/// backend (`None`). `canonical_safewir::manifest` cites this table row by
+/// row, so a new rule cannot reach the backend without a manifest entry.
+pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> Option<CorrespondenceRule> {
+    use crate::canonical_safewir::CanonicalRuleId as Rule;
+    match rule {
+        Rule::ConstInt | Rule::ConstFloat | Rule::ConstBool | Rule::ConstSize | Rule::FunctionValue => Some(CorrespondenceRule::ScalarConstant),
+        Rule::Arithmetic => Some(CorrespondenceRule::ScalarArithmetic),
+        Rule::Compare => Some(CorrespondenceRule::ScalarComparison),
+        Rule::NarrowSize | Rule::WidenSize | Rule::FloatUnary => Some(CorrespondenceRule::ScalarConversion),
+        Rule::Guard => Some(CorrespondenceRule::ScalarGuard),
+        Rule::MoveValue | Rule::MakeInlineAggregate | Rule::ExtractInlineField => Some(CorrespondenceRule::ScalarMove),
+        Rule::Alloc => Some(CorrespondenceRule::MemoryAlloc),
+        Rule::StaticData => Some(CorrespondenceRule::MemoryStaticData),
+        Rule::Load => Some(CorrespondenceRule::MemoryLoad),
+        Rule::Store => Some(CorrespondenceRule::MemoryStore),
+        Rule::CopyBytes | Rule::CloneRange => Some(CorrespondenceRule::MemoryCopy),
+        Rule::MoveRange | Rule::CloneRef | Rule::Release | Rule::DropRef | Rule::Reclaim => Some(CorrespondenceRule::MemoryOwnership),
+        Rule::UpdateCount => Some(CorrespondenceRule::MemoryUpdateCount),
+        Rule::Call | Rule::VarCall => Some(CorrespondenceRule::ScalarCall),
+        Rule::HostCall => Some(CorrespondenceRule::HostCall),
+        // v1 has no standalone retain: a second owner comes from `CloneRef`.
+        Rule::Retain => None,
+        Rule::Branch | Rule::BranchIf | Rule::Return | Rule::TailCall | Rule::VarTailCall | Rule::Trap | Rule::Unreachable => {
+            Some(CorrespondenceRule::Control)
+        }
     }
+}
+
+fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
+    rule_backend(operation.rule_id())
 }
 
 fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool {

@@ -1,0 +1,8 @@
+pub fn choose(flag: Bool, left: String, right: String) -> String:
+    if flag:
+        left
+    else:
+        right
+
+fn main(console: Console):
+    console.print(choose(true, "l", "r") + choose(false, "l", "r"))

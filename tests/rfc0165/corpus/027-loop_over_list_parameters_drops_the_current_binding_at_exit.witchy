@@ -1,0 +1,12 @@
+pub fn dot(a: List(Int), b: List(Int)) -> Int:
+    var sum = 0
+    var i = 0
+    while i < a.length():
+        sum = sum + a[i] * b[i]
+        i = i + 1
+    sum
+
+fn main(console: Console):
+    let u = [1, 2, 3]
+    let v = [4, 5, 6]
+    console.print("dot = ${dot(u, v)}")

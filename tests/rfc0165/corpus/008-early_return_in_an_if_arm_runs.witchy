@@ -1,0 +1,8 @@
+pub fn clamp(n: Int) -> Int:
+    if n < 0:
+        return 0
+    n
+
+fn main(console: Console):
+    if clamp(-3) == 0 && clamp(7) == 7:
+        console.print("done")

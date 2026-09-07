@@ -1,0 +1,23 @@
+pub fn divmod(a: Int, b: Int) -> (Int, Int):
+    (a / b, a % b)
+
+pub fn pick(n: Int) -> Option((Int, String)):
+    if n > 0:
+        Some((n, "pos"))
+    else:
+        None
+
+fn main(console: Console):
+    let (q, r) = divmod(17, 5)
+    console.print("${q} remainder ${r}")
+    let pair = (7, "seven")
+    console.print("${pair.0} spells ${pair.1}")
+    console.print("just the remainder: ${divmod(17, 5).1}")
+    let grid = ((1, 2), (3, 4))
+    console.print("${grid.0.1} ${grid.1.0}")
+    match pick(3):
+        Some(p) -> console.print("${p.0} ${p.1}")
+        None -> console.print("none")
+    match pick(0):
+        Some(p) -> console.print("${p.0} ${p.1}")
+        None -> console.print("none")

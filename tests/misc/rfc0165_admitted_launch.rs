@@ -10,6 +10,31 @@
 use witchy::codegen;
 use witchy::runtime::{Capabilities, Runtime};
 
+/// Run an admitted program and report a runtime trap instead of panicking,
+/// for fixtures whose expected outcome is the trap.
+fn run_admitted_result(source: &str) -> Result<Vec<String>, String> {
+    let checked = witchy::resolve_std_only_checked(source).expect("fixture checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("the foundation subset admits this fixture");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print: true,
+                print_int: true,
+                quiet: true,
+                ..Default::default()
+            },
+            256,
+        )
+        .expect("spawn admitted artifact");
+    match vm.run() {
+        Ok(()) => Ok(vm.output()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn run_admitted(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source).expect("fixture checks");
     let artifact = codegen::compile_checked_module_artifact(&checked)
@@ -607,4 +632,27 @@ fn admitted_while_let_binds_nested_tuple_payloads_until_the_pattern_fails() {
         "pub fn pop(xs: List(Int)) -> Option((Int, List(Int))):\n    match xs:\n        [] -> None\n        [h, ..t] -> Some((h, t))\n\nfn main(console: Console):\n    var stack = [1, 2, 3, 4]\n    var total = 0\n    while let Some((top, rest)) = pop(stack):\n        total = total + top\n        stack = rest\n    console.print(\"${total} ${stack.length()}\")\n    if let Some(x) = pop([7, 8, 9]):\n        let (head, _rest) = x\n        console.print(\"head is ${head}\")\n",
     );
     assert_eq!(output, vec!["10 0".to_string(), "head is 7".to_string()]);
+}
+
+#[test]
+fn admitted_guard_near_misses_trap_exactly_at_the_boundary() {
+    // B3: the last valid index reads; the index equal to the length traps
+    // (a guard is a strict unsigned comparison against the logical length,
+    // never the capacity); a negative index and an empty list trap too; a
+    // substring end past the character count is clamped by the language's
+    // rule, not by a guard.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"${xs[xs.length() - 1]}\")\n    var grown = xs\n    grown.push(40)\n    console.print(\"${grown[3]} ${grown.length()}\")\n    console.print(\"héllo\".substring(1, 9))\n",
+    );
+    assert_eq!(output, vec!["30".to_string(), "40 4".to_string(), "éllo".to_string()]);
+    for (label, source) in [
+        ("index equal to the length", "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"before\")\n    console.print(\"${xs[xs.length()]}\")\n"),
+        ("negative index", "fn main(console: Console):\n    let xs = [10, 20, 30]\n    let i = 0 - 1\n    console.print(\"${xs[i]}\")\n"),
+        ("first element of an empty list", "pub fn first(xs: List(String)) -> String:\n    xs[0]\n\nfn main(console: Console):\n    console.print(first([]))\n"),
+    ] {
+        // After admission the only failure mode is a Wasm trap; the runtime
+        // reports it as an execution error with a backtrace.
+        let error = run_admitted_result(source).expect_err(label);
+        assert!(error.contains("error while executing") || error.contains("unreachable") || error.contains("trap"), "{label}: {error}");
+    }
 }

@@ -89,3 +89,5 @@ mod rfc0103_csp;
 mod rfc0165_admitted_launch;
 #[path = "misc/rfc0165_oracle.rs"]
 mod rfc0165_oracle;
+#[path = "misc/rfc0165_corpus.rs"]
+mod rfc0165_corpus;

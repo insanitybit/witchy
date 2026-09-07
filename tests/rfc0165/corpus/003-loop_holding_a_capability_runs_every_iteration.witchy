@@ -1,0 +1,5 @@
+fn main(console: Console):
+    var i = 0
+    while i < 3:
+        console.print("tick")
+        i = i + 1

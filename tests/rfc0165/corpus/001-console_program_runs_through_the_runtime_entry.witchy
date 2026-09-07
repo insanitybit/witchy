@@ -1,0 +1,2 @@
+fn main(console: Console):
+    console.print("ok")

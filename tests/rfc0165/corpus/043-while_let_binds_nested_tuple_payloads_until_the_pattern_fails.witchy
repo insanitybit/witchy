@@ -1,0 +1,15 @@
+pub fn pop(xs: List(Int)) -> Option((Int, List(Int))):
+    match xs:
+        [] -> None
+        [h, ..t] -> Some((h, t))
+
+fn main(console: Console):
+    var stack = [1, 2, 3, 4]
+    var total = 0
+    while let Some((top, rest)) = pop(stack):
+        total = total + top
+        stack = rest
+    console.print("${total} ${stack.length()}")
+    if let Some(x) = pop([7, 8, 9]):
+        let (head, _rest) = x
+        console.print("head is ${head}")

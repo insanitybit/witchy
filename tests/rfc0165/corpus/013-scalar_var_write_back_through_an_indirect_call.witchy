@@ -1,0 +1,12 @@
+fn bump(var n: Int) -> Int:
+    n = n + 5
+    n
+
+fn apply(f: fn(var Int) -> Int, var value: Int) -> Int:
+    let r = f(value)
+    r + value
+
+fn main(console: Console):
+    var v = 1
+    let r = apply(bump, v)
+    console.print("${r} ${v}")

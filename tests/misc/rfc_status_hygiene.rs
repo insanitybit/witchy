@@ -28,6 +28,8 @@ fn is_companion(name: &str) -> bool {
         || name.contains("-performance-report")
         || name.contains("-judgment")
         || name.contains("-review")
+        || name.contains("-rule-manifest")
+        || name.contains("-memory-mode-boundary")
 }
 
 fn rfcs_dir() -> PathBuf {

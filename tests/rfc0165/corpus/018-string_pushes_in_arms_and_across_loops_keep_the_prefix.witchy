@@ -1,0 +1,33 @@
+pub fn tag(xs: List(String)) -> List(String):
+    var out = []
+    var i = 0
+    while i < xs.length():
+        if i == 0:
+            out.push("- " + xs[i])
+        else:
+            out.push("+ " + xs[i])
+        i = i + 1
+    var j = 0
+    while j < xs.length():
+        out.push("= " + xs[j])
+        j = j + 1
+    out
+
+pub fn transpose(m: List(List(Int)), rows: Int, cols: Int) -> List(List(Int)):
+    var out = []
+    for c in 0..cols:
+        var column = []
+        for r in 0..rows:
+            column.push(m[r][c])
+        out.push(column)
+    out
+
+fn main(console: Console):
+    let ys = tag(["a", "bb"])
+    console.print("${ys.length()} ${ys[0]} ${ys[1]} ${ys[3]}")
+    let t = transpose([[1, 2, 3], [4, 5, 6]], 2, 3)
+    console.print("${t.length()} ${t[2][0]} ${t[2][1]}")
+    var a = [1, 2]
+    let nested = [a, [3]]
+    a.push(9)
+    console.print("${nested[0].length()} ${a.length()}")

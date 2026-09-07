@@ -1,0 +1,20 @@
+type Point:
+    x: Int
+    y: Int
+
+pub fn norm1(p: Point) -> Int:
+    p.x + p.y
+
+pub fn shift(p: Point) -> Point:
+    Point(x: p.x + 1, y: p.y)
+
+fn main(console: Console):
+    let p = Point(x: 3, y: 4)
+    let q = Point(5, 6)
+    console.print("${p.x + q.y}")
+    var r = p
+    if r.x > 2:
+        r = Point(x: 10, y: r.y)
+    console.print("${r.x + r.y} ${norm1(shift(p))} ${p.x}")
+    let s = Point(y: 99, ..p)
+    console.print("${s.x} ${s.y}")

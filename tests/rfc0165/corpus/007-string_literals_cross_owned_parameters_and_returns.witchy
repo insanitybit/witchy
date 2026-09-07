@@ -1,0 +1,13 @@
+pub fn shout(name: String) -> String:
+    "hi " + name
+
+fn greet() -> String:
+    "hello"
+
+fn keep(own value: String) -> String:
+    value
+
+fn main(console: Console):
+    console.print(shout("x"))
+    console.print(greet())
+    console.print(keep("ok"))

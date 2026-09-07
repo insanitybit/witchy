@@ -1,0 +1,20 @@
+pub fn first_gap(xs: List(Int)) -> Int:
+    var i = 0
+    var found = false
+    while i < xs.length() && !found:
+        if xs[i] != i:
+            found = true
+        else:
+            i = i + 1
+    i
+
+pub fn count_until(xs: List(Int), stop: Int) -> Int:
+    var i = 0
+    while i == 0 || xs[i - 1] != stop:
+        if i == xs.length():
+            return 0 - 1
+        i = i + 1
+    i
+
+fn main(console: Console):
+    console.print("${first_gap([0, 1, 5, 3])} ${first_gap([0, 1])} ${count_until([4, 7, 9], 7)} ${count_until([4, 7, 9], 2)}")

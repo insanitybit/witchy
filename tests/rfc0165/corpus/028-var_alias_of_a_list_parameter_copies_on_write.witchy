@@ -1,0 +1,8 @@
+pub fn grow(placed: List(Int), col: Int) -> Int:
+    var next = placed
+    next.push(col)
+    next.length()
+
+fn main(console: Console):
+    let base = [1, 2]
+    console.print("${grow(base, 3)} ${base.length()}")

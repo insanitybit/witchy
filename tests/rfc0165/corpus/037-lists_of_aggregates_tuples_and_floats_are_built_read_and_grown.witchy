@@ -1,0 +1,45 @@
+type Account:
+    name: String
+    balance: Int
+
+pub fn total(accounts: List(Account)) -> Int:
+    var sum = 0
+    for a in accounts:
+        sum = sum + a.balance
+    sum
+
+pub fn richest(accounts: List(Account)) -> String:
+    var best = Account("nobody", -1)
+    for a in accounts:
+        if a.balance > best.balance:
+            best = a
+    best.name
+
+pub fn count(xs: List(String)) -> Int:
+    xs.length()
+
+pub fn mean(xs: List(Float)) -> Float:
+    var sum = 0.0
+    for x in xs:
+        sum = sum + x
+    sum / math.to_float(xs.length())
+
+fn main(console: Console):
+    let accounts = [Account("alice", 100), Account("bob", 50)]
+    console.print("total = ${total(accounts)}")
+    console.print("richest = ${richest(accounts)}")
+    var more = accounts
+    more.push(Account("carol", 250))
+    console.print("${total(more)} ${richest(more)} ${accounts.length()}")
+    let pairs = [(1, "one"), (2, "two")]
+    var labels = []
+    for pair in pairs:
+        let (n, word) = pair
+        labels.push("${n}:" + word)
+    console.print(labels.join(" "))
+    var seen = []
+    seen.push("x")
+    console.print("${count(seen)}")
+    seen.push("y")
+    console.print("${count(seen)} ${seen.join(",")}")
+    console.print("${mean([1.5, 2.5, 5.0]) > 2.9}")

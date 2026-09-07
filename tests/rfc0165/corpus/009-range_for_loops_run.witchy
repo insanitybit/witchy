@@ -1,0 +1,5 @@
+fn main(console: Console):
+    for i in 0..3:
+        console.print("tick")
+    for j in 1..=2:
+        console.print("tock")

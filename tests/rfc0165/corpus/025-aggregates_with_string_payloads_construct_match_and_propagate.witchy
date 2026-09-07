@@ -1,0 +1,32 @@
+type Account:
+    name: String
+    balance: Int
+
+pub fn parse(s: String) -> Result(Int, String):
+    if s.starts_with("x"):
+        Err("bad " + s)
+    else:
+        Ok(s.length())
+
+pub fn both(a: String, b: String) -> Result(Int, String):
+    let x = parse(a)?
+    let y = parse(b)?
+    Ok(x + y)
+
+pub fn name_of(n: Int) -> Option(String):
+    if n > 0:
+        Some("n${n}")
+    else:
+        None
+
+fn main(console: Console):
+    let acc = Account(name: "bob", balance: 5)
+    let richer = Account(balance: acc.balance + 10, ..acc)
+    console.print("${acc.name} ${richer.name} ${richer.balance}")
+    match both("ab", "cde"):
+        Ok(v) -> console.print("ok ${v}")
+        Err(e) -> console.print("err ${e}")
+    match both("ab", "xz"):
+        Ok(v) -> console.print("ok ${v}")
+        Err(e) -> console.print("err ${e}")
+    console.print("${name_of(3) ?? "none"} ${name_of(0) ?? "none"}")

@@ -1,0 +1,25 @@
+pub fn countdown(n: Int, acc: Int) -> Int:
+    if n == 0:
+        acc
+    else:
+        countdown(n - 1, acc + 1)
+
+pub fn spin(n: Int, acc: Int) -> Int:
+    match n:
+        0 -> acc
+        _ -> spin(n - 1, acc + 2)
+
+pub fn ping(n: Int) -> Int:
+    if n == 0:
+        0
+    else:
+        pong(n - 1)
+
+pub fn pong(n: Int) -> Int:
+    if n == 0:
+        1
+    else:
+        ping(n - 1)
+
+fn main(console: Console):
+    console.print("${countdown(300000, 0)} ${spin(300000, 0)} ${ping(300001)}")

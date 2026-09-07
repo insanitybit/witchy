@@ -1,0 +1,10 @@
+pub fn pick(xs: List(Int), n: Int) -> List(Int):
+    if xs.length() == n:
+        xs
+    else:
+        var out = xs
+        out.push(n)
+        out
+
+fn main(console: Console):
+    console.print("${pick([1], 1).length()} ${pick([1], 2).length()}")

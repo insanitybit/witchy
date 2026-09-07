@@ -16,6 +16,7 @@ use std::marker::PhantomData;
 use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
+pub mod manifest;
 pub use check::{InitialCheckError, check_initial};
 mod authority;
 pub use authority::{

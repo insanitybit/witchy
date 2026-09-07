@@ -1,0 +1,462 @@
+{
+  "schema_version": 1,
+  "description": "RFC-0165 B6/B9 digest-bound foundation corpus: every program is a complete witchy source with an independently written expected stdout. tests/misc/rfc0165_corpus.rs refuses digest drift, admits each program through canonical SafeWIR, and requires the SafeWIR oracle, the admitted Wasm, and the expected stdout to agree.",
+  "entries": [
+    {
+      "id": "001-console_program_runs_through_the_runtime_entry",
+      "path": "tests/rfc0165/corpus/001-console_program_runs_through_the_runtime_entry.witchy",
+      "sha256": "0fef92f597efdf6c218c3dcd024be908ff733bd0516beb917fc5bc605de8ef93",
+      "expected_stdout": [
+        "ok"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_console_program_runs_through_the_runtime_entry"
+    },
+    {
+      "id": "002-int_result_is_printed_under_the_exit_code_convention",
+      "path": "tests/rfc0165/corpus/002-int_result_is_printed_under_the_exit_code_convention.witchy",
+      "sha256": "a3c8a03eb1c129a4584155299405d1faafc6a03a375c43c25ffe1c49241fe41a",
+      "expected_stdout": [
+        "42"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_int_result_is_printed_under_the_exit_code_convention"
+    },
+    {
+      "id": "003-loop_holding_a_capability_runs_every_iteration",
+      "path": "tests/rfc0165/corpus/003-loop_holding_a_capability_runs_every_iteration.witchy",
+      "sha256": "0ec4d3ecc206543d16d534d58b3b4d3a8428b058dd1bc6007867498471f1ab5f",
+      "expected_stdout": [
+        "tick",
+        "tick",
+        "tick"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_loop_holding_a_capability_runs_every_iteration"
+    },
+    {
+      "id": "004-explicit_let_parameters_run",
+      "path": "tests/rfc0165/corpus/004-explicit_let_parameters_run.witchy",
+      "sha256": "ccd4706e086f83009696bc5317923cda6b4dd811a63dd71214c1fa1139efdd45",
+      "expected_stdout": [
+        "42"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_explicit_let_parameters_run"
+    },
+    {
+      "id": "005-if_without_else_and_effect_arms_run",
+      "path": "tests/rfc0165/corpus/005-if_without_else_and_effect_arms_run.witchy",
+      "sha256": "be510df572007031dc956cae2f1e2c89e9fb048c56a51b72383e84605bee80ea",
+      "expected_stdout": [
+        "yes"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_if_without_else_and_effect_arms_run"
+    },
+    {
+      "id": "006-short_circuit_operators_run",
+      "path": "tests/rfc0165/corpus/006-short_circuit_operators_run.witchy",
+      "sha256": "89f5f625c43f5f7469955cd35503a99e5e8ffdd25d903325f7900d26972d9da1",
+      "expected_stdout": [
+        "in",
+        "or"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_short_circuit_operators_run"
+    },
+    {
+      "id": "007-string_literals_cross_owned_parameters_and_returns",
+      "path": "tests/rfc0165/corpus/007-string_literals_cross_owned_parameters_and_returns.witchy",
+      "sha256": "8dfe79f93d19af2eead691cfa1ed42791cf8545dc8ee919e203fd333477701db",
+      "expected_stdout": [
+        "hi x",
+        "hello",
+        "ok"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_string_literals_cross_owned_parameters_and_returns"
+    },
+    {
+      "id": "008-early_return_in_an_if_arm_runs",
+      "path": "tests/rfc0165/corpus/008-early_return_in_an_if_arm_runs.witchy",
+      "sha256": "e8a33151c95101b32838541c412ccd9a834b2d3acf9ac64d5a1117861d4a2f7b",
+      "expected_stdout": [
+        "done"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_early_return_in_an_if_arm_runs"
+    },
+    {
+      "id": "009-range_for_loops_run",
+      "path": "tests/rfc0165/corpus/009-range_for_loops_run.witchy",
+      "sha256": "9f0fb871bb5cec8aca2424c9fbaceaba6425ffa9efaecfe94f4122782454e984",
+      "expected_stdout": [
+        "tick",
+        "tick",
+        "tick",
+        "tock",
+        "tock"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_range_for_loops_run"
+    },
+    {
+      "id": "010-float_arithmetic_and_integer_division_run",
+      "path": "tests/rfc0165/corpus/010-float_arithmetic_and_integer_division_run.witchy",
+      "sha256": "87f9b5bee662feca62212a317f01f45eacb1cd74601132ca6a26932571609696",
+      "expected_stdout": [
+        "5"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_float_arithmetic_and_integer_division_run"
+    },
+    {
+      "id": "011-string_interpolation_renders_ints_and_strings",
+      "path": "tests/rfc0165/corpus/011-string_interpolation_renders_ints_and_strings.witchy",
+      "sha256": "00fa25924d1e2578472ada3425a01b88f5a7d71d6857bb31754ee9b777a93757",
+      "expected_stdout": [
+        "8 doubled is 16",
+        "hi witchy!",
+        "0 -7 1234567890 -9223372036854775808 9223372036854775807"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_string_interpolation_renders_ints_and_strings"
+    },
+    {
+      "id": "012-scalar_var_parameters_write_back",
+      "path": "tests/rfc0165/corpus/012-scalar_var_parameters_write_back.witchy",
+      "sha256": "487f3cb240b5f402708be6040343f11c0b9a0b645e869a711ac1945da4ee5dab",
+      "expected_stdout": [
+        "k=30 r=31"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_scalar_var_parameters_write_back"
+    },
+    {
+      "id": "013-scalar_var_write_back_through_an_indirect_call",
+      "path": "tests/rfc0165/corpus/013-scalar_var_write_back_through_an_indirect_call.witchy",
+      "sha256": "93a3f7f76cf75b61e7f2d3b41982641230ef470b537af78f50fda6127649d546",
+      "expected_stdout": [
+        "12 6"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_scalar_var_write_back_through_an_indirect_call"
+    },
+    {
+      "id": "014-early_return_inside_a_loop_over_a_list_parameter",
+      "path": "tests/rfc0165/corpus/014-early_return_inside_a_loop_over_a_list_parameter.witchy",
+      "sha256": "acdceb009a9c3ba8db53e641de216cd8f4d1906994ca417027b8a4e994fba82e",
+      "expected_stdout": [
+        "8 -1"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_early_return_inside_a_loop_over_a_list_parameter"
+    },
+    {
+      "id": "015-while_loops_with_short_circuit_conditions_run",
+      "path": "tests/rfc0165/corpus/015-while_loops_with_short_circuit_conditions_run.witchy",
+      "sha256": "2ba453eae78e90d550dfaf1a18b6c095f0d4b189b18aa8046e8863d7e75a180f",
+      "expected_stdout": [
+        "2 2 2 -1"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_while_loops_with_short_circuit_conditions_run"
+    },
+    {
+      "id": "016-for_loops_carry_bindings_assigned_inside_nested_arms",
+      "path": "tests/rfc0165/corpus/016-for_loops_carry_bindings_assigned_inside_nested_arms.witchy",
+      "sha256": "efd059cc25a2110cdeddfbce47baf389209920d8ae014550728e1a5e4ef9a267",
+      "expected_stdout": [
+        "306 -1"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_for_loops_carry_bindings_assigned_inside_nested_arms"
+    },
+    {
+      "id": "017-string_equality_and_char_count_scan_bytes",
+      "path": "tests/rfc0165/corpus/017-string_equality_and_char_count_scan_bytes.witchy",
+      "sha256": "d026ab70017ac905eeb4f91a93957624c89f1c739230f2bfa77561a268044375",
+      "expected_stdout": [
+        "2 1 0",
+        "eq ok",
+        "11 0 3 3"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_string_equality_and_char_count_scan_bytes"
+    },
+    {
+      "id": "018-string_pushes_in_arms_and_across_loops_keep_the_prefix",
+      "path": "tests/rfc0165/corpus/018-string_pushes_in_arms_and_across_loops_keep_the_prefix.witchy",
+      "sha256": "c167d8bd15bd299ac91b355feb55d9b6859660aae1e4bab99dd244d944e46fc6",
+      "expected_stdout": [
+        "4 - a + bb = bb",
+        "3 3 6",
+        "2 3"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_string_pushes_in_arms_and_across_loops_keep_the_prefix"
+    },
+    {
+      "id": "019-list_of_lists_grows_after_a_shared_element_read",
+      "path": "tests/rfc0165/corpus/019-list_of_lists_grows_after_a_shared_element_read.witchy",
+      "sha256": "8069315ae74454d00c6a7c4796146438972bdf990ac941d27d34be60f4ff8bac",
+      "expected_stdout": [
+        "4 3 30 1"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_list_of_lists_grows_after_a_shared_element_read"
+    },
+    {
+      "id": "020-substring_and_trim_scan_characters_and_ascii_whitespace",
+      "path": "tests/rfc0165/corpus/020-substring_and_trim_scan_characters_and_ascii_whitespace.witchy",
+      "sha256": "e36da493a6f85cfa604ddc144bb3cc6caab5c77718686b665085d65a0d6cb77f",
+      "expected_stdout": [
+        "[éll] [wörld] [] [hé] []",
+        "[hi there] [] [] [x] [ y]",
+        "hél"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_substring_and_trim_scan_characters_and_ascii_whitespace"
+    },
+    {
+      "id": "021-float_conversions_bool_render_and_duration_identities_run",
+      "path": "tests/rfc0165/corpus/021-float_conversions_bool_render_and_duration_identities_run.witchy",
+      "sha256": "9f4da004dd47ea78ddc894dec1b8dc6dc339e010ab9ffcb654c51ca5607ddda8",
+      "expected_stdout": [
+        "15 -7 9223372036854775807 -9223372036854775808 42",
+        "1500 true true"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_float_conversions_bool_render_and_duration_identities_run"
+    },
+    {
+      "id": "022-heap_records_construct_read_update_join_and_cross_calls",
+      "path": "tests/rfc0165/corpus/022-heap_records_construct_read_update_join_and_cross_calls.witchy",
+      "sha256": "1761c7796b8bf7276b99067c1adca9e8825b3969a27582b25112a563ff5bdd3e",
+      "expected_stdout": [
+        "9",
+        "14 8 3",
+        "3 99"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_heap_records_construct_read_update_join_and_cross_calls"
+    },
+    {
+      "id": "023-sum_types_option_and_result_over_scalars_run",
+      "path": "tests/rfc0165/corpus/023-sum_types_option_and_result_over_scalars_run.witchy",
+      "sha256": "1f1b5fe0a90bbb14be55cfc568ce1ae0834d7792d2b0f26e912c6412e9163576",
+      "expected_stdout": [
+        "12 9 0",
+        "7 9 5 -1",
+        "ok 3",
+        "err 3"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_sum_types_option_and_result_over_scalars_run"
+    },
+    {
+      "id": "024-string_searches_ordering_find_and_to_int_scan_bytes",
+      "path": "tests/rfc0165/corpus/024-string_searches_ordering_find_and_to_int_scan_bytes.witchy",
+      "sha256": "8a133b07501a666ebaf32181c786c39cb72dc8c6fac979f9b43e4808a410cdcb",
+      "expected_stdout": [
+        "true false true true false",
+        "true false true false",
+        "true true true true true true",
+        "6 0 -1 0 0",
+        "42 -17 8 -9223372036854775808 0"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_string_searches_ordering_find_and_to_int_scan_bytes"
+    },
+    {
+      "id": "025-aggregates_with_string_payloads_construct_match_and_propagate",
+      "path": "tests/rfc0165/corpus/025-aggregates_with_string_payloads_construct_match_and_propagate.witchy",
+      "sha256": "80824a0f49465dd0d292fd5a9785445928357124ae11844d67f77d469d252f6a",
+      "expected_stdout": [
+        "bob bob 15",
+        "ok 5",
+        "err bad xz",
+        "n3 none"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_aggregates_with_string_payloads_construct_match_and_propagate"
+    },
+    {
+      "id": "026-tuples_construct_index_destructure_and_nest",
+      "path": "tests/rfc0165/corpus/026-tuples_construct_index_destructure_and_nest.witchy",
+      "sha256": "9a71d10440d8a77422e08cd29a54c32f6e5a3ef966d694cfc03e787e275a6dd4",
+      "expected_stdout": [
+        "3 remainder 2",
+        "7 spells seven",
+        "just the remainder: 2",
+        "2 3",
+        "3 pos",
+        "none"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_tuples_construct_index_destructure_and_nest"
+    },
+    {
+      "id": "027-loop_over_list_parameters_drops_the_current_binding_at_exit",
+      "path": "tests/rfc0165/corpus/027-loop_over_list_parameters_drops_the_current_binding_at_exit.witchy",
+      "sha256": "fbf37b7cffdb34af62959c46657418b253baa5ca7ff1c4ea265cda82142a330c",
+      "expected_stdout": [
+        "dot = 32"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_loop_over_list_parameters_drops_the_current_binding_at_exit"
+    },
+    {
+      "id": "028-var_alias_of_a_list_parameter_copies_on_write",
+      "path": "tests/rfc0165/corpus/028-var_alias_of_a_list_parameter_copies_on_write.witchy",
+      "sha256": "0189aacf4d67aca9af6b1ea32e7943ddc60d6a45f6d1d3b76467740e3e05b16a",
+      "expected_stdout": [
+        "3 2"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_var_alias_of_a_list_parameter_copies_on_write"
+    },
+    {
+      "id": "029-guarded_match_arm_with_a_short_circuit_guard_runs",
+      "path": "tests/rfc0165/corpus/029-guarded_match_arm_with_a_short_circuit_guard_runs.witchy",
+      "sha256": "3bf8fb77504ae71f013d8909a7647cb9467a037a4365b68576303eaf718e1ac4",
+      "expected_stdout": [
+        "success",
+        "unknown"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_guarded_match_arm_with_a_short_circuit_guard_runs"
+    },
+    {
+      "id": "030-nested_list_index_runs",
+      "path": "tests/rfc0165/corpus/030-nested_list_index_runs.witchy",
+      "sha256": "99129ee8863bb274a88c1424c330e244015742f578c90604c7984d4d01650c26",
+      "expected_stdout": [
+        "g = 6"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_nested_list_index_runs"
+    },
+    {
+      "id": "031-recursive_search_threads_a_list_parameter_through_loop_and_join",
+      "path": "tests/rfc0165/corpus/031-recursive_search_threads_a_list_parameter_through_loop_and_join.witchy",
+      "sha256": "4dd7aee5ec96b7c710d762d542e07f569a0c7fededae427f6373a8a770ba7275",
+      "expected_stdout": [
+        "8"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_recursive_search_threads_a_list_parameter_through_loop_and_join"
+    },
+    {
+      "id": "032-if_choosing_between_two_reference_parameters_runs",
+      "path": "tests/rfc0165/corpus/032-if_choosing_between_two_reference_parameters_runs.witchy",
+      "sha256": "ca92d7740a1d4e0d7a274dee9af4cfab8dd8a23bbe82ec884fc2cc3b2244a7cd",
+      "expected_stdout": [
+        "lr"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_if_choosing_between_two_reference_parameters_runs"
+    },
+    {
+      "id": "033-proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack",
+      "path": "tests/rfc0165/corpus/033-proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack.witchy",
+      "sha256": "a359e0dea2a3c6e21de0abbc4ec56c184b02da993d6e2c292812bb44f7ccba8f",
+      "expected_stdout": [
+        "300000 600000 1"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack"
+    },
+    {
+      "id": "034-if_joining_a_shared_parameter_with_a_fresh_allocation_runs",
+      "path": "tests/rfc0165/corpus/034-if_joining_a_shared_parameter_with_a_fresh_allocation_runs.witchy",
+      "sha256": "feedba9065843a0a0bfe95520d69afeebe21c11da6f1c336f724ee0f5466c3f4",
+      "expected_stdout": [
+        "1 2"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_if_joining_a_shared_parameter_with_a_fresh_allocation_runs"
+    },
+    {
+      "id": "035-list_patterns_run",
+      "path": "tests/rfc0165/corpus/035-list_patterns_run.witchy",
+      "sha256": "8e67ef90001d80b1e13b3b729d7d40acc240ab5083025e6c981a8802b3182a85",
+      "expected_stdout": [
+        "21",
+        "starts with 3",
+        "one: 42",
+        "empty"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_list_patterns_run"
+    },
+    {
+      "id": "036-lists_of_strings_are_read_iterated_and_pushed",
+      "path": "tests/rfc0165/corpus/036-lists_of_strings_are_read_iterated_and_pushed.witchy",
+      "sha256": "8c48192471695e8792e87d0f3488fbe481391feae64d1d96e740471d9d6ab644",
+      "expected_stdout": [
+        "abbccc",
+        "bb",
+        "2 3"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_lists_of_strings_are_read_iterated_and_pushed"
+    },
+    {
+      "id": "037-lists_of_aggregates_tuples_and_floats_are_built_read_and_grown",
+      "path": "tests/rfc0165/corpus/037-lists_of_aggregates_tuples_and_floats_are_built_read_and_grown.witchy",
+      "sha256": "4263906b0130de6d288524f5c7ee8b4af9f9b28558788b51d6c1de05689a1bef",
+      "expected_stdout": [
+        "total = 150",
+        "richest = alice",
+        "400 carol 2",
+        "1:one 2:two",
+        "1",
+        "2 x,y",
+        "true"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_lists_of_aggregates_tuples_and_floats_are_built_read_and_grown"
+    },
+    {
+      "id": "038-string_chars_split_and_replace_run_over_runtime_strings",
+      "path": "tests/rfc0165/corpus/038-string_chars_split_and_replace_run_over_runtime_strings.witchy",
+      "sha256": "93fbfbd127d47ff489083f4f1de41cef07cf6115ca539094c6fd68f2fe7d8db8",
+      "expected_stdout": [
+        "[h|é|l|l|o|→]",
+        "6",
+        "[a|b||c]",
+        "[a|b|c|]",
+        "[]",
+        "[abc]",
+        "[é→]",
+        "[xy]",
+        "[no separators]",
+        "[|a]",
+        "a+b+c",
+        "bb",
+        "-a-b-",
+        ".é.→.",
+        "keep",
+        "hell wrld",
+        "zyx"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_string_chars_split_and_replace_run_over_runtime_strings"
+    },
+    {
+      "id": "039-element_reads_after_a_kernel_loop_wait_for_the_converged_prefix",
+      "path": "tests/rfc0165/corpus/039-element_reads_after_a_kernel_loop_wait_for_the_converged_prefix.witchy",
+      "sha256": "432f57971cf91e7e5ae3448d0a54f4e0efc80000b55c31c0616cc75479082eed",
+      "expected_stdout": [
+        "x",
+        "3a2b1c"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_element_reads_after_a_kernel_loop_wait_for_the_converged_prefix"
+    },
+    {
+      "id": "040-bool_lists_store_one_byte_elements_and_nest",
+      "path": "tests/rfc0165/corpus/040-bool_lists_store_one_byte_elements_and_nest.witchy",
+      "sha256": "18aeca72f67decebcb98021608d49b8db965780c5fd2a859e6194725e1e0c58e",
+      "expected_stdout": [
+        "3 5 false true",
+        "1"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_bool_lists_store_one_byte_elements_and_nest"
+    },
+    {
+      "id": "041-for_over_a_loaded_row_and_a_var_copy_of_a_list_parameter_grow",
+      "path": "tests/rfc0165/corpus/041-for_over_a_loaded_row_and_a_var_copy_of_a_list_parameter_grow.witchy",
+      "sha256": "5002a6a9d94a027f256e5e733bc55d6df7927ca4331ba2effe2cb00d681585f5",
+      "expected_stdout": [
+        "10",
+        "15 3 2"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_for_over_a_loaded_row_and_a_var_copy_of_a_list_parameter_grow"
+    },
+    {
+      "id": "042-break_and_continue_leave_and_advance_every_loop_kind",
+      "path": "tests/rfc0165/corpus/042-break_and_continue_leave_and_advance_every_loop_kind.witchy",
+      "sha256": "d0be0f52ba108af7ca587752911fe0732c29ad972304212f0d85da4d5e2b81d7",
+      "expected_stdout": [
+        "5 -1",
+        "2,4,6,",
+        "12"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_break_and_continue_leave_and_advance_every_loop_kind"
+    },
+    {
+      "id": "043-while_let_binds_nested_tuple_payloads_until_the_pattern_fails",
+      "path": "tests/rfc0165/corpus/043-while_let_binds_nested_tuple_payloads_until_the_pattern_fails.witchy",
+      "sha256": "711081301b4737c429915297f796611dd7b79e1593c2bb2ab9ebf0ab53f4dcb9",
+      "expected_stdout": [
+        "10 0",
+        "head is 7"
+      ],
+      "origin": "tests/misc/rfc0165_admitted_launch.rs::admitted_while_let_binds_nested_tuple_payloads_until_the_pattern_fails"
+    }
+  ]
+}

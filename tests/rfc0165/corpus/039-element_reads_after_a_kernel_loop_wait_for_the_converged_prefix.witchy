@@ -1,0 +1,21 @@
+pub fn first(text: String) -> String:
+    let chars = text.chars()
+    chars.at(0)
+
+pub fn encode(text: String) -> String:
+    let chars = text.chars()
+    let n = chars.length()
+    var out = ""
+    var i = 0
+    while i < n:
+        let run_char = chars.at(i)
+        var count = 0
+        while i < n && chars.at(i) == run_char:
+            count = count + 1
+            i = i + 1
+        out = out + "${count}" + run_char
+    out
+
+fn main(console: Console):
+    console.print(first("xyz"))
+    console.print(encode("aaabbc"))

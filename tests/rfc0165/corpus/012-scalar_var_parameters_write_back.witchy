@@ -1,0 +1,13 @@
+fn bump(var n: Int):
+    n = n + 1
+
+fn scale(var n: Int, by: Int) -> Int:
+    n = n * by
+    n + 1
+
+fn main(console: Console):
+    var k = 1
+    bump(k)
+    bump(k)
+    let r = scale(k, 10)
+    console.print("k=${k} r=${r}")

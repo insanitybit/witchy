@@ -1,0 +1,10 @@
+fn main(console: Console):
+    let s = "héllo wörld"
+    console.print("[${s.substring(1, 4)}] [${s.substring(6, 100)}] [${s.substring(3, 1)}] [${s.substring(-2, 2)}] [${"".substring(0, 1)}]")
+    console.print("[${"  \t hi there \n".trim()}] [${"".trim()}] [${"   ".trim()}] [${"x".trim()}] [${"  y ".trim()}]")
+    var i = 0
+    var acc = ""
+    while i < 3:
+        acc = acc + s.substring(i, i + 1).trim()
+        i = i + 1
+    console.print(acc)

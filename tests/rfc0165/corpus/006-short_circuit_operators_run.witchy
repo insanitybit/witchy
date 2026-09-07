@@ -1,0 +1,8 @@
+fn main(console: Console):
+    let a = 1
+    if a > 0 && a < 5:
+        console.print("in")
+    else:
+        console.print("out")
+    if a > 3 || a == 1:
+        console.print("or")

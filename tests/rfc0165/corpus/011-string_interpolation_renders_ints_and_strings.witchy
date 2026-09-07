@@ -1,0 +1,6 @@
+fn main(console: Console):
+    let n = 16
+    let who = "witchy"
+    console.print("8 doubled is ${n}")
+    console.print("hi ${who}!")
+    console.print("${0} ${-7} ${1234567890} ${-9223372036854775807 - 1} ${9223372036854775807}")

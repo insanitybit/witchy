@@ -1,0 +1,11 @@
+pub fn count_even(xs: List(Int)) -> Int:
+    var n = 0
+    var last = 0 - 1
+    for x in xs:
+        if x % 2 == 0:
+            n = n + 1
+            last = x
+    n * 100 + last
+
+fn main(console: Console):
+    console.print("${count_even([1, 2, 3, 4, 6])} ${count_even([1, 3])}")

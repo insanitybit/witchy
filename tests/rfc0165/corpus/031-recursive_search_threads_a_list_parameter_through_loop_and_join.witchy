@@ -1,0 +1,16 @@
+pub fn count(n: Int, placed: List(Int)) -> Int:
+    if placed.length() == n:
+        1
+    else:
+        var total = 0
+        var col = 0
+        while col < n:
+            if col % 2 == 0:
+                var next = placed
+                next.push(col)
+                total = total + count(n, next)
+            col = col + 1
+        total
+
+fn main(console: Console):
+    console.print("${count(3, [])}")

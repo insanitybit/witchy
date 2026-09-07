@@ -1,0 +1,8 @@
+fn main(console: Console):
+    let s = "hello world"
+    console.print("${s.starts_with("hello")} ${s.starts_with("world")} ${s.ends_with("world")} ${s.ends_with("")} ${"".starts_with("a")}")
+    console.print("${s.contains("o w")} ${s.contains("xyz")} ${s.contains("")} ${"ab".contains("abc")}")
+    console.print("${"apple" < "banana"} ${"b" > "abc"} ${"abc" <= "abc"} ${"abc" < "abcd"} ${"" < "a"} ${"z" >= "aa"}")
+    let t = "héllo wörld"
+    console.print("${t.find("wör")} ${t.find("h")} ${t.find("zz")} ${t.find("")} ${"aaa".find("aa")}")
+    console.print("${"42".to_int()} ${" -17 ".to_int()} ${"+8".to_int()} ${"-9223372036854775808".to_int()} ${"0".to_int()}")

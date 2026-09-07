@@ -1,0 +1,16 @@
+pub fn join_all(xs: List(String)) -> String:
+    var out = ""
+    for s in xs:
+        out = out + s
+    out
+
+pub fn second(xs: List(String)) -> String:
+    xs[1]
+
+fn main(console: Console):
+    let xs = ["a", "bb", "ccc"]
+    console.print(join_all(xs))
+    console.print(second(xs))
+    var ys = ["x"]
+    ys.push("yy")
+    console.print("${ys.length()} ${xs.length()}")

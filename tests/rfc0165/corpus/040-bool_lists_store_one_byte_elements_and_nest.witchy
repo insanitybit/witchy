@@ -1,0 +1,19 @@
+pub fn count_true(flags: List(Bool)) -> Int:
+    var n = 0
+    for f in flags:
+        if f:
+            n = n + 1
+    n
+
+fn main(console: Console):
+    var seen = [true, false, true]
+    seen.push(false)
+    seen.push(true)
+    console.print("${count_true(seen)} ${seen.length()} ${seen[1]} ${seen[4]}")
+    let grid = [[true, false], [false, false]]
+    var rows = 0
+    for row in grid:
+        for cell in row:
+            if cell:
+                rows = rows + 1
+    console.print("${rows}")

@@ -1,0 +1,5 @@
+fn twice(let n: Int) -> Int:
+    n * 2
+
+fn main() -> Int:
+    twice(21)

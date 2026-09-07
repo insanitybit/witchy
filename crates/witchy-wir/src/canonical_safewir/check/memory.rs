@@ -4313,6 +4313,52 @@ mod tests {
     }
 
     #[test]
+    fn store_cannot_overwrite_a_stored_reference() {
+        // B2 "replace": a slot that already holds a reference is never
+        // overwritten in place; the old token would leak. Replacement is
+        // a load (or drop) followed by a store into a fresh object.
+        with_pointer_slot_checker(|checker, _list, pointee| {
+            let place = Place::projected(
+                SOURCE,
+                Projection::Element { index: START },
+                ValueType::Ref(pointee),
+                AccessMode::Write,
+            );
+            assert_eq!(
+                checker.check(&Operation::Store { place: place.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }),
+                Ok(true)
+            );
+            // A shared clone of the stored element is a live reference the
+            // store could otherwise accept; the slot is taken.
+            assert_eq!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Read),
+                    transfer: LoadTransfer::CloneShared,
+                }),
+                Ok(true)
+            );
+            assert!(matches!(
+                checker.check(&Operation::Store { place, value: LOADED, transfer: StoreTransfer::CloneShared }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(overwrite reference)", .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn retain_is_refused_in_v1() {
+        // B1/B7: `Retain` is not a v1 rule; a second owner comes only from
+        // `CloneRef`, which the backend maps. The checker refuses it before
+        // the backend could see it.
+        with_pointer_slot_checker(|checker, _list, _pointee| {
+            assert!(matches!(
+                checker.check(&Operation::Retain { object: CHILD }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Retain", .. })
+            ));
+        });
+    }
+
+    #[test]
     fn pointer_slot_rejects_scalar_copy_transfer() {
         with_pointer_slot_checker(|checker, _list, pointee| {
             assert!(matches!(

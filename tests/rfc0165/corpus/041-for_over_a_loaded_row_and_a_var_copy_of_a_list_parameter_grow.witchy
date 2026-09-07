@@ -1,0 +1,17 @@
+pub fn total(board: List(List(Int))) -> Int:
+    var sum = 0
+    for row in board:
+        for v in row:
+            sum = sum + v
+    sum
+
+pub fn with_first(board: List(List(Int)), value: Int) -> List(List(Int)):
+    var copy = board
+    copy.push([value])
+    copy
+
+fn main(console: Console):
+    let board = [[1, 2], [3, 4]]
+    console.print("${total(board)}")
+    let grown = with_first(board, 5)
+    console.print("${total(grown)} ${grown.length()} ${board.length()}")

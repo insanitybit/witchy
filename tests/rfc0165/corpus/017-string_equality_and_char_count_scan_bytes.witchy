@@ -1,0 +1,16 @@
+pub fn count(words: List(String), target: String) -> Int:
+    var n = 0
+    for w in words:
+        if w == target:
+            n = n + 1
+    n
+
+pub fn same(a: String, b: String) -> Bool:
+    a == b
+
+fn main(console: Console):
+    let words = ["cat", "dog", "cat", "cats", ""]
+    console.print("${count(words, "cat")} ${count(words, "")} ${count(words, "bird")}")
+    if same("abc", "abc") && !same("abc", "abd") && "x" != "y" && !("" != ""):
+        console.print("eq ok")
+    console.print("${"héllo wörld".char_count()} ${"".char_count()} ${"日本語".char_count()} ${"abc".char_count()}")
