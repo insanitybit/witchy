@@ -73,6 +73,22 @@ this table as the record, followed by queue submission. Until that decision,
 the branch stays unsubmitted and every foundation suite listed in this ledger
 is green.
 
+**Coverage since the classification (2026-09-07).** Twenty-one dated slices in
+`security-eval/findings/CENSUS-2026-09-05-canonical-examples.md` since the
+classification added, inside the compact subset: loops whose exit is decided
+after the header (`&&`/`||` conditions, early returns, drop blocks on exit
+edges), string `==`/`!=`, `string.char_count`, `string.substring`,
+`string.trim`, nested scalar lists stored by copy, lists of strings pushed in
+branch arms and across loops, `math.sqrt`/`math.to_int`/`math.to_float` (one
+`FloatUnary` operation), the `Bool` render, and the duration identities.
+The census stands at 77 of 163 examples checking and 21 runnable examples
+agreeing under three-legged parity; 35 launch tests pin the slices. Two
+silent-wrong-answer lowering defects (a `for` loop dropping a binding rebound
+inside an arm; a header fact cached across arms) were caught by `witchy
+parity`, not by the oracle, which executes the same SafeWIR: independent
+expected results remain the adjudicator. The landing decision above is
+unchanged; the branch stays unsubmitted with every foundation suite green.
+
 ## Current focused candidate evidence
 
 - `canonical_pipeline::tests::scalar_unary_source_reaches_admitted_execution`
