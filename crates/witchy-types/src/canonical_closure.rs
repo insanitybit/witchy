@@ -267,11 +267,22 @@ fn pattern_names(pattern: &Pattern) -> Vec<String> {
     names
 }
 
+/// A lambda expression's structural identity (the callable id the closure
+/// witness records) and the address of its `Expr` node in the checked
+/// module, for a consumer that synthesizes a function per capture-free
+/// lambda and meets the node again while walking the same module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaSite {
+    pub id: ProperTailCallableId,
+    pub expr_address: usize,
+}
+
 struct Builder<'a> {
     typed: &'a TypedModule,
     module: &'a ast::Module,
     entries: Vec<ClosureWitness>,
     scopes: Vec<Vec<Binding>>,
+    sites: Vec<LambdaSite>,
 }
 
 impl<'a> Builder<'a> {
@@ -366,6 +377,7 @@ impl<'a> Builder<'a> {
         match expr {
             Expr::Lambda { params, body, .. } => {
                 let id = ProperTailCallableId { lambda_path: path.clone(), ..callable.clone() };
+                self.sites.push(LambdaSite { id: id.clone(), expr_address: expr as *const Expr as usize });
                 let signature = self.typed.table().type_of(expr).cloned().ok_or_else(|| ClosureWitnessError::MissingCallableType { path: path.clone() })?;
                 if !matches!(signature, Ty::Fn(..)) { return Err(ClosureWitnessError::CallableTypeNotFunction { path: path.clone(), ty: signature }); }
                 let signature_encoding = canonical_abi::canonical_checked_ty_bytes(self.typed, &signature)
@@ -461,7 +473,21 @@ impl<'a> Builder<'a> {
 }
 
 pub fn derive_closure_witness(typed: &TypedModule) -> Result<ClosureWitnessManifest, ClosureWitnessError> {
-    let mut builder = Builder { typed, module: typed.module(), entries: Vec::new(), scopes: Vec::new() };
+    let builder = walk_module(typed)?;
+    let mut entries = builder.entries;
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    for pair in entries.windows(2) { if pair[0].id == pair[1].id { return Err(ClosureWitnessError::DuplicateLambda); } }
+    Ok(ClosureWitnessManifest { entries, source_bundle_digest: [0; 32] })
+}
+
+/// Every lambda of the checked module with its structural identity, in the
+/// order the closure walker meets them.
+pub fn lambda_sites(typed: &TypedModule) -> Result<Vec<LambdaSite>, ClosureWitnessError> {
+    Ok(walk_module(typed)?.sites)
+}
+
+fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> {
+    let mut builder = Builder { typed, module: typed.module(), entries: Vec::new(), scopes: Vec::new(), sites: Vec::new() };
     for (item_index, item_def) in typed.module().items.iter().enumerate() {
         let item = u32::try_from(item_index).map_err(|_| ClosureWitnessError::PathOverflow)?;
         match item_def {
@@ -486,9 +512,7 @@ pub fn derive_closure_witness(typed: &TypedModule) -> Result<ClosureWitnessManif
             Item::Type(_) | Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
         }
     }
-    builder.entries.sort_by(|left, right| left.id.cmp(&right.id));
-    for pair in builder.entries.windows(2) { if pair[0].id == pair[1].id { return Err(ClosureWitnessError::DuplicateLambda); } }
-    Ok(ClosureWitnessManifest { entries: builder.entries, source_bundle_digest: [0; 32] })
+    Ok(builder)
 }
 
 impl TypedModule {
@@ -512,7 +536,7 @@ mod tests {
             typed: &typed,
             module: typed.module(),
             entries: Vec::new(),
-            scopes: Vec::new(),
+            scopes: Vec::new(), sites: Vec::new(),
         };
 
         assert!(builder

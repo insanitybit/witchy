@@ -39,9 +39,9 @@ pub fn visit_module_exprs<E>(
     Ok(())
 }
 
-pub fn visit_block<E>(
-    block: &Block,
-    visitor: &mut impl FnMut(&Expr) -> Result<(), E>,
+pub fn visit_block<'a, E>(
+    block: &'a Block,
+    visitor: &mut impl FnMut(&'a Expr) -> Result<(), E>,
 ) -> Result<(), E> {
     for statement in &block.stmts {
         match statement {
@@ -57,9 +57,9 @@ pub fn visit_block<E>(
     Ok(())
 }
 
-pub fn visit_expr<E>(
-    expression: &Expr,
-    visitor: &mut impl FnMut(&Expr) -> Result<(), E>,
+pub fn visit_expr<'a, E>(
+    expression: &'a Expr,
+    visitor: &mut impl FnMut(&'a Expr) -> Result<(), E>,
 ) -> Result<(), E> {
     visitor(expression)?;
     match expression {

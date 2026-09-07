@@ -942,3 +942,18 @@ pattern destructures through its slot. Newly agree: `let_patterns`. Census: 105/
 Known limit (not pursued: coverage expansion stops here per the plan correction): a `var`
 alias of a list threaded beside its source as loop lanes shares the source's extent ids,
 which the edge renaming cannot tell apart (`var rest = stack; while let [top, ..tail] = rest`).
+
+## Slice 31 (2026-09-07): capture-free scalar lambdas as function values
+
+A lambda whose closure witness records no captures and whose parameters and result are
+scalars becomes a function of its own: `canonical_closure::lambda_sites` yields each lambda's
+structural identity and node address; the lowering synthesizes a function per site (lowering
+the original body node, since the type table is keyed by node address), emits `FunctionValue`
+at the use site, keys tail sites inside the lambda by its `lambda_path`, and binds the function
+to its closure witness (`CandidateClosureBinding`, digest-bound) rather than a source
+declaration; the authority admits such a binding only when the witness exists, captures
+nothing, and carries the function's signature. Capturing lambdas and lambdas over references
+are refused by name. `ast::visit::visit_block`/`visit_expr` now hand the visitor references
+with the block's lifetime. Newly agree: `list_pipeline`, `predicates`, `std_demo` (std `map`,
+`filter`, `fold`, `all`, `any` over `List(Int)` with lambdas). Census: 108/163 check, 52
+runnable three-legged parity, 0 disagree.

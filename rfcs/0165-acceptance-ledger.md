@@ -102,8 +102,11 @@ old prefix; a `var` passed to a callee is copied), dynamic `string.chars`/
 `string.split`/`string.replace` as two shared lowering kernels (a UTF-8
 sequence loop and a match-scan loop over owned accumulator lanes), and a
 checker dataflow that holds a block's failure until its incoming states
-converge. The census stands at 101 of 163 examples checking and 45 runnable
-examples agreeing under three-legged parity; 43 launch tests pin the slices. Two
+converge; Bool lists, `for` over loaded rows, `while let`, `break`/`continue`,
+and capture-free scalar lambdas as function values bound to their closure
+witness (slices 29-31). The census stands at 108 of 163 examples checking and
+52 runnable examples agreeing under three-legged parity; 52 launch tests pin
+the slices. Two
 silent-wrong-answer lowering defects (a `for` loop dropping a binding rebound
 inside an arm; a header fact cached across arms) were caught by `witchy
 parity`, not by the oracle, which executes the same SafeWIR: independent

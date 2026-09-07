@@ -18,6 +18,7 @@ mod owned_tests;
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_types::canonical_aggregates::{scalar_aggregate_shape, ScalarAggregateShape};
 use witchy_types::pipeline::CanonicalCheckedSource;
+use witchy_types::canonical_closure::lambda_sites;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
     ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, TypeTable,
@@ -27,7 +28,7 @@ use witchy_wir::canonical_safewir::{
     CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
     FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
-    LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
+    LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, CandidateClosureBinding, CandidateClosureBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
     ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, Ownership, ValueId, ValueType,
 };
@@ -234,6 +235,79 @@ pub fn lower_typed_module(
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
     }
+    // Capture-free lambdas whose parameters and result are scalars become
+    // functions of their own, bound to their closure witness (RFC-0165 v1
+    // has no closure environments). Each is met again by node address when
+    // its function body is lowered.
+    let sites = lambda_sites(typed)
+        .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
+    let witnesses = source.closure_witness().entries();
+    let mut lambda_names: HashMap<usize, String> = HashMap::new();
+    let mut lambda_functions: Vec<(witchy_syntax::ast::Function, &witchy_syntax::ast::Block, FunctionId, u32, Vec<ProperTailPathStep>, FunctionSignatureId, u32)> = Vec::new();
+    for (item_index, item) in typed.module().items.iter().enumerate() {
+        let Item::Function(function) = item else { continue };
+        if !is_canonical_source_function(typed.module(), &function.name) {
+            continue;
+        }
+        let item_index = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let mut visit_error = None;
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            let Expr::Lambda { params, body, qualifiers, .. } = expression else { return Ok(()) };
+            let address = expression as *const Expr as usize;
+            let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
+            let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
+            if !witnesses[witness_index].captures().is_empty() {
+                return Ok(());
+            }
+            let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
+            let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
+            if !parameter_types.iter().chain(std::iter::once(result_type.as_ref())).all(|ty| witchy_types::canonical_aggregates::is_scalar_type(ty)) {
+                return Ok(());
+            }
+            let Some(&signature_id) = function_types.get(fn_type.unqualified()) else { return Ok(()) };
+            let name = format!("{}#lambda{}", function.name, lambda_functions.len());
+            let params = params
+                .iter()
+                .zip(parameter_types)
+                .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() })
+                .collect::<Vec<_>>();
+            let synthesized = witchy_syntax::ast::Function {
+                line: 0,
+                public: false,
+                pure: qualifiers.pure,
+                comptime_only: false,
+                attributes: Vec::new(),
+                name: name.clone(),
+                params,
+                ret: Some((**result_type).clone()),
+                body: body.clone(),
+                bounds: Vec::new(),
+                is_gen: false,
+                is_async: false,
+            };
+            let function_id = match u32::try_from(functions_by_name.len()) {
+                Ok(index) => FunctionId::new(index),
+                Err(_) => {
+                    visit_error = Some(CanonicalLoweringError::IdOverflow);
+                    return Err(());
+                }
+            };
+            functions_by_name.insert(name.clone(), (function_id, signature_id));
+            lambda_names.insert(address, name);
+            let witness_index = match u32::try_from(witness_index) {
+                Ok(index) => index,
+                Err(_) => {
+                    visit_error = Some(CanonicalLoweringError::IdOverflow);
+                    return Err(());
+                }
+            };
+            lambda_functions.push((synthesized, body, function_id, item_index, site.id.lambda_path.clone(), signature_id, witness_index));
+            Ok(())
+        });
+        if let Some(error) = visit_error {
+            return Err(error);
+        }
+    }
     let checked_parameter_conventions = callable_types
         .iter()
         .filter_map(|ty| {
@@ -313,8 +387,11 @@ pub fn lower_typed_module(
         let signature = &signatures[signature_id.get() as usize];
         functions.push(lower_function(
             function,
+            &function.body,
             function_id,
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            Vec::new(),
+            &lambda_names,
             signature,
             &functions_by_name,
             &checked_parameter_conventions,
@@ -347,8 +424,35 @@ pub fn lower_typed_module(
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
 
+    let mut closure_bindings = Vec::new();
+    for (synthesized, body, function_id, item_index, lambda_path, signature_id, witness_index) in &lambda_functions {
+        let signature = &signatures[signature_id.get() as usize];
+        functions.push(lower_function(
+            synthesized,
+            body,
+            *function_id,
+            *item_index,
+            lambda_path.clone(),
+            &lambda_names,
+            signature,
+            &functions_by_name,
+            &checked_parameter_conventions,
+            &signatures,
+            &tail_manifest,
+            typed.table(),
+            &layouts,
+            &layout_catalog,
+            &string_data_ids,
+            print_import,
+            &packed_records,
+            &definitions,
+        )?);
+        closure_bindings.push(CandidateClosureBinding::new(*function_id, *witness_index));
+    }
+    let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
     let mut abi_bindings = functions_by_name
         .iter()
+        .filter(|(name, _)| !lambda_function_names.contains(*name))
         .map(|(name, (function, _signature))| {
             let source_abi = source.closed_callable_abi(name)
                 .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
@@ -373,7 +477,9 @@ pub fn lower_typed_module(
         imports,
         functions,
         proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module())?,
-    }, static_data_segments).with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings));
+    }, static_data_segments)
+        .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
+        .with_closure_bindings(CandidateClosureBindings::new(closure_bindings));
     Ok(match abi_catalog {
         Some(catalog) => candidate.with_abi_catalog(catalog),
         None => candidate,
@@ -632,10 +738,17 @@ fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
     }
 }
 
+/// `body` is the block to lower: the function's own for a declaration, the
+/// lambda's original node for a synthesized lambda function (the type table
+/// is keyed by node address, so a clone would carry no types).
+#[allow(clippy::too_many_arguments)]
 fn lower_function(
     function: &witchy_syntax::ast::Function,
+    body: &witchy_syntax::ast::Block,
     id: FunctionId,
     item: u32,
+    lambda_path: Vec<ProperTailPathStep>,
+    lambda_names: &HashMap<usize, String>,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
     checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
@@ -663,6 +776,8 @@ fn lower_function(
         token_join_parameters: BTreeSet::new(),
         mutable_bindings: HashSet::new(),
         loop_contexts: Vec::new(),
+        lambda_names,
+        lambda_path,
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
         write_back_parameters: Vec::new(),
@@ -714,7 +829,7 @@ fn lower_function(
         .collect();
 
     let ordinary_results = &signature.results[..signature.results.len() - write_back_count(signature)];
-    lowerer.lower_body(&function.body.stmts, ordinary_results)?;
+    lowerer.lower_body(&body.stmts, ordinary_results)?;
     let blocks = lowerer
         .blocks
         .into_iter()
@@ -901,6 +1016,12 @@ struct FunctionLowerer<'a> {
     /// The enclosing loops, innermost last: where `break` and `continue`
     /// branch and which lanes they carry.
     loop_contexts: Vec<LoopContext>,
+    /// The synthesized function of every capture-free scalar lambda, keyed
+    /// by the lambda expression's node address in the checked module.
+    lambda_names: &'a HashMap<usize, String>,
+    /// This function's lambda path when it implements a lambda (its tail
+    /// sites are keyed by the lambda's structural identity).
+    lambda_path: Vec<ProperTailPathStep>,
     string_lengths: HashMap<ValueId, ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
@@ -1439,7 +1560,7 @@ impl FunctionLowerer<'_> {
         self.tail_manifest.sites().iter().any(|site| {
             site.key.callable.item == self.item
                 && site.key.callable.method.is_none()
-                && site.key.callable.lambda_path.is_empty()
+                && site.key.callable.lambda_path == self.lambda_path
                 && site.key.path.starts_with(prefix)
                 && site.key.path.len() > prefix.len() + 1
         })
@@ -1449,7 +1570,7 @@ impl FunctionLowerer<'_> {
         self.tail_manifest.sites().iter().any(|site| {
             site.key.callable.item == self.item
                 && site.key.callable.method.is_none()
-                && site.key.callable.lambda_path.is_empty()
+                && site.key.callable.lambda_path == self.lambda_path
                 && site.key.path.len() == path.len() + 1
                 && site.key.path.starts_with(path)
                 && site.key.path.last() == Some(&ProperTailPathStep::Node(node))
@@ -3597,7 +3718,7 @@ impl FunctionLowerer<'_> {
             callable: ProperTailCallableId {
                 item: self.item,
                 method: None,
-                lambda_path: Vec::new(),
+                lambda_path: self.lambda_path.clone(),
             },
             path,
             dispatch: ProperTailDispatchKind::Direct,
@@ -3682,7 +3803,7 @@ impl FunctionLowerer<'_> {
             callable: ProperTailCallableId {
                 item: self.item,
                 method: None,
-                lambda_path: Vec::new(),
+                lambda_path: self.lambda_path.clone(),
             },
             path: {
                 let mut path = path;
@@ -4194,7 +4315,18 @@ impl FunctionLowerer<'_> {
             Expr::Unary { op, expr } => self.lower_unary(*op, expr),
             Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
             Expr::Field { base, field } => self.lower_record_field(base, field),
-            Expr::Lambda { .. } => Err(CanonicalLoweringError::UnsupportedExpression("lambda")),
+            Expr::Lambda { .. } => {
+                // A capture-free scalar lambda is the function value of its
+                // synthesized function (bound to its closure witness); any
+                // other lambda is outside the v1 subset.
+                let Some(name) = self.lambda_names.get(&(expression as *const Expr as usize)) else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("lambda with captures or non-scalar parameters"));
+                };
+                let (function, signature) = *self.functions.get(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                let destination = self.fresh(ValueType::Callable(signature))?;
+                self.push_operation(Operation::FunctionValue { destination, function });
+                Ok(destination)
+            }
             Expr::Record { name, fields, spread } => {
                 self.lower_record_literal(expression, name, fields, spread.as_deref())
             }

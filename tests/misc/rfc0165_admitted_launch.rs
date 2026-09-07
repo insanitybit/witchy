@@ -656,3 +656,42 @@ fn admitted_guard_near_misses_trap_exactly_at_the_boundary() {
         assert!(error.contains("error while executing") || error.contains("unreachable") || error.contains("trap"), "{label}: {error}");
     }
 }
+
+#[test]
+fn admitted_capture_free_scalar_lambdas_are_function_values_bound_to_their_witness() {
+    // A capture-free lambda over scalars lowers to a function of its own,
+    // bound to its closure witness rather than a source declaration; its
+    // value passes through `fn(...)` parameters and is called through the
+    // authenticated table, alongside a named function used as a value.
+    let output = run_admitted(
+        "pub fn apply(f: fn(Int) -> Int, n: Int) -> Int:\n    f(n)\n\npub fn twice(f: fn(Int) -> Int, n: Int) -> Int:\n    f(f(n))\n\npub fn reduce(nums: List(Int), f: fn(Int, Int) -> Int, init: Int) -> Int:\n    var acc = init\n    for n in nums:\n        acc = f(acc, n)\n    acc\n\npub fn cube(n: Int) -> Int:\n    n * n * n\n\nfn main(console: Console):\n    console.print(\"${apply(fn(n: Int): n * n, 9)} ${twice(fn(n: Int): n + 3, 10)}\")\n    let nums = [1, 2, 3, 4, 5]\n    console.print(\"${reduce(nums, fn(a: Int, b: Int): a + b, 0)} ${reduce(nums, fn(a: Int, b: Int): a * b, 1)}\")\n    console.print(\"${apply(cube, 3)} ${apply(fn(n: Int): cube(n) - 1, 2)}\")\n",
+    );
+    assert_eq!(output, vec!["81 16".to_string(), "15 120".to_string(), "27 7".to_string()]);
+}
+
+#[test]
+fn capturing_lambdas_and_reference_lambdas_are_refused_by_name() {
+    // v1 has no closure environments: a lambda that captures a binding, or
+    // one whose parameters or result are references, is refused at
+    // canonical lowering with the construct named; nothing falls back.
+    for (label, source) in [
+        (
+            "capture",
+            "pub fn adder(k: Int) -> fn(Int) -> Int:\n    fn(x: Int): x + k\n\nfn main(console: Console):\n    console.print(\"${adder(2)(3)}\")\n",
+        ),
+        (
+            "reference parameter",
+            "pub fn apply(f: fn(String) -> Int, s: String) -> Int:\n    f(s)\n\nfn main(console: Console):\n    console.print(\"${apply(fn(s: String): s.length(), \\\"abc\\\")}\")\n",
+        ),
+    ] {
+        let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
+        match codegen::compile_checked_module_artifact(&checked) {
+            codegen::LoweringOutcome::Unsupported(reason) => {
+                let text = reason.to_string();
+                assert!(text.contains("lambda with captures or non-scalar parameters"), "{label}: {text}");
+            }
+            codegen::LoweringOutcome::Lowered(_) => panic!("{label}: a lambda outside the v1 subset must be refused"),
+            codegen::LoweringOutcome::Rejected(error) => panic!("{label}: refused for the wrong reason: {error}"),
+        }
+    }
+}

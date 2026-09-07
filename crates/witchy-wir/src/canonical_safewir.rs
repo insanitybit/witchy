@@ -822,6 +822,35 @@ impl CandidateAbiBindings {
     pub fn entries(&self) -> &[CandidateAbiBinding] { &self.entries }
 }
 
+/// A lowered function that implements one capture-free lambda of the checked
+/// source, selected by the lambda's index in the closure witness manifest.
+/// The authority admits it only when that witness has no captures and its
+/// signature matches the function's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateClosureBinding {
+    function: FunctionId,
+    closure: u32,
+}
+
+impl CandidateClosureBinding {
+    pub fn new(function: FunctionId, closure: u32) -> Self {
+        Self { function, closure }
+    }
+
+    pub const fn function(&self) -> FunctionId { self.function }
+    pub const fn closure(&self) -> u32 { self.closure }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CandidateClosureBindings {
+    entries: Vec<CandidateClosureBinding>,
+}
+
+impl CandidateClosureBindings {
+    pub fn new(entries: Vec<CandidateClosureBinding>) -> Self { Self { entries } }
+    pub fn entries(&self) -> &[CandidateClosureBinding] { &self.entries }
+}
+
 mod stage {
     pub trait Sealed {}
 }
@@ -853,6 +882,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     static_data_segments: Vec<StaticDataSegment>,
     abi_catalog: Option<CanonicalAbiCatalog>,
     abi_bindings: CandidateAbiBindings,
+    closure_bindings: CandidateClosureBindings,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -892,6 +922,7 @@ impl CanonicalModule<LoweredCandidate> {
             static_data_segments,
             abi_catalog: None,
             abi_bindings: CandidateAbiBindings::default(),
+            closure_bindings: CandidateClosureBindings::default(),
             stage: PhantomData,
         }
     }
@@ -916,6 +947,13 @@ impl CanonicalModule<LoweredCandidate> {
         self
     }
 
+    /// Attach the closure-witness bindings of the functions canonical
+    /// lowering synthesized for capture-free lambdas.
+    pub fn with_closure_bindings(mut self, bindings: CandidateClosureBindings) -> Self {
+        self.closure_bindings = bindings;
+        self
+    }
+
     fn into_initial_valid(self) -> CanonicalModule<InitialValid> {
         CanonicalModule {
             revision: self.revision,
@@ -929,6 +967,7 @@ impl CanonicalModule<LoweredCandidate> {
             static_data_segments: self.static_data_segments,
             abi_catalog: self.abi_catalog,
             abi_bindings: self.abi_bindings,
+            closure_bindings: self.closure_bindings,
             stage: PhantomData,
         }
     }
@@ -977,5 +1016,9 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn source_abi_bindings(&self) -> &CandidateAbiBindings {
         &self.abi_bindings
+    }
+
+    pub fn closure_bindings(&self) -> &CandidateClosureBindings {
+        &self.closure_bindings
     }
 }

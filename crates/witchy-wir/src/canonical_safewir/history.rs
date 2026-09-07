@@ -33,6 +33,7 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     writer.imports(module.imports());
     writer.functions(module.functions());
     writer.source_abi_bindings(module.source_abi_bindings());
+    writer.closure_bindings(module.closure_bindings());
     writer.tail_sites(module.proper_tail_sites());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
@@ -776,6 +777,14 @@ impl CanonicalWriter {
         for binding in bindings.entries() {
             self.u32(binding.function().get());
             self.u32(binding.source_declaration_ordinal());
+        }
+    }
+
+    fn closure_bindings(&mut self, bindings: &super::CandidateClosureBindings) {
+        self.len(bindings.entries().len());
+        for binding in bindings.entries() {
+            self.u32(binding.function().get());
+            self.u32(binding.closure());
         }
     }
 

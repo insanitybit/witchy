@@ -212,6 +212,9 @@ pub enum CandidateAbiBindingError {
     MissingCandidateSignature { function: super::FunctionId },
     SourceAbiMismatch { source_declaration: u32 },
     CandidateSignatureMismatch { function: super::FunctionId },
+    MissingClosureWitness { closure: u32 },
+    CapturingClosureBinding { closure: u32 },
+    ClosureSignatureMismatch { closure: u32 },
 }
 
 impl fmt::Display for CandidateAbiBindingError {
@@ -353,8 +356,39 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
-    if functions.len() != bound_functions.len() {
-        let function = functions.keys().find(|function| !bound_functions.contains_key(function))
+    // A function synthesized for a capture-free lambda is bound to that
+    // lambda's closure witness instead of a source declaration: the witness
+    // must exist, capture nothing, and carry the function's signature.
+    let closures = source.closure_witness().entries();
+    let mut closure_bound = BTreeMap::new();
+    for binding in candidate.closure_bindings().entries() {
+        if bound_functions.contains_key(&binding.function())
+            || closure_bound.insert(binding.function(), binding).is_some()
+        {
+            return Err(CandidateAbiBindingError::DuplicateCandidateFunction { function: binding.function() });
+        }
+        let Some(witness) = closures.get(binding.closure() as usize) else {
+            return Err(CandidateAbiBindingError::MissingClosureWitness { closure: binding.closure() });
+        };
+        if !witness.captures().is_empty() {
+            return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
+        }
+        let Some(function) = functions.get(&binding.function()) else {
+            return Err(CandidateAbiBindingError::MissingCandidateFunction { function: binding.function() });
+        };
+        let Some(signature) = candidate.signatures().iter().find(|signature| signature.id == function.signature) else {
+            return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.function() });
+        };
+        let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
+            return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
+        };
+        if !candidate_signature_matches_source_with_records(signature, &source_signature, candidate, &records) {
+            return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
+        }
+    }
+    if functions.len() != bound_functions.len() + closure_bound.len() {
+        let function = functions.keys()
+            .find(|function| !bound_functions.contains_key(function) && !closure_bound.contains_key(function))
             .copied().unwrap_or_else(|| *bound_functions.keys().next().expect("nonempty mismatch"));
         return Err(CandidateAbiBindingError::MissingCandidateFunction { function });
     }
