@@ -237,6 +237,25 @@ fn admitted_list_of_lists_grows_after_a_shared_element_read() {
 }
 
 #[test]
+fn admitted_substring_and_trim_scan_characters_and_ascii_whitespace() {
+    // `substring` counts Unicode scalars and clamps; `trim` strips the ASCII
+    // set both backends agree on (a no-break space stays). Each scan is a
+    // loop whose exit is decided in a block after the header, nested here
+    // inside a `while`.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let s = \"h\u{e9}llo w\u{f6}rld\"\n    console.print(\"[${s.substring(1, 4)}] [${s.substring(6, 100)}] [${s.substring(3, 1)}] [${s.substring(-2, 2)}] [${\"\".substring(0, 1)}]\")\n    console.print(\"[${\"  \\t hi there \\n\".trim()}] [${\"\".trim()}] [${\"   \".trim()}] [${\"x\".trim()}] [${\" \u{a0}y \".trim()}]\")\n    var i = 0\n    var acc = \"\"\n    while i < 3:\n        acc = acc + s.substring(i, i + 1).trim()\n        i = i + 1\n    console.print(acc)\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "[\u{e9}ll] [w\u{f6}rld] [] [h\u{e9}] []".to_string(),
+            "[hi there] [] [] [x] [\u{a0}y]".to_string(),
+            "h\u{e9}l".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

@@ -3375,6 +3375,25 @@ impl FunctionLowerer<'_> {
                 let object = self.lower_expr(receiver)?;
                 self.lower_char_count(object)
             }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.substring" | "string.__substring") => {
+                let [receiver, start, end] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.substring arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                let start = self.lower_expr(start)?;
+                let end = self.lower_expr(end)?;
+                if self.values[&start] != ValueType::Int || self.values[&end] != ValueType::Int {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.substring index type"));
+                }
+                self.lower_substring(object, start, end)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.trim" | "string.__trim") => {
+                let [receiver] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.trim arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                self.lower_trim(object)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "list.at" | "list.__at") => {
                 let [base, index] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("list.at arity"));
@@ -5166,6 +5185,257 @@ impl FunctionLowerer<'_> {
         merge(&mut self.list_counts, snapshot.list_counts, &defined);
         merge(&mut self.list_capacities, snapshot.list_capacities, &defined);
         merge(&mut self.known_list_lengths, snapshot.known_list_lengths, &defined);
+    }
+
+    /// A fresh reference-counted string holding bytes `[start, start + length)`
+    /// of `source`. The caller has established `start + length <= count` as a
+    /// trapping add followed by a guard.
+    fn copy_string_slice(
+        &mut self,
+        source: ValueId,
+        start: ValueId,
+        length: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, maximum)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes: 4,
+                count: length,
+                capacity: length,
+                stride_bytes: 1,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::UpdateCount { object, count: length });
+        let zero = self.push_const_size(0)?;
+        let destination_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, length)?;
+        self.push_guard(destination_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, zero, source, start, length, layout);
+        self.string_lengths.insert(object, length);
+        self.string_capacities.insert(object, length);
+        Ok(object)
+    }
+
+    /// `max(value, 0)` for an `Int`, branch-free: subtract the value masked by
+    /// its own sign.
+    fn push_clamp_non_negative(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let sign_bit = self.push_const_int(63)?;
+        let mask = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightSigned, value, sign_bit, OverflowBehavior::Wrap)?;
+        let negative_part = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, value, mask, OverflowBehavior::Wrap)?;
+        self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, negative_part, OverflowBehavior::Wrap)
+    }
+
+    /// The byte offset where character `target` (a non-negative `Int` count
+    /// of Unicode scalars) starts, or the byte length when the string has
+    /// fewer characters. A loop over bytes counts sequence starts and leaves
+    /// at the start of character `target`.
+    fn lower_char_offset(
+        &mut self,
+        object: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+        length: ValueId,
+        target: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let zero_int = self.push_const_int(0)?;
+        let one_int = self.push_const_int(1)?;
+        let two_int = self.push_const_int(2)?;
+        let three_int = self.push_const_int(3)?;
+        let six_int = self.push_const_int(6)?;
+        let sixty_three = self.push_const_int(63)?;
+        let state = [ValueType::Size, ValueType::Int];
+        let header = self.new_block(&state)?;
+        let check = self.new_block(&state)?;
+        let exit = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero_int] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], length)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: check,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: vec![header_values[0]],
+        })?;
+        let check_values = self.block_parameter_values(check);
+        self.current = check;
+        let index = check_values[0];
+        let seen = check_values[1];
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, index, layout)?;
+        let byte_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: byte_int, value: byte });
+        // start = 1 for a sequence start, 0 for a continuation byte.
+        let high_bits = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, byte_int, six_int, OverflowBehavior::Wrap)?;
+        let flipped = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitXor, high_bits, two_int, OverflowBehavior::Wrap)?;
+        let biased = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, flipped, three_int, OverflowBehavior::Wrap)?;
+        let start = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, biased, two_int, OverflowBehavior::Wrap)?;
+        // at_target = 1 when seen == target: neither difference is negative.
+        let forward = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, seen, target, OverflowBehavior::Wrap)?;
+        let backward = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, target, seen, OverflowBehavior::Wrap)?;
+        let either = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, forward, backward, OverflowBehavior::Wrap)?;
+        let differs = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, either, sixty_three, OverflowBehavior::Wrap)?;
+        let at_target = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, one_int, differs, OverflowBehavior::Wrap)?;
+        let found_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, start, at_target, OverflowBehavior::Wrap)?;
+        let found = self.push_compare(ComparisonOperator::Equal, found_int, one_int)?;
+        let next_seen = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, seen, start, OverflowBehavior::Wrap)?;
+        let next_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, index, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: found,
+            then_target: exit,
+            then_arguments: vec![index],
+            else_target: header,
+            else_arguments: vec![next_index, next_seen],
+        })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// `string.substring(s, start, end)`: the characters in `[start, end)`,
+    /// counted by Unicode scalar and clamped to the string, empty when the
+    /// range is inverted. Two scans find the byte offsets; the bytes between
+    /// them are copied into a fresh string.
+    fn lower_substring(
+        &mut self,
+        object: ValueId,
+        start: ValueId,
+        end: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(object)?;
+        let ValueType::Ref(layout) = self.values[&object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string.substring receiver"));
+        };
+        let length = *self.string_lengths.get(&object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string.substring receiver extent"),
+        )?;
+        let start = self.push_clamp_non_negative(start)?;
+        let end = self.push_clamp_non_negative(end)?;
+        let start_offset = self.lower_char_offset(object, layout, length, start)?;
+        let end_offset = self.lower_char_offset(object, layout, length, end)?;
+        let start_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: start_int, value: start_offset });
+        let end_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: end_int, value: end_offset });
+        let span = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, end_int, start_int, OverflowBehavior::Wrap)?;
+        let span = self.push_clamp_non_negative(span)?;
+        let byte_count = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: byte_count, value: span });
+        let slice_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start_offset, byte_count, OverflowBehavior::Trap)?;
+        let slice_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, slice_end, length)?;
+        self.push_guard(slice_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.copy_string_slice(object, start_offset, byte_count, layout)
+    }
+
+    /// Scan over ASCII whitespace (space, tab, LF, VT, FF, CR: the set both
+    /// backends trim). Forward from `from` while the byte at the cursor is
+    /// whitespace and the cursor is below `to`; backward from `to` while the
+    /// byte before the cursor is whitespace and the cursor is above `from`.
+    /// Yields the cursor where the scan stopped.
+    fn lower_whitespace_scan(
+        &mut self,
+        object: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+        length: ValueId,
+        from: ValueId,
+        to: ValueId,
+        forward: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let one = self.push_const_size(1)?;
+        let space = self.push_const_size(32)?;
+        let tab = self.push_const_size(9)?;
+        let control_span = self.push_const_size(4)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let check = self.new_block(&[ValueType::Size])?;
+        let advance = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Size])?;
+        // The checker renames a loop argument to the header parameter in
+        // every fact table, so the cursor starts from a dedicated copy and the
+        // bounds (`from`, `to`, `length`) keep their facts.
+        let zero = self.push_const_size(0)?;
+        let initial = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, if forward { from } else { to }, zero, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![initial] })?;
+        let cursor = self.block_parameter_values(header)[0];
+        self.current = header;
+        let more = if forward {
+            self.push_compare(ComparisonOperator::LessUnsigned, cursor, to)?
+        } else {
+            self.push_compare(ComparisonOperator::GreaterUnsigned, cursor, from)?
+        };
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: check,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![cursor],
+        })?;
+        let cursor = self.block_parameter_values(check)[0];
+        self.current = check;
+        let index = if forward {
+            cursor
+        } else {
+            self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, cursor, one, OverflowBehavior::Wrap)?
+        };
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, index, layout)?;
+        let is_space = self.push_compare(ComparisonOperator::Equal, byte, space)?;
+        let from_tab = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, byte, tab, OverflowBehavior::Wrap)?;
+        let is_control = self.push_compare(ComparisonOperator::LessEqualUnsigned, from_tab, control_span)?;
+        let control_check = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_space,
+            then_target: advance,
+            then_arguments: vec![cursor],
+            else_target: control_check,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = control_check;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_control,
+            then_target: advance,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![cursor],
+        })?;
+        let cursor = self.block_parameter_values(advance)[0];
+        self.current = advance;
+        let next = if forward {
+            self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?
+        } else {
+            self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, cursor, one, OverflowBehavior::Wrap)?
+        };
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// `string.trim`: the bytes between the leading and trailing ASCII
+    /// whitespace, copied into a fresh string.
+    fn lower_trim(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(object)?;
+        let ValueType::Ref(layout) = self.values[&object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string.trim receiver"));
+        };
+        let length = *self.string_lengths.get(&object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string.trim receiver extent"),
+        )?;
+        let zero = self.push_const_size(0)?;
+        let start = self.lower_whitespace_scan(object, layout, length, zero, length, true)?;
+        let end = self.lower_whitespace_scan(object, layout, length, start, length, false)?;
+        let byte_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, end, start, OverflowBehavior::Wrap)?;
+        let slice_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start, byte_count, OverflowBehavior::Trap)?;
+        let slice_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, slice_end, length)?;
+        self.push_guard(slice_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.copy_string_slice(object, start, byte_count, layout)
     }
 
     fn block_parameter_values(&self, block: BlockId) -> Vec<ValueId> {

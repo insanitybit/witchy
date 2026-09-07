@@ -713,3 +713,25 @@ route is 0/107.
   and `admitted_list_of_lists_grows_after_a_shared_element_read`.
 - Census: 73 of 163 check; 17 runnable examples admit and agree under
   three-legged parity (`diff` is new).
+
+## Progress (owner, 2026-09-07, twentieth slice: substring, trim, joins inside loops)
+
+- **`string.substring`** (Unicode-scalar indices, clamped, empty when
+  inverted) finds both byte offsets with a branch-free sequence-start count
+  and copies the bytes between them; **`string.trim`** scans the ASCII
+  whitespace set both backends strip (space, tab, LF, VT, FF, CR) from both
+  ends. Each scan is a loop that decides its exit after the header, and a
+  loop argument must be a dedicated copy (the checker renames an argument
+  to the header parameter in every fact table, so passing the length
+  directly took the length fact with it).
+- **Joins inside loops (encoder).** A branch side that reaches the
+  enclosing merge flows into it rather than escaping (emitting it inline
+  emitted the merge twice); a join candidate's paths may leave through the
+  enclosing loop's exit or back edge instead of reaching the merge; and
+  candidates come only from paths that stay in the loop region, so a block
+  reached through the back edge (the next iteration's `if`) never wins on
+  distance. `fizzbuzz` regressed on the last of these for one build and is
+  pinned by the census.
+- Pinned by `admitted_substring_and_trim_scan_characters_and_ascii_whitespace`.
+- Census: 75 of 163 check; 19 runnable examples admit and agree under
+  three-legged parity (`matrix`, `loops`, `fizzbuzz` are new).

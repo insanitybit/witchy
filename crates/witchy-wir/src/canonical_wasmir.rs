@@ -2767,6 +2767,25 @@ impl StructuredEmitter<'_> {
         })
     }
 
+    /// `distances_from` stopping at `stops` (which are never entered).
+    fn distances_until(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        stops: &[crate::canonical_safewir::BlockId],
+    ) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, EncodeError> {
+        let mut distances = BTreeMap::new();
+        let mut pending = VecDeque::from([(start, 0)]);
+        while let Some((id, distance)) = pending.pop_front() {
+            if stops.contains(&id) || distances.contains_key(&id) {
+                continue;
+            }
+            self.block(id)?;
+            distances.insert(id, distance);
+            pending.extend(self.successors(id)?.into_iter().map(|successor| (successor, distance + 1)));
+        }
+        Ok(distances)
+    }
+
     fn distances_from(
         &self,
         start: crate::canonical_safewir::BlockId,
@@ -3045,7 +3064,7 @@ impl StructuredEmitter<'_> {
     /// A branch side that only leaves: its target is an escape, or every
     /// path from it ends in an escape or a terminal block (the drop block on
     /// a loop's exit edge) and it shares no block with the other side.
-    fn side_escapes(&self, current: crate::canonical_safewir::BlockId, side: crate::canonical_safewir::BlockId, other: crate::canonical_safewir::BlockId) -> Result<bool, EncodeError> {
+    fn side_escapes(&self, current: crate::canonical_safewir::BlockId, side: crate::canonical_safewir::BlockId, other: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<bool, EncodeError> {
         if self.escape_label(side).is_some() {
             return Ok(true);
         }
@@ -3055,6 +3074,11 @@ impl StructuredEmitter<'_> {
         }
         stops.push(current);
         let reach = self.reachable_until(side, &stops)?;
+        // A side that reaches the enclosing merge flows into it rather than
+        // escaping: emitting it inline here would emit the merge twice.
+        if stop.is_some_and(|stop| reach.contains(&stop)) {
+            return Ok(false);
+        }
         // Every path must end at an escape: a side that can also return is
         // a terminal side for `only_terminates` to judge, not an escape.
         for block in &reach {
@@ -3140,6 +3164,7 @@ impl StructuredEmitter<'_> {
         current: crate::canonical_safewir::BlockId,
         then_target: crate::canonical_safewir::BlockId,
         else_target: crate::canonical_safewir::BlockId,
+        stop: Option<crate::canonical_safewir::BlockId>,
     ) -> Result<Option<crate::canonical_safewir::BlockId>, EncodeError> {
         if then_target == else_target {
             return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
@@ -3151,16 +3176,20 @@ impl StructuredEmitter<'_> {
         // `br`: it never reaches a merge, and the other side's first block is
         // where emission continues.
         match (
-            self.side_escapes(current, then_target, else_target)?,
-            self.side_escapes(current, else_target, then_target)?,
+            self.side_escapes(current, then_target, else_target, stop)?,
+            self.side_escapes(current, else_target, then_target, stop)?,
         ) {
             (true, true) => return Ok(None),
             (true, false) => return Ok(Some(else_target)),
             (false, true) => return Ok(Some(then_target)),
             (false, false) => {}
         }
-        let then_distances = self.distances_from(then_target)?;
-        let else_distances = self.distances_from(else_target)?;
+        // Candidates come from paths that stay in the current loop region: a
+        // block reached only through an enclosing loop's back edge or exit is
+        // the next iteration's, not this branch's merge.
+        let stops = self.escape_targets();
+        let then_distances = self.distances_until(then_target, &stops)?;
+        let else_distances = self.distances_until(else_target, &stops)?;
         // A side whose every path terminates (an exhaustive `match` whose
         // fallthrough traps, `if c: a else: return`) never reaches the merge;
         // `all_paths_reach_or_terminate` already permits that bypass, so such
@@ -3191,15 +3220,13 @@ impl StructuredEmitter<'_> {
                 None if else_terminal => 0,
                 None => continue,
             };
-            if !self.all_paths_reach_or_terminate(
-                then_target,
-                &[candidate],
-                &mut BTreeSet::new(),
-            )? || !self.all_paths_reach_or_terminate(
-                else_target,
-                &[candidate],
-                &mut BTreeSet::new(),
-            )? {
+            // Inside a loop a path may also leave through the loop's exit or
+            // back edge (a `br`) instead of reaching the merge.
+            let mut merges = self.escape_targets();
+            merges.push(candidate);
+            if !self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
+                || !self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
+            {
                 continue;
             }
             let score = (then_distance + else_distance, candidate);
@@ -3355,7 +3382,7 @@ impl StructuredEmitter<'_> {
                 operation: "loop header outside structured loop",
             }));
         }
-        let join = self.find_join(current, then_target, else_target)?;
+        let join = self.find_join(current, then_target, else_target, stop)?;
         emit_get(self.body, self.layout, self.source_function.id, condition)?;
         self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         self.labels.push(StructuredLabel::If);
@@ -5122,6 +5149,25 @@ impl PlanEmitter<'_> {
         })
     }
 
+    /// `distances_from` stopping at `stops` (which are never entered).
+    fn distances_until(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        stops: &[crate::canonical_safewir::BlockId],
+    ) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, CanonicalAdmissionError> {
+        let mut distances = BTreeMap::new();
+        let mut pending = VecDeque::from([(start, 0)]);
+        while let Some((id, distance)) = pending.pop_front() {
+            if stops.contains(&id) || distances.contains_key(&id) {
+                continue;
+            }
+            self.block(id)?;
+            distances.insert(id, distance);
+            pending.extend(self.successors(id)?.into_iter().map(|successor| (successor, distance + 1)));
+        }
+        Ok(distances)
+    }
+
     fn distances_from(&self, start: crate::canonical_safewir::BlockId) -> Result<BTreeMap<crate::canonical_safewir::BlockId, usize>, CanonicalAdmissionError> {
         let mut distances = BTreeMap::new();
         let mut pending = VecDeque::from([(start, 0)]);
@@ -5345,7 +5391,7 @@ impl PlanEmitter<'_> {
     /// A branch side that only leaves: its target is an escape, or every
     /// path from it ends in an escape or a terminal block (the drop block on
     /// a loop's exit edge) and it shares no block with the other side.
-    fn side_escapes(&self, current: crate::canonical_safewir::BlockId, side: crate::canonical_safewir::BlockId, other: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+    fn side_escapes(&self, current: crate::canonical_safewir::BlockId, side: crate::canonical_safewir::BlockId, other: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<bool, CanonicalAdmissionError> {
         if self.escape_label(side).is_some() {
             return Ok(true);
         }
@@ -5355,6 +5401,11 @@ impl PlanEmitter<'_> {
         }
         stops.push(current);
         let reach = self.reachable_until(side, &stops)?;
+        // A side that reaches the enclosing merge flows into it rather than
+        // escaping: emitting it inline here would emit the merge twice.
+        if stop.is_some_and(|stop| reach.contains(&stop)) {
+            return Ok(false);
+        }
         // Every path must end at an escape: a side that can also return is
         // a terminal side for `only_terminates` to judge, not an escape.
         for block in &reach {
@@ -5417,6 +5468,7 @@ impl PlanEmitter<'_> {
         current: crate::canonical_safewir::BlockId,
         then_target: crate::canonical_safewir::BlockId,
         else_target: crate::canonical_safewir::BlockId,
+        stop: Option<crate::canonical_safewir::BlockId>,
     ) -> Result<Option<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
         if then_target == else_target {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
@@ -5424,16 +5476,20 @@ impl PlanEmitter<'_> {
         // Mirror of the encoder's rule: an escaping side is a plain `br` and
         // the other side's first block is where emission continues.
         match (
-            self.side_escapes(current, then_target, else_target)?,
-            self.side_escapes(current, else_target, then_target)?,
+            self.side_escapes(current, then_target, else_target, stop)?,
+            self.side_escapes(current, else_target, then_target, stop)?,
         ) {
             (true, true) => return Ok(None),
             (true, false) => return Ok(Some(else_target)),
             (false, true) => return Ok(Some(then_target)),
             (false, false) => {}
         }
-        let then_distances = self.distances_from(then_target)?;
-        let else_distances = self.distances_from(else_target)?;
+        // Candidates come from paths that stay in the current loop region: a
+        // block reached only through an enclosing loop's back edge or exit is
+        // the next iteration's, not this branch's merge.
+        let stops = self.escape_targets();
+        let then_distances = self.distances_until(then_target, &stops)?;
+        let else_distances = self.distances_until(else_target, &stops)?;
         // Mirror of the encoder's rule: a terminal side bypasses the merge and
         // contributes distance zero.
         // The other side's reach is taken without passing back through the
@@ -5458,8 +5514,10 @@ impl PlanEmitter<'_> {
                 None if else_terminal => 0,
                 None => continue,
             };
-            if !self.all_paths_reach_or_terminate(then_target, &[candidate], &mut BTreeSet::new())?
-                || !self.all_paths_reach_or_terminate(else_target, &[candidate], &mut BTreeSet::new())?
+            let mut merges = self.escape_targets();
+            merges.push(candidate);
+            if !self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
+                || !self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
             {
                 continue;
             }
@@ -5580,7 +5638,7 @@ impl PlanEmitter<'_> {
         if self.is_loop_header(current)? && !self.loops.iter().any(|(header, _)| *header == current) {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }
-        let join = self.find_join(current, then_target, else_target)?;
+        let join = self.find_join(current, then_target, else_target, stop)?;
         push_get(&mut self.plan, self.layout, condition)?;
         self.plan.push(PlanToken::If("Empty".to_owned()));
         self.labels.push(StructuredLabel::If);
