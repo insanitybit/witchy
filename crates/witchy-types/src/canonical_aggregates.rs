@@ -95,10 +95,24 @@ pub fn is_v1_field_type(ty: &Type) -> bool {
         || matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
         || matches!(ty.unqualified(), Type::Named(name, arguments)
             if name == "List" && arguments.len() == 1 && is_v1_list_element_type(&arguments[0]))
+        // A tuple field is a nested aggregate behind its own pointer slot;
+        // structural, so it cannot recurse.
+        || matches!(ty.unqualified(), Type::Tuple(items) if !items.is_empty() && items.iter().all(is_v1_field_type))
 }
 
 fn render_type(ty: &Type) -> Option<String> {
     match ty.unqualified() {
+        Type::Tuple(items) => {
+            let mut rendered = String::from("(");
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    rendered.push_str(", ");
+                }
+                rendered.push_str(&render_type(item)?);
+            }
+            rendered.push(')');
+            Some(rendered)
+        }
         Type::Named(name, arguments) if arguments.is_empty() => Some(name.clone()),
         Type::Named(name, arguments) => {
             let mut rendered = format!("{name}(");
@@ -122,8 +136,10 @@ fn int_type() -> Type {
 /// The key a source type's aggregate shape is filed under: the bare name of
 /// a user type, or the name with its scalar arguments (`Option(Int)`).
 pub fn aggregate_key(ty: &Type) -> Option<String> {
-    let Type::Named(..) = ty.unqualified() else { return None };
-    render_type(ty)
+    match ty.unqualified() {
+        Type::Named(..) | Type::Tuple(..) => render_type(ty),
+        _ => None,
+    }
 }
 
 /// The module's type definitions keyed by bare and entry-qualified names.
@@ -176,6 +192,19 @@ pub fn scalar_aggregate_shape(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
+    // A tuple is an anonymous one-variant record of its items.
+    if let Type::Tuple(items) = ty.unqualified() {
+        if items.is_empty() || !items.iter().all(is_v1_field_type) {
+            return None;
+        }
+        return Some(ScalarAggregateShape {
+            name: render_type(ty)?,
+            fields: items.clone(),
+            variants: vec![ScalarVariant { name: String::new(), first_field: 0, arity: items.len() }],
+            tagged: false,
+            packed: false,
+        });
+    }
     let Type::Named(name, arguments) = ty.unqualified() else { return None };
     match (name.as_str(), arguments.as_slice()) {
         ("Option", [payload]) if is_v1_field_type(payload) => Some(ScalarAggregateShape {

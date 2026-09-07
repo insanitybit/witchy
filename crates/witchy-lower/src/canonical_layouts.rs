@@ -128,6 +128,17 @@ impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         match ty {
             Type::Qualified(_, inner) => self.visit_type(inner),
+            // A tuple is an anonymous heap aggregate; its reference fields
+            // are roots of their own.
+            Type::Tuple(fields) if scalar_aggregate_shape(ty, &self.definitions).is_some() => {
+                for field in fields {
+                    if !is_scalar_type(field) {
+                        self.visit_type(field)?;
+                    }
+                }
+                self.roots.push(ty.clone());
+                Ok(())
+            }
             Type::Tuple(fields) => {
                 for field in fields {
                     self.visit_type(field)?;
@@ -518,9 +529,11 @@ mod tests {
             &bundle.canonical_bytes(),
         )
         .expect("decode canonical tuple layout");
+        // A tuple is an anonymous heap aggregate: a fixed record of its
+        // items behind one reference (see `canonical_aggregates`).
         assert!(matches!(
             layouts.get(bundle.roots()[0]).expect("tuple root").kind(),
-            LayoutKind::Tuple { .. }
+            LayoutKind::PackedRecord { fields } if fields.len() == 2
         ));
     }
 

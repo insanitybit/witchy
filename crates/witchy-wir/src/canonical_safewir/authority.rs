@@ -479,6 +479,11 @@ fn value_type_matches_source(
                 matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
             })
         }
+        witchy_syntax::ast::Type::Tuple(_) => {
+            witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts))
+            })
+        }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts)),
         witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
             super::ValueType::Callable(id) if seen.insert(id) => {
@@ -513,8 +518,10 @@ fn record_layout_matches(
                     "Float" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Float)),
                     _ => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
                 },
-                // A string or list field lives behind an owned pointer slot
-                // whose pointee is that value's own layout.
+                // A string, list, or tuple field lives behind an owned pointer
+                // slot whose pointee is that value's own layout.
+                witchy_syntax::ast::Type::Tuple(items) => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::Owned }
+                    if record_layout_matches(*pointee, items, layouts)),
                 _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::Owned }
                     if layout_matches_source(*pointee, field, layouts)),
             }

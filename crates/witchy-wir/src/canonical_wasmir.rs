@@ -3138,10 +3138,20 @@ impl StructuredEmitter<'_> {
         // (`if n == 0: return` ahead of a search) is a continuation.
         let mut candidates = BTreeSet::new();
         for block in &leaving {
-            let mut only_returns = Some(*block) != classic_exit
-                && self.all_paths_reach_or_terminate(*block, &[], &mut BTreeSet::from([header]))?;
+            // Every path from the edge terminates when its reach (never
+            // re-entering this header) holds no loop header: acyclic, and a
+            // block without successors is terminal. This stays a plain
+            // reachability question so exits of one loop never walk into the
+            // path check of another.
+            let reach = self.reachable_until(*block, &[header])?;
+            let mut only_returns = Some(*block) != classic_exit;
+            for reached in &reach {
+                if self.is_loop_header(*reached)? {
+                    only_returns = false;
+                    break;
+                }
+            }
             if only_returns {
-                let reach = self.reachable_until(*block, &[header])?;
                 'blocks: for reached in &reach {
                     for predecessor in self.predecessors(*reached)? {
                         if !reach.contains(&predecessor) && !members.contains(&predecessor) {
@@ -5539,10 +5549,20 @@ impl PlanEmitter<'_> {
         // (`if n == 0: return` ahead of a search) is a continuation.
         let mut candidates = BTreeSet::new();
         for block in &leaving {
-            let mut only_returns = Some(*block) != classic_exit
-                && self.all_paths_reach_or_terminate(*block, &[], &mut BTreeSet::from([header]))?;
+            // Every path from the edge terminates when its reach (never
+            // re-entering this header) holds no loop header: acyclic, and a
+            // block without successors is terminal. This stays a plain
+            // reachability question so exits of one loop never walk into the
+            // path check of another.
+            let reach = self.reachable_until(*block, &[header])?;
+            let mut only_returns = Some(*block) != classic_exit;
+            for reached in &reach {
+                if self.is_loop_header(*reached)? {
+                    only_returns = false;
+                    break;
+                }
+            }
             if only_returns {
-                let reach = self.reachable_until(*block, &[header])?;
                 'blocks: for reached in &reach {
                     for predecessor in self.predecessors(*reached)? {
                         if !reach.contains(&predecessor) && !members.contains(&predecessor) {

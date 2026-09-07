@@ -1122,8 +1122,8 @@ impl FunctionLowerer<'_> {
                     return Ok(());
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
-                Stmt::LetPattern { .. } => {
-                    return Err(CanonicalLoweringError::UnsupportedStatement("let pattern"));
+                Stmt::LetPattern { pattern, value } => {
+                    self.lower_let_pattern(pattern, value)?;
                 }
                 Stmt::Break => return Err(CanonicalLoweringError::UnsupportedStatement("break")),
                 Stmt::Continue => {
@@ -1230,8 +1230,8 @@ impl FunctionLowerer<'_> {
                     self.drop_bindings_except(&outer);
                     return Ok(());
                 }
-                Stmt::LetPattern { .. } => {
-                    return Err(CanonicalLoweringError::UnsupportedStatement("let pattern"));
+                Stmt::LetPattern { pattern, value } => {
+                    self.lower_let_pattern(pattern, value)?;
                 }
                 Stmt::Break => return Err(CanonicalLoweringError::UnsupportedStatement("break")),
                 Stmt::Continue => {
@@ -1296,6 +1296,20 @@ impl FunctionLowerer<'_> {
     /// binding still holds (`var next = placed`) needs its own token, or the
     /// copy-on-write path would drop the other binding's. A static string
     /// materializes an owned copy instead of cloning static data.
+    /// `let (a, b) = value`: an irrefutable pattern binds each named slot of
+    /// the value (a shared clone for a reference slot); the value itself is
+    /// a temporary released by placement.
+    fn lower_let_pattern(&mut self, pattern: &Pattern, value: &Expr) -> Result<(), CanonicalLoweringError> {
+        let value_type = self.expression_type(value)?;
+        let lowered = self.lower_expr(value)?;
+        for (name, bound) in self.lower_match_pattern(lowered, pattern, &value_type)? {
+            if self.bindings.insert(name.clone(), bound).is_some() {
+                return Err(CanonicalLoweringError::DuplicateBinding(name));
+            }
+        }
+        Ok(())
+    }
+
     fn lower_let_value(&mut self, mutable: bool, value: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let value = self.lower_expr(value)?;
         if !mutable || !matches!(self.values[&value], ValueType::Ref(_)) {
@@ -1510,6 +1524,7 @@ impl FunctionLowerer<'_> {
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
+                Stmt::LetPattern { pattern, value } => self.lower_let_pattern(pattern, value)?,
                 _ => return Err(CanonicalLoweringError::UnsupportedStatement("tail block statement")),
             }
         }
@@ -2120,6 +2135,27 @@ impl FunctionLowerer<'_> {
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
         match pattern {
             Pattern::Var(name) if name != "_" => Ok(vec![(name.clone(), scrutinee)]),
+            Pattern::Tuple(args) => {
+                let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("tuple pattern scrutinee"),
+                )?;
+                if args.len() != shape.fields.len() {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("tuple pattern arity"));
+                }
+                let mut bindings = Vec::new();
+                for (slot, argument) in args.iter().enumerate() {
+                    match argument {
+                        Pattern::Var(bound) if bound != "_" => {
+                            let value_type = self.field_value_type(&shape.fields[slot])?;
+                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                            bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
+                        }
+                        Pattern::Wildcard | Pattern::Var(_) => {}
+                        _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested tuple pattern")),
+                    }
+                }
+                Ok(bindings)
+            }
             Pattern::Ctor { name, args } => {
                 // Each named payload is a slot load in the arm the tag test
                 // reached; a nested pattern beyond a name or wildcard is not
@@ -2299,6 +2335,13 @@ impl FunctionLowerer<'_> {
                 (destination, ValueType::Bool)
             }
             Pattern::Wildcard | Pattern::Var(_) => return Ok(None),
+            // A tuple pattern of names and wildcards always matches.
+            Pattern::Tuple(args) => {
+                if args.iter().any(|argument| !matches!(argument, Pattern::Var(_) | Pattern::Wildcard)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("nested tuple pattern"));
+                }
+                return Ok(None);
+            }
             // A string literal pattern is an equality test against the
             // static literal.
             Pattern::Str(text) => {
@@ -3714,7 +3757,16 @@ impl FunctionLowerer<'_> {
             }
             Expr::Str(value) => self.lower_string_literal(value),
             Expr::List(items) => self.lower_list_literal(expression, items),
-            Expr::Tuple(_) => Err(CanonicalLoweringError::UnsupportedExpression("tuple")),
+            Expr::Tuple(items) => {
+                let source_type = self.expression_type(expression)?;
+                let shape = scalar_aggregate_shape(&source_type, self.definitions)
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("tuple type"))?;
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(self.lower_expr(item)?);
+                }
+                self.lower_aggregate(&shape, 0, values)
+            }
             Expr::Ctor { name, args } => self.lower_record_constructor(expression, name, args),
             Expr::AnonCtor { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
@@ -4035,8 +4087,23 @@ impl FunctionLowerer<'_> {
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                 self.clone_list_value_for_storage(value, ty)
             }
+            Type::Tuple(_) => self.clone_aggregate_for_storage(value, ty),
             _ => Err(CanonicalLoweringError::UnsupportedType(ty.clone())),
         }
+    }
+
+    /// A fresh copy of an aggregate value: every slot is loaded and stored
+    /// again, reference slots through their own copies.
+    fn clone_aggregate_for_storage(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        let shape = scalar_aggregate_shape(ty, self.definitions)
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(ty.clone()))?;
+        let mut slots = Vec::with_capacity(shape.fields.len());
+        for (index, field) in shape.fields.iter().enumerate() {
+            let value_type = self.field_value_type(field)?;
+            let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+            slots.push(self.load_record_field(value, index, value_type)?);
+        }
+        self.lower_heap_record(&shape.name, &shape.fields, slots)
     }
 
     /// A fresh empty value for an aggregate slot no variant payload fills:
@@ -4085,6 +4152,15 @@ impl FunctionLowerer<'_> {
                 self.list_counts.insert(object, zero);
                 self.list_capacities.insert(object, zero);
                 Ok(object)
+            }
+            Type::Tuple(_) => {
+                let shape = scalar_aggregate_shape(ty, self.definitions)
+                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(ty.clone()))?;
+                let mut slots = Vec::with_capacity(shape.fields.len());
+                for field in &shape.fields {
+                    slots.push(self.push_empty_value(field)?);
+                }
+                self.lower_aggregate(&shape, 0, slots)
             }
             _ => self.push_zero(scalar_type(ty)?),
         }
@@ -4168,6 +4244,14 @@ impl FunctionLowerer<'_> {
 
     fn lower_record_field(&mut self, base: &Expr, field: &str) -> Result<ValueId, CanonicalLoweringError> {
         let base_type = self.expression_type(base)?;
+        if let Type::Tuple(items) = base_type.unqualified() {
+            // `pair.1`: the item's slot.
+            let index = field.parse::<usize>().ok().filter(|index| *index < items.len())
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
+            let value_type = self.field_value_type(&items[index])?;
+            let object = self.lower_expr(base)?;
+            return self.load_record_field(object, u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, value_type);
+        }
         let Type::Named(name, _) = base_type.unqualified() else {
             return Err(CanonicalLoweringError::UnsupportedExpression("field base"));
         };
@@ -6765,6 +6849,7 @@ fn aggregate_layout(
                 Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                     list_layout(field, layout_bundle, layouts)?.0
                 }
+                Type::Tuple(items) => aggregate_layout(items, layout_bundle, layouts)?,
                 _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
             };
             (None, Some(pointee))

@@ -856,3 +856,22 @@ route is 0/107.
 - Pinned by `admitted_aggregates_with_string_payloads_construct_match_and_propagate`.
 - Census: 88 of 163 check; 32 runnable examples admit and agree under
   three-legged parity (`try`, `roman`, `record_update` are new).
+
+## Progress (owner, 2026-09-07, twenty-sixth slice: tuples)
+
+- **Tuples are anonymous aggregates**: `(Int, String)` is a one-variant
+  record of its items behind one reference, keyed by its rendering, with
+  a nested tuple behind its own pointer slot. Construction, `.n` access,
+  `let (a, b) = …` (also inside tail blocks), tuple patterns of names and
+  wildcards, tuples as `Option` payloads, and tuples as function results
+  all go through the aggregate machinery; the ABI authority binds a tuple
+  parameter or result to a reference whose slots match its items.
+- **Loop exits stay a reachability question.** The early-return filter for
+  a loop's leaving edges used the structured path check, whose walk from
+  one loop's exit descended into the next loop's exit computation; a large
+  function overflowed the stack. An edge only returns when its reach
+  (never re-entering the header) holds no loop header, which is acyclic
+  with terminal sinks.
+- Pinned by `admitted_tuples_construct_index_destructure_and_nest`.
+- Census: 91 of 163 check; 35 runnable examples admit and agree under
+  three-legged parity (`tuples`, `generics`, `calculator` are new).

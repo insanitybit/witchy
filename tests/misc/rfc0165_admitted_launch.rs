@@ -338,6 +338,27 @@ fn admitted_aggregates_with_string_payloads_construct_match_and_propagate() {
 }
 
 #[test]
+fn admitted_tuples_construct_index_destructure_and_nest() {
+    // A tuple is an anonymous aggregate: construction, `.n` access, `let`
+    // destructuring, nested tuples behind pointer slots, and a tuple as an
+    // Option payload matched by a constructor pattern.
+    let output = run_admitted(
+        "pub fn divmod(a: Int, b: Int) -> (Int, Int):\n    (a / b, a % b)\n\npub fn pick(n: Int) -> Option((Int, String)):\n    if n > 0:\n        Some((n, \"pos\"))\n    else:\n        None\n\nfn main(console: Console):\n    let (q, r) = divmod(17, 5)\n    console.print(\"${q} remainder ${r}\")\n    let pair = (7, \"seven\")\n    console.print(\"${pair.0} spells ${pair.1}\")\n    console.print(\"just the remainder: ${divmod(17, 5).1}\")\n    let grid = ((1, 2), (3, 4))\n    console.print(\"${grid.0.1} ${grid.1.0}\")\n    match pick(3):\n        Some(p) -> console.print(\"${p.0} ${p.1}\")\n        None -> console.print(\"none\")\n    match pick(0):\n        Some(p) -> console.print(\"${p.0} ${p.1}\")\n        None -> console.print(\"none\")\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "3 remainder 2".to_string(),
+            "7 spells seven".to_string(),
+            "just the remainder: 2".to_string(),
+            "2 3".to_string(),
+            "3 pos".to_string(),
+            "none".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.
