@@ -2046,6 +2046,206 @@ mod tests {
         (module, catalog)
     }
 
+    /// A `float_to_str`-shaped host call: the guest hands the host a unique
+    /// raw-byte buffer to fill, then publishes the returned byte count under
+    /// its own capacity guard.
+    fn write_buffer_host_module(
+        slice_length: u64,
+        mutation: HostMutation,
+        share_object: bool,
+    ) -> (
+        CanonicalModule<super::super::LoweredCandidate>,
+        CanonicalAbiCatalog,
+    ) {
+        let (layouts, layout) = dynamic_byte_layout();
+        let start = ValueId::new(0);
+        let length = ValueId::new(1);
+        let count = ValueId::new(2);
+        let capacity = ValueId::new(3);
+        let capacity_ok = ValueId::new(4);
+        let object = ValueId::new(5);
+        let rendered = ValueId::new(6);
+        let written = ValueId::new(7);
+        let written_ok = ValueId::new(8);
+        let alias = ValueId::new(9);
+        let import_signature_id = FunctionSignatureId::new(1);
+        let import = ImportContract {
+            id: ImportId::new(0),
+            signature: import_signature_id,
+            abi_identity: ImportContractIdentity::AuthenticatedAbi([9; 32]),
+            module: "test".to_string(),
+            name: "float_to_str".to_string(),
+            parameter_roles: vec![
+                HostParameterRole::Value(ValueType::Float),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(layout),
+                    access: AccessMode::Write,
+                    extent: HostBufferExtent::AtLeast(32),
+                },
+            ],
+            result_roles: vec![HostResultRole::Value(ValueType::Size)],
+            mutation,
+            reentrancy: HostReentrancy::Forbidden,
+        };
+        let mut value_types: BTreeMap<ValueId, ValueType> = [
+            (start, ValueType::Size),
+            (length, ValueType::Size),
+            (count, ValueType::Size),
+            (capacity, ValueType::Size),
+            (capacity_ok, ValueType::Bool),
+            (object, ValueType::Ref(layout)),
+            (rendered, ValueType::Float),
+            (written, ValueType::Size),
+            (written_ok, ValueType::Bool),
+        ]
+        .into_iter()
+        .collect();
+        let mut operations = vec![
+            Operation::ConstSize { destination: start, value: 0 },
+            Operation::ConstSize { destination: length, value: slice_length },
+            Operation::ConstSize { destination: count, value: 32 },
+            Operation::ConstSize { destination: capacity, value: 32 },
+            Operation::ConstFloat { destination: rendered, bits: 0 },
+            Operation::Compare {
+                destination: capacity_ok,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: count,
+                right: capacity,
+            },
+            Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
+            Operation::Alloc {
+                destination: object,
+                layout,
+                extent: Extent::Counted {
+                    header_bytes: 4,
+                    count,
+                    capacity,
+                    stride_bytes: 1,
+                },
+                class: AllocationClass::ReferenceCounted,
+            },
+            Operation::UpdateCount { object, count },
+        ];
+        if share_object {
+            // A second live reference weakens the buffer to shared storage.
+            value_types.insert(alias, ValueType::Ref(layout));
+            operations.push(Operation::CloneRef { destination: alias, source: object });
+        }
+        operations.extend([
+            Operation::HostCall {
+                destinations: vec![written],
+                import: ImportId::new(0),
+                arguments: vec![
+                    HostCallArgument::Value(rendered),
+                    HostCallArgument::Buffer {
+                        place: Place::projected(
+                            object,
+                            Projection::Slice { start, length },
+                            ValueType::Ref(layout),
+                            AccessMode::Write,
+                        ),
+                        extent: HostBufferExtent::AtLeast(32),
+                    },
+                ],
+            },
+            // The guest publishes the host-written length under its own guard.
+            Operation::Compare {
+                destination: written_ok,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: written,
+                right: capacity,
+            },
+            Operation::Guard { condition: written_ok, kind: GuardKind::Bounds },
+            Operation::UpdateCount { object, count: written },
+            // Callee-drops: the buffer is released before exit.
+            Operation::DropRef { object },
+        ]);
+        if share_object {
+            operations.push(Operation::DropRef { object: alias });
+        }
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Size],
+                    contract: contract(vec![ResultContract::Value(ValueType::Size)]),
+                },
+                FunctionSignature {
+                    id: import_signature_id,
+                    parameters: vec![ValueType::Float, ValueType::Ref(layout)],
+                    results: vec![ValueType::Size],
+                    contract: CallableContract {
+                        parameters: vec![
+                            ParameterContract {
+                                value_type: ValueType::Float,
+                                ownership: ParameterOwnership::Value,
+                            },
+                            ParameterContract {
+                                value_type: ValueType::Ref(layout),
+                                ownership: ParameterOwnership::Value,
+                            },
+                        ],
+                        results: vec![ResultContract::Value(ValueType::Size)],
+                        parameter_effects: BTreeMap::new(),
+                    },
+                },
+            ],
+            imports: vec![import.clone()],
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types,
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: vec![written] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
+        (module, catalog)
+    }
+
+    #[test]
+    fn write_buffer_host_call_is_admitted_within_capacity() {
+        let (module, catalog) = write_buffer_host_module(32, HostMutation::WriteBuffers, false);
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn write_buffer_host_call_refuses_a_slice_beyond_capacity() {
+        let (module, catalog) = write_buffer_host_module(64, HostMutation::WriteBuffers, false);
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(result.is_err(), "a 64-byte slice of a 32-byte buffer must be refused");
+        println!("slice beyond capacity: {:?}", result.err());
+    }
+
+    #[test]
+    fn write_buffer_host_call_refuses_a_shared_object() {
+        let (module, catalog) = write_buffer_host_module(32, HostMutation::WriteBuffers, true);
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(result.is_err(), "a shared buffer must not be handed to a host write");
+        println!("shared object: {:?}", result.err());
+    }
+
+    #[test]
+    fn write_buffer_host_call_refuses_a_read_only_contract() {
+        let (module, catalog) = write_buffer_host_module(32, HostMutation::ReadOnly, false);
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(
+            matches!(result, Err(InitialCheckError::UnsupportedHostMutation { .. })),
+            "{result:?}"
+        );
+    }
+
     fn byte_copy_module(raw_bytes: bool) -> CanonicalModule<super::super::LoweredCandidate> {
         let (layouts, layout) = if raw_bytes {
             dynamic_byte_layout()

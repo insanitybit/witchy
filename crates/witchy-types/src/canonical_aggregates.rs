@@ -89,7 +89,24 @@ pub fn is_v1_field_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> b
 
 /// `allow_nominal` admits one level of declared aggregates: a nominal
 /// field may not itself carry nominal fields, so no shape recurses.
+/// The canonical representation of `Dict(k, v)`: a tuple of the key list and
+/// the value list, kept in insertion order, so every dictionary rule is a
+/// tuple-and-list rule. `None` for any other type.
+pub fn dictionary_as_tuple(ty: &Type) -> Option<Type> {
+    let Type::Named(name, arguments) = ty.unqualified() else { return None };
+    if name != "Dict" || arguments.len() != 2 {
+        return None;
+    }
+    Some(Type::Tuple(vec![
+        Type::Named("List".into(), vec![arguments[0].clone()]),
+        Type::Named("List".into(), vec![arguments[1].clone()]),
+    ]))
+}
+
 fn field_type_ok(ty: &Type, definitions: &BTreeMap<String, TypeDef>, allow_nominal: bool) -> bool {
+    if let Some(tuple) = dictionary_as_tuple(ty) {
+        return field_type_ok(&tuple, definitions, allow_nominal);
+    }
     match ty.unqualified() {
         _ if is_scalar_type(ty) => true,
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => true,
@@ -206,6 +223,11 @@ pub fn scalar_aggregate_shape(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
+    // A dictionary is its canonical representation: a tuple of the key list
+    // and the value list, in insertion order.
+    if let Some(tuple) = dictionary_as_tuple(ty) {
+        return scalar_aggregate_shape(&tuple, definitions);
+    }
     // A tuple is an anonymous one-variant record of its items.
     if let Type::Tuple(items) = ty.unqualified() {
         if items.is_empty() || !items.iter().all(|item| is_v1_field_type(item, definitions)) {

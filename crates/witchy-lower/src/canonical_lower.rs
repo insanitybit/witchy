@@ -16,7 +16,7 @@ mod owned;
 mod owned_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
-use witchy_types::canonical_aggregates::{scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
+use witchy_types::canonical_aggregates::{dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::canonical_closure::lambda_sites;
 use witchy_types::typeck::{
@@ -112,10 +112,9 @@ pub fn lower_typed_module(
         if let Some(unsupported) = function
             .params
             .iter()
-            .filter_map(|parameter| parameter.ty.as_ref())
-            .chain(function.ret.iter())
-            .find(|ty| contains_deferred_v1_qualifier(ty))
-            .cloned()
+            .filter_map(|parameter| parameter.ty.as_ref().map(|ty| var_parameter_type(ty, parameter.convention)))
+            .chain(function.ret.iter().cloned())
+            .find(contains_deferred_v1_qualifier)
             .or_else(|| deferred_v1_qualifier_in_block(&function.body))
         {
             return Err(CanonicalLoweringError::UnsupportedType(unsupported));
@@ -199,7 +198,12 @@ pub fn lower_typed_module(
         .iter()
         .map(|ty| {
             let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types, &definitions)
+            signature_from_type(id, ty, &layouts, &layout_catalog, &function_types, &definitions).map_err(|error| {
+                if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+                    eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
+                }
+                error
+            })
         })
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     let mut functions_by_name = HashMap::new();
@@ -342,7 +346,7 @@ pub fn lower_typed_module(
     let mut abi_catalog = None;
     let mut host_imports = HostImports::default();
     let prints = contains_console_print(typed.module());
-    let floats = renders_float(typed.module(), typed.table());
+    let floats = renders_float(typed.module(), typed.table(), &definitions);
     if prints || floats {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
@@ -550,7 +554,12 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types, definitions)?;
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, function_types, definitions).map_err(|error| {
+        if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+            eprintln!("canonical signature refused for `{}`: {error}", function.name);
+        }
+        error
+    })?;
     let value_parameters = checked_signature.parameters;
     let contract_parameters = checked_signature.contract.parameters;
     let parameter_effects = checked_signature.contract.parameter_effects;
@@ -595,10 +604,12 @@ fn signature_from_type(
     }
     if let Some(unsupported) = parameters
         .iter()
-        .chain(std::iter::once(result.as_ref()))
-        .find(|ty| contains_deferred_v1_qualifier(ty))
+        .zip(&conventions)
+        .map(|(ty, convention)| var_parameter_type(ty, *convention))
+        .chain(std::iter::once(result.as_ref().clone()))
+        .find(contains_deferred_v1_qualifier)
     {
-        return Err(CanonicalLoweringError::UnsupportedType(unsupported.clone()));
+        return Err(CanonicalLoweringError::UnsupportedType(unsupported));
     }
     let mut value_parameters = Vec::with_capacity(parameters.len());
     let mut contract_parameters = Vec::with_capacity(parameters.len());
@@ -654,6 +665,17 @@ fn signature_from_type(
         results,
         contract: CallableContract { parameters: contract_parameters, results: result_contracts, parameter_effects },
     })
+}
+
+/// `unique` on a `var` parameter names the write-back convention the
+/// canonical ABI already carries (the callee holds the value's token and
+/// hands the value back); it is not a deferred optimization qualifier, so
+/// the parameter reads as its plain type.
+fn var_parameter_type(ty: &Type, convention: Convention) -> Type {
+    match ty {
+        Type::Qualified(TypeQual::Unique, inner) if matches!(convention, Convention::Var) => (**inner).clone(),
+        _ => ty.clone(),
+    }
 }
 
 fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
@@ -2738,6 +2760,7 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Branch { target: join, arguments: vec![decided_value] })?;
 
         self.current = evaluate_right;
+        self.restore_snapshot(facts.clone());
         self.bindings = bindings.clone();
         let right = match right(self)? {
             Some(right) => right,
@@ -3736,8 +3759,10 @@ impl FunctionLowerer<'_> {
     /// came from a shared source (the checker weakens a fresh concat result to
     /// shared at that phi). Untracked references stay unspecified.
     /// The loop body's rebindings plus every `var` name the body passes to
-    /// a write-back parameter: the call's write-back result rebinds that
-    /// name exactly as an assignment does, so its lane needs the same phi.
+    /// a write-back parameter: the call mutates that value in place and
+    /// hands it back, as a push does, so the lane is planned like a pushed
+    /// one (a unique phi when the entry value is a token); a shared value
+    /// arriving on the back edge still demotes it to a shared phi.
     fn loop_rebindings_with_write_backs(&self, body: &witchy_syntax::ast::Block) -> LoopRebindings {
         let mut rebound = loop_rebindings(body);
         let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut |expression| {
@@ -3749,7 +3774,7 @@ impl FunctionLowerer<'_> {
                     if contract.ownership == ParameterOwnership::WriteBack
                         && let Expr::Var(name) = argument
                     {
-                        rebound.assigned.insert(name.clone());
+                        rebound.pushed.insert(name.clone());
                     }
                 }
             }
@@ -4305,6 +4330,11 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if is_console_print(name) => Err(
                 CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
             ),
+            // A `dict.` name that is not a linked function is a dictionary
+            // intrinsic; the std wrappers themselves are ordinary calls.
+            Expr::Call { name, args } if name.starts_with("dict.") && !self.functions.contains_key(name.as_str()) => {
+                self.lower_dict_call(expression, name, args)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "list.length" | "list.__length") => {
                 self.lower_list_length(args)
             }
@@ -4668,6 +4698,29 @@ impl FunctionLowerer<'_> {
         self.lower_heap_record(&shape.name, &shape.fields, values)
     }
 
+    /// `lower_aggregate` whose reference payloads are fresh owned tokens the
+    /// kernel built for this aggregate: they move into their slots.
+    fn lower_aggregate_moving(
+        &mut self,
+        shape: &ScalarAggregateShape,
+        index: usize,
+        payload: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let variant = &shape.variants[index];
+        let mut values = Vec::with_capacity(shape.fields.len());
+        for (slot, field) in shape.fields.iter().enumerate() {
+            let value = if shape.tagged && slot == 0 {
+                self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?
+            } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
+                payload[slot - variant.first_field]
+            } else {
+                self.push_empty_value(field)?
+            };
+            values.push(value);
+        }
+        self.lower_heap_record_with(&shape.name, &shape.fields, values, true)
+    }
+
     fn push_zero(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
         let destination = self.fresh(value_type)?;
         match value_type {
@@ -4963,6 +5016,20 @@ impl FunctionLowerer<'_> {
         field_types: &[Type],
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_heap_record_with(name, field_types, values, false)
+    }
+
+    /// `lower_heap_record` for the kernels: `move_references` stores a
+    /// reference value's own token into its slot (the value is a fresh
+    /// owned object the kernel built for exactly this slot) instead of an
+    /// owned copy of it.
+    fn lower_heap_record_with(
+        &mut self,
+        name: &str,
+        field_types: &[Type],
+        values: Vec<ValueId>,
+        move_references: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         let layout = aggregate_layout(field_types, self.layout_bundle, self.layouts, self.definitions)?;
         let LayoutSize::Fixed(bytes) = self
             .layouts
@@ -4988,7 +5055,7 @@ impl FunctionLowerer<'_> {
                 });
             }
             let reference = matches!(expected, ValueType::Ref(_));
-            let value = if reference { self.owned_for_storage(value, field_type)? } else { value };
+            let value = if reference && !move_references { self.owned_for_storage(value, field_type)? } else { value };
             self.push_operation(Operation::Store {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     object,
@@ -6474,6 +6541,7 @@ impl FunctionLowerer<'_> {
                 ("Float", [], ValueType::Float) => return self.lower_render_float(value),
                 ("Duration", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
                 ("List", [element], ValueType::Ref(_)) => return self.lower_render_list(value, ty, element),
+                ("Dict", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Dict")),
                 _ => {}
             }
         }
@@ -6491,29 +6559,38 @@ impl FunctionLowerer<'_> {
         // A sum dispatches on its tag: each variant's arm renders its own
         // payload into a fresh string, and the arms join on string lanes.
         let layout = self.string_layout_id()?;
-        let join = self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
         let tag = self.load_record_field(value, 0, ValueType::Int)?;
         let facts = self.snapshot_facts();
         let bindings = self.bindings.clone();
+        // Dispatch and arm blocks first, the join last: every edge runs
+        // forward.
+        let variants = shape.variants.len();
+        let mut arms = Vec::with_capacity(variants);
+        let mut nexts = Vec::with_capacity(variants);
+        for index in 0..variants {
+            arms.push(self.new_block(&[])?);
+            if index + 1 < variants {
+                nexts.push(self.new_block(&[])?);
+            }
+        }
+        let join = self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
         for (index, variant) in shape.variants.iter().enumerate() {
-            let last = index + 1 == shape.variants.len();
-            let arm = self.new_block(&[])?;
-            let next = if last {
-                self.finish_current(Terminator::Branch { target: arm, arguments: Vec::new() })?;
-                None
-            } else {
-                let expected = self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-                let matched = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
-                let next = self.new_block(&[])?;
-                self.finish_current(Terminator::BranchIf {
-                    condition: matched,
-                    then_target: arm,
-                    then_arguments: Vec::new(),
-                    else_target: next,
-                    else_arguments: Vec::new(),
-                })?;
-                Some(next)
-            };
+            let arm = arms[index];
+            let next = nexts.get(index).copied();
+            match next {
+                None => self.finish_current(Terminator::Branch { target: arm, arguments: Vec::new() })?,
+                Some(next) => {
+                    let expected = self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                    let matched = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
+                    self.finish_current(Terminator::BranchIf {
+                        condition: matched,
+                        then_target: arm,
+                        then_arguments: Vec::new(),
+                        else_target: next,
+                        else_arguments: Vec::new(),
+                    })?;
+                }
+            }
             self.current = arm;
             self.restore_snapshot(facts.clone());
             let rendered = self.lower_render_variant(value, &shape, variant, false)?;
@@ -6521,6 +6598,7 @@ impl FunctionLowerer<'_> {
             self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
             if let Some(next) = next {
                 self.current = next;
+                self.restore_snapshot(facts.clone());
             }
         }
         self.restore_facts(facts, join);
@@ -6529,6 +6607,440 @@ impl FunctionLowerer<'_> {
         let join_values = self.block_parameter_values(join);
         self.track_accumulator_lanes(&join_values);
         Ok(join_values[0])
+    }
+
+    /// A dictionary operand: its value, its canonical shape (the tuple of
+    /// the key list and the value list), and its key and value types.
+    fn lower_dict_operand(&mut self, operand: &Expr) -> Result<(ValueId, ScalarAggregateShape, Type, Type), CanonicalLoweringError> {
+        let ty = self.expression_type(operand)?;
+        let (shape, key, value) = self.dictionary_parts(&ty)?;
+        let dict = self.lower_expr(operand)?;
+        if !matches!(self.values[&dict], ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict operand"));
+        }
+        Ok((dict, shape, key, value))
+    }
+
+    fn dictionary_parts(&self, ty: &Type) -> Result<(ScalarAggregateShape, Type, Type), CanonicalLoweringError> {
+        let Type::Named(name, arguments) = ty.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict type"));
+        };
+        if name != "Dict" || arguments.len() != 2 {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict type"));
+        }
+        let shape = scalar_aggregate_shape(ty, self.definitions)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict type"))?;
+        Ok((shape, arguments[0].clone(), arguments[1].clone()))
+    }
+
+    /// One of the dictionary's two lists (0: keys, 1: values), a shared clone.
+    fn dict_list(&mut self, dict: ValueId, shape: &ScalarAggregateShape, slot: u32) -> Result<ValueId, CanonicalLoweringError> {
+        let value_type = self.field_value_type(&shape.fields[slot as usize])?;
+        let list = self.load_record_field(dict, slot, value_type)?;
+        self.ensure_list_extent(list)?;
+        Ok(list)
+    }
+
+    /// Whether `ty` is a key the dictionary kernels compare: an `Int` or a
+    /// `String`.
+    fn dict_key_supported(ty: &Type) -> bool {
+        matches!(ty.unqualified(), Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "String"))
+    }
+
+    /// Whether `ty` is a value the dictionary kernels store in place: a
+    /// scalar in its slot.
+    fn dict_scalar_value(ty: &Type) -> bool {
+        scalar_type(ty).is_ok()
+    }
+
+    fn is_string_type(ty: &Type) -> bool {
+        matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
+    }
+
+    /// Search `keys` for `key` in insertion order: `(found, index)`.
+    fn lower_dict_find(&mut self, keys: ValueId, key: ValueId, key_type: &Type) -> Result<(ValueId, ValueId), CanonicalLoweringError> {
+        if !Self::dict_key_supported(key_type) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict key type"));
+        }
+        let list_type = Type::Named("List".into(), vec![key_type.clone()]);
+        let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        self.ensure_list_extent(keys)?;
+        let count = *self.list_counts.get(&keys).ok_or(CanonicalLoweringError::UnsupportedExpression("dict keys extent"))?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let missing = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: missing, value: false });
+        let present = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: present, value: true });
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Bool, ValueType::Size])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        self.current = header;
+        let cursor = self.block_parameter_values(header)[0];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![missing, cursor],
+        })?;
+        self.current = body;
+        let cursor = self.block_parameter_values(body)[0];
+        let element = self.load_list_element(keys, cursor, element_type)?;
+        let matched = if Self::is_string_type(key_type) {
+            self.lower_string_equality(element, key, false)?
+        } else {
+            self.push_compare(ComparisonOperator::Equal, element, key)?
+        };
+        let advance = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: matched,
+            then_target: exit,
+            then_arguments: vec![present, cursor],
+            else_target: advance,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = advance;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
+        let exit_values = self.block_parameter_values(exit);
+        Ok((exit_values[0], exit_values[1]))
+    }
+
+    /// The value at `index` of the dictionary's value list as an owned value
+    /// (a scalar as itself, a string as a fresh copy).
+    fn lower_dict_value_at(&mut self, values: ValueId, index: ValueId, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        let list_type = Type::Named("List".into(), vec![value_type.clone()]);
+        let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        self.ensure_list_extent(values)?;
+        let count = *self.list_counts.get(&values).ok_or(CanonicalLoweringError::UnsupportedExpression("dict values extent"))?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, count)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let element = self.load_list_element(values, index, element_type)?;
+        self.owned_dict_value(element, value_type)
+    }
+
+    fn owned_dict_value(&mut self, value: ValueId, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        if Self::is_string_type(value_type) {
+            self.ensure_string_extent(value)?;
+            self.owned_string_copy(value)
+        } else if Self::dict_scalar_value(value_type) {
+            Ok(value)
+        } else {
+            Err(CanonicalLoweringError::UnsupportedExpression("dict value type"))
+        }
+    }
+
+    /// Join two arms that each produce an owned dictionary value: string
+    /// lanes for a string, one parameter for a scalar. Returns the join
+    /// block and a closure-free protocol: callers branch to it with
+    /// `dict_value_lanes`.
+    fn dict_value_join(&mut self, value_type: &Type) -> Result<BlockId, CanonicalLoweringError> {
+        if Self::is_string_type(value_type) {
+            let layout = self.string_layout_id()?;
+            self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])
+        } else {
+            let value_type = scalar_type(value_type)?;
+            self.new_block(&[value_type])
+        }
+    }
+
+    fn dict_value_lanes(&mut self, value: ValueId, value_type: &Type) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        if Self::is_string_type(value_type) {
+            Ok(self.accumulator_lanes(value)?.0)
+        } else {
+            Ok(vec![value])
+        }
+    }
+
+    /// The dictionary intrinsics over the canonical representation. Keys
+    /// are `Int` or `String`; values a scalar or a `String` for reads and a
+    /// scalar for in-place writes; everything else is refused by name.
+    fn lower_dict_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        match name {
+            "dict.new" => {
+                let ty = self.expression_type(expression)?;
+                let (shape, key, value) = self.dictionary_parts(&ty)?;
+                let keys = self.push_empty_value(&Type::Named("List".into(), vec![key]))?;
+                let values = self.push_empty_value(&Type::Named("List".into(), vec![value]))?;
+                self.lower_aggregate_moving(&shape, 0, vec![keys, values])
+            }
+            "dict.length" => {
+                let [operand] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.length arguments"));
+                };
+                let (dict, shape, _, _) = self.lower_dict_operand(operand)?;
+                let keys = self.dict_list(dict, &shape, 0)?;
+                let count = *self.list_counts.get(&keys).ok_or(CanonicalLoweringError::UnsupportedExpression("dict keys extent"))?;
+                let length = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize { destination: length, value: count });
+                Ok(length)
+            }
+            "dict.contains_key" => {
+                let [operand, key] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.contains_key arguments"));
+                };
+                let (dict, shape, key_type, _) = self.lower_dict_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let keys = self.dict_list(dict, &shape, 0)?;
+                let (found, _) = self.lower_dict_find(keys, key, &key_type)?;
+                Ok(found)
+            }
+            "dict.at" => {
+                let [operand, key] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.at arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let keys = self.dict_list(dict, &shape, 0)?;
+                let (found, index) = self.lower_dict_find(keys, key, &key_type)?;
+                self.push_trap_unless(found)?;
+                let values = self.dict_list(dict, &shape, 1)?;
+                self.lower_dict_value_at(values, index, &value_type)
+            }
+            "dict.get_or" => {
+                let [operand, key, default] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.get_or arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let default = self.lower_expr(default)?;
+                let keys = self.dict_list(dict, &shape, 0)?;
+                let values = self.dict_list(dict, &shape, 1)?;
+                let (found, index) = self.lower_dict_find(keys, key, &key_type)?;
+                let facts = self.snapshot_facts();
+                let bindings = self.bindings.clone();
+                let hit = self.new_block(&[])?;
+                let miss = self.new_block(&[])?;
+                let join = self.dict_value_join(&value_type)?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: found,
+                    then_target: hit,
+                    then_arguments: Vec::new(),
+                    else_target: miss,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = hit;
+                let present = self.lower_dict_value_at(values, index, &value_type)?;
+                let lanes = self.dict_value_lanes(present, &value_type)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+                self.current = miss;
+                self.restore_snapshot(facts.clone());
+                let absent = self.owned_dict_value(default, &value_type)?;
+                let lanes = self.dict_value_lanes(absent, &value_type)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+                self.restore_facts(facts, join);
+                self.current = join;
+                self.bindings = bindings;
+                let join_values = self.block_parameter_values(join);
+                self.track_accumulator_lanes(&join_values);
+                Ok(join_values[0])
+            }
+            "dict.keys" | "dict.values" => {
+                let [operand] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict list arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let (slot, element) = if name == "dict.keys" { (0, key_type) } else { (1, value_type) };
+                let list = self.dict_list(dict, &shape, slot)?;
+                self.clone_list_value_for_storage(list, &Type::Named("List".into(), vec![element]))
+            }
+            "dict.pairs" => {
+                let [operand] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.pairs arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let keys = self.dict_list(dict, &shape, 0)?;
+                let values = self.dict_list(dict, &shape, 1)?;
+                self.lower_dict_pairs(keys, values, &key_type, &value_type)
+            }
+            "dict.__insert_extract" => {
+                let [Expr::Var(target), key, value] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.insert arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(&args[0])?;
+                let key = self.lower_expr(key)?;
+                let value = self.lower_expr(value)?;
+                let (rebuilt, extracted) = self.lower_dict_insert(dict, &shape, &key_type, &value_type, key, value, true)?;
+                self.bindings.insert(target.clone(), rebuilt);
+                extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict insert result"))
+            }
+            // The pure form: the dictionary with the entry, as a value.
+            "dict.__insert" => {
+                let [operand, key, value] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.insert arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let value = self.lower_expr(value)?;
+                let (rebuilt, _) = self.lower_dict_insert(dict, &shape, &key_type, &value_type, key, value, false)?;
+                Ok(rebuilt)
+            }
+            _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
+        }
+    }
+
+    /// Insert `key -> value`: fresh copies of both lists carry the write
+    /// (the old dictionary is untouched, value semantics); a present key
+    /// has its value slot overwritten and the old scalar comes back as
+    /// `Some(old)`, an absent key grows both lists and yields `None`.
+    /// Returns the rebuilt dictionary and, when `extract` asks for it, the
+    /// extracted option (its `Option(v)` layout exists only in a program
+    /// that names it, which the pure insert form does not).
+    fn lower_dict_insert(
+        &mut self,
+        dict: ValueId,
+        shape: &ScalarAggregateShape,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        value: ValueId,
+        extract: bool,
+    ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        if !Self::dict_scalar_value(value_type) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
+        }
+        let key_type = key_type.clone();
+        let value_type = value_type.clone();
+        let key_list = Type::Named("List".into(), vec![key_type.clone()]);
+        let value_list = Type::Named("List".into(), vec![value_type.clone()]);
+        let keys = self.dict_list(dict, shape, 0)?;
+        let values = self.dict_list(dict, shape, 1)?;
+        let keys = self.clone_list_value_for_storage(keys, &key_list)?;
+        let values = self.clone_list_value_for_storage(values, &value_list)?;
+                let (found, index) = self.lower_dict_find(keys, key, &key_type)?;
+        let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
+        let option_shape = extract
+            .then(|| scalar_aggregate_shape(&option_type, self.definitions))
+            .flatten();
+        let option_layout = if extract { Some(self.field_value_type(&option_type)?) } else { None };
+        let (_, element_type, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, self.definitions)?;
+        let dict_layout = self.values[&dict];
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        // Each arm finishes its own dictionary; the join carries the
+        // finished tuple (and the extracted option), never the two lists,
+        // whose prefix facts do not survive a join.
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let mut join_shapes = vec![(dict_layout, Some(Ownership::Unique))];
+        if let Some(option_layout) = option_layout {
+            join_shapes.push((option_layout, Some(Ownership::Unique)));
+        }
+        let join = self.new_block_owned(&join_shapes)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: found,
+            then_target: hit,
+            then_arguments: Vec::new(),
+            else_target: miss,
+            else_arguments: Vec::new(),
+        })?;
+        // Hit: the value slot is overwritten in the fresh copy and the old
+        // scalar comes back as `Some(old)`.
+        self.current = hit;
+        let count = *self.list_counts.get(&values).ok_or(CanonicalLoweringError::UnsupportedExpression("dict values extent"))?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, count)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let old = self.load_list_element(values, index, element_type)?;
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                values,
+                Projection::Element { index },
+                element_type,
+                AccessMode::Write,
+            ),
+            value,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![keys, values])?;
+        let mut lanes = vec![rebuilt];
+        if let Some(option_shape) = &option_shape {
+            lanes.push(self.lower_aggregate(option_shape, 0, vec![old])?);
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        // Miss: both lists grow by the new entry; `None` comes back.
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let key = if Self::is_string_type(&key_type) { self.owned_dict_value(key, &key_type)? } else { key };
+        let grown_keys = self.push_owned_element(keys, key, &key_list)?;
+        let grown_values = self.push_owned_element(values, value, &value_list)?;
+        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![grown_keys, grown_values])?;
+        let mut lanes = vec![rebuilt];
+        if let Some(option_shape) = &option_shape {
+            lanes.push(self.lower_aggregate(option_shape, 1, Vec::new())?);
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let join_values = self.block_parameter_values(join);
+        Ok((join_values[0], join_values.get(1).copied()))
+    }
+
+    /// `dict.pairs`: a fresh list of `(key, value)` tuples in insertion
+    /// order, built by a counted loop over both lists.
+    fn lower_dict_pairs(&mut self, keys: ValueId, values: ValueId, key_type: &Type, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        let pair_type = Type::Tuple(vec![key_type.clone(), value_type.clone()]);
+        let pair_shape = scalar_aggregate_shape(&pair_type, self.definitions)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict pair type"))?;
+        let list_type = Type::Named("List".into(), vec![pair_type.clone()]);
+        let key_list = Type::Named("List".into(), vec![key_type.clone()]);
+        let value_list = Type::Named("List".into(), vec![value_type.clone()]);
+        let (_, key_element, _, _) = list_layout(&key_list, self.layout_bundle, self.layouts, self.definitions)?;
+        let (_, value_element, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, self.definitions)?;
+        self.ensure_list_extent(keys)?;
+        self.ensure_list_extent(values)?;
+        let count = *self.list_counts.get(&keys).ok_or(CanonicalLoweringError::UnsupportedExpression("dict keys extent"))?;
+        let value_count = *self.list_counts.get(&values).ok_or(CanonicalLoweringError::UnsupportedExpression("dict values extent"))?;
+        let out = self.push_empty_value(&list_type)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let (lanes, mut shapes) = self.accumulator_lanes(out)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(zero);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        let header_values = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&header_values);
+        self.current = header;
+        let cursor = header_values[3];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..3].to_vec(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&body_values);
+        self.current = body;
+        let cursor = body_values[3];
+        let key_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.push_guard(key_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let key = self.load_list_element(keys, cursor, key_element)?;
+        let key = self.owned_dict_value(key, key_type)?;
+        let value_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, value_count)?;
+        self.push_guard(value_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let value = self.load_list_element(values, cursor, value_element)?;
+        let value = self.owned_dict_value(value, value_type)?;
+        let pair = self.lower_aggregate_moving(&pair_shape, 0, vec![key, value])?;
+        let grown = self.push_owned_element(body_values[0], pair, &list_type)?;
+        let (folded, _) = self.accumulator_lanes(grown)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        folded.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = exit;
+        let exit_values = self.block_parameter_values(exit);
+        self.track_accumulator_lanes(&exit_values);
+        Ok(exit_values[0])
     }
 
     /// Render a `Float` through the authenticated `float_to_str` import: the
@@ -6592,6 +7104,12 @@ impl FunctionLowerer<'_> {
         variant: &ScalarVariant,
         tuple: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        // An anonymous record's constructor is a generated name the
+        // interpreter renders by field names; the lowering has no field
+        // names, so it refuses rather than print the generated name.
+        if witchy_syntax::linker::is_generated_anon_name(&variant.name) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("render anonymous record"));
+        }
         let shown = render_variant_name(variant);
         let mut out = if tuple {
             self.lower_string_literal("(")?
@@ -8316,8 +8834,8 @@ fn source_value_type(
             list_layout(source, layout_bundle, layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
         Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
-            dictionary_layout(source, layout_bundle, layouts)
-                .map(|(layout, _, _)| ValueType::Ref(layout))
+            let tuple = dictionary_as_tuple(source).expect("a two-argument Dict has a tuple form");
+            source_value_type(&tuple, layout_bundle, layouts, function_types, definitions)
         }
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
             string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
@@ -8486,7 +9004,7 @@ struct HostImports {
 
 /// Whether any canonical source function renders a `Float`, which reaches
 /// the `float_to_str` import.
-fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable) -> bool {
+fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable, definitions: &BTreeMap<String, TypeDef>) -> bool {
     module.items.iter().any(|item| {
         let Item::Function(function) = item else { return false };
         if !is_canonical_source_function(module, &function.name) {
@@ -8499,7 +9017,7 @@ fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable) -> bool
                 && let [argument] = args.as_slice()
                 && let Some(ty) = table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
             {
-                found |= type_renders_float(&ty);
+                found |= type_renders_float(&ty, definitions);
             }
             Ok(())
         }).expect("render visitor cannot fail");
@@ -8507,13 +9025,24 @@ fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable) -> bool
     })
 }
 
-/// Whether the structural render of `ty` reaches a `Float` anywhere inside.
-fn type_renders_float(ty: &Type) -> bool {
-    match ty.unqualified() {
-        Type::Named(name, arguments) => (name == "Float" && arguments.is_empty()) || arguments.iter().any(type_renders_float),
-        Type::Tuple(items) => items.iter().any(type_renders_float),
-        _ => false,
+/// Whether the structural render of `ty` reaches a `Float` anywhere inside:
+/// the same walk as `collect_render_payloads`, so the import is projected
+/// exactly when a render will call it.
+fn type_renders_float(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let ty = ty.unqualified();
+    if let Type::Named(name, arguments) = ty {
+        match (name.as_str(), arguments.as_slice()) {
+            ("Float", []) => return true,
+            ("String", []) | ("Int", []) | ("Bool", []) | ("Duration", _) | ("Dict", _) => return false,
+            ("List", [element]) => return type_renders_float(element, definitions),
+            _ => {}
+        }
     }
+    scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
+        shape.variants.iter().any(|variant| {
+            (0..variant.arity).any(|offset| type_renders_float(&shape.fields[variant.first_field + offset], definitions))
+        })
+    })
 }
 
 /// The static payloads the structural render of a value of type `ty` reads
@@ -8574,6 +9103,9 @@ fn collect_render_payloads(
 /// The constructor name a render shows: the source spelling after any
 /// module qualifier, as the interpreter prints it.
 fn render_variant_name(variant: &ScalarVariant) -> String {
+    if variant.name.starts_with('.') {
+        return variant.name.clone();
+    }
     variant.name.rsplit('.').next().unwrap_or(&variant.name).to_owned()
 }
 

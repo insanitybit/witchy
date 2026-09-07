@@ -775,3 +775,21 @@ fn admitted_float_render_writes_through_the_authenticated_float_to_str_import() 
     );
     assert_eq!(output, vec!["4.0 0.30000000000000004 2.5 0.25 10000000000.0".to_string(), "[1.5, 2.0] Some(0.25)".to_string()]);
 }
+
+#[test]
+fn admitted_dictionaries_are_tuples_of_two_lists_in_insertion_order() {
+    // `Dict(k, v)` is its canonical representation, a tuple of the key list
+    // and the value list in insertion order: `insert` searches the keys
+    // (an `Int` compare or a string equality) and either overwrites the
+    // value slot of a fresh copy or grows both copies, rebinding the `var`;
+    // `get_or`/`at`/`contains_key`/`length`/`keys`/`values`/`pairs` read
+    // through the same lists. `unique` on a `var` parameter reads as the
+    // write-back convention, so the std wrappers lower.
+    let output = run_admitted(
+        "fn main(console: Console):\n    var counts = dict.new()\n    counts.insert(\"a\", 1)\n    counts.insert(\"b\", 2)\n    counts.insert(\"a\", counts.get_or(\"a\", 0) + 10)\n    console.print(\"${counts.length()} ${counts.get_or(\"a\", 0)} ${counts.get_or(\"zz\", -1)} ${counts.contains_key(\"b\")} ${counts.contains_key(\"c\")}\")\n    var total = 0\n    for v in counts.values():\n        total = total + v\n    for entry in counts.pairs():\n        let (k, v) = entry\n        console.print(k + \"=\" + \"${v}\")\n    console.print(\"${total} ${counts.keys()} ${counts.at(\"b\")}\")\n    var ids = dict.new()\n    ids.insert(7, 70)\n    ids.insert(8, 80)\n    console.print(\"${ids.get_or(7, 0)} ${ids.get_or(9, 0)} ${ids.length()}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["2 11 -1 true false", "a=11", "b=2", "13 [a, b] 2", "70 0 2"].into_iter().map(str::to_string).collect::<Vec<_>>()
+    );
+}

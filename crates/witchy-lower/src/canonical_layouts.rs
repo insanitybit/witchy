@@ -126,6 +126,11 @@ struct LayoutProjection {
 
 impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
+        // A dictionary is laid out as its canonical tuple of the key list
+        // and the value list, before any aggregate rule sees the name.
+        if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
+            return self.visit_type(&tuple);
+        }
         match ty {
             Type::Qualified(_, inner) => self.visit_type(inner),
             // A tuple is an anonymous heap aggregate; its reference fields
@@ -196,24 +201,9 @@ impl LayoutProjection {
                 self.roots.push(ty.clone());
                 Ok(())
             }
-            Type::Named(name, arguments) if name == "Dict" => {
-                if arguments.len() != 2
-                    || !arguments.iter().all(|argument| {
-                        matches!(
-                            argument.unqualified(),
-                            Type::Named(element, args)
-                                if args.is_empty()
-                                    && matches!(element.as_str(), "Int" | "Float" | "Duration" | "String")
-                        )
-                    })
-                {
-                    return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
-                }
-                for argument in arguments {
-                    self.visit_type(argument)?;
-                }
-                self.roots.push(ty.clone());
-                Ok(())
+            // A `Dict` with other than two arguments has no canonical form.
+            Type::Named(name, _) if name == "Dict" => {
+                Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")))
             }
             // Iterators are GC/state-machine values, not linear-memory roots.
             // Their element type still participates in the layout graph because
@@ -271,15 +261,8 @@ fn intern_v1_layout(
             .intern_packed_list(element, RcHeader::Required)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
-    if let Type::Named(name, arguments) = ty.unqualified()
-        && name == "Dict"
-        && arguments.len() == 2
-    {
-        let key = intern_dictionary_slot(interner, &arguments[0], definitions)?;
-        let value = intern_dictionary_slot(interner, &arguments[1], definitions)?;
-        return interner
-            .intern_runtime_dictionary_body(key, value)
-            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
+    if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
+        return intern_v1_layout(interner, &tuple, definitions);
     }
     if let Some(shape) = scalar_aggregate_shape(ty, definitions)
         && !shape.packed
@@ -468,25 +451,31 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_projection_uses_the_canonical_dense_body() {
+    fn dictionary_projection_is_its_tuple_of_two_lists() {
         let mut projection = LayoutProjection::default();
         projection
             .visit_type(&Type::Named(
                 "Dict".into(),
                 vec![named("Int"), named("Int")],
             ))
-            .expect("Dict(Int, Int) has canonical scalar lanes");
+            .expect("Dict(Int, Int) has a canonical tuple form");
         let bundle = projection.finish().expect("dictionary layout is canonical");
 
-        assert_eq!(bundle.roots().len(), 1);
         let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(
             &bundle.canonical_bytes(),
         )
         .expect("decode canonical dictionary layout");
-        assert!(matches!(
-            layouts.get(bundle.roots()[0]).expect("dictionary root" ).kind(),
-            LayoutKind::RuntimeDictionaryBody { .. }
-        ));
+        let kinds = bundle
+            .roots()
+            .iter()
+            .map(|root| layouts.get(*root).expect("dictionary root").kind().clone())
+            .collect::<Vec<_>>();
+        // The dictionary is a heap record of two owned list slots (the keys
+        // and the values, in insertion order); the legacy dense body never
+        // reaches the canonical bundle.
+        assert!(kinds.iter().any(|kind| matches!(kind, LayoutKind::PackedRecord { fields } if fields.len() == 2)));
+        assert!(kinds.iter().any(|kind| matches!(kind, LayoutKind::PackedList { .. })));
+        assert!(!kinds.iter().any(|kind| matches!(kind, LayoutKind::RuntimeDictionaryBody { .. })));
     }
 
     #[test]

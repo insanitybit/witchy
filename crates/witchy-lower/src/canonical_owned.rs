@@ -332,7 +332,12 @@ pub(super) fn insert_releases(
             for (source, _) in &transfers { renamed.remove(source); }
             for (_, destination) in transfers { renamed.insert(destination); }
             if let Some(previous) = incoming.get(&target) {
-                if previous != &renamed { return Err(ReleasePlacementError::IncompatibleOwnedEdge(target)); }
+                if previous != &renamed {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!("canonical owned edge mismatch at {target:?}: first {previous:?}, now {renamed:?} (from {:?})", block.id);
+                    }
+                    return Err(ReleasePlacementError::IncompatibleOwnedEdge(target));
+                }
             } else {
                 incoming.insert(target, renamed);
                 pending.push_back(target);

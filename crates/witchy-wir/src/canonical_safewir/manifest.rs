@@ -459,7 +459,7 @@ pub const RULES: &[RuleEntry] = &[
         predicate: "the import is authenticated; each argument fills its contract role: a capability only by a capability value of the right kind, a read buffer by a raw-byte slice within its logical length, a write buffer by a raw-byte slice within the capacity of a unique object (the guest publishes the written length under its own capacity guard); mutation and reentrancy beyond the contract refuse",
         interpreter: "execute_operation: the host fixture",
         backend: Some(CorrespondenceRule::HostCall),
-        admits: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "authenticated_dynamic_host_slice_is_accepted"), t(Launch, "admitted_console_program_runs_through_the_runtime_entry"), t(Launch, "admitted_float_render_writes_through_the_authenticated_float_to_str_import")],
+        admits: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "authenticated_dynamic_host_slice_is_accepted"), t(Check, "write_buffer_host_call_is_admitted_within_capacity"), t(Launch, "admitted_console_program_runs_through_the_runtime_entry"), t(Launch, "admitted_float_render_writes_through_the_authenticated_float_to_str_import")],
         refuses: &[
             t(Check, "integer_cannot_fill_capability_host_role"),
             t(Check, "integer_cannot_be_wrapped_as_capability_host_argument"),
@@ -471,6 +471,9 @@ pub const RULES: &[RuleEntry] = &[
             t(Check, "pointer_or_typed_element_buffers_cannot_be_exposed_as_host_bytes"),
             t(Check, "unsupported_host_mutation_and_reentrancy_fail_closed"),
             t(Check, "host_mutation_must_match_explicit_buffer_access"),
+            t(Check, "write_buffer_host_call_refuses_a_slice_beyond_capacity"),
+            t(Check, "write_buffer_host_call_refuses_a_shared_object"),
+            t(Check, "write_buffer_host_call_refuses_a_read_only_contract"),
         ],
     },
     RuleEntry {

@@ -3943,7 +3943,7 @@ fn is_reserved_user_identifier(name: &str) -> bool {
     is_compiler_private_name(name) || is_user_spellable_lowered_method_name(name)
 }
 
-fn is_generated_anon_name(name: &str) -> bool {
+pub fn is_generated_anon_name(name: &str) -> bool {
     name.strip_prefix("__anon")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }

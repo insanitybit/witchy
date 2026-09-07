@@ -1021,3 +1021,27 @@ address alone for a write buffer (the plan mirror agrees), and the oracle interp
 the shared `render_float` rule into the buffer's cells. A module declares only the imports
 its functions reach. Newly agree: `floats`. Census: 119/163 check, 63 runnable three-legged
 parity, 0 disagree.
+
+## Slice 37 (2026-09-07): dictionaries as tuples of two lists; `unique` on `var` parameters
+
+`Dict(k, v)` is its canonical representation everywhere the lowering and the layout pass
+see a type: a tuple of the key list and the value list, in insertion order
+(`canonical_aggregates::dictionary_as_tuple`), so every dictionary rule is a tuple-and-list
+rule and the legacy dense body never reaches the canonical bundle. The intrinsics lower
+through the list kernels: `insert` searches the keys (an `Int` compare or a string
+equality) and either overwrites the value slot of a fresh copy or grows both fresh copies,
+each arm finishing its own dictionary so the join carries the finished tuple and never
+the two lists (whose prefix facts do not survive a join); `get_or`/`at`/`contains_key`/
+`length`/`keys`/`values`/`pairs` read through the same lists. Keys are `Int` or `String`,
+values a scalar or a `String` for reads and a scalar for writes; `remove`, `update`, and
+`get_or_insert` are refused by name. `unique` on a `var` parameter reads as the write-back
+convention the canonical ABI already carries (the callee holds the value's token and
+hands it back), so the std wrappers lower; `unique` elsewhere stays a deferred qualifier.
+A `var` rebound by a write-back call plans as a pushed (unique) lane. The write-buffer
+host-call rule gained four checker tests (admitted within capacity; refused beyond
+capacity, on a shared object, and under a read-only contract). Newly agree: `wordcount`,
+`inventory`. Census: 121/163 check, 65 runnable three-legged parity, 0 disagree. `maze`
+now trips a pre-existing gap independent of dictionaries: a `for` whose body holds a
+`while` reading outer references (the inner loop threads every outer name as a lane and
+renames its token; the enclosing `for` threads only rebound names, so the token does not
+flow back to its header) — reproduced without any dictionary.

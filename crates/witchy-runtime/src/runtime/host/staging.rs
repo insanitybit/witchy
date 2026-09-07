@@ -38,6 +38,12 @@ pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> 
 fn host_float_to_str(mut caller: Caller<'_, VmState>, x: f64, out_ptr: i32) -> Result<i32> {
     let s = witchy_syntax::fmt::render_float(x);
     let bytes = s.into_bytes();
+    // The canonical caller reserves `FLOAT_RENDER_BUFFER_BYTES`; the legacy
+    // caller more. Neither may be overrun by a longer rendering, so the
+    // bound is checked here rather than assumed of `render_float`.
+    if bytes.len() > witchy_wir::canonical_safewir::FLOAT_RENDER_BUFFER_BYTES as usize {
+        return Err(Error::msg(format!("float rendering of {} bytes exceeds the guest buffer", bytes.len())));
+    }
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, out_ptr as usize, &bytes)
         .map_err(|e| Error::msg(format!("writing float string into guest memory: {e}")))?;
