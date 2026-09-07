@@ -36,6 +36,43 @@ Only `merged-green` completes a row.
   `cargo test -p witchy-wir --tests`; it predates the handoff and is preserved
   unmodified by instruction.
 
+## Landing classification (full workspace suite, 2026-09-06)
+
+`cargo nextest run --workspace --no-fail-fast` on a clean worktree of the
+branch HEAD (7807c0dfc), 41.6 minutes: **4268 tests, 3903 passed, 364 failed,
+1 timed out, 19 skipped.** The reds are not defects of the foundation work;
+they are the consequence of the branch's production policy, which admits
+programs only through canonical SafeWIR and refuses everything outside the
+compact subset instead of falling back to the raw encoder.
+
+| Class | Failing tests | What they do | Refusal they hit |
+|---|---|---|---|
+| `witchy::glamour dom` | 74 | render the real book/docs bundle through the compiled playground | `cannot compile to WASM: unsupported lowering` (layout types such as `Dict`, records, `Option`) |
+| `witchy::bin commands::web::tests` | 46 | the web dev command compiles playground programs | same, surfaced as `WebCommandError` |
+| `witchy::misc typed_errors` | 18 | typed error programs (`Result`, `Bytes`) on both backends | layout types outside the subset |
+| `witchy::misc rfc0087_uniform_var` | 18 | uniform `var` envelopes with records/lists of records | `compile RFC-0087 program: unsupported lowering` |
+| `witchy::misc rfc0105_fixture_cli`, `rfc0077`, `rfc0152`, `rfc0129`, `rfc0130`, `region_copyout`, `sealed_task_handles` | ~46 | CLI and fixture flows that compile async, channel, region, and task programs | `Command failed: .../witchy ...` wrapping the same refusal |
+| trusted application e2e, minigrep distribution | 10 | build and run trusted native applications from full programs | the application program is outside the subset |
+| `example_tests::example_sweeps`, `semantic_conformance`, `examples_index`, `architecture`, `rfc_status_hygiene` | ~10 | sweep every example/book block; ledger hygiene | sweeps include refused programs; hygiene checks see the new companion docs |
+| `rfc0129_scalar_executor_performance` | 6 (1 timed out) | executor benchmarks over compiled programs | refused programs, and one timeout |
+
+Reason signatures across all failure output: `cannot compile to WASM:
+unsupported lowering` 126 occurrences, `unsupported canonical v1 layout type`
+358, `canonical SafeWIR` 498, `MissingCheckedSourceWitness` 202 (paths that
+compile without a checked source witness, such as WAT or externally built
+modules), `Command failed` 60.
+
+**What this means for landing.** The branch cannot pass the gate as it stands,
+and the two ways to make it pass are both decisions outside this work's
+authority: restore the raw production encoder as a fallback (explicitly
+forbidden for this milestone), or classify the listed suites as
+outside-the-foundation and remove them from the blocking gate until coverage
+reaches them (which is scope policy, not a fix, and `#[ignore]` is not the
+mechanism). The recommendation is the second, applied per class above with
+this table as the record, followed by queue submission. Until that decision,
+the branch stays unsubmitted and every foundation suite listed in this ledger
+is green.
+
 ## Current focused candidate evidence
 
 - `canonical_pipeline::tests::scalar_unary_source_reaches_admitted_execution`

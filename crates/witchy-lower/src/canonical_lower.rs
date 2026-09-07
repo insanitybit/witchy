@@ -737,6 +737,75 @@ fn lower_function(
     Ok(lowered)
 }
 
+/// The names a loop body rebinds: assigned (`x = e`) or pushed in place.
+#[derive(Default)]
+struct LoopRebindings {
+    assigned: BTreeSet<String>,
+    pushed: BTreeSet<String>,
+}
+
+fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
+    fn walk_block(block: &witchy_syntax::ast::Block, out: &mut LoopRebindings) {
+        for statement in &block.stmts {
+            match statement {
+                Stmt::Assign { name, value } => {
+                    if let Expr::Call { name: call, .. } = value
+                        && matches!(call.as_str(), "list.push" | "list.__push")
+                    {
+                        out.pushed.insert(name.clone());
+                    } else {
+                        out.assigned.insert(name.clone());
+                    }
+                    walk_expr(value, out);
+                }
+                Stmt::Expr(value) => {
+                    if let Expr::Call { name: call, args } = value
+                        && matches!(call.as_str(), "list.push" | "list.__push")
+                        && let Some(Expr::Var(receiver)) = args.first()
+                    {
+                        out.pushed.insert(receiver.clone());
+                    }
+                    walk_expr(value, out);
+                }
+                Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } | Stmt::Return(Some(value)) | Stmt::Yield(value) => {
+                    walk_expr(value, out);
+                }
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+    fn walk_expr(expression: &Expr, out: &mut LoopRebindings) {
+        match expression {
+            Expr::If { then_block, else_block, .. } => {
+                walk_block(then_block, out);
+                if let Some(else_block) = else_block {
+                    walk_block(else_block, out);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    walk_expr(&arm.body, out);
+                }
+            }
+            Expr::While { body, .. } | Expr::For { body, .. } | Expr::WhileLet { body, .. } => walk_block(body, out),
+            Expr::Block(block) => walk_block(block, out),
+            _ => {}
+        }
+    }
+    let mut out = LoopRebindings::default();
+    walk_block(block, &mut out);
+    out
+}
+
+/// See `plan_binding_lanes`.
+struct BindingLanePlan {
+    name: String,
+    values: Vec<ValueId>,
+    extents: Option<Vec<(ValueId, ValueId)>>,
+    phi: Option<Ownership>,
+    all_tokens: bool,
+}
+
 struct BlockBuilder {
     id: BlockId,
     parameters: Vec<BlockParameter>,
@@ -789,6 +858,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         self.results = results.to_vec();
         for (index, statement) in statements.iter().enumerate() {
+            self.require_open_block()?;
             let final_statement = index + 1 == statements.len();
             match statement {
                 Stmt::Let { name, mutable, value, .. } => {
@@ -1012,6 +1082,14 @@ impl FunctionLowerer<'_> {
             Expr::For { var, iter, body } => self.lower_for(var, iter, body),
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
+            // `fail(msg)` aborts on every backend: the message is evaluated
+            // and the block traps. It must be the block's last statement.
+            Expr::Call { name, args } if name == "fail" => {
+                for argument in args {
+                    let _ = self.lower_expr(argument)?;
+                }
+                self.finish_current(Terminator::Trap)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
                 self.lower_list_push(args)
             }
@@ -1048,6 +1126,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         let outer = self.bindings.keys().cloned().collect::<Vec<_>>();
         for statement in &block.stmts {
+            self.require_open_block()?;
             match statement {
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
@@ -1112,6 +1191,7 @@ impl FunctionLowerer<'_> {
             .split_last()
             .ok_or(CanonicalLoweringError::UnsupportedExpression("empty block"))?;
         for statement in statements {
+            self.require_open_block()?;
             match statement {
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
@@ -1180,8 +1260,16 @@ impl FunctionLowerer<'_> {
         }
         let clone = self.fresh(self.values[&value])?;
         self.push_operation(Operation::CloneRef { destination: clone, source: value });
-        self.ensure_list_extent(clone)?;
-        self.ensure_string_extent(clone)?;
+        // The clone shares the source's authenticated header facts (the
+        // checker copies them with the object state), so its extent lanes are
+        // the source's; a source without lanes yet is authenticated on the
+        // clone.
+        if let Some((count, capacity)) = self.tracked_lanes(value) {
+            self.set_tracked_lanes(clone, count, capacity);
+        } else {
+            self.ensure_list_extent(clone)?;
+            self.ensure_string_extent(clone)?;
+        }
         Ok(clone)
     }
 
@@ -1332,6 +1420,7 @@ impl FunctionLowerer<'_> {
             return self.finish_current(Terminator::Return { values: Vec::new() });
         };
         for statement in leading {
+            self.require_open_block()?;
             match statement {
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
@@ -1376,6 +1465,68 @@ impl FunctionLowerer<'_> {
             }
             _ => Err(CanonicalLoweringError::UnsupportedStatement("tail block end")),
         }
+    }
+
+    /// A block that already terminated (a `fail`) accepts no further
+    /// statement; the lowering refuses rather than emitting dead code.
+    fn require_open_block(&self) -> Result<(), CanonicalLoweringError> {
+        if self.blocks[self.current.get() as usize].terminator.is_some() {
+            return Err(CanonicalLoweringError::UnsupportedStatement("statement after a terminating call"));
+        }
+        Ok(())
+    }
+
+    /// The join plan for one rebound reference binding: the value each arm
+    /// contributes (an alias of another binding is cloned; a static lane is
+    /// materialized when another lane carries a token), the extent lanes
+    /// (distinct ids), and the phi the join parameter may take: unique when
+    /// every arm holds its own token, shared when every arm is shared-phi
+    /// eligible, none otherwise (the checker then demands one identity).
+    fn plan_binding_lanes(
+        &mut self,
+        arms: &[(BlockId, &HashMap<String, ValueId>)],
+        changed_names: &[String],
+    ) -> Result<Vec<BindingLanePlan>, CanonicalLoweringError> {
+        let mut plans = Vec::with_capacity(changed_names.len());
+        for name in changed_names {
+            let mut values = arms.iter().map(|(_, bindings)| bindings[name]).collect::<Vec<_>>();
+            if !matches!(self.values[&values[0]], ValueType::Ref(_)) {
+                plans.push(BindingLanePlan { name: name.clone(), values, extents: None, phi: None, all_tokens: false });
+                continue;
+            }
+            for (index, (end, bindings)) in arms.iter().enumerate() {
+                let value = values[index];
+                if bindings.iter().any(|(other, bound)| other != name && *bound == value) {
+                    self.current = *end;
+                    values[index] = self.clone_reference_token(value)?;
+                }
+            }
+            let mut lanes = arms.iter().map(|(end, _)| *end).zip(values.iter().copied()).collect::<Vec<_>>();
+            let all_tokens = self.materialize_mixed_lanes(&mut lanes)?;
+            values = lanes.iter().map(|(_, value)| *value).collect();
+            let eligible = values.iter().all(|value| self.shared_phi_eligible(*value));
+            let mut extents = Vec::with_capacity(values.len());
+            for ((end, _), value) in arms.iter().zip(&values) {
+                let Some((count, capacity)) = self.dynamic_extent_lanes(*value) else {
+                    extents.clear();
+                    break;
+                };
+                self.current = *end;
+                extents.push(self.split_lanes(count, capacity)?);
+            }
+            let phi = if eligible && extents.len() == values.len() {
+                if all_tokens && values.iter().all(|value| !self.known_shared_value(*value)) {
+                    Some(Ownership::Unique)
+                } else {
+                    Some(Ownership::Shared)
+                }
+            } else {
+                None
+            };
+            let extents = phi.is_some().then_some(extents);
+            plans.push(BindingLanePlan { name: name.clone(), values, extents, phi, all_tokens });
+        }
+        Ok(plans)
     }
 
     fn drop_bindings_except(&mut self, names: &[String]) {
@@ -1488,10 +1639,15 @@ impl FunctionLowerer<'_> {
             .filter(|name| then_bindings[*name] != else_bindings[*name])
             .cloned()
             .collect::<Vec<_>>();
-        let mut parameter_types = changed_names
-            .iter()
-            .map(|name| self.values[&then_bindings[name]])
-            .collect::<Vec<_>>();
+        let plans = self.plan_binding_lanes(&[(then_end, &then_bindings), (else_end, &else_bindings)], &changed_names)?;
+        let mut parameter_types = Vec::new();
+        for plan in &plans {
+            parameter_types.push(self.values[&plan.values[0]]);
+            if plan.phi.is_some() {
+                parameter_types.extend([ValueType::Size, ValueType::Size]);
+            }
+        }
+        let binding_parameters = parameter_types.len();
         if let Some((_, _, result_type)) = result_type {
             parameter_types.push(result_type);
             if shared_result_extents.is_some() {
@@ -1500,7 +1656,7 @@ impl FunctionLowerer<'_> {
         }
         let join_id = self.new_block(&parameter_types)?;
         if shared_result_extents.is_some() {
-            self.blocks[join_id.get() as usize].parameters[changed_names.len()].ownership =
+            self.blocks[join_id.get() as usize].parameters[binding_parameters].ownership =
                 Some(Ownership::Shared);
         }
         let join_parameters = self.blocks[join_id.get() as usize].parameters.clone();
@@ -1509,14 +1665,25 @@ impl FunctionLowerer<'_> {
         let mut parameter_index = 0;
         let mut merged = outer;
         let mut rebound_references = Vec::new();
-        for name in changed_names {
-            then_arguments.push(then_bindings[&name]);
-            else_arguments.push(else_bindings[&name]);
+        for plan in &plans {
+            then_arguments.push(plan.values[0]);
+            else_arguments.push(plan.values[1]);
             let parameter = join_parameters[parameter_index].value;
-            if matches!(self.values[&parameter], ValueType::Ref(_)) {
+            if let (Some(phi), Some(extents)) = (plan.phi, &plan.extents) {
+                self.blocks[join_id.get() as usize].parameters[parameter_index].ownership = Some(phi);
+                then_arguments.extend([extents[0].0, extents[0].1]);
+                else_arguments.extend([extents[1].0, extents[1].1]);
+                let count = join_parameters[parameter_index + 1].value;
+                let capacity = join_parameters[parameter_index + 2].value;
+                self.record_joined_extent(parameter, count, capacity, &plan.values);
+                if plan.all_tokens {
+                    self.token_join_parameters.insert(parameter);
+                }
+                parameter_index += 2;
+            } else if matches!(self.values[&parameter], ValueType::Ref(_)) {
                 rebound_references.push(parameter);
             }
-            merged.insert(name, parameter);
+            merged.insert(plan.name.clone(), parameter);
             parameter_index += 1;
         }
         let result = match result_type {
@@ -1703,10 +1870,16 @@ impl FunctionLowerer<'_> {
             .cloned()
             .collect::<Vec<_>>();
         changed_names.sort();
-        let mut parameter_types = changed_names
-            .iter()
-            .map(|name| self.values[&outer[name]])
-            .collect::<Vec<_>>();
+        let arms = arm_results.iter().map(|(body_end, bindings, _)| (*body_end, bindings)).collect::<Vec<_>>();
+        let plans = self.plan_binding_lanes(&arms, &changed_names)?;
+        let mut parameter_types = Vec::new();
+        for plan in &plans {
+            parameter_types.push(self.values[&plan.values[0]]);
+            if plan.phi.is_some() {
+                parameter_types.extend([ValueType::Size, ValueType::Size]);
+            }
+        }
+        let binding_parameters = parameter_types.len();
         if let Some(result_type) = result_type {
             parameter_types.push(result_type);
         }
@@ -1738,7 +1911,7 @@ impl FunctionLowerer<'_> {
             parameter_types.extend([ValueType::Size, ValueType::Size]);
         }
         let join = self.new_block(&parameter_types)?;
-        let result_parameter_index = changed_names.len();
+        let result_parameter_index = binding_parameters;
         if shared_result_extents.is_some() {
             self.blocks[join.get() as usize].parameters[result_parameter_index].ownership =
                 Some(Ownership::Shared);
@@ -1749,13 +1922,29 @@ impl FunctionLowerer<'_> {
         if all_tokens && let Some(result) = result {
             self.token_join_parameters.insert(result);
         }
-        for (arm_index, (body_end, bindings, value)) in arm_results.into_iter().enumerate() {
-            let mut arguments = changed_names
-                .iter()
-                .map(|name| bindings[name])
-                .collect::<Vec<_>>();
-            for (name, parameter) in changed_names.iter().zip(&join_parameters) {
-                merged.insert(name.clone(), parameter.value);
+        let mut parameter_index = 0;
+        for plan in &plans {
+            let parameter = join_parameters[parameter_index].value;
+            if let (Some(phi), Some(_)) = (plan.phi, &plan.extents) {
+                self.blocks[join.get() as usize].parameters[parameter_index].ownership = Some(phi);
+                let count = join_parameters[parameter_index + 1].value;
+                let capacity = join_parameters[parameter_index + 2].value;
+                self.record_joined_extent(parameter, count, capacity, &plan.values);
+                if plan.all_tokens {
+                    self.token_join_parameters.insert(parameter);
+                }
+                parameter_index += 2;
+            }
+            merged.insert(plan.name.clone(), parameter);
+            parameter_index += 1;
+        }
+        for (arm_index, (body_end, _bindings, value)) in arm_results.into_iter().enumerate() {
+            let mut arguments = Vec::new();
+            for plan in &plans {
+                arguments.push(plan.values[arm_index]);
+                if let Some(extents) = &plan.extents {
+                    arguments.extend([extents[arm_index].0, extents[arm_index].1]);
+                }
             }
             if let Some(value) = value {
                 arguments.push(value);
@@ -1975,7 +2164,7 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false);
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
         let header_parameters = self.blocks[header.get() as usize].parameters.clone();
         let header_values = header_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
@@ -2101,7 +2290,7 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false);
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &loop_rebindings(body));
         let header_values = self.blocks[header.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
@@ -2253,7 +2442,7 @@ impl FunctionLowerer<'_> {
         // lane, which permits a checked Unique phi to rebase the fresh list
         // allocated by a prior iteration.  Untracked/Shared references stay
         // unspecified and therefore cannot acquire phi authority.
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true);
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &loop_rebindings(body));
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
@@ -2652,6 +2841,7 @@ impl FunctionLowerer<'_> {
         tracked: &[String],
         outer: &HashMap<String, ValueId>,
         mark_lists: bool,
+        rebound: &LoopRebindings,
     ) {
         let string = string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts).ok();
         let ownerships = names
@@ -2662,16 +2852,30 @@ impl FunctionLowerer<'_> {
                     return None;
                 }
                 let is_string = Some(self.values[&object]) == string.map(ValueType::Ref);
-                if !is_string {
-                    // Lists keep the `for` loop's rule (a unique phi over the
-                    // canonical push templates); `while` and range loops leave
-                    // them unspecified, as before.
-                    return mark_lists.then_some(Ownership::Unique);
+                if !is_string && mark_lists {
+                    // The `for` loop's rule: a unique phi over the canonical
+                    // push templates.
+                    return Some(Ownership::Unique);
+                }
+                // Only a name the body rebinds needs a phi. A lane from a
+                // shared source is a shared phi. A lane the body mutates in
+                // place (a push) must stay unique; one the body merely
+                // reassigns is a shared phi, which also accepts the shared
+                // join a body-local `if` produces for it. Anything else stays
+                // unspecified, so one identity is demanded.
+                let pushed = rebound.pushed.contains(name);
+                let assigned = rebound.assigned.contains(name);
+                if !pushed && !assigned {
+                    return None;
                 }
                 if self.known_shared_value(object) {
                     Some(Ownership::Shared)
-                } else {
+                } else if !self.carries_token(object) {
+                    None
+                } else if pushed {
                     Some(Ownership::Unique)
+                } else {
+                    Some(Ownership::Shared)
                 }
             })
             .collect::<Vec<_>>();
@@ -2697,13 +2901,6 @@ impl FunctionLowerer<'_> {
             }) || block.operations.iter().any(|operation| match operation {
                 Operation::StaticData { destination, .. }
                 | Operation::CloneRef { destination, .. } => *destination == value,
-                // A fresh reference-counted allocation weakens to a shared
-                // token at a shared phi (the checker's edge rule).
-                Operation::Alloc {
-                    destination,
-                    class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
-                    ..
-                } => *destination == value,
                 Operation::Load {
                     destination,
                     transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,
@@ -3127,6 +3324,19 @@ impl FunctionLowerer<'_> {
             }
             // `xs.at(i)` reaches the lowering as the `list.at` intrinsic, the
             // same bounds-checked element read as `xs[i]`.
+            Expr::Call { name, args } if matches!(name.as_str(), "string.length" | "string.__length") => {
+                let [receiver] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.length arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                self.ensure_string_extent(object)?;
+                let length = *self.string_lengths.get(&object).ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("string.length receiver"),
+                )?;
+                let result = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize { destination: result, value: length });
+                Ok(result)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "list.at" | "list.__at") => {
                 let [base, index] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("list.at arity"));

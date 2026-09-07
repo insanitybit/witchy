@@ -602,3 +602,32 @@ route is 0/107.
 - **Oracle step budget** raised so long-running admitted programs are not
   refused by the oracle's own limit.
 
+## Progress (owner, 2026-09-06, sixteenth slice: joins, loops, allocator growth)
+
+- **Rebound bindings at `if`/`match` joins** get a phi with extent lanes: an
+  alias of another binding is cloned, a static lane next to a token lane is
+  materialized, the phi is unique when every arm holds its own token and
+  shared when every arm is shared-phi eligible; otherwise the join keeps
+  demanding one identity. Loop headers mark a lane only for a name the body
+  rebinds: shared for a shared source, unique when the body pushes in place,
+  shared when it merely reassigns (so the header agrees with a body-local
+  `if` join); `for` loops keep their unique rule for lists.
+- **Allocator grows linear memory on demand** (encoder and plan mirror): an
+  object past the current memory grows by the pages needed, and a refused
+  growth traps before any write. This was a backend divergence the oracle
+  caught: `regions` pushes 1000 strings into a copy-on-write list and ran out
+  of the single initial page while the oracle, with unbounded cells,
+  succeeded. The allocation pin now expects growth, and a trap only under a
+  host memory cap.
+- **Encoder terminal side**: a side terminates when every path from it ends in
+  a terminal block through structured loops and it shares no block with the
+  other side (a `fail` arm that renders its message loops before trapping).
+- `fail(msg)` lowers as a trap after evaluating its message and must end its
+  block; `string.length` reads the byte length. Clones share the source's
+  header facts (checker and lowering agree on the extent lane ids), and a
+  shared managed object's class and immutability facts meet at any block,
+  with a capacity-only extent difference resolved at the count; a consumed
+  token's residual facts never block a join.
+- Census: 71 of 163 check; 15 runnable examples admit and agree under
+  three-legged parity (`math_demo` and `regions` are new).
+

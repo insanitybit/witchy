@@ -231,6 +231,9 @@ impl<'a> MemoryChecker<'a> {
                     && state.allocation_class == Some(AllocationClass::ReferenceCounted)
                     && self.is_sole_live_token(*argument, state.identity);
                 if !(state.ownership == Ownership::Shared || weakenable) || state.layout != parameter_layout {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!("canonical shared phi refused at {:?}: argument {argument:?} state {state:#?}", target.id);
+                    }
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
                         object: *argument,
@@ -272,7 +275,10 @@ impl<'a> MemoryChecker<'a> {
                                 && parameter.value_type == ValueType::Size
                         }) => {}
                     Extent::FixedBytes(_) => {}
-                    _ => {
+                    extent => {
+                        if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                            eprintln!("canonical shared phi refused at {:?}: object {value:?} extent {extent:?} is not carried by the parameters", target.id);
+                        }
                         return Err(InitialCheckError::InvalidOwnership {
                             function: self.function.id,
                             object: value,
@@ -493,12 +499,22 @@ impl<'a> MemoryChecker<'a> {
             // a weakened fresh allocation: both are managed storage, so the
             // meet keeps only what both establish (unknown class, immutable,
             // owned slots initialized only if both say so).
-            let shared_phi_parameter = block
-                .parameters
-                .iter()
-                .any(|parameter| parameter.value == *value && parameter.ownership == Some(Ownership::Shared));
+            // A consumed token carries no obligation; residual class or
+            // immutability facts about the storage it named do not matter.
             if current != next
-                && shared_phi_parameter
+                && current.ownership == Ownership::Consumed
+                && next.ownership == Ownership::Consumed
+                && current.identity == next.identity
+                && current.layout == next.layout
+            {
+                objects.insert(*value, current.clone());
+                continue;
+            }
+            // A shared managed object may reach a block through different
+            // paths with different class or immutability facts (a phi block,
+            // or any block after one across the fixpoint's rounds); the meet
+            // keeps only what both establish.
+            if current != next
                 && let Some(met) = shared_phi_meet(current, next)
             {
                 objects.insert(*value, met);
@@ -2406,6 +2422,16 @@ impl<'a> MemoryChecker<'a> {
         }
         state.ownership = Ownership::Shared;
         self.state.objects.insert(destination, state);
+        // The clone names the same storage: the source's loaded header facts
+        // hold for it, so a later promotion of the clone uses the same ids.
+        let header_values = self
+            .state
+            .header_values
+            .iter()
+            .filter(|((object, _), _)| *object == source)
+            .map(|((_, field), value)| ((destination, *field), *value))
+            .collect::<Vec<_>>();
+        self.state.header_values.extend(header_values);
         if source_is_static {
             self.state.static_data_objects.insert(destination);
         }
@@ -2794,9 +2820,23 @@ fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent
 /// storage, so `is_managed_storage` stays true), and owned slots count as
 /// initialized only if both sides say so.
 fn shared_phi_meet(left: &ObjectState, right: &ObjectState) -> Option<ObjectState> {
+    // A shared object is never written, so its capacity bounds nothing; two
+    // counted extents that differ only in the capacity id meet at the count.
+    let extent = match (&left.extent, &right.extent) {
+        (l, r) if l == r => l.clone(),
+        (
+            Extent::Counted { header_bytes, count, stride_bytes, .. },
+            Extent::Counted { header_bytes: rh, count: rc, stride_bytes: rs, .. },
+        ) if header_bytes == rh && count == rc && stride_bytes == rs => Extent::Counted {
+            header_bytes: *header_bytes,
+            count: *count,
+            capacity: *count,
+            stride_bytes: *stride_bytes,
+        },
+        _ => return None,
+    };
     if left.identity != right.identity
         || left.layout != right.layout
-        || left.extent != right.extent
         || left.ownership != Ownership::Shared
         || right.ownership != Ownership::Shared
         || !MemoryChecker::is_managed_storage(left)
@@ -2807,7 +2847,7 @@ fn shared_phi_meet(left: &ObjectState, right: &ObjectState) -> Option<ObjectStat
     Some(ObjectState {
         identity: left.identity,
         layout: left.layout,
-        extent: left.extent.clone(),
+        extent,
         ownership: Ownership::Shared,
         allocation_class: (left.allocation_class == right.allocation_class).then_some(left.allocation_class).flatten(),
         shared_immutable: true,

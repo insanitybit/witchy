@@ -1391,6 +1391,9 @@ pub struct CanonicalEntry {
 /// by the artifact's Wasm digest like every other section. Reading it back
 /// from bytes lives in `canonical_entry`, outside this private encoder.
 pub(crate) const ENTRY_SECTION: &str = "witchy.entry";
+/// A merge no block has: `all_paths_reach_or_terminate` with this merge
+/// asks whether every path from a block terminates.
+const NO_MERGE: crate::canonical_safewir::BlockId = crate::canonical_safewir::BlockId::new(u32::MAX);
 /// Exported allocator globals of an admitted module: the bump pointer, the
 /// reclaimed-object free list head, and the heap base below which pointers
 /// name static data.
@@ -2008,17 +2011,40 @@ fn emit_alloc(
     emit_set_index(body, scratch_index(layout, 0));
     body.instruction(&wasm_encoder::Instruction::GlobalGet(0));
     emit_set_index(body, scratch_index(layout, 1));
-    emit_get_index(body, scratch_index(layout, 1));
+    // The object's end in bytes (64-bit, so the sum cannot wrap). When it
+    // lies past the current linear memory, grow by the pages needed; a
+    // refused growth traps rather than writing past memory.
+    let emit_end = |body: &mut wasm_encoder::Function| {
+        emit_get_index(body, scratch_index(layout, 1));
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        emit_get_index(body, scratch_index(layout, 0));
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+    };
+    emit_end(body);
+    body.instruction(&wasm_encoder::Instruction::MemorySize(0));
     body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
-    body.instruction(&wasm_encoder::Instruction::I64Add);
-    emit_get_index(body, scratch_index(layout, 0));
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-    body.instruction(&wasm_encoder::Instruction::I64Add);
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
+    body.instruction(&wasm_encoder::Instruction::I64Mul);
     body.instruction(&wasm_encoder::Instruction::I64GtU);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_end(body);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES - 1)));
+    body.instruction(&wasm_encoder::Instruction::I64Add);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
+    body.instruction(&wasm_encoder::Instruction::I64DivU);
+    body.instruction(&wasm_encoder::Instruction::MemorySize(0));
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    body.instruction(&wasm_encoder::Instruction::I64Sub);
+    body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    body.instruction(&wasm_encoder::Instruction::MemoryGrow(0));
+    body.instruction(&wasm_encoder::Instruction::I32Const(-1));
+    body.instruction(&wasm_encoder::Instruction::I32Eq);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
@@ -2789,25 +2815,20 @@ impl StructuredEmitter<'_> {
         Ok(seen)
     }
 
+    /// A side only terminates when every path from it ends in a terminal
+    /// block (structured loops included: their bodies return to their
+    /// headers and their exits terminate) and it shares no block with the
+    /// other side: such a side never reaches a merge and needs none.
     fn only_terminates(
         &self,
         start: crate::canonical_safewir::BlockId,
         other_side: &BTreeSet<crate::canonical_safewir::BlockId>,
     ) -> Result<bool, EncodeError> {
-        let mut id = start;
-        let mut seen = BTreeSet::new();
-        loop {
-            if other_side.contains(&id) || !seen.insert(id) {
-                return Ok(false);
-            }
-            if self.is_terminal(id)? {
-                return Ok(true);
-            }
-            match &self.block(id)?.terminator.operation {
-                ScalarTerminator::Branch { target, .. } => id = *target,
-                _ => return Ok(false),
-            }
+        let reach = self.distances_from(start)?;
+        if reach.keys().any(|id| other_side.contains(id)) {
+            return Ok(false);
         }
+        self.all_paths_reach_or_terminate(start, NO_MERGE, &mut BTreeSet::new())
     }
 
     fn is_terminal(
@@ -3539,6 +3560,8 @@ enum PlanToken {
     I64Mul,
     I64Add,
     I64Sub,
+    MemorySize,
+    MemoryGrow,
     I32WrapI64,
     I64Eq,
     I64LtS,
@@ -3632,6 +3655,8 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I64Mul => PlanToken::I64Mul,
         wasmparser::Operator::I64Add => PlanToken::I64Add,
         wasmparser::Operator::I64Sub => PlanToken::I64Sub,
+        wasmparser::Operator::MemorySize { mem: 0 } => PlanToken::MemorySize,
+        wasmparser::Operator::MemoryGrow { mem: 0 } => PlanToken::MemoryGrow,
         wasmparser::Operator::I32WrapI64 => PlanToken::I32WrapI64,
         wasmparser::Operator::I64Eq => PlanToken::I64Eq,
         wasmparser::Operator::I64LtS => PlanToken::I64LtS,
@@ -4449,7 +4474,7 @@ fn expected_alloc_plan(
         PlanToken::GlobalGet(0),
         PlanToken::LocalSet(layout.scratch[1]),
     ]);
-    plan.extend([
+    let end = [
         PlanToken::LocalGet(layout.scratch[1]),
         PlanToken::I64ExtendI32U,
         PlanToken::I64Const(i64::from(RC_PREFIX_BYTES)),
@@ -4457,10 +4482,32 @@ fn expected_alloc_plan(
         PlanToken::LocalGet(layout.scratch[0]),
         PlanToken::I64ExtendI32U,
         PlanToken::I64Add,
+    ];
+    plan.extend(end.iter().cloned());
+    plan.extend([
+        PlanToken::MemorySize,
+        PlanToken::I64ExtendI32U,
         PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES)),
+        PlanToken::I64Mul,
         PlanToken::I64GtU,
         PlanToken::If("Empty".to_owned()),
+    ]);
+    plan.extend(end.iter().cloned());
+    plan.extend([
+        PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES - 1)),
+        PlanToken::I64Add,
+        PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES)),
+        PlanToken::I64DivU,
+        PlanToken::MemorySize,
+        PlanToken::I64ExtendI32U,
+        PlanToken::I64Sub,
+        PlanToken::I32WrapI64,
+        PlanToken::MemoryGrow,
+        PlanToken::I32Const(-1),
+        PlanToken::I32Eq,
+        PlanToken::If("Empty".to_owned()),
         PlanToken::Unreachable,
+        PlanToken::End,
         PlanToken::End,
         PlanToken::LocalGet(layout.scratch[1]),
         PlanToken::I32Const(RC_PREFIX_BYTES as i32),
@@ -4904,20 +4951,11 @@ impl PlanEmitter<'_> {
     }
 
     fn only_terminates(&self, start: crate::canonical_safewir::BlockId, other_side: &BTreeSet<crate::canonical_safewir::BlockId>) -> Result<bool, CanonicalAdmissionError> {
-        let mut id = start;
-        let mut seen = BTreeSet::new();
-        loop {
-            if other_side.contains(&id) || !seen.insert(id) {
-                return Ok(false);
-            }
-            if self.is_terminal(id)? {
-                return Ok(true);
-            }
-            match &self.block(id)?.terminator {
-                Terminator::Branch { target, .. } => id = *target,
-                _ => return Ok(false),
-            }
+        let reach = self.distances_from(start)?;
+        if reach.keys().any(|id| other_side.contains(id)) {
+            return Ok(false);
         }
+        self.all_paths_reach_or_terminate(start, NO_MERGE, &mut BTreeSet::new())
     }
 
     fn is_terminal(&self, id: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
@@ -8195,7 +8233,7 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
-    fn allocation_refuses_to_return_storage_past_fixed_linear_memory() {
+    fn allocation_past_linear_memory_grows_or_traps_when_growth_is_refused() {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
         let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
@@ -8211,10 +8249,22 @@ mod tests {
         .expect("large allocation module encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        // The allocator grows linear memory for an object past the current
+        // size; the growth is observable through the exported bump pointer.
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let run = instance.get_typed_func::<(), ()>(&mut store, "f32").unwrap();
-        assert!(run.call(&mut store, ()).is_err());
+        run.call(&mut store, ()).expect("growth succeeds without a store limit");
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        assert!(memory.size(&store) >= 2, "memory grew past its single initial page");
+        // A refused growth (the host caps the memory) traps before any write
+        // past the end of memory.
+        let limits = wasmtime::StoreLimitsBuilder::new().memory_size(65_536).build();
+        let mut store = wasmtime::Store::new(&engine, limits);
+        store.limiter(|limits| limits);
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance.get_typed_func::<(), ()>(&mut store, "f32").unwrap();
+        assert!(run.call(&mut store, ()).is_err(), "refused growth traps");
     }
 
     #[cfg(feature = "native")]
