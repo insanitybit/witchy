@@ -2829,6 +2829,12 @@ struct StructuredEmitter<'a> {
     /// and the structuring queries ask about the same blocks repeatedly.
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
     loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
+    /// Proven path facts: `(start, merges)` for which every path reaches a
+    /// merge or terminates. A positive answer never depends on the walk's
+    /// active set (a cut cycle only ever yields a negative one), so it is
+    /// reusable anywhere; without it a function with many sequential loops
+    /// enumerates paths exponentially.
+    path_facts: RefCell<BTreeSet<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>)>>,
 }
 
 impl StructuredEmitter<'_> {
@@ -2976,6 +2982,11 @@ impl StructuredEmitter<'_> {
         if merges.contains(&start) || self.is_terminal(start)? {
             return Ok(true);
         }
+        let mut merge_key = merges.to_vec();
+        merge_key.sort();
+        if self.path_facts.borrow().contains(&(start, merge_key.clone())) {
+            return Ok(true);
+        }
         if !active.insert(start) {
             return Ok(false);
         }
@@ -3010,6 +3021,9 @@ impl StructuredEmitter<'_> {
             result
         };
         active.remove(&start);
+        if result {
+            self.path_facts.borrow_mut().insert((start, merge_key));
+        }
         Ok(result)
     }
 
@@ -3666,6 +3680,7 @@ fn encode_function(
         loop_exits: Vec::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
         loop_exit_targets: RefCell::new(BTreeMap::new()),
+        path_facts: RefCell::new(BTreeSet::new()),
     };
     emitter.emit_path(entry, None)?;
     if emitter.emitted.len() != target_function.blocks.len() {
@@ -5255,6 +5270,12 @@ struct PlanEmitter<'a> {
     loop_exits: Vec<(crate::canonical_safewir::BlockId, usize)>,
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
     loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
+    /// Proven path facts: `(start, merges)` for which every path reaches a
+    /// merge or terminates. A positive answer never depends on the walk's
+    /// active set (a cut cycle only ever yields a negative one), so it is
+    /// reusable anywhere; without it a function with many sequential loops
+    /// enumerates paths exponentially.
+    path_facts: RefCell<BTreeSet<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>)>>,
 }
 
 impl PlanEmitter<'_> {
@@ -5355,6 +5376,11 @@ impl PlanEmitter<'_> {
         if merges.contains(&start) || self.is_terminal(start)? {
             return Ok(true);
         }
+        let mut merge_key = merges.to_vec();
+        merge_key.sort();
+        if self.path_facts.borrow().contains(&(start, merge_key.clone())) {
+            return Ok(true);
+        }
         if !active.insert(start) {
             return Ok(false);
         }
@@ -5389,6 +5415,9 @@ impl PlanEmitter<'_> {
             result
         };
         active.remove(&start);
+        if result {
+            self.path_facts.borrow_mut().insert((start, merge_key));
+        }
         Ok(result)
     }
 
@@ -5991,6 +6020,7 @@ fn expected_function_plan(
         aggregates: BTreeMap::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
         loop_exit_targets: RefCell::new(BTreeMap::new()),
+        path_facts: RefCell::new(BTreeSet::new()),
     };
     emitter.emit_path(function.entry, None)?;
     if emitter.emitted.len() != function.blocks.len() {

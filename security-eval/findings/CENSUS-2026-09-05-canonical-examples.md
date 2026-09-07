@@ -803,3 +803,25 @@ route is 0/107.
   new). Left in this family:
   lists of aggregates (`equality`), `string.ends_with` (`parse_kv`), string
   ordering (`rle`), unions with reference payloads (`rpn`, `bank`).
+
+## Progress (owner, 2026-09-07, twenty-fourth slice: string searches, ordering, find, to_int)
+
+- **String intrinsics over byte loops.** `starts_with`, `ends_with`, and
+  `contains` compare byte ranges (every read guarded against its own
+  string's length, so no range proof is needed); `<`/`<=`/`>`/`>=` on
+  strings compute the sign of the first differing byte, else of the length
+  difference (UTF-8 byte order is code-point order); `find` reports the
+  character index of the first matching window or `-1`; `to_int` parses
+  the signed decimal between the surrounding ASCII whitespace, accumulating
+  negatively so the minimum parses, with explicit range checks (the
+  encoder emits a trapping `Add` only) and a trap on junk or overflow.
+- **Encoder path-fact memo.** The structuring's path check enumerated paths
+  afresh at every branch; a function with a dozen sequential loops spun
+  for twenty minutes. A proven "every path from this block reaches one of
+  these merges or terminates" fact never depends on the walk's active set
+  (a cut cycle only yields a negative answer), so both mirrors memoize the
+  positive answers.
+- Pinned by `admitted_string_searches_ordering_find_and_to_int_scan_bytes`.
+- Census: 84 of 163 check; 28 runnable examples admit and agree under
+  three-legged parity (`parse_kv` is new). `rle` now needs dynamic
+  `string.chars` (a UTF-8 decoder into a list of strings).

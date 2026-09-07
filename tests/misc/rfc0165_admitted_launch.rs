@@ -302,6 +302,27 @@ fn admitted_sum_types_option_and_result_over_scalars_run() {
 }
 
 #[test]
+fn admitted_string_searches_ordering_find_and_to_int_scan_bytes() {
+    // starts_with/ends_with/contains compare byte ranges; ordering is the
+    // sign of the first differing byte, then of the lengths; find reports
+    // the character index of the first match; to_int parses a trimmed
+    // signed decimal, accumulating negatively so the minimum parses.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let s = \"hello world\"\n    console.print(\"${s.starts_with(\"hello\")} ${s.starts_with(\"world\")} ${s.ends_with(\"world\")} ${s.ends_with(\"\")} ${\"\".starts_with(\"a\")}\")\n    console.print(\"${s.contains(\"o w\")} ${s.contains(\"xyz\")} ${s.contains(\"\")} ${\"ab\".contains(\"abc\")}\")\n    console.print(\"${\"apple\" < \"banana\"} ${\"b\" > \"abc\"} ${\"abc\" <= \"abc\"} ${\"abc\" < \"abcd\"} ${\"\" < \"a\"} ${\"z\" >= \"aa\"}\")\n    let t = \"h\u{e9}llo w\u{f6}rld\"\n    console.print(\"${t.find(\"w\u{f6}r\")} ${t.find(\"h\")} ${t.find(\"zz\")} ${t.find(\"\")} ${\"aaa\".find(\"aa\")}\")\n    console.print(\"${\"42\".to_int()} ${\" -17 \".to_int()} ${\"+8\".to_int()} ${\"-9223372036854775808\".to_int()} ${\"0\".to_int()}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "true false true true false".to_string(),
+            "true false true false".to_string(),
+            "true true true true true true".to_string(),
+            "6 0 -1 0 0".to_string(),
+            "42 -17 8 -9223372036854775808 0".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

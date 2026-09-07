@@ -3610,6 +3610,39 @@ impl FunctionLowerer<'_> {
                 }
                 Ok(value)
             }
+            Expr::Call { name, args }
+                if matches!(
+                    name.as_str(),
+                    "string.starts_with" | "string.__starts_with" | "string.ends_with" | "string.__ends_with"
+                        | "string.contains" | "string.__contains"
+                ) =>
+            {
+                let [receiver, needle] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string search arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                let needle = self.lower_expr(needle)?;
+                match name.as_str() {
+                    "string.starts_with" | "string.__starts_with" => self.lower_string_affix(object, needle, true),
+                    "string.ends_with" | "string.__ends_with" => self.lower_string_affix(object, needle, false),
+                    _ => self.lower_string_contains(object, needle),
+                }
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.find" | "string.__find") => {
+                let [receiver, needle] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.find arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                let needle = self.lower_expr(needle)?;
+                self.lower_string_find(object, needle)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.to_int" | "string.__to_int") => {
+                let [receiver] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.to_int arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                self.lower_string_to_int(object)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "string.trim" | "string.__trim") => {
                 let [receiver] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.trim arity"));
@@ -5117,7 +5150,14 @@ impl FunctionLowerer<'_> {
                 return match operator {
                     ComparisonOperator::Equal => self.lower_string_equality(left, right, false),
                     ComparisonOperator::NotEqual => self.lower_string_equality(left, right, true),
-                    _ => Err(CanonicalLoweringError::UnsupportedExpression("string ordering")),
+                    operator => {
+                        // Lexicographic byte order is code-point order for
+                        // UTF-8: the sign of the first differing byte, else
+                        // of the length difference.
+                        let order = self.lower_string_order(left, right)?;
+                        let zero = self.push_const_int(0)?;
+                        self.push_compare(operator, order, zero)
+                    }
                 };
             }
             if !matches!(left_type, ValueType::Int | ValueType::Bool | ValueType::Float) {
@@ -5628,17 +5668,427 @@ impl FunctionLowerer<'_> {
         Ok(result)
     }
 
+    /// The string layout every string value carries.
+    fn string_layout_id(&self) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+        string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts)
+    }
+
+    /// The byte length fact of a string value, loading the header when it is
+    /// not cached.
+    fn string_length_of(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(object)?;
+        self.string_lengths.get(&object).copied().ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string operand extent"),
+        )
+    }
+
+    /// `sign(value)` for an `Int`, branch-free: `-1`, `0`, or `1`.
+    fn push_sign(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let zero = self.push_const_int(0)?;
+        let sixty_three = self.push_const_int(63)?;
+        let negative = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightSigned, value, sixty_three, OverflowBehavior::Wrap)?;
+        let negated = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, zero, value, OverflowBehavior::Wrap)?;
+        let positive = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, negated, sixty_three, OverflowBehavior::Wrap)?;
+        self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, negative, positive, OverflowBehavior::Wrap)
+    }
+
+    /// Whether `left[left_start ..+ length)` and `right[right_start ..+ length)`
+    /// hold the same bytes. Every byte read is guarded against its string's
+    /// length, so a caller need not prove the ranges fit.
+    fn lower_string_range_equal(
+        &mut self,
+        left: ValueId,
+        left_start: ValueId,
+        right: ValueId,
+        right_start: ValueId,
+        length: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let left_length = self.string_length_of(left)?;
+        let right_length = self.string_length_of(right)?;
+        let equal = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: equal, value: true });
+        let differ = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: differ, value: false });
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Bool])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        let cursor = self.block_parameter_values(header)[0];
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, length)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![equal],
+        })?;
+        let cursor = self.block_parameter_values(body)[0];
+        self.current = body;
+        let left_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, left_start, cursor, OverflowBehavior::Wrap)?;
+        let right_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, right_start, cursor, OverflowBehavior::Wrap)?;
+        let left_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, left_index, left_length)?;
+        self.push_guard(left_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let right_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, right_index, right_length)?;
+        self.push_guard(right_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let left_byte = self.push_string_byte_load(left, left_index, layout)?;
+        let right_byte = self.push_string_byte_load(right, right_index, layout)?;
+        let same = self.push_compare(ComparisonOperator::Equal, left_byte, right_byte)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: same,
+            then_target: header,
+            then_arguments: vec![next],
+            else_target: exit,
+            else_arguments: vec![differ],
+        })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// `string.find`: the character index of the first window matching the
+    /// needle, or `-1`.
+    fn lower_string_find(&mut self, object: ValueId, needle: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let length = self.string_length_of(object)?;
+        let needle_length = self.string_length_of(needle)?;
+        let missing = self.push_const_int(-1)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, needle_length, length)?;
+        let scan = self.new_block(&[])?;
+        let exit = self.new_block(&[ValueType::Int])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: fits,
+            then_target: scan,
+            then_arguments: Vec::new(),
+            else_target: exit,
+            else_arguments: vec![missing],
+        })?;
+        self.current = scan;
+        let last_start = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, length, needle_length, OverflowBehavior::Wrap)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        let cursor = self.block_parameter_values(header)[0];
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessEqualUnsigned, cursor, last_start)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![missing],
+        })?;
+        let cursor = self.block_parameter_values(body)[0];
+        self.current = body;
+        let matched = self.lower_string_range_equal(object, cursor, needle, zero, needle_length)?;
+        let found = self.new_block(&[])?;
+        let advance = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: matched,
+            then_target: found,
+            then_arguments: Vec::new(),
+            else_target: advance,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = found;
+        // The match's character index counts the sequence starts before it.
+        let characters = self.lower_char_count_prefix(object, cursor)?;
+        self.finish_current(Terminator::Branch { target: exit, arguments: vec![characters] })?;
+        self.current = advance;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// `string.to_int`: the decimal integer between the surrounding ASCII
+    /// whitespace, with an optional sign; anything else aborts, as does an
+    /// overflow. Digits accumulate negatively so the most negative value
+    /// parses, and the positive result negates at the end.
+    fn lower_string_to_int(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let length = self.string_length_of(object)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let start = self.lower_whitespace_scan(object, layout, length, zero, length, true)?;
+        let end = self.lower_whitespace_scan(object, layout, length, start, length, false)?;
+        let non_empty = self.push_compare(ComparisonOperator::LessUnsigned, start, end)?;
+        self.push_trap_unless(non_empty)?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, start, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let first = self.push_string_byte_load(object, start, layout)?;
+        let minus = self.push_const_size(45)?;
+        let plus = self.push_const_size(43)?;
+        let is_minus = self.push_compare(ComparisonOperator::Equal, first, minus)?;
+        let is_plus = self.push_compare(ComparisonOperator::Equal, first, plus)?;
+        let after_sign = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start, one, OverflowBehavior::Wrap)?;
+        let negative_flag = self.push_const_int(1)?;
+        let positive_flag = self.push_const_int(0)?;
+        // (digit start, sign flag) after the optional sign.
+        let digits = self.new_block(&[ValueType::Size, ValueType::Int])?;
+        let when_minus = self.new_block(&[])?;
+        let check_plus = self.new_block(&[])?;
+        let when_plus = self.new_block(&[])?;
+        let no_sign = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_minus,
+            then_target: when_minus,
+            then_arguments: Vec::new(),
+            else_target: check_plus,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = when_minus;
+        self.finish_current(Terminator::Branch { target: digits, arguments: vec![after_sign, negative_flag] })?;
+        self.current = check_plus;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_plus,
+            then_target: when_plus,
+            then_arguments: Vec::new(),
+            else_target: no_sign,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = when_plus;
+        self.finish_current(Terminator::Branch { target: digits, arguments: vec![after_sign, positive_flag] })?;
+        self.current = no_sign;
+        self.finish_current(Terminator::Branch { target: digits, arguments: vec![start, positive_flag] })?;
+        let digit_values = self.block_parameter_values(digits);
+        self.current = digits;
+        let (digit_start, sign) = (digit_values[0], digit_values[1]);
+        let has_digits = self.push_compare(ComparisonOperator::LessUnsigned, digit_start, end)?;
+        self.push_trap_unless(has_digits)?;
+        let zero_int = self.push_const_int(0)?;
+        let ten = self.push_const_int(10)?;
+        let ascii_zero = self.push_const_size(48)?;
+        let nine = self.push_const_size(9)?;
+        let cursor_start = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, digit_start, zero, OverflowBehavior::Wrap)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Int])?;
+        let body = self.new_block(&[ValueType::Size, ValueType::Int])?;
+        let exit = self.new_block(&[ValueType::Int])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![cursor_start, zero_int] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], end)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: vec![header_values[1]],
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let (cursor, accumulator) = (body_values[0], body_values[1]);
+        let cursor_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, length)?;
+        self.push_guard(cursor_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, cursor, layout)?;
+        let digit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, byte, ascii_zero, OverflowBehavior::Wrap)?;
+        let is_digit = self.push_compare(ComparisonOperator::LessEqualUnsigned, digit, nine)?;
+        self.push_trap_unless(is_digit)?;
+        let digit_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: digit_int, value: digit });
+        // `acc * 10 - digit` stays in range iff `acc >= (MIN + digit) / 10`
+        // (truncating division rounds the negative bound up), checked
+        // before the wrapping arithmetic.
+        let minimum = self.push_const_int(i64::MIN)?;
+        let bound_numerator = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, minimum, digit_int, OverflowBehavior::Wrap)?;
+        let bound = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, bound_numerator, ten, OverflowBehavior::Wrap)?;
+        let in_range = self.push_compare(ComparisonOperator::GreaterEqualSigned, accumulator, bound)?;
+        self.push_trap_unless(in_range)?;
+        let scaled = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, accumulator, ten, OverflowBehavior::Wrap)?;
+        let next_accumulator = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, scaled, digit_int, OverflowBehavior::Wrap)?;
+        let next_cursor = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next_cursor, next_accumulator] })?;
+        self.current = exit;
+        let negative_magnitude = self.block_parameter_values(exit)[0];
+        // sign 1: keep the negative accumulator; sign 0: negate it, which
+        // traps only for the minimum (one past the positive bound): the
+        // accumulator differs from the minimum or the sign is negative.
+        let minimum = self.push_const_int(i64::MIN)?;
+        let sixty_three = self.push_const_int(63)?;
+        let from_minimum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, negative_magnitude, minimum, OverflowBehavior::Wrap)?;
+        let zero_int = self.push_const_int(0)?;
+        let negated_distance = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, zero_int, from_minimum, OverflowBehavior::Wrap)?;
+        let either = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, from_minimum, negated_distance, OverflowBehavior::Wrap)?;
+        let not_minimum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, either, sixty_three, OverflowBehavior::Wrap)?;
+        let representable = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, not_minimum, sign, OverflowBehavior::Wrap)?;
+        let one_int = self.push_const_int(1)?;
+        let fits = self.push_compare(ComparisonOperator::GreaterEqualSigned, representable, one_int)?;
+        self.push_trap_unless(fits)?;
+        let two = self.push_const_int(2)?;
+        let doubled = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, sign, two, OverflowBehavior::Wrap)?;
+        let factor = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, doubled, one_int, OverflowBehavior::Wrap)?;
+        self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, negative_magnitude, factor, OverflowBehavior::Wrap)
+    }
+
+    /// `string.starts_with` / `string.ends_with`: the affix fits and its
+    /// bytes match at the start or at the end.
+    fn lower_string_affix(
+        &mut self,
+        object: ValueId,
+        affix: ValueId,
+        at_start: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let length = self.string_length_of(object)?;
+        let affix_length = self.string_length_of(affix)?;
+        let differ = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: differ, value: false });
+        let zero = self.push_const_size(0)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, affix_length, length)?;
+        let compare = self.new_block(&[])?;
+        let exit = self.new_block(&[ValueType::Bool])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: fits,
+            then_target: compare,
+            then_arguments: Vec::new(),
+            else_target: exit,
+            else_arguments: vec![differ],
+        })?;
+        self.current = compare;
+        let start = if at_start {
+            zero
+        } else {
+            self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, length, affix_length, OverflowBehavior::Wrap)?
+        };
+        let matched = self.lower_string_range_equal(object, start, affix, zero, affix_length)?;
+        self.finish_current(Terminator::Branch { target: exit, arguments: vec![matched] })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// `string.contains`: some window of the needle's length matches.
+    fn lower_string_contains(&mut self, object: ValueId, needle: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let length = self.string_length_of(object)?;
+        let needle_length = self.string_length_of(needle)?;
+        let found = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: found, value: true });
+        let missing = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: missing, value: false });
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, needle_length, length)?;
+        let scan = self.new_block(&[])?;
+        let exit = self.new_block(&[ValueType::Bool])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: fits,
+            then_target: scan,
+            then_arguments: Vec::new(),
+            else_target: exit,
+            else_arguments: vec![missing],
+        })?;
+        self.current = scan;
+        // Windows start at 0 ..= length - needle_length.
+        let last_start = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, length, needle_length, OverflowBehavior::Wrap)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        let cursor = self.block_parameter_values(header)[0];
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessEqualUnsigned, cursor, last_start)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![missing],
+        })?;
+        let cursor = self.block_parameter_values(body)[0];
+        self.current = body;
+        let matched = self.lower_string_range_equal(object, cursor, needle, zero, needle_length)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        let advance = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: matched,
+            then_target: exit,
+            then_arguments: vec![found],
+            else_target: advance,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = advance;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// The lexicographic order of two strings as `-1`, `0`, or `1`: the
+    /// sign of the first differing byte, else of the length difference.
+    fn lower_string_order(&mut self, left: ValueId, right: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let left_length = self.string_length_of(left)?;
+        let right_length = self.string_length_of(right)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let left_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: left_int, value: left_length });
+        let right_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: right_int, value: right_length });
+        let length_difference = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, left_int, right_int, OverflowBehavior::Wrap)?;
+        let by_length = self.push_sign(length_difference)?;
+        // The shared prefix length is the shorter length: min(a, b) = b + ((a - b) & ((a - b) >> 63)).
+        let sixty_three = self.push_const_int(63)?;
+        let mask = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightSigned, length_difference, sixty_three, OverflowBehavior::Wrap)?;
+        let masked = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, length_difference, mask, OverflowBehavior::Wrap)?;
+        let shared_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, right_int, masked, OverflowBehavior::Wrap)?;
+        let shared = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: shared, value: shared_int });
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Int])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        let cursor = self.block_parameter_values(header)[0];
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, shared)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: vec![by_length],
+        })?;
+        let cursor = self.block_parameter_values(body)[0];
+        self.current = body;
+        let left_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, left_length)?;
+        self.push_guard(left_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let right_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, right_length)?;
+        self.push_guard(right_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let left_byte = self.push_string_byte_load(left, cursor, layout)?;
+        let right_byte = self.push_string_byte_load(right, cursor, layout)?;
+        let left_byte_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: left_byte_int, value: left_byte });
+        let right_byte_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: right_byte_int, value: right_byte });
+        let byte_difference = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, left_byte_int, right_byte_int, OverflowBehavior::Wrap)?;
+        let by_byte = self.push_sign(byte_difference)?;
+        let same = self.push_compare(ComparisonOperator::Equal, left_byte, right_byte)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: same,
+            then_target: header,
+            then_arguments: vec![next],
+            else_target: exit,
+            else_arguments: vec![by_byte],
+        })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
+    }
+
     /// `string.char_count`: the number of UTF-8 sequence starts, counted
     /// without a branch as `(((byte >> 6) ^ 2) + 3) >> 2`, which is zero for
     /// a continuation byte (`10xxxxxx`) and one otherwise.
     fn lower_char_count(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
-        self.ensure_string_extent(object)?;
+        let length = self.string_length_of(object)?;
+        self.lower_char_count_prefix(object, length)
+    }
+
+    /// The number of UTF-8 sequence starts in the first `length` bytes.
+    fn lower_char_count_prefix(&mut self, object: ValueId, length: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let ValueType::Ref(layout) = self.values[&object] else {
             return Err(CanonicalLoweringError::UnsupportedExpression("string.char_count receiver"));
         };
-        let length = *self.string_lengths.get(&object).ok_or(
-            CanonicalLoweringError::UnsupportedExpression("string.char_count receiver extent"),
-        )?;
+        let total = self.string_length_of(object)?;
         let zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
         let zero_int = self.push_const_int(0)?;
@@ -5663,7 +6113,7 @@ impl FunctionLowerer<'_> {
         let body_values = self.block_parameter_values(body);
         self.current = body;
         let index = body_values[0];
-        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, length)?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let byte = self.push_string_byte_load(object, index, layout)?;
         let byte_int = self.fresh(ValueType::Int)?;
