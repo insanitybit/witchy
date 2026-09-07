@@ -1045,3 +1045,14 @@ now trips a pre-existing gap independent of dictionaries: a `for` whose body hol
 `while` reading outer references (the inner loop threads every outer name as a lane and
 renames its token; the enclosing `for` threads only rebound names, so the token does not
 flow back to its header) — reproduced without any dictionary.
+
+## Slice 38 (2026-09-07): loops thread only the names they rebind
+
+`while`, `while let`, and range `for` carried every outer binding as a header lane, renaming
+each reference's token into the lane; a `for` (which threads only rebound names) around
+such a loop then lost the token on its own back edge (`OwnedReleasePlacement:
+IncompatibleOwnedEdge`). All loops now thread only the names their bodies rebind (assign,
+push, or pass to a write-back parameter), as `for` did; every other outer binding keeps its
+value and its token across the loop. A dictionary-typed signature matches the candidate
+ABI by its tuple shape. Newly agree: `maze`. Census: 122/163 check, 66 runnable
+three-legged parity, 0 disagree.

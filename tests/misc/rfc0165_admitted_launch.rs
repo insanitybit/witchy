@@ -793,3 +793,15 @@ fn admitted_dictionaries_are_tuples_of_two_lists_in_insertion_order() {
         vec!["2 11 -1 true false", "a=11", "b=2", "13 [a, b] 2", "70 0 2"].into_iter().map(str::to_string).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn admitted_inner_loops_thread_only_the_names_they_rebind() {
+    // A `while` (like a `for`) carries only the names its body rebinds as
+    // header lanes; an outer reference it merely reads keeps its value and
+    // its token, so a `for` around it still owns that token on its own
+    // back edge (the shape of `maze.find`).
+    let output = run_admitted(
+        "fn find(rows: List(String), m: String, width: Int) -> Int:\n    var pos = -1\n    var r = 0\n    for row in rows:\n        var c = 0\n        while c < width:\n            if row.substring(c, c + 1) == m:\n                pos = r * width + c\n            c = c + 1\n        r = r + 1\n    pos\n\nfn count(rows: List(String), m: String) -> Int:\n    var n = 0\n    for row in rows:\n        var c = 0\n        while c < row.length():\n            if row.substring(c, c + 1) == m:\n                n = n + 1\n            c = c + 1\n    n\n\nfn main(console: Console):\n    let rows = [\"ab\", \"cS\", \"SS\"]\n    console.print(\"${find(rows, \\\"S\\\", 2)} ${find(rows, \\\"z\\\", 2)} ${count(rows, \\\"S\\\")}\")\n",
+    );
+    assert_eq!(output, vec!["5 -1 3".to_string()]);
+}

@@ -508,7 +508,11 @@ fn value_type_matches_source(
                 matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
             }),
         },
-        witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Option" | "Result") => {
+        // A dictionary is its canonical tuple of the key list and the value
+        // list, so it matches by that shape like any other aggregate.
+        witchy_syntax::ast::Type::Named(name, arguments)
+            if matches!(name.as_str(), "Option" | "Result") || (name == "Dict" && arguments.len() == 2) =>
+        {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
                 matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
             })

@@ -987,6 +987,33 @@ fn block_breaks_loop(block: &witchy_syntax::ast::Block) -> bool {
     walk_block(block)
 }
 
+/// The outer names a loop threads as header lanes: those its body rebinds
+/// (assigns, pushes, or passes to a write-back parameter), sorted.
+fn loop_lane_names(outer: &HashMap<String, ValueId>, rebound: &LoopRebindings) -> Vec<String> {
+    let mut names = rebound
+        .assigned
+        .iter()
+        .chain(rebound.pushed.iter())
+        .filter(|name| outer.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The bindings inside or after a loop: every outer binding, with the
+/// threaded names rebound to their lane values.
+fn lane_bindings(
+    outer: &HashMap<String, ValueId>,
+    names: &[String],
+    values: impl Iterator<Item = ValueId>,
+) -> HashMap<String, ValueId> {
+    let mut bindings = outer.clone();
+    bindings.extend(names.iter().cloned().zip(values));
+    bindings
+}
+
 fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
     fn walk_block(block: &witchy_syntax::ast::Block, out: &mut LoopRebindings) {
         for statement in &block.stmts {
@@ -2905,8 +2932,12 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
-        let mut names = outer.keys().cloned().collect::<Vec<_>>();
-        names.sort();
+        // Only a name the body rebinds is a header lane; every other outer
+        // binding keeps its value (and its token) across the loop, as in
+        // `lower_for`, so an inner loop never renames what an outer loop
+        // does not carry.
+        let rebound = self.loop_rebindings_with_write_backs(body);
+        let mut names = loop_lane_names(&outer, &rebound);
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -2921,7 +2952,7 @@ impl FunctionLowerer<'_> {
         state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
         let header = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &self.loop_rebindings_with_write_backs(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -2935,7 +2966,7 @@ impl FunctionLowerer<'_> {
         }
         self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
         self.current = header;
-        self.bindings = names.iter().zip(&header_values).map(|(name, value)| (name.clone(), *value)).collect();
+        self.bindings = lane_bindings(&outer, &names, header_values.iter().copied());
         let mut metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
@@ -2971,7 +3002,7 @@ impl FunctionLowerer<'_> {
         }
         let body_values = self.block_parameter_values(body_id);
         self.current = body_id;
-        self.bindings = names.iter().zip(&body_values).map(|(name, value)| (name.clone(), *value)).collect();
+        self.bindings = lane_bindings(&outer, &names, body_values.iter().copied());
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
@@ -3008,7 +3039,7 @@ impl FunctionLowerer<'_> {
         self.restore_facts(facts, exit);
         self.current = exit;
         let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
-        self.bindings = names.iter().zip(exit_parameters.iter()).map(|(name, parameter)| (name.clone(), parameter.value)).collect();
+        self.bindings = lane_bindings(&outer, &names, exit_parameters.iter().map(|parameter| parameter.value));
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
@@ -3025,8 +3056,12 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
-        let mut names = outer.keys().cloned().collect::<Vec<_>>();
-        names.sort();
+        // Only a name the body rebinds is a header lane; every other outer
+        // binding keeps its value (and its token) across the loop, as in
+        // `lower_for`, so an inner loop never renames what an outer loop
+        // does not carry.
+        let rebound = self.loop_rebindings_with_write_backs(body);
+        let mut names = loop_lane_names(&outer, &rebound);
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -3045,7 +3080,7 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &self.loop_rebindings_with_write_backs(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -3064,11 +3099,7 @@ impl FunctionLowerer<'_> {
             arguments: entry_state,
         })?;
         self.current = header;
-        self.bindings = names
-            .iter()
-            .zip(&header_values)
-            .map(|(name, value)| (name.clone(), *value))
-            .collect();
+        self.bindings = lane_bindings(&outer, &names, header_values.iter().copied());
         let mut metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
@@ -3090,11 +3121,7 @@ impl FunctionLowerer<'_> {
         let body_parameters = self.blocks[body_id.get() as usize].parameters.clone();
         let body_values = body_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         self.current = body_id;
-        self.bindings = names
-            .iter()
-            .zip(&body_values)
-            .map(|(name, value)| (name.clone(), *value))
-            .collect();
+        self.bindings = lane_bindings(&outer, &names, body_values.iter().copied());
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
@@ -3130,11 +3157,7 @@ impl FunctionLowerer<'_> {
         });
         self.restore_facts(facts, exit);
         self.current = exit;
-        self.bindings = names
-            .iter()
-            .zip(exit_parameters.iter())
-            .map(|(name, parameter)| (name.clone(), parameter.value))
-            .collect();
+        self.bindings = lane_bindings(&outer, &names, exit_parameters.iter().map(|parameter| parameter.value));
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
@@ -3168,8 +3191,12 @@ impl FunctionLowerer<'_> {
         if outer.contains_key(variable) {
             return Err(CanonicalLoweringError::DuplicateBinding(variable.to_owned()));
         }
-        let mut names = outer.keys().cloned().collect::<Vec<_>>();
-        names.sort();
+        // Only a name the body rebinds is a header lane; every other outer
+        // binding keeps its value (and its token) across the loop, as in
+        // `lower_for`, so an inner loop never renames what an outer loop
+        // does not carry.
+        let rebound = self.loop_rebindings_with_write_backs(body);
+        let mut names = loop_lane_names(&outer, &rebound);
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -3186,7 +3213,7 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &self.loop_rebindings_with_write_backs(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false, &rebound);
         if block_breaks_loop(body) {
             self.give_exit_header_ownership(header, exit);
         }
@@ -3203,7 +3230,7 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
 
         let bind_state = |lowerer: &mut Self, values: &[ValueId]| {
-            lowerer.bindings = names.iter().zip(values).map(|(name, value)| (name.clone(), *value)).collect();
+            lowerer.bindings = lane_bindings(&outer, &names, values.iter().copied());
             let mut metadata_index = names.len();
             for name in &list_names {
                 let object = lowerer.bindings[name];
@@ -9761,8 +9788,9 @@ mod tests {
         );
         let function = &candidate.functions()[0];
         assert_eq!(function.blocks.len(), 4);
-        assert_eq!(function.blocks[1].parameters.len(), 2);
-        assert_eq!(function.blocks[3].parameters.len(), 2);
+        // Only the rebound `i` is a lane; `limit` keeps its entry value.
+        assert_eq!(function.blocks[1].parameters.len(), 1);
+        assert_eq!(function.blocks[3].parameters.len(), 1);
         let result = check_initial(candidate);
         assert!(result.is_ok(), "owned tail-call candidate rejected: {result:?}");
     }
