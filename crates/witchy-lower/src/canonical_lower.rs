@@ -3117,6 +3117,14 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if matches!(name.as_str(), "string.chars" | "string.__chars") => {
                 self.lower_string_chars(args)
             }
+            // `xs.at(i)` reaches the lowering as the `list.at` intrinsic, the
+            // same bounds-checked element read as `xs[i]`.
+            Expr::Call { name, args } if matches!(name.as_str(), "list.at" | "list.__at") => {
+                let [base, index] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("list.at arity"));
+                };
+                self.lower_index(base, index)
+            }
             Expr::Call { name, args } if witchy_syntax::ast::is_render_intrinsic(name) => {
                 let [argument] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("render arity"));

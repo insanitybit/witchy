@@ -27,7 +27,7 @@ mod canonical_entry;
 pub use canonical_entry::{CANONICAL_ENTRY_SECTION, canonical_entry_from_wasm};
 pub use canonical_wasmir::{
     AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,
-    CanonicalEntryResult, admit_canonical,
+    CanonicalEntryResult, HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT, admit_canonical,
 };
 pub mod safewir;
 pub mod safewir_adapter;

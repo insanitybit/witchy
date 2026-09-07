@@ -12601,3 +12601,12 @@ mod callable_layout_tests;
 
 #[cfg(test)]
 mod host_layout_tests;
+
+/// The independently validated SafeWIR of a checked module, for the
+/// execution oracle (RFC-0135): the same graph admission encodes, so the
+/// oracle's semantics are the checker's and never the backend's.
+pub fn validate_checked_module_for_oracle(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> Result<witchy_wir::canonical_safewir::ValidatedSafeWir, String> {
+    crate::canonical_pipeline::validate_checked_module(checked).map_err(|error| error.to_string())
+}

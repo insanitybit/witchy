@@ -217,6 +217,16 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
             lines
         }),
     };
+    // Third leg (RFC-0135): the executable SafeWIR oracle runs the same
+    // validated graph admission encoded, with the checker's semantics. Its
+    // output must match the compiled run line for line, and it must return
+    // with no live reference-counted object. Any disagreement, including the
+    // oracle refusing a program the backend ran, is loud.
+    if unmintable.is_none() {
+        if let Err(message) = safewir_oracle_agrees(&checked, &artifact, &compiled) {
+            unexpected!("SafeWIR oracle: {message}");
+        }
+    }
     // Positive control (RFC-0058 §1): when armed, deliberately perturb the COMPILED
     // side so the oracle MUST report a divergence — proving the gate can fail. An
     // `Ok` gains an impossible sentinel line; an `Err` becomes an `Ok` carrying only
@@ -665,4 +675,41 @@ fn run_compiled(
         None
     };
     Ok((lines, exit_code))
+}
+
+/// Run the admitted program through the executable SafeWIR interpreter and
+/// compare with the compiled run. `Ok(())` means agreement (both produced the
+/// same lines, or both failed); `Err` names the divergence.
+fn safewir_oracle_agrees(
+    checked: &witchy_types::pipeline::CheckedModule,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    compiled: &Result<Vec<String>, String>,
+) -> Result<(), String> {
+    use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig, InterpreterValue};
+    let Some(entry) = artifact.entry() else {
+        return Ok(());
+    };
+    let validated = codegen::validate_checked_module_for_oracle(checked)?;
+    let function = entry
+        .export()
+        .strip_prefix('f')
+        .and_then(|id| id.parse::<u32>().ok())
+        .map(witchy_wir::canonical_safewir::FunctionId::new)
+        .ok_or_else(|| format!("entry export `{}` names no canonical function", entry.export()))?;
+    let arguments = entry.capabilities().iter().map(|_| InterpreterValue::Capability(0)).collect();
+    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 200_000_000 });
+    match (run, compiled) {
+        (Ok(run), Ok(lines)) => {
+            if run.output != *lines {
+                return Err(format!("output differs: oracle {:?}, compiled {:?}", run.output, lines));
+            }
+            if run.leaked_objects > 0 {
+                return Err(format!("{} reference-counted object(s) survived the entry", run.leaked_objects));
+            }
+            Ok(())
+        }
+        (Err(_), Err(_)) => Ok(()),
+        (Err(error), Ok(_)) => Err(format!("oracle failed where the backend ran: {error:?}")),
+        (Ok(run), Err(error)) => Err(format!("oracle ran ({:?}) where the backend failed: {error}", run.output)),
+    }
 }

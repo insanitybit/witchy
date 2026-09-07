@@ -1575,6 +1575,59 @@ impl Vm {
     /// out-of-object overrun that is in-bounds for the linear memory, so wasmtime never
     /// saw it. A no-op (and free) when nothing was registered, i.e. on uninstrumented
     /// builds. Drains the shadow so a reused VM starts clean.
+    /// Audit an admitted canonical module's heap after its entry returned:
+    /// every reference-counted object between the heap base and the bump
+    /// pointer must be on the reclaimed free list. Under callee-drops a
+    /// surviving object is a reclamation defect in the program's lowering,
+    /// never a legitimate state. `None` when the module is not canonical.
+    pub fn canonical_heap_leaks(&mut self) -> Result<Option<usize>> {
+        let mut read_global = |name: &str| -> Option<u32> {
+            let global = self.instance.get_global(&mut self.store, name)?;
+            global.get(&mut self.store).i32().map(|value| value as u32)
+        };
+        let (Some(top), Some(free), Some(base)) = (
+            read_global(witchy_wir::HEAP_TOP_EXPORT),
+            read_global(witchy_wir::HEAP_FREE_EXPORT),
+            read_global(witchy_wir::HEAP_BASE_EXPORT),
+        ) else {
+            return Ok(None);
+        };
+        let Some(memory) = self.instance.get_memory(&mut self.store, "memory") else {
+            return Ok(None);
+        };
+        let data = memory.data(&self.store);
+        let word = |at: u32| -> Result<u32> {
+            let at = at as usize;
+            data.get(at..at + 4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+                .ok_or_else(|| Error::msg(format!("HEAP CHECK: heap word {at:#x} is outside linear memory")))
+        };
+        // Reclaim links an object into the free list through its first word.
+        let mut freed = std::collections::BTreeSet::new();
+        let mut cursor = free;
+        while cursor != 0 {
+            if !freed.insert(cursor) {
+                return Err(Error::msg("HEAP CHECK: the reclaimed free list is cyclic"));
+            }
+            cursor = word(cursor)?;
+        }
+        // Objects are laid out back to back: [rc][size][size bytes].
+        let mut leaks = 0usize;
+        let mut cursor = base;
+        while cursor.saturating_add(8) <= top {
+            let size = word(cursor + 4)?;
+            let object = cursor + 8;
+            if !freed.contains(&object) {
+                leaks += 1;
+            }
+            cursor = object.saturating_add(size);
+            if size == 0 {
+                return Err(Error::msg(format!("HEAP CHECK: object at {object:#x} has a zero-length header")));
+            }
+        }
+        Ok(Some(leaks))
+    }
+
     fn heap_sweep(&mut self) -> Result<()> {
         let objs = std::mem::take(&mut self.store.data_mut().heap_objects);
         if objs.is_empty() {
@@ -2059,7 +2112,11 @@ impl Runtime {
         // An admitted canonical artifact carries its launch entry in a custom
         // section (RFC-0165 B11); its bytes are instantiated exactly, never
         // optimized or cached, and entered through that entry.
-        let entry = witchy_wir::canonical_entry_from_wasm(wasm).map_err(Error::msg)?;
+        let entry = if wasm.starts_with(b"\0asm") {
+            witchy_wir::canonical_entry_from_wasm(wasm).map_err(Error::msg)?
+        } else {
+            None
+        };
         let module = if entry.is_some() {
             build_admitted_module(&self.engine, wasm)?
         } else {

@@ -87,3 +87,5 @@ mod rfc0103_build_step_confinement;
 mod rfc0103_csp;
 #[path = "misc/rfc0165_admitted_launch.rs"]
 mod rfc0165_admitted_launch;
+#[path = "misc/rfc0165_oracle.rs"]
+mod rfc0165_oracle;

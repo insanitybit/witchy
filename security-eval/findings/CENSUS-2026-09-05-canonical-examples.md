@@ -554,3 +554,26 @@ route is 0/107.
   (moving elements out of shared storage; pointer-bearing `CloneRange` is
   fail-closed until the typed transfer kernel exists).
 
+## Progress (owner, 2026-09-06, fourteenth slice: execution oracle)
+
+- **Executable SafeWIR oracle**: the checker-side interpreter now models
+  capability tokens, reference-bearing loads and stores, byte and range
+  copies and moves, recursive release of a dropped object's children, and the
+  console print host call (lines recorded with the host's trailing-newline
+  rule). `interpret_program` runs an entry as the launcher would and reports
+  the printed lines, the result, and the count of reference-counted objects
+  still live at return.
+- **Wasm heap audit**: admitted modules export their allocator globals (bump
+  pointer, free-list head, heap base); `Vm::canonical_heap_leaks` walks the
+  heap after the entry returns and counts objects not on the reclaimed free
+  list. The development runner refuses a program that leaks.
+- **Three-legged parity**: `witchy parity` runs the oracle on the validated
+  graph admission encoded and requires identical output, identical
+  success/failure, and no surviving object; any disagreement, including the
+  oracle refusing a program the backend ran, is loud.
+  `tests/misc/rfc0165_oracle.rs` pins the oracle over the foundation programs
+  and every admitted example. This is the guard the destructor scratch-slot
+  leak would have tripped.
+- `list.at` lowers as the bounds-checked element read (`xs.at(i)` is `xs[i]`);
+  `queens` now clears lowering and stops at a checker join in `solve`.
+

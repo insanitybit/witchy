@@ -10,8 +10,8 @@ use std::fmt;
 
 use crate::canonical_safewir::{
     AllocationClass, ArithmeticOperator, BasicBlock, BlockId, CallArgument, CanonicalModule,
-    ComparisonOperator, Extent, Function, FunctionId, HeaderField, LoadTransfer, Operation,
-    InitialValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
+    ComparisonOperator, Extent, Function, FunctionId, HeaderField, HostCallArgument, LoadTransfer,
+    Operation, InitialValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
     ValidatedSafeWir, ValueId,
 };
 use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind};
@@ -30,6 +30,21 @@ pub enum InterpreterValue {
     InlineAggregate { layout: LayoutId, fields: Vec<InterpreterValue> },
     ObjectRef(u64),
     Function(FunctionId),
+    /// An opaque host token for a capability parameter; the interpreter
+    /// never reads it, only passes it along and hands it to host calls.
+    Capability(u32),
+}
+
+/// The observable outcome of running a program entry to completion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgramRun {
+    pub results: Vec<InterpreterValue>,
+    /// Lines the program printed through the console host call, in order.
+    pub output: Vec<String>,
+    /// Reference-counted objects still live when the entry returned. Under
+    /// callee-drops every token is released by exit, so any survivor is a
+    /// reclamation defect in the program's lowering.
+    pub leaked_objects: usize,
 }
 
 /// A precise failure of the executable SafeWIR semantics.
@@ -108,6 +123,26 @@ pub fn interpret_with_config(
     Engine::new(module.module(), config).execute(function, arguments)
 }
 
+/// Run a program entry as the launcher would: capability tokens in, console
+/// output captured, and the heap audited for objects the program never
+/// released. This is the execution oracle for admitted programs: its
+/// semantics are the checker's, independent of the Wasm backend.
+pub fn interpret_program(
+    module: &ValidatedSafeWir,
+    function: FunctionId,
+    arguments: Vec<InterpreterValue>,
+    config: InterpreterConfig,
+) -> Result<ProgramRun, InterpretError> {
+    let mut engine = Engine::new(module.module(), config);
+    let results = engine.execute(function, arguments)?;
+    let leaked_objects = engine
+        .objects
+        .values()
+        .filter(|object| matches!(object.storage, RuntimeStorage::Allocation(_)))
+        .count();
+    Ok(ProgramRun { results, output: engine.output, leaked_objects })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum CellKey {
     Field(u32),
@@ -137,6 +172,12 @@ struct Object {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeTransfer {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeStorage {
     Allocation(AllocationClass),
     StaticData,
@@ -149,6 +190,7 @@ struct Engine<'a> {
     next_object: u64,
     objects: BTreeMap<u64, Object>,
     static_objects: BTreeMap<crate::canonical_safewir::StaticDataId, u64>,
+    output: Vec<String>,
 }
 
 enum FunctionExit {
@@ -165,6 +207,7 @@ impl<'a> Engine<'a> {
             next_object: 0,
             objects: BTreeMap::new(),
             static_objects: BTreeMap::new(),
+            output: Vec::new(),
         }
     }
 
@@ -374,14 +417,14 @@ impl<'a> Engine<'a> {
                 value,
                 transfer,
             } => self.store(place, *value, *transfer, values)?,
-            Operation::CopyBytes { .. } => {
-                return Err(InterpretError::UnsupportedOperation("CopyBytes"));
+            Operation::CopyBytes { destination, source, length } => {
+                self.copy_range(destination, source, *length, RangeTransfer::Copy, values)?;
             }
-            Operation::MoveRange { .. } => {
-                return Err(InterpretError::UnsupportedOperation("MoveRange"));
+            Operation::MoveRange { destination, source, count } => {
+                self.copy_range(destination, source, *count, RangeTransfer::Move, values)?;
             }
-            Operation::CloneRange { .. } => {
-                return Err(InterpretError::UnsupportedOperation("CloneRange"));
+            Operation::CloneRange { destination, source, count } => {
+                self.copy_range(destination, source, *count, RangeTransfer::Copy, values)?;
             }
             Operation::UpdateCount { object, count } => {
                 let object = self.object_value(*object, values)?;
@@ -389,9 +432,12 @@ impl<'a> Engine<'a> {
                 self.update_count(object, count)?;
             }
             Operation::MoveValue { destination, source } => {
-                let value = values
-                    .remove(source)
-                    .ok_or(InterpretError::MissingValue(*source))?;
+                // A reference move transfers the token; a scalar move is a
+                // copy, as the checker and the backend both treat it.
+                let value = self.value(*source, values)?.clone();
+                if matches!(value, InterpreterValue::ObjectRef(_)) {
+                    values.remove(source);
+                }
                 values.insert(*destination, value);
             }
             Operation::CloneRef { destination, source } => {
@@ -437,9 +483,114 @@ impl<'a> Engine<'a> {
                 let returned = self.execute(callee, arguments)?;
                 self.bind_results(destinations, returned, values)?;
             }
-            Operation::HostCall { .. } => {
-                return Err(InterpretError::UnsupportedOperation("HostCall"));
+            Operation::HostCall { destinations, import, arguments } => {
+                self.host_call(*import, destinations, arguments, values)?;
             }
+        }
+        Ok(())
+    }
+
+    /// The console print import is the one host call the oracle models: it
+    /// reads the buffer's bytes and records a line. Every other import is an
+    /// effect the oracle does not model and fails closed.
+    fn host_call(
+        &mut self,
+        import: crate::canonical_safewir::ImportId,
+        destinations: &[ValueId],
+        arguments: &[HostCallArgument],
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(), InterpretError> {
+        let contract = self
+            .module
+            .imports()
+            .iter()
+            .find(|contract| contract.id == import)
+            .ok_or(InterpretError::UnsupportedOperation("HostCall unknown import"))?;
+        if contract.module != "witchy" || contract.name != "print" || !destinations.is_empty() {
+            return Err(InterpretError::UnsupportedOperation("HostCall import"));
+        }
+        let [HostCallArgument::Buffer { place, .. }] = arguments else {
+            return Err(InterpretError::UnsupportedOperation("HostCall print arguments"));
+        };
+        let (object, start, length) = self.slice_place(place, values)?;
+        self.check_range(object, start, length, false)?;
+        let cells = &self.object(object)?.cells;
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in start..start.checked_add(length).ok_or(InterpretError::ArithmeticTrap)? {
+            match cells.get(&CellKey::Element(index)) {
+                Some(InterpreterValue::Size(byte)) => bytes.push(u8::try_from(*byte).map_err(|_| InterpretError::TypeMismatch("byte cell"))?),
+                Some(_) => return Err(InterpretError::TypeMismatch("byte cell")),
+                None => return Err(InterpretError::UninitializedPlace),
+            }
+        }
+        // The console host records a line with its trailing newlines removed.
+        self.output.push(String::from_utf8_lossy(&bytes).trim_end_matches('\n').to_owned());
+        Ok(())
+    }
+
+    fn slice_place(
+        &self,
+        place: &Place,
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(u64, u64, u64), InterpretError> {
+        let object = self.object_value(place.object(), values)?;
+        let Projection::Slice { start, length } = place.projection() else {
+            return Err(InterpretError::UnsupportedOperation("range place"));
+        };
+        Ok((object, self.size_value(*start, values)?, self.size_value(*length, values)?))
+    }
+
+    /// A range must lie inside the logical count for reads and inside the
+    /// capacity for writes, exactly as the checker's range rule bounds it.
+    fn check_range(&self, object: u64, start: u64, length: u64, write: bool) -> Result<(), InterpretError> {
+        let RuntimeExtent::Counted { count, capacity, .. } = &self.object(object)?.extent else {
+            return Err(InterpretError::TypeMismatch("range on uncounted object"));
+        };
+        let bound = if write { *capacity } else { *count };
+        let end = start.checked_add(length).ok_or(InterpretError::ArithmeticTrap)?;
+        if end > bound {
+            return Err(InterpretError::IndexOutOfBounds { index: end, length: bound });
+        }
+        Ok(())
+    }
+
+    /// `CopyBytes`/`CloneRange` copy cells; `MoveRange` moves them, which
+    /// carries each child token across without a retain.
+    fn copy_range(
+        &mut self,
+        destination: &Place,
+        source: &Place,
+        length: ValueId,
+        transfer: RangeTransfer,
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(), InterpretError> {
+        let length = self.size_value(length, values)?;
+        let (source_object, source_start, source_length) = self.slice_place(source, values)?;
+        let (destination_object, destination_start, destination_length) = self.slice_place(destination, values)?;
+        if source_length != length || destination_length != length {
+            return Err(InterpretError::TypeMismatch("range length"));
+        }
+        if source_object == destination_object {
+            return Err(InterpretError::UnsupportedOperation("overlapping range"));
+        }
+        self.check_range(source_object, source_start, length, false)?;
+        self.check_range(destination_object, destination_start, length, true)?;
+        if self.object(destination_object)?.immutable {
+            return Err(InterpretError::ImmutableObject(destination_object));
+        }
+        let mut moved = Vec::with_capacity(length as usize);
+        for offset in 0..length {
+            let key = CellKey::Element(source_start.checked_add(offset).ok_or(InterpretError::ArithmeticTrap)?);
+            let cell = match transfer {
+                RangeTransfer::Copy => self.object(source_object)?.cells.get(&key).cloned(),
+                RangeTransfer::Move => self.object_mut(source_object)?.cells.remove(&key),
+            };
+            moved.push(cell.ok_or(InterpretError::UninitializedPlace)?);
+        }
+        let cells = &mut self.object_mut(destination_object)?.cells;
+        for (offset, cell) in moved.into_iter().enumerate() {
+            let key = CellKey::Element(destination_start.checked_add(offset as u64).ok_or(InterpretError::ArithmeticTrap)?);
+            cells.insert(key, cell);
         }
         Ok(())
     }
@@ -806,12 +957,36 @@ impl<'a> Engine<'a> {
         transfer: LoadTransfer,
         values: &BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<InterpreterValue, InterpretError> {
-        if transfer != LoadTransfer::CopyScalar {
-            return Err(InterpretError::UnsupportedOperation(
-                "reference-bearing Load transfer",
-            ));
-        }
         let object = self.object_value(place.object(), values)?;
+        if transfer != LoadTransfer::CopyScalar {
+            // A reference cell: a shared clone retains the child, a unique
+            // move takes the cell (its token leaves the container).
+            let key = match place.projection() {
+                Projection::Field { index } => CellKey::Field(*index),
+                Projection::Element { index } => {
+                    let index = self.size_value(*index, values)?;
+                    self.check_element(object, index)?;
+                    CellKey::Element(index)
+                }
+                _ => return Err(InterpretError::UnsupportedOperation("reference-bearing Load place")),
+            };
+            return match transfer {
+                LoadTransfer::CloneShared => {
+                    let value = self.object(object)?.cells.get(&key).cloned().ok_or(InterpretError::UninitializedPlace)?;
+                    if let InterpreterValue::ObjectRef(child) = value {
+                        self.retain(child)?;
+                    }
+                    Ok(value)
+                }
+                LoadTransfer::MoveUnique => {
+                    if self.object(object)?.immutable {
+                        return Err(InterpretError::ImmutableObject(object));
+                    }
+                    self.object_mut(object)?.cells.remove(&key).ok_or(InterpretError::UninitializedPlace)
+                }
+                LoadTransfer::CopyScalar => unreachable!("handled below"),
+            };
+        }
         match place.projection() {
             Projection::Header(field) => {
                 let object = self.object(object)?;
@@ -852,15 +1027,14 @@ impl<'a> Engine<'a> {
         transfer: StoreTransfer,
         values: &BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<(), InterpretError> {
-        if transfer != StoreTransfer::CopyScalar {
-            return Err(InterpretError::UnsupportedOperation(
-                "reference-bearing Store transfer",
-            ));
-        }
         let object = self.object_value(place.object(), values)?;
         let value = self.value(source, values)?.clone();
         if self.object(object)?.immutable {
             return Err(InterpretError::ImmutableObject(object));
+        }
+        // A unique move stores the token itself; a shared store adds one.
+        if let (StoreTransfer::CloneShared, InterpreterValue::ObjectRef(child)) = (transfer, &value) {
+            self.retain(*child)?;
         }
         let key = match place.projection() {
             Projection::Header(_) => {
@@ -868,8 +1042,10 @@ impl<'a> Engine<'a> {
             }
             Projection::Field { index } => CellKey::Field(*index),
             Projection::Element { index } => {
+                // A store may initialize a slot past the logical count, up to
+                // the capacity; the count follows through `UpdateCount`.
                 let index = self.size_value(*index, values)?;
-                self.check_element(object, index)?;
+                self.check_range(object, index, 1, true)?;
                 CellKey::Element(index)
             }
             Projection::Slice { .. } => {
@@ -950,7 +1126,13 @@ impl<'a> Engine<'a> {
             object_state.references
         };
         if remaining == 0 {
-            self.objects.remove(&object);
+            // Pointer-bearing reclamation releases every initialized child.
+            let cells = self.objects.remove(&object).map(|object| object.cells).unwrap_or_default();
+            for cell in cells.into_values() {
+                if let InterpreterValue::ObjectRef(child) = cell {
+                    self.release(child)?;
+                }
+            }
         }
         Ok(())
     }

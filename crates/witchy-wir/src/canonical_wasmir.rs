@@ -1391,6 +1391,12 @@ pub struct CanonicalEntry {
 /// by the artifact's Wasm digest like every other section. Reading it back
 /// from bytes lives in `canonical_entry`, outside this private encoder.
 pub(crate) const ENTRY_SECTION: &str = "witchy.entry";
+/// Exported allocator globals of an admitted module: the bump pointer, the
+/// reclaimed-object free list head, and the heap base below which pointers
+/// name static data.
+pub const HEAP_TOP_EXPORT: &str = "__witchy_heap_bump";
+pub const HEAP_FREE_EXPORT: &str = "__witchy_heap_free";
+pub const HEAP_BASE_EXPORT: &str = "__witchy_heap_base";
 const ENTRY_VERSION: u8 = 1;
 
 impl CanonicalEntry {
@@ -3460,6 +3466,13 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     );
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
+    // The allocator's three globals are exported read-only for the host's
+    // heap audit (a launcher may check that an admitted program released
+    // every object); they grant no authority the module does not already
+    // exercise on its own memory.
+    exports.export(HEAP_TOP_EXPORT, ExportKind::Global, 0);
+    exports.export(HEAP_FREE_EXPORT, ExportKind::Global, 1);
+    exports.export(HEAP_BASE_EXPORT, ExportKind::Global, 2);
     let mut code = CodeSection::new();
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter().map(|segment| (segment.id, segment.offset)).collect();
     let mut data = DataSection::new();
@@ -5421,6 +5434,13 @@ fn expected_metadata_prefix(
     let mut tables = TableSection::new();
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
+    // The allocator's three globals are exported read-only for the host's
+    // heap audit (a launcher may check that an admitted program released
+    // every object); they grant no authority the module does not already
+    // exercise on its own memory.
+    exports.export(HEAP_TOP_EXPORT, ExportKind::Global, 0);
+    exports.export(HEAP_FREE_EXPORT, ExportKind::Global, 1);
+    exports.export(HEAP_BASE_EXPORT, ExportKind::Global, 2);
     let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     for (index, function) in target.functions.iter().enumerate() {
         let type_index = signature_indices.get(&function.signature).copied()
