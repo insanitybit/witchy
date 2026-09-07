@@ -4444,57 +4444,6 @@ impl FunctionLowerer<'_> {
         Ok(destinations[..destinations.len() - write_back_count(&declaration)].to_vec())
     }
 
-    fn lower_indirect_call(
-        &mut self,
-        callee: ValueId,
-        arguments: &[Expr],
-        signature_id: FunctionSignatureId,
-    ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
-        let signature = self
-            .signatures
-            .get(signature_id.get() as usize)
-            .cloned()
-            .ok_or(CanonicalLoweringError::UnsupportedExpression(
-                "indirect call signature",
-            ))?;
-        // Reference parameters follow the direct-call conventions: a `let`
-        // reference is cloned before the call and moved into the callee's
-        // shared parameter, which the checker's indirect-call rule admits.
-        if signature
-            .parameters
-            .iter()
-            .copied()
-            .any(|value_type| !is_indirect_result(value_type))
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "indirect call parameter outside the v1 value set",
-            ));
-        }
-        if let Some(result) = signature
-            .results
-            .iter()
-            .copied()
-            .find(|value_type| !is_indirect_result(*value_type))
-        {
-            return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
-        }
-        let call_arguments = self.lower_call_arguments("<indirect>", arguments, signature_id, &signature, false)?;
-        let destinations = signature
-            .results
-            .iter()
-            .copied()
-            .map(|value_type| self.fresh(value_type))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.push_operation(Operation::VarCall {
-            destinations: destinations.clone(),
-            callee,
-            signature: signature_id,
-            arguments: call_arguments,
-        });
-        self.rebind_write_backs(arguments, &signature, &destinations)?;
-        Ok(destinations[..destinations.len() - write_back_count(&signature)].to_vec())
-    }
-
     fn rebind_write_backs(
         &mut self,
         source_arguments: &[Expr],
