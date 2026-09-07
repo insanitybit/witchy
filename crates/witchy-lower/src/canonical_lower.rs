@@ -653,6 +653,7 @@ fn lower_function(
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
+        token_join_parameters: BTreeSet::new(),
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
         write_back_parameters: Vec::new(),
@@ -754,6 +755,9 @@ struct FunctionLowerer<'a> {
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     owned_parameters: Vec<ValueId>,
+    /// Join parameters whose every lane carried a reference-count token, so
+    /// the parameter carries one too (see `carries_token`).
+    token_join_parameters: BTreeSet<ValueId>,
     /// Source name of each entry parameter, so an exit drop targets the
     /// token under its current binding (a loop threads parameters through
     /// block parameters) rather than the entry value.
@@ -1435,6 +1439,17 @@ impl FunctionLowerer<'_> {
             return Ok(None);
         }
 
+        // A static lane joined with a token lane: materialize the static one
+        // so both edges carry a token (see `materialize_mixed_lanes`).
+        let mut all_tokens = false;
+        let (then_value, else_value) = match (then_value, else_value) {
+            (Some(then), Some(other)) => {
+                let mut lanes = [(then_end, then), (else_end, other)];
+                all_tokens = self.materialize_mixed_lanes(&mut lanes)?;
+                (Some(lanes[0].1), Some(lanes[1].1))
+            }
+            values => values,
+        };
         let result_type = match (then_value, else_value) {
             (Some(then_value), Some(else_value)) => {
                 let then_type = self.values[&then_value];
@@ -1501,6 +1516,9 @@ impl FunctionLowerer<'_> {
             then_arguments.push(then_value);
             else_arguments.push(else_value);
             let result = join_parameters[parameter_index].value;
+            if all_tokens {
+                self.token_join_parameters.insert(result);
+            }
             if let Some(((then_count, then_capacity), (else_count, else_capacity))) =
                 shared_result_extents
             {
@@ -1571,11 +1589,6 @@ impl FunctionLowerer<'_> {
             self.current = current;
             self.bindings = outer.clone();
             let arm_block = self.new_block(&[])?;
-            let pattern_binding = self.lower_match_pattern(scrutinee, &arm.pattern)?;
-            if let Some((name, value)) = pattern_binding {
-                self.bindings.insert(name, value);
-            }
-            let arm_bindings = self.bindings.clone();
             let condition = self.match_pattern_condition(scrutinee, &arm.pattern)?;
             // Only an arm that can fail (a refutable pattern or a guard) has a
             // fallthrough successor.
@@ -1600,7 +1613,12 @@ impl FunctionLowerer<'_> {
             }
 
             self.current = arm_block;
-            self.bindings = arm_bindings;
+            self.bindings = outer.clone();
+            // Pattern bindings are emitted in the arm block: a list pattern's
+            // element loads are guarded by the length test that reached it.
+            for (name, value) in self.lower_match_pattern(scrutinee, &arm.pattern)? {
+                self.bindings.insert(name, value);
+            }
             if let Some(guard) = &arm.guard {
                 let guard = self.lower_expr(guard)?;
                 if self.values[&guard] != ValueType::Bool {
@@ -1678,6 +1696,16 @@ impl FunctionLowerer<'_> {
         if let Some(result_type) = result_type {
             parameter_types.push(result_type);
         }
+        // A static lane joined with a token lane would hand the release
+        // placer a token on one edge only; materialize the static lanes.
+        let mut lanes = arm_results
+            .iter()
+            .filter_map(|(body_end, _, value)| value.map(|value| (*body_end, value)))
+            .collect::<Vec<_>>();
+        let all_tokens = self.materialize_mixed_lanes(&mut lanes)?;
+        for ((_, _, value), (_, lane)) in arm_results.iter_mut().filter(|(_, _, value)| value.is_some()).zip(&lanes) {
+            *value = Some(*lane);
+        }
         let result_values = arm_results
             .iter()
             .filter_map(|(_, _, value)| *value)
@@ -1704,6 +1732,9 @@ impl FunctionLowerer<'_> {
         let join_parameters = self.blocks[join.get() as usize].parameters.clone();
         let mut merged = outer;
         let result = result_type.map(|_| join_parameters[result_parameter_index].value);
+        if all_tokens && let Some(result) = result {
+            self.token_join_parameters.insert(result);
+        }
         for (arm_index, (body_end, bindings, value)) in arm_results.into_iter().enumerate() {
             let mut arguments = changed_names
                 .iter()
@@ -1738,19 +1769,123 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_match_pattern(
-        &self,
+        &mut self,
         scrutinee: ValueId,
         pattern: &Pattern,
-    ) -> Result<Option<(String, ValueId)>, CanonicalLoweringError> {
+    ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
         match pattern {
-            Pattern::Var(name) if name != "_" => Ok(Some((name.clone(), scrutinee))),
+            Pattern::Var(name) if name != "_" => Ok(vec![(name.clone(), scrutinee)]),
             Pattern::Wildcard
             | Pattern::Var(_)
             | Pattern::Int(_)
             | Pattern::Duration(_)
-            | Pattern::Bool(_) => Ok(None),
+            | Pattern::Bool(_) => Ok(Vec::new()),
+            Pattern::List { elems, rest } => self.lower_list_pattern_bindings(scrutinee, elems, rest.as_ref()),
             _ => Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         }
+    }
+
+    /// Bindings of a list pattern, emitted in the arm the length test
+    /// reached: each named element is a guarded scalar load, and `..rest`
+    /// is a fresh list holding a copy of the remaining elements (value
+    /// semantics; the source is not consumed).
+    fn lower_list_pattern_bindings(
+        &mut self,
+        scrutinee: ValueId,
+        elems: &[Pattern],
+        rest: Option<&Option<String>>,
+    ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.values[&scrutinee] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
+        };
+        let descriptor = self.layouts.get(layout).ok_or(CanonicalLoweringError::UnsupportedExpression("list pattern layout"))?;
+        let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
+        };
+        let element = *element;
+        let element_type = match self.layouts.get(element).map(|descriptor| descriptor.kind()) {
+            Some(LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
+            Some(LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
+            Some(LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("list pattern over reference elements")),
+        };
+        let (header_bytes, stride_bytes) = match (descriptor.header(), descriptor.size()) {
+            (HeaderLayout::PackedList { data_offset, .. }, LayoutSize::Dynamic { stride, .. }) if stride != 0 => (data_offset, stride),
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("list pattern layout")),
+        };
+        self.ensure_list_extent(scrutinee)?;
+        let count = self.list_counts[&scrutinee];
+        let mut bindings = Vec::new();
+        for (position, pattern) in elems.iter().enumerate() {
+            let name = match pattern {
+                Pattern::Var(name) if name != "_" => name.clone(),
+                Pattern::Wildcard | Pattern::Var(_) => continue,
+                _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested list pattern element")),
+            };
+            let index = self.push_const_size(u64::try_from(position).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+            let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, count)?;
+            self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            let value = self.fresh(element_type)?;
+            self.push_operation(Operation::Load {
+                destination: value,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    scrutinee,
+                    Projection::Element { index },
+                    element_type,
+                    AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            });
+            bindings.push((name, value));
+        }
+        let Some(Some(rest_name)) = rest else { return Ok(bindings) };
+        // `..rest`: the elements after the named prefix, copied into a fresh
+        // list. `count - prefix` cannot wrap: the arm's length test proved
+        // `prefix <= count`, and the trapping add of the prefix back onto the
+        // remainder is the exact end the checker's range rule consumes.
+        let prefix = self.push_const_size(u64::try_from(elems.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+        let prefix_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, prefix, count)?;
+        self.push_guard(prefix_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let rest_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, count, prefix, OverflowBehavior::Wrap)?;
+        let maximum = self.push_const_size((u64::from(u32::MAX) - u64::from(header_bytes)) / u64::from(stride_bytes))?;
+        let rest_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, rest_count, maximum)?;
+        self.push_guard(rest_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let source_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, prefix, rest_count, OverflowBehavior::Trap)?;
+        let source_in_bounds = self.push_compare(ComparisonOperator::LessEqualUnsigned, source_end, count)?;
+        self.push_guard(source_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let tail = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: tail,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count: rest_count,
+                capacity: rest_count,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        let zero = self.push_const_size(0)?;
+        self.push_operation(Operation::CloneRange {
+            destination: witchy_wir::canonical_safewir::Place::projected(
+                tail,
+                Projection::Slice { start: zero, length: rest_count },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            source: witchy_wir::canonical_safewir::Place::projected(
+                scrutinee,
+                Projection::Slice { start: prefix, length: rest_count },
+                ValueType::Ref(layout),
+                AccessMode::Read,
+            ),
+            count: rest_count,
+        });
+        self.push_operation(Operation::UpdateCount { object: tail, count: rest_count });
+        self.list_counts.insert(tail, rest_count);
+        self.list_capacities.insert(tail, rest_count);
+        bindings.push((rest_name.clone(), tail));
+        Ok(bindings)
     }
 
     fn match_pattern_condition(
@@ -1770,6 +1905,19 @@ impl FunctionLowerer<'_> {
                 (destination, ValueType::Bool)
             }
             Pattern::Wildcard | Pattern::Var(_) => return Ok(None),
+            Pattern::List { elems, rest } => {
+                // The length test: exact for `[a, b]`, at least the prefix
+                // for `[a, ..]` / `[a, ..rest]`. Element bindings follow in
+                // the arm block.
+                if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
+                }
+                self.ensure_list_extent(scrutinee)?;
+                let count = self.list_counts[&scrutinee];
+                let prefix = self.push_const_size(u64::try_from(elems.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                let operator = if rest.is_some() { ComparisonOperator::GreaterEqualUnsigned } else { ComparisonOperator::Equal };
+                return Ok(Some(self.push_compare(operator, count, prefix)?));
+            }
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         };
         if self.values[&scrutinee] != expected_type {
@@ -2353,6 +2501,100 @@ impl FunctionLowerer<'_> {
                 matches!(operation, Operation::StaticData { destination, .. } if *destination == value)
             })
         })
+    }
+
+    /// Whether `value` holds a reference-count token the release placer
+    /// tracks: a fresh allocation, a clone, a call result, a loaded shared
+    /// element, or a join parameter all of whose lanes carried one. Static
+    /// data and join parameters over static data carry none.
+    fn carries_token(&self, value: ValueId) -> bool {
+        self.carries_token_seen(value, &mut BTreeSet::new())
+    }
+
+    /// Token-ness follows the explicit CFG: an owned entry parameter, an
+    /// operation that mints or transfers a token, or a block parameter some
+    /// incoming edge feeds from a token-carrying argument (a loop threads a
+    /// list binding through its header, body, and exit parameters). A cycle
+    /// through a loop back edge contributes nothing.
+    fn carries_token_seen(&self, value: ValueId, seen: &mut BTreeSet<ValueId>) -> bool {
+        if self.token_join_parameters.contains(&value) {
+            return true;
+        }
+        if !seen.insert(value) {
+            return false;
+        }
+        if self.blocks.first().is_some_and(|entry| {
+            entry.parameters.iter().any(|parameter| parameter.value == value && parameter.ownership.is_some())
+        }) {
+            return true;
+        }
+        let minted = self.blocks.iter().any(|block| {
+            block.operations.iter().any(|operation| match operation {
+                Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
+                | Operation::CloneRef { destination, .. } => *destination == value,
+                Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared, .. } => {
+                    *destination == value
+                }
+                Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
+                    destinations.contains(&value)
+                }
+                _ => false,
+            })
+        });
+        if minted {
+            return true;
+        }
+        let Some((target, index)) = self.blocks.iter().find_map(|block| {
+            block.parameters.iter().position(|parameter| parameter.value == value).map(|index| (block.id, index))
+        }) else {
+            return false;
+        };
+        let mut arguments = Vec::new();
+        for block in &self.blocks {
+            match &block.terminator {
+                Some(Terminator::Branch { target: edge, arguments: edge_arguments }) if *edge == target => {
+                    arguments.extend(edge_arguments.get(index).copied());
+                }
+                Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
+                    if *then_target == target {
+                        arguments.extend(then_arguments.get(index).copied());
+                    }
+                    if *else_target == target {
+                        arguments.extend(else_arguments.get(index).copied());
+                    }
+                }
+                _ => {}
+            }
+        }
+        arguments.into_iter().any(|argument| self.carries_token_seen(argument, seen))
+    }
+
+    /// Give every result lane of a join a token when any lane carries one:
+    /// a static string (or a join parameter over static strings) is copied
+    /// into owned storage in its own arm, so the release placer sees the
+    /// same token shape on every edge. Returns whether the lanes now all
+    /// carry tokens.
+    fn materialize_mixed_lanes(
+        &mut self,
+        lanes: &mut [(BlockId, ValueId)],
+    ) -> Result<bool, CanonicalLoweringError> {
+        if lanes.is_empty() || !matches!(self.values[&lanes[0].1], ValueType::Ref(_)) {
+            return Ok(false);
+        }
+        if !lanes.iter().any(|(_, value)| self.carries_token(*value)) {
+            return Ok(false);
+        }
+        for (block, value) in lanes.iter_mut() {
+            if self.carries_token(*value) {
+                continue;
+            }
+            if !self.string_lengths.contains_key(value) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("mixed token and static join lanes"));
+            }
+            self.current = *block;
+            *value = self.clone_string_for_storage(*value)?;
+        }
+        Ok(true)
     }
 
     fn known_shared_value(&self, value: ValueId) -> bool {
@@ -3300,6 +3542,7 @@ impl FunctionLowerer<'_> {
         });
         self.push_string_copy(object, source, zero, length, length, layout)?;
         self.string_lengths.insert(object, length);
+        self.string_capacities.insert(object, length);
         Ok(object)
     }
 
@@ -4087,6 +4330,7 @@ impl FunctionLowerer<'_> {
         self.push_string_copy(object, left, zero, left_length, total, layout)?;
         self.push_string_copy(object, right, left_length, right_length, total, layout)?;
         self.string_lengths.insert(object, total);
+        self.string_capacities.insert(object, total);
         Ok(object)
     }
 
@@ -4291,6 +4535,7 @@ impl FunctionLowerer<'_> {
         self.current = write_exit;
 
         self.string_lengths.insert(object, total);
+        self.string_capacities.insert(object, total);
         Ok(object)
     }
 

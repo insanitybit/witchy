@@ -258,3 +258,14 @@ fn admitted_if_joining_a_shared_parameter_with_a_fresh_allocation_runs() {
     );
     assert_eq!(output, vec!["1 2".to_string()]);
 }
+
+#[test]
+fn admitted_list_patterns_run() {
+    let output = run_admitted(
+        "pub fn sum(xs: List(Int)) -> Int:\n    match xs:\n        [] -> 0\n        [head, ..tail] -> head + sum(tail)\n\npub fn describe(xs: List(Int)) -> String:\n    match xs:\n        [] -> \"empty\"\n        [only] -> \"one: ${only}\"\n        [first, ..] -> \"starts with ${first}\"\n\nfn main(console: Console):\n    console.print(\"${sum([3, 7, 11])}\")\n    console.print(describe([3, 7, 11]))\n    console.print(describe([42]))\n    console.print(describe([]))\n",
+    );
+    assert_eq!(
+        output,
+        vec!["21".to_string(), "starts with 3".to_string(), "one: 42".to_string(), "empty".to_string()]
+    );
+}

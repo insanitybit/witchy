@@ -472,3 +472,29 @@ route is 0/107.
   treats a fresh reference-counted allocation as eligible for the shared phi.
   `if xs.length() == n: xs else: <fresh list>` runs (launch test).
 
+## Progress (owner, 2026-09-06, eleventh slice)
+
+- **List patterns fixed**: `[]`, `[a, b]`, `[a, ..]`, and `[a, ..rest]` lower
+  over lists of scalars. The length test (exact, or at least the named
+  prefix) is the arm's dispatch condition; element bindings are guarded
+  scalar loads emitted in the arm block, and `..rest` is a fresh list holding
+  a copy of the remaining elements (value semantics, source not consumed),
+  whose slice bounds are the trapping-add facts the checker's range rule
+  consumes. Nested element patterns and lists of references refuse by name.
+- **Encoder**: a branch side that is a straight chain of unconditional
+  branches ending in a terminal block (the release placer's drop edge block
+  ahead of a trap) counts as terminal, provided the chain touches no block the
+  other side reaches without passing back through the branching block. Two
+  wrong drafts of this rule (any acyclic side; any block the other side reaches
+  at all) mis-joined ordinary matches and a returning arm inside a loop; both
+  were caught by the launch tests and the census before commit.
+- **Join lanes and tokens**: a static lane joined with a token-carrying lane
+  is materialized into an owned copy in its own arm, so the placer sees one
+  token shape on every edge. Token-ness follows the explicit CFG: an owned
+  entry parameter, a minting operation, or a block parameter fed by a
+  token-carrying argument (loop parameters), never a static or a join over
+  statics. Concat, render, and copied strings record their capacity lane, so
+  string joins over them are shared phis.
+- Census: 69 of 163 check; 13 runnable examples admit and agree under parity
+  (`listmatch` is new). `queens` stops only at `list.at`.
+

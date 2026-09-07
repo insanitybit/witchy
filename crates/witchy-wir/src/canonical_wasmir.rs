@@ -2690,6 +2690,47 @@ impl StructuredEmitter<'_> {
         Ok(self.distances_from(start)?.contains_key(&goal))
     }
 
+    /// `start` is a terminal block, or a straight chain of unconditional
+    /// branches (the release placer's drop edge blocks) that ends in one
+    /// without touching any block the other side reaches: such a side never
+    /// reaches a merge and needs none.
+    fn reachable_avoiding(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        avoid: crate::canonical_safewir::BlockId,
+    ) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, EncodeError> {
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if id == avoid || !seen.insert(id) {
+                continue;
+            }
+            pending.extend(self.successors(id)?);
+        }
+        Ok(seen)
+    }
+
+    fn only_terminates(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        other_side: &BTreeSet<crate::canonical_safewir::BlockId>,
+    ) -> Result<bool, EncodeError> {
+        let mut id = start;
+        let mut seen = BTreeSet::new();
+        loop {
+            if other_side.contains(&id) || !seen.insert(id) {
+                return Ok(false);
+            }
+            if self.is_terminal(id)? {
+                return Ok(true);
+            }
+            match &self.block(id)?.terminator.operation {
+                ScalarTerminator::Branch { target, .. } => id = *target,
+                _ => return Ok(false),
+            }
+        }
+    }
+
     fn is_terminal(
         &self,
         id: crate::canonical_safewir::BlockId,
@@ -2860,8 +2901,11 @@ impl StructuredEmitter<'_> {
         // fallthrough traps, `if c: a else: return`) never reaches the merge;
         // `all_paths_reach_or_terminate` already permits that bypass, so such
         // a side contributes distance zero instead of vetoing every candidate.
-        let then_terminal = self.is_terminal(then_target)?;
-        let else_terminal = self.is_terminal(else_target)?;
+        // The other side's reach is taken without passing back through the
+        // branching block: a loop back edge would otherwise make a returning
+        // arm look reachable from the continuing side.
+        let then_terminal = self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
+        let else_terminal = self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             // When one side only terminates (`if c: return x` then fall through),
@@ -4752,6 +4796,35 @@ impl PlanEmitter<'_> {
         Ok(self.distances_from(start)?.contains_key(&goal))
     }
 
+    fn reachable_avoiding(&self, start: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if id == avoid || !seen.insert(id) {
+                continue;
+            }
+            pending.extend(self.successors(id)?);
+        }
+        Ok(seen)
+    }
+
+    fn only_terminates(&self, start: crate::canonical_safewir::BlockId, other_side: &BTreeSet<crate::canonical_safewir::BlockId>) -> Result<bool, CanonicalAdmissionError> {
+        let mut id = start;
+        let mut seen = BTreeSet::new();
+        loop {
+            if other_side.contains(&id) || !seen.insert(id) {
+                return Ok(false);
+            }
+            if self.is_terminal(id)? {
+                return Ok(true);
+            }
+            match &self.block(id)?.terminator {
+                Terminator::Branch { target, .. } => id = *target,
+                _ => return Ok(false),
+            }
+        }
+    }
+
     fn is_terminal(&self, id: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
         Ok(matches!(
             self.block(id)?.terminator,
@@ -4865,8 +4938,11 @@ impl PlanEmitter<'_> {
         let else_distances = self.distances_from(else_target)?;
         // Mirror of the encoder's rule: a terminal side bypasses the merge and
         // contributes distance zero.
-        let then_terminal = self.is_terminal(then_target)?;
-        let else_terminal = self.is_terminal(else_target)?;
+        // The other side's reach is taken without passing back through the
+        // branching block: a loop back edge would otherwise make a returning
+        // arm look reachable from the continuing side.
+        let then_terminal = self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
+        let else_terminal = self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             // When one side only terminates (`if c: return x` then fall through),
