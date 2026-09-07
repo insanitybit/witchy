@@ -75,6 +75,46 @@ pub fn is_scalar_type(ty: &Type) -> bool {
         if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool"))
 }
 
+/// A v1 list element: a scalar, a string, or a list of those.
+pub fn is_v1_list_element_type(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Named(name, arguments) if arguments.is_empty() => {
+            is_scalar_type(ty) || name == "String"
+        }
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            is_v1_list_element_type(&arguments[0])
+        }
+        _ => false,
+    }
+}
+
+/// A field an aggregate may carry: a scalar in its slot, or a string or
+/// list behind an owned pointer slot.
+pub fn is_v1_field_type(ty: &Type) -> bool {
+    is_scalar_type(ty)
+        || matches!(ty.unqualified(), Type::Named(name, arguments) if name == "String" && arguments.is_empty())
+        || matches!(ty.unqualified(), Type::Named(name, arguments)
+            if name == "List" && arguments.len() == 1 && is_v1_list_element_type(&arguments[0]))
+}
+
+fn render_type(ty: &Type) -> Option<String> {
+    match ty.unqualified() {
+        Type::Named(name, arguments) if arguments.is_empty() => Some(name.clone()),
+        Type::Named(name, arguments) => {
+            let mut rendered = format!("{name}(");
+            for (index, argument) in arguments.iter().enumerate() {
+                if index > 0 {
+                    rendered.push_str(", ");
+                }
+                rendered.push_str(&render_type(argument)?);
+            }
+            rendered.push(')');
+            Some(rendered)
+        }
+        _ => None,
+    }
+}
+
 fn int_type() -> Type {
     Type::Named("Int".into(), Vec::new())
 }
@@ -82,23 +122,8 @@ fn int_type() -> Type {
 /// The key a source type's aggregate shape is filed under: the bare name of
 /// a user type, or the name with its scalar arguments (`Option(Int)`).
 pub fn aggregate_key(ty: &Type) -> Option<String> {
-    let Type::Named(name, arguments) = ty.unqualified() else { return None };
-    if arguments.is_empty() {
-        return Some(name.clone());
-    }
-    let mut key = format!("{name}(");
-    for (index, argument) in arguments.iter().enumerate() {
-        let Type::Named(argument, inner) = argument.unqualified() else { return None };
-        if !inner.is_empty() || !is_scalar_type(&Type::Named(argument.clone(), Vec::new())) {
-            return None;
-        }
-        if index > 0 {
-            key.push_str(", ");
-        }
-        key.push_str(argument);
-    }
-    key.push(')');
-    Some(key)
+    let Type::Named(..) = ty.unqualified() else { return None };
+    render_type(ty)
 }
 
 /// The module's type definitions keyed by bare and entry-qualified names.
@@ -122,7 +147,7 @@ pub fn shape_from_definition(definition: &TypeDef) -> Option<ScalarAggregateShap
     if !definition.params.is_empty() || definition.variants.is_empty() || definition.is_capability {
         return None;
     }
-    if !definition.variants.iter().all(|variant| variant.fields.iter().all(is_scalar_type)) {
+    if !definition.variants.iter().all(|variant| variant.fields.iter().all(is_v1_field_type)) {
         return None;
     }
     let name = definition.name.rsplit('.').next().unwrap_or(&definition.name).to_owned();
@@ -153,7 +178,7 @@ pub fn scalar_aggregate_shape(
 ) -> Option<ScalarAggregateShape> {
     let Type::Named(name, arguments) = ty.unqualified() else { return None };
     match (name.as_str(), arguments.as_slice()) {
-        ("Option", [payload]) if is_scalar_type(payload) => Some(ScalarAggregateShape {
+        ("Option", [payload]) if is_v1_field_type(payload) => Some(ScalarAggregateShape {
             name: "Option".into(),
             fields: vec![int_type(), payload.clone()],
             variants: vec![
@@ -163,7 +188,7 @@ pub fn scalar_aggregate_shape(
             tagged: true,
             packed: false,
         }),
-        ("Result", [value, error]) if is_scalar_type(value) && is_scalar_type(error) => Some(ScalarAggregateShape {
+        ("Result", [value, error]) if is_v1_field_type(value) && is_v1_field_type(error) => Some(ScalarAggregateShape {
             name: "Result".into(),
             fields: vec![int_type(), value.clone(), error.clone()],
             variants: vec![

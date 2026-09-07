@@ -631,12 +631,18 @@ fn field_access(
         .fields()
         .get(index as usize)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "field" })?;
-    let crate::layout::FieldKind::Scalar(scalar) = field.kind() else {
-        return Err(LoweringError::UnsupportedLayout { function, operation: "pointer field" });
+    // A scalar field is loaded as its kind; a pointer field (an owned pointer
+    // value slot) is a 32-bit object address whose pointee the reference
+    // transfer needs.
+    let (scalar, pointer_layout) = match field.kind() {
+        crate::layout::FieldKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (scalar, None),
+        crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => (ScalarKind::U32, Some(pointee)),
+        crate::layout::FieldKind::Inline(slot) => match layouts.get(slot).map(|slot| slot.kind()) {
+            Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => (ScalarKind::U32, Some(*pointee)),
+            _ => return Err(LoweringError::UnsupportedLayout { function, operation: "field kind" }),
+        },
+        _ => return Err(LoweringError::UnsupportedLayout { function, operation: "field kind" }),
     };
-    if !scalar.is_ordinary_lowering_target() {
-        return Err(LoweringError::UnsupportedLayout { function, operation: "field scalar" });
-    }
     let width = scalar.size();
     Ok(MemoryAccess {
         object,
@@ -647,12 +653,12 @@ fn field_access(
             data_offset: field.offset(),
             stride: width,
             scalar,
-            pointer_layout: None,
+            pointer_layout,
         },
         offset: field.offset(),
         width,
         scalar,
-        pointer_layout: None,
+        pointer_layout,
         index: None,
     })
 }
@@ -1626,7 +1632,15 @@ fn drop_layout_depth(
             Some(child) => 1 + drop_layout_depth(function, layouts, child, visiting)?,
             None => 1,
         },
-        Err(_) => 1,
+        // A fixed layout's destructor descends into each owned pointer
+        // field; its depth is one more than the deepest child's.
+        Err(_) => {
+            let mut depth = 1;
+            for (_, child) in fixed_pointer_fields(layouts, layout) {
+                depth = depth.max(1 + drop_layout_depth(function, layouts, child, visiting)?);
+            }
+            depth
+        }
     };
     visiting.remove(&layout);
     Ok(depth)
@@ -2352,6 +2366,24 @@ fn emit_drop_ref_local(
             body.instruction(&wasm_encoder::Instruction::End);
             body.instruction(&wasm_encoder::Instruction::End);
         }
+    } else {
+        // A fixed layout drops the child behind each owned pointer field.
+        for (offset, child_layout) in fixed_pointer_fields(layouts, object_layout) {
+            if base + 5 >= layout.scratch.len() {
+                return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
+            }
+            emit_get_index(body, scratch_index(layout, base));
+            body.instruction(&wasm_encoder::Instruction::I32Const(offset as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+            emit_set_index(body, scratch_index(layout, base + 5));
+            emit_get_index(body, scratch_index(layout, base + 5));
+            body.instruction(&wasm_encoder::Instruction::I32Eqz);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Unreachable);
+            body.instruction(&wasm_encoder::Instruction::End);
+            emit_drop_ref_local(body, layout, function, layouts, child_layout, depth + 1)?;
+        }
     }
     emit_reclaim_local(body, layout, base);
     body.instruction(&wasm_encoder::Instruction::Else);
@@ -2365,6 +2397,26 @@ fn emit_drop_ref_local(
     body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
     Ok(())
+}
+
+/// The owned pointer fields of a fixed layout as `(byte offset, pointee)`.
+fn fixed_pointer_fields(layouts: &LayoutInterner, layout: crate::layout::LayoutId) -> Vec<(u32, crate::layout::LayoutId)> {
+    let Some(descriptor) = layouts.get(layout) else { return Vec::new() };
+    if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
+        return Vec::new();
+    }
+    descriptor
+        .fields()
+        .iter()
+        .filter_map(|field| match field.kind() {
+            crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => Some((field.offset(), pointee)),
+            crate::layout::FieldKind::Inline(slot) => match layouts.get(slot).map(|slot| slot.kind()) {
+                Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Some((field.offset(), *pointee)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, function: &Function, object: ValueId, layouts: &LayoutInterner) -> Result<(), EncodeError> {
@@ -4749,6 +4801,26 @@ fn push_drop_ref_local_plan(
                 PlanToken::End,
                 PlanToken::End,
             ]);
+        }
+    }
+    else {
+        for (offset, child_layout) in fixed_pointer_fields(layouts, object_layout) {
+            if base + 5 >= layout.scratch.len() {
+                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            }
+            plan.extend([
+                PlanToken::LocalGet(layout.scratch[base]),
+                PlanToken::I32Const(offset as i32),
+                PlanToken::I32Add,
+                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                PlanToken::LocalSet(layout.scratch[base + 5]),
+                PlanToken::LocalGet(layout.scratch[base + 5]),
+                PlanToken::I32Eqz,
+                PlanToken::If("Empty".to_owned()),
+                PlanToken::Unreachable,
+                PlanToken::End,
+            ]);
+            push_drop_ref_local_plan(plan, function, layouts, layout, child_layout, depth + 1)?;
         }
     }
     push_reclaim_local_plan(plan, layout, base);

@@ -507,14 +507,16 @@ fn record_layout_matches(
         && actual.iter().zip(fields).all(|(actual, field)| {
             let Some(actual) = layouts.get(*actual) else { return false };
             match field.unqualified() {
-                witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
+                witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Duration" | "Float" | "Bool") => match name.as_str() {
                     "Int" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Int)),
                     "Duration" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Duration)),
                     "Float" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Float)),
-                    "Bool" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
-                    _ => false,
+                    _ => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
                 },
-                _ => false,
+                // A string or list field lives behind an owned pointer slot
+                // whose pointee is that value's own layout.
+                _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::Owned }
+                    if layout_matches_source(*pointee, field, layouts)),
             }
         })
 }

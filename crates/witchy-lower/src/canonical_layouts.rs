@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use witchy_types::canonical_aggregates::{aggregate_key, scalar_aggregate_shape, shape_from_definition};
+use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -141,6 +141,21 @@ impl LayoutProjection {
                 }
                 self.visit_type(result)
             }
+            // A heap aggregate (record, sum, scalar-or-reference
+            // `Option`/`Result`) is a root; its reference fields are roots of
+            // their own.
+            Type::Named(..)
+                if scalar_aggregate_shape(ty, &self.definitions).is_some_and(|shape| !shape.packed) =>
+            {
+                let shape = scalar_aggregate_shape(ty, &self.definitions).expect("checked above");
+                for field in &shape.fields {
+                    if !is_scalar_type(field) {
+                        self.visit_type(field)?;
+                    }
+                }
+                self.roots.push(ty.clone());
+                Ok(())
+            }
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
                 "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" => Ok(()),
                 "String" | "Bytes" => {
@@ -255,18 +270,28 @@ fn intern_v1_layout(
             .intern_runtime_dictionary_body(key, value)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
-    if let Type::Named(name, arguments) = ty.unqualified()
-        && matches!(name.as_str(), "Option" | "Result")
-        && !arguments.is_empty()
-        && let Some(key) = aggregate_key(ty)
-        && scalar_aggregate_shape(ty, definitions).is_some()
+    if let Some(shape) = scalar_aggregate_shape(ty, definitions)
+        && !shape.packed
     {
-        // A scalar `Option`/`Result` instantiation is interned under its key
-        // as a nominal without arguments: the interner's packed-record rule
-        // takes no closed type arguments.
-        let keyed = Type::Named(key, Vec::new());
+        // A heap aggregate is a fixed record of its slots: a scalar in place,
+        // a string or list behind an owned pointer slot. Built directly: the
+        // interner's type resolver cannot place a reference inside a record.
+        let mut children = Vec::with_capacity(shape.fields.len());
+        for field in &shape.fields {
+            let child = if let Some(scalar) = scalar_kind_of(field) {
+                interner
+                    .intern_scalar(scalar)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            } else {
+                let pointee = intern_v1_layout(interner, field, definitions)?;
+                interner
+                    .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            };
+            children.push(child);
+        }
         return interner
-            .intern_type(&keyed, &V1Resolver::new(definitions, ty))
+            .intern_packed_record(children)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     interner
@@ -288,6 +313,19 @@ fn intern_dictionary_slot(
     interner
         .intern_type(ty, &V1Resolver::new(definitions, ty))
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
+}
+
+fn scalar_kind_of(ty: &Type) -> Option<ScalarKind> {
+    match ty.unqualified() {
+        Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
+            "Int" => Some(ScalarKind::Int),
+            "Float" => Some(ScalarKind::Float),
+            "Duration" => Some(ScalarKind::Duration),
+            "Bool" => Some(ScalarKind::Bool),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn is_byte_buffer_type(ty: &Type) -> bool {

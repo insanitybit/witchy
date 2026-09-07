@@ -323,6 +323,21 @@ fn admitted_string_searches_ordering_find_and_to_int_scan_bytes() {
 }
 
 #[test]
+fn admitted_aggregates_with_string_payloads_construct_match_and_propagate() {
+    // A record with a string field, Result(Int, String) through `?`, and
+    // Option(String) through `??`: reference payloads live behind owned
+    // pointer slots, are copied in on construction, and load as shared
+    // clones; the destructor drops each child.
+    let output = run_admitted(
+        "type Account:\n    name: String\n    balance: Int\n\npub fn parse(s: String) -> Result(Int, String):\n    if s.starts_with(\"x\"):\n        Err(\"bad \" + s)\n    else:\n        Ok(s.length())\n\npub fn both(a: String, b: String) -> Result(Int, String):\n    let x = parse(a)?\n    let y = parse(b)?\n    Ok(x + y)\n\npub fn name_of(n: Int) -> Option(String):\n    if n > 0:\n        Some(\"n${n}\")\n    else:\n        None\n\nfn main(console: Console):\n    let acc = Account(name: \"bob\", balance: 5)\n    let richer = Account(balance: acc.balance + 10, ..acc)\n    console.print(\"${acc.name} ${richer.name} ${richer.balance}\")\n    match both(\"ab\", \"cde\"):\n        Ok(v) -> console.print(\"ok ${v}\")\n        Err(e) -> console.print(\"err ${e}\")\n    match both(\"ab\", \"xz\"):\n        Ok(v) -> console.print(\"ok ${v}\")\n        Err(e) -> console.print(\"err ${e}\")\n    console.print(\"${name_of(3) ?? \"none\"} ${name_of(0) ?? \"none\"}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["bob bob 15".to_string(), "ok 5".to_string(), "err bad xz".to_string(), "n3 none".to_string()]
+    );
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

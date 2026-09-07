@@ -825,3 +825,34 @@ route is 0/107.
 - Census: 84 of 163 check; 28 runnable examples admit and agree under
   three-legged parity (`parse_kv` is new). `rle` now needs dynamic
   `string.chars` (a UTF-8 decoder into a list of strings).
+
+## Progress (owner, 2026-09-07, twenty-fifth slice: reference payloads in aggregates)
+
+- **Strings and lists inside records and sums.** An aggregate field may be
+  a `String` or a scalar list: it lives behind an owned pointer slot in the
+  record layout, which the layout catalog now builds directly (the
+  interner's type resolver cannot place a reference inside a record). A
+  construction copies the payload into a fresh object (value semantics)
+  and fills every other reference slot of a sum with a fresh empty value,
+  so every owned slot holds an object for the destructor. A field read or
+  pattern binding takes a shared clone.
+- **Checker.** A record field is a constant reference slot; once every
+  owned pointer field holds a stored reference the object is complete and
+  the summary flag replaces the per-slot facts (a join could not reconcile
+  those across fresh identities); a complete object's field load yields a
+  shared child; drops of fixed layouts descend into their pointer fields;
+  reclaiming a pointer-bearing fixed layout is refused. Record children
+  interned as pointer value slots are inline fields whose layout is the
+  slot, which every field walk recognizes.
+- **Encoder and mirror.** Field projections address pointer fields as
+  32-bit object addresses with their pointee; the destructor of a fixed
+  layout drops the child behind each owned pointer field; the scratch
+  pool counts that depth. The ABI authority binds a reference field to the
+  slot's pointee layout.
+- **Lowering.** `??` over a string payload materializes a static default
+  and joins through a shared phi with extent lanes; string literal
+  patterns are equality tests against static literals collected from
+  patterns; string concatenation loads operand extents lazily.
+- Pinned by `admitted_aggregates_with_string_payloads_construct_match_and_propagate`.
+- Census: 88 of 163 check; 32 runnable examples admit and agree under
+  three-legged parity (`try`, `roman`, `record_update` are new).

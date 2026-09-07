@@ -457,6 +457,9 @@ impl<'a> MemoryChecker<'a> {
                         || object.shared_immutable)
                     && !other.objects.contains_key(value)
                 {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!("canonical memory join at {:?}: live token {value:?} is missing on the other edge: {object:#?}", block.id);
+                    }
                     return Err(InitialCheckError::IncompatibleMemoryJoin {
                         function: self.function.id,
                         block: block.id,
@@ -466,6 +469,9 @@ impl<'a> MemoryChecker<'a> {
             }
             for (slot, object) in &state.stored_objects {
                 if other.stored_objects.get(slot) != Some(object) {
+                    if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                        eprintln!("canonical memory join at {:?}: stored slot {slot:?} differs: {object:#?} vs {:#?}", block.id, other.stored_objects.get(slot));
+                    }
                     return Err(InitialCheckError::IncompatibleMemoryJoin {
                         function: self.function.id,
                         block: block.id,
@@ -1114,7 +1120,16 @@ impl<'a> MemoryChecker<'a> {
         }
         let descriptor = self.descriptor(state.layout)?;
         let Some(element) = descriptor.kind().packed_element_layout() else {
-            return Ok(());
+            // A fixed layout with owned pointer fields is initialized once
+            // every field holds a stored reference (the summary flag above,
+            // or the per-slot facts before consolidation).
+            let pointer_fields = self.fixed_pointer_fields(state.layout)?;
+            if pointer_fields.iter().all(|(index, _)| {
+                self.state.stored_objects.contains_key(&(object, SlotIdentity::Constant(*index)))
+            }) {
+                return Ok(());
+            }
+            return self.unsupported(operation);
         };
         // Scalar storage has no child reference tokens to account for. In
         // particular RawByte and BoolValueSlot are storage layouts, not
@@ -1807,6 +1822,44 @@ impl<'a> MemoryChecker<'a> {
             }
             let index = match place.projection() {
                 Projection::Element { index } => *index,
+                // A complete fixed-layout object's pointer field holds a
+                // reference the object owns; the load takes a shared clone.
+                Projection::Field { index } => {
+                    let state = self.live_object(place.object())?.clone();
+                    if !state.initialized_owned_slots {
+                        return self.unsupported("Load(uninitialized reference)");
+                    }
+                    let pointee = self
+                        .fixed_pointer_fields(state.layout)?
+                        .into_iter()
+                        .find(|(field, _)| *field == u64::from(*index))
+                        .map(|(_, pointee)| pointee)
+                        .ok_or_else(|| InitialCheckError::InvalidProjection {
+                            function: self.function.id,
+                            object: place.object(),
+                        })?;
+                    if !Self::is_managed_storage(&state) {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: place.object(),
+                        });
+                    }
+                    let extent = match self.descriptor(pointee)?.size() {
+                        LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
+                        LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
+                    };
+                    let child_complete = !self.fixed_pointer_fields(pointee)?.is_empty();
+                    self.state.objects.insert(destination, ObjectState {
+                        identity: destination,
+                        layout: pointee,
+                        extent,
+                        ownership: Ownership::Shared,
+                        allocation_class: Some(AllocationClass::ReferenceCounted),
+                        shared_immutable: false,
+                        initialized_owned_slots: child_complete,
+                    });
+                    return Ok(());
+                }
                 _ => return self.unsupported("Load(uninitialized reference)"),
             };
             // A managed parameter's prefix is seeded from its contract once
@@ -1973,6 +2026,53 @@ impl<'a> MemoryChecker<'a> {
             StoreTransfer::CopyScalar => return self.unsupported("Store(reference copy)"),
         }
         self.state.stored_objects.insert(key, stored);
+        self.consolidate_fixed_fields(place.object())?;
+        Ok(())
+    }
+
+    /// The owned pointer fields of a fixed layout: `(field index, pointee)`.
+    fn fixed_pointer_fields(&self, layout: crate::layout::LayoutId) -> Result<Vec<(u64, crate::layout::LayoutId)>, InitialCheckError> {
+        let descriptor = self.descriptor(layout)?;
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
+            return Ok(Vec::new());
+        }
+        Ok(descriptor
+            .fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| match field.kind() {
+                crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => Some((index as u64, pointee)),
+                // A record child interned as an owned pointer value slot is
+                // an inline field whose layout is that slot.
+                crate::layout::FieldKind::Inline(slot) => match self.layouts.get(slot).map(|slot| slot.kind()) {
+                    Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Some((index as u64, *pointee)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// Once every owned pointer field of a fixed-layout object holds a
+    /// stored reference, the object is complete: the summary flag replaces
+    /// the per-slot facts (which a join could not reconcile across fresh
+    /// identities), and loads and drops rely on the flag from then on.
+    fn consolidate_fixed_fields(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        let layout = self.live_object(object)?.layout;
+        let pointer_fields = self.fixed_pointer_fields(layout)?;
+        if pointer_fields.is_empty() {
+            return Ok(());
+        }
+        let complete = pointer_fields
+            .iter()
+            .all(|(index, _)| self.state.stored_objects.contains_key(&(object, SlotIdentity::Constant(*index))));
+        if !complete {
+            return Ok(());
+        }
+        for (index, _) in &pointer_fields {
+            self.state.stored_objects.remove(&(object, SlotIdentity::Constant(*index)));
+        }
+        self.state.objects.get_mut(&object).expect("live object exists").initialized_owned_slots = true;
         Ok(())
     }
 
@@ -1980,8 +2080,11 @@ impl<'a> MemoryChecker<'a> {
         &self,
         place: &Place,
     ) -> Result<(ValueId, SlotIdentity), InitialCheckError> {
-        let Projection::Element { index } = place.projection() else {
-            return self.unsupported("reference slot(non-element)");
+        // A record field is a constant slot; a list element is its index.
+        let index = match place.projection() {
+            Projection::Element { index } => index,
+            Projection::Field { index } => return Ok((place.object(), SlotIdentity::Constant(u64::from(*index)))),
+            _ => return self.unsupported("reference slot(non-element)"),
         };
         let slot = self
             .state
@@ -2528,6 +2631,9 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         self.require_owned_slots_initialized(object, "Reclaim(uninitialized owned slot)")?;
+        if !self.fixed_pointer_fields(state.layout)?.is_empty() {
+            return self.unsupported("Reclaim(pointer-bearing layout requires DropRef)");
+        }
         let descriptor = self.descriptor(state.layout)?;
         if descriptor.kind().packed_element_layout().is_some_and(|element| {
             matches!(
@@ -2807,10 +2913,16 @@ fn drop_ref_layout_supported(
     }
     let supported = layouts.get(layout).is_some_and(|descriptor| match descriptor.kind() {
         LayoutKind::Scalar(_) => true,
-        // A scalar-field record or tuple owns no children: dropping it is
-        // reclaiming its bytes.
+        // A record or tuple drops each owned pointer field's child, then
+        // reclaims its bytes.
         LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields.iter().all(|field| {
-            layouts.get(*field).is_some_and(|field| matches!(field.kind(), LayoutKind::Scalar(_)))
+            layouts.get(*field).is_some_and(|field| match field.kind() {
+                LayoutKind::Scalar(_) => true,
+                LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } => {
+                    drop_ref_layout_supported(layouts, *pointee, visiting)
+                }
+                _ => false,
+            })
         }),
         LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => {
             layouts.get(*element).is_some_and(|element| match element.kind() {

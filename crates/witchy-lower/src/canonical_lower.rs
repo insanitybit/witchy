@@ -2137,7 +2137,7 @@ impl FunctionLowerer<'_> {
                     match argument {
                         Pattern::Var(bound) if bound != "_" => {
                             let slot = variant.first_field + offset;
-                            let value_type = scalar_type(&shape.fields[slot])?;
+                            let value_type = self.field_value_type(&shape.fields[slot])?;
                             let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
                             bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
                         }
@@ -2151,7 +2151,8 @@ impl FunctionLowerer<'_> {
             | Pattern::Var(_)
             | Pattern::Int(_)
             | Pattern::Duration(_)
-            | Pattern::Bool(_) => Ok(Vec::new()),
+            | Pattern::Bool(_)
+            | Pattern::Str(_) => Ok(Vec::new()),
             Pattern::List { elems, rest } => self.lower_list_pattern_bindings(scrutinee, elems, rest.as_ref()),
             _ => Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         }
@@ -2298,6 +2299,15 @@ impl FunctionLowerer<'_> {
                 (destination, ValueType::Bool)
             }
             Pattern::Wildcard | Pattern::Var(_) => return Ok(None),
+            // A string literal pattern is an equality test against the
+            // static literal.
+            Pattern::Str(text) => {
+                if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string pattern scrutinee"));
+                }
+                let literal = self.lower_string_literal(text)?;
+                return Ok(Some(self.lower_string_equality(scrutinee, literal, false)?));
+            }
             Pattern::List { elems, rest } => {
                 // The length test: exact for `[a, b]`, at least the prefix
                 // for `[a, ..]` / `[a, ..rest]`. Element bindings follow in
@@ -3808,7 +3818,7 @@ impl FunctionLowerer<'_> {
             } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
                 payload[slot - variant.first_field]
             } else {
-                self.push_zero(scalar_type(field)?)?
+                self.push_empty_value(field)?
             };
             values.push(value);
         }
@@ -3834,7 +3844,7 @@ impl FunctionLowerer<'_> {
             .filter(|shape| shape.name == "Option")
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
         let object = self.lower_expr(left)?;
-        let payload_type = scalar_type(&shape.fields[1])?;
+        let payload_type = self.field_value_type(&shape.fields[1])?;
         let tag = self.load_record_field(object, 0, ValueType::Int)?;
         let some_tag = self.push_const_int(0)?;
         let is_some = self.push_compare(ComparisonOperator::Equal, tag, some_tag)?;
@@ -3842,7 +3852,19 @@ impl FunctionLowerer<'_> {
         let bindings = self.bindings.clone();
         let when_some = self.new_block(&[])?;
         let when_none = self.new_block(&[])?;
-        let join = self.new_block(&[payload_type])?;
+        // A reference payload joins through a shared phi (the payload is a
+        // shared clone, the default its own token, which weakens); a string
+        // or list phi also carries count and capacity lanes.
+        let dynamic_payload = matches!(payload_type, ValueType::Ref(layout)
+            if matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Dynamic { .. })));
+        let join = if dynamic_payload {
+            self.new_block(&[payload_type, ValueType::Size, ValueType::Size])?
+        } else {
+            self.new_block(&[payload_type])?
+        };
+        if matches!(payload_type, ValueType::Ref(_)) {
+            self.blocks[join.get() as usize].parameters[0].ownership = Some(Ownership::Shared);
+        }
         self.finish_current(Terminator::BranchIf {
             condition: is_some,
             then_target: when_some,
@@ -3852,7 +3874,7 @@ impl FunctionLowerer<'_> {
         })?;
         self.current = when_some;
         let payload = self.load_record_field(object, 1, payload_type)?;
-        self.finish_current(Terminator::Branch { target: join, arguments: vec![payload] })?;
+        let some_end = self.current;
         self.current = when_none;
         self.bindings = bindings.clone();
         let default = self.lower_expr(right)?;
@@ -3862,11 +3884,46 @@ impl FunctionLowerer<'_> {
         if self.bindings != bindings {
             return Err(CanonicalLoweringError::UnsupportedExpression("binding change inside coalesce default"));
         }
-        self.finish_current(Terminator::Branch { target: join, arguments: vec![default] })?;
+        let none_end = self.current;
+        // A static default (`?? ""`) joined with the payload's token is
+        // materialized so both edges carry a token.
+        let mut lanes = [(some_end, payload), (none_end, default)];
+        if matches!(payload_type, ValueType::Ref(_)) {
+            self.materialize_mixed_lanes(&mut lanes)?;
+        }
+        let [(_, payload), (_, default)] = lanes;
+        let mut some_arguments = vec![payload];
+        let mut none_arguments = vec![default];
+        if dynamic_payload {
+            self.current = some_end;
+            self.ensure_string_extent(payload)?;
+            self.ensure_list_extent(payload)?;
+            let (count, capacity) = self.dynamic_extent_lanes(payload).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("coalesce payload extent"),
+            )?;
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            some_arguments.extend([count, capacity]);
+            self.current = none_end;
+            self.ensure_string_extent(default)?;
+            self.ensure_list_extent(default)?;
+            let (count, capacity) = self.dynamic_extent_lanes(default).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("coalesce default extent"),
+            )?;
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            none_arguments.extend([count, capacity]);
+        }
+        self.current = some_end;
+        self.finish_current(Terminator::Branch { target: join, arguments: some_arguments })?;
+        self.current = none_end;
+        self.finish_current(Terminator::Branch { target: join, arguments: none_arguments })?;
         self.restore_facts(facts, join);
         self.current = join;
         self.bindings = bindings;
-        Ok(self.block_parameter_values(join)[0])
+        let join_values = self.block_parameter_values(join);
+        if dynamic_payload {
+            self.record_joined_extent(join_values[0], join_values[1], join_values[2], &[payload, default]);
+        }
+        Ok(join_values[0])
     }
 
     /// `value?` on a scalar `Option`/`Result`: continue with the payload, or
@@ -3898,8 +3955,8 @@ impl FunctionLowerer<'_> {
         })?;
         self.current = fail;
         let failure_payload = if shape.name == "Result" {
-            let error_type = scalar_type(&shape.fields[2])?;
-            if error_type != scalar_type(&failure_shape.fields[2])? {
+            let error_type = self.field_value_type(&shape.fields[2])?;
+            if error_type != self.field_value_type(&failure_shape.fields[2])? {
                 return Err(CanonicalLoweringError::UnsupportedExpression("try error type"));
             }
             vec![self.load_record_field(object, 2, error_type)?]
@@ -3911,7 +3968,7 @@ impl FunctionLowerer<'_> {
         let terminator = self.return_value(Some(failure), &results)?;
         self.finish_current(terminator)?;
         self.current = proceed;
-        let payload_type = scalar_type(&shape.fields[1])?;
+        let payload_type = self.field_value_type(&shape.fields[1])?;
         self.load_record_field(object, 1, payload_type)
     }
 
@@ -3951,7 +4008,8 @@ impl FunctionLowerer<'_> {
                 values.push(self.lower_expr(value)?);
             } else if let Some(base) = base {
                 let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                values.push(self.load_record_field(base, index, scalar_type(&field_types[index as usize])?)?);
+                let value_type = self.field_value_type(&field_types[index as usize])?;
+                values.push(self.load_record_field(base, index, value_type)?);
             } else {
                 return Err(CanonicalLoweringError::MissingBinding(field_name.clone()));
             }
@@ -3960,13 +4018,85 @@ impl FunctionLowerer<'_> {
     }
 
     /// Allocate an immutable reference-counted record and store its fields.
+    /// The SafeWIR value type of an aggregate field or payload.
+    fn field_value_type(&self, ty: &Type) -> Result<ValueType, CanonicalLoweringError> {
+        source_value_type(ty, self.layout_bundle, self.layouts, &HashMap::new(), self.definitions)
+    }
+
+    /// A reference value as a fresh owned token for an aggregate slot: a
+    /// string or scalar list is copied (value semantics; the source keeps
+    /// its own token).
+    fn owned_for_storage(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        match ty.unqualified() {
+            Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+                self.ensure_string_extent(value)?;
+                self.clone_string_for_storage(value)
+            }
+            Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+                self.clone_list_value_for_storage(value, ty)
+            }
+            _ => Err(CanonicalLoweringError::UnsupportedType(ty.clone())),
+        }
+    }
+
+    /// A fresh empty value for an aggregate slot no variant payload fills:
+    /// every owned pointer slot must hold an object for the destructor.
+    fn push_empty_value(&mut self, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        match ty.unqualified() {
+            Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+                let layout = self.string_layout_id()?;
+                let zero = self.push_const_size(0)?;
+                let object = self.fresh(ValueType::Ref(layout))?;
+                self.push_operation(Operation::Alloc {
+                    destination: object,
+                    layout,
+                    extent: witchy_wir::canonical_safewir::Extent::Counted {
+                        header_bytes: 4,
+                        count: zero,
+                        capacity: zero,
+                        stride_bytes: 1,
+                    },
+                    class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+                });
+                self.push_operation(Operation::UpdateCount { object, count: zero });
+                self.string_lengths.insert(object, zero);
+                self.string_capacities.insert(object, zero);
+                Ok(object)
+            }
+            Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+                let (layout, element_type, header_bytes, stride_bytes) =
+                    list_layout(ty, self.layout_bundle, self.layouts)?;
+                if matches!(element_type, ValueType::Ref(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("empty list of references"));
+                }
+                let zero = self.push_const_size(0)?;
+                let object = self.fresh(ValueType::Ref(layout))?;
+                self.push_operation(Operation::Alloc {
+                    destination: object,
+                    layout,
+                    extent: witchy_wir::canonical_safewir::Extent::Counted {
+                        header_bytes,
+                        count: zero,
+                        capacity: zero,
+                        stride_bytes,
+                    },
+                    class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+                });
+                self.list_counts.insert(object, zero);
+                self.list_capacities.insert(object, zero);
+                Ok(object)
+            }
+            _ => self.push_zero(scalar_type(ty)?),
+        }
+    }
+
     fn lower_heap_record(
         &mut self,
         name: &str,
         field_types: &[Type],
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let layout = packed_scalar_layout(field_types, self.layout_bundle, self.layouts)?;
+        let layout = aggregate_layout(field_types, self.layout_bundle, self.layouts)?;
         let LayoutSize::Fixed(bytes) = self
             .layouts
             .get(layout)
@@ -3983,13 +4113,15 @@ impl FunctionLowerer<'_> {
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
         for (index, (value, field_type)) in values.into_iter().zip(field_types).enumerate() {
-            let expected = scalar_type(field_type)?;
+            let expected = self.field_value_type(field_type)?;
             let actual = self.values[&value];
             if actual != expected {
                 return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
                     callee: name.to_owned(), parameter: index, expected, actual,
                 });
             }
+            let reference = matches!(expected, ValueType::Ref(_));
+            let value = if reference { self.owned_for_storage(value, field_type)? } else { value };
             self.push_operation(Operation::Store {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     object,
@@ -3998,7 +4130,11 @@ impl FunctionLowerer<'_> {
                     AccessMode::Write,
                 ),
                 value,
-                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+                transfer: if reference {
+                    witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+                } else {
+                    witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+                },
             });
         }
         Ok(object)
@@ -4019,7 +4155,13 @@ impl FunctionLowerer<'_> {
                 value_type,
                 AccessMode::Read,
             ),
-            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            // A reference field yields a shared clone; the object keeps its
+            // own token.
+            transfer: if matches!(value_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::LoadTransfer::CloneShared
+            } else {
+                witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
+            },
         });
         Ok(destination)
     }
@@ -4037,7 +4179,7 @@ impl FunctionLowerer<'_> {
         }
         let index = definition.variants[0].field_names.iter().position(|candidate| candidate == field)
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
-        let value_type = scalar_type(&definition.variants[0].fields[index])?;
+        let value_type = self.field_value_type(&definition.variants[0].fields[index])?;
         let object = self.lower_expr(base)?;
         if !matches!(self.values[&object], ValueType::Ref(_)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("heap record field base"));
@@ -4471,8 +4613,16 @@ impl FunctionLowerer<'_> {
         source_expression: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let source_type = self.expression_type(source_expression)?;
+        self.clone_list_value_for_storage(source, &source_type)
+    }
+
+    fn clone_list_value_for_storage(
+        &mut self,
+        source: ValueId,
+        source_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&source_type, self.layout_bundle, self.layouts)?;
+            list_layout(source_type, self.layout_bundle, self.layouts)?;
         if self.values.get(&source).copied() != Some(ValueType::Ref(layout)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("nested list element type"));
         }
@@ -5243,12 +5393,8 @@ impl FunctionLowerer<'_> {
                 "string concatenation operands",
             ));
         }
-        let left_length = *self.string_lengths.get(&left).ok_or(
-            CanonicalLoweringError::UnsupportedExpression("dynamic string concatenation operand"),
-        )?;
-        let right_length = *self.string_lengths.get(&right).ok_or(
-            CanonicalLoweringError::UnsupportedExpression("dynamic string concatenation operand"),
-        )?;
+        let left_length = self.string_length_of(left)?;
+        let right_length = self.string_length_of(right)?;
 
         let maximum = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ConstSize {
@@ -6574,7 +6720,7 @@ fn source_value_type(
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
         // the ABI does not carry (`scalar_type` refuses it below).
-        return packed_scalar_layout(&shape.fields, layout_bundle, layouts).map(ValueType::Ref);
+        return aggregate_layout(&shape.fields, layout_bundle, layouts).map(ValueType::Ref);
     }
     match source.unqualified() {
         Type::Fn(..) => function_types
@@ -6597,6 +6743,62 @@ fn source_value_type(
             Ok(ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)))
         }
         _ => scalar_type(source),
+    }
+}
+
+/// The interned record layout whose slots are exactly `expected_fields`: a
+/// scalar in its slot, a string or list behind an owned pointer slot.
+fn aggregate_layout(
+    expected_fields: &[Type],
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+    let mut expected = Vec::with_capacity(expected_fields.len());
+    for field in expected_fields {
+        let slot = if let Ok(scalar) = scalar_type(field) {
+            (Some(scalar), None)
+        } else {
+            let pointee = match field.unqualified() {
+                Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+                    string_layout(field, layout_bundle, layouts)?
+                }
+                Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+                    list_layout(field, layout_bundle, layouts)?.0
+                }
+                _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+            };
+            (None, Some(pointee))
+        };
+        expected.push(slot);
+    }
+    let mut candidates = Vec::new();
+    for root in layout_bundle.roots() {
+        let Some(descriptor) = layouts.get(*root) else { continue };
+        let LayoutKind::PackedRecord { fields } = descriptor.kind() else { continue };
+        if fields.len() != expected.len() {
+            continue;
+        }
+        let matches = fields.iter().zip(&expected).all(|(field, (scalar, pointee))| {
+            match (layouts.get(*field).map(|field| field.kind()), scalar, pointee) {
+                (Some(LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration)), Some(ValueType::Int), None) => true,
+                (Some(LayoutKind::Scalar(ScalarKind::Float)), Some(ValueType::Float), None) => true,
+                (Some(LayoutKind::Scalar(ScalarKind::Bool)), Some(ValueType::Bool), None) => true,
+                (
+                    Some(LayoutKind::RuntimePointerValueSlot { pointee: actual, semantics: PointerSlot::Owned }),
+                    None,
+                    Some(pointee),
+                ) => actual == pointee,
+                _ => false,
+            }
+        });
+        if matches {
+            candidates.push(*root);
+        }
+    }
+    match candidates.as_slice() {
+        [layout] => Ok(*layout),
+        [] => Err(CanonicalLoweringError::MissingLayout(Type::Tuple(expected_fields.to_vec()))),
+        _ => Err(CanonicalLoweringError::AmbiguousLayout(Type::Tuple(expected_fields.to_vec()))),
     }
 }
 
@@ -6700,6 +6902,12 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
             if let Expr::Str(value) = expression {
                 *literal_uses.entry(value.as_bytes().to_vec()).or_default() += 1;
             }
+            // String literal patterns compare against static literals too.
+            if let Expr::Match { arms, .. } = expression {
+                for arm in arms {
+                    collect_pattern_literals(&arm.pattern, &mut literal_uses);
+                }
+            }
             // Only an `Int` render reaches the digit tables; the checker
             // refuses a registered segment no function references.
             if let Expr::Call { name, args } = expression
@@ -6745,6 +6953,23 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
         }
     }
     payloads.into_iter().collect()
+}
+
+fn collect_pattern_literals(pattern: &Pattern, literal_uses: &mut BTreeMap<Vec<u8>, usize>) {
+    match pattern {
+        Pattern::Str(text) => *literal_uses.entry(text.as_bytes().to_vec()).or_default() += 1,
+        Pattern::Ctor { args, .. } | Pattern::AnonCtor { args, .. } | Pattern::Tuple(args) => {
+            for argument in args {
+                collect_pattern_literals(argument, literal_uses);
+            }
+        }
+        Pattern::List { elems, .. } => {
+            for element in elems {
+                collect_pattern_literals(element, literal_uses);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn contains_console_print(module: &witchy_syntax::ast::Module) -> bool {

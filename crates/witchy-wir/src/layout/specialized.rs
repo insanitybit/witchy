@@ -1281,6 +1281,14 @@ impl LayoutInterner {
         self.intern_kind(LayoutKind::RuntimePointerValueSlot { pointee, semantics })
     }
 
+    /// Intern a fixed record of already-interned field layouts: scalars and
+    /// owned pointer slots. The canonical layout catalog builds heap
+    /// aggregates (records, sums, `Option`/`Result`) this way because a
+    /// reference field cannot be reached through a type resolver.
+    pub fn intern_packed_record(&mut self, fields: Vec<LayoutId>) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::PackedRecord { fields })
+    }
+
     /// Intern one ordinary slot-backed closed sum. Empty variants are retained
     /// exactly; non-empty children must already be canonical runtime value slots.
     pub fn intern_runtime_closed_sum(
