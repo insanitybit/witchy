@@ -10,7 +10,11 @@ const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("witchy-testkit", &["witchy-cap-model"]),
     ("witchy-test-host", &["witchy-testkit"]),
     ("witchy-syntax", &["witchy-cap-model"]),
-    ("witchy-types", &["witchy-cap-model", "witchy-syntax"]),
+    // RFC-0165: the canonical checked source binds the launch contract
+    // (the host capability grant of `main`) into its identity before
+    // admission; the payload is computed by `witchy-caps`, which depends on
+    // nothing above the syntax stage, so the graph stays acyclic.
+    ("witchy-types", &["witchy-cap-model", "witchy-caps", "witchy-syntax"]),
     ("witchy-wir", &["witchy-syntax"]),
     ("witchy-caps", &["witchy-cap-model", "witchy-syntax"]),
     ("witchy-confinement", &[]),

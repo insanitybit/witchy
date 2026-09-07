@@ -110,6 +110,49 @@ parity`, not by the oracle, which executes the same SafeWIR: independent
 expected results remain the adjudicator. The landing decision above is
 unchanged; the branch stays unsubmitted with every foundation suite green.
 
+## Targeted confirmation of the landing classification (2026-09-07)
+
+`cargo nextest run --workspace --no-fail-fast` on the branch at 19e7eb1ba's
+parent (the two preserved untracked `witchy-wir` test files set aside for the
+build, restored after): **4288 tests, 3928 passed, 359 failed, 1 timed out, 19
+skipped**, 38.0 minutes. `scripts/rfc0165-classify-reds.py` buckets every
+failure by the refusal signature in its captured output:
+
+| Signature | Failing tests |
+|---|---|
+| `unsupported canonical v1 layout type` | 116 |
+| `unsupported lowering` (other constructs) | 106 |
+| `canonical SafeWIR pipeline/lowering failed` | 100 |
+| no refusal signature in the output | 37 |
+
+The 37 without a signature, read one by one: 13 `witchy::stats` tests assert
+optimization statistics (in-place updates, SROA, format arenas) the
+optimizer-free route never produces; 11 `witchy::e2e` flows report that the
+`coven`/`coven-web` server never started, because those programs are outside
+the subset and do not compile; 5 build-step tests (`rfc0103`, the compiled
+build-step tests, `build_steps_are_default_deny_even_when_safe`) hit a
+checked-source refusal spelled `canonical runtime function `build.build` lacks
+a finalized signature`, an imprecise message for an unsupported program rather
+than a defect; 2 `witchy-lower` boundary tests are the `MissingCheckedSourceWitness`
+class already recorded; `emit-wasm` in `cli_subcommands`, the in-language test
+framework sweep, and the `rfc0105` fixture transcript fail because the program
+under test does not compile. Four are not policy consequences and are recorded
+here as findings: `architecture::stage_crates_follow_the_declared_dependency_dag`
+(the branch made `witchy-types` depend on `witchy-caps` for the launch-contract
+payload without amending the contract; the edge is now explicit in
+`tests/misc/architecture.rs` and `spec/architecture.md`, and the graph stays
+acyclic because `witchy-caps` depends on nothing above the syntax stage),
+`sandbox_vm::parity_file_agrees_on_matching_aborts` (an admitted program's
+out-of-bounds abort is a Wasm trap without the interpreter's diagnostic text, a
+known behavioral difference of the canonical route to decide, not a memory-safety
+defect), and `test_for_paths`/`merge_queue` script expectations plus two
+`sandbox_grants` confinement tests that depend on the host environment and need
+a run on `master` for comparison. `rfc_status_hygiene` failed on
+`0165-memory-mode-boundary.md`, now a companion document.
+
+The classification therefore holds for 353 of 359 reds by construction and for
+the rest by inspection; the gate-coverage decision remains the user's.
+
 ## Current focused candidate evidence
 
 - `canonical_pipeline::tests::scalar_unary_source_reaches_admitted_execution`
