@@ -2659,6 +2659,9 @@ impl FunctionLowerer<'_> {
         if self.values[&source] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list object type"));
         }
+        // A source without count facts (an element loaded out of a list of
+        // lists, a call result) authenticates its header here.
+        self.ensure_list_extent(source)?;
 
         let outer = self.bindings.clone();
         // Every outer binding the body rebinds anywhere (an assignment nested
@@ -3130,9 +3133,11 @@ impl FunctionLowerer<'_> {
                     return None;
                 }
                 let is_string = Some(self.values[&object]) == string.map(ValueType::Ref);
-                if !is_string && !fixed_layout && mark_lists {
+                if !is_string && !fixed_layout && mark_lists && !self.known_shared_value(object) {
                     // The `for` loop's rule: a unique phi over the canonical
-                    // push templates.
+                    // push templates. A lane holding a shared value (a call
+                    // result, a clone) cannot be unique and takes the
+                    // general rule below.
                     return Some(Ownership::Unique);
                 }
                 // Only a name the body rebinds needs a phi. A lane from a
@@ -7618,7 +7623,7 @@ fn list_layout(
         let element_type = match (expected_element, element_descriptor.kind()) {
             (ValueType::Int, LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
             (ValueType::Float, LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
-            (ValueType::Bool, LayoutKind::Scalar(ScalarKind::BoolValueSlot)) => ValueType::Bool,
+            (ValueType::Bool, LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
             (
                 ValueType::Ref(expected),
                 LayoutKind::RuntimePointerValueSlot {

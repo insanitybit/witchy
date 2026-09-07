@@ -75,11 +75,10 @@ pub fn is_scalar_type(ty: &Type) -> bool {
         if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool"))
 }
 
-/// A v1 list element: a scalar other than `Bool` (a boolean element slot
-/// is not a value type yet), a string, a list of those, or an aggregate.
+/// A v1 list element: a scalar (a `Bool` element is one byte), a string,
+/// a list of those, or an aggregate.
 pub fn is_v1_list_element_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    !matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Bool" && arguments.is_empty())
-        && field_type_ok(ty, definitions, true)
+    field_type_ok(ty, definitions, true)
 }
 
 /// A field an aggregate may carry: a scalar in its slot, or a string,
@@ -95,8 +94,7 @@ fn field_type_ok(ty: &Type, definitions: &BTreeMap<String, TypeDef>, allow_nomin
         _ if is_scalar_type(ty) => true,
         Type::Named(name, arguments) if name == "String" && arguments.is_empty() => true,
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            !matches!(arguments[0].unqualified(), Type::Named(name, inner) if name == "Bool" && inner.is_empty())
-                && field_type_ok(&arguments[0], definitions, allow_nominal)
+            field_type_ok(&arguments[0], definitions, allow_nominal)
         }
         Type::Named(name, arguments) if matches!(name.as_str(), "Option" | "Result") => {
             !arguments.is_empty() && arguments.iter().all(|argument| field_type_ok(argument, definitions, false))

@@ -560,3 +560,27 @@ fn admitted_element_reads_after_a_kernel_loop_wait_for_the_converged_prefix() {
     );
     assert_eq!(output, vec!["x".to_string(), "3a2b1c".to_string()]);
 }
+
+#[test]
+fn admitted_bool_lists_store_one_byte_elements_and_nest() {
+    // `List(Bool)` elements are one-byte scalars: literal, pushed, indexed,
+    // iterated, and nested in a list of lists.
+    let output = run_admitted(
+        "pub fn count_true(flags: List(Bool)) -> Int:\n    var n = 0\n    for f in flags:\n        if f:\n            n = n + 1\n    n\n\nfn main(console: Console):\n    var seen = [true, false, true]\n    seen.push(false)\n    seen.push(true)\n    console.print(\"${count_true(seen)} ${seen.length()} ${seen[1]} ${seen[4]}\")\n    let grid = [[true, false], [false, false]]\n    var rows = 0\n    for row in grid:\n        for cell in row:\n            if cell:\n                rows = rows + 1\n    console.print(\"${rows}\")\n",
+    );
+    assert_eq!(output, vec!["3 5 false true".to_string(), "1".to_string()]);
+}
+
+#[test]
+fn admitted_for_over_a_loaded_row_and_a_var_copy_of_a_list_parameter_grow() {
+    // A `for` over an element loaded out of a list of lists authenticates
+    // that element's header itself; a `var` copy of a list parameter (a
+    // pointer-bearing prefix cloned from a shared object) is grown by push
+    // while the parameter keeps its length. A `for` header lane holding a
+    // shared call result takes a shared phi, not the push template's unique
+    // one.
+    let output = run_admitted(
+        "pub fn total(board: List(List(Int))) -> Int:\n    var sum = 0\n    for row in board:\n        for v in row:\n            sum = sum + v\n    sum\n\npub fn with_first(board: List(List(Int)), value: Int) -> List(List(Int)):\n    var copy = board\n    copy.push([value])\n    copy\n\nfn main(console: Console):\n    let board = [[1, 2], [3, 4]]\n    console.print(\"${total(board)}\")\n    let grown = with_first(board, 5)\n    console.print(\"${total(grown)} ${grown.length()} ${board.length()}\")\n",
+    );
+    assert_eq!(output, vec!["10".to_string(), "15 3 2".to_string()]);
+}

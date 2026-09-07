@@ -914,3 +914,15 @@ entry state first).
 
 Newly agree: `rle`, `rpn`, `wrap`, `regex_demo`. Census: 101/163 check, 45 runnable
 three-legged parity, 0 disagree. `anagram`/`text` now stop at lambdas; `wordcount` at dicts.
+
+## Slice 29 (2026-09-07): Bool lists, `for` over loaded rows, copies of shared lists
+
+`List(Bool)` elements are the one-byte `ScalarKind::Bool` scalar (the layout lookup and the
+ABI authority matched the legacy 8-byte `BoolValueSlot`, which the checker refuses as a
+value). A `for` source without count facts (an element loaded out of a list of lists)
+authenticates its header. A pointer-bearing `CloneRange` accepts any managed source (a
+parameter's class is unknown); the `for` header rule no longer forces a unique phi on a
+lane holding a known-shared value. Newly agree: `dijkstra`, `life`, `sudoku`. Census:
+104/163 check, 48 runnable three-legged parity, 0 disagree. Remaining in-subset: `while let`
+(needs `break` and type-table entries for the desugared scrutinee), `Float` render,
+`largest` (generic + trait bound).

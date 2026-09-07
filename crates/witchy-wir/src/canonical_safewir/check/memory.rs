@@ -1284,9 +1284,13 @@ impl<'a> MemoryChecker<'a> {
             // never survives). Both prefixes then share their elements.
             let cloned = self.require_initialized_range(source, destination.element)?;
             self.require_destination_range_empty(destination)?;
-            // A zero-width prefix fact carries no class of its own; the
-            // objects on both sides must be reference counted regardless.
-            if source.allocation_class != Some(AllocationClass::ReferenceCounted)
+            // A zero-width prefix fact carries no class of its own. The
+            // destination is a fresh reference-counted list; the source is
+            // any managed object (a parameter's class is unknown but its
+            // elements are managed, and the retain loop respects the static
+            // boundary).
+            let source_state = self.live_object(source.object)?.clone();
+            if !Self::is_managed_storage(&source_state)
                 || destination.allocation_class != Some(AllocationClass::ReferenceCounted)
             {
                 return Err(InitialCheckError::InvalidOwnership {
