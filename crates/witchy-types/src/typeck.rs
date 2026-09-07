@@ -12092,15 +12092,13 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         // Effect-only canonical host operations are not callable tail
         // transfers. In particular, console.print must lower to HostCall
         // followed by Return, not to a TailCall terminator.
+        // An intrinsic-named call (the catalog, plus the duration conversions
+        // the linker resolves by name) is computed in place and returned as a
+        // value: there is no callee to transfer to.
         Expr::Call { name, .. }
-            if matches!(
-                name.as_str(),
-                "__capop.print"
-                    | "list.length"
-                    | "list.__length"
-                    | "string.chars"
-                    | "string.__chars"
-            ) => None,
+            if matches!(name.as_str(), "__capop.print" | "int_to_duration" | "duration_to_int")
+                || witchy_syntax::intrinsics::lookup(name).is_some()
+                || witchy_syntax::intrinsics::lookup(name.strip_prefix("list.__").map_or(name.as_str(), |_| name.as_str())).is_some() => None,
         Expr::Call { .. } | Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } | Expr::MethodCall { .. } => Some(ProperTailDispatchKind::Direct),
         Expr::Apply { .. } | Expr::ExistentialCall { .. } => Some(ProperTailDispatchKind::Indirect),
         _ => None,

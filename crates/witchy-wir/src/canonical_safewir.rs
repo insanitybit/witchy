@@ -126,6 +126,14 @@ pub enum ArithmeticOperator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FloatUnaryOperator {
+    Sqrt,
+    TruncateToInt,
+    /// An `Int` converted to the nearest `Float`.
+    FromInt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ComparisonOperator {
     Equal,
     NotEqual,
@@ -504,6 +512,7 @@ pub enum CanonicalRuleId {
     Compare,
     NarrowSize,
     WidenSize,
+    FloatUnary,
     Guard,
     Alloc,
     StaticData,
@@ -555,6 +564,12 @@ pub enum Operation {
     },
     NarrowSize { destination: ValueId, value: ValueId },
     WidenSize { destination: ValueId, value: ValueId },
+    /// A unary float operation: `Sqrt` maps a `Float` to a `Float`;
+    /// `TruncateToInt` maps a `Float` to an `Int` toward zero, saturating at
+    /// the `Int` bounds and mapping NaN to zero (the lowering traps on NaN
+    /// before it when the language semantics abort); `FromInt` maps an `Int`
+    /// to a `Float`.
+    FloatUnary { destination: ValueId, operator: FloatUnaryOperator, value: ValueId },
     Guard { condition: ValueId, kind: GuardKind },
     Alloc {
         destination: ValueId,
@@ -668,6 +683,7 @@ impl Operation {
             Self::Compare { .. } => CanonicalRuleId::Compare,
             Self::NarrowSize { .. } => CanonicalRuleId::NarrowSize,
             Self::WidenSize { .. } => CanonicalRuleId::WidenSize,
+            Self::FloatUnary { .. } => CanonicalRuleId::FloatUnary,
             Self::Guard { .. } => CanonicalRuleId::Guard,
             Self::Alloc { .. } => CanonicalRuleId::Alloc,
             Self::StaticData { .. } => CanonicalRuleId::StaticData,

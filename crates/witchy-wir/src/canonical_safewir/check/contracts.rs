@@ -462,7 +462,8 @@ fn propagate_operation_origins(
         | Operation::Arithmetic { destination, .. }
         | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. }
-        | Operation::WidenSize { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
+        | Operation::WidenSize { destination, .. }
+        | Operation::FloatUnary { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
         Operation::Guard { .. }
         | Operation::Store { .. }
         | Operation::CopyBytes { .. }
@@ -601,7 +602,7 @@ fn derive_operation(
                 );
             }
         }
-        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
+        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
     }
     Ok(())
 }

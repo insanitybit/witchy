@@ -530,6 +530,16 @@ impl CanonicalWriter {
                 self.value_id(*destination);
                 self.value_id(*value);
             }
+            Operation::FloatUnary { destination, operator, value } => {
+                self.u8(28);
+                self.value_id(*destination);
+                self.u8(match operator {
+                    crate::canonical_safewir::FloatUnaryOperator::Sqrt => 0,
+                    crate::canonical_safewir::FloatUnaryOperator::TruncateToInt => 1,
+                    crate::canonical_safewir::FloatUnaryOperator::FromInt => 2,
+                });
+                self.value_id(*value);
+            }
             Operation::Guard { condition, kind } => {
                 self.u8(7);
                 self.value_id(*condition);

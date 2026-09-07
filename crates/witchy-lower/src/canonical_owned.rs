@@ -41,6 +41,7 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
         | Operation::ConstBool { destination, .. } | Operation::ConstSize { destination, .. }
         | Operation::Arithmetic { destination, .. } | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. } | Operation::WidenSize { destination, .. }
+        | Operation::FloatUnary { destination, .. }
         | Operation::Alloc { destination, .. } | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. } | Operation::MoveValue { destination, .. }
         | Operation::MakeInlineAggregate { destination, .. }
@@ -58,7 +59,7 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
 fn uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::Arithmetic { left, right, .. } | Operation::Compare { left, right, .. } => vec![*left, *right],
-        Operation::NarrowSize { value, .. } | Operation::WidenSize { value, .. } => vec![*value],
+        Operation::NarrowSize { value, .. } | Operation::WidenSize { value, .. } | Operation::FloatUnary { value, .. } => vec![*value],
         Operation::Guard { condition, .. } => vec![*condition],
         Operation::Load { place, .. } => vec![place.object()],
         Operation::Store { place, value, .. } => vec![place.object(), *value],

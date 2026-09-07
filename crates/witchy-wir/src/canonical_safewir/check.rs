@@ -747,6 +747,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. }
         | Operation::WidenSize { destination, .. }
+        | Operation::FloatUnary { destination, .. }
         | Operation::Alloc { destination, .. }
         | Operation::StaticData { destination, .. }
         | Operation::Load { destination, .. }
@@ -784,6 +785,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::Compare { left, right, .. } => vec![*left, *right],
         Operation::NarrowSize { value, .. }
         | Operation::WidenSize { value, .. }
+        | Operation::FloatUnary { value, .. }
         | Operation::Guard { condition: value, .. }
         | Operation::MoveValue { source: value, .. }
         | Operation::CloneRef { source: value, .. }
@@ -1092,6 +1094,15 @@ fn check_operation(
         Operation::WidenSize { destination, value } => {
             require_type(function, *destination, ValueType::Int)?;
             require_type(function, *value, ValueType::Size)
+        }
+        Operation::FloatUnary { destination, operator, value } => {
+            let (operand, result) = match operator {
+                crate::canonical_safewir::FloatUnaryOperator::Sqrt => (ValueType::Float, ValueType::Float),
+                crate::canonical_safewir::FloatUnaryOperator::TruncateToInt => (ValueType::Float, ValueType::Int),
+                crate::canonical_safewir::FloatUnaryOperator::FromInt => (ValueType::Int, ValueType::Float),
+            };
+            require_type(function, *destination, result)?;
+            require_type(function, *value, operand)
         }
         Operation::Guard { condition, .. } => require_type(function, *condition, ValueType::Bool),
         Operation::MoveValue { destination, source } => {

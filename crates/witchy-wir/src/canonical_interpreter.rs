@@ -360,6 +360,28 @@ impl<'a> Engine<'a> {
                 let widened = i64::try_from(value).map_err(|_| InterpretError::ArithmeticTrap)?;
                 values.insert(*destination, InterpreterValue::Int(widened));
             }
+            Operation::FloatUnary { destination, operator, value } => {
+                let result = match operator {
+                    crate::canonical_safewir::FloatUnaryOperator::FromInt => {
+                        let operand = self.int_value(*value, values)?;
+                        InterpreterValue::FloatBits((operand as f64).to_bits())
+                    }
+                    operator => {
+                        let InterpreterValue::FloatBits(bits) = self.value(*value, values)? else {
+                            return Err(InterpretError::TypeMismatch("FloatUnary operand"));
+                        };
+                        let operand = f64::from_bits(*bits);
+                        match operator {
+                            crate::canonical_safewir::FloatUnaryOperator::Sqrt => InterpreterValue::FloatBits(operand.sqrt().to_bits()),
+                            // `as` truncates toward zero, saturates, and maps
+                            // NaN to zero: the contract of `i64.trunc_sat_f64_s`.
+                            crate::canonical_safewir::FloatUnaryOperator::TruncateToInt => InterpreterValue::Int(operand as i64),
+                            crate::canonical_safewir::FloatUnaryOperator::FromInt => unreachable!("handled above"),
+                        }
+                    }
+                };
+                values.insert(*destination, result);
+            }
             Operation::Guard { condition, .. } => {
                 if !self.bool_value(*condition, values)? {
                     return Err(InterpretError::GuardTrap);

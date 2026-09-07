@@ -256,6 +256,25 @@ fn admitted_substring_and_trim_scan_characters_and_ascii_whitespace() {
 }
 
 #[test]
+fn admitted_float_conversions_bool_render_and_duration_identities_run() {
+    // `math.sqrt`, `math.to_int` (saturating, NaN traps before the
+    // conversion), and `math.to_float` are one SafeWIR unary float
+    // operation; a `Bool` renders from the static `falsetrue` table; the
+    // duration conversions are identities, also at a tail position where
+    // the tail-site classifier no longer takes them for calls.
+    let output = run_admitted(
+        "import math\n\npub fn wrap(n: Int) -> Duration:\n    int_to_duration(n * 2)\n\nfn main(console: Console):\n    let big = 1000000000.0 * 1000000000.0 * 1000000000.0\n    console.print(\"${math.to_int(math.sqrt(2.25) * 10.0)} ${math.to_int(-7.9)} ${math.to_int(big)} ${math.to_int(0.0 - big)} ${math.to_int(math.to_float(41) + 1.5)}\")\n    let d = wrap(750)\n    console.print(\"${duration_to_int(d)} ${duration_to_int(d) > 1000} ${d == 1500ms}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec![
+            "15 -7 9223372036854775807 -9223372036854775808 42".to_string(),
+            "1500 true true".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

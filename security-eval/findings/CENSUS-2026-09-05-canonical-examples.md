@@ -735,3 +735,22 @@ route is 0/107.
 - Pinned by `admitted_substring_and_trim_scan_characters_and_ascii_whitespace`.
 - Census: 75 of 163 check; 19 runnable examples admit and agree under
   three-legged parity (`matrix`, `loops`, `fizzbuzz` are new).
+
+## Progress (owner, 2026-09-07, twenty-first slice: float conversions, Bool render, duration identities)
+
+- **One unary float operation** (`FloatUnary`: `Sqrt`, `TruncateToInt`,
+  `FromInt`) joins the SafeWIR vocabulary across the checker, the oracle,
+  the encoder (`f64.sqrt`, `i64.trunc_sat_f64_s`, `f64.convert_i64_s`), the
+  plan mirror, and the history digest. `math.to_int` traps on NaN through a
+  separate terminal block before the saturating truncation (a guard's
+  condition must be an unsigned order, so the NaN test is a branch).
+- **`Bool` renders** from the static `falsetrue` table: a branch selects the
+  word's offset and length as a scalar phi and the bytes are copied.
+- **Duration conversions** are identities at runtime. At a tail position the
+  statement lowering tail-called any name it did not bind, and typeck's
+  tail-site classifier counted the call as a proper tail site; both now
+  treat an intrinsic-named call (the catalog and the duration conversions)
+  as a value.
+- Pinned by `admitted_float_conversions_bool_render_and_duration_identities_run`.
+- Census: 76 of 163 check; 20 runnable examples admit and agree under
+  three-legged parity (`temperature` is new).

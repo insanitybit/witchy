@@ -899,7 +899,7 @@ impl FunctionLowerer<'_> {
                     if !final_statement {
                         return Err(CanonicalLoweringError::UnsupportedStatement("early return"));
                     }
-                    if let Some(Expr::Call { name, args }) = value {
+                    if let Some(call @ Expr::Call { name, args }) = value {
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
                             let terminator = self.return_value(Some(value), results)?;
@@ -920,6 +920,16 @@ impl FunctionLowerer<'_> {
                             }
                             self.lower_console_print(args)?;
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
+                        // A call by a name that is neither a binding nor a
+                        // canonical function is an intrinsic the expression
+                        // lowering handles (`int_to_duration`, `math.sqrt`):
+                        // its value is returned, not tail-called.
+                        if !self.bindings.contains_key(name) && !self.functions.contains_key(name) {
+                            let value = self.lower_expr(call)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if !self.bindings.contains_key(name) {
@@ -978,7 +988,7 @@ impl FunctionLowerer<'_> {
                     return Ok(());
                 }
                 Stmt::Expr(value) if final_statement => {
-                    if let Expr::Call { name, args } = value {
+                    if let call @ Expr::Call { name, args } = value {
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
                             let terminator = self.return_value(Some(value), results)?;
@@ -999,6 +1009,16 @@ impl FunctionLowerer<'_> {
                             }
                             self.lower_console_print(args)?;
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
+                        // A call by a name that is neither a binding nor a
+                        // canonical function is an intrinsic the expression
+                        // lowering handles (`int_to_duration`, `math.sqrt`):
+                        // its value is returned, not tail-called.
+                        if !self.bindings.contains_key(name) && !self.functions.contains_key(name) {
+                            let value = self.lower_expr(call)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if !self.bindings.contains_key(name) {
@@ -3387,6 +3407,70 @@ impl FunctionLowerer<'_> {
                 }
                 self.lower_substring(object, start, end)
             }
+            Expr::Call { name, args } if matches!(name.as_str(), "math.sqrt" | "math.__sqrt") => {
+                let [argument] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("math.sqrt arity"));
+                };
+                let value = self.lower_expr(argument)?;
+                if self.values[&value] != ValueType::Float {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("math.sqrt operand type"));
+                }
+                let destination = self.fresh(ValueType::Float)?;
+                self.push_operation(Operation::FloatUnary {
+                    destination,
+                    operator: witchy_wir::canonical_safewir::FloatUnaryOperator::Sqrt,
+                    value,
+                });
+                Ok(destination)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "math.to_int" | "math.__to_int") => {
+                let [argument] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("math.to_int arity"));
+                };
+                let value = self.lower_expr(argument)?;
+                if self.values[&value] != ValueType::Float {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("math.to_int operand type"));
+                }
+                // NaN is a runtime error on every backend: a NaN is the one
+                // float unequal to itself, so the conversion traps on it before
+                // the saturating truncation would map it to zero.
+                let is_number = self.push_compare(ComparisonOperator::Equal, value, value)?;
+                self.push_trap_unless(is_number)?;
+                let destination = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::FloatUnary {
+                    destination,
+                    operator: witchy_wir::canonical_safewir::FloatUnaryOperator::TruncateToInt,
+                    value,
+                });
+                Ok(destination)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "math.to_float" | "math.__to_float") => {
+                let [argument] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("math.to_float arity"));
+                };
+                let value = self.lower_expr(argument)?;
+                if self.values[&value] != ValueType::Int {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("math.to_float operand type"));
+                }
+                let destination = self.fresh(ValueType::Float)?;
+                self.push_operation(Operation::FloatUnary {
+                    destination,
+                    operator: witchy_wir::canonical_safewir::FloatUnaryOperator::FromInt,
+                    value,
+                });
+                Ok(destination)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "int_to_duration" | "duration_to_int") => {
+                // A `Duration` is an `Int` of milliseconds at runtime.
+                let [argument] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("duration conversion arity"));
+                };
+                let value = self.lower_expr(argument)?;
+                if self.values[&value] != ValueType::Int {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("duration conversion operand type"));
+                }
+                Ok(value)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "string.trim" | "string.__trim") => {
                 let [receiver] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.trim arity"));
@@ -4834,10 +4918,48 @@ impl FunctionLowerer<'_> {
             }
             ("Int", ValueType::Int) => self.lower_render_int(value),
             ("Float", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Float")),
-            ("Bool", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Bool")),
+            ("Bool", ValueType::Bool) => self.lower_render_bool(value),
             ("Duration", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
             _ => Err(CanonicalLoweringError::UnsupportedExpression("render type")),
         }
+    }
+
+    /// Render a `Bool` as `true` or `false`: a branch selects the word's
+    /// offset and length in the static table, and the bytes are copied into a
+    /// fresh string.
+    fn lower_render_bool(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            self.layout_bundle,
+            self.layouts,
+        )?;
+        let table = self.lower_string_literal(RENDER_BOOL_TABLE)?;
+        let table_length = self.string_lengths[&table];
+        let when_true = self.new_block(&[])?;
+        let when_false = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: value,
+            then_target: when_true,
+            then_arguments: Vec::new(),
+            else_target: when_false,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = when_true;
+        let true_start = self.push_const_size(5)?;
+        let true_length = self.push_const_size(4)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![true_start, true_length] })?;
+        self.current = when_false;
+        let false_start = self.push_const_size(0)?;
+        let false_length = self.push_const_size(5)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![false_start, false_length] })?;
+        self.current = join;
+        let join_values = self.block_parameter_values(join);
+        let (start, length) = (join_values[0], join_values[1]);
+        let end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start, length, OverflowBehavior::Trap)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, end, table_length)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.copy_string_slice(table, start, length, layout)
     }
 
     /// Render an `Int` as a fresh reference-counted decimal string.
@@ -5222,6 +5344,25 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+    /// Continue only when `condition` holds; otherwise trap. The trap is a
+    /// separate terminal block, so no guard-kind rule constrains the
+    /// condition's shape.
+    fn push_trap_unless(&mut self, condition: ValueId) -> Result<(), CanonicalLoweringError> {
+        let ok = self.new_block(&[])?;
+        let trap = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition,
+            then_target: ok,
+            then_arguments: Vec::new(),
+            else_target: trap,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = trap;
+        self.finish_current(Terminator::Trap)?;
+        self.current = ok;
+        Ok(())
+    }
+
     /// `max(value, 0)` for an `Int`, branch-free: subtract the value masked by
     /// its own sign.
     fn push_clamp_non_negative(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
@@ -5523,6 +5664,8 @@ fn same_record_name(checked: &str, constructor: &str) -> bool {
 /// Static payloads the `Int` renderer copies digits and the sign from.
 const RENDER_DIGIT_TABLE: &str = "0123456789";
 const RENDER_MINUS_SIGN: &str = "-";
+/// The two `Bool` renderings, back to back: `false` at 0, `true` at 5.
+const RENDER_BOOL_TABLE: &str = "falsetrue";
 
 fn scalar_type(source: &Type) -> Result<ValueType, CanonicalLoweringError> {
     match source.unqualified() {
@@ -5648,6 +5791,7 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
     let mut chars_inputs = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_outputs = BTreeSet::new();
     let mut renders_int = false;
+    let mut renders_bool = false;
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(module, &function.name) { continue; }
@@ -5666,6 +5810,14 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
                 renders_int = true;
             }
             if let Expr::Call { name, args } = expression
+                && witchy_syntax::ast::is_render_intrinsic(name)
+                && let [argument] = args.as_slice()
+                && table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
+                    .is_some_and(|ty| matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Bool" && arguments.is_empty()))
+            {
+                renders_bool = true;
+            }
+            if let Expr::Call { name, args } = expression
                 && matches!(name.as_str(), "string.chars" | "string.__chars")
             {
                 if let [Expr::Str(value)] = args.as_slice() {
@@ -5682,6 +5834,9 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
     if renders_int {
         payloads.insert(RENDER_DIGIT_TABLE.as_bytes().to_vec());
         payloads.insert(RENDER_MINUS_SIGN.as_bytes().to_vec());
+    }
+    if renders_bool {
+        payloads.insert(RENDER_BOOL_TABLE.as_bytes().to_vec());
     }
     for (payload, uses) in literal_uses {
         if uses > chars_inputs.get(&payload).copied().unwrap_or_default() {
