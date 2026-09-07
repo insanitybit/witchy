@@ -744,6 +744,16 @@ struct LoopRebindings {
     pushed: BTreeSet<String>,
 }
 
+/// Cached extent facts (see `snapshot_facts`).
+#[derive(Clone)]
+struct FactSnapshot {
+    string_lengths: HashMap<ValueId, ValueId>,
+    string_capacities: HashMap<ValueId, ValueId>,
+    list_counts: HashMap<ValueId, ValueId>,
+    list_capacities: HashMap<ValueId, ValueId>,
+    known_list_lengths: HashMap<ValueId, u64>,
+}
+
 fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
     fn walk_block(block: &witchy_syntax::ast::Block, out: &mut LoopRebindings) {
         for statement in &block.stmts {
@@ -1544,6 +1554,7 @@ impl FunctionLowerer<'_> {
         if self.values[&condition] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
         }
+        let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let then_id = self.new_block(&[])?;
         let else_id = self.new_block(&[])?;
@@ -1567,6 +1578,10 @@ impl FunctionLowerer<'_> {
         let then_bindings = self.bindings.clone();
         let then_end = self.current;
         let then_terminated = self.blocks[then_end.get() as usize].terminator.is_some();
+        // The else arm starts from the facts before the `if`; the then arm's
+        // are merged back for the join's lane planning.
+        let then_facts = self.snapshot_facts();
+        self.restore_snapshot(facts.clone());
 
         self.current = else_id;
         self.bindings = outer.clone();
@@ -1580,6 +1595,7 @@ impl FunctionLowerer<'_> {
         let else_bindings = self.bindings.clone();
         let else_end = self.current;
         let else_terminated = self.blocks[else_end.get() as usize].terminator.is_some();
+        self.absorb_facts(then_facts);
 
         // An arm that returned early has no edge into the join. With one arm
         // gone the other simply continues as the fall-through; the `if` is a
@@ -1724,6 +1740,7 @@ impl FunctionLowerer<'_> {
             target: join_id,
             arguments: else_arguments,
         });
+        self.restore_facts(facts, join_id);
         self.current = join_id;
         // A rebound list or string arrives without extent facts; a loop
         // back edge or a later index needs them, so load the header once here.
@@ -1746,6 +1763,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
         let scrutinee = self.lower_expr(scrutinee)?;
+        let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let result_type = if with_value {
             let first = self.expression_type(&arms[0].body)?;
@@ -1765,8 +1783,15 @@ impl FunctionLowerer<'_> {
         // guessing it is dead (BUG-canonical-match-cfg-unstructured-block).
         let mut next = Some(self.current);
 
+        let mut arm_facts = Vec::new();
         for (arm_index, arm) in arms.iter().enumerate() {
             let Some(current) = next else { break };
+            // Each arm starts from the facts before the `match`; every arm's
+            // facts are merged back for the join's lane planning.
+            if arm_index > 0 {
+                arm_facts.push(self.snapshot_facts());
+                self.restore_snapshot(facts.clone());
+            }
             self.current = current;
             self.bindings = outer.clone();
             let arm_block = self.new_block(&[])?;
@@ -1850,6 +1875,9 @@ impl FunctionLowerer<'_> {
             arm_results.push((body_end, bindings, value));
             self.bindings = outer.clone();
             next = next_block;
+        }
+        for previous in arm_facts {
+            self.absorb_facts(previous);
         }
 
         // Exhaustiveness is the type checker's judgment; a dispatch that falls
@@ -1968,6 +1996,7 @@ impl FunctionLowerer<'_> {
                 &result_values,
             );
         }
+        self.restore_facts(facts, join);
         self.current = join;
         self.bindings = merged;
         Ok(result)
@@ -2143,6 +2172,7 @@ impl FunctionLowerer<'_> {
         condition: &Expr,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let mut names = outer.keys().cloned().collect::<Vec<_>>();
         names.sort();
@@ -2234,6 +2264,7 @@ impl FunctionLowerer<'_> {
             target: header,
             arguments: carried,
         });
+        self.restore_facts(facts, exit);
         self.current = exit;
         self.bindings = names
             .iter()
@@ -2263,6 +2294,7 @@ impl FunctionLowerer<'_> {
         inclusive: bool,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
         let start = self.lower_expr(lo)?;
         let bound = self.lower_expr(hi)?;
         if self.values[&start] != ValueType::Int || self.values[&bound] != ValueType::Int {
@@ -2364,6 +2396,7 @@ impl FunctionLowerer<'_> {
         self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch { target: header, arguments: carried });
 
         let exit_values = self.blocks[exit.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        self.restore_facts(facts, exit);
         self.current = exit;
         bind_state(self, &exit_values);
         Ok(())
@@ -2375,6 +2408,7 @@ impl FunctionLowerer<'_> {
         iterable: &Expr,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
         if let Expr::Range { lo, hi, inclusive } = iterable {
             return self.lower_range_for(variable, lo, hi, *inclusive, body);
         }
@@ -2578,6 +2612,7 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
 
         let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
+        self.restore_facts(facts, exit);
         self.current = exit;
         self.bindings = outer;
         for (name, parameter) in names.iter().zip(&exit_parameters) {
@@ -3727,9 +3762,7 @@ impl FunctionLowerer<'_> {
                 if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;
                 } else if !matches!(item, Expr::List(_)) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression(
-                        "non-literal nested list needs explicit ownership",
-                    ));
+                    value = self.clone_list_for_storage(value, item)?;
                 }
             }
             let index = self.fresh(ValueType::Size)?;
@@ -3860,6 +3893,71 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+    /// A list stored into another list is copied (value semantics): a fresh
+    /// exact-count allocation receives the source's elements through
+    /// `CloneRange`. Only scalar-element lists copy this way; a list of
+    /// references would need per-element retains the v1 range operation does
+    /// not express, and a literal is fresh already and moves.
+    fn clone_list_for_storage(
+        &mut self,
+        source: ValueId,
+        source_expression: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let source_type = self.expression_type(source_expression)?;
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&source_type, self.layout_bundle, self.layouts)?;
+        if self.values.get(&source).copied() != Some(ValueType::Ref(layout)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("nested list element type"));
+        }
+        if matches!(element_type, ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "storing a list of references needs explicit ownership",
+            ));
+        }
+        self.ensure_list_extent(source)?;
+        let (length, _) = self.tracked_lanes(source).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("nested list element without count state"),
+        )?;
+        let maximum = self.push_const_size(
+            (u64::from(u32::MAX) - u64::from(header_bytes)) / u64::from(stride_bytes),
+        )?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, maximum)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count: length,
+                capacity: length,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        let zero = self.push_const_size(0)?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::CloneRange {
+            destination: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Slice { start: zero, length },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            source: witchy_wir::canonical_safewir::Place::projected(
+                source,
+                Projection::Slice { start: zero, length },
+                ValueType::Ref(layout),
+                AccessMode::Read,
+            ),
+            count: length,
+        });
+        self.list_counts.insert(object, length);
+        self.list_capacities.insert(object, length);
+        Ok(object)
+    }
+
     /// Lower resolved `list.push(xs, value)` in normal mode. The operation
     /// retains source-level mutation syntax while using copy-correct value
     /// semantics: grow into a fresh allocation, initialize it, then reclaim
@@ -3917,9 +4015,7 @@ impl FunctionLowerer<'_> {
         if pointer_elements && self.string_lengths.contains_key(&value) {
             value = self.clone_string_for_storage(value)?;
         } else if pointer_elements && !matches!(value_expression, Expr::List(_)) {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "non-literal nested list push needs explicit ownership",
-            ));
+            value = self.clone_list_for_storage(value, value_expression)?;
         }
 
         let increment_fits = self.fresh(ValueType::Bool)?;
@@ -4395,6 +4491,7 @@ impl FunctionLowerer<'_> {
         right: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let left = self.lower_expr(left)?;
+        let facts = self.snapshot_facts();
         if self.values[&left] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
         }
@@ -4437,6 +4534,7 @@ impl FunctionLowerer<'_> {
         }
         self.finish_current(Terminator::Branch { target: join, arguments: vec![right] })?;
 
+        self.restore_facts(facts, join);
         self.current = join;
         self.bindings = bindings;
         Ok(result)
@@ -5007,6 +5105,67 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Branch { target: header, arguments: vec![next, count] })?;
         self.current = exit;
         Ok(self.block_parameter_values(exit)[0])
+    }
+
+    /// The extent facts cached before a region whose blocks do not dominate
+    /// the code after it (the arms of an `if`/`match`, a short-circuit right
+    /// operand, a loop body). A header length loaded inside one arm is not
+    /// available in the other arm or after the join; keeping it cached once
+    /// produced a use the value did not dominate.
+    fn snapshot_facts(&self) -> FactSnapshot {
+        FactSnapshot {
+            string_lengths: self.string_lengths.clone(),
+            string_capacities: self.string_capacities.clone(),
+            list_counts: self.list_counts.clone(),
+            list_capacities: self.list_capacities.clone(),
+            known_list_lengths: self.known_list_lengths.clone(),
+        }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: FactSnapshot) {
+        self.string_lengths = snapshot.string_lengths;
+        self.string_capacities = snapshot.string_capacities;
+        self.list_counts = snapshot.list_counts;
+        self.list_capacities = snapshot.list_capacities;
+        self.known_list_lengths = snapshot.known_list_lengths;
+    }
+
+    /// Add another arm's facts for values the current facts do not cover.
+    fn absorb_facts(&mut self, other: FactSnapshot) {
+        fn absorb<V>(current: &mut HashMap<ValueId, V>, other: HashMap<ValueId, V>) {
+            for (key, value) in other {
+                current.entry(key).or_insert(value);
+            }
+        }
+        absorb(&mut self.string_lengths, other.string_lengths);
+        absorb(&mut self.string_capacities, other.string_capacities);
+        absorb(&mut self.list_counts, other.list_counts);
+        absorb(&mut self.list_capacities, other.list_capacities);
+        absorb(&mut self.known_list_lengths, other.known_list_lengths);
+    }
+
+    /// Restore the facts from before a region, keeping only the entries the
+    /// region's join block itself defines (its parameters' lanes).
+    fn restore_facts(&mut self, snapshot: FactSnapshot, join: BlockId) {
+        let defined = self.blocks[join.get() as usize]
+            .parameters
+            .iter()
+            .map(|parameter| parameter.value)
+            .collect::<BTreeSet<_>>();
+        fn merge<V: Clone>(current: &mut HashMap<ValueId, V>, before: HashMap<ValueId, V>, defined: &BTreeSet<ValueId>) {
+            let kept = current
+                .iter()
+                .filter(|(key, _)| defined.contains(*key))
+                .map(|(key, value)| (*key, value.clone()))
+                .collect::<Vec<_>>();
+            *current = before;
+            current.extend(kept);
+        }
+        merge(&mut self.string_lengths, snapshot.string_lengths, &defined);
+        merge(&mut self.string_capacities, snapshot.string_capacities, &defined);
+        merge(&mut self.list_counts, snapshot.list_counts, &defined);
+        merge(&mut self.list_capacities, snapshot.list_capacities, &defined);
+        merge(&mut self.known_list_lengths, snapshot.known_list_lengths, &defined);
     }
 
     fn block_parameter_values(&self, block: BlockId) -> Vec<ValueId> {

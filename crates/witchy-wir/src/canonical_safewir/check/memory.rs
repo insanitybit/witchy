@@ -1021,9 +1021,14 @@ impl<'a> MemoryChecker<'a> {
             identity.object == range.object
                 && state.initialized
                 && !self.is_zero(identity.length)
-                && !(self.same_scalar(identity.start, range.start)
+                && !(self.range_start_matches(identity, state, range.start)
                     && self.same_scalar(identity.length, range.length))
         }) {
+            if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                let ranges = self.state.range_states.iter().filter(|(identity, _)| identity.object == range.object).collect::<Vec<_>>();
+                let stored = self.state.stored_objects.keys().filter(|(object, _)| *object == range.object).collect::<Vec<_>>();
+                eprintln!("MoveRange(source-partial) object={:?} start={:?} length={:?} ranges={ranges:#?} stored={stored:?}", range.object, range.start, range.length);
+            }
             return self.unsupported("MoveRange(source-partial)");
         }
         Ok(())
@@ -1049,7 +1054,7 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<RangeState, InitialCheckError> {
         if let Some(state) = self.state.range_states.iter().find_map(|(identity, state)| {
             (identity.object == range.object
-                && self.same_scalar(identity.start, range.start)
+                && self.range_start_matches(identity, state, range.start)
                 && self.same_scalar(identity.length, range.length)
                 && state.element == element
                 && state.ownership == Ownership::Unique
@@ -1058,6 +1063,11 @@ impl<'a> MemoryChecker<'a> {
                 .then_some(*state)
         }) {
             return Ok(state);
+        }
+        if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+            let ranges = self.state.range_states.iter().filter(|(identity, _)| identity.object == range.object).collect::<Vec<_>>();
+            let stored = self.state.stored_objects.keys().filter(|(object, _)| *object == range.object).collect::<Vec<_>>();
+            eprintln!("MoveRange(uninitialized-source) object={:?} start={:?} length={:?} object_state={:#?} ranges={ranges:#?} stored={stored:?}", range.object, range.start, range.length, self.state.objects.get(&range.object));
         }
         let Some(start) = self.state.constants.get(&range.start).copied() else {
             return self.unsupported("MoveRange(uninitialized-source)");
@@ -2585,6 +2595,14 @@ impl<'a> MemoryChecker<'a> {
             })
     }
 
+    /// A range identity's start matches a place's start by scalar identity,
+    /// or because both are zero: a zero-start range that came through a loop
+    /// header keeps its `zero_start` fact while its start value (a constant
+    /// defined in the body) is renamed away.
+    fn range_start_matches(&self, identity: &RangeIdentity, state: &RangeState, start: ValueId) -> bool {
+        self.same_scalar(identity.start, start) || (state.zero_start && self.is_zero(start))
+    }
+
     fn is_zero(&self, value: ValueId) -> bool {
         self.state.constants.get(&value) == Some(&0)
     }
@@ -2933,19 +2951,24 @@ fn meet_range_states(
             let mut candidates = incoming.range_states.iter().filter(|(candidate, next)| {
                 candidate.object == identity.object
                     && next.element == current.element
+                    // Two zero-start prefixes match by that fact alone: a
+                    // start constant defined inside a loop body is renamed
+                    // away by the time the prefix reaches the next header.
                     && (current.zero_width
                         || next.zero_width
-                        || (same_scalar_across(
-                            existing,
-                            identity.start,
-                            incoming,
-                            candidate.start,
-                        ) && same_scalar_across(
-                            existing,
-                            identity.length,
-                            incoming,
-                            candidate.length,
-                        )))
+                        || (((current.zero_start && next.zero_start)
+                            || same_scalar_across(
+                                existing,
+                                identity.start,
+                                incoming,
+                                candidate.start,
+                            ))
+                            && same_scalar_across(
+                                existing,
+                                identity.length,
+                                incoming,
+                                candidate.length,
+                            )))
             });
             let (next_identity, next) = candidates.next()?;
             if candidates.next().is_some() {

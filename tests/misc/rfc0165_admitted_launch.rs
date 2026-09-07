@@ -214,6 +214,18 @@ fn admitted_string_equality_and_char_count_scan_bytes() {
 }
 
 #[test]
+fn admitted_string_pushes_in_arms_and_across_loops_keep_the_prefix() {
+    // A list of strings pushed in both arms of an `if` inside a loop, then
+    // again in a second loop: the cached length loaded in one arm must not
+    // leak into the other (it did not dominate), and the initialized-prefix
+    // fact must survive the first loop's exit into the second header.
+    let output = run_admitted(
+        "pub fn tag(xs: List(String)) -> List(String):\n    var out = []\n    var i = 0\n    while i < xs.length():\n        if i == 0:\n            out.push(\"- \" + xs[i])\n        else:\n            out.push(\"+ \" + xs[i])\n        i = i + 1\n    var j = 0\n    while j < xs.length():\n        out.push(\"= \" + xs[j])\n        j = j + 1\n    out\n\npub fn transpose(m: List(List(Int)), rows: Int, cols: Int) -> List(List(Int)):\n    var out = []\n    for c in 0..cols:\n        var column = []\n        for r in 0..rows:\n            column.push(m[r][c])\n        out.push(column)\n    out\n\nfn main(console: Console):\n    let ys = tag([\"a\", \"bb\"])\n    console.print(\"${ys.length()} ${ys[0]} ${ys[1]} ${ys[3]}\")\n    let t = transpose([[1, 2, 3], [4, 5, 6]], 2, 3)\n    console.print(\"${t.length()} ${t[2][0]} ${t[2][1]}\")\n    var a = [1, 2]\n    let nested = [a, [3]]\n    a.push(9)\n    console.print(\"${nested[0].length()} ${a.length()}\")\n",
+    );
+    assert_eq!(output, vec!["4 - a + bb = bb".to_string(), "3 3 6".to_string(), "2 3".to_string()]);
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.
