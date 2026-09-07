@@ -163,6 +163,46 @@ a run on `master` for comparison. `rfc_status_hygiene` failed on
 The classification therefore holds for 353 of 359 reds by construction and for
 the rest by inspection; the gate-coverage decision remains the user's.
 
+## Landing decision (2026-09-07)
+
+`cargo nextest run --workspace --no-fail-fast` on the branch after slice 40 (the
+two preserved untracked `witchy-wir` test files set aside for the build and
+restored byte-identically): **4326 tests, 3971 passed, 354 failed, 1 timed
+out, 19 skipped**, 38.4 minutes. `scripts/rfc0165-classify-reds.py` buckets 315
+failures by a canonical refusal signature; the 40 without one are the same
+classes as the targeted confirmation above (17 optimizer-statistics tests, 11
+end-to-end flows whose server program does not compile, 5 build-step programs,
+2 legacy boundary tests, the abort-diagnostic parity difference, the
+in-language test framework sweep, the preserved owner fixture
+`canonical_owned_slot_storage`, and two gate-script tests).
+
+The two gate-script tests were defects of this branch, now fixed:
+`merge_queue::gate_behavior::fast_gate_emits_structured_foreground_and_background_timings`
+tripped `check.sh`'s empty `native_feature_args` array under bash 3.2's `set
+-u`, and `test_for_paths::lower_path_keeps_wasm_but_drops_covered_nextest_checks`
+no longer recognised the `--features witchy-wir/native` form of the covered
+`example_tests` command.
+
+**Decision.** The blocking gate is the whole workspace minus exactly the tests
+in `scripts/rfc0165-deferred-tests.txt` (352 entries, one `binary-id test-name`
+per line, generated from this run and reviewed class by class above). Every
+one exercises a deferred language or platform family, optimizer statistics the
+optimizer-free route never produces, or a preserved fixture whose owner has not
+migrated it. `check.sh` excludes them by exact binary id and test name
+(`WITCHY_GATE_DEFERRED`, mirroring the ungated-project families); `--full` and
+an empty `WITCHY_GATE_DEFERRED` run them, so they are preserved, not hidden. A
+test leaves the list when its family is admitted, never to hide a defect in an
+admitted family. Everything else remains blocking, including the foundation's
+security suites, which `scripts/rfc0165-foundation.sh` runs on their own: the
+`witchy-wir` native library tests (checker, encoder and plan mirror, oracle,
+authority, rule manifest; 567), the canonical lowering tests (91), and the
+`rfc0165_*` admitted-launch (57), corpus, and oracle tests.
+
+What this decision does not claim: compiler-wide memory safety. The reviews in
+slice 40 of the census challenged the latest boundaries and closed what they
+found; the rows above stay `candidate-green` until the merge queue records the
+landing, and B10-B12 remain partial.
+
 ## Current focused candidate evidence
 
 - `canonical_pipeline::tests::scalar_unary_source_reaches_admitted_execution`

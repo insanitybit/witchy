@@ -1071,6 +1071,7 @@ fn lower_function(
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
         write_back_parameters: Vec::new(),
+        write_back_parameter_types: HashMap::new(),
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
@@ -1117,6 +1118,10 @@ fn lower_function(
     lowerer.write_back_parameters = function.params.iter().zip(&signature.contract.parameters)
         .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
         .map(|(parameter, _)| parameter.name.clone())
+        .collect();
+    lowerer.write_back_parameter_types = function.params.iter().zip(&signature.contract.parameters)
+        .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
+        .filter_map(|(parameter, _)| parameter.ty.clone().map(|ty| (parameter.name.clone(), ty)))
         .collect();
     // A lambda's captures are the `Int` slots of its closure record, the
     // leading parameter, bound by their source names.
@@ -1370,6 +1375,9 @@ struct FunctionLowerer<'a> {
     /// block parameters) rather than the entry value.
     parameter_names: BTreeMap<ValueId, String>,
     write_back_parameters: Vec<String>,
+    /// The source type of each `var` parameter, for the owned copy a result
+    /// lane takes when it names the same value as the write-back lane.
+    write_back_parameter_types: HashMap<String, Type>,
     /// The function's ordinary result types, so a `return` nested in a block
     /// can build the same terminator the body tail does.
     results: Vec<ValueType>,
@@ -1416,6 +1424,10 @@ impl FunctionLowerer<'_> {
             self.require_open_block()?;
             let final_statement = index + 1 == statements.len();
             match statement {
+                Stmt::Let { name, value, .. } if name == "_" => {
+                    // `let _ = e` keeps `e`'s effects and discards its value.
+                    self.lower_effect_expr(value)?;
+                }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
@@ -1613,6 +1625,10 @@ impl FunctionLowerer<'_> {
                     return Ok(());
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
+                Stmt::LetPattern { pattern: Pattern::Wildcard, value } => {
+                    // `let _ = e` keeps `e`'s effects and discards its value.
+                    self.lower_effect_expr(value)?;
+                }
                 Stmt::LetPattern { pattern, value } => {
                     self.lower_let_pattern(pattern, value)?;
                 }
@@ -1652,6 +1668,19 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
                 self.lower_list_push(args)
             }
+            // `Nil` as a statement or a unit body's last expression does
+            // nothing.
+            Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => Ok(()),
+            Expr::Var(name) if name == "Nil" && !self.bindings.contains_key(name) => Ok(()),
+            // A call by a bound name is a call through a closure record.
+            Expr::Call { name, args } if self.bindings.contains_key(name) => {
+                let callee = self.bindings[name];
+                let ValueType::Ref(layout) = self.values[&callee] else {
+                    return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
+                };
+                self.lower_closure_call(callee, layout, args)?;
+                Ok(())
+            }
             Expr::Call { name, args } => {
                 self.lower_direct_call(name, args)?;
                 Ok(())
@@ -1687,6 +1716,10 @@ impl FunctionLowerer<'_> {
         for statement in &block.stmts {
             self.require_open_block()?;
             match statement {
+                Stmt::Let { name, value, .. } if name == "_" => {
+                    // `let _ = e` keeps `e`'s effects and discards its value.
+                    self.lower_effect_expr(value)?;
+                }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
@@ -1726,6 +1759,10 @@ impl FunctionLowerer<'_> {
                     self.drop_bindings_except(&outer);
                     return Ok(());
                 }
+                Stmt::LetPattern { pattern: Pattern::Wildcard, value } => {
+                    // `let _ = e` keeps `e`'s effects and discards its value.
+                    self.lower_effect_expr(value)?;
+                }
                 Stmt::LetPattern { pattern, value } => {
                     self.lower_let_pattern(pattern, value)?;
                 }
@@ -1756,6 +1793,10 @@ impl FunctionLowerer<'_> {
         for statement in statements {
             self.require_open_block()?;
             match statement {
+                Stmt::Let { name, value, .. } if name == "_" => {
+                    // `let _ = e` keeps `e`'s effects and discards its value.
+                    self.lower_effect_expr(value)?;
+                }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
@@ -1998,6 +2039,10 @@ impl FunctionLowerer<'_> {
         for statement in leading {
             self.require_open_block()?;
             match statement {
+                Stmt::Let { name, value, .. } if name == "_" => {
+                    // `let _ = e` keeps `e`'s effects and discards its value.
+                    self.lower_effect_expr(value)?;
+                }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
                     if self.bindings.insert(name.clone(), value).is_some() {
@@ -2023,6 +2068,7 @@ impl FunctionLowerer<'_> {
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
+                Stmt::LetPattern { pattern: Pattern::Wildcard, value } => self.lower_effect_expr(value)?,
                 Stmt::LetPattern { pattern, value } => self.lower_let_pattern(pattern, value)?,
                 _ => return Err(CanonicalLoweringError::UnsupportedStatement("tail block statement")),
             }
@@ -3028,6 +3074,12 @@ impl FunctionLowerer<'_> {
         Ok(result)
     }
 
+    /// Whether `value` is also bound under a name other than `name`: a live
+    /// `let` alias that must keep observing the pre-call value.
+    fn aliased_binding(&self, name: &str, value: ValueId) -> bool {
+        self.bindings.iter().any(|(other, bound)| other != name && *bound == value)
+    }
+
     /// A tail-site path for the statement at `statement` of this function's
     /// body. A lambda's body is addressed under the lambda's own path plus
     /// `Child(0)`, as the checked manifest keys it.
@@ -3798,10 +3850,14 @@ impl FunctionLowerer<'_> {
                     let value = *self.bindings.get(&name)
                         .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                     if values.contains(&value) && matches!(self.values[&value], ValueType::Ref(_)) {
-                        let clone = self.fresh(self.values[&value])?;
-                        self.push_operation(Operation::CloneRef { destination: clone, source: value });
+                        // The write-back lane keeps the unique token; the
+                        // result lane gets its own owned copy (a shared
+                        // clone would weaken the token the lane must return).
+                        let ty = self.write_back_parameter_types.get(&name).cloned()
+                            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                        let copy = self.owned_for_storage(value, &ty)?;
                         for result in &mut values {
-                            if *result == value { *result = clone; }
+                            if *result == value { *result = copy; }
                         }
                     }
                     values.push(value);
@@ -4470,6 +4526,10 @@ impl FunctionLowerer<'_> {
             let replacement = *destinations.get(destination).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("missing var write-back destination"),
             )?;
+            // The replacement is a fresh value: authenticate its extent so a
+            // loop header can carry it as a tracked lane.
+            self.ensure_string_extent(replacement)?;
+            self.ensure_list_extent(replacement)?;
             self.bindings.insert(name.clone(), replacement);
             destination += 1;
         }
@@ -4583,7 +4643,17 @@ impl FunctionLowerer<'_> {
                         if !matches!(actual, ValueType::Ref(_)) {
                             return Ok(CallArgument::Value(value));
                         }
-                        self.owned_parameters.retain(|owned| *owned != value);
+                        // The callee receives its own copy (value semantics:
+                        // a `let` alias taken before the call is unchanged
+                        // after it); the caller's binding is rebound to the
+                        // write-back result.
+                        let ty = self.expression_type(argument)?;
+                        let value = if self.known_shared_value(value) || self.aliased_binding(name, value) {
+                            self.owned_for_storage(value, &ty)?
+                        } else {
+                            self.owned_parameters.retain(|owned| *owned != value);
+                            value
+                        };
                         Ok(CallArgument::Move(value))
                     }
                 }

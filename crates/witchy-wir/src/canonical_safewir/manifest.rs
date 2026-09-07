@@ -276,7 +276,7 @@ pub const RULES: &[RuleEntry] = &[
             t(Interpreter, "validated_closure_record_calls_through_its_callable_slot"),
         ],
         refuses: &[
-            t(Check, "closure_slot_rejects_an_integer_store"),
+            t(Check, "closure_slot_load_before_store_is_refused"), t(Check, "closure_slot_rejects_an_integer_store"),
             t(Check, "closure_slot_load_rejects_a_different_signature"),
             t(Check, "closure_record_outside_the_registry_has_no_callable_slot"),
         ],
@@ -644,7 +644,7 @@ pub const CALLS: &[CallEntry] = &[
     CallEntry { form: "proper tail call", convention: "indirect", verdict: "admitted", evidence: &[t(Backend, "admitted_scalar_var_tail_call_executes_with_return_call_indirect")] },
     CallEntry { form: "proper tail call", convention: "site not in the checked manifest, or discharged twice", verdict: "refused", evidence: &[t(Check, "proper_tail_site_is_matched_exactly_once"), t(Check, "duplicate_tail_terminators_cannot_discharge_one_obligation"), t(Check, "ordinary_return_cannot_discharge_a_tail_obligation")] },
     CallEntry { form: "host call", convention: "authenticated import with a capability role", verdict: "admitted only for a capability value of the declared kind", evidence: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "integer_cannot_fill_capability_host_role"), t(Check, "wrong_capability_kind_is_rejected")] },
-    CallEntry { form: "closure value", convention: "named function used as a value (adapter binding)", verdict: "admitted only when the adapter's body is exactly one forwarding call to its target under the environment-taking signature", evidence: &[t(Authority, "adapter_binding_admits_the_forwarding_shape"), t(Authority, "adapter_binding_rejects_a_body_that_does_extra_work")] },
+    CallEntry { form: "closure value", convention: "named function used as a value (adapter binding)", verdict: "admitted only when the adapter's body is exactly one forwarding call to its target under the environment-taking signature", evidence: &[t(Authority, "adapter_binding_admits_a_trailing_release_of_the_environment"), t(Authority, "adapter_binding_rejects_a_body_that_does_extra_work")] },
     CallEntry { form: "`CallBorrow`", convention: "any", verdict: "absent from v1: no such rule exists", evidence: &[] },
 ];
 

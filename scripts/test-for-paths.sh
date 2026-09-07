@@ -529,6 +529,7 @@ if [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
             "cargo nextest run --test "* | \
             "cargo nextest run --bin "* | \
             "cargo nextest run -E 'test(/^example_tests::/)'" | \
+            "cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'" | \
             "cargo nextest run -E 'test(stdlib_docs_are_current)'" | \
             "cargo check -p witchy --all-targets" | \
             "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use") ;;

@@ -1804,6 +1804,30 @@ mod tests {
     }
 
     #[test]
+    fn closure_slot_load_before_store_is_refused() {
+        // A fresh record's code slot holds nothing a call may dispatch
+        // through: the store to the capture slot alone leaves the lane
+        // uninitialized, and the load refuses.
+        let module = closure_module(
+            Place::projected(
+                CLOSURE,
+                Projection::Field { index: 1 },
+                ValueType::Int,
+                AccessMode::Write,
+            ),
+            CAPTURE,
+            callable_place(AccessMode::Read, ENV_SIGNATURE),
+            ValueType::Callable(ENV_SIGNATURE),
+            true,
+        );
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidClosureSlot { function: FUNCTION, object: CLOSURE }
+        );
+    }
+
+    #[test]
     fn closure_slot_rejects_an_integer_store() {
         // The lane is typed by the registry, so a place claiming `Int` over
         // it is a closure-slot refusal rather than an ordinary type mismatch.

@@ -1076,3 +1076,31 @@ closure witness admits `Int` captures that fit the record. Non-`Int` captures re
 Newly agree: `higher_order`, `higher_order_sum`, `closures`. Census: 125/163 check, 69
 runnable three-legged parity, 0 disagree. `plugin_host` stays refused: a list of `fn` values
 and a lambda capturing a capability are both outside v1 by policy.
+
+## Slice 40 (2026-09-07): independent review of the foundation, and its fixes
+
+Three bounded adversarial reviews (closures; pointer-bearing copies, writable host buffers,
+and `unique` on `var`; loop lanes and release placement) ran against the branch with
+probe programs on all three legs. No interpreter/Wasm disagreement was produced. One
+checker fail-open was found and closed: a fresh closure record's code slot could be loaded
+(and dispatched through) before it was stored, because the checker tracked initialization
+only for reference slots; the `ClosureSlot` rule now records a `Store` of a callable lane
+per container (renamed across edges, intersected at joins) and refuses a `Load`, a call
+argument, a return, or a drop of a fresh record whose slot was never stored
+(`closure_slot_load_before_store_is_refused`). Also closed: range facts retained by token
+instead of allocation identity after `MoveRange`/`CloneRange`/prefix consolidation (an alias
+could keep a stale initialized-prefix fact); an adapter that never released its environment
+was admitted (a leak per call; the release is now mandatory); the oracle's range copy now
+refuses to overwrite a stored reference cell like the checker; the `string.from_code` host
+gained the bound check its float sibling had. Refusals of valid programs closed: a `var`
+list or string written back inside a loop (the replacement now carries its extent lanes), a
+bound closure called in statement position, `fn(...) -> Nil` bodies and `let _ = f(n)`, a
+`var` parameter that is also returned (the result lane is an owned copy), and a `let` alias
+live across a `var` record or dictionary call (the callee receives its own copy, as lists
+already did). Reviewed and left as recorded limits: `closure_slot_assignment` keeps layouts
+apart by padding rather than by a structural signature identity; the zero-width branch of
+`meet_range_states` adopts the other edge's prefix fact (sound while the fact's length is
+the block's own count lane); `Callable` lanes share one Wasm function type per shape, so
+signature identity rests on the checker, not on `call_indirect`. Census unchanged at
+125/163 check, 69 runnable three-legged parity, 0 disagree; wir lib 567, lower canonical
+91, launch 57.

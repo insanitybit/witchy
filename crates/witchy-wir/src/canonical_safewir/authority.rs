@@ -550,9 +550,10 @@ fn adapter_body_forwards(
     }) {
         return false;
     }
-    // At most one release of the environment token the adapter was handed.
+    // Exactly one release of the environment token the adapter was handed:
+    // every call site clones the record for the callee, so an adapter that
+    // kept its token would leak one reference per call.
     match tail {
-        [] => {}
         [super::Operation::Release { object } | super::Operation::DropRef { object }]
             if object == environment => {}
         _ => return false,
@@ -1061,10 +1062,12 @@ mod tests {
     }
 
     #[test]
-    fn adapter_binding_admits_the_forwarding_shape() {
+    fn adapter_binding_rejects_a_body_that_keeps_the_environment() {
+        // Every call site clones the record for the adapter; one that never
+        // releases its token would leak a reference per call.
         let (operations, terminator) = forwarding_body();
         let (module, adapter, target) = adapter_candidate(operations, terminator);
-        assert!(adapter_shape_holds(&module, adapter, target));
+        assert!(!adapter_shape_holds(&module, adapter, target));
     }
 
     #[test]

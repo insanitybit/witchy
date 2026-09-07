@@ -380,6 +380,32 @@ case " ${compile_sel[*]} " in
         ;;
 esac
 
+# DEFERRED-FEATURE TESTS (RFC-0165) -------------------------------------------
+# The canonical SafeWIR production route refuses every program outside its
+# compact subset instead of falling back to the raw encoder, so the tests that
+# compile programs from the deferred language families (tasks, capabilities
+# beyond Console, Bytes, recursive types, generators, optimizer statistics,
+# fixture flows over such programs) are red by policy, not by defect. They are
+# preserved, listed one per line in scripts/rfc0165-deferred-tests.txt, and
+# excluded from the blocking gate by exact binary id and test name; nothing
+# else is excluded. `--full` and an explicitly EMPTY WITCHY_GATE_DEFERRED run
+# them. The list is reviewed in rfcs/0165-acceptance-ledger.md; a test leaves
+# it when its family is admitted, never to hide a defect in an admitted one.
+gate_deferred="${WITCHY_GATE_DEFERRED-scripts/rfc0165-deferred-tests.txt}"
+[ "$full" -eq 1 ] && gate_deferred=""
+deferred_excl=""
+if [ -n "$gate_deferred" ]; then
+    if [ ! -r "$gate_deferred" ]; then
+        echo "check.sh: WITCHY_GATE_DEFERRED names an unreadable list '$gate_deferred'" >&2; exit 2
+    fi
+    deferred_terms=""
+    while read -r deferred_binary deferred_test _; do
+        case "$deferred_binary" in ''|'#'*) continue ;; esac
+        deferred_terms="${deferred_terms:+$deferred_terms or }(binary_id(=$deferred_binary) and test(=$deferred_test))"
+    done < "$gate_deferred"
+    [ -n "$deferred_terms" ] && deferred_excl="not ($deferred_terms)"
+fi
+
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"
 [ "$full" -eq 1 ] && gate_ungated=""
 ungated_excl=""
@@ -441,6 +467,9 @@ if cargo nextest --version >/dev/null 2>&1; then
     fi
     if [ -n "$ungated_excl" ]; then
         excl="${excl:+$excl and }$ungated_excl"
+    fi
+    if [ -n "$deferred_excl" ]; then
+        excl="${excl:+$excl and }$deferred_excl"
     fi
     if [ -n "$sweeps_excl" ]; then
         excl="${excl:+$excl and }$sweeps_excl"
@@ -955,7 +984,7 @@ seed_cow_target() { # seed_cow_target <dir>
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
     clippy_started=$(date +%s)
-    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets "${native_feature_args[@]}" -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
+    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} -- "${CLIPPY_GATE_LINTS[@]}" ) >"$clippy_log" 2>&1 &
     clippy_pid=$!
 }
 
@@ -971,7 +1000,7 @@ check_dir="${target_dir}-check"
 launch_check_leg() {
     check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
     check_started=$(date +%s)
-    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets "${native_feature_args[@]}" ) >"$check_log" 2>&1 &
+    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check "${compile_sel[@]}" --all-targets ${native_feature_args[@]+"${native_feature_args[@]}"} ) >"$check_log" 2>&1 &
     check_pid=$!
 }
 

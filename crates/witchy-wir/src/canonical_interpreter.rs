@@ -646,6 +646,12 @@ impl<'a> Engine<'a> {
         let cells = &mut self.object_mut(destination_object)?.cells;
         for (offset, cell) in moved.into_iter().enumerate() {
             let key = CellKey::Element(destination_start.checked_add(offset as u64).ok_or(InterpretError::ArithmeticTrap)?);
+            // The checker requires the destination range to be empty; the
+            // oracle states the same rule so an overwritten reference cell
+            // can never be silently dropped.
+            if matches!(cells.get(&key), Some(InterpreterValue::ObjectRef(_))) {
+                return Err(InterpretError::UnsupportedOperation("range copy over a stored reference"));
+            }
             cells.insert(key, cell);
         }
         Ok(())

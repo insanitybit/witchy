@@ -88,6 +88,11 @@ pub(super) struct MemoryState {
     guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
     header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
     static_data_objects: BTreeSet<ValueId>,
+    /// The callable lanes a `Store` has initialized, by container value and
+    /// slot. A fresh closure record's code slot is unreadable until then;
+    /// a record that arrived from outside (a parameter, a loaded child) is
+    /// summarized complete by `initialized_owned_slots` like its owned slots.
+    callable_slots: BTreeSet<(ValueId, SlotIdentity)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -132,6 +137,7 @@ impl<'a> MemoryChecker<'a> {
                 guards: BTreeSet::new(),
                 header_values: BTreeMap::new(),
                 static_data_objects: BTreeSet::new(),
+                callable_slots: BTreeSet::new(),
             },
         };
         checker.initialize_parameters(signature)?;
@@ -346,6 +352,12 @@ impl<'a> MemoryChecker<'a> {
         Ok(MemoryState {
             objects,
             shared_phi_origins,
+            callable_slots: self
+                .state
+                .callable_slots
+                .iter()
+                .map(|(container, index)| (remap_value(&renames, *container), *index))
+                .collect(),
             stored_objects: self
                 .state
                 .stored_objects
@@ -583,6 +595,7 @@ impl<'a> MemoryChecker<'a> {
             objects,
             shared_phi_origins: meet_shared_phi_origins(existing, incoming),
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
+            callable_slots: existing.callable_slots.intersection(&incoming.callable_slots).copied().collect(),
             range_states: meet_range_states(existing, incoming),
             constants: intersect_map(&existing.constants, &incoming.constants),
             exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
@@ -1032,9 +1045,18 @@ impl<'a> MemoryChecker<'a> {
             for key in consumed {
                 self.state.stored_objects.remove(&key);
             }
-            self.state.range_states.retain(|identity, _| {
-                identity.object != source.object && identity.object != destination.object
-            });
+            {
+                // Range facts follow the allocation, not the token: an
+                // alias's prefix fact must not survive the move of the
+                // elements it names.
+                let source_identity = self.state.objects.get(&source.object).map(|state| state.identity);
+                let destination_identity = self.state.objects.get(&destination.object).map(|state| state.identity);
+                let MemoryState { objects, range_states, .. } = &mut self.state;
+                range_states.retain(|identity, _| {
+                    let identity = objects.get(&identity.object).map(|state| state.identity);
+                    identity != source_identity && identity != destination_identity
+                });
+            }
             self.state.range_states.insert(
                 RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
                 RangeState { element: destination.element, ownership: moved.ownership, allocation_class: moved.allocation_class, initialized: true, zero_width: self.is_zero(count), zero_start: self.is_zero(destination.start) },
@@ -1161,6 +1183,26 @@ impl<'a> MemoryChecker<'a> {
             }
     }
 
+    /// Whether a callable lane of `object`'s allocation has been stored, under
+    /// any alias.
+    fn callable_slot_stored(&self, object: ValueId, slot: SlotIdentity) -> bool {
+        self.state
+            .callable_slots
+            .iter()
+            .any(|(container, stored)| *stored == slot && self.same_allocation(object, *container))
+    }
+
+    /// Whether the callable lane at `place` may be read: stored on every
+    /// path into this block, or held by a record that arrived complete (a
+    /// parameter, a loaded child).
+    fn callable_slot_initialized(&self, place: &Place) -> Result<bool, InitialCheckError> {
+        let (object, slot) = self.reference_slot(place)?;
+        if self.live_object(object)?.initialized_owned_slots {
+            return Ok(true);
+        }
+        Ok(self.callable_slot_stored(object, slot))
+    }
+
     /// A stored slot fact of `object`'s allocation under any alias.
     fn stored_slot_by_identity(&self, object: ValueId, slot: SlotIdentity) -> Option<&ObjectState> {
         self.state
@@ -1182,6 +1224,17 @@ impl<'a> MemoryChecker<'a> {
         let allocation_identity = state.identity;
         if state.initialized_owned_slots {
             return Ok(());
+        }
+        // A closure record leaves the function that built it (a call
+        // argument, a return, a stored child, a drop) only with its code
+        // slot stored.
+        if self.closure_layouts.contains_key(&state.layout)
+            && !self.callable_slot_stored(object, SlotIdentity::Constant(0))
+        {
+            return Err(InitialCheckError::InvalidClosureSlot {
+                function: self.function.id,
+                object,
+            });
         }
         let descriptor = self.descriptor(state.layout)?;
         let Some(element) = descriptor.kind().packed_element_layout() else {
@@ -1328,7 +1381,13 @@ impl<'a> MemoryChecker<'a> {
             for identity in shared_ranges {
                 self.state.range_states.get_mut(&identity).expect("range exists").ownership = Ownership::Shared;
             }
-            self.state.range_states.retain(|identity, _| identity.object != destination.object);
+            {
+                let destination_identity = self.state.objects.get(&destination.object).map(|state| state.identity);
+                let MemoryState { objects, range_states, .. } = &mut self.state;
+                range_states.retain(|identity, _| {
+                    objects.get(&identity.object).map(|state| state.identity) != destination_identity
+                });
+            }
             self.state.range_states.insert(
                 RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
                 RangeState {
@@ -1913,6 +1972,14 @@ impl<'a> MemoryChecker<'a> {
             if transfer != LoadTransfer::CopyScalar {
                 return self.unsupported("Load(closure slot transfer)");
             }
+            // The slot must have been stored on every path: a fresh record's
+            // code slot holds nothing a call may dispatch through.
+            if !self.callable_slot_initialized(place)? {
+                return Err(InitialCheckError::InvalidClosureSlot {
+                    function: self.function.id,
+                    object: place.object(),
+                });
+            }
             self.require_type(destination, expected)?;
             return Ok(());
         }
@@ -2094,6 +2161,8 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Store(closure slot transfer)");
             }
             self.require_type(value, expected)?;
+            let slot = self.reference_slot(place)?;
+            self.state.callable_slots.insert(slot);
             return Ok(());
         }
         if !expected.is_memory_bearing() {
@@ -2532,7 +2601,13 @@ impl<'a> MemoryChecker<'a> {
             {
                 return self.unsupported("UpdateCount(pointer shrink with live elements)");
             }
-            self.state.range_states.retain(|identity, _| identity.object != object);
+            {
+                let object_identity = self.state.objects.get(&object).map(|state| state.identity);
+                let MemoryState { objects, range_states, .. } = &mut self.state;
+                range_states.retain(|identity, _| {
+                    objects.get(&identity.object).map(|state| state.identity) != object_identity
+                });
+            }
             self.state.range_states.insert(
                 RangeIdentity { object, start: count, length: count },
                 RangeState {

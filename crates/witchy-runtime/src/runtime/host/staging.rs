@@ -63,6 +63,11 @@ fn host_string_from_code(mut caller: Caller<'_, VmState>, cp: i64, out_ptr: i32)
         _ => return Err(Error::msg("string.from_code did not return a String")),
     };
     let bytes = s.into_bytes();
+    // One scalar value encodes to at most four UTF-8 bytes; the guest reserves
+    // that much, and a longer rendering may not overrun it.
+    if bytes.len() > 4 {
+        return Err(Error::msg(format!("string.from_code rendering of {} bytes exceeds the guest buffer", bytes.len())));
+    }
     let mem = memory_of(&mut caller)?;
     mem.write(&mut caller, out_ptr as usize, &bytes)
         .map_err(|e| Error::msg(format!("writing string.from_code result into guest memory: {e}")))?;
