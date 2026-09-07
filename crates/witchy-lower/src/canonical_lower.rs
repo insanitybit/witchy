@@ -2362,6 +2362,13 @@ impl FunctionLowerer<'_> {
             }) || block.operations.iter().any(|operation| match operation {
                 Operation::StaticData { destination, .. }
                 | Operation::CloneRef { destination, .. } => *destination == value,
+                // A fresh reference-counted allocation weakens to a shared
+                // token at a shared phi (the checker's edge rule).
+                Operation::Alloc {
+                    destination,
+                    class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+                    ..
+                } => *destination == value,
                 Operation::Load {
                     destination,
                     transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,

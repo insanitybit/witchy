@@ -248,3 +248,13 @@ fn admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack() {
     );
     assert_eq!(output, vec!["300000 600000 1".to_string()]);
 }
+
+#[test]
+fn admitted_if_joining_a_shared_parameter_with_a_fresh_allocation_runs() {
+    // One arm returns the parameter (a shared token), the other a fresh
+    // unique list; the fresh token weakens to shared at the join.
+    let output = run_admitted(
+        "pub fn pick(xs: List(Int), n: Int) -> List(Int):\n    if xs.length() == n:\n        xs\n    else:\n        var out = xs\n        out.push(n)\n        out\n\nfn main(console: Console):\n    console.print(\"${pick([1], 1).length()} ${pick([1], 2).length()}\")\n",
+    );
+    assert_eq!(output, vec!["1 2".to_string()]);
+}

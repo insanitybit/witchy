@@ -223,7 +223,14 @@ impl<'a> MemoryChecker<'a> {
                         object: *argument,
                     },
                 )?;
-                if state.ownership != Ownership::Shared || state.layout != parameter_layout {
+                // A unique reference-counted token may weaken to shared at a
+                // shared phi, as a call weakens a unique argument into a
+                // shared parameter: the object keeps its one token and loses
+                // its write authority. Only a sole live token may weaken.
+                let weakenable = state.ownership == Ownership::Unique
+                    && state.allocation_class == Some(AllocationClass::ReferenceCounted)
+                    && self.is_sole_live_token(*argument, state.identity);
+                if !(state.ownership == Ownership::Shared || weakenable) || state.layout != parameter_layout {
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
                         object: *argument,
@@ -253,6 +260,9 @@ impl<'a> MemoryChecker<'a> {
             }
             if let Some(identity) = shared_phi_rebases.get(&original_value) {
                 state.identity = *identity;
+                if state.ownership == Ownership::Unique {
+                    state.ownership = Ownership::Shared;
+                }
                 match &state.extent {
                     Extent::Counted { count, capacity, .. }
                         if target.parameters.iter().any(|parameter| {
@@ -479,6 +489,21 @@ impl<'a> MemoryChecker<'a> {
                 None => (promoted_current, promoted_next),
             };
             let (current, next) = (&current, &next);
+            // A shared phi may join a parameter-derived shared reference with
+            // a weakened fresh allocation: both are managed storage, so the
+            // meet keeps only what both establish (unknown class, immutable,
+            // owned slots initialized only if both say so).
+            let shared_phi_parameter = block
+                .parameters
+                .iter()
+                .any(|parameter| parameter.value == *value && parameter.ownership == Some(Ownership::Shared));
+            if current != next
+                && shared_phi_parameter
+                && let Some(met) = shared_phi_meet(current, next)
+            {
+                objects.insert(*value, met);
+                continue;
+            }
             if current != next {
                 if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
                     eprintln!(
@@ -2716,6 +2741,33 @@ fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent
             stride_bytes: *stride_bytes,
         },
     }
+}
+
+/// The meet of two shared, managed states of one phi object that agree on
+/// identity, layout, and extent: the allocation class survives only if both
+/// sides name the same one, the object is immutable (both sides are managed
+/// storage, so `is_managed_storage` stays true), and owned slots count as
+/// initialized only if both sides say so.
+fn shared_phi_meet(left: &ObjectState, right: &ObjectState) -> Option<ObjectState> {
+    if left.identity != right.identity
+        || left.layout != right.layout
+        || left.extent != right.extent
+        || left.ownership != Ownership::Shared
+        || right.ownership != Ownership::Shared
+        || !MemoryChecker::is_managed_storage(left)
+        || !MemoryChecker::is_managed_storage(right)
+    {
+        return None;
+    }
+    Some(ObjectState {
+        identity: left.identity,
+        layout: left.layout,
+        extent: left.extent.clone(),
+        ownership: Ownership::Shared,
+        allocation_class: (left.allocation_class == right.allocation_class).then_some(left.allocation_class).flatten(),
+        shared_immutable: true,
+        initialized_owned_slots: left.initialized_owned_slots && right.initialized_owned_slots,
+    })
 }
 
 /// When two states of one object differ only in their dynamic extent facts

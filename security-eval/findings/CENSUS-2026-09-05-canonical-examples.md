@@ -459,3 +459,16 @@ route is 0/107.
   and `tests/rfc0090/tail_positions.rs` passes on the canonical route.
 - Census unchanged at 68 of 163 check and 12 runnable examples with parity.
 
+## Progress (owner, 2026-09-06, tenth slice)
+
+- **Shared-versus-fresh join decided and fixed**: the checker now weakens a
+  unique reference-counted token to shared at a shared phi, under the same
+  reasoning as a call weakening a unique argument into a shared parameter
+  (one token, write authority lost), and only for a sole live token. The meet
+  of two shared managed states of a phi object keeps only what both establish:
+  the allocation class survives only when both name it, the object is
+  immutable, and owned slots count as initialized only if both sides say so.
+  Identity, layout, extent, and ownership must agree exactly. The lowering
+  treats a fresh reference-counted allocation as eligible for the shared phi.
+  `if xs.length() == n: xs else: <fresh list>` runs (launch test).
+
