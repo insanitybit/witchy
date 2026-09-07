@@ -226,6 +226,17 @@ fn admitted_string_pushes_in_arms_and_across_loops_keep_the_prefix() {
 }
 
 #[test]
+fn admitted_list_of_lists_grows_after_a_shared_element_read() {
+    // `table.at(i - 1)` takes a shared clone of a row; the following push
+    // relocates the owned slots, which keeps every clone valid, so the
+    // prefix's shared mark is accepted and carried to the new allocation.
+    let output = run_admitted(
+        "pub fn build(n: Int) -> List(List(Int)):\n    var table = [[0]]\n    var i = 1\n    while i <= n:\n        let above = table.at(i - 1)\n        var row = [above.at(0) + 1]\n        row.push(i * 10)\n        table.push(row)\n        i = i + 1\n    table\n\nfn main(console: Console):\n    let t = build(3)\n    console.print(\"${t.length()} ${t[3][0]} ${t[3][1]} ${t[1][0]}\")\n",
+    );
+    assert_eq!(output, vec!["4 3 30 1".to_string()]);
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

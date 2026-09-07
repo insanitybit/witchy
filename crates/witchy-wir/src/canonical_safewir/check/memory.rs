@@ -991,7 +991,7 @@ impl<'a> MemoryChecker<'a> {
             });
             self.state.range_states.insert(
                 RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
-                RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: moved.allocation_class, initialized: true, zero_width: self.is_zero(count), zero_start: self.is_zero(destination.start) },
+                RangeState { element: destination.element, ownership: moved.ownership, allocation_class: moved.allocation_class, initialized: true, zero_width: self.is_zero(count), zero_start: self.is_zero(destination.start) },
             );
             self.state.range_states.insert(
                 RangeIdentity { object: source.object, start: source.start, length: source.length },
@@ -1057,7 +1057,10 @@ impl<'a> MemoryChecker<'a> {
                 && self.range_start_matches(identity, state, range.start)
                 && self.same_scalar(identity.length, range.length)
                 && state.element == element
-                && state.ownership == Ownership::Unique
+                // A prefix some element of which has a live shared clone
+                // still owns its slots: relocating them keeps every clone
+                // valid, so a move accepts the shared mark and carries it.
+                && matches!(state.ownership, Ownership::Unique | Ownership::Shared)
                 && state.initialized
                 && (!state.zero_width || self.is_zero(range.length)))
                 .then_some(*state)

@@ -686,3 +686,30 @@ route is 0/107.
   and `admitted_string_equality_and_char_count_scan_bytes`.
 - Census: 72 of 163 check; 16 runnable examples admit and agree under
   three-legged parity.
+
+## Progress (owner, 2026-09-07, nineteenth slice: nested lists, scoped facts, shared prefixes)
+
+- **Nested list storage.** A list stored into a list (`out.push(column)`,
+  `[a, [3]]`) is copied into a fresh exact-count allocation through
+  `CloneRange` (scalar elements only; a list of references still needs
+  explicit ownership).
+- **Region-scoped extent facts.** The lowering cached header loads (string
+  lengths, list counts and capacities) function-wide, so a length loaded in
+  one `if` arm was reused in the other arm, where it did not dominate. Each
+  `if`/`match` arm now starts from the facts before the branch, the arms'
+  facts are merged back for the join's lane planning, and a loop's exit
+  restores the facts before the loop, keeping the join's own parameters.
+- **Zero-start prefixes across joins (checker).** A prefix fact whose start
+  constant was defined in a loop body loses that constant when it is
+  renamed through the header; the `zero_start` flag now matches a zero
+  start both when a `MoveRange` consumes the prefix and when two prefixes
+  meet at a header, so a list of strings pushed in both arms of an `if`
+  and again in a later loop keeps its initialized prefix.
+- **Shared-marked prefixes move.** A dynamic shared element read marks the
+  prefix shared; relocating the owned slots keeps every clone valid, so a
+  `MoveRange` accepts the mark and carries it to the new allocation
+  (`lcs_table` reads a row then pushes the next).
+- Pinned by `admitted_string_pushes_in_arms_and_across_loops_keep_the_prefix`
+  and `admitted_list_of_lists_grows_after_a_shared_element_read`.
+- Census: 73 of 163 check; 17 runnable examples admit and agree under
+  three-legged parity (`diff` is new).
