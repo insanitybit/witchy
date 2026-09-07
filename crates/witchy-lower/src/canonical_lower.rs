@@ -1615,7 +1615,8 @@ impl FunctionLowerer<'_> {
         let else_bindings = self.bindings.clone();
         let else_end = self.current;
         let else_terminated = self.blocks[else_end.get() as usize].terminator.is_some();
-        self.absorb_facts(then_facts);
+        let else_facts = self.snapshot_facts();
+        self.absorb_facts(then_facts.clone());
 
         // An arm that returned early has no edge into the join. With one arm
         // gone the other simply continues as the fall-through; the `if` is a
@@ -1627,7 +1628,15 @@ impl FunctionLowerer<'_> {
             if then_terminated && else_terminated {
                 return Err(CanonicalLoweringError::UnsupportedStatement("return in every if arm"));
             }
-            let (end, bindings) = if then_terminated { (else_end, else_bindings) } else { (then_end, then_bindings) };
+            // Only the continuing arm's facts remain valid: a terminated
+            // arm's cached loads never dominate what follows.
+            let (end, bindings, arm_facts) = if then_terminated {
+                (else_end, else_bindings, else_facts)
+            } else {
+                (then_end, then_bindings, then_facts)
+            };
+            self.restore_snapshot(facts);
+            self.absorb_facts(arm_facts);
             self.current = end;
             self.bindings = bindings;
             return Ok(None);
