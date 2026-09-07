@@ -1155,10 +1155,17 @@ impl FunctionLowerer<'_> {
     /// materializes an owned copy instead of cloning static data.
     fn lower_let_value(&mut self, mutable: bool, value: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let value = self.lower_expr(value)?;
-        if !mutable
-            || !matches!(self.values[&value], ValueType::Ref(_))
-            || !self.bindings.values().any(|bound| *bound == value)
-        {
+        if !mutable || !matches!(self.values[&value], ValueType::Ref(_)) {
+            return Ok(value);
+        }
+        // A `var` initialised from a static string (`var out = ""`) owns a
+        // copy from the start: it will be rebound to owned values (a loop
+        // accumulator), and every edge into a loop header must carry the
+        // same token shape.
+        if self.is_static_string(value) {
+            return self.clone_string_for_storage(value);
+        }
+        if !self.bindings.values().any(|bound| *bound == value) {
             return Ok(value);
         }
         self.clone_reference_token(value)
@@ -1512,29 +1519,36 @@ impl FunctionLowerer<'_> {
             merged.insert(name, parameter);
             parameter_index += 1;
         }
-        let result = result_type.map(|(then_value, else_value, _)| {
-            then_arguments.push(then_value);
-            else_arguments.push(else_value);
-            let result = join_parameters[parameter_index].value;
-            if all_tokens {
-                self.token_join_parameters.insert(result);
+        let result = match result_type {
+            Some((then_value, else_value, _)) => {
+                then_arguments.push(then_value);
+                else_arguments.push(else_value);
+                let result = join_parameters[parameter_index].value;
+                if all_tokens {
+                    self.token_join_parameters.insert(result);
+                }
+                if let Some(((then_count, then_capacity), (else_count, else_capacity))) =
+                    shared_result_extents
+                {
+                    self.current = then_end;
+                    let (then_count, then_capacity) = self.split_lanes(then_count, then_capacity)?;
+                    then_arguments.extend([then_count, then_capacity]);
+                    self.current = else_end;
+                    let (else_count, else_capacity) = self.split_lanes(else_count, else_capacity)?;
+                    else_arguments.extend([else_count, else_capacity]);
+                    let count = join_parameters[parameter_index + 1].value;
+                    let capacity = join_parameters[parameter_index + 2].value;
+                    self.record_joined_extent(
+                        result,
+                        count,
+                        capacity,
+                        &[then_value, else_value],
+                    );
+                }
+                Some(result)
             }
-            if let Some(((then_count, then_capacity), (else_count, else_capacity))) =
-                shared_result_extents
-            {
-                then_arguments.extend([then_count, then_capacity]);
-                else_arguments.extend([else_count, else_capacity]);
-                let count = join_parameters[parameter_index + 1].value;
-                let capacity = join_parameters[parameter_index + 2].value;
-                self.record_joined_extent(
-                    result,
-                    count,
-                    capacity,
-                    &[then_value, else_value],
-                );
-            }
-            result
-        });
+            None => None,
+        };
         self.blocks[then_end.get() as usize].terminator = Some(Terminator::Branch {
             target: join_id,
             arguments: then_arguments,
@@ -1746,7 +1760,9 @@ impl FunctionLowerer<'_> {
             if let Some(value) = value {
                 arguments.push(value);
                 if let Some(extents) = &shared_result_extents {
-                    arguments.extend([extents[arm_index].0, extents[arm_index].1]);
+                    self.current = body_end;
+                    let (count, capacity) = self.split_lanes(extents[arm_index].0, extents[arm_index].1)?;
+                    arguments.extend([count, capacity]);
                 }
             }
             self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
@@ -1945,13 +1961,10 @@ impl FunctionLowerer<'_> {
             .iter()
             .filter_map(|name| {
                 let object = outer[name];
-                self.list_counts.contains_key(&object).then(|| name.clone())
+                self.tracked_lanes(object).is_some().then(|| name.clone())
             })
             .collect::<Vec<_>>();
-        if list_names.iter().any(|name| {
-            let object = outer[name];
-            !self.list_capacities.contains_key(&object)
-        }) {
+        if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("while list capacity state"));
         }
         let mut state_types = names
@@ -1962,13 +1975,16 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false);
         let header_parameters = self.blocks[header.get() as usize].parameters.clone();
         let header_values = header_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
-            entry_state.push(self.list_counts[&object]);
-            entry_state.push(self.list_capacities[&object]);
+            let (count, capacity) = self.tracked_lanes(object).expect("tracked names have lanes");
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            entry_state.push(count);
+            entry_state.push(capacity);
         }
         self.finish_current(Terminator::Branch {
             target: header,
@@ -1983,8 +1999,7 @@ impl FunctionLowerer<'_> {
         let mut metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
-            self.list_counts.insert(object, header_values[metadata_index]);
-            self.list_capacities.insert(object, header_values[metadata_index + 1]);
+            self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
             metadata_index += 2;
         }
         let condition = self.lower_expr(condition)?;
@@ -2010,8 +2025,7 @@ impl FunctionLowerer<'_> {
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
-            self.list_counts.insert(object, body_values[metadata_index]);
-            self.list_capacities.insert(object, body_values[metadata_index + 1]);
+            self.set_tracked_lanes(object, body_values[metadata_index], body_values[metadata_index + 1]);
             metadata_index += 2;
         }
         self.lower_block_effect(body)?;
@@ -2019,12 +2033,12 @@ impl FunctionLowerer<'_> {
         let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = body_bindings[name];
-            carried.push(*self.list_counts.get(&object).ok_or(
+            let (count, capacity) = self.tracked_lanes(object).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("while backedge list count state"),
-            )?);
-            carried.push(*self.list_capacities.get(&object).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("while backedge list capacity state"),
-            )?);
+            )?;
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            carried.push(count);
+            carried.push(capacity);
         }
         let body_end = self.current;
         self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
@@ -2075,10 +2089,10 @@ impl FunctionLowerer<'_> {
             .iter()
             .filter_map(|name| {
                 let object = outer[name];
-                self.list_counts.contains_key(&object).then(|| name.clone())
+                self.tracked_lanes(object).is_some().then(|| name.clone())
             })
             .collect::<Vec<_>>();
-        if list_names.iter().any(|name| !self.list_capacities.contains_key(&outer[name])) {
+        if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
         }
         let mut state_types = names.iter().map(|name| self.values[&outer[name]]).collect::<Vec<_>>();
@@ -2087,12 +2101,15 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state_types)?;
         let body_id = self.new_block(&state_types)?;
         let exit = self.new_block(&state_types)?;
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, false);
         let header_values = self.blocks[header.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
-            entry_state.push(self.list_counts[&object]);
-            entry_state.push(self.list_capacities[&object]);
+            let (count, capacity) = self.tracked_lanes(object).expect("tracked names have lanes");
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            entry_state.push(count);
+            entry_state.push(capacity);
         }
         entry_state.push(start);
         self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
@@ -2102,8 +2119,7 @@ impl FunctionLowerer<'_> {
             let mut metadata_index = names.len();
             for name in &list_names {
                 let object = lowerer.bindings[name];
-                lowerer.list_counts.insert(object, values[metadata_index]);
-                lowerer.list_capacities.insert(object, values[metadata_index + 1]);
+                lowerer.set_tracked_lanes(object, values[metadata_index], values[metadata_index + 1]);
                 metadata_index += 2;
             }
         };
@@ -2137,12 +2153,12 @@ impl FunctionLowerer<'_> {
         let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = body_bindings[name];
-            carried.push(*self.list_counts.get(&object).ok_or(
+            let (count, capacity) = self.tracked_lanes(object).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("for backedge list count state"),
-            )?);
-            carried.push(*self.list_capacities.get(&object).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("for backedge list capacity state"),
-            )?);
+            )?;
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            carried.push(count);
+            carried.push(capacity);
         }
         let one = self.fresh(ValueType::Int)?;
         self.push_operation(Operation::ConstInt { destination: one, value: 1 });
@@ -2207,13 +2223,10 @@ impl FunctionLowerer<'_> {
             .iter()
             .filter_map(|name| {
                 let object = outer[name];
-                self.list_counts.contains_key(&object).then(|| name.clone())
+                self.tracked_lanes(object).is_some().then(|| name.clone())
             })
             .collect::<Vec<_>>();
-        if list_names.iter().any(|name| {
-            let object = outer[name];
-            !self.list_capacities.contains_key(&object)
-        }) {
+        if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
         }
 
@@ -2240,21 +2253,14 @@ impl FunctionLowerer<'_> {
         // lane, which permits a checked Unique phi to rebase the fresh list
         // allocated by a prior iteration.  Untracked/Shared references stay
         // unspecified and therefore cannot acquire phi authority.
-        for (name, parameter) in names
-            .iter()
-            .zip(&mut self.blocks[header.get() as usize].parameters)
-        {
-            if list_names.iter().any(|list_name| list_name == name)
-                && matches!(parameter.value_type, ValueType::Ref(_))
-            {
-                parameter.ownership = Some(Ownership::Unique);
-            }
-        }
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true);
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
-            entry_state.push(self.list_counts[&object]);
-            entry_state.push(self.list_capacities[&object]);
+            let (count, capacity) = self.tracked_lanes(object).expect("tracked names have lanes");
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            entry_state.push(count);
+            entry_state.push(capacity);
         }
         entry_state.push(zero);
         self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
@@ -2269,8 +2275,7 @@ impl FunctionLowerer<'_> {
         let mut metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
-            self.list_counts.insert(object, header_values[metadata_index]);
-            self.list_capacities.insert(object, header_values[metadata_index + 1]);
+            self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
             metadata_index += 2;
         }
         let index = *header_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
@@ -2312,8 +2317,7 @@ impl FunctionLowerer<'_> {
         metadata_index = names.len();
         for name in &list_names {
             let object = self.bindings[name];
-            self.list_counts.insert(object, body_values[metadata_index]);
-            self.list_capacities.insert(object, body_values[metadata_index + 1]);
+            self.set_tracked_lanes(object, body_values[metadata_index], body_values[metadata_index + 1]);
             metadata_index += 2;
         }
         let body_index = *body_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
@@ -2378,12 +2382,12 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         for name in &list_names {
             let object = body_bindings[name];
-            back_state.push(*self.list_counts.get(&object).ok_or(
+            let (count, capacity) = self.tracked_lanes(object).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("for backedge list count state"),
-            )?);
-            back_state.push(*self.list_capacities.get(&object).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("for backedge list capacity state"),
-            )?);
+            )?;
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            back_state.push(count);
+            back_state.push(capacity);
         }
         back_state.push(next_index);
         self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
@@ -2595,6 +2599,87 @@ impl FunctionLowerer<'_> {
             *value = self.clone_string_for_storage(*value)?;
         }
         Ok(true)
+    }
+
+    /// The dynamic extent lanes a loop threads for a tracked reference: a
+    /// list's count and capacity, or a string's length and capacity.
+    fn tracked_lanes(&self, object: ValueId) -> Option<(ValueId, ValueId)> {
+        if let (Some(count), Some(capacity)) = (self.list_counts.get(&object), self.list_capacities.get(&object)) {
+            return Some((*count, *capacity));
+        }
+        if let (Some(length), Some(capacity)) = (self.string_lengths.get(&object), self.string_capacities.get(&object)) {
+            return Some((*length, *capacity));
+        }
+        None
+    }
+
+    /// Extent lanes passed across a CFG edge must be distinct value ids: the
+    /// checker renames a branch argument to its parameter in every fact table,
+    /// and a value passed twice lands on the last parameter, which would put
+    /// the object's count on the capacity lane. A string's capacity is its
+    /// length, so its capacity lane is a fresh copy.
+    fn split_lanes(&mut self, count: ValueId, capacity: ValueId) -> Result<(ValueId, ValueId), CanonicalLoweringError> {
+        if count != capacity {
+            return Ok((count, capacity));
+        }
+        let copy = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::MoveValue { destination: copy, source: capacity });
+        Ok((count, copy))
+    }
+
+    fn set_tracked_lanes(&mut self, object: ValueId, count: ValueId, capacity: ValueId) {
+        let is_string = string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts)
+            .is_ok_and(|layout| self.values.get(&object) == Some(&ValueType::Ref(layout)));
+        if is_string {
+            self.string_lengths.insert(object, count);
+            self.string_capacities.insert(object, capacity);
+        } else {
+            self.list_counts.insert(object, count);
+            self.list_capacities.insert(object, capacity);
+        }
+    }
+
+    /// Give a loop header's tracked reference lanes phi authority. A tracked
+    /// mutable list is the sole local token of canonical allocation/push
+    /// templates (a unique phi rebases the list a prior iteration built). A
+    /// string is a unique phi when it owns its token and a shared phi when it
+    /// came from a shared source (the checker weakens a fresh concat result to
+    /// shared at that phi). Untracked references stay unspecified.
+    fn mark_tracked_phi_parameters(
+        &mut self,
+        header: BlockId,
+        names: &[String],
+        tracked: &[String],
+        outer: &HashMap<String, ValueId>,
+        mark_lists: bool,
+    ) {
+        let string = string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts).ok();
+        let ownerships = names
+            .iter()
+            .map(|name| {
+                let object = outer[name];
+                if !tracked.iter().any(|tracked| tracked == name) || !matches!(self.values[&object], ValueType::Ref(_)) {
+                    return None;
+                }
+                let is_string = Some(self.values[&object]) == string.map(ValueType::Ref);
+                if !is_string {
+                    // Lists keep the `for` loop's rule (a unique phi over the
+                    // canonical push templates); `while` and range loops leave
+                    // them unspecified, as before.
+                    return mark_lists.then_some(Ownership::Unique);
+                }
+                if self.known_shared_value(object) {
+                    Some(Ownership::Shared)
+                } else {
+                    Some(Ownership::Unique)
+                }
+            })
+            .collect::<Vec<_>>();
+        for (parameter, ownership) in self.blocks[header.get() as usize].parameters.iter_mut().zip(ownerships) {
+            if ownership.is_some() {
+                parameter.ownership = ownership;
+            }
+        }
     }
 
     fn known_shared_value(&self, value: ValueId) -> bool {

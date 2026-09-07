@@ -298,3 +298,14 @@ fn admitted_bytes_launch_from_their_entry_section_without_the_artifact() {
     mutated[last] ^= 2;
     assert!(artifact.verify_exact_bytes(&mutated).is_err(), "a mutated entry section is not the admitted artifact");
 }
+
+#[test]
+fn admitted_lists_of_strings_are_read_iterated_and_pushed() {
+    // A managed `List(String)` parameter's initialized prefix is seeded from
+    // its contract; a local list of strings grows by push; a `var` string
+    // accumulator owns its token from its static initializer onward.
+    let output = run_admitted(
+        "pub fn join_all(xs: List(String)) -> String:\n    var out = \"\"\n    for s in xs:\n        out = out + s\n    out\n\npub fn second(xs: List(String)) -> String:\n    xs[1]\n\nfn main(console: Console):\n    let xs = [\"a\", \"bb\", \"ccc\"]\n    console.print(join_all(xs))\n    console.print(second(xs))\n    var ys = [\"x\"]\n    ys.push(\"yy\")\n    console.print(\"${ys.length()} ${xs.length()}\")\n",
+    );
+    assert_eq!(output, vec!["abbccc".to_string(), "bb".to_string(), "2 3".to_string()]);
+}

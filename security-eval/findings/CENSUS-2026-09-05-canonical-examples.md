@@ -528,3 +528,29 @@ route is 0/107.
 - New in-subset refusal recorded: pushing into a `var` list of strings is
   refused by the checker as `UpdateCount(pointer prefix missing)`.
 
+## Progress (owner, 2026-09-06, thirteenth slice)
+
+- **Lists of strings fixed**: reading an element of a `List(String)`
+  parameter, iterating one, pushing into a local list of strings, and a `var`
+  string accumulator rebound in a loop all run (launch test
+  `admitted_lists_of_strings_are_read_iterated_and_pushed`, parity agreeing).
+  - Checker: a managed parameter's `initialized_owned_slots` is the ABI's
+    statement that every slot below its runtime count holds an owned
+    reference-counted element, so header-extent promotion (and the element
+    load fallback) seeds that prefix as a range fact instead of refusing
+    `UpdateCount(pointer prefix missing)`.
+  - Lowering: a `var` initialised from a static string owns a copy from the
+    start; loops thread strings like lists (length and capacity lanes, a
+    unique phi for an owned string, a shared phi for one from a shared
+    source); list lanes in `while` and range loops keep their previous
+    unspecified ownership, since a shared list parameter threaded through them
+    must not meet a unique phi (a draft that marked them regressed
+    `subscript` and the recursive-search test, caught before commit).
+  - Extent lanes across any edge are distinct value ids: the checker renames a
+    duplicated branch argument to its last parameter, which put a string's
+    count on its capacity lane; a string's capacity lane is now a fresh copy
+    at loop entries, back edges, and `if`/`match` result joins.
+- Still outside the subset: pushing into a copy of a `List(String)` parameter
+  (moving elements out of shared storage; pointer-bearing `CloneRange` is
+  fail-closed until the typed transfer kernel exists).
+

@@ -1780,6 +1780,14 @@ impl<'a> MemoryChecker<'a> {
                 Projection::Element { index } => *index,
                 _ => return self.unsupported("Load(uninitialized reference)"),
             };
+            // A managed parameter's prefix is seeded from its contract once
+            // its runtime count is known.
+            if let (Extent::Counted { count, .. }, Some(element)) = (
+                self.live_object(place.object())?.extent.clone(),
+                self.descriptor(self.live_object(place.object())?.layout)?.kind().packed_element_layout(),
+            ) {
+                let _ = self.seed_managed_prefix(place.object(), count, element)?;
+            }
             let range = self.state.range_states.iter().find_map(|(identity, state)| {
                 (identity.object == place.object()
                     && state.initialized
@@ -2160,6 +2168,40 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    /// A managed ABI entry parameter (`initialized_owned_slots`) denotes a
+    /// complete logical value: every slot below its runtime count holds an
+    /// owned reference-counted element. When such an object has no range
+    /// fact yet (its count is read at runtime, never built by stores), seed
+    /// the whole initialized prefix from that contract. Returns whether a
+    /// range was seeded.
+    fn seed_managed_prefix(
+        &mut self,
+        object: ValueId,
+        count: ValueId,
+        element: crate::layout::LayoutId,
+    ) -> Result<bool, InitialCheckError> {
+        let state = self.live_object(object)?;
+        if !state.initialized_owned_slots
+            || self.state.range_states.iter().any(|(identity, range)| {
+                identity.object == object && range.initialized && range.zero_start
+            })
+        {
+            return Ok(false);
+        }
+        self.state.range_states.insert(
+            RangeIdentity { object, start: count, length: count },
+            RangeState {
+                element,
+                ownership: Ownership::Unique,
+                allocation_class: Some(AllocationClass::ReferenceCounted),
+                initialized: true,
+                zero_width: false,
+                zero_start: true,
+            },
+        );
+        Ok(true)
+    }
+
     fn consolidate_pointer_prefix(
         &mut self,
         object: ValueId,
@@ -2197,6 +2239,9 @@ impl<'a> MemoryChecker<'a> {
                     zero_start: true,
                 },
             );
+            return Ok(());
+        }
+        if self.seed_managed_prefix(object, count, element)? {
             return Ok(());
         }
         let existing = self.state.range_states.iter().find_map(|(identity, state)| {
