@@ -2051,7 +2051,7 @@ fn emit_typed_store(
     emit_get(body, layout, function.id, value)?;
     let arg = memarg(access.width);
     match access.scalar {
-        ScalarKind::Bool | ScalarKind::Tag8 => body.instruction(&wasm_encoder::Instruction::I32Store8(arg)),
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Store8(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Store16(arg)),
         ScalarKind::U32 | ScalarKind::Tag32 => body.instruction(&wasm_encoder::Instruction::I32Store(arg)),
         ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Store(arg)),
@@ -4360,7 +4360,7 @@ fn push_memory_store_plan(
     push_projected_address_plan(plan, function, layout, access)?;
     push_get(plan, layout, value)?;
     plan.push(match access.scalar {
-        ScalarKind::Bool | ScalarKind::Tag8 => PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
         ScalarKind::Tag16 => PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
         ScalarKind::U32 | ScalarKind::Tag32 => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
         ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Store { offset: 0, align: 3, memory: 0 },

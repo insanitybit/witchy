@@ -4255,6 +4255,13 @@ impl FunctionLowerer<'_> {
                     _ => self.lower_string_contains(object, needle),
                 }
             }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.to_upper" | "string.__to_upper" | "string.to_lower" | "string.__to_lower") => {
+                let [receiver] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string case arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                self.lower_string_case(object, name.ends_with("to_upper"))
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "string.split" | "string.__split") => {
                 let [receiver, separator] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.split arity"));
@@ -6856,6 +6863,76 @@ impl FunctionLowerer<'_> {
         let piece = self.copy_checked_slice(object, start, rest, total, layout)?;
         let folded = step(self, &tail_values[..3], piece, false)?;
         Ok(folded[0])
+    }
+
+    /// `string.to_upper` / `string.to_lower`: ASCII case mapping (the
+    /// interpreter's rule) over a fresh copy, one byte at a time and without
+    /// branches: a byte in the source range moves by 32, every other byte,
+    /// including every byte of a multi-byte sequence, is left as it is.
+    fn lower_string_case(&mut self, object: ValueId, upper: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let total = self.string_length_of(object)?;
+        let zero = self.push_const_size(0)?;
+        let copy = self.copy_checked_slice(object, zero, total, total, layout)?;
+        let length = self.string_length_of(copy)?;
+        let one = self.push_const_size(1)?;
+        let (low, high) = if upper { (97, 122) } else { (65, 90) };
+        let low = self.push_const_int(low)?;
+        let high = self.push_const_int(high)?;
+        let sixty_three = self.push_const_int(63)?;
+        let one_int = self.push_const_int(1)?;
+        let thirty_two = self.push_const_int(32)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        let cursor = self.block_parameter_values(header)[0];
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, length)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: Vec::new(),
+        })?;
+        let cursor = self.block_parameter_values(body)[0];
+        self.current = body;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(copy, cursor, layout)?;
+        let value = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: value, value: byte });
+        // `below = value - low` and `above = high - value` are both non-negative
+        // exactly when the byte is in range; the sign bit of their union is
+        // the out-of-range flag, so `1 + (flag ? -1 : 0)` selects the shift.
+        let below = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, low, OverflowBehavior::Wrap)?;
+        let above = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, high, value, OverflowBehavior::Wrap)?;
+        let either = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, below, above, OverflowBehavior::Wrap)?;
+        let flag = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightSigned, either, sixty_three, OverflowBehavior::Wrap)?;
+        let select = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, one_int, flag, OverflowBehavior::Wrap)?;
+        let delta = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, thirty_two, select, OverflowBehavior::Wrap)?;
+        let operator = if upper { ArithmeticOperator::Subtract } else { ArithmeticOperator::Add };
+        let mapped = self.push_arithmetic(ValueType::Int, operator, value, delta, OverflowBehavior::Wrap)?;
+        let narrowed = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: narrowed, value: mapped });
+        let byte_limit = self.push_const_size(255)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, narrowed, byte_limit)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                copy,
+                Projection::Element { index: cursor },
+                ValueType::Size,
+                AccessMode::Write,
+            ),
+            value: narrowed,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
+        Ok(copy)
     }
 
     /// `string.chars` over a runtime string: one owned string per UTF-8

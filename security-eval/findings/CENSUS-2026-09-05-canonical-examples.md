@@ -971,3 +971,11 @@ started unique but is carried a known-shared value on a back edge (a call result
 shared phi. Newly agree: `aliases`, `anagram`. Census: 110/163 check, 54 runnable
 three-legged parity, 0 disagree. `text` still needs `string.to_upper` (an ASCII byte map in
 the interpreter; needs a raw-byte element store rule).
+
+## Slice 33 (2026-09-07): `string.to_upper` / `string.to_lower`
+
+ASCII case mapping (the interpreter's rule) over a fresh copy, one byte at a time and
+branch-free (the sign bit of `(b - low) | (high - b)` selects the shift). The checker types
+a raw-byte element write as a `Size` store the path must prove fits a byte (`proven_at_most`
+on a guard against a constant), and the backend stores it with `i32.store8`. Newly agree:
+`text`. Census: 111/163 check, 55 runnable three-legged parity, 0 disagree.

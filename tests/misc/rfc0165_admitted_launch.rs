@@ -705,3 +705,17 @@ fn admitted_lambdas_over_references_pass_through_indirect_calls_and_std_combinat
         vec!["abc!".to_string(), "3".to_string(), "pearpear,figfig,plumplum,kiwikiwi".to_string(), "3 pear".to_string()]
     );
 }
+
+#[test]
+fn admitted_ascii_case_mapping_writes_bytes_under_a_byte_bound() {
+    // `to_upper`/`to_lower` map ASCII letters over a fresh copy one byte at
+    // a time (a `Size` store into a byte slot the path proves fits a byte);
+    // every other byte, including multi-byte sequences, is untouched.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let mixed = \"héLLo, wörld! 123 aZ\" + \"\"\n    console.print(mixed.to_upper())\n    console.print(mixed.to_lower())\n    console.print(\"\".to_upper() + \"|\" + \"ABC\".to_lower())\n    let words = [\"pear\", \"Fig\"]\n    console.print(words.map(fn(w: String): w.to_upper()).join(\",\"))\n",
+    );
+    assert_eq!(
+        output,
+        vec!["HéLLO, WöRLD! 123 AZ".to_string(), "héllo, wörld! 123 az".to_string(), "|abc".to_string(), "PEAR,FIG".to_string()]
+    );
+}

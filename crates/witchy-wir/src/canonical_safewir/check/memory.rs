@@ -2065,7 +2065,17 @@ impl<'a> MemoryChecker<'a> {
             if transfer != StoreTransfer::CopyScalar {
                 return self.unsupported("Store(scalar transfer)");
             }
-            return self.require_type(value, expected);
+            self.require_type(value, expected)?;
+            // A byte slot takes the low byte of a `Size`; the path must
+            // prove the value fits so no bits are silently dropped.
+            if self.is_raw_byte_element_place(place)? && !self.proven_at_most(value, 255) {
+                return Err(InitialCheckError::MissingBoundsGuard {
+                    function: self.function.id,
+                    index: value,
+                    count: value,
+                });
+            }
+            return Ok(());
         }
         let ValueType::Ref(layout) = expected else {
             return self.unsupported("Store(non-linear reference)");
@@ -2257,14 +2267,14 @@ impl<'a> MemoryChecker<'a> {
                         function: self.function.id,
                         object: place.object(),
                     })?;
-                // A raw byte has no value type of its own; a read of one is a
+                // A raw byte has no value type of its own: a read of one is a
                 // zero-extended `Size` (the byte loops behind string equality
-                // and character counting). Writes stay byte copies.
-                let raw_byte_read = place.access() == AccessMode::Read
-                    && self.descriptor(element).is_ok_and(|element| {
-                        element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)
-                    });
-                if raw_byte_read {
+                // and character counting), and a write stores a `Size` the
+                // path proves fits a byte (`store` demands that proof).
+                let raw_byte = self.descriptor(element).is_ok_and(|element| {
+                    element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)
+                });
+                if raw_byte {
                     ValueType::Size
                 } else {
                     self.value_type_for_layout(element)?
@@ -2816,6 +2826,31 @@ impl<'a> MemoryChecker<'a> {
 
     fn is_zero(&self, value: ValueId) -> bool {
         self.state.constants.get(&value) == Some(&0)
+    }
+
+    /// Whether `place` is an element of a raw-byte buffer (a string byte).
+    fn is_raw_byte_element_place(&self, place: &Place) -> Result<bool, InitialCheckError> {
+        if !matches!(place.projection(), Projection::Element { .. }) {
+            return Ok(false);
+        }
+        let layout = self.live_object(place.object())?.layout;
+        self.is_raw_byte_buffer(layout)
+    }
+
+    /// Whether the path proves `value <= bound`: a constant, or an unsigned
+    /// guard against a constant no larger than the bound.
+    fn proven_at_most(&self, value: ValueId, bound: u64) -> bool {
+        if self.state.constants.get(&value).is_some_and(|constant| *constant <= bound) {
+            return true;
+        }
+        self.state.guards.iter().any(|(operator, left, right)| {
+            self.same_scalar(value, *left)
+                && match operator {
+                    ComparisonOperator::LessEqualUnsigned => self.state.constants.get(right).is_some_and(|limit| *limit <= bound),
+                    ComparisonOperator::LessUnsigned => self.state.constants.get(right).is_some_and(|limit| *limit <= bound + 1),
+                    _ => false,
+                }
+        })
     }
 
     fn less_equal(&self, left: ValueId, right: ValueId) -> bool {
