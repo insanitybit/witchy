@@ -90,8 +90,13 @@ edges), string `==`/`!=`, `string.char_count`, `string.substring`,
 `string.trim`, nested scalar lists stored by copy, lists of strings pushed in
 branch arms and across loops, `math.sqrt`/`math.to_int`/`math.to_float` (one
 `FloatUnary` operation), the `Bool` render, and the duration identities.
-The census stands at 77 of 163 examples checking and 21 runnable examples
-agreeing under three-legged parity; 35 launch tests pin the slices. Two
+Later the same day: scalar-field records as immutable reference-counted heap
+aggregates; sum types and scalar `Option`/`Result` as a tag plus one slot per
+variant field (one shape shared by the layout catalog, the lowering, and the
+ABI authority); constructor patterns, `??`, `?`; `starts_with`/`ends_with`/
+`contains`/`find`/`to_int` and string ordering; a memo of proven path facts in
+the encoder. The census stands at 84 of 163 examples checking and 28 runnable
+examples agreeing under three-legged parity; 38 launch tests pin the slices. Two
 silent-wrong-answer lowering defects (a `for` loop dropping a binding rebound
 inside an arm; a header fact cached across arms) were caught by `witchy
 parity`, not by the oracle, which executes the same SafeWIR: independent
