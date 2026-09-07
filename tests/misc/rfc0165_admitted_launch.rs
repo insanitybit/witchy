@@ -746,3 +746,20 @@ fn admitted_record_write_back_in_a_loop_takes_a_shared_lane() {
     );
     assert_eq!(output, vec!["10 4".to_string(), "<1><2><3>".to_string()]);
 }
+
+#[test]
+fn admitted_aggregates_render_structurally_as_the_interpreter_prints_them() {
+    // `"${x}"` on a sum, record, tuple, or list renders structurally: a
+    // sum dispatches on its tag into per-variant arms that join on string
+    // lanes, a payload-free variant is its bare name, a list folds its
+    // rendered elements between brackets with `, ` before every element
+    // but the first, and nested aggregates recurse.
+    let output = run_admitted(
+        "type Shape:\n    Circle(Int)\n    Square(Int)\n    Dot\n\ntype Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let none: Option(Int) = None\n    let empty: List(Int) = []\n    let r: Result(Int, String) = Err(\"bad\")\n    let ok: Result(Int, String) = Ok(3)\n    let pair = (1, true)\n    let words: List(Option(String)) = [Some(\"a\"), None]\n    console.print(\"${Some(1)} ${none}\")\n    console.print(\"${Circle(2)} ${Dot}\")\n    console.print(\"${Point(1, 2)}\")\n    console.print(\"${pair}\")\n    console.print(\"${[1, 2, 3]} ${empty}\")\n    console.print(\"${words}\")\n    console.print(\"${[Point(1, 2), Point(3, 4)]}\")\n    console.print(\"${r} ${ok}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["Some(1) None", "Circle(2) Dot", "Point(1, 2)", "(1, true)", "[1, 2, 3] []", "[Some(a), None]", "[Point(1, 2), Point(3, 4)]", "Err(bad) Ok(3)"]
+            .into_iter().map(str::to_string).collect::<Vec<_>>()
+    );
+}

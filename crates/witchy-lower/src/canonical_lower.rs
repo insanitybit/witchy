@@ -16,7 +16,7 @@ mod owned;
 mod owned_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
-use witchy_types::canonical_aggregates::{scalar_aggregate_shape, ScalarAggregateShape};
+use witchy_types::canonical_aggregates::{scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::canonical_closure::lambda_sites;
 use witchy_types::typeck::{
@@ -137,7 +137,7 @@ pub fn lower_typed_module(
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
-    let string_payloads = collect_string_payloads(typed.module(), typed.table());
+    let string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     let string_data_ids = string_payloads
         .iter()
         .enumerate()
@@ -5912,6 +5912,17 @@ impl FunctionLowerer<'_> {
         // reload the header here: a new definition would discard that relation.
         // An element of a nested list has no recorded extent yet; load it once.
         self.ensure_list_extent(object)?;
+        self.load_list_element(object, index_size, element_type)
+    }
+
+    /// Load the element at `index_size` of `object` behind a bounds guard
+    /// against the recorded count; a reference element is a shared clone.
+    fn load_list_element(
+        &mut self,
+        object: ValueId,
+        index_size: ValueId,
+        element_type: ValueType,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         let logical_count = *self.list_counts.get(&object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list index extent"),
         )?;
@@ -6410,23 +6421,205 @@ impl FunctionLowerer<'_> {
     fn lower_render(&mut self, argument: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let source_type = self.expression_type(argument)?;
         let value = self.lower_expr(argument)?;
-        let Type::Named(name, arguments) = source_type.unqualified() else {
+        self.lower_render_typed(value, &source_type)
+    }
+
+    /// Render `value` of checked type `ty`: a `String` is itself, an `Int`
+    /// its decimal digits, a `Bool` its word; an aggregate renders
+    /// structurally as the interpreter does (`Some(1)`, `Circle(2)`,
+    /// `Point(1, 2)`, `(1, 2)`, `[1, 2]`, a payload-free variant by name).
+    fn lower_render_typed(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        let ty = ty.unqualified();
+        if let Type::Named(name, arguments) = ty {
+            match (name.as_str(), arguments.as_slice(), self.values[&value]) {
+                ("String", [], ValueType::Ref(_)) => {
+                    self.ensure_string_extent(value)?;
+                    return Ok(value);
+                }
+                ("Int", [], ValueType::Int) => return self.lower_render_int(value),
+                ("Bool", [], ValueType::Bool) => return self.lower_render_bool(value),
+                ("Float", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Float")),
+                ("Duration", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
+                ("List", [element], ValueType::Ref(_)) => return self.lower_render_list(value, ty, element),
+                _ => {}
+            }
+        }
+        if !matches!(self.values[&value], ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("render type"));
+        }
+        let Some(shape) = scalar_aggregate_shape(ty, self.definitions) else {
             return Err(CanonicalLoweringError::UnsupportedExpression("render type"));
         };
-        if !arguments.is_empty() {
-            return Err(CanonicalLoweringError::UnsupportedExpression("render type"));
+        let tuple = matches!(ty, Type::Tuple(_));
+        if !shape.tagged {
+            let variant = shape.variants.first().cloned().ok_or(CanonicalLoweringError::UnsupportedExpression("render type"))?;
+            return self.lower_render_variant(value, &shape, &variant, tuple);
         }
-        match (name.as_str(), self.values[&value]) {
-            ("String", ValueType::Ref(_)) => {
-                self.ensure_string_extent(value)?;
-                Ok(value)
+        // A sum dispatches on its tag: each variant's arm renders its own
+        // payload into a fresh string, and the arms join on string lanes.
+        let layout = self.string_layout_id()?;
+        let join = self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
+        let tag = self.load_record_field(value, 0, ValueType::Int)?;
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        for (index, variant) in shape.variants.iter().enumerate() {
+            let last = index + 1 == shape.variants.len();
+            let arm = self.new_block(&[])?;
+            let next = if last {
+                self.finish_current(Terminator::Branch { target: arm, arguments: Vec::new() })?;
+                None
+            } else {
+                let expected = self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                let matched = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
+                let next = self.new_block(&[])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: matched,
+                    then_target: arm,
+                    then_arguments: Vec::new(),
+                    else_target: next,
+                    else_arguments: Vec::new(),
+                })?;
+                Some(next)
+            };
+            self.current = arm;
+            self.restore_snapshot(facts.clone());
+            let rendered = self.lower_render_variant(value, &shape, variant, false)?;
+            let (lanes, _) = self.accumulator_lanes(rendered)?;
+            self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+            if let Some(next) = next {
+                self.current = next;
             }
-            ("Int", ValueType::Int) => self.lower_render_int(value),
-            ("Float", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Float")),
-            ("Bool", ValueType::Bool) => self.lower_render_bool(value),
-            ("Duration", _) => Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
-            _ => Err(CanonicalLoweringError::UnsupportedExpression("render type")),
         }
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let join_values = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&join_values);
+        Ok(join_values[0])
+    }
+
+    /// One variant's render: its short constructor name (the type name for
+    /// a record), then the rendered payloads between parentheses when it
+    /// has any; a tuple is its payloads between parentheses. Always a fresh
+    /// owned string.
+    fn lower_render_variant(
+        &mut self,
+        value: ValueId,
+        shape: &ScalarAggregateShape,
+        variant: &ScalarVariant,
+        tuple: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let shown = render_variant_name(variant);
+        let mut out = if tuple {
+            self.lower_string_literal("(")?
+        } else if variant.arity == 0 {
+            let literal = self.lower_string_literal(&shown)?;
+            return self.owned_string_copy(literal);
+        } else {
+            self.lower_string_literal(&format!("{shown}("))?
+        };
+        for offset in 0..variant.arity {
+            if offset > 0 {
+                let separator = self.lower_string_literal(", ")?;
+                out = self.concat_string_values(out, separator)?;
+            }
+            let slot = variant.first_field + offset;
+            let field_type = shape.fields[slot].clone();
+            let value_type = self.field_value_type(&field_type)?;
+            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+            let field = self.load_record_field(value, slot, value_type)?;
+            let rendered = self.lower_render_typed(field, &field_type)?;
+            out = self.concat_string_values(out, rendered)?;
+        }
+        let close = self.lower_string_literal(")")?;
+        self.concat_string_values(out, close)
+    }
+
+    /// `[a, b, c]`: the elements rendered in order between brackets, folded
+    /// into an owned accumulator by a counted loop.
+    fn lower_render_list(&mut self, object: ValueId, list_type: &Type, element_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        let (_, element_value_type, _, _) = list_layout(list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        self.ensure_list_extent(object)?;
+        let count = *self.list_counts.get(&object).ok_or(CanonicalLoweringError::UnsupportedExpression("render list extent"))?;
+        let open = self.lower_string_literal("[")?;
+        let accumulator = self.owned_string_copy(open)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let (lanes, mut shapes) = self.accumulator_lanes(accumulator)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(zero);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        let header_values = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&header_values);
+        self.current = header;
+        let cursor = header_values[3];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..3].to_vec(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&body_values);
+        self.current = body;
+        let cursor = body_values[3];
+        // The separator before every element but the first: an owned copy
+        // of `, ` or an empty string, joined on string lanes.
+        let layout = self.string_layout_id()?;
+        let separator = self.lower_string_literal(", ")?;
+        let first = self.push_compare(ComparisonOperator::Equal, cursor, zero)?;
+        let facts = self.snapshot_facts();
+        let without = self.new_block(&[])?;
+        let with = self.new_block(&[])?;
+        let selected = self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: first,
+            then_target: without,
+            then_arguments: Vec::new(),
+            else_target: with,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = without;
+        let empty = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
+        let (lanes, _) = self.accumulator_lanes(empty)?;
+        self.finish_current(Terminator::Branch { target: selected, arguments: lanes })?;
+        self.current = with;
+        let piece = self.owned_string_copy(separator)?;
+        let (lanes, _) = self.accumulator_lanes(piece)?;
+        self.finish_current(Terminator::Branch { target: selected, arguments: lanes })?;
+        self.restore_facts(facts, selected);
+        self.current = selected;
+        let selected_values = self.block_parameter_values(selected);
+        self.track_accumulator_lanes(&selected_values);
+        let out = self.concat_string_values(body_values[0], selected_values[0])?;
+        let element = self.load_list_element(object, cursor, element_value_type)?;
+        let rendered = self.lower_render_typed(element, element_type)?;
+        let out = self.concat_string_values(out, rendered)?;
+        let (folded, _) = self.accumulator_lanes(out)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        folded.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = exit;
+        let exit_values = self.block_parameter_values(exit);
+        self.track_accumulator_lanes(&exit_values);
+        let close = self.lower_string_literal("]")?;
+        self.concat_string_values(exit_values[0], close)
+    }
+
+    /// A fresh owned copy of a string (a literal, a shared field) so it can
+    /// travel an owned accumulator lane.
+    fn owned_string_copy(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let length = self.string_length_of(value)?;
+        let zero = self.push_const_size(0)?;
+        self.copy_checked_slice(value, zero, length, length, layout)
     }
 
     /// Render a `Bool` as `true` or `false`: a branch selects the word's
@@ -8200,12 +8393,74 @@ fn string_layout(
     }
 }
 
-fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTable) -> Vec<Vec<u8>> {
+/// The static payloads the structural render of a value of type `ty` reads
+/// (`lower_render_typed`): list and tuple punctuation, a variant's name or
+/// `Name(` opener, the `, ` between payloads, and the scalar tables of the
+/// nested `Int` and `Bool` fields. Mirrors the lowering exactly: a segment
+/// no function references is refused by the checker.
+fn collect_render_payloads(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    payloads: &mut BTreeSet<Vec<u8>>,
+    renders_int: &mut bool,
+    renders_bool: &mut bool,
+) {
+    let ty = ty.unqualified();
+    if let Type::Named(name, arguments) = ty {
+        match (name.as_str(), arguments.as_slice()) {
+            ("String", []) | ("Float", _) | ("Duration", _) => return,
+            ("Int", []) => {
+                *renders_int = true;
+                return;
+            }
+            ("Bool", []) => {
+                *renders_bool = true;
+                return;
+            }
+            ("List", [element]) => {
+                payloads.insert(b"[".to_vec());
+                payloads.insert(b", ".to_vec());
+                payloads.insert(b"]".to_vec());
+                collect_render_payloads(element, definitions, payloads, renders_int, renders_bool);
+                return;
+            }
+            _ => {}
+        }
+    }
+    let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return };
+    let tuple = matches!(ty, Type::Tuple(_));
+    for variant in &shape.variants {
+        if tuple {
+            payloads.insert(b"(".to_vec());
+        } else if variant.arity == 0 {
+            payloads.insert(render_variant_name(variant).into_bytes());
+            continue;
+        } else {
+            payloads.insert(format!("{}(", render_variant_name(variant)).into_bytes());
+        }
+        if variant.arity > 1 {
+            payloads.insert(b", ".to_vec());
+        }
+        payloads.insert(b")".to_vec());
+        for offset in 0..variant.arity {
+            collect_render_payloads(&shape.fields[variant.first_field + offset], definitions, payloads, renders_int, renders_bool);
+        }
+    }
+}
+
+/// The constructor name a render shows: the source spelling after any
+/// module qualifier, as the interpreter prints it.
+fn render_variant_name(variant: &ScalarVariant) -> String {
+    variant.name.rsplit('.').next().unwrap_or(&variant.name).to_owned()
+}
+
+fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTable, definitions: &BTreeMap<String, TypeDef>) -> Vec<Vec<u8>> {
     let mut literal_uses = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_inputs = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_outputs = BTreeSet::new();
     let mut renders_int = false;
     let mut renders_bool = false;
+    let mut render_payloads = BTreeSet::new();
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         if !is_canonical_source_function(module, &function.name) { continue; }
@@ -8219,23 +8474,15 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
                     collect_pattern_literals(&arm.pattern, &mut literal_uses);
                 }
             }
-            // Only an `Int` render reaches the digit tables; the checker
-            // refuses a registered segment no function references.
+            // A render reaches exactly the tables and punctuation its type's
+            // structural render reads; the checker refuses a registered
+            // segment no function references.
             if let Expr::Call { name, args } = expression
                 && witchy_syntax::ast::is_render_intrinsic(name)
                 && let [argument] = args.as_slice()
-                && table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
-                    .is_some_and(|ty| matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Int" && arguments.is_empty()))
+                && let Some(ty) = table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
             {
-                renders_int = true;
-            }
-            if let Expr::Call { name, args } = expression
-                && witchy_syntax::ast::is_render_intrinsic(name)
-                && let [argument] = args.as_slice()
-                && table.type_of(argument).and_then(witchy_types::typeck::ty_to_ast)
-                    .is_some_and(|ty| matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Bool" && arguments.is_empty()))
-            {
-                renders_bool = true;
+                collect_render_payloads(&ty, definitions, &mut render_payloads, &mut renders_int, &mut renders_bool);
             }
             if let Expr::Call { name, args } = expression
                 && matches!(name.as_str(), "string.chars" | "string.__chars")
@@ -8251,6 +8498,7 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
         }).expect("string payload visitor cannot fail");
     }
     let mut payloads = chars_outputs;
+    payloads.extend(render_payloads);
     if renders_int {
         payloads.insert(RENDER_DIGIT_TABLE.as_bytes().to_vec());
         payloads.insert(RENDER_MINUS_SIGN.as_bytes().to_vec());

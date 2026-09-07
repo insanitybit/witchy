@@ -994,3 +994,18 @@ rebound by that call as an assignment rebinds it, so its header lane is a shared
 the write-back's unique result weakens into it on the back edge. Newly agree: `dice`,
 `largest`, `list_ops`, `pipeline`, `sort`. Census: 116/163 check, 60 runnable three-legged
 parity, 0 disagree.
+
+## Slice 35 (2026-09-07): structural render of aggregates
+
+`"${x}"` on a sum, record, tuple, or list renders structurally, in the interpreter's
+format: a payload-free variant is its bare name, a variant or record is `Name(a, b)`, a
+tuple `(a, b)`, a list `[a, b]`, nested aggregates recurse, and a `String` inside prints
+bare. A sum dispatches on its tag into per-variant arms that join on owned string lanes;
+a list folds its rendered elements through a counted loop whose separator (`, ` or the
+empty string) is itself a string-lane join. The static-payload pre-pass registers exactly
+the punctuation and names a rendered type reads (`collect_render_payloads`, mirroring the
+lowering) so the checker's unreferenced-segment rule stays exact. Newly agree: `equality`
+(an `Option(Int)` render). Census: 118/163 check, 62 runnable three-legged parity, 0
+disagree. `Float` render remains refused: the prelude's `witchy.float_to_str` import
+writes a guest buffer, and the v1 host-call rule admits read-only imports only, so
+admitting it is a memory-mode boundary decision, not a lowering slice.
