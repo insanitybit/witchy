@@ -201,6 +201,12 @@ security suites, which `scripts/rfc0165-foundation.sh` runs on their own: the
 authority, rule manifest; 567), the canonical lowering tests (91), and the
 `rfc0165_*` admitted-launch (57), corpus, and oracle tests.
 
+Re-run after the review fixes and the first two gate attempts (the filterset
+naming the untracked fixture; an intrinsic in statement position): **4327
+tests, 3974 passed, 352 failed, 1 timed out, 19 skipped**, 38.1 minutes. Every
+failure is in the deferred list or is the untracked fixture; no deferred test
+started passing.
+
 What this decision does not claim: compiler-wide memory safety. The reviews in
 slice 40 of the census challenged the latest boundaries and closed what they
 found; the rows above stay `candidate-green` until the merge queue records the
