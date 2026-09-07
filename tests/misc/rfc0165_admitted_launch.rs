@@ -192,6 +192,28 @@ fn admitted_while_loops_with_short_circuit_conditions_run() {
 }
 
 #[test]
+fn admitted_for_loops_carry_bindings_assigned_inside_nested_arms() {
+    // The `for` lowering once scanned only the body's top-level statements
+    // for rebinding, so `n = n + 1` inside an `if` was dropped and the loop
+    // silently kept the entry value; the parity check caught it.
+    let output = run_admitted(
+        "pub fn count_even(xs: List(Int)) -> Int:\n    var n = 0\n    var last = 0 - 1\n    for x in xs:\n        if x % 2 == 0:\n            n = n + 1\n            last = x\n    n * 100 + last\n\nfn main(console: Console):\n    console.print(\"${count_even([1, 2, 3, 4, 6])} ${count_even([1, 3])}\")\n",
+    );
+    assert_eq!(output, vec!["306 -1".to_string()]);
+}
+
+#[test]
+fn admitted_string_equality_and_char_count_scan_bytes() {
+    // String equality is a byte scan whose loop leaves through drop blocks
+    // on two edges (length mismatch, first differing byte); `char_count`
+    // counts UTF-8 sequence starts without a branch.
+    let output = run_admitted(
+        "pub fn count(words: List(String), target: String) -> Int:\n    var n = 0\n    for w in words:\n        if w == target:\n            n = n + 1\n    n\n\npub fn same(a: String, b: String) -> Bool:\n    a == b\n\nfn main(console: Console):\n    let words = [\"cat\", \"dog\", \"cat\", \"cats\", \"\"]\n    console.print(\"${count(words, \"cat\")} ${count(words, \"\")} ${count(words, \"bird\")}\")\n    if same(\"abc\", \"abc\") && !same(\"abc\", \"abd\") && \"x\" != \"y\" && !(\"\" != \"\"):\n        console.print(\"eq ok\")\n    console.print(\"${\"héllo wörld\".char_count()} ${\"\".char_count()} ${\"日本語\".char_count()} ${\"abc\".char_count()}\")\n",
+    );
+    assert_eq!(output, vec!["2 1 0".to_string(), "eq ok".to_string(), "11 0 3 3".to_string()]);
+}
+
+#[test]
 fn admitted_loop_over_list_parameters_drops_the_current_binding_at_exit() {
     // A loop threads list parameters through block parameters; the exit drop
     // must target the current binding, not the entry value.

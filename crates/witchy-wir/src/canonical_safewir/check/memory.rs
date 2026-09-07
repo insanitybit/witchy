@@ -2039,7 +2039,18 @@ impl<'a> MemoryChecker<'a> {
                         function: self.function.id,
                         object: place.object(),
                     })?;
-                self.value_type_for_layout(element)?
+                // A raw byte has no value type of its own; a read of one is a
+                // zero-extended `Size` (the byte loops behind string equality
+                // and character counting). Writes stay byte copies.
+                let raw_byte_read = place.access() == AccessMode::Read
+                    && self.descriptor(element).is_ok_and(|element| {
+                        element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)
+                    });
+                if raw_byte_read {
+                    ValueType::Size
+                } else {
+                    self.value_type_for_layout(element)?
+                }
             }
             Projection::Field { index } => {
                 let field = descriptor.fields().get(*index as usize).ok_or(

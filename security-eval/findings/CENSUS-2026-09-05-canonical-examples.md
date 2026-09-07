@@ -654,3 +654,35 @@ route is 0/107.
   (`&&`, `||`, early return inside the loop, compound index).
 - Census: 72 of 163 check; 16 runnable examples admit and agree under
   three-legged parity (`queens` is new).
+
+## Progress (owner, 2026-09-07, eighteenth slice: byte scans, converging loop exits)
+
+- **Raw byte reads.** A string's element is a raw byte with no value type;
+  the checker now types a read of one as a zero-extended `Size` (writes stay
+  byte copies), the encoder and plan mirror load it with `i32.load8_u`, and
+  the oracle already decoded bytes as sizes. On that: string `==`/`!=` is a
+  length test guarding a byte-scan loop with an early exit, and
+  `string.char_count` counts UTF-8 sequence starts without a branch
+  (`(((b >> 6) ^ 2) + 3) >> 2`).
+- **Loops whose exits converge.** Release placement puts a drop block on
+  each edge out of the byte scan (length mismatch, first differing byte),
+  so the loop has several exit edges. The loop's continuation is now the
+  nearest block every exit edge reaches; the edge blocks are emitted inside
+  the loop ahead of their `br`. An edge whose paths only return through
+  blocks nothing outside the loop enters is an early return, emitted
+  inline; a return block shared with a path from before the loop (the
+  `queens` search) stays a continuation. A branch side "escapes" when
+  every path from it ends at an enclosing loop's header or exit and shares
+  no block with the other side. The path check shares its visited set
+  through loop bodies (fresh sets let a walk re-enter an enclosing loop
+  forever), and a side's own first block may be the merge when the other
+  side flows into it.
+- **`for` carried bindings.** The `for` lowering scanned only the body's
+  top-level statements for rebinding, so `n = n + 1` inside an `if` was
+  dropped and the loop silently kept the entry value. `witchy parity`
+  caught it (the oracle runs the same SafeWIR and cannot). The nested
+  rebinding scan the `while` lowering uses now selects the loop state.
+- Pinned by `admitted_for_loops_carry_bindings_assigned_inside_nested_arms`
+  and `admitted_string_equality_and_char_count_scan_bytes`.
+- Census: 72 of 163 check; 16 runnable examples admit and agree under
+  three-legged parity.

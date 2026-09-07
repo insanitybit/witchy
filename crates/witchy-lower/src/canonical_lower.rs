@@ -2387,21 +2387,17 @@ impl FunctionLowerer<'_> {
         }
 
         let outer = self.bindings.clone();
-        let mut names = body
-            .stmts
+        // Every outer binding the body rebinds anywhere (an assignment nested
+        // in an `if` arm counts) is loop state; a top-level-only scan once
+        // dropped a nested `n = n + 1` and the loop silently kept the entry
+        // value.
+        let rebound = loop_rebindings(body);
+        let mut names = rebound
+            .assigned
             .iter()
-            .filter_map(|statement| match statement {
-                Stmt::Assign { name, .. } if outer.contains_key(name) => Some(name.clone()),
-                Stmt::Expr(Expr::Call { name, args })
-                    if matches!(name.as_str(), "list.push" | "list.__push") =>
-                {
-                    match args.first() {
-                        Some(Expr::Var(name)) if outer.contains_key(name) => Some(name.clone()),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            })
+            .chain(rebound.pushed.iter())
+            .filter(|name| outer.contains_key(*name))
+            .cloned()
             .collect::<Vec<_>>();
         names.sort();
         names.dedup();
@@ -2442,7 +2438,7 @@ impl FunctionLowerer<'_> {
         // lane, which permits a checked Unique phi to rebase the fresh list
         // allocated by a prior iteration.  Untracked/Shared references stay
         // unspecified and therefore cannot acquire phi authority.
-        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &loop_rebindings(body));
+        self.mark_tracked_phi_parameters(header, &names, &list_names, &outer, true, &rebound);
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
@@ -3336,6 +3332,13 @@ impl FunctionLowerer<'_> {
                 let result = self.fresh(ValueType::Int)?;
                 self.push_operation(Operation::WidenSize { destination: result, value: length });
                 Ok(result)
+            }
+            Expr::Call { name, args } if matches!(name.as_str(), "string.char_count" | "string.__char_count") => {
+                let [receiver] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.char_count arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                self.lower_char_count(object)
             }
             Expr::Call { name, args } if matches!(name.as_str(), "list.at" | "list.__at") => {
                 let [base, index] = args.as_slice() else {
@@ -4478,6 +4481,13 @@ impl FunctionLowerer<'_> {
             _ => None,
         };
         if let Some(operator) = comparison {
+            if string_operands && matches!(left_type, ValueType::Ref(_)) {
+                return match operator {
+                    ComparisonOperator::Equal => self.lower_string_equality(left, right, false),
+                    ComparisonOperator::NotEqual => self.lower_string_equality(left, right, true),
+                    _ => Err(CanonicalLoweringError::UnsupportedExpression("string ordering")),
+                };
+            }
             if !matches!(left_type, ValueType::Int | ValueType::Bool | ValueType::Float) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("comparison type"));
             }
@@ -4848,6 +4858,155 @@ impl FunctionLowerer<'_> {
         self.string_lengths.insert(object, total);
         self.string_capacities.insert(object, total);
         Ok(object)
+    }
+
+    /// Read byte `index` of a string as a zero-extended `Size`. The caller has
+    /// pushed the `index < count` guard the checker's element rule consumes.
+    fn push_string_byte_load(
+        &mut self,
+        object: ValueId,
+        index: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Load {
+            destination,
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Element { index },
+                ValueType::Size,
+                AccessMode::Read,
+            ),
+            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+        });
+        Ok(destination)
+    }
+
+    /// `a == b` over strings: equal byte lengths and equal bytes. The scan is
+    /// a loop whose header tests the position and whose body leaves early on
+    /// the first differing byte; the result is the exit block's parameter.
+    fn lower_string_equality(
+        &mut self,
+        left: ValueId,
+        right: ValueId,
+        negate: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(left)?;
+        self.ensure_string_extent(right)?;
+        let ValueType::Ref(layout) = self.values[&left] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string equality operand"));
+        };
+        let left_length = *self.string_lengths.get(&left).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string equality operand extent"),
+        )?;
+        let right_length = *self.string_lengths.get(&right).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string equality operand extent"),
+        )?;
+        let equal = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: equal, value: true });
+        let differ = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: differ, value: false });
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let same_length = self.push_compare(ComparisonOperator::Equal, left_length, right_length)?;
+        let scan = self.new_block(&[])?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Bool])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: same_length,
+            then_target: scan,
+            then_arguments: Vec::new(),
+            else_target: exit,
+            else_arguments: vec![differ],
+        })?;
+        self.current = scan;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], left_length)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: vec![equal],
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let index = body_values[0];
+        let left_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, left_length)?;
+        self.push_guard(left_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let right_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, right_length)?;
+        self.push_guard(right_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let left_byte = self.push_string_byte_load(left, index, layout)?;
+        let right_byte = self.push_string_byte_load(right, index, layout)?;
+        let same_byte = self.push_compare(ComparisonOperator::Equal, left_byte, right_byte)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, index, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: same_byte,
+            then_target: header,
+            then_arguments: vec![next],
+            else_target: exit,
+            else_arguments: vec![differ],
+        })?;
+        self.current = exit;
+        let result = self.block_parameter_values(exit)[0];
+        if negate {
+            return self.push_compare(ComparisonOperator::Equal, result, differ);
+        }
+        Ok(result)
+    }
+
+    /// `string.char_count`: the number of UTF-8 sequence starts, counted
+    /// without a branch as `(((byte >> 6) ^ 2) + 3) >> 2`, which is zero for
+    /// a continuation byte (`10xxxxxx`) and one otherwise.
+    fn lower_char_count(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(object)?;
+        let ValueType::Ref(layout) = self.values[&object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string.char_count receiver"));
+        };
+        let length = *self.string_lengths.get(&object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string.char_count receiver extent"),
+        )?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let zero_int = self.push_const_int(0)?;
+        let two_int = self.push_const_int(2)?;
+        let three_int = self.push_const_int(3)?;
+        let six_int = self.push_const_int(6)?;
+        let state = [ValueType::Size, ValueType::Int];
+        let header = self.new_block(&state)?;
+        let body = self.new_block(&state)?;
+        let exit = self.new_block(&[ValueType::Int])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero_int] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], length)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: vec![header_values[1]],
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let index = body_values[0];
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, index, layout)?;
+        let byte_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: byte_int, value: byte });
+        let high_bits = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, byte_int, six_int, OverflowBehavior::Wrap)?;
+        let flipped = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitXor, high_bits, two_int, OverflowBehavior::Wrap)?;
+        let biased = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, flipped, three_int, OverflowBehavior::Wrap)?;
+        let increment = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, biased, two_int, OverflowBehavior::Wrap)?;
+        let count = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, body_values[1], increment, OverflowBehavior::Wrap)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, index, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next, count] })?;
+        self.current = exit;
+        Ok(self.block_parameter_values(exit)[0])
     }
 
     fn block_parameter_values(&self, block: BlockId) -> Vec<ValueId> {

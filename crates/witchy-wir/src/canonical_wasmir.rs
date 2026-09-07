@@ -1949,7 +1949,7 @@ fn emit_typed_load(
     emit_projected_address(body, function, layout, access)?;
     let arg = memarg(access.width);
     match access.scalar {
-        ScalarKind::Bool | ScalarKind::Tag8 => body.instruction(&wasm_encoder::Instruction::I32Load8U(arg)),
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Load8U(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Load16U(arg)),
         ScalarKind::U32 | ScalarKind::Tag32 => body.instruction(&wasm_encoder::Instruction::I32Load(arg)),
         ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Load(arg)),
@@ -2868,9 +2868,13 @@ impl StructuredEmitter<'_> {
             let exit = self.loop_exit(start)?;
             let mut body_merges = vec![start];
             body_merges.extend(exit);
+            // The body walk keeps the caller's active set: body blocks are
+            // dominated by the header, so an active ancestor is reachable
+            // only by leaving the loop somewhere other than its exit, which
+            // must fail rather than walk the enclosing loop again.
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, &body_merges, &mut BTreeSet::new())? {
+                if !self.all_paths_reach_or_terminate(successor, &body_merges, active)? {
                     result = false;
                     break;
                 }
@@ -2927,33 +2931,78 @@ impl StructuredEmitter<'_> {
                 members.push(block.id);
             }
         }
-        // The canonical `while` header names its exit directly: its `else`
-        // side leaves the loop. Any other header continues at the one
-        // non-terminal block the loop's blocks branch out to; a `return`
-        // inside the body reaches a terminal block, which is emitted inline
-        // and is no continuation.
+        // The canonical `while` header names an exit directly: its `else`
+        // side leaves the loop. Every other edge out of the loop is an exit
+        // too unless all its paths terminate (a `return` inside the body,
+        // emitted inline). With one exit the loop continues there; with
+        // several (drop blocks on the edges out of a byte scan) it continues
+        // at the nearest block all of them reach, and the edge blocks are
+        // emitted inside the loop ahead of their `br`.
         let classic_exit = match &self.block(header)?.terminator.operation {
             ScalarTerminator::BranchIf { else_target, .. } if !members.contains(else_target) => Some(*else_target),
             _ => None,
         };
-        let exit = if classic_exit.is_some() {
-            classic_exit
-        } else {
-            let mut continuing = BTreeSet::new();
-            for member in &members {
-                for successor in self.successors(*member)? {
-                    if !members.contains(&successor) && !self.is_terminal(successor)? {
-                        continuing.insert(successor);
+        let mut leaving = BTreeSet::new();
+        leaving.extend(classic_exit);
+        for member in &members {
+            for successor in self.successors(*member)? {
+                if !members.contains(&successor) {
+                    leaving.insert(successor);
+                }
+            }
+        }
+        // An edge whose every path terminates through blocks nothing outside
+        // the loop enters is an early return, emitted inline; the rest are
+        // exits. A return block shared with a path from before the loop
+        // (`if n == 0: return` ahead of a search) is a continuation.
+        let mut candidates = BTreeSet::new();
+        for block in &leaving {
+            let mut only_returns = Some(*block) != classic_exit
+                && self.all_paths_reach_or_terminate(*block, &[], &mut BTreeSet::from([header]))?;
+            if only_returns {
+                let reach = self.reachable_until(*block, &[header])?;
+                'blocks: for reached in &reach {
+                    for predecessor in self.predecessors(*reached)? {
+                        if !reach.contains(&predecessor) && !members.contains(&predecessor) {
+                            only_returns = false;
+                            break 'blocks;
+                        }
                     }
                 }
             }
-            if continuing.len() > 1 {
+            if !only_returns {
+                candidates.insert(*block);
+            }
+        }
+        let exit = if candidates.len() <= 1 {
+            candidates.into_iter().next()
+        } else {
+            let mut common: Option<(usize, crate::canonical_safewir::BlockId)> = None;
+            let distances = candidates
+                .iter()
+                .map(|candidate| self.distances_from(*candidate))
+                .collect::<Result<Vec<_>, _>>()?;
+            for block in distances[0].keys() {
+                let Some(farthest) = distances
+                    .iter()
+                    .map(|reach| reach.get(block).copied())
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|reaches| reaches.into_iter().max())
+                else {
+                    continue;
+                };
+                let score = (farthest, *block);
+                if common.is_none_or(|previous| score < previous) {
+                    common = Some(score);
+                }
+            }
+            let Some((_, block)) = common else {
                 return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                     function: self.source_function.id,
-                    operation: "loop with several exits",
+                    operation: "loop exits that never converge",
                 }));
-            }
-            continuing.into_iter().next()
+            };
+            Some(block)
         };
         self.loop_exit_targets.borrow_mut().insert(header, exit);
         Ok(exit)
@@ -2969,6 +3018,60 @@ impl StructuredEmitter<'_> {
             .find(|(header, _)| *header == target)
             .or_else(|| self.loop_exits.iter().rev().find(|(exit, _)| *exit == target))
             .map(|(_, label_index)| *label_index)
+    }
+
+    fn predecessors(&self, block: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, EncodeError> {
+        let mut sources = Vec::new();
+        for candidate in &self.target_function.blocks {
+            if self.successors(candidate.id)?.contains(&block) {
+                sources.push(candidate.id);
+            }
+        }
+        Ok(sources)
+    }
+
+    fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, EncodeError> {
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if stops.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            pending.extend(self.successors(id)?);
+        }
+        Ok(seen)
+    }
+
+    /// A branch side that only leaves: its target is an escape, or every
+    /// path from it ends in an escape or a terminal block (the drop block on
+    /// a loop's exit edge) and it shares no block with the other side.
+    fn side_escapes(&self, current: crate::canonical_safewir::BlockId, side: crate::canonical_safewir::BlockId, other: crate::canonical_safewir::BlockId) -> Result<bool, EncodeError> {
+        if self.escape_label(side).is_some() {
+            return Ok(true);
+        }
+        let mut stops = self.escape_targets();
+        if stops.is_empty() || !self.all_paths_reach_or_terminate(side, &stops, &mut BTreeSet::new())? {
+            return Ok(false);
+        }
+        stops.push(current);
+        let reach = self.reachable_until(side, &stops)?;
+        // Every path must end at an escape: a side that can also return is
+        // a terminal side for `only_terminates` to judge, not an escape.
+        for block in &reach {
+            if self.is_terminal(*block)? {
+                return Ok(false);
+            }
+        }
+        let other_reach = self.reachable_until(other, &stops)?;
+        Ok(reach.is_disjoint(&other_reach))
+    }
+
+    fn escape_targets(&self) -> Vec<crate::canonical_safewir::BlockId> {
+        self.loops
+            .iter()
+            .map(|(header, _)| *header)
+            .chain(self.loop_exits.iter().map(|(exit, _)| *exit))
+            .collect()
     }
 
     fn reaches_avoiding(
@@ -3048,8 +3151,8 @@ impl StructuredEmitter<'_> {
         // `br`: it never reaches a merge, and the other side's first block is
         // where emission continues.
         match (
-            self.escape_label(then_target).is_some(),
-            self.escape_label(else_target).is_some(),
+            self.side_escapes(current, then_target, else_target)?,
+            self.side_escapes(current, else_target, then_target)?,
         ) {
             (true, true) => return Ok(None),
             (true, false) => return Ok(Some(else_target)),
@@ -3069,16 +3172,13 @@ impl StructuredEmitter<'_> {
         let else_terminal = self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
-            // When one side only terminates (`if c: return x` then fall through),
-            // the other side's first block is itself the merge: the structured
-            // form is `if c { ... } else { } end` followed by that block.
-            // An enclosing loop's header or exit is never a merge: emission
-            // reaches those only through `br`.
-            if candidate == current
-                || self.escape_label(candidate).is_some()
-                || (candidate == then_target && !else_terminal)
-                || (candidate == else_target && !then_terminal)
-            {
+            // A side's own first block can be the merge: when the other side
+            // only terminates (`if c: return x` then fall through) or flows
+            // into it (a length test guarding a scan loop that exits there),
+            // the structured form is `if c { ... } else { } end` followed by
+            // that block. An enclosing loop's header or exit is never a
+            // merge: emission reaches those only through `br`.
+            if candidate == current || self.escape_label(candidate).is_some() {
                 continue;
             }
             let then_distance = match then_distances.get(&candidate) {
@@ -3106,6 +3206,9 @@ impl StructuredEmitter<'_> {
             if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
                 best = Some(score);
             }
+        }
+        if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+            eprintln!("find_join current={current:?} then={then_target:?} else={else_target:?} then_terminal={then_terminal} else_terminal={else_terminal} best={best:?}");
         }
         best.map(|(_, block)| Some(block)).ok_or(EncodeError::Lowering(
             LoweringError::UnsupportedControlFlow {
@@ -3173,6 +3276,9 @@ impl StructuredEmitter<'_> {
             return self.emit_loop(start, stop);
         }
         if !self.emitted.insert(start) {
+            if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+                eprintln!("block emitted twice: {start:?} stop={stop:?} loops={:?} exits={:?}", self.loops, self.loop_exits);
+            }
             return Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                 function: self.source_function.id,
                 operation: "block emitted twice",
@@ -3285,6 +3391,9 @@ impl StructuredEmitter<'_> {
         }
         let block = self.block(header)?.clone();
         let exit = self.loop_exit(header)?;
+        if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
+            eprintln!("emit_loop header={header:?} exit={exit:?} stop={stop:?}");
+        }
 
         self.body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
         let block_label = self.labels.len();
@@ -3958,7 +4067,7 @@ fn push_memory_load_plan(
     push_projected_address_plan(plan, function, layout, access)?;
     let memarg = |offset, align, memory| PlanToken::I32Load { offset, align, memory };
     plan.push(match access.scalar {
-        ScalarKind::Bool | ScalarKind::Tag8 => PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
         ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
         ScalarKind::U32 | ScalarKind::Tag32 => memarg(0, 2, 0),
         ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
@@ -5078,9 +5187,13 @@ impl PlanEmitter<'_> {
             let exit = self.loop_exit(start)?;
             let mut body_merges = vec![start];
             body_merges.extend(exit);
+            // The body walk keeps the caller's active set: body blocks are
+            // dominated by the header, so an active ancestor is reachable
+            // only by leaving the loop somewhere other than its exit, which
+            // must fail rather than walk the enclosing loop again.
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, &body_merges, &mut BTreeSet::new())? {
+                if !self.all_paths_reach_or_terminate(successor, &body_merges, active)? {
                     result = false;
                     break;
                 }
@@ -5127,27 +5240,72 @@ impl PlanEmitter<'_> {
                 members.push(block.id);
             }
         }
-        // Mirror of the encoder's rule: a `while` header's `else` side is the
-        // exit; otherwise the one non-terminal block the loop branches out to.
+        // Mirror of the encoder's rule: the `while` header's `else` side and
+        // every non-terminating edge out of the loop are exits; one exit is
+        // the continuation, several continue at the nearest block they all
+        // reach.
         let classic_exit = match &self.block(header)?.terminator {
             Terminator::BranchIf { else_target, .. } if !members.contains(else_target) => Some(*else_target),
             _ => None,
         };
-        let exit = if classic_exit.is_some() {
-            classic_exit
-        } else {
-            let mut continuing = BTreeSet::new();
-            for member in &members {
-                for successor in self.successors(*member)? {
-                    if !members.contains(&successor) && !self.is_terminal(successor)? {
-                        continuing.insert(successor);
+        let mut leaving = BTreeSet::new();
+        leaving.extend(classic_exit);
+        for member in &members {
+            for successor in self.successors(*member)? {
+                if !members.contains(&successor) {
+                    leaving.insert(successor);
+                }
+            }
+        }
+        // An edge whose every path terminates through blocks nothing outside
+        // the loop enters is an early return, emitted inline; the rest are
+        // exits. A return block shared with a path from before the loop
+        // (`if n == 0: return` ahead of a search) is a continuation.
+        let mut candidates = BTreeSet::new();
+        for block in &leaving {
+            let mut only_returns = Some(*block) != classic_exit
+                && self.all_paths_reach_or_terminate(*block, &[], &mut BTreeSet::from([header]))?;
+            if only_returns {
+                let reach = self.reachable_until(*block, &[header])?;
+                'blocks: for reached in &reach {
+                    for predecessor in self.predecessors(*reached)? {
+                        if !reach.contains(&predecessor) && !members.contains(&predecessor) {
+                            only_returns = false;
+                            break 'blocks;
+                        }
                     }
                 }
             }
-            if continuing.len() > 1 {
-                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            if !only_returns {
+                candidates.insert(*block);
             }
-            continuing.into_iter().next()
+        }
+        let exit = if candidates.len() <= 1 {
+            candidates.into_iter().next()
+        } else {
+            let mut common: Option<(usize, crate::canonical_safewir::BlockId)> = None;
+            let distances = candidates
+                .iter()
+                .map(|candidate| self.distances_from(*candidate))
+                .collect::<Result<Vec<_>, _>>()?;
+            for block in distances[0].keys() {
+                let Some(farthest) = distances
+                    .iter()
+                    .map(|reach| reach.get(block).copied())
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|reaches| reaches.into_iter().max())
+                else {
+                    continue;
+                };
+                let score = (farthest, *block);
+                if common.is_none_or(|previous| score < previous) {
+                    common = Some(score);
+                }
+            }
+            let Some((_, block)) = common else {
+                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            };
+            Some(block)
         };
         self.loop_exit_targets.borrow_mut().insert(header, exit);
         Ok(exit)
@@ -5160,6 +5318,60 @@ impl PlanEmitter<'_> {
             .find(|(header, _)| *header == target)
             .or_else(|| self.loop_exits.iter().rev().find(|(exit, _)| *exit == target))
             .map(|(_, label_index)| *label_index)
+    }
+
+    fn predecessors(&self, block: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        let mut sources = Vec::new();
+        for candidate in &self.source_function.blocks {
+            if self.successors(candidate.id)?.contains(&block) {
+                sources.push(candidate.id);
+            }
+        }
+        Ok(sources)
+    }
+
+    fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if stops.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            pending.extend(self.successors(id)?);
+        }
+        Ok(seen)
+    }
+
+    /// A branch side that only leaves: its target is an escape, or every
+    /// path from it ends in an escape or a terminal block (the drop block on
+    /// a loop's exit edge) and it shares no block with the other side.
+    fn side_escapes(&self, current: crate::canonical_safewir::BlockId, side: crate::canonical_safewir::BlockId, other: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        if self.escape_label(side).is_some() {
+            return Ok(true);
+        }
+        let mut stops = self.escape_targets();
+        if stops.is_empty() || !self.all_paths_reach_or_terminate(side, &stops, &mut BTreeSet::new())? {
+            return Ok(false);
+        }
+        stops.push(current);
+        let reach = self.reachable_until(side, &stops)?;
+        // Every path must end at an escape: a side that can also return is
+        // a terminal side for `only_terminates` to judge, not an escape.
+        for block in &reach {
+            if self.is_terminal(*block)? {
+                return Ok(false);
+            }
+        }
+        let other_reach = self.reachable_until(other, &stops)?;
+        Ok(reach.is_disjoint(&other_reach))
+    }
+
+    fn escape_targets(&self) -> Vec<crate::canonical_safewir::BlockId> {
+        self.loops
+            .iter()
+            .map(|(header, _)| *header)
+            .chain(self.loop_exits.iter().map(|(exit, _)| *exit))
+            .collect()
     }
 
     fn reaches_avoiding(&self, start: crate::canonical_safewir::BlockId, goal: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
@@ -5212,8 +5424,8 @@ impl PlanEmitter<'_> {
         // Mirror of the encoder's rule: an escaping side is a plain `br` and
         // the other side's first block is where emission continues.
         match (
-            self.escape_label(then_target).is_some(),
-            self.escape_label(else_target).is_some(),
+            self.side_escapes(current, then_target, else_target)?,
+            self.side_escapes(current, else_target, then_target)?,
         ) {
             (true, true) => return Ok(None),
             (true, false) => return Ok(Some(else_target)),
@@ -5231,14 +5443,9 @@ impl PlanEmitter<'_> {
         let else_terminal = self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
-            // When one side only terminates (`if c: return x` then fall through),
-            // the other side's first block is itself the merge: the structured
-            // form is `if c { ... } else { } end` followed by that block.
-            if candidate == current
-                || self.escape_label(candidate).is_some()
-                || (candidate == then_target && !else_terminal)
-                || (candidate == else_target && !then_terminal)
-            {
+            // Mirror of the encoder's rule: a side's own first block can be
+            // the merge; loop headers and exits never are.
+            if candidate == current || self.escape_label(candidate).is_some() {
                 continue;
             }
             let then_distance = match then_distances.get(&candidate) {
