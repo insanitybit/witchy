@@ -8,7 +8,9 @@
 # exactly these tests and nothing else; `./scripts/check.sh --full` and
 # `WITCHY_GATE_DEFERRED=""` run them. A test that starts passing stays listed
 # until its family is admitted; remove it then. Never add a test here to hide a
-# defect in an admitted family.
+# defect in an admitted family. Every entry must name a binary that exists in
+# the committed tree: nextest refuses a filterset whose `binary_id(=...)`
+# matches nothing, so an untracked fixture's tests cannot be listed here.
 witchy performance_mode_tests::browser_compile_exports_a_pure_bytes_entrypoint
 witchy stats::tests::arbitrary_apply_var_call_forwards_capacity_without_reown
 witchy stats::tests::bounded_keyset_dict_cache_is_already_bounded
@@ -71,7 +73,6 @@ witchy-lower codegen::assembly::checked_codegen_boundary_tests::ready_int_channe
 witchy-lower codegen::assembly::checked_codegen_boundary_tests::scalar_channel_region_preserves_an_effectful_eager_prologue
 witchy-lower::codegen tests::dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter
 witchy-lower::codegen tests::forced_copy_dict_update_does_not_reference_an_ownership_token
-witchy-wir::canonical_owned_slot_storage owned_slot_accepts_reference_counted_child
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_env_reads_only_allow_listed_keys
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_exec_runs_only_allow_listed_tools
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_net_fetches_only_allow_listed_hosts

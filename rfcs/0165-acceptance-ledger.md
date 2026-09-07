@@ -184,8 +184,11 @@ no longer recognised the `--features witchy-wir/native` form of the covered
 `example_tests` command.
 
 **Decision.** The blocking gate is the whole workspace minus exactly the tests
-in `scripts/rfc0165-deferred-tests.txt` (352 entries, one `binary-id test-name`
-per line, generated from this run and reviewed class by class above). Every
+in `scripts/rfc0165-deferred-tests.txt` (351 entries, one `binary-id test-name`
+per line, generated from this run and reviewed class by class above; the
+preserved untracked fixture is not listed, because nextest refuses a filter
+naming a binary absent from the committed tree, which is exactly what the
+first gate attempt hit). Every
 one exercises a deferred language or platform family, optimizer statistics the
 optimizer-free route never produces, or a preserved fixture whose owner has not
 migrated it. `check.sh` excludes them by exact binary id and test name
