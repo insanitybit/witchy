@@ -430,6 +430,9 @@ fn real_std_hex_decode_agrees_with_oracle_and_admitted_wasm() {
 #[test]
 fn raw_base64_streaming_decoders_match_source_oracle_and_wasm() {
     let cases = [
+        ("encoding.base64_decode_bytes_raw", "", "${bytes.length(decoded)}", "0"),
+        ("encoding.base64_decode_bytes_raw", "=", "${bytes.length(decoded)}", "0"),
+        ("encoding.base64_decode_bytes_raw", "0123", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}:${bytes.at(decoded, 1)}:${bytes.at(decoded, 2)}", "3:211:93:183"),
         ("encoding.base64_decode_bytes_raw", "T", "${bytes.length(decoded)}", "0"),
         ("encoding.base64_decode_bytes_raw", "TQ@rest", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
         ("encoding.base64_decode_bytes_raw", "T=Q", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
@@ -526,5 +529,50 @@ fn raw_base64_streaming_decoders_match_source_oracle_and_wasm() {
         .expect("spawn admitted raw base64 fixture");
     vm.run().expect("Wasm runs raw base64 fixture");
     assert_eq!(vm.output(), native_output, "admitted Wasm must match audited native reference");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
+}
+
+#[test]
+fn checked_base64_wrappers_match_source_oracle_and_wasm() {
+    let source = r#"
+import encoding
+fn main(console: Console):
+    for encoded in ["TQ==", "TWE", "TWFu"]:
+        match encoding.base64_decode(encoded):
+            Ok(value) -> console.print(value)
+            Err(_) -> console.print("unexpected error")
+    match encoding.base64_decode("T@Q"):
+        Ok(_) -> console.print("unexpected success")
+        Err(_) -> console.print("invalid standard")
+    match encoding.base64url_decode("TQ"):
+        Ok(value) -> console.print(value)
+        Err(_) -> console.print("unexpected error")
+    match encoding.base64url_decode("TQ=="):
+        Ok(_) -> console.print("unexpected success")
+        Err(_) -> console.print("invalid url")
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("public Base64 source checks");
+    let expected = vec!["M", "Ma", "Man", "invalid standard", "M", "invalid url"];
+    let source_output = witchy::interpreter::run_module_args(
+        checked.module().clone(), ".", Vec::new(), Vec::new(),
+    ).expect("source interpreter runs public Base64 wrappers");
+    assert_eq!(source_output, expected, "public wrapper reference semantics");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("public Base64 wrappers admit");
+    let entry = artifact.entry().expect("public Base64 entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    let validated = codegen::validate_checked_module_for_oracle(&checked)
+        .expect("public Base64 wrappers validate for oracle");
+    let oracle = interpret_program(&validated, function, arguments, InterpreterConfig::default())
+        .expect("oracle runs public Base64 wrappers");
+    assert_eq!(oracle.output, source_output);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256,
+    ).expect("spawn admitted public Base64 wrappers");
+    vm.run().expect("Wasm runs public Base64 wrappers");
+    assert_eq!(vm.output(), source_output);
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
 }
