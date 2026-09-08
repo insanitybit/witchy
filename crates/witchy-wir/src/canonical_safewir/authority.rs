@@ -687,7 +687,7 @@ fn value_type_matches_source(
             // A scalar aggregate: one reference to a fixed layout whose slots
             // are exactly the shape's fields, in order.
             _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records))
             }),
         },
         // A dictionary is its canonical tuple of the key list and the value
@@ -696,12 +696,12 @@ fn value_type_matches_source(
             if matches!(name.as_str(), "Option" | "Result") || (name == "Dict" && arguments.len() == 2) =>
         {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records))
             })
         }
         witchy_syntax::ast::Type::Tuple(_) => {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, layouts, records))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records))
             })
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
@@ -734,6 +734,7 @@ fn value_type_matches_source(
 fn record_layout_matches(
     layout: crate::layout::LayoutId,
     fields: &[witchy_syntax::ast::Type],
+    nullable_fields: bool,
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
@@ -752,8 +753,9 @@ fn record_layout_matches(
                 },
                 // A string, list, tuple, or aggregate field lives behind an
                 // owned pointer slot whose pointee is that value's own layout.
-                _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::Owned }
-                    if layout_matches_source(*pointee, field, layouts, records)),
+                _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics }
+                    if *semantics == if nullable_fields { crate::layout::PointerSlot::OwnedNullable } else { crate::layout::PointerSlot::Owned }
+                        && layout_matches_source(*pointee, field, layouts, records)),
             }
         })
 }
@@ -769,7 +771,7 @@ fn layout_matches_source(
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
     // record of its shape's slots.
     if let Some(shape) = witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records) {
-        return record_layout_matches(layout, &shape.fields, layouts, records);
+        return record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records);
     }
     match source.unqualified() {
         witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
@@ -1106,6 +1108,33 @@ mod tests {
         let (module, adapter, target) = adapter_candidate(operations, terminator);
         let module = module.with_closure_layouts(BTreeMap::new());
         assert!(!adapter_shape_holds(&module, adapter, target));
+    }
+
+    #[test]
+    fn source_sum_nullable_fields_have_exact_canonical_slot_semantics() {
+        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
+        use witchy_syntax::ast::Type;
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = layouts.intern_runtime_buffer(byte).unwrap();
+        let source_string = Type::Named("String".into(), vec![]);
+        let sum = Type::Named("Option".into(), vec![source_string.clone()]);
+        let tuple = Type::Tuple(vec![Type::Named("Int".into(), vec![]), source_string]);
+        for semantics in [PointerSlot::Owned, PointerSlot::OwnedNullable, PointerSlot::Raw] {
+            let record = layouts.intern_runtime_pointer_value_slot(string, semantics)
+                .and_then(|slot| layouts.intern_packed_record(vec![int, slot]));
+            if semantics == PointerSlot::Raw {
+                assert!(record.is_err(), "raw ownership erasure must fail during layout construction");
+                continue;
+            }
+            let record = record.unwrap();
+            assert_eq!(layout_matches_source(record, &sum, &layouts, &BTreeMap::new()), semantics == PointerSlot::OwnedNullable);
+            assert_eq!(layout_matches_source(record, &tuple, &layouts, &BTreeMap::new()), semantics == PointerSlot::Owned);
+        }
+        let wrong = layouts.intern_runtime_pointer_value_slot(int, PointerSlot::OwnedNullable).unwrap();
+        let record = layouts.intern_packed_record(vec![int, wrong]).unwrap();
+        assert!(!layout_matches_source(record, &sum, &layouts, &BTreeMap::new()));
     }
 
     fn source() -> witchy_types::pipeline::CheckedModule {
