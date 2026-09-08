@@ -5204,15 +5204,17 @@ impl FunctionLowerer<'_> {
         let mut values = Vec::with_capacity(shape.fields.len());
         for (slot, field) in shape.fields.iter().enumerate() {
             let value = if shape.tagged && slot == 0 {
-                self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?
+                Some(self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?)
             } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
-                payload[slot - variant.first_field]
+                Some(payload[slot - variant.first_field])
+            } else if shape.tagged && matches!(self.field_value_type(field)?, ValueType::Ref(_)) {
+                None
             } else {
-                self.push_empty_value(field)?
+                Some(self.push_empty_value(field)?)
             };
             values.push(value);
         }
-        self.lower_heap_record(&shape.name, &shape.fields, values)
+        self.lower_heap_record_with_slots(&shape.name, &shape.fields, values, false, shape.tagged)
     }
 
     /// `lower_aggregate` whose reference payloads are fresh owned tokens the
@@ -5227,15 +5229,17 @@ impl FunctionLowerer<'_> {
         let mut values = Vec::with_capacity(shape.fields.len());
         for (slot, field) in shape.fields.iter().enumerate() {
             let value = if shape.tagged && slot == 0 {
-                self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?
+                Some(self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?)
             } else if slot >= variant.first_field && slot < variant.first_field + variant.arity {
-                payload[slot - variant.first_field]
+                Some(payload[slot - variant.first_field])
+            } else if shape.tagged && matches!(self.field_value_type(field)?, ValueType::Ref(_)) {
+                None
             } else {
-                self.push_empty_value(field)?
+                Some(self.push_empty_value(field)?)
             };
             values.push(value);
         }
-        self.lower_heap_record_with(&shape.name, &shape.fields, values, true)
+        self.lower_heap_record_with_slots(&shape.name, &shape.fields, values, true, shape.tagged)
     }
 
     fn push_zero(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
@@ -5533,7 +5537,7 @@ impl FunctionLowerer<'_> {
         field_types: &[Type],
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_heap_record_with(name, field_types, values, false)
+        self.lower_heap_record_with(name, field_types, values, false, false)
     }
 
     /// `lower_heap_record` for the kernels: `move_references` stores a
@@ -5546,8 +5550,32 @@ impl FunctionLowerer<'_> {
         field_types: &[Type],
         values: Vec<ValueId>,
         move_references: bool,
+        nullable_references: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let layout = aggregate_layout(field_types, self.layout_bundle, self.layouts, self.definitions)?;
+        self.lower_heap_record_with_slots(
+            name,
+            field_types,
+            values.into_iter().map(Some).collect(),
+            move_references,
+            nullable_references,
+        )
+    }
+
+    fn lower_heap_record_with_slots(
+        &mut self,
+        name: &str,
+        field_types: &[Type],
+        values: Vec<Option<ValueId>>,
+        move_references: bool,
+        nullable_references: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = aggregate_layout(
+            field_types,
+            nullable_references,
+            self.layout_bundle,
+            self.layouts,
+            self.definitions,
+        )?;
         let LayoutSize::Fixed(bytes) = self
             .layouts
             .get(layout)
@@ -5565,30 +5593,60 @@ impl FunctionLowerer<'_> {
         });
         for (index, (value, field_type)) in values.into_iter().zip(field_types).enumerate() {
             let expected = self.field_value_type(field_type)?;
-            let actual = self.values[&value];
-            if actual != expected {
-                return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
-                    callee: name.to_owned(), parameter: index, expected, actual,
-                });
+            let place = witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Field { index: u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)? },
+                expected,
+                AccessMode::Write,
+            );
+            match value {
+                Some(value) => {
+                    let actual = self.values[&value];
+                    if actual != expected {
+                        return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                            callee: name.to_owned(), parameter: index, expected, actual,
+                        });
+                    }
+                    let reference = matches!(expected, ValueType::Ref(_));
+                    let value = if reference && !move_references {
+                        self.owned_for_storage(value, field_type)?
+                    } else {
+                        value
+                    };
+                    self.push_operation(Operation::Store {
+                        place,
+                        value,
+                        transfer: if reference {
+                            witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+                        } else {
+                            witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+                        },
+                    });
+                }
+                None if matches!(expected, ValueType::Ref(_)) && nullable_references => {
+                    self.push_operation(Operation::InitNullableOwned { place });
+                }
+                None => {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("nullable scalar aggregate slot"));
+                }
             }
-            let reference = matches!(expected, ValueType::Ref(_));
-            let value = if reference && !move_references { self.owned_for_storage(value, field_type)? } else { value };
-            self.push_operation(Operation::Store {
-                place: witchy_wir::canonical_safewir::Place::projected(
-                    object,
-                    Projection::Field { index: u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)? },
-                    expected,
-                    AccessMode::Write,
-                ),
-                value,
-                transfer: if reference {
-                    witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-                } else {
-                    witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-                },
-            });
         }
         Ok(object)
+    }
+
+    fn is_nullable_record_field(&self, object: ValueId, index: u32) -> bool {
+        let Some(ValueType::Ref(layout)) = self.values.get(&object) else { return false };
+        let Some(descriptor) = self.layouts.get(*layout) else { return false };
+        let Some(field) = descriptor.fields().get(index as usize) else { return false };
+        match field.kind() {
+            witchy_wir::layout::FieldKind::Pointer { slot: PointerSlot::OwnedNullable, .. } => true,
+            witchy_wir::layout::FieldKind::Inline(slot) => self.layouts.get(slot).is_some_and(|layout| {
+                matches!(layout.kind(), LayoutKind::RuntimePointerValueSlot {
+                    semantics: PointerSlot::OwnedNullable, ..
+                })
+            }),
+            _ => false,
+        }
     }
 
     fn load_record_field(
@@ -5608,7 +5666,9 @@ impl FunctionLowerer<'_> {
             ),
             // A reference field yields a shared clone; the object keeps its
             // own token.
-            transfer: if matches!(value_type, ValueType::Ref(_)) {
+            transfer: if self.is_nullable_record_field(object, index) {
+                witchy_wir::canonical_safewir::LoadTransfer::ClonePresent
+            } else if matches!(value_type, ValueType::Ref(_)) {
                 witchy_wir::canonical_safewir::LoadTransfer::CloneShared
             } else {
                 witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
@@ -6031,7 +6091,13 @@ impl FunctionLowerer<'_> {
                 let some_tag = self.push_const_int(i64::try_from(some_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
                 let none_tag = self.push_const_int(i64::try_from(none_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
                 let tag = self.lower_int_select(present, some_tag, none_tag)?;
-                let record = self.lower_heap_record_with(&shape.name, &shape.fields, vec![tag, joined[0]], true)?;
+                let record = self.lower_heap_record_with(
+                    &shape.name,
+                    &shape.fields,
+                    vec![tag, joined[0]],
+                    true,
+                    shape.tagged,
+                )?;
                 Ok(Some(record))
             }
             _ => Err(CanonicalLoweringError::UnsupportedExpression("capability operation")),
@@ -10499,7 +10565,7 @@ fn source_value_type(
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
         // the ABI does not carry (`scalar_type` refuses it below).
-        return aggregate_layout(&shape.fields, layout_bundle, layouts, definitions).map(ValueType::Ref);
+        return aggregate_layout(&shape.fields, shape.tagged, layout_bundle, layouts, definitions).map(ValueType::Ref);
     }
     match source.unqualified() {
         // A `fn` value is a closure record.
@@ -10537,6 +10603,7 @@ fn source_value_type(
 /// scalar in its slot, a string or list behind an owned pointer slot.
 fn aggregate_layout(
     expected_fields: &[Type],
+    nullable_references: bool,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     definitions: &BTreeMap<String, TypeDef>,
@@ -10554,7 +10621,7 @@ fn aggregate_layout(
                     list_layout(field, layout_bundle, layouts, definitions)?.0
                 }
                 _ => match scalar_aggregate_shape(field, definitions) {
-                    Some(shape) if !shape.packed => aggregate_layout(&shape.fields, layout_bundle, layouts, definitions)?,
+                    Some(shape) if !shape.packed => aggregate_layout(&shape.fields, shape.tagged, layout_bundle, layouts, definitions)?,
                     _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
                 },
             };
@@ -10575,10 +10642,12 @@ fn aggregate_layout(
                 (Some(LayoutKind::Scalar(ScalarKind::Float)), Some(ValueType::Float), None) => true,
                 (Some(LayoutKind::Scalar(ScalarKind::Bool)), Some(ValueType::Bool), None) => true,
                 (
-                    Some(LayoutKind::RuntimePointerValueSlot { pointee: actual, semantics: PointerSlot::Owned }),
+                    Some(LayoutKind::RuntimePointerValueSlot { pointee: actual, semantics }),
                     None,
                     Some(pointee),
-                ) => actual == pointee,
+                ) => actual == pointee
+                    && (*semantics == PointerSlot::Owned
+                        || (nullable_references && *semantics == PointerSlot::OwnedNullable)),
                 _ => false,
             }
         });
@@ -10996,7 +11065,7 @@ fn list_layout(
         // lives behind an owned pointer slot to its record layout.
         _ => match scalar_aggregate_shape(&arguments[0], definitions) {
             Some(shape) if !shape.packed => {
-                ValueType::Ref(aggregate_layout(&shape.fields, layout_bundle, layouts, definitions)?)
+                ValueType::Ref(aggregate_layout(&shape.fields, shape.tagged, layout_bundle, layouts, definitions)?)
             }
             _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
         },

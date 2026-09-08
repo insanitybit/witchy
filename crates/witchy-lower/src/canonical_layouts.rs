@@ -453,7 +453,14 @@ fn intern_v1_layout_fields(
             } else {
                 let pointee = intern_v1_layout_checked(interner, field, definitions, active)?;
                 interner
-                    .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
+                    .intern_runtime_pointer_value_slot(
+                        pointee,
+                        if shape.tagged {
+                            PointerSlot::OwnedNullable
+                        } else {
+                            PointerSlot::Owned
+                        },
+                    )
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
             };
             children.push(child);

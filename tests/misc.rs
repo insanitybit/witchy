@@ -93,3 +93,5 @@ mod rfc0165_oracle;
 mod rfc0165_corpus;
 #[path = "misc/rfc0165_encoding.rs"]
 mod rfc0165_encoding;
+#[path = "misc/rfc0165_nullable_source.rs"]
+mod rfc0165_nullable_source;
