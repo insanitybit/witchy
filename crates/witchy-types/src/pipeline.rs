@@ -1266,11 +1266,11 @@ mod tests {
         assert!(is_canonical_entry_function(None, "anything"));
     }
 
-    /// A rights-qualified capability parameter is outside the canonical ABI
-    /// encoding today. The program is valid, so it checks; the manifest binds
-    /// nothing and the limit is a digest-bound obligation.
+    /// A rights-qualified capability parameter is inside the canonical ABI
+    /// (RFC-0165 slice 42): the rights are encoded by name, so the program
+    /// binds its manifest and records no callable-ABI obligation.
     #[test]
-    fn checked_source_records_callable_abi_limits_as_obligations() {
+    fn checked_source_binds_rights_qualified_capability_parameters() {
         let checked = link_checked_from_source_bundle(
             vec![(
                 "main".to_string(),
@@ -1279,15 +1279,15 @@ mod tests {
             "main",
             no_expand,
         )
-        .expect("a valid program with a rights-qualified capability still checks");
+        .expect("a valid program with a rights-qualified capability checks");
         let canonical = checked.canonical_source().expect("canonical source");
         assert!(
-            canonical.obligations().iter().any(|obligation| matches!(obligation, CanonicalObligation::CallableAbi(_))),
+            !canonical.obligations().iter().any(|obligation| matches!(obligation, CanonicalObligation::CallableAbi(_))),
             "{:?}",
             canonical.obligations()
         );
-        assert!(canonical.callable_abi_manifest().entries().is_empty(), "no partial inventory is bound");
-        assert!(canonical.closed_callable_abi("main").is_none());
+        assert!(canonical.closed_callable_abi("main").is_some(), "the entry binds its callable ABI");
+        assert!(!canonical.callable_abi_manifest().entries().is_empty(), "the inventory is bound");
     }
 
     /// The entry scope decides strictness: a bodyless instance inside it is a

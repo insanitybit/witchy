@@ -100,6 +100,39 @@ impl InterpreterValue {
 pub struct OracleFixture {
     pub files: BTreeMap<String, Vec<u8>>,
     pub environment: BTreeMap<String, String>,
+    /// A directory the oracle reads when a path is not in `files` (the
+    /// parity third leg runs against the same root the backend was granted);
+    /// writes stay in `files`, so a program sees its own writes first.
+    pub root: Option<std::path::PathBuf>,
+    /// Consult the process environment for a name not in `environment`.
+    pub process_environment: bool,
+}
+
+impl OracleFixture {
+    fn file(&self, path: &str) -> Option<Vec<u8>> {
+        if let Some(contents) = self.files.get(path) {
+            return Some(contents.clone());
+        }
+        let root = self.root.as_ref()?;
+        std::fs::read(root.join(path)).ok()
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        let prefix = format!("{path}/");
+        self.files.contains_key(path)
+            || self.files.keys().any(|name| name.starts_with(&prefix))
+            || self.root.as_ref().is_some_and(|root| root.join(path).exists())
+    }
+
+    fn variable(&self, name: &str) -> Option<String> {
+        if let Some(value) = self.environment.get(name) {
+            return Some(value.clone());
+        }
+        if self.process_environment {
+            return std::env::var(name).ok();
+        }
+        None
+    }
 }
 
 /// The observable outcome of running a program entry to completion.
@@ -667,13 +700,7 @@ impl<'a> Engine<'a> {
             ) => {
                 let scope = self.capability_scope(token, DIR_KIND, values)?;
                 let path = self.host_path(&scope, &self.host_string(path, values)?)?;
-                let contents = self
-                    .config
-                    .fixture
-                    .files
-                    .get(&path)
-                    .cloned()
-                    .ok_or(InterpretError::ExplicitTrap)?;
+                let contents = self.config.fixture.file(&path).ok_or(InterpretError::ExplicitTrap)?;
                 let length = self.fill_host_buffer(out, &contents, values)?;
                 values.insert(*destination, InterpreterValue::Size(length));
                 Ok(())
@@ -681,9 +708,7 @@ impl<'a> Engine<'a> {
             ("dir_exists_at", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
                 let scope = self.capability_scope(token, DIR_KIND, values)?;
                 let path = self.host_path(&scope, &self.host_string(path, values)?)?;
-                let prefix = format!("{path}/");
-                let exists = self.config.fixture.files.contains_key(&path)
-                    || self.config.fixture.files.keys().any(|name| name.starts_with(&prefix));
+                let exists = self.config.fixture.exists(&path);
                 values.insert(*destination, InterpreterValue::Size(u64::from(exists)));
                 Ok(())
             }
@@ -707,7 +732,7 @@ impl<'a> Engine<'a> {
             ("env_has_var", [token, HostCallArgument::Buffer { place: name, .. }], [destination]) => {
                 let _ = self.capability_scope(token, ENV_KIND, values)?;
                 let name = self.host_string(name, values)?;
-                let present = self.config.fixture.environment.contains_key(&name);
+                let present = self.config.fixture.variable(&name).is_some();
                 values.insert(*destination, InterpreterValue::Size(u64::from(present)));
                 Ok(())
             }
@@ -718,13 +743,7 @@ impl<'a> Engine<'a> {
             ) => {
                 let _ = self.capability_scope(token, ENV_KIND, values)?;
                 let name = self.host_string(name, values)?;
-                let value = self
-                    .config
-                    .fixture
-                    .environment
-                    .get(&name)
-                    .cloned()
-                    .ok_or(InterpretError::ExplicitTrap)?;
+                let value = self.config.fixture.variable(&name).ok_or(InterpretError::ExplicitTrap)?;
                 let length = self.fill_host_buffer(out, value.as_bytes(), values)?;
                 values.insert(*destination, InterpreterValue::Size(length));
                 Ok(())

@@ -433,7 +433,8 @@ pub fn lower_typed_module(
     let mut host_imports = HostImports::default();
     let prints = contains_console_print(typed.module());
     let floats = renders_float(typed.module(), typed.table(), &definitions);
-    if prints || floats {
+    let capability_imports = collect_capability_imports(typed.module(), typed.table());
+    if prints || floats || !capability_imports.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -478,18 +479,70 @@ pub fn lower_typed_module(
                 parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
             },
         });
-        let catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, float_signature_id, string_layout)
+        let mut catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, float_signature_id, string_layout)
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        if !capability_imports.is_empty() {
+            let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
+            let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
+            let text = ValueType::Ref(string_layout);
+            let mut push_import_signature = |parameters: Vec<ValueType>, results: Vec<ValueType>, writes: Option<usize>| {
+                let id = FunctionSignatureId::new(
+                    u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                );
+                let mut parameter_effects = BTreeMap::new();
+                for (index, parameter) in parameters.iter().enumerate() {
+                    if matches!(parameter, ValueType::Ref(_)) {
+                        let effect = if writes == Some(index) { MemoryEffect::Write } else { MemoryEffect::Read };
+                        parameter_effects.insert(u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, vec![effect]);
+                    }
+                }
+                signatures.push(FunctionSignature {
+                    id,
+                    parameters: parameters.clone(),
+                    results: results.clone(),
+                    contract: CallableContract {
+                        // Host buffer roles, not callable ownership, authorize
+                        // each import's slice access.
+                        parameters: parameters
+                            .iter()
+                            .map(|value_type| ParameterContract { value_type: *value_type, ownership: ParameterOwnership::Value })
+                            .collect(),
+                        results: results.iter().map(|result| ResultContract::Value(*result)).collect(),
+                        parameter_effects,
+                    },
+                });
+                Ok::<_, CanonicalLoweringError>(id)
+            };
+            let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
+                dir_read_into: push_import_signature(vec![dir, text, text], vec![ValueType::Size], Some(2))?,
+                dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
+                dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
+                env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
+                env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
+            };
+            catalog = catalog
+                .with_capability_imports(capability_signatures, string_layout)
+                .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
         let projected = catalog
             .imports()
             .into_iter()
-            .filter(|import| (import.name == "print" && prints) || (import.name == "float_to_str" && floats))
+            .filter(|import| {
+                (import.name == "print" && prints)
+                    || (import.name == "float_to_str" && floats)
+                    || capability_imports.contains(import.name.as_str())
+            })
             .collect::<Vec<_>>();
         host_imports = HostImports {
             print: projected.iter().find(|import| import.name == "print").map(|import| import.id),
             float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
+            capabilities: CAPABILITY_IMPORTS
+                .iter()
+                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
+                .collect(),
         };
         imports = projected;
         abi_catalog = Some(catalog);
@@ -526,7 +579,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &string_data_ids,
-            host_imports,
+            &host_imports,
             &packed_records,
             &definitions,
             &closure_context,
@@ -570,7 +623,7 @@ pub fn lower_typed_module(
             &layouts,
             &layout_catalog,
             &string_data_ids,
-            host_imports,
+            &host_imports,
             &packed_records,
             &definitions,
             &closure_context,
@@ -1051,7 +1104,7 @@ fn lower_function(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
-    host_imports: HostImports,
+    host_imports: &HostImports,
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
     closures: &ClosureContext,
@@ -1398,7 +1451,7 @@ struct FunctionLowerer<'a> {
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
-    host_imports: HostImports,
+    host_imports: &'a HostImports,
     closures: &'a ClosureContext,
     packed_records: &'a HashMap<String, &'a TypeDef>,
     /// Every type definition, keyed by bare and entry-qualified names; the
@@ -1488,6 +1541,12 @@ impl FunctionLowerer<'_> {
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
                             return Ok(());
                         }
+                        if is_capability_op(name) {
+                            let value = self.lower_capability_op(name, args)?;
+                            let terminator = self.return_value(value, results)?;
+                            self.finish_current(terminator)?;
+                            return Ok(());
+                        }
                         // A call by a name that is neither a binding nor a
                         // canonical function is an intrinsic the expression
                         // lowering handles (`int_to_duration`, `math.sqrt`):
@@ -1563,6 +1622,12 @@ impl FunctionLowerer<'_> {
                             }
                             self.lower_console_print(args)?;
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
+                        if is_capability_op(name) {
+                            let value = self.lower_capability_op(name, args)?;
+                            let terminator = self.return_value(value, results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         // A call by a name that is neither a binding nor a
@@ -1663,6 +1728,13 @@ impl FunctionLowerer<'_> {
             Expr::For { var, iter, body } => self.lower_for(var, iter, body),
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
+            // A capability operation in statement position: `dir.write` has
+            // no value; a value-bearing one is released like any other
+            // discarded result.
+            Expr::Call { name, args } if is_capability_op(name) => {
+                self.lower_capability_op(name, args)?;
+                Ok(())
+            }
             // `fail(msg)` aborts on every backend: the message is evaluated
             // and the block traps. It must be the block's last statement.
             Expr::Call { name, args } if name == "fail" => {
@@ -4734,6 +4806,9 @@ impl FunctionLowerer<'_> {
                 self.ensure_list_extent(value)?;
                 Ok(value)
             }
+            Expr::Call { name, args } if is_capability_op(name) => self
+                .lower_capability_op(name, args)?
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("capability operation without a value")),
             Expr::Call { name, args } if is_console_print(name) => Err(
                 CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
             ),
@@ -5790,6 +5865,224 @@ impl FunctionLowerer<'_> {
         });
         Ok(())
     }
+
+    /// A capability operation on a `Dir` or `Env` receiver as its host call
+    /// (RFC-0165 slice 42). The token is passed as a capability argument;
+    /// strings cross as checked slices; a read lands in a guest-owned buffer
+    /// whose published length is bounded by the buffer's own capacity.
+    fn lower_capability_op(&mut self, name: &str, arguments: &[Expr]) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some(receiver) = arguments.first() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("capability operation receiver"));
+        };
+        let receiver_kind = match self.expression_type(receiver)?.unqualified() {
+            Type::Named(kind, _) if kind == "Dir" => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
+            Type::Named(kind, arguments) if kind == "Env" && arguments.is_empty() => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("capability operation receiver")),
+        };
+        let token = self.lower_expr(receiver)?;
+        if self.values[&token] != ValueType::Capability(receiver_kind) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("capability operation token"));
+        }
+        let layout = self.string_layout_id()?;
+        match (name, receiver_kind == witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND, &arguments[1..]) {
+            ("__capop.read", true, [path]) => {
+                let path = self.lower_string_argument(path)?;
+                let value = self.lower_host_read_into("dir_read_into", token, path)?;
+                Ok(Some(value))
+            }
+            ("__capop.exists", true, [path]) => {
+                let path = self.lower_string_argument(path)?;
+                let import = self.capability_import("dir_exists_at")?;
+                let flag = self.fresh(ValueType::Size)?;
+                let path_slice = self.string_slice_argument(path, layout)?;
+                self.push_operation(Operation::HostCall {
+                    destinations: vec![flag],
+                    import,
+                    arguments: vec![HostCallArgument::Capability(token), path_slice],
+                });
+                let zero = self.push_const_size(0)?;
+                let exists = self.push_compare(ComparisonOperator::NotEqual, flag, zero)?;
+                Ok(Some(exists))
+            }
+            ("__capop.write", true, [path, data]) => {
+                let path = self.lower_string_argument(path)?;
+                let data = self.lower_string_argument(data)?;
+                let import = self.capability_import("dir_write_at")?;
+                let path_slice = self.string_slice_argument(path, layout)?;
+                let data_slice = self.string_slice_argument(data, layout)?;
+                self.push_operation(Operation::HostCall {
+                    destinations: Vec::new(),
+                    import,
+                    arguments: vec![HostCallArgument::Capability(token), path_slice, data_slice],
+                });
+                Ok(None)
+            }
+            ("__capop.subtree", true, [path]) => {
+                let path = self.lower_string_argument(path)?;
+                let import = self.capability_import("dir_subtree_at")?;
+                let narrowed = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND))?;
+                let path_slice = self.string_slice_argument(path, layout)?;
+                self.push_operation(Operation::HostCall {
+                    destinations: vec![narrowed],
+                    import,
+                    arguments: vec![HostCallArgument::Capability(token), path_slice],
+                });
+                Ok(Some(narrowed))
+            }
+            ("__capop.get_env", false, [variable]) => {
+                let variable = self.lower_string_argument(variable)?;
+                let has_import = self.capability_import("env_has_var")?;
+                let flag = self.fresh(ValueType::Size)?;
+                let name_slice = self.string_slice_argument(variable, layout)?;
+                self.push_operation(Operation::HostCall {
+                    destinations: vec![flag],
+                    import: has_import,
+                    arguments: vec![HostCallArgument::Capability(token), name_slice],
+                });
+                let zero = self.push_const_size(0)?;
+                let present = self.push_compare(ComparisonOperator::NotEqual, flag, zero)?;
+                // The value is read only when present; the other arm carries
+                // an empty string, which is also what the `None` payload slot
+                // holds. The tag is selected, so one record serves both arms.
+                let facts = self.snapshot_facts();
+                let read_block = self.new_block(&[])?;
+                let absent_block = self.new_block(&[])?;
+                let join = self.new_block_owned(&[
+                    (ValueType::Ref(layout), Some(Ownership::Unique)),
+                    (ValueType::Size, None),
+                    (ValueType::Size, None),
+                ])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: present,
+                    then_target: read_block,
+                    then_arguments: Vec::new(),
+                    else_target: absent_block,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = read_block;
+                let value = self.lower_host_read_into("env_get_into", token, variable)?;
+                let (lanes, _) = self.accumulator_lanes(value)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+                self.current = absent_block;
+                self.restore_snapshot(facts.clone());
+                let empty = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
+                let (lanes, _) = self.accumulator_lanes(empty)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+                self.restore_facts(facts, join);
+                self.current = join;
+                let joined = self.block_parameter_values(join);
+                self.track_accumulator_lanes(&joined);
+                let option_type = Type::Named("Option".into(), vec![Type::Named("String".into(), Vec::new())]);
+                let shape = scalar_aggregate_shape(&option_type, self.definitions)
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("Option(String) shape"))?;
+                let (some_index, _) = shape.variant("Some").ok_or(CanonicalLoweringError::MissingBinding("Some".into()))?;
+                let (none_index, _) = shape.variant("None").ok_or(CanonicalLoweringError::MissingBinding("None".into()))?;
+                let some_tag = self.push_const_int(i64::try_from(some_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                let none_tag = self.push_const_int(i64::try_from(none_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                let tag = self.lower_int_select(present, some_tag, none_tag)?;
+                let record = self.lower_heap_record_with(&shape.name, &shape.fields, vec![tag, joined[0]], true)?;
+                Ok(Some(record))
+            }
+            _ => Err(CanonicalLoweringError::UnsupportedExpression("capability operation")),
+        }
+    }
+
+    fn capability_import(&self, name: &str) -> Result<witchy_wir::canonical_safewir::ImportId, CanonicalLoweringError> {
+        self.host_imports.capabilities.get(name).copied().ok_or_else(|| {
+            CanonicalLoweringError::InvalidAuthenticatedAbiCatalog(format!("{name} has no projected ABI import"))
+        })
+    }
+
+    /// A string-typed operand of a capability operation, as a string value.
+    fn lower_string_argument(&mut self, argument: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        if !Self::is_string_type(&self.expression_type(argument)?) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("capability operation string argument"));
+        }
+        let value = self.lower_expr(argument)?;
+        self.ensure_string_extent(value)?;
+        Ok(value)
+    }
+
+    /// The whole logical body of a string as a read slice host argument.
+    fn string_slice_argument(&mut self, object: ValueId, layout: witchy_wir::layout::LayoutId) -> Result<HostCallArgument, CanonicalLoweringError> {
+        let length = self.string_length_of(object)?;
+        let start = self.push_const_size(0)?;
+        Ok(HostCallArgument::Buffer {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Slice { start, length },
+                ValueType::Ref(layout),
+                AccessMode::Read,
+            ),
+            extent: HostBufferExtent::Slice,
+        })
+    }
+
+    /// A bounded host read (`dir_read_into`, `env_get_into`) into a fresh
+    /// guest buffer: the host is first asked with an empty buffer for the
+    /// full length, a buffer of that length is allocated, and the host is
+    /// asked again; the published length is the second answer bounded by the
+    /// buffer's capacity, never the first answer (the source may change
+    /// between the two calls).
+    fn lower_host_read_into(&mut self, import_name: &str, token: ValueId, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let import = self.capability_import(import_name)?;
+        let zero = self.push_const_size(0)?;
+        let probe = self.alloc_bytes(zero, zero)?;
+        let key_slice = self.string_slice_argument(key, layout)?;
+        let full = self.fresh(ValueType::Size)?;
+        let probe_capacity = self.string_capacities[&probe];
+        self.push_operation(Operation::HostCall {
+            destinations: vec![full],
+            import,
+            arguments: vec![
+                HostCallArgument::Capability(token),
+                key_slice,
+                HostCallArgument::Buffer {
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        probe,
+                        Projection::Slice { start: zero, length: probe_capacity },
+                        ValueType::Ref(layout),
+                        AccessMode::Write,
+                    ),
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+        });
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::MoveValue { destination: capacity, source: full });
+        let object = self.alloc_bytes(full, capacity)?;
+        let key_slice = self.string_slice_argument(key, layout)?;
+        let written = self.fresh(ValueType::Size)?;
+        let start = self.push_const_size(0)?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![written],
+            import,
+            arguments: vec![
+                HostCallArgument::Capability(token),
+                key_slice,
+                HostCallArgument::Buffer {
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        object,
+                        Projection::Slice { start, length: capacity },
+                        ValueType::Ref(layout),
+                        AccessMode::Write,
+                    ),
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+        });
+        // The published length is the second answer under the buffer's own
+        // capacity guard: a source that grew between the two calls aborts
+        // loudly rather than publishing a truncated read.
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, written, capacity)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::UpdateCount { object, count: written });
+        self.string_lengths.insert(object, written);
+        self.string_capacities.insert(object, capacity);
+        Ok(object)
+    }
+
 
     fn lower_list_literal(
         &mut self,
@@ -9739,6 +10032,12 @@ fn source_value_type(
         Type::Named(name, arguments) if name == "Console" && arguments.is_empty() => {
             Ok(ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)))
         }
+        // A `Dir` token of any rights (`Dir[Read]`, `Dir[Write]`) is kind 1;
+        // the rights live in the host's authority object. `Env` is kind 2.
+        Type::Named(name, _) if name == "Dir" => Ok(ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND)),
+        Type::Named(name, arguments) if name == "Env" && arguments.is_empty() => {
+            Ok(ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND))
+        }
         _ => scalar_type(source),
     }
 }
@@ -9892,10 +10191,58 @@ fn string_layout(
 
 /// The prelude imports the canonical ABI catalog projected for this module,
 /// by the role the lowering reaches them through.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct HostImports {
     print: Option<witchy_wir::canonical_safewir::ImportId>,
     float_to_str: Option<witchy_wir::canonical_safewir::ImportId>,
+    /// The capability imports (RFC-0165 slice 42), keyed by import name.
+    capabilities: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
+}
+
+/// The canonical capability imports, in catalog order.
+const CAPABILITY_IMPORTS: [&str; 6] =
+    ["dir_read_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "env_has_var", "env_get_into"];
+
+/// Whether `name` is a capability operation this lowering admits on a `Dir`
+/// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
+/// `env.get_env`).
+fn is_capability_op(name: &str) -> bool {
+    matches!(name, "__capop.read" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.get_env")
+}
+
+/// The imports the canonical functions' capability operations reach.
+fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeTable) -> BTreeSet<&'static str> {
+    let scope = witchy_types::pipeline::canonical_scope(module);
+    let mut needed = BTreeSet::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) { continue; }
+        witchy_syntax::ast::visit::visit_block::<()>(&function.body, &mut |expression| {
+            if let Expr::Call { name, args } = expression
+                && is_capability_op(name)
+                && let Some(receiver) = args.first()
+                && let Some(ty) = table.type_of(receiver).and_then(witchy_types::typeck::ty_to_ast)
+            {
+                let receiver = match ty.unqualified() {
+                    Type::Named(receiver, _) => receiver.as_str(),
+                    _ => "",
+                };
+                match (name.as_str(), receiver) {
+                    ("__capop.read", "Dir") => { needed.insert("dir_read_into"); }
+                    ("__capop.exists", "Dir") => { needed.insert("dir_exists_at"); }
+                    ("__capop.write", "Dir") => { needed.insert("dir_write_at"); }
+                    ("__capop.subtree", "Dir") => { needed.insert("dir_subtree_at"); }
+                    ("__capop.get_env", "Env") => {
+                        needed.insert("env_has_var");
+                        needed.insert("env_get_into");
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }).expect("capability import visitor cannot fail");
+    }
+    needed
 }
 
 /// Whether any canonical source function renders a `Float`, which reaches

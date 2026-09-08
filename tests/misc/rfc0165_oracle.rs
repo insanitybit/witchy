@@ -18,12 +18,35 @@ fn oracle(source: &str, label: &str) {
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
     let validated = codegen::validate_checked_module_for_oracle(&checked).unwrap_or_else(|e| panic!("{label}: {e}"));
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
-    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 20_000_000_000, ..Default::default() })
+    // The oracle and the runtime both see the working directory and the
+    // process environment (the dev grants `witchy run` derives), so an
+    // example with `Dir`/`Env` parameters runs on both legs.
+    let config = InterpreterConfig {
+        max_steps: 20_000_000_000,
+        fixture: witchy_wir::canonical_interpreter::OracleFixture {
+            root: Some(std::path::PathBuf::from(".")),
+            process_environment: true,
+            ..Default::default()
+        },
+    };
+    let run = interpret_program(&validated, function, arguments, config)
         .unwrap_or_else(|e| panic!("{label}: oracle refused: {e:?}"));
 
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime
-        .spawn_admitted(&artifact, Capabilities { print: true, print_int: true, quiet: true, ..Default::default() }, 256)
+        .spawn_admitted(
+            &artifact,
+            Capabilities {
+                print: true,
+                print_int: true,
+                quiet: true,
+                env: true,
+                dir_root: Some(std::path::PathBuf::from(".")),
+                dir_read: true,
+                ..Default::default()
+            },
+            256,
+        )
         .expect("spawn admitted artifact");
     vm.run().unwrap_or_else(|e| panic!("{label}: wasm run failed: {e}"));
     let mut wasm_lines = vm.output();

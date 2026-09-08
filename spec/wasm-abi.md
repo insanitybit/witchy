@@ -276,6 +276,12 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `heap_unregister` | `(i32)` | runtime diagnostic | none | omitted |
 | `heap_frontier` | `(i32)` | runtime diagnostic | none | omitted |
 | `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |
+| `dir_read_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_exists_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
+| `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
+| `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

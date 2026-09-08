@@ -697,7 +697,17 @@ fn safewir_oracle_agrees(
         .map(witchy_wir::canonical_safewir::FunctionId::new)
         .ok_or_else(|| format!("entry export `{}` names no canonical function", entry.export()))?;
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
-    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 20_000_000_000, ..Default::default() });
+    let run = interpret_program(&validated, function, arguments, InterpreterConfig {
+        max_steps: 20_000_000_000,
+        // The third leg reads the same root the backend was granted (dev
+        // grants: the working directory and the process environment); its
+        // own writes stay in the fixture.
+        fixture: witchy_wir::canonical_interpreter::OracleFixture {
+            root: Some(std::path::PathBuf::from(".")),
+            process_environment: true,
+            ..Default::default()
+        },
+    });
     match (run, compiled) {
         (Ok(run), Ok(lines)) => {
             if run.output != *lines {

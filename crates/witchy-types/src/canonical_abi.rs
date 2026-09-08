@@ -497,6 +497,21 @@ fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), C
             };
             bytes.extend_from_slice(&tag.to_le_bytes());
             put_len(bytes, args.len());
+            if is_capability_name(name) {
+                // A capability's type arguments are its rights (`Dir[Read]`),
+                // names rather than types: encode each by name.
+                for arg in args {
+                    let Type::Named(right, inner) = arg.unqualified() else {
+                        return Err(CanonicalAbiError::Unsupported(format!("capability right `{arg:?}` is not a name")));
+                    };
+                    if !inner.is_empty() {
+                        return Err(CanonicalAbiError::Unsupported(format!("capability right `{arg:?}` carries arguments")));
+                    }
+                    put_len(bytes, right.len());
+                    bytes.extend_from_slice(right.as_bytes());
+                }
+                return Ok(());
+            }
             for arg in args { encode_ast(arg, context, bytes)?; }
         }
         Type::Tuple(items) => { bytes.push(1); put_len(bytes, items.len()); for item in items { encode_ast(item, context, bytes)?; } }

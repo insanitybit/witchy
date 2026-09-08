@@ -268,6 +268,7 @@ fn fixture(files: &[(&str, &[u8])], environment: &[(&str, &str)]) -> Interpreter
                 .iter()
                 .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
                 .collect(),
+            ..Default::default()
         },
         ..Default::default()
     }

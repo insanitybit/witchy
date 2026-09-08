@@ -908,3 +908,149 @@ fn admitted_bytes_out_of_range_index_value_and_count_trap() {
     let output = run_admitted("import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    var c = bytes.with_capacity(9223372036854775807)\n    c.reserve(9223372036854775807)\n    console.print(\"${b.at(2)} ${b.slice(1, 3).length()} ${c.length()}\")\n");
     assert_eq!(output, vec!["1 2 0".to_string()]);
 }
+
+/// Run an admitted program with `Dir` and `Env` grants beside the console.
+fn run_admitted_with_grants(source: &str, capabilities: Capabilities) -> Result<Vec<String>, String> {
+    let checked = witchy::resolve_std_only_checked(source).expect("fixture checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("the foundation subset admits this fixture");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact, capabilities, 256)
+        .map_err(|error| error.to_string())?;
+    match vm.run() {
+        Ok(()) => Ok(vm.output()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("witchy-rfc0165-{tag}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    dir
+}
+
+#[test]
+fn admitted_dir_read_exists_write_and_subtree_go_through_bounded_host_calls() {
+    // A `Dir` token is an externref minted by the launcher from the grant;
+    // `read` lands in a guest buffer (`to_upper` is ASCII-only, so `é` keeps its case); whose published length is bounded by
+    // the buffer's own capacity, `exists`/`write`/`subtree` cross as checked
+    // slices. The expected result is the directory's contents, independent
+    // of either backend.
+    let root = scratch_dir("dir");
+    std::fs::create_dir_all(root.join("notes")).expect("subdir");
+    std::fs::write(root.join("greeting.txt"), "héllo, dir").expect("seed file");
+    std::fs::write(root.join("notes/todo.txt"), "a\nb\n").expect("seed file");
+    let output = run_admitted_with_grants(
+        "fn shout(dir: Dir[Read], name: String) -> String:\n    dir.read(name).to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\"))\n    console.print(\"${dir.exists(\"greeting.txt\")} ${dir.exists(\"missing.txt\")} ${dir.read(\"greeting.txt\").length()}\")\n    let notes = dir.subtree(\"notes\")\n    console.print(\"${notes.read(\"todo.txt\").length()} ${notes.exists(\"todo.txt\")}\")\n    dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\"))\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
+        Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            dir_write: true,
+            ..Default::default()
+        },
+    )
+    .expect("runs");
+    assert_eq!(
+        output,
+        vec!["héllo, dir", "true false 11", "4 true", "written by main", "HéLLO, DIR"].into_iter().map(str::to_string).collect::<Vec<_>>()
+    );
+    assert_eq!(std::fs::read_to_string(root.join("out.txt")).expect("written"), "written by main");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[test]
+fn admitted_dir_reads_larger_than_the_probe_buffer_and_denied_paths() {
+    // The first host call answers the full length into an empty buffer,
+    // the second fills an exact-size buffer; a file well past any fixed
+    // buffer comes back whole. A path outside the root and a write through
+    // a read-only grant trap on the host, the interpreter's abort.
+    let root = scratch_dir("dir-large");
+    let large = "x".repeat(100_000) + "end";
+    std::fs::write(root.join("large.txt"), &large).expect("seed file");
+    let grants = || Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        dir_root: Some(root.clone()),
+        dir_read: true,
+        dir_write: false,
+        ..Default::default()
+    };
+    let output = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir[Read]):\n    let text = dir.read(\"large.txt\")\n    console.print(\"${text.length()} ${text.substring(100000, 100003)}\")\n",
+        grants(),
+    )
+    .expect("runs");
+    assert_eq!(output, vec!["100003 end".to_string()]);
+    let escape = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir[Read]):\n    console.print(dir.read(\"../escape.txt\"))\n",
+        grants(),
+    );
+    assert!(escape.is_err(), "{escape:?}");
+    let write = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir):\n    dir.write(\"out.txt\", \"denied\")\n    console.print(\"unreachable\")\n",
+        grants(),
+    );
+    assert!(write.is_err(), "{write:?}");
+    assert!(!root.join("out.txt").exists());
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}
+
+#[test]
+fn admitted_env_get_env_returns_an_option_and_honors_the_allow_list() {
+    // `get_env` asks the host whether the variable is set, reads it into a
+    // bounded buffer only then, and selects the `Option` tag; a name outside
+    // the grant's allow-list traps.
+    // SAFETY: the names are unique to this test and no other thread reads them.
+    unsafe {
+        std::env::set_var("WITCHY_RFC0165_ENV_PROBE", "from the host");
+        std::env::remove_var("WITCHY_RFC0165_ENV_UNSET");
+    }
+    let output = run_admitted_with_grants(
+        "fn main(console: Console, env: Env):\n    match env.get_env(\"WITCHY_RFC0165_ENV_PROBE\"):\n        Some(value) -> console.print(\"set ${value} ${value.length()}\")\n        None -> console.print(\"unset\")\n    match env.get_env(\"WITCHY_RFC0165_ENV_UNSET\"):\n        Some(value) -> console.print(\"set ${value}\")\n        None -> console.print(\"unset\")\n",
+        Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            env: true,
+            env_allow: Some(vec!["WITCHY_RFC0165_ENV_PROBE".into(), "WITCHY_RFC0165_ENV_UNSET".into()]),
+            ..Default::default()
+        },
+    )
+    .expect("runs");
+    assert_eq!(output, vec!["set from the host 13".to_string(), "unset".to_string()]);
+    let denied = run_admitted_with_grants(
+        "fn main(console: Console, env: Env):\n    match env.get_env(\"WITCHY_RFC0165_ENV_PROBE\"):\n        Some(value) -> console.print(value)\n        None -> console.print(\"unset\")\n",
+        Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            env: true,
+            env_allow: Some(vec!["OTHER".into()]),
+            ..Default::default()
+        },
+    );
+    assert!(denied.is_err(), "{denied:?}");
+}
+
+#[test]
+fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
+    let refused = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir[Read]):\n    console.print(\"${dir.exists(\"x\")}\")\n",
+        Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+    );
+    assert!(refused.is_err(), "{refused:?}");
+    let refused = run_admitted_with_grants(
+        "fn main(console: Console, env: Env):\n    match env.get_env(\"HOME\"):\n        Some(_) -> console.print(\"set\")\n        None -> console.print(\"unset\")\n",
+        Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
+    );
+    assert!(refused.is_err(), "{refused:?}");
+}

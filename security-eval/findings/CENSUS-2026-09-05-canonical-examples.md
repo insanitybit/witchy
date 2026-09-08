@@ -1149,3 +1149,45 @@ disagree; launch 60 (kernels, a `from_utf8_lossy`-adjudicated decode battery, an
 abort fixtures), lower canonical 91, wir lib 567. `time_and_encoding` remains refused on
 the `encoding.*` intrinsics (hex/base64 kernels), the next byte-level slice.
 
+## Slice 42 (2026-09-08): `Dir` and `Env` capability host calls
+
+The first authority-bearing operations on the canonical route, built against the frozen
+contract in `rfcs/0165-notes/dir-env-host-contract.md` by three parallel tracks (the
+`witchy-wir` catalog/backend/oracle, the `witchy-runtime` host functions and launch
+minting, and the lowering). A capability is an opaque `Capability(kind)` token (0 Console,
+1 Dir with any rights arguments, 2 Env) minted only by the launcher, by grant ordinal, from
+the entry signature's kinds (`CanonicalEntryCapability::{Dir, Env}`); rights and subtree
+scope stay in the host's authority object and a violation is a host trap. Six stateless,
+bounded imports replace the frozen route's staged `pending` reads: `dir_read_into`,
+`dir_exists_at`, `dir_write_at`, `dir_subtree_at`, `env_has_var`, `env_get_into`; paths and
+data cross as checked read slices, a read lands in a `Write` slice (a new backend buffer
+form, `(ptr, capacity)`, keyed on the place's access) whose extent the checker bounds by
+the buffer's capacity. The guest asks the host with an empty buffer for the full length,
+allocates exactly that, asks again, and publishes the second answer under the buffer's own
+capacity guard (a source that grew between the calls aborts rather than truncating). The
+catalog projection (`with_capability_imports`) requires each import's authenticated
+authority family (`DirRead`/`DirWrite`/`DirGrant`/`Env`) to match, the mirror of the rule
+that refuses an authority-bearing `print`. `get_env` selects the `Option` tag from
+`env_has_var` and reads only when present. `dir as Dir[Read]` is the same token; the
+canonical ABI encodes a capability's rights by name (they were "unresolved nominal types"
+before, and a rights-qualified parameter was a callable-ABI obligation; it now binds).
+
+The oracle serves the six imports from an `OracleFixture` (files, environment) with a
+root-directory and process-environment fallback used by `witchy parity`'s third leg and the
+oracle example test, so a `Dir`/`Env` program runs on all three legs against the same
+working directory (dev grants); the launch tests seed a temporary directory and assert the
+expected contents independently. Not modeled by the oracle: rights (a violation stays a
+host-side trap on the runtime leg), `dir.list` (its host-laid-out list stays refused), and
+the shared `witchy-test-host` fixture adapter (the fixture is a map with a filesystem
+fallback, not the test-host protocol; recorded as the follow-up). RFC-0163's ghost-authority
+validation is not claimed: this slice is the object-level boundary.
+
+Newly agree: `files` (the census now runs parity for `Dir`/`Env` mains too). Census: 127/163
+check, 71 runnable three-legged parity, 0 disagree; launch 68 (four capability fixtures:
+read/exists/write/subtree through a scratch directory, a 100 KB read past the probe
+buffer, an escaping path and a read-only write trapping, `get_env` present/absent and the
+allow-list trap, entry refusal without a grant), wir lib 580, lower canonical 91, runtime
+82, types 419. `minigrep` now stops at its `args: List(String)` entry parameter (the launch
+protocol mints capabilities only); `caps_audit`/`caps_guard`/`coven_check` at `json`,
+`capability_rights` at `Net`, `branded_caps` at a nominal wrapper `Option`.
+

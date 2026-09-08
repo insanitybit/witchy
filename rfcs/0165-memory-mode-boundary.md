@@ -164,8 +164,9 @@ two calls. The canonical imports are stateless and bounded, on the
 `float_to_str` pattern: `dir_read_into(dir, path: Read Slice, out: Write
 AtLeast(capacity)) -> Size` writes at most `capacity` bytes of the file and
 returns the file's full length; `env_get_into(env, name: Read Slice, out: Write
-AtLeast(capacity)) -> Int` does the same for a variable and returns `-1` when it
-is unset. The guest allocates a unique, non-static buffer, calls, and publishes
+AtLeast(capacity)) -> Size` does the same for a variable; `env_has_var(env,
+name)` answers whether it is set (and allowed), and a read of an unset variable
+traps. The guest allocates a unique, non-static buffer, calls, and publishes
 `min(returned, capacity)` as the count after a guard; a length above the
 capacity means reallocate to that length and call again, and the count is again
 bounded by the second call's guard, never by the first call's answer (the file
@@ -192,13 +193,15 @@ claims the object-level boundary only, and the acceptance ledger keeps the
 authority-flow judgment as a separate obligation.
 
 **Oracle.** Capability, confinement, and ABI security take strict differential
-coverage (RFC-0135), so the canonical interpreter serves these imports through
-the shared fixture host (`witchy-test-host`, filesystem and environment
-providers) rather than recording a debt. The launch tests run the same program
-on the runtime against a temporary directory and on the oracle against a
-fixture seeded with that directory's contents; the expected result is the
-fixture plan's, independent of both. `witchy parity`'s third leg seeds the
-fixture from the granted root the same way.
+coverage (RFC-0135), so the canonical interpreter serves these imports itself
+rather than recording a debt: an `OracleFixture` (files, environment) with a
+root-directory and process-environment fallback. `witchy parity`'s third leg
+and the oracle example test point the fallback at the working directory the
+backend was granted, so all three legs read the same files; the launch tests
+seed a temporary directory and assert its expected contents independently.
+Rights are not modeled by the oracle (a violation is a host trap on the
+runtime leg), and the shared `witchy-test-host` fixture adapter is the
+follow-up, not this slice.
 
 **Source surface admitted by the slice.** `dir.read(path)`, `dir.exists(path)`,
 `dir.write(path, data)`, `dir.subtree(path)`, `env.get_env(name)`, `Dir` and

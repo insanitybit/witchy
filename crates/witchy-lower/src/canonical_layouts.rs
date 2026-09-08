@@ -297,8 +297,11 @@ impl LayoutProjection {
                 self.roots.push(ty.clone());
                 Ok(())
             }
+            // A `Dir` token carries its rights as type arguments; like every
+            // capability it has no layout (an externref minted by the host).
+            Type::Named(name, _) if name == "Dir" => Ok(()),
             Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
-                "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" => Ok(()),
+                "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "Console" | "Env" => Ok(()),
                 "String" | "Bytes" => {
                     self.roots.push(ty.clone());
                     Ok(())
