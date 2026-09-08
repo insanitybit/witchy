@@ -30,11 +30,12 @@ fn main(console: Console):
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect
+from json import Json
 
 fn main(console: Console):
-    let value = reflect.reflect_one(.{x: 7})
-    console.print("reflected")
-"#, vec!["reflected".to_owned()]);
+    console.print(json.encode(Json.from(.{x: 7})))
+    console.print(json.encode(Json.from(.{x: "seven"})))
+"#, vec![r#"{"x":7}"#.to_owned(), r#"{"x":"seven"}"#.to_owned()]);
 }
 
 #[test]

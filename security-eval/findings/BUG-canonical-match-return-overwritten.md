@@ -1,6 +1,7 @@
 # Canonical match lowering overwrites early-return terminators
 
-Status: confirmed lowering defect; repair in progress.
+Status: repaired for the focused returning/continuing cases; landed in
+`8665462e1` at 2026-09-08T19:01:10Z after a green merge-queue gate.
 Observed revision: `cd341fcd8` (also present at `e6045165f`).
 
 ## Reproducer and evidence

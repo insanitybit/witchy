@@ -322,3 +322,19 @@ equivalence, source type-system soundness, or compiler-wide memory safety.
 - Remaining typed-error refusals: duration owned-edge mismatch; URL block statement; encoding and JWT raw Base64 decoders; time incompatible memory join; HTTP divergent value block; semver missing checked closure type. These are not passing evidence or new exclusions.
 - `config_merge` advanced past recursive-container layout and valued-if lowering to `MissingBinding("string.from_code")`. No execution agreement is claimed for it yet.
 - Unicode construction integrated as `cd341fcd8` (worker `71fe823f3`): focused Rust-scalar expected encoding, source interpreter, SafeWIR oracle, admitted Wasm, and zero-leak probe passed. Bounded independent review found no concrete defect; adjacent scalar boundaries remain additional test opportunities. The real `config_merge` forward probe now refuses `UnsupportedType(Named("t0", []))`, not the missing Unicode intrinsic.
+
+### Control-flow landing (2026-09-08T19:01:10Z)
+
+- `impl/rfc0165-match-and-decoder` landed at `8665462e11c13e01f3b3183262dd266e59ca450f`, queue item `mq-c2490d1edce25c5273e496e8b3aa4e02a4c53579`. Required workspace tests, prose, compile check, and bug clippy stages passed; no flakes were reported.
+- Returning match arms retain their terminators. Valued matches derive their result kind from actual continuing values, including an early String return with an Int continuation. The exact integrated valued-match test passed one test with source/oracle/Wasm agreement and zero leaks.
+- Structured loop-exit lowering admits the focused multiple-owned-return case and the original duration typed-error test. Only duration's now-passing deferred entry was removed. The terminal-tail walk is structural, not a proof of runtime termination.
+- HTTP typed errors now reach `UnsupportedStatement("match has no continuing arm")`; they remain deferred. Anonymous-record `reflect.reflect_one(.{x: 7})` still refuses unresolved `t0`, while scalar Json conversion admits and ordinary generic destructuring passes parity.
+- Base64 decoding is not part of this landing. Its candidate passes fixed-expected oracle/Wasm cases, but executable source/native-reference evidence is being restored before submission. No additional census or compiler-wide safety claim follows from these focused results.
+
+### Base64 and concrete record fields (candidate evidence)
+
+- `fd9ae4d6a` and `fb31100ec` implement shared standard/URL raw Base64 decoding and compare it with the audited native reference. Logical count starts at zero and advances only after bounded byte stores; the validator was not relaxed. Alphabet offsets, vertical-tab truncation, permitted whitespace, padding, incomplete groups, and invalid-tail behavior are covered.
+- `939254707` adds public-wrapper source/oracle/Wasm checks and empty/padding/digit raw cases. The integrated `cargo test --test misc base64 -- --nocapture` run passed three tests with explicit expected results and zero-leak assertions.
+- `dcfdec488` obtains generic record field types from the checked receiver's instantiated aggregate shape, rather than raw declaration parameters. The strengthened focused test observes both `Int` and owned `String` instantiations through JSON, agrees across source/oracle/Wasm, and reports zero leaks. The real `config_merge` parity probe passed on the worker's equivalent production code.
+- Exploratory anonymous-record traits changes were unnecessary and are preserved separately, not integrated. The initial receiver-selection/catalog hypotheses were superseded by the traced `lower_record_field` defect.
+- Forward refusals remain: encoding typed errors need `encoding.base64url_encode_bytes`; JWT reaches `InvalidOwnership` in function 23; time/encoding reaches `IncompatibleMemoryJoin` in function 21. Those tests remain deferred. No full-corpus or compiler-wide safety conclusion follows from these focused cases.
