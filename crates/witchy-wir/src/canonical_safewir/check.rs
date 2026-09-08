@@ -292,23 +292,23 @@ fn check_candidate<S: ModuleStage>(
 }
 
 fn has_unadmitted_nullable_owned_slot(layouts: &crate::layout::LayoutInterner) -> bool {
-    layouts.iter().any(|(_, descriptor)| {
-        matches!(
-            descriptor.kind(),
-            crate::layout::LayoutKind::RuntimePointerValueSlot {
-                semantics: crate::layout::PointerSlot::OwnedNullable,
-                ..
-            } | crate::layout::LayoutKind::RuntimePointerBuffer {
-                semantics: crate::layout::PointerSlot::OwnedNullable,
-                ..
+    use crate::layout::{FieldKind, LayoutKind, PointerSlot};
+    layouts.iter().any(|(id, descriptor)| {
+        match descriptor.kind() {
+            LayoutKind::RuntimePointerBuffer { semantics: PointerSlot::OwnedNullable, .. } => true,
+            LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::OwnedNullable, .. } => {
+                // The first admitted carrier is a typed fixed field. A naked
+                // nullable slot, or a nullable collection element, is not a
+                // first-class reference or a supported range operation.
+                !layouts.iter().any(|(_, parent)| matches!(parent.kind(),
+                    LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields }
+                        if fields.contains(&id)))
+                    || layouts.iter().any(|(_, parent)| parent.kind().packed_element_layout() == Some(id))
             }
-        ) || descriptor.fields().iter().any(|field| matches!(
-            field.kind(),
-            crate::layout::FieldKind::Pointer {
-                slot: crate::layout::PointerSlot::OwnedNullable,
-                ..
-            }
-        ))
+            LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } => false,
+            _ => descriptor.fields().iter().any(|field| matches!(field.kind(),
+                FieldKind::Pointer { slot: PointerSlot::OwnedNullable, .. })),
+        }
     })
 }
 
@@ -1689,6 +1689,22 @@ mod tests {
             .intern_runtime_pointer_buffer(pointee, PointerSlot::OwnedNullable)
             .unwrap();
         assert!(super::has_unadmitted_nullable_owned_slot(&layouts));
+    }
+
+    #[test]
+    fn nullable_owned_collection_cannot_borrow_a_fixed_field_catalog_exception() {
+        let mut layouts = LayoutInterner::new();
+        let pointee = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let nullable = layouts.intern_runtime_pointer_value_slot(pointee, PointerSlot::OwnedNullable).unwrap();
+        let record = layouts.intern_packed_record(vec![nullable]).unwrap();
+        let list = layouts.intern_packed_list(nullable, crate::layout::RcHeader::Required).unwrap();
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0), checked_source: CheckedSourceIdentity::from_digest([9; 32]),
+            layouts: LayoutBundle::from_interner(&layouts, [record, list]).unwrap(),
+            signatures: vec![], imports: vec![], functions: vec![], proper_tail_sites: vec![],
+        });
+        assert!(matches!(check_initial(candidate), Err(InitialCheckError::InvalidLayoutBundle(message))
+            if message == "nullable owned slots require canonical presence and destruction support"));
     }
 
     fn closure_layout() -> (LayoutBundle, LayoutId) {

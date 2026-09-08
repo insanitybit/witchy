@@ -32,6 +32,8 @@ pub enum EvidenceFile {
     Interpreter,
     /// `crates/witchy-wir/src/canonical_wasmir.rs`
     Backend,
+    /// Nullable fixed-field admission probes, using internal source witnesses.
+    NullableBackend,
     /// `tests/misc/rfc0165_admitted_launch.rs` (end to end through the runtime)
     Launch,
     /// `crates/witchy-wir/src/canonical_safewir/authority.rs`
@@ -45,6 +47,7 @@ impl EvidenceFile {
             Self::Memory => "crates/witchy-wir/src/canonical_safewir/check/memory.rs",
             Self::Interpreter => "crates/witchy-wir/src/canonical_interpreter.rs",
             Self::Backend => "crates/witchy-wir/src/canonical_wasmir.rs",
+            Self::NullableBackend => "crates/witchy-wir/src/canonical_wasmir/tests/nullable_admission.rs",
             Self::Launch => "tests/misc/rfc0165_admitted_launch.rs",
             Self::Authority => "crates/witchy-wir/src/canonical_safewir/authority.rs",
         }
@@ -56,6 +59,7 @@ impl EvidenceFile {
             Self::Memory => include_str!("check/memory.rs"),
             Self::Interpreter => include_str!("../canonical_interpreter.rs"),
             Self::Backend => include_str!("../canonical_wasmir.rs"),
+            Self::NullableBackend => include_str!("../canonical_wasmir/tests/nullable_admission.rs"),
             Self::Launch => include_str!("../../../../tests/misc/rfc0165_admitted_launch.rs"),
             Self::Authority => include_str!("authority.rs"),
         }
@@ -250,11 +254,11 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::InitNullableOwned,
         judgment: "check/memory.rs::MemoryChecker::init_nullable_owned",
-        predicate: "unique RC root and typed nullable fixed slot, never a live-edge overwrite; production catalog admission remains sealed",
+        predicate: "unique RC root and typed nullable fixed slot, never a live-edge overwrite; naked slots, nullable ranges, and opaque nominals remain refused",
         interpreter: "explicit absent storage state, distinct from uninitialized storage and SSA references",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
-        admits: &[t(Memory, "nullable_owned_checker_requires_initialization_and_checked_presence"), t(Interpreter, "nullable_owned_oracle_distinguishes_absent_uninitialized_and_present")],
-        refuses: &[t(Memory, "nullable_owned_checker_refuses_nonnullable_and_shared_initialization"), t(Check, "nullable_owned_slot_is_refused_at_the_initial_catalog_gate")],
+        admits: &[t(Memory, "nullable_owned_checker_requires_initialization_and_checked_presence"), t(Interpreter, "nullable_owned_oracle_distinguishes_absent_uninitialized_and_present"), t(EvidenceFile::NullableBackend, "nullable_admission_present_and_absent_agree_with_oracle")],
+        refuses: &[t(Memory, "nullable_owned_checker_refuses_nonnullable_and_shared_initialization"), t(Check, "nullable_owned_slot_is_refused_at_the_initial_catalog_gate"), t(Check, "nullable_owned_collection_cannot_borrow_a_fixed_field_catalog_exception"), t(EvidenceFile::NullableBackend, "nullable_admission_rejects_valid_but_mutated_bytes")],
     },
     RuleEntry {
         rule: CanonicalRuleId::Store,
@@ -682,6 +686,7 @@ fn cite(tests: &[TestRef]) -> String {
                 Backend => "backend",
                 Launch => "launch",
                 Authority => "authority",
+                EvidenceFile::NullableBackend => "nullable backend",
             };
             format!("`{}` ({file})", test.name)
         })

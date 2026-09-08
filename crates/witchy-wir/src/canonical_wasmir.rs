@@ -8879,6 +8879,9 @@ mod tests {
         assert_eq!(result, 19);
     }
 
+    #[path = "nullable_admission.rs"]
+    mod nullable_admission;
+
     #[test]
     fn foreign_entry_section_fails_admission() {
         // The test admission path derives no entry, so an entry section in the
