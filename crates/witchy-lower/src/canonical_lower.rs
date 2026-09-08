@@ -2482,7 +2482,12 @@ impl FunctionLowerer<'_> {
                 if plan.has_lanes() {
                     then_arguments.extend([extents[0].0, extents[0].1]);
                     else_arguments.extend([extents[1].0, extents[1].1]);
-                    dynamic_join_parameters.push(parameter);
+                    if plan.values.iter().all(|value| self.list_counts.contains_key(value)) {
+                        self.record_joined_extent(parameter, join_parameters[parameter_index + 1].value,
+                            join_parameters[parameter_index + 2].value, &plan.values);
+                    } else {
+                        dynamic_join_parameters.push(parameter);
+                    }
                     parameter_index += 2;
                 }
                 if plan.all_tokens {
@@ -2511,7 +2516,12 @@ impl FunctionLowerer<'_> {
                     self.current = else_end;
                     let (else_count, else_capacity) = self.split_lanes(else_count, else_capacity)?;
                     else_arguments.extend([else_count, else_capacity]);
-                    dynamic_join_parameters.push(result);
+                    if self.list_counts.contains_key(&then_value) && self.list_counts.contains_key(&else_value) {
+                        self.record_joined_extent(result, join_parameters[parameter_index + 1].value,
+                            join_parameters[parameter_index + 2].value, &[then_value, else_value]);
+                    } else {
+                        dynamic_join_parameters.push(result);
+                    }
                 }
                 Some(result)
             }
@@ -2537,7 +2547,8 @@ impl FunctionLowerer<'_> {
         // A rebound list or string arrives without extent facts; a loop
         // back edge or a later index needs them, so load the header once here.
         for parameter in rebound_references {
-            self.reload_dynamic_extent(parameter)?;
+            self.ensure_list_extent(parameter)?;
+            self.ensure_string_extent(parameter)?;
         }
         self.bindings = merged;
         Ok(result)
@@ -5418,7 +5429,11 @@ impl FunctionLowerer<'_> {
         self.bindings = bindings;
         let join_values = self.block_parameter_values(join);
         if dynamic_payload {
-            self.record_joined_extent(join_values[0], join_values[1], join_values[2], &[payload, default]);
+            if self.list_counts.contains_key(&payload) && self.list_counts.contains_key(&default) {
+                self.record_joined_extent(join_values[0], join_values[1], join_values[2], &[payload, default]);
+            } else {
+                self.reload_dynamic_extent(join_values[0])?;
+            }
         }
         Ok(join_values[0])
     }

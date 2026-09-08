@@ -3147,11 +3147,14 @@ impl StructuredEmitter<'_> {
         for reached in &reach {
             // A terminal sink shared with another continuation must remain a
             // merge, otherwise structured emission can visit its block twice.
-            if self
-                .predecessors(*reached)?
-                .into_iter()
-                .any(|predecessor| !members.contains(&predecessor) && !reach.contains(&predecessor))
-            {
+            let predecessors = self.predecessors(*reached)?;
+            let mut external = predecessors.iter().filter(|predecessor| !reach.contains(predecessor));
+            if *reached == start {
+                let Some(entry) = external.next() else { return Ok(false) };
+                if !members.contains(entry) || external.next().is_some() {
+                    return Ok(false);
+                }
+            } else if external.next().is_some() {
                 return Ok(false);
             }
         }
@@ -3485,8 +3488,12 @@ impl StructuredEmitter<'_> {
         // The other side's reach is taken without passing back through the
         // branching block: a loop back edge would otherwise make a returning
         // arm look reachable from the continuing side.
-        let then_terminal = self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
-        let else_terminal = self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
+        // Reaching an enclosing continuation is not terminal within this
+        // region, even if execution eventually returns beyond that boundary.
+        let then_reaches_stop = match stop { Some(stop) => self.reaches(then_target, stop)?, None => false };
+        let else_reaches_stop = match stop { Some(stop) => self.reaches(else_target, stop)?, None => false };
+        let then_terminal = !then_reaches_stop && self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
+        let else_terminal = !else_reaches_stop && self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             // A side's own first block can be the merge: when the other side
@@ -5551,11 +5558,14 @@ impl PlanEmitter<'_> {
         }
         for reached in &reach {
             // Match the encoder's exclusivity rule for terminal sinks too.
-            if self
-                .predecessors(*reached)?
-                .into_iter()
-                .any(|predecessor| !members.contains(&predecessor) && !reach.contains(&predecessor))
-            {
+            let predecessors = self.predecessors(*reached)?;
+            let mut external = predecessors.iter().filter(|predecessor| !reach.contains(predecessor));
+            if *reached == start {
+                let Some(entry) = external.next() else { return Ok(false) };
+                if !members.contains(entry) || external.next().is_some() {
+                    return Ok(false);
+                }
+            } else if external.next().is_some() {
                 return Ok(false);
             }
         }
@@ -5835,8 +5845,11 @@ impl PlanEmitter<'_> {
         // The other side's reach is taken without passing back through the
         // branching block: a loop back edge would otherwise make a returning
         // arm look reachable from the continuing side.
-        let then_terminal = self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
-        let else_terminal = self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
+        // Mirror the enclosing-continuation boundary used by the encoder.
+        let then_reaches_stop = match stop { Some(stop) => self.reaches(then_target, stop)?, None => false };
+        let else_reaches_stop = match stop { Some(stop) => self.reaches(else_target, stop)?, None => false };
+        let then_terminal = !then_reaches_stop && self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
+        let else_terminal = !else_reaches_stop && self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
         let mut best = None;
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             // Mirror of the encoder's rule: a side's own first block can be
