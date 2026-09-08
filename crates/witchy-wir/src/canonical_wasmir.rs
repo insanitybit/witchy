@@ -42,6 +42,8 @@ use crate::layout::{
 // eight bytes immediately before that root; the private module keeps one
 // fixed linear-memory page and refuses an allocation before returning a
 // pointer when the checked extent does not fit.
+mod drop_worklist;
+
 const RC_PREFIX_BYTES: u32 = 8;
 const LINEAR_MEMORY_BYTES: u32 = 65_536;
 
@@ -1696,35 +1698,6 @@ struct LocalLayout {
     scratch: Vec<u32>,
 }
 
-fn drop_layout_depth(
-    function: FunctionId,
-    layouts: &LayoutInterner,
-    layout: crate::layout::LayoutId,
-    visiting: &mut BTreeSet<crate::layout::LayoutId>,
-) -> Result<usize, EncodeError> {
-    if !visiting.insert(layout) {
-        return Err(EncodeError::UnsupportedLayout { function, operation: "recursive DropRef layout" });
-    }
-    let collection = collection_layout(function, layouts, layout);
-    let depth = match collection {
-        Ok(collection) => match collection.pointer_layout {
-            Some(child) => 1 + drop_layout_depth(function, layouts, child, visiting)?,
-            None => 1,
-        },
-        // A fixed layout's destructor descends into each owned pointer
-        // field; its depth is one more than the deepest child's.
-        Err(_) => {
-            let mut depth = 1;
-            for (_, child) in fixed_pointer_fields(layouts, layout) {
-                depth = depth.max(1 + drop_layout_depth(function, layouts, child, visiting)?);
-            }
-            depth
-        }
-    };
-    visiting.remove(&layout);
-    Ok(depth)
-}
-
 fn local_layout(
     function: &Function,
     signature: &FunctionSignature,
@@ -1759,26 +1732,7 @@ fn local_layout(
         indices.insert(*value, index);
         extra_types.push(wasm_value_type(function.id, *value, *value_type)?);
     }
-    let mut destructor_depth = 1;
-    for block in &function.blocks {
-        for operation in &block.operations {
-            let object = match operation {
-                Operation::DropRef { object } | Operation::Release { object } => Some(*object),
-                _ => None,
-            };
-            let Some(object) = object else { continue };
-            let Some(ValueType::Ref(object_layout)) = function.value_types.get(&object).copied() else {
-                continue;
-            };
-            destructor_depth = destructor_depth.max(drop_layout_depth(
-                function.id,
-                layouts,
-                object_layout,
-                &mut BTreeSet::new(),
-            )?);
-        }
-    }
-    let mut scratch = vec![0; destructor_depth.saturating_mul(5).max(5)];
+    let mut scratch = vec![0; drop_worklist::SCRATCH];
     for (slot, index) in scratch.iter_mut().enumerate() {
         *index = entry.parameters.len() as u32 + extra_types.len() as u32;
         extra_types.push(ValType::I32);
@@ -2346,138 +2300,6 @@ fn emit_reclaim_local(body: &mut wasm_encoder::Function, layout: &LocalLayout, s
     body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
 }
 
-fn emit_drop_ref_local(
-    body: &mut wasm_encoder::Function,
-    layout: &LocalLayout,
-    function: FunctionId,
-    layouts: &LayoutInterner,
-    object_layout: crate::layout::LayoutId,
-    depth: usize,
-) -> Result<(), EncodeError> {
-    let base = depth * 5;
-    if base + 4 >= layout.scratch.len() {
-        return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
-    }
-    emit_get_index(body, scratch_index(layout, base));
-    body.instruction(&wasm_encoder::Instruction::GlobalGet(2));
-    body.instruction(&wasm_encoder::Instruction::I32LtU);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Else);
-    emit_get_index(body, scratch_index(layout, base));
-    body.instruction(&wasm_encoder::Instruction::I32Const(8));
-    body.instruction(&wasm_encoder::Instruction::I32Sub);
-    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-    emit_set_index(body, scratch_index(layout, base + 1));
-    emit_get_index(body, scratch_index(layout, base + 1));
-    body.instruction(&wasm_encoder::Instruction::I32Eqz);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Unreachable);
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, base + 1));
-    body.instruction(&wasm_encoder::Instruction::I32Const(1));
-    body.instruction(&wasm_encoder::Instruction::I32Eq);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    if let Ok(collection) = collection_layout(function, layouts, object_layout) {
-        if let Some(child_layout) = collection.pointer_layout {
-            if let Some(capacity_offset) = collection.capacity_offset {
-                emit_get_index(body, scratch_index(layout, base));
-                body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
-                body.instruction(&wasm_encoder::Instruction::I32Add);
-                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-                emit_get_index(body, scratch_index(layout, base));
-                body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
-                body.instruction(&wasm_encoder::Instruction::I32Add);
-                body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-                body.instruction(&wasm_encoder::Instruction::I32GtU);
-                body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-                body.instruction(&wasm_encoder::Instruction::Unreachable);
-                body.instruction(&wasm_encoder::Instruction::End);
-            }
-            body.instruction(&wasm_encoder::Instruction::I32Const(0));
-            emit_set_index(body, scratch_index(layout, base + 2));
-            body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
-            body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
-            emit_get_index(body, scratch_index(layout, base + 2));
-            emit_get_index(body, scratch_index(layout, base));
-            body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-            body.instruction(&wasm_encoder::Instruction::I32LtU);
-            body.instruction(&wasm_encoder::Instruction::I32Eqz);
-            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-            body.instruction(&wasm_encoder::Instruction::Br(2));
-            body.instruction(&wasm_encoder::Instruction::End);
-            emit_get_index(body, scratch_index(layout, base));
-            body.instruction(&wasm_encoder::Instruction::I32Const(collection.data_offset as i32));
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            emit_get_index(body, scratch_index(layout, base + 2));
-            body.instruction(&wasm_encoder::Instruction::I32Const(collection.stride as i32));
-            body.instruction(&wasm_encoder::Instruction::I32Mul);
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-            // The loaded child pointer is the object of the next destructor
-            // depth: it lives in that depth's first scratch slot, where the
-            // recursive drop below reads it.
-            if base + 5 >= layout.scratch.len() {
-                return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
-            }
-            emit_set_index(body, scratch_index(layout, base + 5));
-            emit_get_index(body, scratch_index(layout, base + 5));
-            body.instruction(&wasm_encoder::Instruction::I32Eqz);
-            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-            body.instruction(&wasm_encoder::Instruction::Unreachable);
-            body.instruction(&wasm_encoder::Instruction::End);
-            emit_get_index(body, scratch_index(layout, base));
-            body.instruction(&wasm_encoder::Instruction::I32Const(collection.data_offset as i32));
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            emit_get_index(body, scratch_index(layout, base + 2));
-            body.instruction(&wasm_encoder::Instruction::I32Const(collection.stride as i32));
-            body.instruction(&wasm_encoder::Instruction::I32Mul);
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I32Const(0));
-            body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
-            emit_drop_ref_local(body, layout, function, layouts, child_layout, depth + 1)?;
-            emit_get_index(body, scratch_index(layout, base + 2));
-            body.instruction(&wasm_encoder::Instruction::I32Const(1));
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            emit_set_index(body, scratch_index(layout, base + 2));
-            body.instruction(&wasm_encoder::Instruction::Br(0));
-            body.instruction(&wasm_encoder::Instruction::End);
-            body.instruction(&wasm_encoder::Instruction::End);
-        }
-    } else {
-        // A fixed layout drops the child behind each owned pointer field.
-        for (offset, child_layout) in fixed_pointer_fields(layouts, object_layout) {
-            if base + 5 >= layout.scratch.len() {
-                return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch depth" });
-            }
-            emit_get_index(body, scratch_index(layout, base));
-            body.instruction(&wasm_encoder::Instruction::I32Const(offset as i32));
-            body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-            emit_set_index(body, scratch_index(layout, base + 5));
-            emit_get_index(body, scratch_index(layout, base + 5));
-            body.instruction(&wasm_encoder::Instruction::I32Eqz);
-            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-            body.instruction(&wasm_encoder::Instruction::Unreachable);
-            body.instruction(&wasm_encoder::Instruction::End);
-            emit_drop_ref_local(body, layout, function, layouts, child_layout, depth + 1)?;
-        }
-    }
-    emit_reclaim_local(body, layout, base);
-    body.instruction(&wasm_encoder::Instruction::Else);
-    emit_get_index(body, scratch_index(layout, base));
-    body.instruction(&wasm_encoder::Instruction::I32Const(8));
-    body.instruction(&wasm_encoder::Instruction::I32Sub);
-    emit_get_index(body, scratch_index(layout, base + 1));
-    body.instruction(&wasm_encoder::Instruction::I32Const(1));
-    body.instruction(&wasm_encoder::Instruction::I32Sub);
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
-    body.instruction(&wasm_encoder::Instruction::End);
-    body.instruction(&wasm_encoder::Instruction::End);
-    Ok(())
-}
-
 /// The owned pointer fields of a fixed layout as `(byte offset, pointee)`.
 fn fixed_pointer_fields(layouts: &LayoutInterner, layout: crate::layout::LayoutId) -> Vec<(u32, crate::layout::LayoutId)> {
     let Some(descriptor) = layouts.get(layout) else { return Vec::new() };
@@ -2504,7 +2326,7 @@ fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, functio
     };
     emit_get(body, layout, function.id, object)?;
     emit_set_index(body, scratch_index(layout, 0));
-    emit_drop_ref_local(body, layout, function.id, layouts, object_layout, 0)
+    drop_worklist::emit(body, layout, function.id, layouts, object_layout)
 }
 
 fn emit_call_arguments(
@@ -4104,6 +3926,7 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
 enum PlanToken {
     LocalGet(u32),
     LocalSet(u32),
+    LocalTee(u32),
     I32Const(i32),
     I64Const(i64),
     I64ExtendI32U,
@@ -4115,6 +3938,7 @@ enum PlanToken {
     I64Sub,
     MemorySize,
     MemoryGrow,
+    MemoryFill(u32),
     I32WrapI64,
     I64Eq,
     I64LtS,
@@ -4213,6 +4037,8 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::I64Sub => PlanToken::I64Sub,
         wasmparser::Operator::MemorySize { mem: 0 } => PlanToken::MemorySize,
         wasmparser::Operator::MemoryGrow { mem: 0 } => PlanToken::MemoryGrow,
+        wasmparser::Operator::MemoryFill { mem } => PlanToken::MemoryFill(mem),
+        wasmparser::Operator::LocalTee { local_index } => PlanToken::LocalTee(local_index),
         wasmparser::Operator::I32WrapI64 => PlanToken::I32WrapI64,
         wasmparser::Operator::I64Eq => PlanToken::I64Eq,
         wasmparser::Operator::I64LtS => PlanToken::I64LtS,
@@ -4921,144 +4747,6 @@ fn push_reclaim_local_plan(plan: &mut Vec<PlanToken>, layout: &LocalLayout, slot
     ]);
 }
 
-fn push_drop_ref_local_plan(
-    plan: &mut Vec<PlanToken>,
-    function: FunctionId,
-    layouts: &LayoutInterner,
-    layout: &LocalLayout,
-    object_layout: crate::layout::LayoutId,
-    depth: usize,
-) -> Result<(), CanonicalAdmissionError> {
-    let base = depth * 5;
-    if base + 4 >= layout.scratch.len() {
-        return Err(CanonicalAdmissionError::UnsupportedPlan);
-    }
-    plan.extend([
-        PlanToken::LocalGet(layout.scratch[base]),
-        PlanToken::GlobalGet(2),
-        PlanToken::I32LtU,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Else,
-        PlanToken::LocalGet(layout.scratch[base]),
-        PlanToken::I32Const(8),
-        PlanToken::I32Sub,
-        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-        PlanToken::LocalSet(layout.scratch[base + 1]),
-        PlanToken::LocalGet(layout.scratch[base + 1]),
-        PlanToken::I32Eqz,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Unreachable,
-        PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[base + 1]),
-        PlanToken::I32Const(1),
-        PlanToken::I32Eq,
-        PlanToken::If("Empty".to_owned()),
-    ]);
-    if let Ok(collection) = collection_layout(function, layouts, object_layout) {
-        if let Some(child_layout) = collection.pointer_layout {
-            if let Some(capacity_offset) = collection.capacity_offset {
-                plan.extend([
-                    PlanToken::LocalGet(layout.scratch[base]),
-                    PlanToken::I32Const(collection.length_offset as i32),
-                    PlanToken::I32Add,
-                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-                    PlanToken::LocalGet(layout.scratch[base]),
-                    PlanToken::I32Const(capacity_offset as i32),
-                    PlanToken::I32Add,
-                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-                    PlanToken::I32GtU,
-                    PlanToken::If("Empty".to_owned()),
-                    PlanToken::Unreachable,
-                    PlanToken::End,
-                ]);
-            }
-            plan.extend([
-                PlanToken::I32Const(0),
-                PlanToken::LocalSet(layout.scratch[base + 2]),
-                PlanToken::Block("Empty".to_owned()),
-                PlanToken::Loop("Empty".to_owned()),
-                PlanToken::LocalGet(layout.scratch[base + 2]),
-                PlanToken::LocalGet(layout.scratch[base]),
-                PlanToken::I32Const(collection.length_offset as i32),
-                PlanToken::I32Add,
-                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-                PlanToken::I32LtU,
-                PlanToken::I32Eqz,
-                PlanToken::If("Empty".to_owned()),
-                PlanToken::Br(2),
-                PlanToken::End,
-                PlanToken::LocalGet(layout.scratch[base]),
-                PlanToken::I32Const(collection.data_offset as i32),
-                PlanToken::I32Add,
-                PlanToken::LocalGet(layout.scratch[base + 2]),
-                PlanToken::I32Const(collection.stride as i32),
-                PlanToken::I32Mul,
-                PlanToken::I32Add,
-                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-                PlanToken::LocalSet(*layout.scratch.get(base + 5).ok_or(CanonicalAdmissionError::UnsupportedPlan)?),
-                PlanToken::LocalGet(*layout.scratch.get(base + 5).ok_or(CanonicalAdmissionError::UnsupportedPlan)?),
-                PlanToken::I32Eqz,
-                PlanToken::If("Empty".to_owned()),
-                PlanToken::Unreachable,
-                PlanToken::End,
-                PlanToken::LocalGet(layout.scratch[base]),
-                PlanToken::I32Const(collection.data_offset as i32),
-                PlanToken::I32Add,
-                PlanToken::LocalGet(layout.scratch[base + 2]),
-                PlanToken::I32Const(collection.stride as i32),
-                PlanToken::I32Mul,
-                PlanToken::I32Add,
-                PlanToken::I32Const(0),
-                PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
-            ]);
-            push_drop_ref_local_plan(plan, function, layouts, layout, child_layout, depth + 1)?;
-            plan.extend([
-                PlanToken::LocalGet(layout.scratch[base + 2]),
-                PlanToken::I32Const(1),
-                PlanToken::I32Add,
-                PlanToken::LocalSet(layout.scratch[base + 2]),
-                PlanToken::Br(0),
-                PlanToken::End,
-                PlanToken::End,
-            ]);
-        }
-    }
-    else {
-        for (offset, child_layout) in fixed_pointer_fields(layouts, object_layout) {
-            if base + 5 >= layout.scratch.len() {
-                return Err(CanonicalAdmissionError::UnsupportedPlan);
-            }
-            plan.extend([
-                PlanToken::LocalGet(layout.scratch[base]),
-                PlanToken::I32Const(offset as i32),
-                PlanToken::I32Add,
-                PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-                PlanToken::LocalSet(layout.scratch[base + 5]),
-                PlanToken::LocalGet(layout.scratch[base + 5]),
-                PlanToken::I32Eqz,
-                PlanToken::If("Empty".to_owned()),
-                PlanToken::Unreachable,
-                PlanToken::End,
-            ]);
-            push_drop_ref_local_plan(plan, function, layouts, layout, child_layout, depth + 1)?;
-        }
-    }
-    push_reclaim_local_plan(plan, layout, base);
-    plan.extend([
-        PlanToken::Else,
-        PlanToken::LocalGet(layout.scratch[base]),
-        PlanToken::I32Const(8),
-        PlanToken::I32Sub,
-        PlanToken::LocalGet(layout.scratch[base + 1]),
-        PlanToken::I32Const(1),
-        PlanToken::I32Sub,
-        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
-        PlanToken::End,
-        PlanToken::End,
-    ]);
-    Ok(())
-}
-
 fn push_drop_ref_plan(
     plan: &mut Vec<PlanToken>,
     function: &Function,
@@ -5071,7 +4759,7 @@ fn push_drop_ref_plan(
     };
     push_get(plan, layout, object)?;
     plan.push(PlanToken::LocalSet(layout.scratch[0]));
-    push_drop_ref_local_plan(plan, function.id, layouts, layout, object_layout, 0)
+    drop_worklist::plan(plan, function.id, layouts, layout, object_layout)
 }
 
 fn expected_alloc_plan(

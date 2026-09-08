@@ -12,6 +12,8 @@ use witchy::runtime::{Capabilities, Runtime};
 
 #[path = "rfc0165_launch_arguments.rs"]
 mod launch_arguments;
+#[path = "rfc0165_drop_worklist.rs"]
+mod drop_worklist;
 
 /// Run an admitted program and report a runtime trap instead of panicking,
 /// for fixtures whose expected outcome is the trap.
