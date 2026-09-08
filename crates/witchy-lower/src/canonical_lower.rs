@@ -5877,7 +5877,16 @@ impl FunctionLowerer<'_> {
         }
         let index = definition.variants[0].field_names.iter().position(|candidate| candidate == field)
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
-        let value_type = self.field_value_type(&definition.variants[0].fields[index])?;
+        // The declaration field may be a generic parameter. The checked
+        // receiver carries the concrete instantiation, and its scalar shape
+        // substitutes that parameter before determining the SafeWIR value type.
+        let shape = scalar_aggregate_shape(&base_type, self.definitions)
+            .filter(|shape| !shape.packed && !shape.tagged)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("non-record field"))?;
+        let field_type = shape.fields.get(index).ok_or_else(|| {
+            CanonicalLoweringError::MissingBinding(field.to_owned())
+        })?;
+        let value_type = self.field_value_type(field_type)?;
         let object = self.lower_expr(base)?;
         if !matches!(self.values[&object], ValueType::Ref(_)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("heap record field base"));
