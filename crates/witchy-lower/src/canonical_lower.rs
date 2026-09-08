@@ -4881,6 +4881,7 @@ impl FunctionLowerer<'_> {
                 self.lower_list_length(args)
             }
             Expr::Call { name, args } if name == "list.concat" => self.lower_list_concat(args),
+            Expr::Call { name, args } if name == "string.from_code" => self.lower_string_from_code(args),
             Expr::Call { name, args } if matches!(name.as_str(), "string.chars" | "string.__chars") => {
                 self.lower_string_chars(args)
             }
@@ -8589,6 +8590,160 @@ impl FunctionLowerer<'_> {
             "encoding.base64_encode" => self.lower_base64_encode(source, false),
             _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
         }
+    }
+
+    /// Encode one Unicode scalar value as a fresh owned UTF-8 String. This
+    /// matches the native contract: values outside the Unicode scalar range,
+    /// including surrogate code points, become U+FFFD rather than trapping.
+    fn lower_string_from_code(&mut self, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let [argument] = args else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string.from_code arity"));
+        };
+        let code = self.lower_expr(argument)?;
+        if self.values[&code] != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string.from_code operand type"));
+        }
+
+        let replacement = self.push_const_int(0xFFFD)?;
+        let zero = self.push_const_int(0)?;
+        let non_negative = self.push_compare(ComparisonOperator::GreaterEqualSigned, code, zero)?;
+        let mut scalar = self.lower_int_select(non_negative, code, replacement)?;
+        let maximum = self.push_const_int(0x10FFFF)?;
+        let in_range = self.push_compare(ComparisonOperator::LessEqualSigned, scalar, maximum)?;
+        scalar = self.lower_int_select(in_range, scalar, replacement)?;
+        let last_surrogate = self.push_const_int(0xDFFF)?;
+        let above_surrogates = self.push_compare(ComparisonOperator::GreaterSigned, scalar, last_surrogate)?;
+        let first_surrogate = self.push_const_int(0xD800)?;
+        let below_surrogates = self.push_compare(ComparisonOperator::LessSigned, scalar, first_surrogate)?;
+        let above_scalar = self.lower_int_select(above_surrogates, scalar, replacement)?;
+        scalar = self.lower_int_select(below_surrogates, scalar, above_scalar)?;
+
+        let one = self.push_const_size(1)?;
+        let two = self.push_const_size(2)?;
+        let three = self.push_const_size(3)?;
+        let four = self.push_const_size(4)?;
+        let limit_one = self.push_const_int(0x7F)?;
+        let limit_two = self.push_const_int(0x7FF)?;
+        let limit_three = self.push_const_int(0xFFFF)?;
+        let one_byte = self.push_compare(ComparisonOperator::LessEqualSigned, scalar, limit_one)?;
+        let two_bytes = self.push_compare(ComparisonOperator::LessEqualSigned, scalar, limit_two)?;
+        let three_bytes = self.push_compare(ComparisonOperator::LessEqualSigned, scalar, limit_three)?;
+        let count_three_or_four = self.lower_size_select(three_bytes, three, four)?;
+        let count_two_or_more = self.lower_size_select(two_bytes, two, count_three_or_four)?;
+        let count = self.lower_size_select(one_byte, one, count_two_or_more)?;
+
+        // Capacity four lets all branch arms share one owned result; count is
+        // still the exact UTF-8 length exposed to String consumers.
+        let output = self.alloc_bytes(count, four)?;
+        let index_zero = self.push_const_size(0)?;
+        let index_one = self.push_const_size(1)?;
+        let index_two = self.push_const_size(2)?;
+        let index_three = self.push_const_size(3)?;
+        let one_block = self.new_block(&[])?;
+        let two_block = self.new_block(&[])?;
+        let three_block = self.new_block(&[])?;
+        let four_block = self.new_block(&[])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: one_byte,
+            then_target: one_block,
+            then_arguments: Vec::new(),
+            else_target: two_block,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = one_block;
+        let byte = self.byte_value_checked(scalar)?;
+        self.push_byte_store(output, index_zero, byte)?;
+        self.finish_current(Terminator::Branch { target: exit, arguments: Vec::new() })?;
+
+        self.current = two_block;
+        // Keep the stores in a separate block so the dispatch condition remains
+        // available without a result-valued ownership join.
+        let two_store = self.new_block(&[])?;
+        let three_dispatch = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: two_bytes,
+            then_target: two_store,
+            then_arguments: Vec::new(),
+            else_target: three_dispatch,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = two_store;
+        let shift = self.push_const_int(6)?;
+        let mask = self.push_const_int(0x3F)?;
+        let lead = self.push_const_int(0xC0)?;
+        let continuation = self.push_const_int(0x80)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, scalar, shift, OverflowBehavior::Wrap)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, first, lead, OverflowBehavior::Wrap)?;
+        let second = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, scalar, mask, OverflowBehavior::Wrap)?;
+        let second = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, second, continuation, OverflowBehavior::Wrap)?;
+        let first = self.byte_value_checked(first)?;
+        let second = self.byte_value_checked(second)?;
+        self.push_byte_store(output, index_zero, first)?;
+        self.push_byte_store(output, index_one, second)?;
+        self.finish_current(Terminator::Branch { target: exit, arguments: Vec::new() })?;
+
+        self.current = three_dispatch;
+        self.finish_current(Terminator::BranchIf {
+            condition: three_bytes,
+            then_target: three_block,
+            then_arguments: Vec::new(),
+            else_target: four_block,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = three_block;
+        let shift_twelve = self.push_const_int(12)?;
+        let shift_six = self.push_const_int(6)?;
+        let lead_three = self.push_const_int(0xE0)?;
+        let continuation_three = self.push_const_int(0x80)?;
+        let mask_three = self.push_const_int(0x3F)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, scalar, shift_twelve, OverflowBehavior::Wrap)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, first, lead_three, OverflowBehavior::Wrap)?;
+        let middle = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, scalar, shift_six, OverflowBehavior::Wrap)?;
+        let middle = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, middle, mask_three, OverflowBehavior::Wrap)?;
+        let middle = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, middle, continuation_three, OverflowBehavior::Wrap)?;
+        let last = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, scalar, mask_three, OverflowBehavior::Wrap)?;
+        let last = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, last, continuation_three, OverflowBehavior::Wrap)?;
+        let first = self.byte_value_checked(first)?;
+        let middle = self.byte_value_checked(middle)?;
+        let last = self.byte_value_checked(last)?;
+        self.push_byte_store(output, index_zero, first)?;
+        self.push_byte_store(output, index_one, middle)?;
+        self.push_byte_store(output, index_two, last)?;
+        self.finish_current(Terminator::Branch { target: exit, arguments: Vec::new() })?;
+
+        self.current = four_block;
+        let shift_eighteen = self.push_const_int(18)?;
+        let shift_twelve = self.push_const_int(12)?;
+        let shift_six = self.push_const_int(6)?;
+        let lead_four = self.push_const_int(0xF0)?;
+        let continuation_four = self.push_const_int(0x80)?;
+        let mask_four = self.push_const_int(0x3F)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, scalar, shift_eighteen, OverflowBehavior::Wrap)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, first, lead_four, OverflowBehavior::Wrap)?;
+        let middle_one = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, scalar, shift_twelve, OverflowBehavior::Wrap)?;
+        let middle_one = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, middle_one, mask_four, OverflowBehavior::Wrap)?;
+        let middle_one = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, middle_one, continuation_four, OverflowBehavior::Wrap)?;
+        let middle_two = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, scalar, shift_six, OverflowBehavior::Wrap)?;
+        let middle_two = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, middle_two, mask_four, OverflowBehavior::Wrap)?;
+        let middle_two = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, middle_two, continuation_four, OverflowBehavior::Wrap)?;
+        let last = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, scalar, mask_four, OverflowBehavior::Wrap)?;
+        let last = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, last, continuation_four, OverflowBehavior::Wrap)?;
+        let first = self.byte_value_checked(first)?;
+        let middle_one = self.byte_value_checked(middle_one)?;
+        let middle_two = self.byte_value_checked(middle_two)?;
+        let last = self.byte_value_checked(last)?;
+        self.push_byte_store(output, index_zero, first)?;
+        self.push_byte_store(output, index_one, middle_one)?;
+        self.push_byte_store(output, index_two, middle_two)?;
+        self.push_byte_store(output, index_three, last)?;
+        self.finish_current(Terminator::Branch { target: exit, arguments: Vec::new() })?;
+
+        self.current = exit;
+        Ok(output)
     }
 
     fn lower_hex_encode(&mut self, source: ValueId) -> Result<ValueId, CanonicalLoweringError> {

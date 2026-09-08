@@ -56,6 +56,61 @@ fn main(console: Console):
     console.print(encoding.base64_encode("é🙂"))
 "#;
 
+const STRING_FROM_CODE_SOURCE: &str = r#"
+import string
+
+fn main(console: Console):
+    console.print(string.from_code(65))
+    console.print(string.from_code(127))
+    console.print(string.from_code(128))
+    console.print(string.from_code(2047))
+    console.print(string.from_code(2048))
+    console.print(string.from_code(65535))
+    console.print(string.from_code(65536))
+    console.print(string.from_code(1114111))
+    console.print(string.from_code(-1))
+    console.print(string.from_code(1114112))
+    console.print(string.from_code(55296))
+    console.print(string.from_code(57343))
+"#;
+
+#[test]
+fn real_std_string_from_code_matches_rust_scalar_encoding_across_boundaries() {
+    let checked = witchy::resolve_std_only_checked(STRING_FROM_CODE_SOURCE).expect("real std string source checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("real std string.from_code must admit");
+    let codes = [65_i64, 127, 128, 2047, 2048, 65535, 65536, 1114111, -1, 1114112, 55296, 57343];
+    let expected: Vec<String> = codes
+        .iter()
+        .map(|&code| u32::try_from(code).ok().and_then(char::from_u32).unwrap_or('\u{FFFD}').to_string())
+        .collect();
+    let source_output = witchy::interpreter::run_module_args(checked.module().clone(), ".", Vec::new(), Vec::new())
+        .expect("source interpreter runs the real std checked string.from_code module");
+    assert_eq!(source_output, expected, "source interpreter must follow Rust Unicode scalar semantics");
+
+    let entry = artifact.entry().expect("string.from_code program entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("string source validates for oracle");
+    let arguments = entry
+        .capabilities()
+        .iter()
+        .copied()
+        .map(InterpreterValue::entry_capability)
+        .collect();
+    let oracle = interpret_program(&validated, function, arguments, InterpreterConfig::default())
+        .expect("canonical oracle runs real std string.from_code");
+    assert_eq!(oracle.output, source_output, "canonical oracle must match source interpreter");
+    assert_eq!(oracle.leaked_objects, 0, "string.from_code oracle must not leak");
+
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+        .expect("spawn admitted real std string.from_code");
+    vm.run().expect("admitted Wasm runs real std string.from_code");
+    assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
+}
+
 #[test]
 fn real_std_hex_encode_agrees_with_oracle_and_admitted_wasm() {
     let checked = witchy::resolve_std_only_checked(HEX_ENCODE_SOURCE).expect("real std hex source checks");
