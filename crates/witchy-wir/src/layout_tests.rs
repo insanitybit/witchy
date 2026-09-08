@@ -457,11 +457,17 @@ fn layout_bundle_rejects_unknown_versions_truncation_and_dangling_roots() {
         Err(LayoutTransportError::Invalid("truncated layout bundle"))
     ));
     let mut wrong_bundle = bytes.clone();
-    wrong_bundle[4..8].copy_from_slice(&2u32.to_le_bytes());
+    wrong_bundle[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
     assert_eq!(
         LayoutBundle::decode_canonical(&wrong_bundle).unwrap_err(),
-        LayoutTransportError::UnsupportedBundleVersion(2)
+        LayoutTransportError::UnsupportedBundleVersion(u32::MAX)
     );
+    let mut truncated_v2 = bytes.clone();
+    truncated_v2[4..8].copy_from_slice(&2u32.to_le_bytes());
+    assert!(matches!(
+        LayoutBundle::decode_canonical(&truncated_v2),
+        Err(LayoutTransportError::Invalid("truncated layout bundle"))
+    ));
     let mut wrong_schema = bytes.clone();
     wrong_schema[8..12].copy_from_slice(&2u32.to_le_bytes());
     assert_eq!(
