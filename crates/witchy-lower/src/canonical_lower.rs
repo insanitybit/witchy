@@ -4834,7 +4834,12 @@ impl FunctionLowerer<'_> {
             // The encoding intrinsics are guest-side byte kernels on the same
             // raw-byte layout as String and Bytes. The std wrappers validate
             // fallible input before reaching the raw decode kernels.
-            Expr::Call { name, args } if matches!(name.as_str(), "encoding.hex_encode" | "encoding.base64_encode") => {
+            Expr::Call { name, args }
+                if matches!(
+                    name.as_str(),
+                    "encoding.hex_encode" | "encoding.hex_decode_bytes_raw" | "encoding.base64_encode"
+                ) =>
+            {
                 self.lower_encoding_call(name, args)
             }
             // A `dict.` name that is not a linked function is a dictionary
@@ -8183,6 +8188,12 @@ impl FunctionLowerer<'_> {
         self.ensure_string_extent(source)?;
         match name {
             "encoding.hex_encode" => self.lower_hex_encode(source),
+            // The checked std wrapper establishes even length and alphabet
+            // membership before this raw byte kernel is reachable. The kernel
+            // nevertheless guards every source load and destination store;
+            // wrapper validation never substitutes for memory safety. Keep the
+            // byte result distinct from the lossy text wrapper above it.
+            "encoding.hex_decode_bytes_raw" => self.lower_hex_decode(source, true),
             "encoding.base64_encode" => self.lower_base64_encode(source, false),
             _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
         }
@@ -8507,11 +8518,24 @@ impl FunctionLowerer<'_> {
         let case_bit = self.push_const_int(32)?;
         let ascii_zero = self.push_const_int(48)?;
         let ascii_a_offset = self.push_const_int(87)?;
-        let nine = self.push_const_int(57)?;
+        let ascii_a = self.push_const_int(97)?;
+        let five = self.push_const_int(5)?;
+        let nine = self.push_const_int(9)?;
         let lower = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, value, case_bit, OverflowBehavior::Wrap)?;
         let digit_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, ascii_zero, OverflowBehavior::Wrap)?;
         let letter_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, lower, ascii_a_offset, OverflowBehavior::Wrap)?;
-        let is_digit = self.push_compare(ComparisonOperator::LessEqualSigned, value, nine)?;
+        let letter_offset = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, lower, ascii_a, OverflowBehavior::Wrap)?;
+        // Wrapping subtraction followed by an unsigned upper bound checks
+        // both ends of each ASCII interval. The letter nibble itself is
+        // 10..=15, whereas its alphabet-validation offset is 0..=5.
+        let is_digit = self.push_compare(ComparisonOperator::LessEqualUnsigned, digit_value, nine)?;
+        let is_letter = self.push_compare(ComparisonOperator::LessEqualUnsigned, letter_offset, five)?;
+        let zero = self.push_const_int(0)?;
+        let one = self.push_const_int(1)?;
+        let letter_flag = self.lower_int_select(is_letter, one, zero)?;
+        let valid_flag = self.lower_int_select(is_digit, one, letter_flag)?;
+        let valid = self.push_compare(ComparisonOperator::Equal, valid_flag, one)?;
+        self.push_trap_unless(valid)?;
         let digit = self.lower_int_select(is_digit, digit_value, letter_value)?;
         Ok(digit)
     }
