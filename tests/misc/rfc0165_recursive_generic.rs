@@ -59,6 +59,28 @@ fn main(console: Console):
 "#, vec!["10".to_owned(), "9".to_owned()]);
 }
 
+#[test]
+fn recursive_lists_and_tuple_fields_execute_and_reclaim() {
+    assert_three_legs(r#"
+type Tree:
+    Leaf
+    Array(List(Tree))
+    Object(List((String, Tree)))
+
+fn main(console: Console):
+    let leaf = Leaf
+    let array = Array([leaf, leaf])
+    let object = Object([("items", array)])
+    match object:
+        Object(pairs) ->
+            let (name, value) = pairs[0]
+            match value:
+                Array(items) -> console.print("${name}: ${items.length()}")
+                _ -> console.print("unexpected value")
+        _ -> console.print("unexpected object")
+"#, vec!["items: 2".to_owned()]);
+}
+
 fn assert_three_legs(source: &str, expected: Vec<String>) {
 
     let checked = witchy::resolve_std_only_checked(source)

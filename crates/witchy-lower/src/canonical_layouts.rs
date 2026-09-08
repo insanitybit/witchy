@@ -368,6 +368,24 @@ impl LayoutProjection {
         let recursive_types = recursive_heap_types(&self.roots, &self.definitions);
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
+        // Reserve all nominal cycle breakers before constructing any body.
+        // A structural root such as List(Tree) may be visited before Tree;
+        // following its pointee must not recursively rebuild that list while
+        // the list's content-derived descriptor is still being constructed.
+        let mut recursive = recursive_types.iter().collect::<Vec<_>>();
+        recursive.sort_by_key(|ty| format!("{ty:?}"));
+        for ty in &recursive {
+            intern_recursive_nominal(&mut interner, ty)?;
+        }
+        for ty in recursive {
+            let nominal = intern_recursive_nominal(&mut interner, ty)?;
+            let body = intern_v1_layout_fields(
+                &mut interner, ty, &self.definitions, &recursive_types,
+                &mut HashSet::new(),
+            )?;
+            interner.bind_nominal(nominal, body)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        }
         for ty in self.roots {
             let root = intern_v1_layout(&mut interner, &ty, &self.definitions, &recursive_types)?;
             roots.insert(root);
@@ -398,22 +416,9 @@ fn intern_v1_layout_checked(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     let key = canonical_layout_type(ty, definitions);
     if recursive_types.contains(&key) {
-        let nominal = intern_recursive_nominal(interner, &key)?;
-        if interner.nominal_target(nominal).is_some() {
-            return Ok(nominal);
-        }
-        if !active.insert(key.clone()) {
-            // The identity is reserved before its body is visited. A back
-            // edge carries that identity into the physical pointer slot.
-            return Ok(nominal);
-        }
-        let result = intern_v1_layout_fields(interner, &key, definitions, recursive_types, active);
-        active.remove(&key);
-        let body = result?;
-        interner
-            .bind_nominal(nominal, body)
-            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-        return Ok(nominal);
+        // Bodies are bound separately by finish. References use only the
+        // reserved identity, regardless of whether its body is already bound.
+        return intern_recursive_nominal(interner, &key);
     }
     if !active.insert(key.clone()) {
         return Err(CanonicalLayoutError::UnsupportedType(format!(
@@ -800,6 +805,46 @@ mod tests {
         let mut definition = heap_definition(name, fields);
         definition.params = parameters.iter().map(|parameter| (*parameter).to_owned()).collect();
         definition
+    }
+
+    #[test]
+    fn recursive_container_layouts_keep_structural_lists_and_stable_bindings() {
+        fn bundle(list_first: bool) -> witchy_wir::layout::LayoutBundle {
+            let list = Type::Named("List".into(), vec![named("Tree")]);
+            let mut projection = LayoutProjection::default();
+            projection.definitions.insert("Tree".into(), heap_definition("Tree", vec![list.clone()]));
+            let order = if list_first { vec![list, named("Tree")] } else { vec![named("Tree"), list] };
+            for ty in order {
+                projection.visit_type(&ty).expect("finite container source graph");
+            }
+            projection.finish().expect("container recursion binds without eager descent")
+        }
+        let first = bundle(true);
+        assert_eq!(first.canonical_bytes(), bundle(false).canonical_bytes());
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&first.canonical_bytes())
+            .expect("closed recursive container catalog");
+        let list = first.roots().iter().copied().find(|root| {
+            matches!(layouts.get(*root).map(|layout| layout.kind()), Some(LayoutKind::PackedList { .. }))
+        }).expect("list retains its structural descriptor");
+        let LayoutKind::PackedList { element, .. } = layouts.get(list).unwrap().kind() else { unreachable!() };
+        let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
+            layouts.get(*element).unwrap().kind() else { panic!("list elements remain non-null owned references") };
+        let body = layouts.nominal_target(*pointee).expect("nominal child is bound");
+        let LayoutKind::PackedRecord { fields } = layouts.get(body).unwrap().kind() else { panic!("Tree body") };
+        assert!(matches!(layouts.get(fields[0]).unwrap().kind(),
+            LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if *pointee == list));
+    }
+
+    #[test]
+    fn recursive_container_layouts_bind_mutual_bodies_before_structural_roots() {
+        let list_b = Type::Named("List".into(), vec![named("B")]);
+        let mut projection = LayoutProjection::default();
+        projection.definitions.insert("A".into(), heap_definition("A", vec![list_b.clone()]));
+        projection.definitions.insert("B".into(), heap_definition("B", vec![named("A"), list_b]));
+        projection.visit_type(&named("A")).expect("mutual source graph");
+        let bundle = projection.finish().expect("a body never descends into another nominal body");
+        witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
+            .expect("all mutual bindings are closed");
     }
 
     #[test]
