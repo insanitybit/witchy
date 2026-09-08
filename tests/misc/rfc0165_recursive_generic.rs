@@ -39,6 +39,27 @@ fn main(console: Console):
 }
 
 #[test]
+fn jq_recursive_json_queries_execute_across_three_legs() {
+    let expected = [
+        ("user.name", r#""Ada""#),
+        ("user.roles", r#"["admin","dev"]"#),
+        ("user.roles.0", r#""admin""#),
+        ("user.roles.1", r#""dev""#),
+        ("count", "42"),
+        ("active", "true"),
+        ("user.missing", "(no such path)"),
+    ].into_iter().map(|(path, result)| format!("{path:<16}=> {result}")).collect();
+    assert_three_legs_with_config(
+        include_str!("../../examples/jq/src/jq.witchy"),
+        expected,
+        witchy_wir::canonical_interpreter::InterpreterConfig {
+            max_steps: 20_000_000,
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
 fn queens_shared_terminal_blocks_are_emitted_once() {
     assert_three_legs_with_config(include_str!("../../examples/queens/src/queens.witchy"), vec![
         "8-queens solutions: 92".to_owned(),
