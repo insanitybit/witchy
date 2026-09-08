@@ -251,6 +251,7 @@ pub enum GuardKind {
 pub enum LoadTransfer {
     CopyScalar,
     CloneShared,
+    ClonePresent,
     MoveUnique,
 }
 
@@ -748,6 +749,7 @@ pub enum CanonicalRuleId {
     Alloc,
     StaticData,
     Load,
+    InitNullableOwned,
     Store,
     /// Not an operation of its own: the extra judgment a `Load` or `Store` of
     /// a closure object's callable lane must pass. It has a rule row because
@@ -824,6 +826,7 @@ pub enum Operation {
         place: Place,
         transfer: LoadTransfer,
     },
+    InitNullableOwned { place: Place },
     Store {
         place: Place,
         value: ValueId,
@@ -924,6 +927,7 @@ impl Operation {
             Self::Alloc { .. } => CanonicalRuleId::Alloc,
             Self::StaticData { .. } => CanonicalRuleId::StaticData,
             Self::Load { .. } => CanonicalRuleId::Load,
+            Self::InitNullableOwned { .. } => CanonicalRuleId::InitNullableOwned,
             Self::Store { .. } => CanonicalRuleId::Store,
             Self::CopyBytes { .. } => CanonicalRuleId::CopyBytes,
             Self::MoveRange { .. } => CanonicalRuleId::MoveRange,

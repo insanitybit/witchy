@@ -849,6 +849,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::VarCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
         Operation::Guard { .. }
+        | Operation::InitNullableOwned { .. }
         | Operation::Store { .. }
         | Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
@@ -884,7 +885,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::Reclaim { object: value } => vec![*value],
         Operation::MakeInlineAggregate { fields, .. } => fields.clone(),
         Operation::ExtractInlineField { aggregate, .. } => vec![*aggregate],
-        Operation::Load { place, .. } => place_uses(place),
+        Operation::Load { place, .. } | Operation::InitNullableOwned { place } => place_uses(place),
         Operation::Store { place, value, .. } => {
             let mut result = place_uses(place);
             result.push(*value);
@@ -1285,6 +1286,7 @@ fn check_operation(
         Operation::Alloc { .. } => unsupported_memory(function, "Alloc"),
         Operation::StaticData { .. } => unsupported_memory(function, "StaticData"),
         Operation::Load { .. } => unsupported_memory(function, "Load"),
+        Operation::InitNullableOwned { .. } => unsupported_memory(function, "InitNullableOwned"),
         Operation::Store { .. } => unsupported_memory(function, "Store"),
         Operation::CopyBytes { .. } => unsupported_memory(function, "CopyBytes"),
         Operation::MoveRange { .. } => unsupported_memory(function, "MoveRange"),

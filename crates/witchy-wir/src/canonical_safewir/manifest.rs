@@ -248,6 +248,15 @@ pub const RULES: &[RuleEntry] = &[
         ],
     },
     RuleEntry {
+        rule: CanonicalRuleId::InitNullableOwned,
+        judgment: "check/memory.rs::MemoryChecker::init_nullable_owned",
+        predicate: "reserved pending nullable ownership integration; the initial catalog gate refuses nullable-owned storage",
+        interpreter: "refused before execution",
+        backend: RuleBackend::Refused,
+        admits: &[],
+        refuses: &[t(Check, "nullable_owned_slot_is_refused_at_the_initial_catalog_gate")],
+    },
+    RuleEntry {
         rule: CanonicalRuleId::Store,
         judgment: "check/memory.rs::MemoryChecker::store",
         predicate: "the object is uniquely owned and writable; a scalar store copies (a byte slot takes a `Size` the path proves fits a byte); a reference store moves a unique token or a shared clone into an empty slot and never overwrites a stored reference or an initialized prefix; the stored value is complete",
@@ -731,7 +740,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
     use CanonicalRuleId as R;
     let ordered = [
         R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
-        R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
+        R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
         R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
         R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
         R::TailCall, R::VarTailCall, R::Trap, R::Unreachable,
@@ -740,7 +749,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
         // Exhaustive by construction: adding a variant fails here.
         match rule {
             R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::Arithmetic | R::Compare | R::NarrowSize
-            | R::WidenSize | R::FloatUnary | R::Guard | R::Alloc | R::StaticData | R::Load | R::Store | R::CopyBytes
+            | R::WidenSize | R::FloatUnary | R::Guard | R::Alloc | R::StaticData | R::Load | R::InitNullableOwned | R::Store | R::CopyBytes
             | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue
             | R::Call | R::VarCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
