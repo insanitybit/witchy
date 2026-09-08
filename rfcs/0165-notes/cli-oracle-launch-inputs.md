@@ -22,5 +22,26 @@ env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
   parity_oracle_materializes_empty_and_nonempty_launch_arguments -- --nocapture
 ```
 
-No fresh corpus or full gate was run for this slice. The remaining recursive
-admission and nullable-collection work is separate.
+## Current execution evidence
+
+The standalone `tests/rfc0165_launch_arguments.rs` runner includes the existing
+launch-input fixtures without compiling unrelated `misc` modules. All five
+tests passed in 0.86 seconds:
+
+- real `minigrep` against a confined file;
+- UTF-8, empty arguments, and embedded NUL;
+- ownership across mutation and multiple argument-list parameters;
+- 300,000 proper-tail transfers;
+- rejection of unsupported entry reference types.
+
+The executable fixtures compare the source interpreter, SafeWIR oracle,
+independent expected output, and admitted Wasm, including zero-leak checks.
+
+```sh
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
+  CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-drop-worklist-target \
+  taskpolicy -c utility cargo test --test rfc0165_launch_arguments -- --nocapture
+```
+
+No fresh corpus or full gate was run for this slice. Recursive generic layout
+construction and the nullable-collection regression remain separate work.
