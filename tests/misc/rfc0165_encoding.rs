@@ -426,3 +426,99 @@ fn real_std_hex_decode_agrees_with_oracle_and_admitted_wasm() {
     assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
 }
+
+#[test]
+fn raw_base64_streaming_decoders_match_source_oracle_and_wasm() {
+    let cases = [
+        ("encoding.base64_decode_bytes_raw", "T", "${bytes.length(decoded)}", "0"),
+        ("encoding.base64_decode_bytes_raw", "TQ@rest", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+        ("encoding.base64_decode_bytes_raw", "T=Q", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+        ("encoding.base64_decode_bytes_raw", "T\\nQ", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+        ("encoding.base64_decode_bytes_raw", "TQ==", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+        ("encoding.base64_decode_bytes_raw", "TQ", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+        ("encoding.base64_decode_bytes_raw", "T\u{000b}Q", "${bytes.length(decoded)}", "0"),
+        ("encoding.base64_decode_bytes_raw", "T\t\n\u{000c}\rQ", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+        ("encoding.base64_decode_bytes_raw", "TWE=", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}:${bytes.at(decoded, 1)}", "2:77:97"),
+        ("encoding.base64_decode_bytes_raw", "TWE", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}:${bytes.at(decoded, 1)}", "2:77:97"),
+        ("encoding.base64_decode_bytes_raw", "TWFu", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}:${bytes.at(decoded, 1)}:${bytes.at(decoded, 2)}", "3:77:97:110"),
+        ("encoding.base64_decode_bytes_raw", "+///", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}:${bytes.at(decoded, 1)}:${bytes.at(decoded, 2)}", "3:251:255:255"),
+        ("encoding.base64url_decode_bytes_raw", "-__", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}:${bytes.at(decoded, 1)}", "2:251:255"),
+        ("encoding.base64url_decode_bytes_raw", "TQérest", "${bytes.length(decoded)}:${bytes.at(decoded, 0)}", "1:77"),
+    ];
+    let functions = cases
+        .iter()
+        .enumerate()
+        .map(|(index, (intrinsic, input, render, _expected))| {
+            format!(
+                "pub fn test_base64_{index}(console: Console):\n    let decoded = {intrinsic}(\"{input}\")\n    console.print(\"{render}\")\n"
+            )
+        })
+        .collect::<String>();
+    let calls = cases
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("    encoding.test_base64_{index}(console)\n"))
+        .collect::<String>();
+    let bundled = witchy_syntax::linker::bundled_source("encoding").expect("bundled encoding source");
+    let entry = format!("{bundled}\n{functions}");
+    let main = format!("import encoding\n\nfn main(console: Console):\n{calls}");
+    let mut pending = vec![("encoding".to_string(), entry), ("main".to_string(), main)];
+    let mut loaded = std::collections::HashSet::from(["encoding".to_string(), "main".to_string()]);
+    for &prelude in witchy_syntax::linker::PRELUDE_MODULES {
+        if loaded.insert(prelude.to_owned()) {
+            let source = witchy_syntax::linker::bundled_source(prelude).expect("bundled implicit prelude");
+            pending.push((prelude.to_owned(), source.to_owned()));
+        }
+    }
+    let mut sources = Vec::new();
+    while let Some((name, source)) = pending.pop() {
+        let module = witchy_syntax::parser::parse_module(&source).expect("bundled test module parses");
+        for import in module.imports {
+            if loaded.insert(import.clone()) {
+                let dependency = witchy_syntax::linker::bundled_source(&import).expect("bundled dependency");
+                pending.push((import, dependency.to_owned()));
+            }
+        }
+        sources.push((name, source.into_bytes()));
+    }
+    use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", env!("CARGO_PKG_VERSION")).unwrap();
+    let application = PackageCoordinate::new(PackageSource::Workspace, "witchy/source", env!("CARGO_PKG_VERSION")).unwrap();
+    let assignments: Vec<_> = sources.iter().map(|(name, _)| {
+        let owner = if name == "main" {
+            ModuleLoadIdentity::new(application.clone(), ["source", "main"]).unwrap()
+        } else {
+            ModuleLoadIdentity::new(toolchain.clone(), ["std", name.as_str()]).unwrap()
+        };
+        (name.clone(), owner)
+    }).collect();
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+    let checked = witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources, "main", &std::collections::HashSet::from(["main".to_string()]), owners,
+    ).expect("authenticated raw base64 fixture checks");
+    // The private raw intrinsic is intentionally absent from the source
+    // interpreter's ordinary native bindings. Keep the fixed native contract
+    // expected before artifact compilation so a contract mismatch is visible
+    // even when canonical admission fails.
+    let expected = vec![
+        "0", "1:77", "1:77", "1:77", "1:77", "1:77", "0", "1:77", "2:77:97", "2:77:97",
+        "3:77:97:110", "3:251:255:255", "2:251:255", "1:77",
+    ].into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let declared_expected = cases.iter().map(|(_, _, _, expected)| (*expected).to_owned()).collect::<Vec<_>>();
+    assert_eq!(declared_expected, expected, "raw base64 source contract expected output");
+    let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("raw base64 decoders admit");
+    let entry = artifact.entry().expect("raw base64 entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("raw base64 validates for oracle");
+    let oracle = interpret_program(&validated, function, arguments, InterpreterConfig::default()).expect("oracle runs raw base64 fixture");
+    assert_eq!(oracle.output, expected, "canonical oracle must match raw base64 source contract");
+    assert_eq!(oracle.leaked_objects, 0, "raw base64 oracle must not leak");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+        .expect("spawn admitted raw base64 fixture");
+    vm.run().expect("Wasm runs raw base64 fixture");
+    assert_eq!(vm.output(), expected, "admitted Wasm must match raw base64 source contract");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
+}
