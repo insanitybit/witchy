@@ -177,6 +177,10 @@ pub enum FieldKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PointerSlot {
     Owned,
+    /// An explicitly catalog-declared owned edge which may be absent in storage.
+    /// It is not a nullable SSA reference and is rejected by canonical SafeWIR
+    /// until presence-aware operations and destruction are admitted together.
+    OwnedNullable,
     Borrowed,
     Raw,
 }
@@ -2714,6 +2718,7 @@ impl Encoder {
             PointerSlot::Owned => 0,
             PointerSlot::Borrowed => 1,
             PointerSlot::Raw => 2,
+            PointerSlot::OwnedNullable => 3,
         });
     }
 
@@ -3045,6 +3050,7 @@ impl<'a> Decoder<'a> {
             0 => Ok(PointerSlot::Owned),
             1 => Ok(PointerSlot::Borrowed),
             2 => Ok(PointerSlot::Raw),
+            3 => Ok(PointerSlot::OwnedNullable),
             _ => Err(LayoutError::Decode {
                 offset,
                 reason: "unknown pointer slot semantics",

@@ -253,6 +253,11 @@ fn check_candidate<S: ModuleStage>(
             "recursive nominal values require canonical ownership and destruction support".into(),
         ));
     }
+    if has_unadmitted_nullable_owned_slot(&layouts) {
+        return Err(InitialCheckError::InvalidLayoutBundle(
+            "nullable owned slots require canonical presence and destruction support".into(),
+        ));
+    }
     check_static_data(candidate, &layouts)?;
     let signatures = index_signatures(candidate.signatures())?;
     let imports = index_imports(candidate.imports())?;
@@ -284,6 +289,27 @@ fn check_candidate<S: ModuleStage>(
     }
 
     Ok(())
+}
+
+fn has_unadmitted_nullable_owned_slot(layouts: &crate::layout::LayoutInterner) -> bool {
+    layouts.iter().any(|(_, descriptor)| {
+        matches!(
+            descriptor.kind(),
+            crate::layout::LayoutKind::RuntimePointerValueSlot {
+                semantics: crate::layout::PointerSlot::OwnedNullable,
+                ..
+            } | crate::layout::LayoutKind::RuntimePointerBuffer {
+                semantics: crate::layout::PointerSlot::OwnedNullable,
+                ..
+            }
+        ) || descriptor.fields().iter().any(|field| matches!(
+            field.kind(),
+            crate::layout::FieldKind::Pointer {
+                slot: crate::layout::PointerSlot::OwnedNullable,
+                ..
+            }
+        ))
+    })
 }
 
 fn check_static_data<S: ModuleStage>(
@@ -1612,7 +1638,7 @@ mod tests {
     };
     use super::{InitialCheckError, check_initial};
     use super::super::{CallArgument, StoreTransfer};
-    use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, RcHeader, ScalarKind};
+    use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
     // The closure-object subset: one `PackedRecord` whose slot 0 is the
     // callable lane and whose slot 1 is one Int capture. The driver builds
@@ -1627,6 +1653,41 @@ mod tests {
     const CALL_RESULT: ValueId = ValueId::new(5);
     const ENVIRONMENT: ValueId = ValueId::new(6);
     const CAPTURE_READ: ValueId = ValueId::new(7);
+
+    #[test]
+    fn nullable_owned_slot_is_refused_at_the_initial_catalog_gate() {
+        let mut layouts = LayoutInterner::new();
+        let pointee = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let nullable = layouts
+            .intern_runtime_pointer_value_slot(pointee, PointerSlot::OwnedNullable)
+            .unwrap();
+        assert!(super::has_unadmitted_nullable_owned_slot(&layouts));
+        let bundle = LayoutBundle::from_interner(&layouts, [nullable]).unwrap();
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([9; 32]),
+            layouts: bundle,
+            signatures: Vec::new(),
+            imports: Vec::new(),
+            functions: Vec::new(),
+            proper_tail_sites: Vec::new(),
+        });
+        assert!(matches!(
+            check_initial(candidate),
+            Err(InitialCheckError::InvalidLayoutBundle(message))
+                if message == "nullable owned slots require canonical presence and destruction support"
+        ));
+    }
+
+    #[test]
+    fn nullable_owned_pointer_buffer_is_refused_at_the_initial_catalog_gate() {
+        let mut layouts = LayoutInterner::new();
+        let pointee = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        layouts
+            .intern_runtime_pointer_buffer(pointee, PointerSlot::OwnedNullable)
+            .unwrap();
+        assert!(super::has_unadmitted_nullable_owned_slot(&layouts));
+    }
 
     fn closure_layout() -> (LayoutBundle, LayoutId) {
         let mut layouts = LayoutInterner::new();
