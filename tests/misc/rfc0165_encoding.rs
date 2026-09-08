@@ -496,29 +496,35 @@ fn raw_base64_streaming_decoders_match_source_oracle_and_wasm() {
     let checked = witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
         sources, "main", &std::collections::HashSet::from(["main".to_string()]), owners,
     ).expect("authenticated raw base64 fixture checks");
-    // The private raw intrinsic is intentionally absent from the source
-    // interpreter's ordinary native bindings. Keep the fixed native contract
-    // expected before artifact compilation so a contract mismatch is visible
-    // even when canonical admission fails.
-    let expected = vec![
-        "0", "1:77", "1:77", "1:77", "1:77", "1:77", "0", "1:77", "2:77:97", "2:77:97",
-        "3:77:97:110", "3:251:255:255", "2:251:255", "1:77",
-    ].into_iter().map(str::to_owned).collect::<Vec<_>>();
-    let declared_expected = cases.iter().map(|(_, _, _, expected)| (*expected).to_owned()).collect::<Vec<_>>();
-    assert_eq!(declared_expected, expected, "raw base64 source contract expected output");
+    let expected = cases.iter().map(|(_, _, _, expected)| (*expected).to_owned()).collect::<Vec<_>>();
+    let native_output = cases.iter().map(|(intrinsic, input, render, _)| {
+        let native = witchy_runtime::native::lookup(intrinsic).expect("cataloged raw base64 native binding");
+        let native_input = input.replace("\\n", "\n");
+        let value = native(&[witchy_runtime::value::NativeValue::Str(native_input)])
+            .expect("audited raw base64 native reference");
+        let witchy_runtime::value::NativeValue::Bytes(bytes) = value else {
+            panic!("raw base64 native reference returned a non-Bytes value");
+        };
+        let mut fields = vec![bytes.len().to_string()];
+        for index in 0..render.matches("bytes.at(decoded,").count() {
+            fields.push(bytes[index].to_string());
+        }
+        fields.join(":")
+    }).collect::<Vec<_>>();
+    assert_eq!(native_output, expected, "audited native raw base64 reference contract");
     let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("raw base64 decoders admit");
     let entry = artifact.entry().expect("raw base64 entry");
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
     let validated = codegen::validate_checked_module_for_oracle(&checked).expect("raw base64 validates for oracle");
     let oracle = interpret_program(&validated, function, arguments, InterpreterConfig::default()).expect("oracle runs raw base64 fixture");
-    assert_eq!(oracle.output, expected, "canonical oracle must match raw base64 source contract");
+    assert_eq!(oracle.output, native_output, "canonical oracle must match audited native reference");
     assert_eq!(oracle.leaked_objects, 0, "raw base64 oracle must not leak");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime
         .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
         .expect("spawn admitted raw base64 fixture");
     vm.run().expect("Wasm runs raw base64 fixture");
-    assert_eq!(vm.output(), expected, "admitted Wasm must match raw base64 source contract");
+    assert_eq!(vm.output(), native_output, "admitted Wasm must match audited native reference");
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
 }
