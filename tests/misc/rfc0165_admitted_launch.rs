@@ -14,6 +14,8 @@ use witchy::runtime::{Capabilities, Runtime};
 mod launch_arguments;
 #[path = "rfc0165_drop_worklist.rs"]
 mod drop_worklist;
+#[path = "rfc0165_recursive_source.rs"]
+mod recursive_source;
 
 /// Run an admitted program and report a runtime trap instead of panicking,
 /// for fixtures whose expected outcome is the trap.

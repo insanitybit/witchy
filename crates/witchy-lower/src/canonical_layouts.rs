@@ -4,7 +4,7 @@
 //! witness. Callers cannot provide a second layout graph and cannot make a
 //! layout-bearing type appear supported by supplying a matching descriptor.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
@@ -174,6 +174,8 @@ fn project_layouts(
         definitions,
         closures: BTreeMap::new(),
         capture_slots: closure_capture_slots(source),
+        visiting: HashSet::new(),
+        visited: HashSet::new(),
     };
 
     for item in &typed.module().items {
@@ -242,10 +244,25 @@ struct LayoutProjection {
     /// slots its closures need.
     closures: BTreeMap<String, (Type, usize)>,
     capture_slots: HashMap<Type, usize>,
+    visiting: HashSet<Type>,
+    visited: HashSet<Type>,
 }
 
 impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
+        let key = ty.unqualified().clone();
+        if self.visited.contains(&key) || !self.visiting.insert(key.clone()) {
+            return Ok(());
+        }
+        let result = self.visit_type_fields(&key);
+        self.visiting.remove(&key);
+        if result.is_ok() {
+            self.visited.insert(key);
+        }
+        result
+    }
+
+    fn visit_type_fields(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         // A dictionary is laid out as its canonical tuple of the key list
         // and the value list, before any aggregate rule sees the name.
         if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
@@ -366,6 +383,32 @@ fn intern_v1_layout(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
+    intern_v1_layout_checked(interner, ty, definitions, &mut HashSet::new())
+}
+
+fn intern_v1_layout_checked(
+    interner: &mut LayoutInterner,
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    active: &mut HashSet<Type>,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
+    let key = ty.unqualified().clone();
+    if !active.insert(key.clone()) {
+        return Err(CanonicalLayoutError::UnsupportedType(format!(
+            "recursive nominal layout {key:?} requires nullable owned-slot lowering"
+        )));
+    }
+    let result = intern_v1_layout_fields(interner, ty, definitions, active);
+    active.remove(&key);
+    result
+}
+
+fn intern_v1_layout_fields(
+    interner: &mut LayoutInterner,
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    active: &mut HashSet<Type>,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
         // String is `[u32 byte_length][UTF-8 bytes...]`. RawByte is
         // representation-only and grants no scalar or pointer authority.
@@ -380,7 +423,7 @@ fn intern_v1_layout(
         && name == "List"
         && arguments.len() == 1
     {
-        let element = intern_v1_layout(interner, &arguments[0], definitions)?;
+        let element = intern_v1_layout_checked(interner, &arguments[0], definitions, active)?;
         let element = if !is_scalar_type(&arguments[0]) {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
@@ -393,7 +436,7 @@ fn intern_v1_layout(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
-        return intern_v1_layout(interner, &tuple, definitions);
+        return intern_v1_layout_checked(interner, &tuple, definitions, active);
     }
     if let Some(shape) = scalar_aggregate_shape(ty, definitions)
         && !shape.packed
@@ -408,7 +451,7 @@ fn intern_v1_layout(
                     .intern_scalar(scalar)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
             } else {
-                let pointee = intern_v1_layout(interner, field, definitions)?;
+                let pointee = intern_v1_layout_checked(interner, field, definitions, active)?;
                 interner
                     .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
@@ -575,6 +618,47 @@ mod tests {
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned(), Vec::new())
+    }
+
+    fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
+        let mut definition = witchy_types::canonical_aggregates::ScalarAggregateShape {
+            name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false,
+        }.packed_view();
+        definition.packed = false;
+        definition
+    }
+
+    #[test]
+    fn recursive_layout_projection_collects_finite_roots_and_refuses_expansion() {
+        let mut projection = LayoutProjection::default();
+        projection.definitions.insert("Tree".into(), heap_definition("Tree", vec![named("Int"), named("Tree")]));
+        projection.visit_type(&named("Tree")).expect("source root graph is finite");
+        assert_eq!(projection.roots, vec![named("Tree")]);
+        let error = projection.finish().expect_err("recursive source admission is still sealed");
+        assert!(error.to_string().contains("requires nullable owned-slot lowering"));
+    }
+
+    #[test]
+    fn recursive_layout_projection_handles_mutual_cycles() {
+        let mut projection = LayoutProjection::default();
+        projection.definitions.insert("A".into(), heap_definition("A", vec![named("B")]));
+        projection.definitions.insert("B".into(), heap_definition("B", vec![named("A")]));
+        projection.visit_type(&named("A")).expect("mutual root graph is finite");
+        assert_eq!(projection.roots.len(), 2);
+        let error = projection.finish().expect_err("mutual layout expansion must refuse");
+        assert!(error.to_string().contains("requires nullable owned-slot lowering"));
+    }
+
+    #[test]
+    fn recursive_layout_projection_keeps_nonrecursive_nested_aggregates() {
+        let mut projection = LayoutProjection::default();
+        for (name, field) in [("A", "B"), ("B", "C"), ("C", "String")] {
+            projection.definitions.insert(name.into(), heap_definition(name, vec![named(field)]));
+        }
+        projection.visit_type(&named("A")).expect("nested source types are supported");
+        projection.visit_type(&named("A")).expect("revisiting a root is harmless");
+        assert_eq!(projection.roots.len(), 4);
+        projection.finish().expect("acyclic owned fields retain concrete layouts");
     }
 
     #[test]
