@@ -28,7 +28,7 @@ fn main(console: Console):
 
 #[test]
 fn generic_templates_do_not_shift_executable_tail_site_owners() {
-    assert_three_legs(include_str!("../examples/generic_stack/src/generic_stack.witchy"), vec![
+    assert_three_legs(include_str!("../../examples/generic_stack/src/generic_stack.witchy"), vec![
         "nums size:  3".to_owned(),
         "words size: 2".to_owned(),
         "nums top:   1".to_owned(),

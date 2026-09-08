@@ -8,7 +8,7 @@ fn recursive_calc_matches_expected_results_and_reclaims_objects() {
     use witchy_wir::canonical_safewir::FunctionId;
 
     let checked = witchy::resolve_std_only_checked(
-        include_str!("../examples/calc/src/calc.witchy"),
+        include_str!("../../examples/calc/src/calc.witchy"),
     ).expect("checked calc source");
     let cases = [
         ("2 + 3 * 4", "14"),
