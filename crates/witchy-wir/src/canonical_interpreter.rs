@@ -1525,28 +1525,34 @@ impl<'a> Engine<'a> {
     }
 
     fn release(&mut self, object: u64) -> Result<(), InterpretError> {
-        let remaining = {
-            let object_state = self.object_mut(object)?;
-            match object_state.storage {
-                RuntimeStorage::StaticData => return Ok(()),
-                RuntimeStorage::Allocation(AllocationClass::ReferenceCounted) => {}
-                RuntimeStorage::Allocation(_) => {
-                    return Err(InterpretError::ObjectNotReferenceCounted(object));
+        let mut pending = vec![object];
+        while let Some(object) = pending.pop() {
+            let remaining = {
+                let object_state = self.object_mut(object)?;
+                match object_state.storage {
+                    RuntimeStorage::StaticData => continue,
+                    RuntimeStorage::Allocation(AllocationClass::ReferenceCounted) => {}
+                    RuntimeStorage::Allocation(_) => {
+                        return Err(InterpretError::ObjectNotReferenceCounted(object));
+                    }
                 }
-            }
-            object_state.references = u32::try_from(object_state.references)
-                .ok()
-                .and_then(|references| references.checked_sub(1))
-                .map(u64::from)
-                .ok_or(InterpretError::ReferenceCountUnderflow(object))?;
-            object_state.references
-        };
-        if remaining == 0 {
-            // Pointer-bearing reclamation releases every initialized child.
-            let cells = self.objects.remove(&object).map(|object| object.cells).unwrap_or_default();
-            for cell in cells.into_values() {
-                if let InterpreterValue::ObjectRef(child) = cell {
-                    self.release(child)?;
+                object_state.references = u32::try_from(object_state.references)
+                    .ok()
+                    .and_then(|references| references.checked_sub(1))
+                    .map(u64::from)
+                    .ok_or(InterpretError::ReferenceCountUnderflow(object))?;
+                object_state.references
+            };
+            if remaining == 0 {
+                let cells = self.objects.remove(&object).map(|object| object.cells).unwrap_or_default();
+                // Reverse insertion preserves the previous depth-first cell
+                // order without using one Rust stack frame per nested value.
+                // Each edge transfers one owned token, including repeated
+                // edges to a shared child; do not deduplicate the worklist.
+                for cell in cells.into_values().rev() {
+                    if let InterpreterValue::ObjectRef(child) = cell {
+                        pending.push(child);
+                    }
                 }
             }
         }
@@ -1874,6 +1880,62 @@ mod tests {
     fn empty_layouts() -> LayoutBundle {
         LayoutBundle::from_interner(&LayoutInterner::new(), [])
             .expect("empty canonical layout bundle")
+    }
+
+    fn release_test_object(references: u64, children: &[u64]) -> Object {
+        Object {
+            layout: LayoutId::from_bytes([0; 32]),
+            storage: RuntimeStorage::Allocation(AllocationClass::ReferenceCounted),
+            extent: RuntimeExtent::FixedBytes(children.len() as u64 * 8),
+            references,
+            immutable: false,
+            cells: children.iter().enumerate().map(|(index, child)|
+                (CellKey::Field(index as u32), InterpreterValue::ObjectRef(*child))
+            ).collect(),
+        }
+    }
+
+    #[test]
+    fn iterative_release_drops_a_deep_chain_without_host_recursion() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        const DEPTH: u64 = 25_000;
+        for object in 0..DEPTH {
+            let children = if object + 1 < DEPTH { vec![object + 1] } else { vec![] };
+            engine.objects.insert(object, release_test_object(1, &children));
+        }
+        engine.release(0).unwrap();
+        assert!(engine.objects.is_empty());
+    }
+
+    #[test]
+    fn iterative_release_counts_shared_edges_and_keeps_external_owners() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        engine.objects.insert(0, release_test_object(1, &[1, 1]));
+        engine.objects.insert(1, release_test_object(3, &[2]));
+        engine.objects.insert(2, release_test_object(1, &[]));
+        engine.release(0).unwrap();
+        assert_eq!(engine.objects.len(), 2);
+        assert_eq!(engine.objects[&1].references, 1);
+        engine.release(1).unwrap();
+        assert!(engine.objects.is_empty());
+    }
+
+    #[test]
+    fn iterative_release_preserves_static_children_and_refuses_underflow() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        engine.objects.insert(0, release_test_object(1, &[1]));
+        let mut immortal = release_test_object(1, &[]);
+        immortal.storage = RuntimeStorage::StaticData;
+        engine.objects.insert(1, immortal);
+        engine.release(0).unwrap();
+        assert_eq!(engine.objects.len(), 1);
+        assert_eq!(engine.objects[&1].references, 1);
+        engine.objects.insert(2, release_test_object(0, &[]));
+        assert!(matches!(engine.release(2), Err(InterpretError::ReferenceCountUnderflow(2))));
+        assert_eq!(engine.objects[&2].references, 0);
     }
 
     fn packed_u32_layout() -> (LayoutBundle, LayoutId) {
