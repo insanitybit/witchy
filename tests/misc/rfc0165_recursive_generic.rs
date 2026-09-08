@@ -39,6 +39,25 @@ fn main(console: Console):
 }
 
 #[test]
+fn queens_shared_terminal_blocks_are_emitted_once() {
+    assert_three_legs_with_config(include_str!("../../examples/queens/src/queens.witchy"), vec![
+        "8-queens solutions: 92".to_owned(),
+        "first solution:".to_owned(),
+        "Q.......".to_owned(),
+        "....Q...".to_owned(),
+        ".......Q".to_owned(),
+        ".....Q..".to_owned(),
+        "..Q.....".to_owned(),
+        "......Q.".to_owned(),
+        ".Q......".to_owned(),
+        "...Q....".to_owned(),
+    ], witchy_wir::canonical_interpreter::InterpreterConfig {
+        max_steps: 20_000_000,
+        ..Default::default()
+    });
+}
+
+#[test]
 fn generic_templates_do_not_shift_executable_tail_site_owners() {
     assert_three_legs(include_str!("../../examples/generic_stack/src/generic_stack.witchy"), vec![
         "nums size:  3".to_owned(),
@@ -119,7 +138,14 @@ fn main(console: Console):
 }
 
 fn assert_three_legs(source: &str, expected: Vec<String>) {
+    assert_three_legs_with_config(source, expected, Default::default());
+}
 
+fn assert_three_legs_with_config(
+    source: &str,
+    expected: Vec<String>,
+    config: witchy_wir::canonical_interpreter::InterpreterConfig,
+) {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("recursive generic source checks");
     let source_output = witchy::interpreter::run_module_args(
@@ -146,7 +172,7 @@ fn assert_three_legs(source: &str, expected: Vec<String>) {
         &validated,
         function,
         capabilities,
-        Default::default(),
+        config,
     )
     .expect("canonical oracle executes both concrete Stack instantiations");
     assert_eq!(oracle.output, expected);

@@ -3128,11 +3128,9 @@ impl StructuredEmitter<'_> {
     /// True only for a loop-leaving tail that can be emitted inside the loop:
     /// it cannot return to `header`, and the structural walk accepts only
     /// terminal paths or recognized nested loops with recursively checked
-    /// exits; this is not a proof of runtime termination. No nonterminal
-    /// cleanup block may be shared with code outside that loop. A shared
-    /// terminal sink is not presumed empty: normal edge-argument transfer and
-    /// single-emission rules still apply, and an unstructured duplicate
-    /// remains refused.
+    /// exits; this is not a proof of runtime termination. No block, including
+    /// a terminal sink, may be shared with code outside that loop and tail.
+    /// Shared sinks remain continuation candidates for single emission.
     fn is_exclusive_terminal_loop_tail(
         &self,
         start: crate::canonical_safewir::BlockId,
@@ -3147,9 +3145,8 @@ impl StructuredEmitter<'_> {
             return Ok(false);
         }
         for reached in &reach {
-            if self.is_terminal(*reached)? {
-                continue;
-            }
+            // A terminal sink shared with another continuation must remain a
+            // merge, otherwise structured emission can visit its block twice.
             if self
                 .predecessors(*reached)?
                 .into_iter()
@@ -5553,9 +5550,7 @@ impl PlanEmitter<'_> {
             return Ok(false);
         }
         for reached in &reach {
-            if self.is_terminal(*reached)? {
-                continue;
-            }
+            // Match the encoder's exclusivity rule for terminal sinks too.
             if self
                 .predecessors(*reached)?
                 .into_iter()
