@@ -388,22 +388,18 @@ esac
 # fixture flows over such programs) are red by policy, not by defect. They are
 # preserved, listed one per line in scripts/rfc0165-deferred-tests.txt, and
 # excluded from the blocking gate by exact binary id and test name; nothing
-# else is excluded. `--full` and an explicitly EMPTY WITCHY_GATE_DEFERRED run
-# them. The list is reviewed in rfcs/0165-acceptance-ledger.md; a test leaves
-# it when its family is admitted, never to hide a defect in an admitted one.
+# else is excluded. The filterset is produced by ONE script,
+# scripts/rfc0165-deferred-filter.sh, which CI consumes too, so the gate and CI
+# cannot drift; it also refuses to defer the native security suites. `--full`
+# and an explicitly EMPTY WITCHY_GATE_DEFERRED run the deferred tests. The
+# list is reviewed in rfcs/0165-acceptance-ledger.md; a test leaves it when
+# its family is admitted, never to hide a defect in an admitted one.
 gate_deferred="${WITCHY_GATE_DEFERRED-scripts/rfc0165-deferred-tests.txt}"
 [ "$full" -eq 1 ] && gate_deferred=""
 deferred_excl=""
 if [ -n "$gate_deferred" ]; then
-    if [ ! -r "$gate_deferred" ]; then
-        echo "check.sh: WITCHY_GATE_DEFERRED names an unreadable list '$gate_deferred'" >&2; exit 2
-    fi
-    deferred_terms=""
-    while read -r deferred_binary deferred_test _; do
-        case "$deferred_binary" in ''|'#'*) continue ;; esac
-        deferred_terms="${deferred_terms:+$deferred_terms or }(binary_id(=$deferred_binary) and test(=$deferred_test))"
-    done < "$gate_deferred"
-    [ -n "$deferred_terms" ] && deferred_excl="not ($deferred_terms)"
+    deferred_excl="$(./scripts/rfc0165-deferred-filter.sh "$gate_deferred")" || exit 2
+    [ "$deferred_excl" = "all()" ] && deferred_excl=""
 fi
 
 gate_ungated="${WITCHY_GATE_UNGATED-glamour grimoire}"

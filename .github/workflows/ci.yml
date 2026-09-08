@@ -85,7 +85,10 @@ jobs:
       - name: Unit + integration tests (partition ${{ matrix.shard }}/4)
         env:
           SHARD: ${{ matrix.shard }}
-        run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --partition "count:${SHARD}/4"
+        # The RFC-0165 deferred-feature tests are excluded by the same script the
+        # merge gate uses (scripts/rfc0165-deferred-filter.sh), never by an
+        # expression written here; the native security suites stay mandatory.
+        run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --partition "count:${SHARD}/4" -E "$(./scripts/rfc0165-deferred-filter.sh)"
 
   # SBPL is undocumented and version-sensitive, and a preamble that an OS
   # upgrade invalidates fails as a SIGABRT in dyld with no stderr and no
