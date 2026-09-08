@@ -3126,9 +3126,13 @@ impl StructuredEmitter<'_> {
     }
 
     /// True only for a loop-leaving tail that can be emitted inside the loop:
-    /// every path terminates without returning to `header`, and no nonterminal
-    /// cleanup block is shared with code outside that loop.  A terminal sink
-    /// may be shared: it has no successor or cleanup operation to duplicate.
+    /// it cannot return to `header`, and the structural walk accepts only
+    /// terminal paths or recognized nested loops with recursively checked
+    /// exits; this is not a proof of runtime termination. No nonterminal
+    /// cleanup block may be shared with code outside that loop. A shared
+    /// terminal sink is not presumed empty: normal edge-argument transfer and
+    /// single-emission rules still apply, and an unstructured duplicate
+    /// remains refused.
     fn is_exclusive_terminal_loop_tail(
         &self,
         start: crate::canonical_safewir::BlockId,
