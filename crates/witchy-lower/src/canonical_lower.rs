@@ -1471,6 +1471,14 @@ impl<'a> FunctionLowerer<'a> {
             .get(name)
             .or_else(|| name.rsplit('.').next().and_then(|bare| self.definitions.get(bare)))
     }
+
+    fn physical_descriptor(
+        &self,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Option<&witchy_wir::layout::LayoutDescriptor> {
+        let physical = self.layouts.resolve_nominal(layout).ok()?;
+        self.layouts.get(physical)
+    }
 }
 
 fn base64_encode_max_input() -> u64 {
@@ -2222,7 +2230,7 @@ impl FunctionLowerer<'_> {
             // every arm or none at all.
             let fixed_layout = values.iter().all(|value| {
                 matches!(self.values[value], ValueType::Ref(layout)
-                    if matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_))))
+                    if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_))))
             });
             let mut extents = Vec::with_capacity(values.len());
             for ((end, _), value) in arms.iter().zip(&values) {
@@ -2390,7 +2398,7 @@ impl FunctionLowerer<'_> {
         // fresh token, shared otherwise.
         let fixed_result_phi = result_type.and_then(|(then_value, else_value, result_type)| {
             let ValueType::Ref(layout) = result_type else { return None };
-            let fixed = matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
+            let fixed = matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
             (fixed && self.shared_phi_eligible(then_value) && self.shared_phi_eligible(else_value)).then(|| {
                 if all_tokens && !self.known_shared_value(then_value) && !self.known_shared_value(else_value) {
                     Ownership::Unique
@@ -2696,7 +2704,7 @@ impl FunctionLowerer<'_> {
         }
         let fixed_result_phi = result_type.and_then(|result_type| {
             let ValueType::Ref(layout) = result_type else { return None };
-            let fixed = matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
+            let fixed = matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)));
             (fixed && !result_values.is_empty() && result_values.iter().all(|value| self.shared_phi_eligible(*value))).then(|| {
                 if all_tokens && result_values.iter().all(|value| !self.known_shared_value(*value)) {
                     Ownership::Unique
@@ -2881,7 +2889,7 @@ impl FunctionLowerer<'_> {
         let ValueType::Ref(layout) = self.values[&scrutinee] else {
             return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
         };
-        let descriptor = self.layouts.get(layout).ok_or(CanonicalLoweringError::UnsupportedExpression("list pattern layout"))?;
+        let descriptor = self.physical_descriptor(layout).ok_or(CanonicalLoweringError::UnsupportedExpression("list pattern layout"))?;
         let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
             return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
         };
@@ -4190,7 +4198,7 @@ impl FunctionLowerer<'_> {
                 // carries no extent lanes and is never pushed in place; it
                 // follows the general rule below.
                 let fixed_layout = matches!(self.values[&object], ValueType::Ref(layout)
-                    if self.layouts.get(layout).is_some_and(|descriptor| matches!(descriptor.size(), witchy_wir::layout::LayoutSize::Fixed(_))));
+                    if self.physical_descriptor(layout).is_some_and(|descriptor| matches!(descriptor.size(), witchy_wir::layout::LayoutSize::Fixed(_))));
                 if !matches!(self.values[&object], ValueType::Ref(_))
                     || (!fixed_layout && !tracked.iter().any(|tracked| tracked == name))
                 {
@@ -5072,7 +5080,7 @@ impl FunctionLowerer<'_> {
                 for item in items {
                     values.push(self.lower_expr(item)?);
                 }
-                self.lower_aggregate(&shape, 0, values)
+                self.lower_aggregate_for_source(&source_type, &shape, 0, values)
             }
             Expr::Ctor { name, args } => self.lower_record_constructor(expression, name, args),
             Expr::AnonCtor { .. } => {
@@ -5187,7 +5195,7 @@ impl FunctionLowerer<'_> {
         for argument in arguments {
             values.push(self.lower_expr(argument)?);
         }
-        self.lower_aggregate(&shape, index, values)
+        self.lower_aggregate_for_source(&source_type, &shape, index, values)
     }
 
     /// Allocate an immutable reference-counted scalar aggregate holding
@@ -5196,6 +5204,26 @@ impl FunctionLowerer<'_> {
     /// fully initialized.
     fn lower_aggregate(
         &mut self,
+        shape: &ScalarAggregateShape,
+        index: usize,
+        payload: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_aggregate_with_source(None, shape, index, payload)
+    }
+
+    fn lower_aggregate_for_source(
+        &mut self,
+        source_type: &Type,
+        shape: &ScalarAggregateShape,
+        index: usize,
+        payload: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_aggregate_with_source(Some(source_type), shape, index, payload)
+    }
+
+    fn lower_aggregate_with_source(
+        &mut self,
+        source_type: Option<&Type>,
         shape: &ScalarAggregateShape,
         index: usize,
         payload: Vec<ValueId>,
@@ -5214,7 +5242,7 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        self.lower_heap_record_with_slots(&shape.name, &shape.fields, values, false, shape.tagged)
+        self.lower_heap_record_with_slots(source_type, &shape.name, &shape.fields, values, false, shape.tagged)
     }
 
     /// `lower_aggregate` whose reference payloads are fresh owned tokens the
@@ -5239,7 +5267,7 @@ impl FunctionLowerer<'_> {
             };
             values.push(value);
         }
-        self.lower_heap_record_with_slots(&shape.name, &shape.fields, values, true, shape.tagged)
+        self.lower_heap_record_with_slots(None, &shape.name, &shape.fields, values, true, shape.tagged)
     }
 
     fn push_zero(&mut self, value_type: ValueType) -> Result<ValueId, CanonicalLoweringError> {
@@ -5273,7 +5301,7 @@ impl FunctionLowerer<'_> {
         // shared clone, the default its own token, which weakens); a string
         // or list phi also carries count and capacity lanes.
         let dynamic_payload = matches!(payload_type, ValueType::Ref(layout)
-            if matches!(self.layouts.get(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Dynamic { .. })));
+            if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Dynamic { .. })));
         let join = if dynamic_payload {
             self.new_block(&[payload_type, ValueType::Size, ValueType::Size])?
         } else {
@@ -5431,7 +5459,7 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::MissingBinding(field_name.clone()));
             }
         }
-        self.lower_heap_record(name, &field_types, values)
+        self.lower_heap_record_for_source(&source_type, name, &field_types, values)
     }
 
     /// Allocate an immutable reference-counted record and store its fields.
@@ -5468,7 +5496,7 @@ impl FunctionLowerer<'_> {
             let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
             slots.push(self.load_record_field(value, index, value_type)?);
         }
-        self.lower_heap_record(&shape.name, &shape.fields, slots)
+        self.lower_heap_record_for_source(ty, &shape.name, &shape.fields, slots)
     }
 
     /// A fresh empty value for an aggregate slot no variant payload fills:
@@ -5525,7 +5553,7 @@ impl FunctionLowerer<'_> {
                 for field in &shape.fields {
                     slots.push(self.push_empty_value(field)?);
                 }
-                self.lower_aggregate(&shape, 0, slots)
+                self.lower_aggregate_for_source(ty, &shape, 0, slots)
             }
             _ => self.push_zero(scalar_type(ty)?),
         }
@@ -5537,7 +5565,17 @@ impl FunctionLowerer<'_> {
         field_types: &[Type],
         values: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_heap_record_with(name, field_types, values, false, false)
+        self.lower_heap_record_with_source(None, name, field_types, values, false, false)
+    }
+
+    fn lower_heap_record_for_source(
+        &mut self,
+        source_type: &Type,
+        name: &str,
+        field_types: &[Type],
+        values: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_heap_record_with_source(Some(source_type), name, field_types, values, false, false)
     }
 
     /// `lower_heap_record` for the kernels: `move_references` stores a
@@ -5552,7 +5590,27 @@ impl FunctionLowerer<'_> {
         move_references: bool,
         nullable_references: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_heap_record_with_source(
+            None,
+            name,
+            field_types,
+            values,
+            move_references,
+            nullable_references,
+        )
+    }
+
+    fn lower_heap_record_with_source(
+        &mut self,
+        source_type: Option<&Type>,
+        name: &str,
+        field_types: &[Type],
+        values: Vec<ValueId>,
+        move_references: bool,
+        nullable_references: bool,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         self.lower_heap_record_with_slots(
+            source_type,
             name,
             field_types,
             values.into_iter().map(Some).collect(),
@@ -5563,22 +5621,37 @@ impl FunctionLowerer<'_> {
 
     fn lower_heap_record_with_slots(
         &mut self,
+        source_type: Option<&Type>,
         name: &str,
         field_types: &[Type],
         values: Vec<Option<ValueId>>,
         move_references: bool,
         nullable_references: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let layout = aggregate_layout(
-            field_types,
-            nullable_references,
-            self.layout_bundle,
-            self.layouts,
-            self.definitions,
-        )?;
+        let layout = match source_type {
+            Some(source_type) => aggregate_layout_for_source(
+                source_type,
+                field_types,
+                nullable_references,
+                self.layout_bundle,
+                self.layouts,
+                self.definitions,
+            )?,
+            None => aggregate_layout(
+                field_types,
+                nullable_references,
+                self.layout_bundle,
+                self.layouts,
+                self.definitions,
+            )?,
+        };
+        let physical_layout = self
+            .layouts
+            .resolve_nominal(layout)
+            .map_err(|_| CanonicalLoweringError::MissingLayout(Type::Named(name.to_owned(), Vec::new())))?;
         let LayoutSize::Fixed(bytes) = self
             .layouts
-            .get(layout)
+            .get(physical_layout)
             .ok_or(CanonicalLoweringError::MissingLayout(Type::Named(name.to_owned(), Vec::new())))?
             .size()
         else {
@@ -5642,7 +5715,8 @@ impl FunctionLowerer<'_> {
 
     fn is_nullable_record_field(&self, object: ValueId, index: u32) -> bool {
         let Some(ValueType::Ref(layout)) = self.values.get(&object) else { return false };
-        let Some(descriptor) = self.layouts.get(*layout) else { return false };
+        let Ok(physical_layout) = self.layouts.resolve_nominal(*layout) else { return false };
+        let Some(descriptor) = self.layouts.get(physical_layout) else { return false };
         let Some(field) = descriptor.fields().get(index as usize) else { return false };
         match field.kind() {
             witchy_wir::layout::FieldKind::Pointer { slot: PointerSlot::OwnedNullable, .. } => true,
@@ -10571,7 +10645,8 @@ fn source_value_type(
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
         // the ABI does not carry (`scalar_type` refuses it below).
-        return aggregate_layout(&shape.fields, shape.tagged, layout_bundle, layouts, definitions).map(ValueType::Ref);
+        return aggregate_layout_for_source(source, &shape.fields, shape.tagged, layout_bundle, layouts, definitions)
+            .map(ValueType::Ref);
     }
     match source.unqualified() {
         // A `fn` value is a closure record.
@@ -10607,6 +10682,34 @@ fn source_value_type(
 
 /// The interned record layout whose slots are exactly `expected_fields`: a
 /// scalar in its slot, a string or list behind an owned pointer slot.
+fn physical_layout_descriptor(
+    layouts: &LayoutInterner,
+    layout: witchy_wir::layout::LayoutId,
+) -> Option<&witchy_wir::layout::LayoutDescriptor> {
+    let physical = layouts.resolve_nominal(layout).ok()?;
+    layouts.get(physical)
+}
+
+fn aggregate_layout_for_source(
+    source: &Type,
+    expected_fields: &[Type],
+    nullable_references: bool,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+    if let Ok(nominal) = crate::canonical_layouts::recursive_nominal_layout_id(source)
+        && layout_bundle.roots().contains(&nominal)
+        && matches!(layouts.get(nominal).map(|descriptor| descriptor.kind()), Some(LayoutKind::OpaqueNominal { .. }))
+    {
+        if layouts.nominal_target(nominal).is_none() {
+            return Err(CanonicalLoweringError::MissingLayout(source.clone()));
+        }
+        return Ok(nominal);
+    }
+    aggregate_layout(expected_fields, nullable_references, layout_bundle, layouts, definitions)
+}
+
 fn aggregate_layout(
     expected_fields: &[Type],
     nullable_references: bool,
@@ -10627,7 +10730,14 @@ fn aggregate_layout(
                     list_layout(field, layout_bundle, layouts, definitions)?.0
                 }
                 _ => match scalar_aggregate_shape(field, definitions) {
-                    Some(shape) if !shape.packed => aggregate_layout(&shape.fields, shape.tagged, layout_bundle, layouts, definitions)?,
+                    Some(shape) if !shape.packed => aggregate_layout_for_source(
+                        field,
+                        &shape.fields,
+                        shape.tagged,
+                        layout_bundle,
+                        layouts,
+                        definitions,
+                    )?,
                     _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
                 },
             };
@@ -10637,7 +10747,7 @@ fn aggregate_layout(
     }
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = layouts.get(*root) else { continue };
+        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
         let LayoutKind::PackedRecord { fields } = descriptor.kind() else { continue };
         if fields.len() != expected.len() {
             continue;
@@ -10674,7 +10784,7 @@ fn packed_scalar_layout(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = layouts.get(*root) else { continue };
+        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
         let fields = match descriptor.kind() {
             LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields,
             _ => continue,
@@ -10736,9 +10846,9 @@ fn string_layout(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = layouts.get(*root) else { continue };
+        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
         let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { continue };
-        let Some(element_descriptor) = layouts.get(*element) else { continue };
+        let Some(element_descriptor) = physical_layout_descriptor(layouts, *element) else { continue };
         if !matches!(element_descriptor.kind(), LayoutKind::Scalar(ScalarKind::RawByte)) {
             continue;
         }
@@ -11070,7 +11180,14 @@ fn list_layout(
         // lives behind an owned pointer slot to its record layout.
         _ => match scalar_aggregate_shape(&arguments[0], definitions) {
             Some(shape) if !shape.packed => {
-                ValueType::Ref(aggregate_layout(&shape.fields, shape.tagged, layout_bundle, layouts, definitions)?)
+                ValueType::Ref(aggregate_layout_for_source(
+                    &arguments[0],
+                    &shape.fields,
+                    shape.tagged,
+                    layout_bundle,
+                    layouts,
+                    definitions,
+                )?)
             }
             _ => return Err(CanonicalLoweringError::UnsupportedListElement(source.clone())),
         },
@@ -11078,9 +11195,9 @@ fn list_layout(
 
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = layouts.get(*root) else { continue };
+        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
         let LayoutKind::PackedList { element, .. } = descriptor.kind() else { continue };
-        let Some(element_descriptor) = layouts.get(*element) else { continue };
+        let Some(element_descriptor) = physical_layout_descriptor(layouts, *element) else { continue };
         let element_type = match (expected_element, element_descriptor.kind()) {
             (ValueType::Int, LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
             (ValueType::Float, LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
@@ -11122,7 +11239,7 @@ fn dictionary_layout(
     let value_type = dictionary_slot_type(&arguments[1], layout_bundle, layouts)?;
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = layouts.get(*root) else { continue };
+        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
         let LayoutKind::RuntimeDictionaryBody { key, value, .. } = descriptor.kind() else {
             continue;
         };
@@ -11157,7 +11274,7 @@ fn dictionary_slot_matches(
     value_type: ValueType,
     layouts: &LayoutInterner,
 ) -> bool {
-    let Some(descriptor) = layouts.get(layout) else { return false };
+    let Some(descriptor) = physical_layout_descriptor(layouts, layout) else { return false };
     match (descriptor.kind(), value_type) {
         (LayoutKind::Scalar(ScalarKind::Int), ValueType::Int)
         | (LayoutKind::Scalar(ScalarKind::Float), ValueType::Float)
@@ -11302,14 +11419,14 @@ fn expr_in_tail_path<'a>(expression: &'a Expr, path: &[ProperTailPathStep]) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{lower_typed_module, CanonicalLoweringError};
+    use super::{lower_typed_module, CanonicalLoweringError, Type};
     use witchy_syntax::ast::{Convention, Item};
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
         check_initial, check_initial_with_witness, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
         Ownership, ParameterOwnership, Projection, Terminator, ValueType,
     };
-    use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, RcHeader, ResolvedNamed, ScalarKind};
+    use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ResolvedNamed, ScalarKind};
 
     struct ListResolver;
 
@@ -11379,6 +11496,69 @@ mod tests {
         let layouts = crate::canonical_layouts::derive_layout_bundle(canonical)
             .expect("derive canonical layouts");
         lower_typed_module(canonical, layouts).expect("lower canonical SafeWIR")
+    }
+
+    #[test]
+    fn recursive_source_type_lowers_to_the_catalog_nominal_before_checker_seal() {
+        let source = r#"
+type Tree:
+    Leaf
+    Branch(Int, Tree, Tree)
+
+fn build() -> Tree:
+    Branch(1, Leaf, Leaf)
+
+fn main() -> Int:
+    match build():
+        Leaf -> 0
+        Branch(value, _, _) -> value
+"#;
+        let checked = checked(source);
+        let canonical = checked.canonical_source().expect("canonical source");
+        let build_name = canonical.typed_module().module().items.iter().find_map(|item| {
+            match item {
+                Item::Function(function) if function.name.rsplit('.').next() == Some("build") => Some(function.name.as_str()),
+                _ => None,
+            }
+        }).expect("checked build declaration");
+        let tree_type = match canonical
+            .callable_signature(build_name)
+            .expect("checked Tree signature")
+        {
+            Type::Fn(_, result, _, _) => result.as_ref().clone(),
+            other => panic!("build signature is not a function: {other:?}"),
+        };
+        let layouts = crate::canonical_layouts::derive_layout_bundle(canonical)
+            .expect("derive recursive catalog");
+        let (_, catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
+            .expect("decode recursive catalog");
+        let nominal = crate::canonical_layouts::recursive_nominal_layout_id(&tree_type)
+            .expect("checked recursive nominal identity");
+        assert!(matches!(
+            catalog.get(nominal).map(|descriptor| descriptor.kind()),
+            Some(LayoutKind::OpaqueNominal { .. })
+        ));
+        assert!(catalog.nominal_target(nominal).is_some());
+
+        let candidate = lower_typed_module(canonical, layouts)
+            .expect("checked recursive source lowers before seal");
+        assert!(
+            candidate.functions().iter().any(|function| {
+                function
+                    .value_types
+                    .values()
+                    .any(|value_type| *value_type == ValueType::Ref(nominal))
+            }),
+            "lowered candidate must retain the checked nominal Ref identity"
+        );
+        let refusal = check_initial(candidate)
+            .expect_err("initial opaque nominal seal must still refuse recursive candidate");
+        assert!(
+            refusal
+                .to_string()
+                .contains("recursive nominal values require canonical ownership and destruction support"),
+            "unexpected initial seal refusal: {refusal}"
+        );
     }
 
     #[test]

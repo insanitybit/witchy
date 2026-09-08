@@ -369,6 +369,7 @@ fn layout_contains_pointer(
     layouts: &crate::layout::LayoutInterner,
     visiting: &mut Vec<crate::layout::LayoutId>,
 ) -> bool {
+    let Ok(layout) = layouts.resolve_nominal(layout) else { return true };
     if visiting.contains(&layout) {
         return true;
     }
@@ -392,6 +393,7 @@ fn static_data_extent_matches(
     constants: &BTreeMap<ValueId, u64>,
     layouts: &crate::layout::LayoutInterner,
 ) -> bool {
+    let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
     let Some(descriptor) = layouts.get(layout) else {
         return false;
     };
@@ -406,7 +408,7 @@ fn static_data_extent_matches(
             if matches!(
                 layouts.get(layout).map(|descriptor| descriptor.kind()),
                 Some(crate::layout::LayoutKind::RuntimeBuffer { element })
-                    if layouts.get(*element).is_some_and(|element| {
+                    if layouts.resolve_nominal(*element).ok().and_then(|element| layouts.get(element)).is_some_and(|element| {
                         element.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::RawByte)
                     })
             ) {
@@ -455,6 +457,30 @@ fn static_data_extent_matches(
         }
         _ => false,
     }
+}
+
+#[test]
+fn nominal_static_data_checks_resolve_physical_storage() {
+    use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
+    let mut layouts = LayoutInterner::new();
+    let recursive = layouts.intern_opaque_nominal([41; 32]).unwrap();
+    let slot = layouts.intern_runtime_pointer_value_slot(recursive, PointerSlot::OwnedNullable).unwrap();
+    let body = layouts.intern_packed_record(vec![slot]).unwrap();
+    layouts.bind_nominal(recursive, body).unwrap();
+    assert!(layout_contains_pointer(recursive, &layouts, &mut Vec::new()));
+    assert!(!static_data_extent_matches(recursive, &super::Extent::FixedBytes(0), &[], &BTreeMap::new(), &layouts), "opaque identity size is not physical storage extent");
+
+    let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+    let scalar_body = layouts.intern_packed_record(vec![int]).unwrap();
+    let scalar_nominal = layouts.intern_opaque_nominal([42; 32]).unwrap();
+    layouts.bind_nominal(scalar_nominal, scalar_body).unwrap();
+    assert!(!layout_contains_pointer(scalar_nominal, &layouts, &mut Vec::new()));
+    assert!(static_data_extent_matches(scalar_nominal, &super::Extent::FixedBytes(8), &[0; 8], &BTreeMap::new(), &layouts));
+    assert!(!static_data_extent_matches(scalar_nominal, &super::Extent::FixedBytes(0), &[], &BTreeMap::new(), &layouts));
+
+    let unbound = layouts.intern_opaque_nominal([43; 32]).unwrap();
+    assert!(layout_contains_pointer(unbound, &layouts, &mut Vec::new()));
+    assert!(!static_data_extent_matches(unbound, &super::Extent::FixedBytes(0), &[], &BTreeMap::new(), &layouts));
 }
 
 fn index_signatures(

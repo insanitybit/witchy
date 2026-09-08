@@ -112,3 +112,24 @@ not relax that catalog invariant or establish general checker soundness.
 Remaining: source value/constructor lookup must consistently retain nominal
 reference identities while using the bound physical body for places and sizes.
 The initial production opaque-layout refusal remains present.
+
+## Checked-source lowering and static-data follow-up
+
+A checked program that constructs `Branch(1, Leaf, Leaf)` through a reachable
+`build` function and matches the result now lowers to nominal SafeWIR references.
+The fixture selects the checked declaration's qualified name rather than
+assuming a bare callable name. Its next step deliberately observes the existing
+initial opaque-layout refusal; this is not execution evidence.
+
+The focused selector
+`recursive_source_type_lowers_to_the_catalog_nominal_before_checker_seal`
+passed in the `witchy-lower` library target.
+
+Readiness review found static-data judgments still inspecting the zero-sized
+opaque descriptor. They now resolve the physical body, with the passing WIR
+selector `nominal_static_data_checks_resolve_physical_storage`. Details and the
+limited security claim are recorded in
+`security-eval/findings/BUG-canonical-nominal-static-data-physical-extent.md`.
+
+No new ownership authority was granted to WriteBack parameters or alias-result
+contracts. Their separate unsupported cases remain fail-closed.

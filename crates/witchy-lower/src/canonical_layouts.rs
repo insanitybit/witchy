@@ -513,6 +513,12 @@ fn intern_recursive_nominal(
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
+/// Derive the catalog's exact nominal ID without granting any layout authority.
+/// Consumers must still find this ID and its binding in the checked catalog.
+pub(crate) fn recursive_nominal_layout_id(ty: &Type) -> Result<LayoutId, CanonicalLayoutError> {
+    intern_recursive_nominal(&mut LayoutInterner::new(), ty)
+}
+
 /// Find the reachable user-defined heap types that are actually on a source
 /// cycle. Acyclic heap records retain their existing concrete content IDs;
 /// only cycle participants need an opaque identity reserved before their body.
