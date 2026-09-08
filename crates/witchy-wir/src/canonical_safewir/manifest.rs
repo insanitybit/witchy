@@ -19,7 +19,7 @@
 //!   reviewed document cannot drift from the code.
 
 use super::CanonicalRuleId;
-use crate::canonical_wasmir::{rule_backend, CorrespondenceRule};
+use crate::canonical_wasmir::{rule_backend, CorrespondenceRule, RuleBackend};
 
 /// Where a cited test lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,9 +85,9 @@ pub struct RuleEntry {
     pub predicate: &'static str,
     /// The interpreter's semantics for an admitted instance.
     pub interpreter: &'static str,
-    /// The backend correspondence rule, or `None` when the backend refuses
-    /// the rule (the checker refuses it first).
-    pub backend: Option<CorrespondenceRule>,
+    /// The backend disposition: an instruction receipt, a subjudgment of
+    /// existing parent receipts, or refusal before lowering.
+    pub backend: RuleBackend,
     /// Tests that exercise admitted instances.
     pub admits: &'static [TestRef],
     /// Tests that exercise refused or trapping instances.
@@ -101,7 +101,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "defines the destination as `Int`; a constant has no failing predicate",
         interpreter: "execute_operation: binds the literal",
-        backend: Some(CorrespondenceRule::ScalarConstant),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         admits: &[t(Backend, "encoded_scalar_module_executes"), t(Interpreter, "validated_scalar_arithmetic_executes")],
         refuses: &[t(Check, "block_arguments_are_typed_ssa_definitions")],
     },
@@ -110,7 +110,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "defines the destination as `Float` from raw bits",
         interpreter: "execute_operation: binds the bits",
-        backend: Some(CorrespondenceRule::ScalarConstant),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         admits: &[t(Launch, "admitted_float_conversions_bool_render_and_duration_identities_run")],
         refuses: &[t(Check, "block_arguments_are_typed_ssa_definitions")],
     },
@@ -119,7 +119,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "defines the destination as `Bool`",
         interpreter: "execute_operation: binds the literal",
-        backend: Some(CorrespondenceRule::ScalarConstant),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         admits: &[t(Backend, "encoded_structured_branch_executes_both_arms")],
         refuses: &[t(Check, "block_arguments_are_typed_ssa_definitions")],
     },
@@ -128,7 +128,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "defines the destination as `Size` and records the constant for later bounds facts",
         interpreter: "execute_operation: binds the literal as an i32-width size",
-        backend: Some(CorrespondenceRule::ScalarConstant),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         admits: &[t(Backend, "full_u32_size_constant_encodes_and_validates"), t(Backend, "full_u32_size_constant_matches_exact_admission_plan")],
         refuses: &[t(Interpreter, "validated_size_values_reject_values_wider_than_i32")],
     },
@@ -137,7 +137,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation; check/memory.rs::MemoryChecker (exact-addition facts)",
         predicate: "operands and destination share one scalar type; `Size` overflow policy is `Trap` or `Wrap`; a trapping `Size` add records an exact relation for bounds",
         interpreter: "int_arithmetic/size_arithmetic/float_arithmetic: wraps or traps exactly as declared; `/0` and signed `MIN % -1` trap or define",
-        backend: Some(CorrespondenceRule::ScalarArithmetic),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarArithmetic),
         admits: &[
             t(Interpreter, "validated_scalar_arithmetic_executes"),
             t(Interpreter, "validated_size_arithmetic_uses_i32_width_and_signed_bits"),
@@ -157,7 +157,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation; check/memory.rs::MemoryChecker (guard facts)",
         predicate: "operands share one type, the destination is `Bool`; an unsigned `Size` comparison is the only shape a `Guard` may cite",
         interpreter: "execute_operation: signed, unsigned, and float comparisons by operator",
-        backend: Some(CorrespondenceRule::ScalarComparison),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarComparison),
         admits: &[t(Backend, "comparison_encodes_and_validates"), t(Backend, "encoded_comparison_and_full_u32_size_execute")],
         refuses: &[t(Check, "bounds_guard_without_a_comparison_is_refused")],
     },
@@ -166,7 +166,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "`Int` to `Size`; the value must be in `0..=u32::MAX` at runtime or the backend traps",
         interpreter: "execute_operation: traps outside the i32 width",
-        backend: Some(CorrespondenceRule::ScalarConversion),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConversion),
         admits: &[t(Backend, "narrow_size_valid_value_executes")],
         refuses: &[t(Backend, "narrow_size_negative_traps_in_wasmtime"), t(Backend, "narrow_size_u32_overflow_traps_in_wasmtime")],
     },
@@ -175,7 +175,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "`Size` to `Int`, always representable",
         interpreter: "execute_operation: zero-extends",
-        backend: Some(CorrespondenceRule::ScalarConversion),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConversion),
         admits: &[t(Backend, "admitted_int_list_loop_executes_with_bounds_checks"), t(Launch, "admitted_nested_list_index_runs")],
         refuses: &[t(Interpreter, "validated_size_values_reject_values_wider_than_i32")],
     },
@@ -184,7 +184,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "`Sqrt`: Float to Float; `TruncateToInt`: Float to Int (saturating, NaN to 0); `FromInt`: Int to Float",
         interpreter: "execute_operation: IEEE sqrt, saturating truncation, exact conversion",
-        backend: Some(CorrespondenceRule::ScalarConversion),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConversion),
         admits: &[t(Launch, "admitted_float_conversions_bool_render_and_duration_identities_run")],
         refuses: &[t(Launch, "admitted_float_conversions_bool_render_and_duration_identities_run")],
     },
@@ -193,7 +193,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker (guard kinds); check.rs::check_operation",
         predicate: "the condition is a `Bool` from an unsigned `Size` comparison; a `Bounds` guard proves an index below a logical length, never a capacity; a false guard traps",
         interpreter: "execute_operation: a false condition traps",
-        backend: Some(CorrespondenceRule::ScalarGuard),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
         admits: &[t(Check, "guarded_dynamic_element_load_is_admitted"), t(Check, "update_count_grows_logical_length_only_after_capacity_guard")],
         refuses: &[
             t(Check, "dynamic_element_load_without_guard_is_refused"),
@@ -209,7 +209,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::allocate (check_extent)",
         predicate: "a reference-counted object of the declared layout whose count is at most its capacity and whose capacity fits the address space; a pointer-element list starts with an empty prefix; scratch classes refuse",
         interpreter: "allocate: a fresh object with uninitialized cells and count one",
-        backend: Some(CorrespondenceRule::MemoryAlloc),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryAlloc),
         admits: &[
             t(Backend, "consecutive_rc_allocations_reserve_non_overlapping_prefixes"),
             t(Backend, "valid_scalar_and_packed_list_artifacts_admit"),
@@ -225,7 +225,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::static_data; check.rs::static_data_extent_matches",
         predicate: "a shared immutable object over a static segment whose declared extent matches the segment; it is never written, released, or reclaimed",
         interpreter: "execute_operation: a static object outside reference counting",
-        backend: Some(CorrespondenceRule::MemoryStaticData),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryStaticData),
         admits: &[t(Launch, "admitted_string_literals_cross_owned_parameters_and_returns"), t(Interpreter, "static_shared_clone_and_drop_do_not_touch_rc_state")],
         refuses: &[t(Memory, "shared_static_storage_clones_and_drops_without_mutation_authority"), t(Memory, "shared_boundary_union_allows_only_immutable_token_operations")],
     },
@@ -234,7 +234,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::load (check_place, promote_header_extent)",
         predicate: "a header field loads a typed scalar; an element load needs a `Bounds` guard against the logical length; a reference load takes a shared clone of a stored slot or an initialized prefix element, never an uninitialized one",
         interpreter: "load: reads an initialized cell; a reference load retains",
-        backend: Some(CorrespondenceRule::MemoryLoad),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryLoad),
         admits: &[
             t(Check, "guarded_dynamic_element_load_is_admitted"),
             t(Check, "counted_header_projections_load_typed_scalars"),
@@ -252,7 +252,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::store",
         predicate: "the object is uniquely owned and writable; a scalar store copies (a byte slot takes a `Size` the path proves fits a byte); a reference store moves a unique token or a shared clone into an empty slot and never overwrites a stored reference or an initialized prefix; the stored value is complete",
         interpreter: "store: writes the cell; a reference store transfers the token",
-        backend: Some(CorrespondenceRule::MemoryStore),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
         admits: &[
             t(Interpreter, "validated_counted_element_store_and_load_execute"),
             t(Backend, "packed_scalar_collection_access_mutates_and_preserves_headers"),
@@ -270,7 +270,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::closure_slot_type (from check_place)",
         predicate: "slot 0 of a closure record is `Callable(sig)` where `sig` is the module's registered signature for that layout; a load copies the scalar and a store copies a `Callable(sig)` value (only `FunctionValue` produces one); a mismatched signature, a non-callable value type, or a layout absent from the registry refuses",
         interpreter: "load/store (CopyScalar): copies the `Function` cell",
-        backend: Some(CorrespondenceRule::MemoryLoad),
+        backend: RuleBackend::Subjudgment(&[CanonicalRuleId::Load, CanonicalRuleId::Store]),
         admits: &[
             t(Check, "closure_record_stores_loads_and_calls_its_callable_slot"),
             t(Interpreter, "validated_closure_record_calls_through_its_callable_slot"),
@@ -286,7 +286,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::copy_bytes (check_byte_slice)",
         predicate: "both slices are raw-byte buffers within their logical lengths, proven by a dominating end guard; typed or pointer elements never copy as bytes",
         interpreter: "copy_range(Copy): copies scalar cells",
-        backend: Some(CorrespondenceRule::MemoryCopy),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryCopy),
         admits: &[t(Check, "raw_byte_slice_copy_is_accepted"), t(Launch, "admitted_string_equality_and_char_count_scan_bytes")],
         refuses: &[t(Check, "typed_element_slice_cannot_use_copy_bytes"), t(Memory, "byte_copy_requires_a_dominating_dynamic_end_guard")],
     },
@@ -295,7 +295,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::move_range (require_initialized_range, require_destination_range_empty)",
         predicate: "a scalar prefix copies; a pointer prefix moves every stored token from a complete initialized source into an empty destination of the same element, distinct storage, both unique and reference counted; the source prefix is consumed",
         interpreter: "copy_range(Move): moves cells out of the source",
-        backend: Some(CorrespondenceRule::MemoryOwnership),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[
             t(Memory, "scalar_move_range_is_bounds_checked_and_admitted"),
             t(Memory, "dynamic_pointer_move_range_transfers_initialized_ownership_once"),
@@ -316,7 +316,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::clone_range",
         predicate: "a scalar prefix copies; a pointer prefix retains every element of an initialized managed source into an empty unique destination, after which both prefixes are shared",
         interpreter: "copy_range(Copy): copies cells and retains every reference cell",
-        backend: Some(CorrespondenceRule::MemoryCopy),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryCopy),
         admits: &[
             t(Memory, "scalar_clone_range_is_ownership_safe_and_admitted"),
             t(Memory, "dynamic_pointer_clone_range_shares_initialized_elements"),
@@ -335,7 +335,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::update_count",
         predicate: "a unique counted object's logical length moves to a value at most its capacity; a pointer list's new prefix must be initialized",
         interpreter: "update_count: sets the logical length",
-        backend: Some(CorrespondenceRule::MemoryUpdateCount),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryUpdateCount),
         admits: &[t(Check, "update_count_grows_logical_length_only_after_capacity_guard"), t(Launch, "admitted_lists_of_strings_are_read_iterated_and_pushed")],
         refuses: &[t(Check, "logical_length_guard_is_not_satisfied_by_capacity_guard"), t(Memory, "dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot")],
     },
@@ -344,7 +344,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::move_value (references); check.rs::check_operation (scalars)",
         predicate: "a scalar copies; a reference token moves once from a live, unaliased, unstored source, which becomes consumed",
         interpreter: "execute_operation: a reference move transfers the token, a scalar move copies",
-        backend: Some(CorrespondenceRule::ScalarMove),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarMove),
         admits: &[t(Backend, "encoded_structured_loop_executes_carried_arguments"), t(Launch, "admitted_var_alias_of_a_list_parameter_copies_on_write")],
         refuses: &[
             t(Memory, "move_value_rejects_shared_source"),
@@ -357,7 +357,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation (inline_scalar_layout_type); check_function refuses inline aggregates in control flow",
         predicate: "builds a packed scalar record from typed scalar fields; the value never crosses a block edge or a call",
         interpreter: "execute_operation: a tuple of scalar cells",
-        backend: Some(CorrespondenceRule::ScalarMove),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarMove),
         admits: &[t(Launch, "admitted_tuples_construct_index_destructure_and_nest")],
         refuses: &[t(Check, "block_arguments_are_typed_ssa_definitions")],
     },
@@ -366,7 +366,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation (inline_scalar_layout_type)",
         predicate: "reads one scalar field of an inline aggregate by index and type",
         interpreter: "execute_operation: projects the cell",
-        backend: Some(CorrespondenceRule::ScalarMove),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarMove),
         admits: &[t(Launch, "admitted_tuples_construct_index_destructure_and_nest")],
         refuses: &[t(Check, "block_arguments_are_typed_ssa_definitions")],
     },
@@ -375,7 +375,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::clone_ref",
         predicate: "a second shared token of a live unique-or-shared object with reference-count authority (or a static); the source becomes shared; a saturated count traps at runtime",
         interpreter: "retain: increments the count, trapping at the i32 maximum",
-        backend: Some(CorrespondenceRule::MemoryOwnership),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[t(Memory, "clone_ref_tracks_two_affine_shared_tokens"), t(Interpreter, "validated_clone_and_two_drops_execute")],
         refuses: &[
             t(Memory, "clone_ref_rejects_storage_without_refcount_authority"),
@@ -388,7 +388,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::check (unsupported)",
         predicate: "not a v1 rule: a second owner comes only from `CloneRef`; the checker refuses it and the backend has no mapping",
         interpreter: "retain (unreachable through an admitted module)",
-        backend: None,
+        backend: RuleBackend::Refused,
         admits: &[],
         refuses: &[t(Memory, "retain_is_refused_in_v1")],
     },
@@ -397,7 +397,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::release",
         predicate: "drops one shared token of a reference-counted object whose owned slots are initialized; a zero count traps at runtime",
         interpreter: "release: decrements, reclaiming at zero and trapping below",
-        backend: Some(CorrespondenceRule::MemoryOwnership),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[t(Interpreter, "validated_clone_and_two_drops_execute")],
         refuses: &[
             t(Memory, "release_rejects_shared_value_without_refcount_authority"),
@@ -410,7 +410,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::drop_ref (require_owned_slots_initialized, drop_ref_layout_supported)",
         predicate: "drops an owned token of a complete object; when the count reaches zero every initialized child (pointer elements, owned pointer fields) drops recursively before reclamation",
         interpreter: "release: recursive drop at zero",
-        backend: Some(CorrespondenceRule::MemoryOwnership),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[
             t(Check, "owned_parameter_read_then_drop_is_accepted"),
             t(Backend, "admitted_pointer_list_move_and_clone_execute_with_retained_child"),
@@ -423,7 +423,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check/memory.rs::MemoryChecker::reclaim",
         predicate: "frees a uniquely owned, complete, scalar-only object; shared objects and pointer-bearing layouts refuse (they drop recursively instead)",
         interpreter: "reclaim: frees the object",
-        backend: Some(CorrespondenceRule::MemoryOwnership),
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[t(Launch, "admitted_recursive_search_threads_a_list_parameter_through_loop_and_join")],
         refuses: &[
             t(Check, "reclaim_without_unique_object_authority_fails_closed"),
@@ -436,7 +436,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation",
         predicate: "a callable value of a checked function whose signature matches the destination's declared signature",
         interpreter: "execute_operation: a function value",
-        backend: Some(CorrespondenceRule::ScalarConstant),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         admits: &[t(Check, "function_value_authenticates_checked_target_signature"), t(Backend, "admitted_scalar_var_call_uses_authenticated_table_and_executes")],
         refuses: &[t(Check, "function_value_rejects_destination_signature_mismatch"), t(Check, "function_value_rejects_unknown_function")],
     },
@@ -445,7 +445,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_call; check/memory.rs::MemoryChecker::consume_call_move",
         predicate: "arguments match the callee's contract by type and ownership: a moved reference is consumed, a value argument is a scalar; results follow the declared result contracts",
         interpreter: "execute: a nested frame; owned arguments transfer",
-        backend: Some(CorrespondenceRule::ScalarCall),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarCall),
         admits: &[
             t(Interpreter, "validated_direct_call_executes_callee"),
             t(Backend, "direct_call_encodes_as_wasm_call"),
@@ -465,7 +465,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_call (check_indirect_reference_arguments)",
         predicate: "an indirect call through a function value of the declared signature; reference arguments refuse in v1",
         interpreter: "execute: the callee is the function value",
-        backend: Some(CorrespondenceRule::ScalarCall),
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarCall),
         admits: &[t(Backend, "admitted_scalar_var_call_uses_authenticated_table_and_executes"), t(Launch, "admitted_scalar_var_write_back_through_an_indirect_call")],
         refuses: &[
             t(Check, "indirect_reference_value_argument_is_refused"),
@@ -478,7 +478,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_operation (authenticated import contracts)",
         predicate: "the import is authenticated; each argument fills its contract role: a capability only by a capability value of the right kind, a read buffer by a raw-byte slice within its logical length, a write buffer by a raw-byte slice within the capacity of a unique object (the guest publishes the written length under its own capacity guard); mutation and reentrancy beyond the contract refuse",
         interpreter: "execute_operation: the host fixture",
-        backend: Some(CorrespondenceRule::HostCall),
+        backend: RuleBackend::Receipt(CorrespondenceRule::HostCall),
         admits: &[t(Check, "typed_capability_host_call_is_admitted"), t(Check, "authenticated_dynamic_host_slice_is_accepted"), t(Check, "write_buffer_host_call_is_admitted_within_capacity"), t(Launch, "admitted_console_program_runs_through_the_runtime_entry"), t(Launch, "admitted_float_render_writes_through_the_authenticated_float_to_str_import")],
         refuses: &[
             t(Check, "integer_cannot_fill_capability_host_role"),
@@ -501,7 +501,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_branch; check/memory.rs::MemoryChecker::transfer_edge and meet",
         predicate: "arguments match the target's parameters by type; facts are renamed to the parameters; a unique phi takes a sole live token, a shared phi a shared or weakenable one; the join keeps only what every edge establishes",
         interpreter: "execute_frame: binds the parameters",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[
             t(Backend, "encoded_structured_loop_executes_carried_arguments"),
             t(Memory, "unique_phi_rebases_distinct_fresh_identities_before_join"),
@@ -519,7 +519,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_branch (both edges); check/memory.rs::MemoryChecker::transfer_edge",
         predicate: "a `Bool` condition; each edge is a `Branch`; the backend structures reducible control flow only",
         interpreter: "execute_frame: takes the edge the condition selects",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[t(Backend, "encoded_structured_branch_executes_both_arms"), t(Launch, "admitted_while_loops_with_short_circuit_conditions_run")],
         refuses: &[
             t(Backend, "irreducible_cfg_is_refused_without_dispatcher_lowering"),
@@ -532,7 +532,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_terminator; check/memory.rs (return contracts, affine boundary)",
         predicate: "values match the signature's result contracts; an owned result is the sole live fresh token; no other owned token remains live; a tail obligation is not discharged by a return",
         interpreter: "execute_frame: yields the values",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[t(Memory, "return_contract_accepts_only_sole_unique_fresh_object"), t(Memory, "owned_result_contract_accepts_unique_rc_without_inventing_a_clone")],
         refuses: &[
             t(Memory, "return_contract_rejects_fresh_allocation_class_mismatch"),
@@ -546,7 +546,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_tail_call and observe_tail_site; check/memory.rs (no untransferred tokens)",
         predicate: "a proper-tail site from the checked manifest, discharged exactly once; arguments transfer every live owned token; the callee's results are the caller's",
         interpreter: "execute_frame: trampolines without growing the frame stack",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[
             t(Interpreter, "validated_tail_call_trampolines_three_hundred_thousand_times"),
             t(Backend, "proper_tail_call_encodes_as_wasm_return_call"),
@@ -565,7 +565,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_tail_call (indirect)",
         predicate: "a proper-tail site through a function value of the declared signature, under the `VarCall` argument rules",
         interpreter: "execute_frame: trampolines through the function value",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[t(Backend, "admitted_scalar_var_tail_call_executes_with_return_call_indirect")],
         refuses: &[t(Check, "indirect_reference_value_argument_is_refused"), t(Check, "proper_tail_site_is_matched_exactly_once")],
     },
@@ -574,7 +574,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_terminator",
         predicate: "always admitted; execution stops with a trap",
         interpreter: "execute_frame: a trap",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[t(Backend, "encoded_trap_terminator_remains_terminal"), t(Launch, "admitted_guard_near_misses_trap_exactly_at_the_boundary")],
         refuses: &[],
     },
@@ -583,7 +583,7 @@ pub const RULES: &[RuleEntry] = &[
         judgment: "check.rs::check_terminator",
         predicate: "always admitted; the block must be unreachable, which the backend's structuring verifies",
         interpreter: "execute_frame: a trap if ever reached",
-        backend: Some(CorrespondenceRule::Control),
+        backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[t(Check, "valid_unreachable_block_is_available_to_pruning")],
         refuses: &[t(Backend, "common_reachable_join_with_non_terminating_bypass_is_refused")],
     },
@@ -648,10 +648,14 @@ pub const CALLS: &[CallEntry] = &[
     CallEntry { form: "`CallBorrow`", convention: "any", verdict: "absent from v1: no such rule exists", evidence: &[] },
 ];
 
-fn backend_name(rule: Option<CorrespondenceRule>) -> String {
+fn backend_name(rule: RuleBackend) -> String {
     match rule {
-        Some(rule) => format!("{rule:?}"),
-        None => "refused".to_owned(),
+        RuleBackend::Receipt(rule) => format!("{rule:?}"),
+        RuleBackend::Subjudgment(parents) => format!(
+            "subjudgment of {}",
+            parents.iter().map(|parent| format!("`{parent:?}`")).collect::<Vec<_>>().join(", ")
+        ),
+        RuleBackend::Refused => "refused".to_owned(),
     }
 }
 
@@ -766,20 +770,34 @@ mod tests {
                 entry.rule
             );
         }
-        // Retain is the one refused rule; everything else the backend maps.
-        let refused = RULES.iter().filter(|entry| entry.backend.is_none()).map(|entry| entry.rule).collect::<Vec<_>>();
+        // Retain is the one refused rule; ClosureSlot is a subjudgment and
+        // every other rule has an instruction receipt.
+        let refused = RULES.iter().filter(|entry| matches!(entry.backend, RuleBackend::Refused)).map(|entry| entry.rule).collect::<Vec<_>>();
         assert_eq!(refused, vec![CanonicalRuleId::Retain]);
     }
 
     #[test]
     fn every_rule_cites_admitting_evidence_or_is_refused() {
         for entry in RULES {
-            if entry.backend.is_some() {
+            if !matches!(entry.backend, RuleBackend::Refused) {
                 assert!(!entry.admits.is_empty(), "{:?}: an admitted rule needs admitting evidence", entry.rule);
             } else {
                 assert!(!entry.refuses.is_empty(), "{:?}: a refused rule needs refusing evidence", entry.rule);
             }
         }
+    }
+
+    #[test]
+    fn closure_slot_is_a_load_store_subjudgment_without_a_receipt() {
+        let closure_slot = RULES.iter().find(|entry| entry.rule == CanonicalRuleId::ClosureSlot).unwrap();
+        assert_eq!(
+            closure_slot.backend,
+            RuleBackend::Subjudgment(&[CanonicalRuleId::Load, CanonicalRuleId::Store])
+        );
+        for parent in [CanonicalRuleId::Load, CanonicalRuleId::Store] {
+            assert!(matches!(rule_backend(parent), RuleBackend::Receipt(_)), "{parent:?} must retain its instruction receipt");
+        }
+        assert!(!matches!(closure_slot.backend, RuleBackend::Receipt(_)), "ClosureSlot must not create a standalone instruction receipt");
     }
 
     fn assert_cited_tests_exist(tests: &[TestRef], context: &str) {

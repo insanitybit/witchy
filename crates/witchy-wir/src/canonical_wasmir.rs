@@ -245,6 +245,16 @@ pub(crate) enum CorrespondenceRule {
     Control,
 }
 
+/// The backend disposition of a canonical rule.  Most rules produce one
+/// instruction receipt.  A subjudgment instead constrains named parent rules
+/// and never produces a receipt of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuleBackend {
+    Receipt(CorrespondenceRule),
+    Subjudgment(&'static [crate::canonical_safewir::CanonicalRuleId]),
+    Refused,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CorrespondenceMapping {
     source: SourceItemId,
@@ -1230,37 +1240,38 @@ fn static_data_plan(
 /// rule is either mapped under one correspondence rule or refused by the
 /// backend (`None`). `canonical_safewir::manifest` cites this table row by
 /// row, so a new rule cannot reach the backend without a manifest entry.
-pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> Option<CorrespondenceRule> {
+pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> RuleBackend {
     use crate::canonical_safewir::CanonicalRuleId as Rule;
     match rule {
-        Rule::ConstInt | Rule::ConstFloat | Rule::ConstBool | Rule::ConstSize | Rule::FunctionValue => Some(CorrespondenceRule::ScalarConstant),
-        Rule::Arithmetic => Some(CorrespondenceRule::ScalarArithmetic),
-        Rule::Compare => Some(CorrespondenceRule::ScalarComparison),
-        Rule::NarrowSize | Rule::WidenSize | Rule::FloatUnary => Some(CorrespondenceRule::ScalarConversion),
-        Rule::Guard => Some(CorrespondenceRule::ScalarGuard),
-        Rule::MoveValue | Rule::MakeInlineAggregate | Rule::ExtractInlineField => Some(CorrespondenceRule::ScalarMove),
-        Rule::Alloc => Some(CorrespondenceRule::MemoryAlloc),
-        Rule::StaticData => Some(CorrespondenceRule::MemoryStaticData),
-        Rule::Load => Some(CorrespondenceRule::MemoryLoad),
-        // The callable lane is an ordinary four-byte field: its load and
-        // store are the same i32 access every other 32-bit lane gets.
-        Rule::ClosureSlot => Some(CorrespondenceRule::MemoryLoad),
-        Rule::Store => Some(CorrespondenceRule::MemoryStore),
-        Rule::CopyBytes | Rule::CloneRange => Some(CorrespondenceRule::MemoryCopy),
-        Rule::MoveRange | Rule::CloneRef | Rule::Release | Rule::DropRef | Rule::Reclaim => Some(CorrespondenceRule::MemoryOwnership),
-        Rule::UpdateCount => Some(CorrespondenceRule::MemoryUpdateCount),
-        Rule::Call | Rule::VarCall => Some(CorrespondenceRule::ScalarCall),
-        Rule::HostCall => Some(CorrespondenceRule::HostCall),
+        Rule::ConstInt | Rule::ConstFloat | Rule::ConstBool | Rule::ConstSize | Rule::FunctionValue => RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
+        Rule::Arithmetic => RuleBackend::Receipt(CorrespondenceRule::ScalarArithmetic),
+        Rule::Compare => RuleBackend::Receipt(CorrespondenceRule::ScalarComparison),
+        Rule::NarrowSize | Rule::WidenSize | Rule::FloatUnary => RuleBackend::Receipt(CorrespondenceRule::ScalarConversion),
+        Rule::Guard => RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        Rule::MoveValue | Rule::MakeInlineAggregate | Rule::ExtractInlineField => RuleBackend::Receipt(CorrespondenceRule::ScalarMove),
+        Rule::Alloc => RuleBackend::Receipt(CorrespondenceRule::MemoryAlloc),
+        Rule::StaticData => RuleBackend::Receipt(CorrespondenceRule::MemoryStaticData),
+        Rule::Load => RuleBackend::Receipt(CorrespondenceRule::MemoryLoad),
+        Rule::ClosureSlot => RuleBackend::Subjudgment(&[Rule::Load, Rule::Store]),
+        Rule::Store => RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
+        Rule::CopyBytes | Rule::CloneRange => RuleBackend::Receipt(CorrespondenceRule::MemoryCopy),
+        Rule::MoveRange | Rule::CloneRef | Rule::Release | Rule::DropRef | Rule::Reclaim => RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
+        Rule::UpdateCount => RuleBackend::Receipt(CorrespondenceRule::MemoryUpdateCount),
+        Rule::Call | Rule::VarCall => RuleBackend::Receipt(CorrespondenceRule::ScalarCall),
+        Rule::HostCall => RuleBackend::Receipt(CorrespondenceRule::HostCall),
         // v1 has no standalone retain: a second owner comes from `CloneRef`.
-        Rule::Retain => None,
+        Rule::Retain => RuleBackend::Refused,
         Rule::Branch | Rule::BranchIf | Rule::Return | Rule::TailCall | Rule::VarTailCall | Rule::Trap | Rule::Unreachable => {
-            Some(CorrespondenceRule::Control)
+            RuleBackend::Receipt(CorrespondenceRule::Control)
         }
     }
 }
 
 fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
-    rule_backend(operation.rule_id())
+    match rule_backend(operation.rule_id()) {
+        RuleBackend::Receipt(rule) => Some(rule),
+        RuleBackend::Subjudgment(_) | RuleBackend::Refused => None,
+    }
 }
 
 fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool {
