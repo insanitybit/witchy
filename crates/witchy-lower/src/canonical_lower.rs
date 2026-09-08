@@ -515,6 +515,7 @@ pub fn lower_typed_module(
             };
             let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
                 dir_read_into: push_import_signature(vec![dir, text, text], vec![ValueType::Size], Some(2))?,
+                dir_list_into: push_import_signature(vec![dir, text], vec![ValueType::Size], Some(1))?,
                 dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
                 dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
                 dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
@@ -5887,8 +5888,48 @@ impl FunctionLowerer<'_> {
         match (name, receiver_kind == witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND, &arguments[1..]) {
             ("__capop.read", true, [path]) => {
                 let path = self.lower_string_argument(path)?;
-                let value = self.lower_host_read_into("dir_read_into", token, path)?;
+                let value = self.lower_host_read_into("dir_read_into", token, Some(path))?;
                 Ok(Some(value))
+            }
+            ("__capop.list", true, []) => {
+                // The names arrive NUL-separated; an empty payload is the
+                // empty list (a split would yield one empty name).
+                let names = self.lower_host_read_into("dir_list_into", token, None)?;
+                let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
+                let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+                let length = self.string_length_of(names)?;
+                let zero = self.push_const_size(0)?;
+                let empty = self.push_compare(ComparisonOperator::Equal, length, zero)?;
+                let facts = self.snapshot_facts();
+                let none_block = self.new_block(&[])?;
+                let split_block = self.new_block(&[])?;
+                let join = self.new_block_owned(&[
+                    (ValueType::Ref(list_layout_id), Some(Ownership::Unique)),
+                    (ValueType::Size, None),
+                    (ValueType::Size, None),
+                ])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: empty,
+                    then_target: none_block,
+                    then_arguments: Vec::new(),
+                    else_target: split_block,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = none_block;
+                let nothing = self.push_empty_value(&list_type)?;
+                let (lanes, _) = self.accumulator_lanes(nothing)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+                self.current = split_block;
+                self.restore_snapshot(facts.clone());
+                let separator = self.lower_string_literal(DIRECTORY_LISTING_SEPARATOR)?;
+                let pieces = self.lower_string_split(names, separator)?;
+                let (lanes, _) = self.accumulator_lanes(pieces)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+                self.restore_facts(facts, join);
+                self.current = join;
+                let joined = self.block_parameter_values(join);
+                self.track_accumulator_lanes(&joined);
+                Ok(Some(joined[0]))
             }
             ("__capop.exists", true, [path]) => {
                 let path = self.lower_string_argument(path)?;
@@ -5960,7 +6001,7 @@ impl FunctionLowerer<'_> {
                     else_arguments: Vec::new(),
                 })?;
                 self.current = read_block;
-                let value = self.lower_host_read_into("env_get_into", token, variable)?;
+                let value = self.lower_host_read_into("env_get_into", token, Some(variable))?;
                 let (lanes, _) = self.accumulator_lanes(value)?;
                 self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
                 self.current = absent_block;
@@ -6024,54 +6065,46 @@ impl FunctionLowerer<'_> {
     /// asked again; the published length is the second answer bounded by the
     /// buffer's capacity, never the first answer (the source may change
     /// between the two calls).
-    fn lower_host_read_into(&mut self, import_name: &str, token: ValueId, key: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_host_read_into(&mut self, import_name: &str, token: ValueId, key: Option<ValueId>) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let import = self.capability_import(import_name)?;
         let zero = self.push_const_size(0)?;
         let probe = self.alloc_bytes(zero, zero)?;
-        let key_slice = self.string_slice_argument(key, layout)?;
         let full = self.fresh(ValueType::Size)?;
         let probe_capacity = self.string_capacities[&probe];
-        self.push_operation(Operation::HostCall {
-            destinations: vec![full],
-            import,
-            arguments: vec![
-                HostCallArgument::Capability(token),
-                key_slice,
-                HostCallArgument::Buffer {
-                    place: witchy_wir::canonical_safewir::Place::projected(
-                        probe,
-                        Projection::Slice { start: zero, length: probe_capacity },
-                        ValueType::Ref(layout),
-                        AccessMode::Write,
-                    ),
-                    extent: HostBufferExtent::Slice,
-                },
-            ],
+        let mut arguments = vec![HostCallArgument::Capability(token)];
+        if let Some(key) = key {
+            arguments.push(self.string_slice_argument(key, layout)?);
+        }
+        arguments.push(HostCallArgument::Buffer {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                probe,
+                Projection::Slice { start: zero, length: probe_capacity },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            extent: HostBufferExtent::Slice,
         });
+        self.push_operation(Operation::HostCall { destinations: vec![full], import, arguments });
         let capacity = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::MoveValue { destination: capacity, source: full });
         let object = self.alloc_bytes(full, capacity)?;
-        let key_slice = self.string_slice_argument(key, layout)?;
         let written = self.fresh(ValueType::Size)?;
         let start = self.push_const_size(0)?;
-        self.push_operation(Operation::HostCall {
-            destinations: vec![written],
-            import,
-            arguments: vec![
-                HostCallArgument::Capability(token),
-                key_slice,
-                HostCallArgument::Buffer {
-                    place: witchy_wir::canonical_safewir::Place::projected(
-                        object,
-                        Projection::Slice { start, length: capacity },
-                        ValueType::Ref(layout),
-                        AccessMode::Write,
-                    ),
-                    extent: HostBufferExtent::Slice,
-                },
-            ],
+        let mut arguments = vec![HostCallArgument::Capability(token)];
+        if let Some(key) = key {
+            arguments.push(self.string_slice_argument(key, layout)?);
+        }
+        arguments.push(HostCallArgument::Buffer {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Slice { start, length: capacity },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            extent: HostBufferExtent::Slice,
         });
+        self.push_operation(Operation::HostCall { destinations: vec![written], import, arguments });
         // The published length is the second answer under the buffer's own
         // capacity guard: a source that grew between the two calls aborts
         // loudly rather than publishing a truncated read.
@@ -10200,14 +10233,18 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 6] =
-    ["dir_read_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "env_has_var", "env_get_into"];
+const CAPABILITY_IMPORTS: [&str; 7] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "env_has_var", "env_get_into"];
+
+/// The separator between the names `dir_list_into` writes; a file name never
+/// contains it.
+const DIRECTORY_LISTING_SEPARATOR: &str = "\u{0}";
 
 /// Whether `name` is a capability operation this lowering admits on a `Dir`
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
-    matches!(name, "__capop.read" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.get_env")
+    matches!(name, "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -10229,6 +10266,7 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                 };
                 match (name.as_str(), receiver) {
                     ("__capop.read", "Dir") => { needed.insert("dir_read_into"); }
+                    ("__capop.list", "Dir") => { needed.insert("dir_list_into"); }
                     ("__capop.exists", "Dir") => { needed.insert("dir_exists_at"); }
                     ("__capop.write", "Dir") => { needed.insert("dir_write_at"); }
                     ("__capop.subtree", "Dir") => { needed.insert("dir_subtree_at"); }
@@ -10368,6 +10406,7 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
     let mut renders_bool = false;
     let mut render_payloads = BTreeSet::new();
     let mut decodes_bytes = false;
+    let mut lists_directories = false;
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name) { continue; }
@@ -10394,6 +10433,9 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
             if let Expr::Call { name, .. } = expression && name == "__bytes_to_string" {
                 decodes_bytes = true;
             }
+            if let Expr::Call { name, .. } = expression && name == "__capop.list" {
+                lists_directories = true;
+            }
             if let Expr::Call { name, args } = expression
                 && matches!(name.as_str(), "string.chars" | "string.__chars")
             {
@@ -10411,6 +10453,9 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
     payloads.extend(render_payloads);
     if decodes_bytes {
         payloads.insert("\u{FFFD}".as_bytes().to_vec());
+    }
+    if lists_directories {
+        payloads.insert(DIRECTORY_LISTING_SEPARATOR.as_bytes().to_vec());
     }
     if renders_int {
         payloads.insert(RENDER_DIGIT_TABLE.as_bytes().to_vec());

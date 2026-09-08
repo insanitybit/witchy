@@ -19,8 +19,9 @@ use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind
 const SIZE_MAX: u64 = u32::MAX as u64;
 
 /// The canonical capability operations the oracle serves, by import name.
-const CAPABILITY_IMPORTS: [&str; 6] = [
+const CAPABILITY_IMPORTS: [&str; 7] = [
     "dir_read_into",
+    "dir_list_into",
     "dir_exists_at",
     "dir_write_at",
     "dir_subtree_at",
@@ -145,6 +146,32 @@ impl OracleFixture {
         self.files.contains_key(path)
             || self.files.keys().any(|name| name.starts_with(&prefix))
             || self.root_entry(path).is_some()
+    }
+
+    /// The entry names directly under `scope` (the fixture map's, then the
+    /// fallback root's, links listed by name but never followed), sorted.
+    fn entry_names(&self, scope: &str) -> Vec<String> {
+        let prefix = if scope.is_empty() { String::new() } else { format!("{scope}/") };
+        let mut names = std::collections::BTreeSet::new();
+        for key in self.files.keys() {
+            if let Some(rest) = key.strip_prefix(&prefix)
+                && let Some(first) = rest.split('/').next()
+                && !first.is_empty()
+            {
+                names.insert(first.to_owned());
+            }
+        }
+        let root = if scope.is_empty() { self.root.clone() } else { self.root_entry(scope) };
+        if let Some(root) = root
+            && let Ok(entries) = std::fs::read_dir(root)
+        {
+            for entry in entries.flatten() {
+                if let Ok(name) = entry.file_name().into_string() {
+                    names.insert(name);
+                }
+            }
+        }
+        names.into_iter().collect()
     }
 
     fn is_directory(&self, path: &str) -> bool {
@@ -750,6 +777,13 @@ impl<'a> Engine<'a> {
                     return Err(InterpretError::ExplicitTrap);
                 }
                 let length = self.fill_host_buffer(out, &contents, values)?;
+                values.insert(*destination, InterpreterValue::Size(length));
+                Ok(())
+            }
+            ("dir_list_into", [token, HostCallArgument::Buffer { place: out, .. }], [destination]) => {
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let payload = self.config.fixture.entry_names(&scope).join("\0");
+                let length = self.fill_host_buffer(out, payload.as_bytes(), values)?;
                 values.insert(*destination, InterpreterValue::Size(length));
                 Ok(())
             }

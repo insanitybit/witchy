@@ -328,6 +328,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
   (import "witchy" "dir_read_into" (func $dir_read_into_host (param externref i32 i32 i32 i32) (result i32)))
+  (import "witchy" "dir_list_into" (func $dir_list_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_subtree_at" (func $dir_subtree_at_host (param externref i32 i32) (result externref)))
@@ -337,7 +338,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 114;
+pub const IMPORT_COUNT: usize = 115;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v10: adds native regex counting and literal global replacement imports.
@@ -560,6 +561,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         // The canonical route's stateless `Dir`/`Env` operations. They take a
         // capability token and checked slices, never host-staged state.
         | "dir_read_into"
+        | "dir_list_into"
         | "dir_exists_at"
         | "dir_write_at"
         | "dir_subtree_at"
@@ -603,6 +605,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_is_dir"
         | "dir_open"
         | "dir_read_into"
+        | "dir_list_into"
         | "dir_exists_at" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"

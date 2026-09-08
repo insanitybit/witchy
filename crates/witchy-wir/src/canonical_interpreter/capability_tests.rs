@@ -42,6 +42,7 @@ fn byte_buffer_layout() -> (LayoutBundle, LayoutId, u32) {
 fn capability_signatures() -> CapabilityImportSignatures {
     CapabilityImportSignatures {
         dir_read_into: READ_SIGNATURE,
+        dir_list_into: READ_SIGNATURE,
         dir_exists_at: READ_SIGNATURE,
         dir_write_at: READ_SIGNATURE,
         dir_subtree_at: READ_SIGNATURE,

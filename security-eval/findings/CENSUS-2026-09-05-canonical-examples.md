@@ -1208,3 +1208,10 @@ interpreter mints every `Dir` parameter of `main` at the working directory under
 grants while both compiled routes refuse a second ungranted `Dir` (`review-probes-caps/two`),
 a pre-existing interpreter grant-model divergence outside this slice.
 
+`dir.list` followed in the same shape: a seventh import, `dir_list_into(dir, out Write
+Slice) -> Size`, writes the admitted entry names (sorted, the legacy policy filter) joined
+by NUL through the bounded two-call protocol, and the guest splits them with the string
+split kernel (an empty payload is the empty list, not one empty name). The oracle lists the
+fixture map's names under the scope and the fallback root's entries (links by name, never
+followed). Launch test: `admitted_dir_list_names_entries_sorted_and_an_empty_directory_is_empty`.
+

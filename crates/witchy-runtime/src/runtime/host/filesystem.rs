@@ -26,6 +26,7 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     // `Dir[Read]` grant as its frozen siblings above: a program without the
     // right cannot even link the import.
     linker.func_wrap("witchy", "dir_read_into", host_dir_read_into)?;
+    linker.func_wrap("witchy", "dir_list_into", host_dir_list_into)?;
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
     linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
     Ok(())
@@ -633,20 +634,42 @@ fn host_dir_is_dir(
     Ok(ok as i32)
 }
 
-/// `dir_list_size(h) -> bytes`: read the directory NOW (sorted names, matching
-/// the interpreter), stage the listing, and report the total byte size of the
-/// witchy `List(String)` structure the guest must reserve.
-fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<i32> {
+/// `dir_list_into(dir, out, out_cap) -> byte length`: the admitted entry names
+/// (sorted, the same policy filter as `dir_list_size`) joined by NUL, written
+/// through the bounded slice protocol of `dir_read_into`; the guest splits
+/// them. A name cannot contain NUL, so the separator is unambiguous.
+fn host_dir_list_into(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    out_ptr: i32,
+    out_cap: i32,
+) -> Result<i32> {
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let names: Vec<String> = match &dir.backing {
+    let names = admitted_entry_names(&dir)?;
+    let payload = names.join("\0");
+    fill_slice(&mut caller, out_ptr, out_cap, payload.as_bytes(), "directory listing")
+}
+
+/// The directory's entry names the grant's policy admits, sorted.
+fn admitted_entry_names(dir: &DirAuthority) -> Result<Vec<String>> {
+    Ok(match &dir.backing {
         DirBacking::Fs(base) => base.entries().map_err(|e| {
             Error::msg(format!("list failed for `{}`: {e}", base.display_path().display()))
         })?.into_iter().filter(|name| {
             let is_dir = base.is_dir(name).unwrap_or(false);
             witchy_caps::capabilities::dir_admits(&dir.policy, name, is_dir)
         }).collect(),
-    };
+    })
+}
+
+/// `dir_list_size(h) -> bytes`: read the directory NOW (sorted names, matching
+/// the interpreter), stage the listing, and report the total byte size of the
+/// witchy `List(String)` structure the guest must reserve.
+fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<i32> {
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let names = admitted_entry_names(&dir)?;
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(names);
     Ok(size as i32)

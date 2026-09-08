@@ -1054,3 +1054,30 @@ fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
     );
     assert!(refused.is_err(), "{refused:?}");
 }
+
+#[test]
+fn admitted_dir_list_names_entries_sorted_and_an_empty_directory_is_empty() {
+    // `dir.list` arrives as the sorted admitted names joined by NUL through
+    // the bounded read protocol; the guest splits them, and an empty payload
+    // is the empty list rather than one empty name.
+    let root = scratch_dir("dir-list");
+    std::fs::create_dir_all(root.join("sub")).expect("subdir");
+    std::fs::create_dir_all(root.join("empty")).expect("subdir");
+    std::fs::write(root.join("b.txt"), "b").expect("seed");
+    std::fs::write(root.join("a.txt"), "a").expect("seed");
+    std::fs::write(root.join("sub/inner.txt"), "i").expect("seed");
+    let output = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir[Read]):\n    let names = dir.list()\n    console.print(\"${names.length()} ${names}\")\n    console.print(\"${dir.subtree(\"sub\").list()} ${dir.subtree(\"empty\").list().length()}\")\n",
+        Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        },
+    )
+    .expect("runs");
+    assert_eq!(output, vec!["4 [a.txt, b.txt, empty, sub]".to_string(), "[inner.txt] 0".to_string()]);
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}

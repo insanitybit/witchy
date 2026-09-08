@@ -175,9 +175,9 @@ may change between calls). `dir_exists(dir, path: Read Slice) -> Bool`,
 `dir_subtree(dir, path: Read Slice) -> Capability(1)` take checked slices; a
 path is a string slice the memory checker re-establishes, not a length-prefixed
 object address. The host never retains a guest pointer past the call and never
-writes outside the slice it was handed. `dir.list()` (a list of strings laid out
-by the host through `write_pending_list`) stays refused until the list is built
-guest-side from a bounded fill of a separator-joined payload.
+writes outside the slice it was handed. `dir.list()` is built guest-side from a
+bounded fill of the NUL-joined names (`dir_list_into`), never a host-laid-out
+list.
 
 **Scope and reentrancy.** Every capability import is `HostReentrancy::Forbidden`
 and `HostMutation::WriteBuffers` (reads) or `ReadOnly` (existence, write,
@@ -203,7 +203,7 @@ Rights are not modeled by the oracle (a violation is a host trap on the
 runtime leg), and the shared `witchy-test-host` fixture adapter is the
 follow-up, not this slice.
 
-**Source surface admitted by the slice.** `dir.read(path)`, `dir.exists(path)`,
+**Source surface admitted by the slice.** `dir.read(path)`, `dir.list()`, `dir.exists(path)`,
 `dir.write(path, data)`, `dir.subtree(path)`, `env.get_env(name)`, `Dir` and
 `Env` as entry parameters and as ordinary parameters passed down (the token is a
 scalar-like value: copied on pass, no release), and `dir as Dir[Read]`. The

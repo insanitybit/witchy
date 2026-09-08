@@ -440,6 +440,7 @@ pub const ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(2);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityImportSignatures {
     pub dir_read_into: FunctionSignatureId,
+    pub dir_list_into: FunctionSignatureId,
     pub dir_exists_at: FunctionSignatureId,
     pub dir_write_at: FunctionSignatureId,
     pub dir_subtree_at: FunctionSignatureId,
@@ -642,6 +643,18 @@ impl CanonicalAbiCatalog {
                 &[WasmTy::I32],
                 signatures.dir_read_into,
                 vec![dir(), read_slice(), write_slice()],
+                size(),
+                HostMutation::WriteBuffers,
+                &[AbiImportAuthority::DirRead],
+            )?,
+            // The directory's admitted entry names, NUL-separated, into a
+            // guest buffer (the guest splits them).
+            authenticated_capability_import(
+                "dir_list_into",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32],
+                signatures.dir_list_into,
+                vec![dir(), write_slice()],
                 size(),
                 HostMutation::WriteBuffers,
                 &[AbiImportAuthority::DirRead],
@@ -1325,6 +1338,7 @@ mod catalog_tests {
     fn signatures() -> CapabilityImportSignatures {
         CapabilityImportSignatures {
             dir_read_into: FunctionSignatureId::new(1),
+            dir_list_into: FunctionSignatureId::new(2),
             dir_exists_at: FunctionSignatureId::new(2),
             dir_write_at: FunctionSignatureId::new(3),
             dir_subtree_at: FunctionSignatureId::new(4),
@@ -1348,7 +1362,21 @@ mod catalog_tests {
     fn capability_imports_project_with_their_contract_roles() {
         let catalog = catalog();
         let imports = catalog.imports();
-        assert_eq!(imports.len(), 8, "two prelude imports and the six capability operations");
+        assert_eq!(imports.len(), 9, "two prelude imports and the seven capability operations");
+        let listing = imports.iter().find(|import| import.name == "dir_list_into").expect("dir_list_into");
+        assert_eq!(
+            listing.parameter_roles,
+            vec![
+                HostParameterRole::Capability(DIR_CAPABILITY_KIND),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(STRING_LAYOUT),
+                    access: AccessMode::Write,
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+        );
+        assert_eq!(listing.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
+        assert_eq!(listing.mutation, HostMutation::WriteBuffers);
         let read = imports.iter().find(|import| import.name == "dir_read_into").expect("dir_read_into");
         assert_eq!(
             read.parameter_roles,

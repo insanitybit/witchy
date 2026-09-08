@@ -22,6 +22,7 @@ Results are HostResultRole::Value(ValueType::Size) (wasm i32).
 | name | wasm params | result | authority | semantics |
 |---|---|---|---|---|
 | dir_read_into | externref, path Read Slice, out Write Slice | i32 | DirRead | Read the confined file at `path` NOW (same confinement/UTF-8 rules as legacy `dir_read_len`: invalid UTF-8 or a missing/denied file traps). Write min(len, out_cap) bytes at out_ptr (must fit guest memory, else trap). Return the file's full byte length (> i32::MAX traps). Stateless: no `pending`. |
+| dir_list_into | externref, out Write Slice | i32 | DirRead | The admitted entry names (sorted, legacy `dir_list_size`'s policy filter) joined by NUL, through the bounded slice protocol; the guest splits them (an empty payload is the empty list). |
 | dir_exists_at | externref, path Read Slice | i32 (0/1) | DirRead | Semantics of legacy `dir_exists`. |
 | dir_write_at | externref, path Read Slice, data Read Slice | (none) | DirWrite | Semantics of legacy `dir_write` (data is UTF-8 text). |
 | dir_subtree_at | externref, path Read Slice | externref | DirGrant (narrowing) | Semantics of legacy `dir_subdir`; result role HostResultRole::Capability(kind 1). |

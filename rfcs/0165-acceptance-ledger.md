@@ -114,7 +114,7 @@ convention, loops that thread only the names they rebind, and closures as
 records of code and `Int` captures, `Bytes` as the byte-buffer layout with
 its kernels, and `Dir`/`Env` capability host calls (slices 32-42). The census
 stands at 127 of 163 examples checking and 71 runnable examples agreeing
-under three-legged parity; 68 launch tests pin the slices. Two
+under three-legged parity; 69 launch tests pin the slices. Two
 silent-wrong-answer lowering defects (a `for` loop dropping a binding rebound
 inside an arm; a header fact cached across arms) were caught by `witchy
 parity`, not by the oracle, which executes the same SafeWIR: independent
