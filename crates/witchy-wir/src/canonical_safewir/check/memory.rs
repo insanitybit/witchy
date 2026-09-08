@@ -3200,8 +3200,10 @@ impl<'a> MemoryChecker<'a> {
         &self,
         layout: crate::layout::LayoutId,
     ) -> Result<&LayoutDescriptor, InitialCheckError> {
+        let physical = self.layouts.resolve_nominal(layout)
+            .map_err(|_| InitialCheckError::UnknownLayout(layout))?;
         self.layouts
-            .get(layout)
+            .get(physical)
             .ok_or(InitialCheckError::UnknownLayout(layout))
     }
 
@@ -3320,37 +3322,58 @@ impl<'a> MemoryChecker<'a> {
 fn drop_ref_layout_supported(
     layouts: &LayoutInterner,
     layout: crate::layout::LayoutId,
-    visiting: &mut BTreeSet<crate::layout::LayoutId>,
+    visited: &mut BTreeSet<crate::layout::LayoutId>,
 ) -> bool {
-    if !visiting.insert(layout) {
-        return false;
-    }
-    let supported = layouts.get(layout).is_some_and(|descriptor| match descriptor.kind() {
-        LayoutKind::Scalar(_) => true,
-        // A record or tuple drops each owned pointer field's child, then
-        // reclaims its bytes.
-        LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields.iter().all(|field| {
-            layouts.get(*field).is_some_and(|field| match field.kind() {
-                LayoutKind::Scalar(_) => true,
-                LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned | PointerSlot::OwnedNullable } => {
-                    drop_ref_layout_supported(layouts, *pointee, visiting)
-                }
-                _ => false,
-            })
-        }),
-        LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => {
-            layouts.get(*element).is_some_and(|element| match element.kind() {
-                LayoutKind::Scalar(_) => true,
-                LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } => {
-                    drop_ref_layout_supported(layouts, *pointee, visiting)
-                }
-                _ => false,
-            })
+    let mut pending = vec![layout];
+    while let Some(layout) = pending.pop() {
+        let Ok(physical) = layouts.resolve_nominal(layout) else { return false };
+        if !visited.insert(physical) {
+            continue;
         }
-        _ => false,
-    });
-    visiting.remove(&layout);
-    supported
+        let Some(descriptor) = layouts.get(physical) else { return false };
+        match descriptor.kind() {
+            LayoutKind::Scalar(_) => {}
+            // Recursion is in the layout graph, not the compiler's call stack.
+            // Every physical node still checks all of its owned child edges.
+            LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => {
+                for field in fields {
+                    let Some(field) = layouts.get(*field) else { return false };
+                    match field.kind() {
+                        LayoutKind::Scalar(_) => {}
+                        LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned | PointerSlot::OwnedNullable } => pending.push(*pointee),
+                        _ => return false,
+                    }
+                }
+            }
+            LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } => {
+                let Some(element) = layouts.get(*element) else { return false };
+                match element.kind() {
+                    LayoutKind::Scalar(_) => {}
+                    LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } => pending.push(*pointee),
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+#[test]
+fn recursive_drop_layout_graph_requires_bound_supported_children() {
+    let mut layouts = LayoutInterner::new();
+    let nominal = layouts.intern_opaque_nominal([23; 32]).unwrap();
+    let child = layouts.intern_runtime_pointer_value_slot(nominal, PointerSlot::OwnedNullable).unwrap();
+    let physical = layouts.intern_packed_record(vec![child]).unwrap();
+    assert!(!drop_ref_layout_supported(&layouts, nominal, &mut BTreeSet::new()));
+    layouts.bind_nominal(nominal, physical).unwrap();
+    assert!(drop_ref_layout_supported(&layouts, nominal, &mut BTreeSet::new()));
+    let missing = layouts.intern_opaque_nominal([24; 32]).unwrap();
+    let missing_child = layouts.intern_runtime_pointer_value_slot(missing, PointerSlot::Owned).unwrap();
+    let with_missing = layouts.intern_packed_record(vec![missing_child, child]).unwrap();
+    assert!(!drop_ref_layout_supported(&layouts, with_missing, &mut BTreeSet::new()), "a closed recursive edge must not hide another unbound child");
+    let nullable_list = layouts.intern_packed_list(child, crate::layout::RcHeader::Required).unwrap();
+    assert!(!drop_ref_layout_supported(&layouts, nullable_list, &mut BTreeSet::new()), "nullable collection slots remain unsupported");
 }
 
 fn remap_value(renames: &BTreeMap<ValueId, ValueId>, value: ValueId) -> ValueId {

@@ -34,20 +34,22 @@ fn rows(function: FunctionId, layouts: &LayoutInterner, root: LayoutId) -> Resul
     let mut pending = VecDeque::from([root]);
     while let Some(id) = pending.pop_front() {
         if result.contains_key(&id) { continue; }
-        let concrete = layouts.nominal_target(id).unwrap_or(id);
+        let concrete = layouts.resolve_nominal(id).map_err(|_| EncodeError::UnsupportedLayout {
+            function, operation: "DropRef nominal layout",
+        })?;
         let descriptor = layouts.get(concrete).ok_or(EncodeError::UnsupportedLayout {
             function, operation: "DropRef missing layout",
         })?;
         let children = match descriptor.kind() {
             LayoutKind::PackedList { .. } | LayoutKind::RuntimeBuffer { .. } => {
-                let collection = collection_layout(function, layouts, concrete).map_err(EncodeError::Lowering)?;
+                let collection = collection_layout(function, layouts, id).map_err(EncodeError::Lowering)?;
                 match collection.pointer_layout {
                     Some(child) => { pending.push_back(child); Children::Elements(collection, child) }
                     None => Children::Fields(Vec::new()),
                 }
             }
             LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } => {
-                let fields = fixed_pointer_fields(layouts, concrete);
+                let fields = fixed_pointer_fields(function, layouts, id).map_err(EncodeError::Lowering)?;
                 pending.extend(fields.iter().map(|(_, child, _)| *child));
                 Children::Fields(fields)
             }

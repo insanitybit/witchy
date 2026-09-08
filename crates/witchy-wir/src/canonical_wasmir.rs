@@ -412,11 +412,13 @@ fn raw_byte_slice_place(
     if place.value_type() != ValueType::Ref(layout) {
         return Err(LoweringError::UnsupportedOperation { function, operation: "CopyBytes type" });
     }
-    let descriptor = layouts.get(layout).ok_or(LoweringError::UnsupportedLayout { function, operation: "CopyBytes layout" })?;
+    let physical_layout = resolve_backend_layout(function, layouts, layout, "CopyBytes layout")?;
+    let descriptor = layouts.get(physical_layout).ok_or(LoweringError::UnsupportedLayout { function, operation: "CopyBytes layout" })?;
     let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else {
         return Err(LoweringError::UnsupportedLayout { function, operation: "CopyBytes layout" });
     };
-    let element = layouts.get(*element).ok_or(LoweringError::UnsupportedLayout { function, operation: "CopyBytes element" })?;
+    let physical_element = resolve_backend_layout(function, layouts, *element, "CopyBytes element")?;
+    let element = layouts.get(physical_element).ok_or(LoweringError::UnsupportedLayout { function, operation: "CopyBytes element" })?;
     if element.kind() != &LayoutKind::Scalar(ScalarKind::RawByte) {
         return Err(LoweringError::UnsupportedLayout { function, operation: "CopyBytes element" });
     }
@@ -544,16 +546,18 @@ fn collection_layout(
     layouts: &LayoutInterner,
     layout: crate::layout::LayoutId,
 ) -> Result<CollectionLayout, LoweringError> {
+    let physical_layout = resolve_backend_layout(function, layouts, layout, "layout")?;
     let descriptor = layouts
-        .get(layout)
+        .get(physical_layout)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
     let (element, raw_runtime_buffer) = match descriptor.kind() {
         LayoutKind::PackedList { element, .. } => (*element, false),
         LayoutKind::RuntimeBuffer { element } => (*element, true),
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "layout" }),
     };
+    let physical_element = resolve_backend_layout(function, layouts, element, "layout")?;
     let element_descriptor = layouts
-        .get(element)
+        .get(physical_element)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
     let (scalar, pointer_layout, pointer_slot) = match element_descriptor.kind() {
         LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (*scalar, None, None),
@@ -603,6 +607,20 @@ fn collection_layout(
         pointer_layout,
         pointer_slot,
     })
+}
+
+/// Resolve a nominal identity only at the physical descriptor boundary. SSA
+/// `ValueType::Ref` and the pointer metadata returned by this module retain
+/// the original identity so exact source/ABI correspondence remains visible.
+fn resolve_backend_layout(
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    layout: crate::layout::LayoutId,
+    operation: &'static str,
+) -> Result<crate::layout::LayoutId, LoweringError> {
+    layouts
+        .resolve_nominal(layout)
+        .map_err(|_| LoweringError::UnsupportedLayout { function, operation })
 }
 
 fn resolve_collection_layout(
@@ -678,8 +696,9 @@ fn field_access(
     layout: crate::layout::LayoutId,
     index: u32,
 ) -> Result<MemoryAccess, LoweringError> {
+    let physical_layout = resolve_backend_layout(function, layouts, layout, "layout")?;
     let descriptor = layouts
-        .get(layout)
+        .get(physical_layout)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
     let field = descriptor
         .fields()
@@ -693,14 +712,17 @@ fn field_access(
         crate::layout::FieldKind::Pointer { pointee, slot } if matches!(slot, PointerSlot::Owned | PointerSlot::OwnedNullable) => {
             (ScalarKind::U32, Some(pointee), Some(slot))
         }
-        crate::layout::FieldKind::Inline(slot) => match layouts.get(slot).map(|slot| slot.kind()) {
+        crate::layout::FieldKind::Inline(slot) => {
+            let physical_slot = resolve_backend_layout(function, layouts, slot, "field kind")?;
+            match layouts.get(physical_slot).map(|slot| slot.kind()) {
             Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics })
                 if matches!(semantics, PointerSlot::Owned | PointerSlot::OwnedNullable) =>
             {
                 (ScalarKind::U32, Some(*pointee), Some(*semantics))
             }
             _ => return Err(LoweringError::UnsupportedLayout { function, operation: "field kind" }),
-        },
+            }
+        }
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "field kind" }),
     };
     let width = scalar.size();
@@ -884,8 +906,9 @@ fn lower_operation(
             // scalar record) allocates its constant size.
             let supported = match extent {
                 Extent::Counted { .. } => collection_layout(function, layouts, *layout).is_ok(),
-                Extent::FixedBytes(bytes) => layouts
-                    .get(*layout)
+                Extent::FixedBytes(bytes) => resolve_backend_layout(function, layouts, *layout, "Alloc layout")
+                    .ok()
+                    .and_then(|physical_layout| layouts.get(physical_layout))
                     .is_some_and(|descriptor| matches!(descriptor.size(), LayoutSize::Fixed(size) if u64::from(size) == *bytes)),
                 Extent::HeaderPrefix { .. } => false,
             };
@@ -2377,29 +2400,40 @@ fn emit_reclaim_local(body: &mut wasm_encoder::Function, layout: &LocalLayout, s
 }
 
 /// The owned pointer fields of a fixed layout as `(byte offset, pointee)`.
-fn fixed_pointer_fields(layouts: &LayoutInterner, layout: crate::layout::LayoutId) -> Vec<(u32, crate::layout::LayoutId, bool)> {
-    let Some(descriptor) = layouts.get(layout) else { return Vec::new() };
+fn fixed_pointer_fields(
+    function: FunctionId,
+    layouts: &LayoutInterner,
+    layout: crate::layout::LayoutId,
+) -> Result<Vec<(u32, crate::layout::LayoutId, bool)>, LoweringError> {
+    let physical_layout = resolve_backend_layout(function, layouts, layout, "fixed pointer layout")?;
+    let Some(descriptor) = layouts.get(physical_layout) else {
+        return Err(LoweringError::UnsupportedLayout { function, operation: "fixed pointer layout" });
+    };
     if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     descriptor
         .fields()
         .iter()
-        .filter_map(|field| match field.kind() {
+        .map(|field| match field.kind() {
             crate::layout::FieldKind::Pointer { pointee, slot } if matches!(slot, PointerSlot::Owned | PointerSlot::OwnedNullable) => {
-                Some((field.offset(), pointee, slot == PointerSlot::OwnedNullable))
+                Ok(Some((field.offset(), pointee, slot == PointerSlot::OwnedNullable)))
             }
-            crate::layout::FieldKind::Inline(slot) => match layouts.get(slot).map(|slot| slot.kind()) {
+            crate::layout::FieldKind::Inline(slot) => {
+                let physical_slot = resolve_backend_layout(function, layouts, slot, "fixed pointer field")?;
+                match layouts.get(physical_slot).map(|slot| slot.kind()) {
                 Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics })
                     if matches!(semantics, PointerSlot::Owned | PointerSlot::OwnedNullable) =>
                 {
-                    Some((field.offset(), *pointee, *semantics == PointerSlot::OwnedNullable))
+                    Ok(Some((field.offset(), *pointee, *semantics == PointerSlot::OwnedNullable)))
                 }
-                _ => None,
-            },
-            _ => None,
+                _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
         })
-        .collect()
+        .collect::<Result<Vec<_>, LoweringError>>()
+        .map(|fields| fields.into_iter().flatten().collect())
 }
 
 fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, function: &Function, object: ValueId, layouts: &LayoutInterner) -> Result<(), EncodeError> {

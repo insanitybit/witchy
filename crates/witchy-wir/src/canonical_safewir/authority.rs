@@ -738,7 +738,22 @@ fn record_layout_matches(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
+    let mut pending = Vec::new();
+    if !enqueue_record_fields(layout, fields, nullable_fields, layouts, &mut pending) {
+        return false;
+    }
+    match_layout_graph(pending, layouts, records)
+}
+
+fn enqueue_record_fields(
+    layout: crate::layout::LayoutId,
+    fields: &[witchy_syntax::ast::Type],
+    nullable_fields: bool,
+    layouts: &crate::layout::LayoutInterner,
+    pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+) -> bool {
     use crate::layout::{LayoutKind, ScalarKind};
+    let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
     let Some(descriptor) = layouts.get(layout) else { return false };
     let LayoutKind::PackedRecord { fields: actual } = descriptor.kind() else { return false };
     actual.len() == fields.len()
@@ -755,7 +770,7 @@ fn record_layout_matches(
                 // owned pointer slot whose pointee is that value's own layout.
                 _ => matches!(actual.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics }
                     if *semantics == if nullable_fields { crate::layout::PointerSlot::OwnedNullable } else { crate::layout::PointerSlot::Owned }
-                        && layout_matches_source(*pointee, field, layouts, records)),
+                        && { pending.push((*pointee, field.unqualified().clone())); true }),
             }
         })
 }
@@ -766,12 +781,49 @@ fn layout_matches_source(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
+    match_layout_graph(vec![(layout, source.unqualified().clone())], layouts, records)
+}
+
+/// Check every node in the finite layout/source-type product. A revisited
+/// exact pair closes a recursive edge only: all other outgoing obligations
+/// still have to pass. Nominal resolution never replaces source validation.
+fn match_layout_graph(
+    mut pending: Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+    layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
+) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    while let Some((layout, source)) = pending.pop() {
+        if seen.contains(&(layout, source.clone())) {
+            continue;
+        }
+        // A resource ceiling refuses pathological expansion; it never turns
+        // unfinished correspondence into successful admission.
+        if seen.len() == 65_536 {
+            return false;
+        }
+        seen.insert((layout, source.clone()));
+        if !enqueue_layout_children(layout, &source, layouts, records, &mut pending) {
+            return false;
+        }
+    }
+    true
+}
+
+fn enqueue_layout_children(
+    layout: crate::layout::LayoutId,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
+    pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+) -> bool {
     use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
+    let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
     let Some(descriptor) = layouts.get(layout) else { return false };
     // An aggregate (record, sum, tuple, scalar Option/Result) is a fixed
     // record of its shape's slots.
     if let Some(shape) = witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records) {
-        return record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records);
+        return enqueue_record_fields(layout, &shape.fields, shape.tagged, layouts, pending);
     }
     match source.unqualified() {
         witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
@@ -785,7 +837,7 @@ fn layout_matches_source(
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
-                inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if layout_matches_source(*pointee, inner, layouts, records)),
+                inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if { pending.push((*pointee, inner.unqualified().clone())); true }),
             }
         }
         _ => false,
@@ -1135,6 +1187,37 @@ mod tests {
         let wrong = layouts.intern_runtime_pointer_value_slot(int, PointerSlot::OwnedNullable).unwrap();
         let record = layouts.intern_packed_record(vec![int, wrong]).unwrap();
         assert!(!layout_matches_source(record, &sum, &layouts, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn source_recursive_layout_graph_checks_every_pair_and_child() {
+        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
+        use witchy_syntax::ast::Type;
+        use witchy_types::canonical_aggregates::ScalarAggregateShape;
+        let named = |name: &str| Type::Named(name.into(), vec![]);
+        let definition = |name: &str, fields: Vec<Type>| {
+            let mut definition = ScalarAggregateShape {
+                name: name.into(), fields, variants: vec![], tagged: false, packed: false,
+            }.packed_view();
+            definition.packed = false;
+            definition
+        };
+        let records = BTreeMap::from([
+            ("Tree".into(), definition("Tree", vec![named("Tree"), named("Int")])),
+            ("Other".into(), definition("Other", vec![named("Other"), named("Float")])),
+        ]);
+        let mut layouts = LayoutInterner::new();
+        let nominal = layouts.intern_opaque_nominal([17; 32]).unwrap();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(nominal, PointerSlot::Owned).unwrap();
+        let physical = layouts.intern_packed_record(vec![slot, int]).unwrap();
+        assert!(!layout_matches_source(nominal, &named("Tree"), &layouts, &records), "an unbound identity cannot close a recursive obligation");
+        layouts.bind_nominal(nominal, physical).unwrap();
+        assert!(layout_matches_source(nominal, &named("Tree"), &layouts, &records));
+        assert!(!layout_matches_source(nominal, &named("Other"), &layouts, &records), "a cycle does not excuse a mismatched sibling field");
+        let pair = layouts.intern_packed_record(vec![slot, slot]).unwrap();
+        assert!(!layout_matches_source(pair, &Type::Tuple(vec![named("Tree"), named("Other")]), &layouts, &records), "visited keys must include the source type, not just the layout");
+        assert!(!layout_matches_source(nominal, &Type::Named("Option".into(), vec![named("Tree")]), &layouts, &records), "recursive identity cannot substitute for a tagged nullable layout");
     }
 
     fn source() -> witchy_types::pipeline::CheckedModule {
