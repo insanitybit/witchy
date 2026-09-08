@@ -14,6 +14,21 @@ fn main(console: Console):
     console.print(encoding.hex_encode("é🙂"))
 "#;
 
+const HEX_BYTES_ENCODE_SOURCE: &str = r#"
+import bytes
+import encoding
+
+fn make_bytes(xs: List(Int)) -> Bytes:
+    bytes.from_list(xs).unwrap_or(bytes.from_string(""))
+
+fn main(console: Console):
+    console.print(encoding.hex_encode_bytes(make_bytes([])))
+    console.print(encoding.hex_encode_bytes(make_bytes([0])))
+    console.print(encoding.hex_encode_bytes(make_bytes([255])))
+    console.print(encoding.hex_encode_bytes(make_bytes([0, 255])))
+    console.print(encoding.hex_encode_bytes(make_bytes([0, 255, 1])))
+"#;
+
 const HEX_DECODE_SOURCE: &str = r#"
 import encoding
 
@@ -269,6 +284,46 @@ fn real_std_hex_encode_agrees_with_oracle_and_admitted_wasm() {
         .expect("spawn admitted real std hex_encode");
     vm.run().expect("admitted Wasm runs real std hex_encode");
     assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
+}
+
+#[test]
+fn real_std_hex_encode_bytes_preserves_raw_bytes_across_backends() {
+    let checked = witchy::resolve_std_only_checked(HEX_BYTES_ENCODE_SOURCE)
+        .expect("real std byte hex source checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("real std hex_encode_bytes must admit");
+    let expected = vec!["", "00", "ff", "00ff", "00ff01"];
+    let source_output = witchy::interpreter::run_module_args(checked.module().clone(), ".", Vec::new(), Vec::new())
+        .expect("source interpreter runs real std byte hex encoder");
+    assert_eq!(source_output, expected, "source interpreter expected raw byte hex output");
+
+    let entry = artifact.entry().expect("byte hex program entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked)
+        .expect("byte hex source validates for oracle");
+    let arguments = entry
+        .capabilities()
+        .iter()
+        .copied()
+        .map(InterpreterValue::entry_capability)
+        .collect();
+    let oracle = interpret_program(
+        &validated,
+        function,
+        arguments,
+        InterpreterConfig { max_steps: 100_000_000, ..Default::default() },
+    )
+    .expect("canonical oracle runs real std byte hex encoder");
+    assert_eq!(oracle.output, source_output, "canonical oracle must match source byte hex output");
+    assert_eq!(oracle.leaked_objects, 0, "byte hex source oracle must not leak");
+
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+        .expect("spawn admitted real std byte hex encoder");
+    vm.run().expect("admitted Wasm runs real std byte hex encoder");
+    assert_eq!(vm.output(), source_output, "admitted Wasm must match source byte hex output");
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
 }
 

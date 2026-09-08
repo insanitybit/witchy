@@ -4876,6 +4876,7 @@ impl FunctionLowerer<'_> {
                 if matches!(
                     name.as_str(),
                         "encoding.hex_encode"
+                        | "encoding.hex_encode_bytes"
                         | "encoding.hex_decode_bytes_raw"
                         | "encoding.base64_encode"
                         | "encoding.base64_encode_bytes"
@@ -8612,7 +8613,7 @@ impl FunctionLowerer<'_> {
         let source = self.lower_expr(source)?;
         self.ensure_string_extent(source)?;
         match name {
-            "encoding.hex_encode" => self.lower_hex_encode(source),
+            "encoding.hex_encode" | "encoding.hex_encode_bytes" => self.lower_hex_encode(source),
             // The checked std wrapper establishes even length and alphabet
             // membership before this raw byte kernel is reachable. The kernel
             // nevertheless guards every source load and destination store;
