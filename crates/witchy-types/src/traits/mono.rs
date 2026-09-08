@@ -146,7 +146,26 @@ impl Mono<'_> {
         for (param, arg) in template.params.iter().zip(args) {
             let Some(pattern) = &param.ty else { continue };
             let from_table = table_ast_type(self.table, arg);
-            let actual = from_table.clone().or_else(|| self.type_ast(arg, scope));
+            // Generated specializations are walked against the preceding round's
+            // table.  That table still describes their template locals (for
+            // example `t0` in the generated Reflect body), while `scope` has
+            // the concrete parameter after `specialize` substituted it.  Never
+            // let stale unresolved evidence hide that concrete binding.
+            let scoped_local = match arg {
+                Expr::Var(name) => scope.get(name).cloned(),
+                _ => None,
+            };
+            let actual = from_table
+                .as_ref()
+                .filter(|ty| {
+                    let mut variables = Vec::new();
+                    collect_type_vars(ty, &mut variables);
+                    variables.is_empty()
+                })
+                .cloned()
+                .or(scoped_local)
+                .or(from_table.clone())
+                .or_else(|| self.type_ast(arg, scope));
             let Some(actual) = actual else { continue };
             if !bind_ast_type_vars(pattern, &actual, &mut bindings) {
                 return None;

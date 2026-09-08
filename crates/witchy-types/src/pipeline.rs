@@ -1217,6 +1217,34 @@ mod tests {
     }
 
     #[test]
+    fn canonical_source_rechecks_nested_concrete_specializations_from_a_generic_local() {
+        let checked = link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"trait Reflect:\n    fn reflect(self) -> Int\n\ntype Record(t0):\n    Record(t0)\n\nimpl Reflect for Record(t0):\n    fn reflect(self) -> Int:\n        1\n\nfn reflect_value(value: a) -> Int where a: Reflect:\n    value.reflect()\n\nfn into_value(value: a) -> Int where a: Reflect:\n    reflect_value(value)\n\nfn main() -> Int:\n    into_value(Record(7))\n".to_vec(),
+            )],
+            "main",
+            no_expand,
+        )
+        .expect("nested concrete generic source checks");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let functions = canonical
+            .typed_module()
+            .module()
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function) => Some(&function.name),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(functions.iter().any(|name| name.contains("into_value__main_2eRecord")), "{functions:?}");
+        assert!(functions.iter().any(|name| name.contains("reflect_value__main_2eRecord")), "{functions:?}");
+        assert!(functions.iter().any(|name| name.contains("Reflect__main.Record__reflect__Int")), "{functions:?}");
+        assert!(canonical.obligations().is_empty(), "{:?}", canonical.obligations());
+    }
+
+    #[test]
     fn canonical_source_omits_unreachable_checked_generic_instances() {
         let mut module = parse(
             "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
