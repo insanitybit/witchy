@@ -4850,6 +4850,7 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if matches!(name.as_str(), "list.length" | "list.__length") => {
                 self.lower_list_length(args)
             }
+            Expr::Call { name, args } if name == "list.concat" => self.lower_list_concat(args),
             Expr::Call { name, args } if matches!(name.as_str(), "string.chars" | "string.__chars") => {
                 self.lower_string_chars(args)
             }
@@ -6622,6 +6623,367 @@ impl FunctionLowerer<'_> {
 
         let new_object = self.push_owned_element(old_object, value, &list_type)?;
         self.bindings.insert(name.clone(), new_object);
+        Ok(())
+    }
+
+    /// Lower `list.concat(xs, ys)` with source value semantics.  Neither input
+    /// token is consumed: every reference element is loaded as a shared clone
+    /// and materialized through the same owned-storage path as list literals.
+    fn lower_list_concat(&mut self, arguments: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let [left_expression, right_expression] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.concat arity"));
+        };
+        let left_type = self.expression_type(left_expression)?;
+        let right_type = self.expression_type(right_expression)?;
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(&left_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let (right_layout, right_element_type, right_header_bytes, right_stride_bytes) =
+            list_layout(&right_type, self.layout_bundle, self.layouts, self.definitions)?;
+        if layout != right_layout
+            || element_type != right_element_type
+            || header_bytes != right_header_bytes
+            || stride_bytes != right_stride_bytes
+        {
+            return Err(CanonicalLoweringError::UnsupportedListElement(left_type));
+        }
+        let Type::Named(_, left_arguments) = left_type.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedListElement(left_type));
+        };
+        let element_source_type = left_arguments.first().ok_or(
+            CanonicalLoweringError::UnsupportedListElement(left_type.clone()),
+        )?;
+        let left = self.lower_expr(left_expression)?;
+        let right = self.lower_expr(right_expression)?;
+        if self.values.get(&left) != Some(&ValueType::Ref(layout))
+            || self.values.get(&right) != Some(&ValueType::Ref(layout))
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.concat operands"));
+        }
+        self.ensure_list_extent(left)?;
+        self.ensure_list_extent(right)?;
+        let left_length = *self.list_counts.get(&left).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list.concat left length"),
+        )?;
+        let right_length = *self.list_counts.get(&right).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list.concat right length"),
+        )?;
+
+        let maximum_count = self.push_const_size(
+            (u64::from(u32::MAX) - u64::from(header_bytes)) / u64::from(stride_bytes),
+        )?;
+        for length in [left_length, right_length] {
+            let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, maximum_count)?;
+            self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        }
+        let remaining = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Subtract,
+            maximum_count,
+            right_length,
+            OverflowBehavior::Wrap,
+        )?;
+        let total_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, left_length, remaining)?;
+        self.push_guard(total_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let total = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            left_length,
+            right_length,
+            OverflowBehavior::Wrap,
+        )?;
+        let capacity_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            total,
+            maximum_count,
+        )?;
+        self.push_guard(capacity_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let zero = self.push_const_size(0)?;
+        let pointer_elements = matches!(element_type, ValueType::Ref(_));
+        let allocation_count = if pointer_elements { zero } else { total };
+        let allocation_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            allocation_count,
+            total,
+        )?;
+        self.push_guard(allocation_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count: allocation_count,
+                capacity: total,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.list_counts.insert(object, allocation_count);
+        self.list_capacities.insert(object, total);
+
+        if pointer_elements {
+            let (object, _, _) = self.lower_list_concat_push_loop(
+                object,
+                left,
+                left_length,
+                &left_type,
+                element_source_type,
+            )?;
+            let (object, _, _) = self.lower_list_concat_push_loop(
+                object,
+                right,
+                right_length,
+                &left_type,
+                element_source_type,
+            )?;
+            return Ok(object);
+        }
+
+        self.lower_list_concat_copy_loop(
+            object,
+            left,
+            left_length,
+            zero,
+            total,
+            maximum_count,
+            element_type,
+            element_source_type,
+        )?;
+        self.lower_list_concat_copy_loop(
+            object,
+            right,
+            right_length,
+            left_length,
+            total,
+            maximum_count,
+            element_type,
+            element_source_type,
+        )?;
+        self.list_counts.insert(object, total);
+        Ok(object)
+    }
+
+    fn lower_list_concat_push_loop(
+        &mut self,
+        initial: ValueId,
+        source: ValueId,
+        count: ValueId,
+        list_type: &Type,
+        element_source_type: &Type,
+    ) -> Result<(ValueId, ValueId, ValueId), CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.values[&initial] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.concat accumulator"));
+        };
+        let (initial_count, initial_capacity) = self.tracked_lanes(initial).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list.concat accumulator extent"),
+        )?;
+        let facts = self.snapshot_facts();
+        let (initial_count, initial_capacity) = self.split_lanes(initial_count, initial_capacity)?;
+        let zero = self.push_const_size(0)?;
+        let header = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        let body = self.new_block(&[
+            ValueType::Ref(layout),
+            ValueType::Size,
+            ValueType::Size,
+            ValueType::Size,
+        ])?;
+        let exit = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::Branch {
+            target: header,
+            arguments: vec![initial, initial_count, initial_capacity, zero],
+        })?;
+
+        self.current = header;
+        let header_values = self.block_parameter_values(header);
+        let header_object = header_values[0];
+        self.set_tracked_lanes(header_object, header_values[1], header_values[2]);
+        let cursor = header_values[3];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..3].to_vec(),
+        })?;
+
+        self.current = body;
+        let body_values = self.block_parameter_values(body);
+        let body_object = body_values[0];
+        self.set_tracked_lanes(body_object, body_values[1], body_values[2]);
+        let body_cursor = body_values[3];
+        let element_type = match self.values.get(&body_object) {
+            Some(ValueType::Ref(_)) => {
+                let (_, element_type, _, _) = list_layout(
+                    list_type,
+                    self.layout_bundle,
+                    self.layouts,
+                    self.definitions,
+                )?;
+                element_type
+            }
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("list.concat accumulator")),
+        };
+        let element = self.load_list_element(source, body_cursor, element_type)?;
+        let owned = self.owned_for_storage(element, element_source_type)?;
+        let next_object = self.push_owned_element(body_object, owned, list_type)?;
+        let (next_count, next_capacity) = self.tracked_lanes(next_object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list.concat pushed extent"),
+        )?;
+        let maximum_count = self.push_const_size(u64::from(u32::MAX))?;
+        let cursor_fits = self.push_compare(
+            ComparisonOperator::LessUnsigned,
+            body_cursor,
+            maximum_count,
+        )?;
+        self.push_guard(cursor_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let one = self.push_const_size(1)?;
+        let next_cursor = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            body_cursor,
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        let (next_count, next_capacity) = self.split_lanes(next_count, next_capacity)?;
+        let back_state = vec![next_object, next_count, next_capacity, next_cursor];
+        self.demote_unique_lanes_carrying_shared(header, exit, &back_state);
+        self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
+
+        let exit_values = self.block_parameter_values(exit);
+        self.restore_facts(facts, exit);
+        self.current = exit;
+        self.set_tracked_lanes(exit_values[0], exit_values[1], exit_values[2]);
+        Ok((exit_values[0], exit_values[1], exit_values[2]))
+    }
+
+    fn lower_list_concat_copy_loop(
+        &mut self,
+        destination: ValueId,
+        source: ValueId,
+        count: ValueId,
+        destination_offset: ValueId,
+        capacity: ValueId,
+        maximum_count: ValueId,
+        element_type: ValueType,
+        element_source_type: &Type,
+    ) -> Result<(), CanonicalLoweringError> {
+        let offset_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            destination_offset,
+            maximum_count,
+        )?;
+        self.push_guard(offset_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let destination_room = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Subtract,
+            maximum_count,
+            destination_offset,
+            OverflowBehavior::Wrap,
+        )?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+
+        self.current = header;
+        let cursor = self.block_parameter_values(header)[0];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: Vec::new(),
+        })?;
+
+        self.current = body;
+        let cursor = self.block_parameter_values(body)[0];
+        let cursor_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            cursor,
+            destination_room,
+        )?;
+        self.push_guard(cursor_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let destination_index = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            destination_offset,
+            cursor,
+            OverflowBehavior::Wrap,
+        )?;
+        let destination_fits = self.push_compare(
+            ComparisonOperator::LessUnsigned,
+            destination_index,
+            capacity,
+        )?;
+        self.push_guard(destination_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let mut value = self.load_list_element(source, cursor, element_type)?;
+        if matches!(element_type, ValueType::Ref(_)) {
+            value = self.owned_for_storage(value, element_source_type)?;
+        }
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                destination,
+                Projection::Element { index: destination_index },
+                element_type,
+                AccessMode::Write,
+            ),
+            value,
+            transfer: if matches!(element_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+            } else {
+                witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+            },
+        });
+        if matches!(element_type, ValueType::Ref(_)) {
+            let count_fits = self.push_compare(
+                ComparisonOperator::LessUnsigned,
+                destination_index,
+                maximum_count,
+            )?;
+            self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+            let initialized = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::Add,
+                destination_index,
+                one,
+                OverflowBehavior::Wrap,
+            )?;
+            let initialized_fits = self.push_compare(
+                ComparisonOperator::LessEqualUnsigned,
+                initialized,
+                capacity,
+            )?;
+            self.push_guard(initialized_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            self.push_operation(Operation::UpdateCount { object: destination, count: initialized });
+        }
+        let cursor_fits = self.push_compare(
+            ComparisonOperator::LessUnsigned,
+            cursor,
+            maximum_count,
+        )?;
+        self.push_guard(cursor_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let next = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            cursor,
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
         Ok(())
     }
 
@@ -11897,6 +12259,35 @@ fn main() -> Int:
         }));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "dynamic list push rejected: {result:?}");
+    }
+
+    #[test]
+    fn list_concat_preserves_scalar_and_string_inputs() {
+        let candidate = lower_with_derived_layouts(
+            "fn scalar() -> Int:\n    let left = [1, 2]\n    let right = [3, 4]\n    let joined = left.concat(right)\n    joined[0] + joined[3] + left[1] + right[0]\n\nfn strings() -> Int:\n    let left = [\"a\", \"bb\"]\n    let right = [\"ccc\"]\n    let joined = left.concat(right)\n    joined[0].length() + joined[2].length() + left[1].length() + right[0].length()\n",
+        );
+        let operations = candidate
+            .functions()
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.operations)
+            .collect::<Vec<_>>();
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Load { transfer: LoadTransfer::CloneShared, place, .. }
+                if matches!(place.projection(), Projection::Element { .. })
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Store { transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique, .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Store { transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar, .. }
+        )));
+        assert!(operations.iter().any(|operation| matches!(operation, Operation::UpdateCount { .. })));
+        let validation = check_initial(candidate);
+        assert!(validation.is_ok(), "list.concat rejected: {validation:?}");
     }
 
     #[test]
