@@ -95,6 +95,7 @@ enum ScalarInstruction {
         class: crate::canonical_safewir::AllocationClass,
     },
     StaticData { destination: ValueId, data: crate::canonical_safewir::StaticDataId },
+    InitNullableOwned { place: Place },
     Load { destination: ValueId, place: Place, transfer: LoadTransfer },
     Store { place: Place, value: ValueId, transfer: StoreTransfer },
     CopyBytes { destination: Place, source: Place, length: ValueId },
@@ -129,6 +130,7 @@ struct CollectionLayout {
     stride: u32,
     scalar: ScalarKind,
     pointer_layout: Option<crate::layout::LayoutId>,
+    pointer_slot: Option<PointerSlot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +141,7 @@ struct MemoryAccess {
     width: u32,
     scalar: ScalarKind,
     pointer_layout: Option<crate::layout::LayoutId>,
+    pointer_slot: Option<PointerSlot>,
     index: Option<ValueId>,
 }
 
@@ -552,15 +555,17 @@ fn collection_layout(
     let element_descriptor = layouts
         .get(element)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
-    let (scalar, pointer_layout) = match element_descriptor.kind() {
-        LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (*scalar, None),
+    let (scalar, pointer_layout, pointer_slot) = match element_descriptor.kind() {
+        LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (*scalar, None, None),
         LayoutKind::Scalar(ScalarKind::RawByte) if raw_runtime_buffer => {
-            (ScalarKind::RawByte, None)
+            (ScalarKind::RawByte, None, None)
         }
         LayoutKind::RuntimePointerValueSlot {
             pointee,
-            semantics: PointerSlot::Owned,
-        } => (ScalarKind::U32, Some(*pointee)),
+            semantics,
+        } if matches!(semantics, PointerSlot::Owned | PointerSlot::OwnedNullable) => {
+            (ScalarKind::U32, Some(*pointee), Some(*semantics))
+        }
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "pointer-bearing layout" }),
     };
     let LayoutSize::Dynamic { base, stride } = descriptor.size() else {
@@ -596,6 +601,7 @@ fn collection_layout(
         stride,
         scalar,
         pointer_layout,
+        pointer_slot,
     })
 }
 
@@ -643,7 +649,7 @@ fn resolve_memory_place(
                     operation: "header",
                 })?,
             };
-            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, pointer_layout: None, index: None })
+            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, pointer_layout: None, pointer_slot: None, index: None })
         }
         Projection::Element { index } => Ok(MemoryAccess {
             object: place.object(),
@@ -652,6 +658,7 @@ fn resolve_memory_place(
             width: collection.scalar.size(),
             scalar: collection.scalar,
             pointer_layout: collection.pointer_layout,
+            pointer_slot: collection.pointer_slot,
             index: Some(*index),
         }),
         Projection::Field { .. } | Projection::Slice { .. } => Err(LoweringError::UnsupportedLayout {
@@ -681,11 +688,17 @@ fn field_access(
     // A scalar field is loaded as its kind; a pointer field (an owned pointer
     // value slot) is a 32-bit object address whose pointee the reference
     // transfer needs.
-    let (scalar, pointer_layout) = match field.kind() {
-        crate::layout::FieldKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (scalar, None),
-        crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => (ScalarKind::U32, Some(pointee)),
+    let (scalar, pointer_layout, pointer_slot) = match field.kind() {
+        crate::layout::FieldKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (scalar, None, None),
+        crate::layout::FieldKind::Pointer { pointee, slot } if matches!(slot, PointerSlot::Owned | PointerSlot::OwnedNullable) => {
+            (ScalarKind::U32, Some(pointee), Some(slot))
+        }
         crate::layout::FieldKind::Inline(slot) => match layouts.get(slot).map(|slot| slot.kind()) {
-            Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => (ScalarKind::U32, Some(*pointee)),
+            Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics })
+                if matches!(semantics, PointerSlot::Owned | PointerSlot::OwnedNullable) =>
+            {
+                (ScalarKind::U32, Some(*pointee), Some(*semantics))
+            }
             _ => return Err(LoweringError::UnsupportedLayout { function, operation: "field kind" }),
         },
         _ => return Err(LoweringError::UnsupportedLayout { function, operation: "field kind" }),
@@ -701,11 +714,13 @@ fn field_access(
             stride: width,
             scalar,
             pointer_layout,
+            pointer_slot,
         },
         offset: field.offset(),
         width,
         scalar,
         pointer_layout,
+        pointer_slot,
         index: None,
     })
 }
@@ -732,7 +747,7 @@ fn resolve_memory_place_for_values(
                     operation: "header",
                 })?,
             };
-            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, pointer_layout: None, index: None })
+            Ok(MemoryAccess { object: place.object(), collection, offset, width: 4, scalar: ScalarKind::U32, pointer_layout: None, pointer_slot: None, index: None })
         }
         Projection::Element { index } => Ok(MemoryAccess {
             object: place.object(),
@@ -741,6 +756,7 @@ fn resolve_memory_place_for_values(
             width: collection.scalar.size(),
             scalar: collection.scalar,
             pointer_layout: collection.pointer_layout,
+            pointer_slot: collection.pointer_slot,
             index: Some(*index),
         }),
         Projection::Field { .. } | Projection::Slice { .. } => Err(LoweringError::UnsupportedLayout {
@@ -881,9 +897,20 @@ fn lower_operation(
         Operation::StaticData { destination, data, .. } => {
             ScalarInstruction::StaticData { destination: *destination, data: *data }
         }
+        Operation::InitNullableOwned { place } => {
+            let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
+            if access.pointer_slot != Some(PointerSlot::OwnedNullable) || place.access() != AccessMode::Write {
+                return Err(LoweringError::UnsupportedLayout { function, operation: "InitNullableOwned" });
+            }
+            ScalarInstruction::InitNullableOwned { place: place.clone() }
+        }
         Operation::Load { destination, place, transfer } => {
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
+                Some(pointee) if access.pointer_slot == Some(PointerSlot::OwnedNullable) => {
+                    *transfer == LoadTransfer::ClonePresent
+                        && place.value_type() == ValueType::Ref(pointee)
+                }
                 Some(pointee) => {
                     matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::MoveUnique)
                         && place.value_type() == ValueType::Ref(pointee)
@@ -898,6 +925,7 @@ fn lower_operation(
         Operation::Store { place, value, transfer } => {
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
+                Some(_) if access.pointer_slot == Some(PointerSlot::OwnedNullable) => false,
                 Some(pointee) => {
                     *transfer == StoreTransfer::MoveUnique
                         && place.value_type() == ValueType::Ref(pointee)
@@ -999,6 +1027,8 @@ fn lower_operation(
             let destination_layout = resolve_collection_layout_for_values(function, value_types, layouts, destination.object())?;
             let source_layout = resolve_collection_layout_for_values(function, value_types, layouts, source.object())?;
             if destination_layout.pointer_layout.is_none()
+                || destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+                || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
                 || destination_layout != source_layout
                 || !matches!(destination.projection(), Projection::Slice { length, .. } if *length == *count)
                 || !matches!(source.projection(), Projection::Slice { length, .. } if *length == *count)
@@ -1010,7 +1040,9 @@ fn lower_operation(
         Operation::CloneRange { destination, source, count } => {
             let destination_layout = resolve_collection_layout_for_values(function, value_types, layouts, destination.object())?;
             let source_layout = resolve_collection_layout_for_values(function, value_types, layouts, source.object())?;
-            if destination_layout != source_layout
+            if destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+                || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+                || destination_layout != source_layout
                 || !matches!(destination.projection(), Projection::Slice { length, .. } if *length == *count)
                 || !matches!(source.projection(), Projection::Slice { length, .. } if *length == *count)
             {
@@ -1039,6 +1071,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Guard { .. } => "Guard",
         Operation::Alloc { .. } => "Alloc",
         Operation::StaticData { .. } => "StaticData",
+        Operation::InitNullableOwned { .. } => "InitNullableOwned",
         Operation::Load { .. } => "Load",
         Operation::Store { .. } => "Store",
         Operation::CopyBytes { .. } => "CopyBytes",
@@ -1251,6 +1284,7 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> R
         Rule::MoveValue | Rule::MakeInlineAggregate | Rule::ExtractInlineField => RuleBackend::Receipt(CorrespondenceRule::ScalarMove),
         Rule::Alloc => RuleBackend::Receipt(CorrespondenceRule::MemoryAlloc),
         Rule::StaticData => RuleBackend::Receipt(CorrespondenceRule::MemoryStaticData),
+        Rule::InitNullableOwned => RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
         Rule::Load => RuleBackend::Receipt(CorrespondenceRule::MemoryLoad),
         Rule::ClosureSlot => RuleBackend::Subjudgment(&[Rule::Load, Rule::Store]),
         Rule::Store => RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
@@ -1292,6 +1326,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::FunctionValue { destination, function }, ScalarInstruction::FunctionValue { destination: actual_destination, function: actual_function, .. }) => destination == actual_destination && function == actual_function,
         (Operation::Alloc { destination, layout, extent, class }, ScalarInstruction::Alloc { destination: actual_destination, layout: actual_layout, extent: actual_extent, class: actual_class }) => destination == actual_destination && layout == actual_layout && extent == actual_extent && class == actual_class,
         (Operation::StaticData { destination, data, .. }, ScalarInstruction::StaticData { destination: actual_destination, data: actual_data }) => destination == actual_destination && data == actual_data,
+        (Operation::InitNullableOwned { place }, ScalarInstruction::InitNullableOwned { place: actual_place }) => place == actual_place,
         (Operation::Load { destination, place, transfer }, ScalarInstruction::Load { destination: actual_destination, place: actual_place, transfer: actual_transfer }) => destination == actual_destination && place == actual_place && transfer == actual_transfer,
         (Operation::Store { place, value, transfer }, ScalarInstruction::Store { place: actual_place, value: actual_value, transfer: actual_transfer }) => place == actual_place && value == actual_value && transfer == actual_transfer,
         (Operation::CopyBytes { destination, source, length }, ScalarInstruction::CopyBytes { destination: actual_destination, source: actual_source, length: actual_length }) => destination == actual_destination && source == actual_source && length == actual_length,
@@ -2103,6 +2138,37 @@ fn emit_typed_store(
     Ok(())
 }
 
+fn emit_init_nullable_owned(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    layouts: &LayoutInterner,
+    place: &Place,
+) -> Result<(), EncodeError> {
+    let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
+    if access.pointer_slot != Some(PointerSlot::OwnedNullable) || place.access() != AccessMode::Write {
+        return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "InitNullableOwned" });
+    }
+    emit_projected_address(body, function, layout, access)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(0));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    Ok(())
+}
+
+fn emit_clone_present(
+    body: &mut wasm_encoder::Function,
+    layout: &LocalLayout,
+    object: ValueId,
+    function: &Function,
+) -> Result<(), EncodeError> {
+    emit_get(body, layout, function.id, object)?;
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_clone_ref(body, layout, object, object, function)
+}
+
 fn emit_alloc(
     body: &mut wasm_encoder::Function,
     function: &Function,
@@ -2312,7 +2378,7 @@ fn emit_reclaim_local(body: &mut wasm_encoder::Function, layout: &LocalLayout, s
 }
 
 /// The owned pointer fields of a fixed layout as `(byte offset, pointee)`.
-fn fixed_pointer_fields(layouts: &LayoutInterner, layout: crate::layout::LayoutId) -> Vec<(u32, crate::layout::LayoutId)> {
+fn fixed_pointer_fields(layouts: &LayoutInterner, layout: crate::layout::LayoutId) -> Vec<(u32, crate::layout::LayoutId, bool)> {
     let Some(descriptor) = layouts.get(layout) else { return Vec::new() };
     if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
         return Vec::new();
@@ -2321,9 +2387,15 @@ fn fixed_pointer_fields(layouts: &LayoutInterner, layout: crate::layout::LayoutI
         .fields()
         .iter()
         .filter_map(|field| match field.kind() {
-            crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => Some((field.offset(), pointee)),
+            crate::layout::FieldKind::Pointer { pointee, slot } if matches!(slot, PointerSlot::Owned | PointerSlot::OwnedNullable) => {
+                Some((field.offset(), pointee, slot == PointerSlot::OwnedNullable))
+            }
             crate::layout::FieldKind::Inline(slot) => match layouts.get(slot).map(|slot| slot.kind()) {
-                Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Some((field.offset(), *pointee)),
+                Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics })
+                    if matches!(semantics, PointerSlot::Owned | PointerSlot::OwnedNullable) =>
+                {
+                    Some((field.offset(), *pointee, *semantics == PointerSlot::OwnedNullable))
+                }
                 _ => None,
             },
             _ => None,
@@ -2529,7 +2601,10 @@ fn emit_move_range(
 ) -> Result<(), EncodeError> {
     let destination_layout = resolve_collection_layout(function, layouts, destination.object()).map_err(EncodeError::Lowering)?;
     let source_layout = resolve_collection_layout(function, layouts, source.object()).map_err(EncodeError::Lowering)?;
-    if destination_layout.pointer_layout.is_none() || destination_layout != source_layout {
+    if destination_layout.pointer_layout.is_none()
+        || destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+        || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+        || destination_layout != source_layout
         return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "MoveRange" }));
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
@@ -2580,7 +2655,9 @@ fn emit_clone_range(
 ) -> Result<(), EncodeError> {
     let destination_layout = resolve_collection_layout(function, layouts, destination.object()).map_err(EncodeError::Lowering)?;
     let source_layout = resolve_collection_layout(function, layouts, source.object()).map_err(EncodeError::Lowering)?;
-    if destination_layout != source_layout {
+    if destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+        || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+        || destination_layout != source_layout
         return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "CloneRange" }));
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
@@ -2791,11 +2868,16 @@ fn emit_instruction(
             body.instruction(&wasm_encoder::Instruction::I32Const(offset as i32));
             emit_set(body, layout, function.id, *destination)?;
         }
+        ScalarInstruction::InitNullableOwned { place } => {
+            emit_init_nullable_owned(body, function, layout, layouts, place)?;
+        }
         ScalarInstruction::Load { destination, place, transfer } => {
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
-            if *transfer == LoadTransfer::CloneShared {
-                emit_clone_ref(body, layout, *destination, *destination, function)?;
+            match transfer {
+                LoadTransfer::CloneShared => emit_clone_ref(body, layout, *destination, *destination, function)?,
+                LoadTransfer::ClonePresent => emit_clone_present(body, layout, *destination, function)?,
+                LoadTransfer::MoveUnique | LoadTransfer::CopyScalar => {}
             }
         }
         ScalarInstruction::Store { place, value, transfer } => {
@@ -4270,6 +4352,38 @@ fn push_memory_load_plan(
     push_set(plan, layout, destination)
 }
 
+fn push_init_nullable_owned_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layouts: &LayoutInterner,
+    layout: &LocalLayout,
+    place: &Place,
+) -> Result<(), CanonicalAdmissionError> {
+    let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    if access.pointer_slot != Some(PointerSlot::OwnedNullable) || place.access() != AccessMode::Write {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    push_projected_address_plan(plan, function, layout, access)?;
+    plan.extend([PlanToken::I32Const(0), PlanToken::I32Store { offset: 0, align: 2, memory: 0 }]);
+    Ok(())
+}
+
+fn push_require_present_plan(
+    plan: &mut Vec<PlanToken>,
+    layout: &LocalLayout,
+    value: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    push_get(plan, layout, value)?;
+    plan.extend([
+        PlanToken::I32Eqz,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
+    Ok(())
+}
+
 fn push_memory_store_plan(
     plan: &mut Vec<PlanToken>,
     function: &Function,
@@ -4990,6 +5104,9 @@ fn expected_linear_function_plan(
                 plan.push(PlanToken::I32Const(offset as i32));
                 push_set(&mut plan, &layout, *destination)?;
             }
+            Operation::InitNullableOwned { place } => {
+                push_init_nullable_owned_plan(&mut plan, function, layouts, &layout, place)?;
+            }
             Operation::NarrowSize { destination, value } => {
                 push_get(&mut plan, &layout, *value)?;
                 plan.extend([
@@ -5078,12 +5195,18 @@ fn expected_linear_function_plan(
                     transfer,
                     LoadTransfer::CopyScalar
                         | LoadTransfer::CloneShared
+                        | LoadTransfer::ClonePresent
                         | LoadTransfer::MoveUnique
                 ) =>
             {
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
-                if *transfer == LoadTransfer::CloneShared {
-                    push_share_plan(&mut plan, &layout, *destination, *destination)?;
+                match transfer {
+                    LoadTransfer::CloneShared => push_share_plan(&mut plan, &layout, *destination, *destination)?,
+                    LoadTransfer::ClonePresent => {
+                        push_require_present_plan(&mut plan, &layout, *destination)?;
+                        push_share_plan(&mut plan, &layout, *destination, *destination)?;
+                    }
+                    LoadTransfer::CopyScalar | LoadTransfer::MoveUnique => {}
                 }
             }
             Operation::Store { place, value, transfer }

@@ -25,7 +25,7 @@ const PAGES: usize = 11;
 const FRAME_BYTES: i32 = 12;
 
 enum Children {
-    Fields(Vec<(u32, LayoutId)>),
+    Fields(Vec<(u32, LayoutId, bool)>),
     Elements(CollectionLayout, LayoutId),
 }
 
@@ -48,7 +48,7 @@ fn rows(function: FunctionId, layouts: &LayoutInterner, root: LayoutId) -> Resul
             }
             LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } => {
                 let fields = fixed_pointer_fields(layouts, concrete);
-                pending.extend(fields.iter().map(|(_, child)| *child));
+                pending.extend(fields.iter().map(|(_, child, _)| *child));
                 Children::Fields(fields)
             }
             LayoutKind::Scalar(_) => Children::Fields(Vec::new()),
@@ -152,10 +152,11 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
                     code(body, [I::LocalGet(s[INDEX]), I::I32Const(fields.len() as i32), I::I32GeU, I::If(BlockType::Empty)]);
                     reclaim(body, s); pop(body, s);
                     code(body, [I::Br(2), I::End, I::I32Const(-1), I::LocalSet(s[CHILD_TAG])]);
-                    for (index, (offset, child)) in fields.iter().enumerate() {
+                    for (index, (offset, child, nullable)) in fields.iter().enumerate() {
                         code(body, [I::LocalGet(s[INDEX]), I::I32Const(index as i32), I::I32Eq, I::If(BlockType::Empty),
                             I::LocalGet(s[OBJECT]), I::I32Const(*offset as i32), I::I32Add, I::LocalSet(s[ADDRESS]),
-                            I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]), I::End]);
+                            I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]),
+                            I::I32Const(i32::from(*nullable)), I::LocalSet(s[PAGES]), I::End]);
                     }
                     code(body, [I::LocalGet(s[CHILD_TAG]), I::I32Const(-1), I::I32Eq,
                         I::If(BlockType::Empty), I::Unreachable, I::End]);
@@ -172,7 +173,8 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
                     code(body, [I::Br(2), I::End,
                         I::LocalGet(s[OBJECT]), I::I32Const(collection.data_offset as i32), I::I32Add,
                         I::LocalGet(s[INDEX]), I::I32Const(collection.stride as i32), I::I32Mul, I::I32Add,
-                        I::LocalSet(s[ADDRESS]), I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG])]);
+                        I::LocalSet(s[ADDRESS]), I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]),
+                        I::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), I::LocalSet(s[PAGES])]);
                 }
             }
             // Transfer exactly one child to a new frame. The parent resumes
@@ -180,6 +182,8 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
             code(body, [I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add,
                 I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
                 I::LocalGet(s[ADDRESS]), load(), I::LocalSet(s[OBJECT]),
+                I::LocalGet(s[OBJECT]), I::I32Eqz, I::LocalGet(s[PAGES]), I::I32And,
+                I::If(BlockType::Empty), I::Br(2), I::End,
                 I::LocalGet(s[OBJECT]), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End,
                 I::LocalGet(s[ADDRESS]), I::I32Const(0), store(),
                 I::LocalGet(s[CHILD_TAG]), I::LocalSet(s[TAG]), I::I32Const(-1), I::LocalSet(s[INDEX])]);
@@ -281,10 +285,11 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
                     p.extend([P::LocalGet(s[INDEX]), P::I32Const(fields.len() as i32), P::I32GeU, P::If("Empty".into())]);
                     plan_reclaim(p, s); plan_pop(p, s);
                     p.extend([P::Br(2), P::End, P::I32Const(-1), P::LocalSet(s[CHILD_TAG])]);
-                    for (index, (offset, child)) in fields.iter().enumerate() {
+                    for (index, (offset, child, nullable)) in fields.iter().enumerate() {
                         p.extend([P::LocalGet(s[INDEX]), P::I32Const(index as i32), P::I32Eq, P::If("Empty".into()),
                             P::LocalGet(s[OBJECT]), P::I32Const(*offset as i32), P::I32Add, P::LocalSet(s[ADDRESS]),
-                            P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]), P::End]);
+                        P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]),
+                        P::I32Const(i32::from(*nullable)), P::LocalSet(s[PAGES]), P::End]);
                     }
                     p.extend([P::LocalGet(s[CHILD_TAG]), P::I32Const(-1), P::I32Eq,
                         P::If("Empty".into()), P::Unreachable, P::End]);
@@ -301,12 +306,15 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
                     p.extend([P::Br(2), P::End,
                         P::LocalGet(s[OBJECT]), P::I32Const(collection.data_offset as i32), P::I32Add,
                         P::LocalGet(s[INDEX]), P::I32Const(collection.stride as i32), P::I32Mul, P::I32Add,
-                        P::LocalSet(s[ADDRESS]), P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG])]);
+                        P::LocalSet(s[ADDRESS]), P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]),
+                        P::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), P::LocalSet(s[PAGES])]);
                 }
             }
             p.extend([P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add,
                 P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
                 P::LocalGet(s[ADDRESS]), pload(), P::LocalSet(s[OBJECT]),
+                P::LocalGet(s[OBJECT]), P::I32Eqz, P::LocalGet(s[PAGES]), P::I32And,
+                P::If("Empty".into()), P::Br(2), P::End,
                 P::LocalGet(s[OBJECT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,
                 P::LocalGet(s[ADDRESS]), P::I32Const(0), pstore(),
                 P::LocalGet(s[CHILD_TAG]), P::LocalSet(s[TAG]), P::I32Const(-1), P::LocalSet(s[INDEX])]);
@@ -331,9 +339,16 @@ mod tests {
     // latter remains sealed until nullable ownership and checked source
     // binding land. A recursive counted list terminates in an empty list.
     fn fixture(heap: &[u8]) -> (wasmtime::Store<()>, wasmtime::Instance, wasmtime::Memory) {
+        fixture_with_slot(heap, PointerSlot::Owned)
+    }
+
+    fn fixture_with_slot(
+        heap: &[u8],
+        semantics: PointerSlot,
+    ) -> (wasmtime::Store<()>, wasmtime::Instance, wasmtime::Memory) {
         let mut layouts = LayoutInterner::new();
         let node = layouts.intern_opaque_nominal([23; 32]).unwrap();
-        let slot = layouts.intern_runtime_pointer_value_slot(node, PointerSlot::Owned).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(node, semantics).unwrap();
         let body_layout = layouts.intern_packed_list(slot, RcHeader::Required).unwrap();
         layouts.bind_nominal(node, body_layout).unwrap();
         let frontier = 32 + heap.len() as u32;
@@ -455,5 +470,30 @@ mod tests {
         assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
         assert_eq!(global(&instance, &mut store, "frontier"), 80);
         assert_eq!(global(&instance, &mut store, "free"), 0);
+    }
+
+    #[test]
+    fn nullable_owned_drop_skips_absent_releases_present_and_nonnullable_traps() {
+        let mut absent = vec![0; 24];
+        for (at, value) in [(0, 1), (4, 16), (8, 1), (12, 1)] {
+            put(&mut absent, at, value);
+        }
+        let (mut store, instance, _) = fixture_with_slot(&absent, PointerSlot::OwnedNullable);
+        instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
+        assert_eq!(global(&instance, &mut store, "free"), 40, "absent nullable child is skipped and root is reclaimed");
+
+        let mut present = vec![0; 48];
+        for (at, value) in [(0, 1), (4, 16), (8, 1), (12, 1), (24, 1), (28, 16), (32, 0), (36, 0)] {
+            put(&mut present, at, value);
+        }
+        put(&mut present, 16, 64);
+        let (mut store, instance, memory) = fixture_with_slot(&present, PointerSlot::OwnedNullable);
+        instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
+        assert_eq!(global(&instance, &mut store, "free"), 64, "present child is reclaimed before root");
+        assert_eq!(word(memory.data(&store), 64), 40, "present child free-list link preserves balanced release");
+        assert_eq!(word(memory.data(&store), 40), 0);
+
+        let (mut store, instance, _) = fixture_with_slot(&absent, PointerSlot::Owned);
+        assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
     }
 }
