@@ -223,7 +223,7 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
     // with no live reference-counted object. Any disagreement, including the
     // oracle refusing a program the backend ran, is loud.
     if unmintable.is_none() {
-        if let Err(message) = safewir_oracle_agrees(&checked, &artifact, &compiled) {
+        if let Err(message) = safewir_oracle_agrees(&checked, &artifact, &[], &compiled) {
             unexpected!("SafeWIR oracle: {message}");
         }
     }
@@ -683,9 +683,10 @@ fn run_compiled(
 fn safewir_oracle_agrees(
     checked: &witchy_types::pipeline::CheckedModule,
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    launch_arguments: &[String],
     compiled: &Result<Vec<String>, String>,
 ) -> Result<(), String> {
-    use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig, InterpreterValue};
+    use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
     let Some(entry) = artifact.entry() else {
         return Ok(());
     };
@@ -697,7 +698,7 @@ fn safewir_oracle_agrees(
         .map(witchy_wir::canonical_safewir::FunctionId::new)
         .ok_or_else(|| format!("entry export `{}` names no canonical function", entry.export()))?;
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
-    let run = interpret_program(&validated, function, arguments, InterpreterConfig {
+    let run = interpret_entry_program(&validated, function, arguments, launch_arguments, InterpreterConfig {
         max_steps: 20_000_000_000,
         // The third leg reads the same root the backend was granted (dev
         // grants: the working directory and the process environment); its
@@ -722,5 +723,26 @@ fn safewir_oracle_agrees(
         (Err(_), Err(_)) => Ok(()),
         (Err(error), Ok(_)) => Err(format!("oracle failed where the backend ran: {error:?}")),
         (Ok(run), Err(error)) => Err(format!("oracle ran ({:?}) where the backend failed: {error}", run.output)),
+    }
+}
+
+#[cfg(test)]
+mod canonical_launch_oracle_tests {
+    use super::*;
+
+    #[test]
+    fn parity_oracle_materializes_empty_and_nonempty_launch_arguments() {
+        let source = "fn main(console: Console, args: List(String)):\n    console.print(\"${args.length()}\")\n    for arg in args:\n        console.print(arg)\n";
+        let checked = witchy::resolve_std_only_checked(source).expect("checked argument entry");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("argument entry admits");
+        safewir_oracle_agrees(&checked, &artifact, &[], &Ok(vec!["0".to_owned()]))
+            .expect("empty argument list is an owned launch value");
+        let arguments = vec!["hello".to_owned(), String::new()];
+        let expected = Ok(vec!["2".to_owned(), "hello".to_owned(), String::new()]);
+        safewir_oracle_agrees(&checked, &artifact, &arguments, &expected)
+            .expect("oracle receives the same launch arguments");
+        assert!(safewir_oracle_agrees(&checked, &artifact, &[], &expected).is_err(),
+            "omitted launch inputs must remain an observable disagreement");
     }
 }
