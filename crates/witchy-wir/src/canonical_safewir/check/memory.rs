@@ -274,6 +274,33 @@ impl<'a> MemoryChecker<'a> {
             renames.insert(*argument, parameter.value);
         }
 
+        // A checked header read can name the same logical count with a fresh
+        // SSA definition. Transport that equality, not an optimizer annotation.
+        // Capacity header reads are deliberately excluded: a shared meet may
+        // retain only a conservative capacity bound rather than physical capacity.
+        for (argument, parameter) in arguments.iter().zip(&target.parameters) {
+            if parameter.ownership != Some(Ownership::Shared) {
+                continue;
+            }
+            let Some(state) = self.state.objects.get(argument) else { continue };
+            let Extent::Counted { count, capacity, .. } = state.extent else { continue };
+            for bound in [count, capacity] {
+                if renames.contains_key(&bound) {
+                    continue;
+                }
+                let replacement = arguments.iter().zip(&target.parameters).find(|(source, target)| {
+                    target.value_type == ValueType::Size
+                        && (self.state.constants.get(&bound).zip(self.state.constants.get(source))
+                            .is_some_and(|(left, right)| left == right)
+                            || (bound == count
+                                && self.state.header_values.get(&(*argument, HeaderField::Length)) == Some(*source)))
+                });
+                if let Some((_, replacement)) = replacement {
+                    renames.insert(bound, replacement.value);
+                }
+            }
+        }
+
         let mut objects = BTreeMap::new();
         for (value, state) in &self.state.objects {
             let original_value = *value;
@@ -3060,12 +3087,15 @@ impl<'a> MemoryChecker<'a> {
                 let Some(state) = self.state.objects.get(object) else {
                     return false;
                 };
-                let Extent::Counted { count, capacity, .. } = state.extent else {
+                let Extent::Counted { count, .. } = state.extent else {
                     return false;
                 };
                 let authoritative = match field {
                     HeaderField::Length => count,
-                    HeaderField::Capacity => capacity,
+                    // Shared meets may retain only capacity >= count, not
+                    // equality with the physical capacity header. A capacity
+                    // load must never become a logical-length proof here.
+                    HeaderField::Capacity => return false,
                 };
                 (*loaded == left && authoritative == right)
                     || (*loaded == right && authoritative == left)
@@ -3638,6 +3668,14 @@ mod tests {
         pointer_element: bool,
         test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
     ) {
+        with_checker_capacity(pointer_element, 1, test);
+    }
+
+    fn with_checker_capacity(
+        pointer_element: bool,
+        capacity: u64,
+        test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
+    ) {
         let mut layouts = LayoutInterner::new();
         let element = layouts
             .intern_scalar(ScalarKind::U32)
@@ -3693,7 +3731,7 @@ mod tests {
         let closure_layouts = BTreeMap::new();
         let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
             .expect("checker construction");
-        for (destination, value) in [(COUNT, 1), (CAPACITY, 1), (START, 0), (LENGTH, 1), (LONG_LENGTH, 2)] {
+        for (destination, value) in [(COUNT, 1), (CAPACITY, capacity), (START, 0), (LENGTH, 1), (LONG_LENGTH, 2)] {
             checker
                 .check(&Operation::ConstSize { destination, value })
                 .expect("constant is accepted");
@@ -3775,6 +3813,125 @@ mod tests {
                 checker.transfer_edge(&target, &[SOURCE]),
                 Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
             ));
+        });
+    }
+
+    fn shared_extent_target(layout: crate::layout::LayoutId) -> BasicBlock {
+        let mut target = unique_phi_target(ValueId::new(99), layout);
+        target.parameters[0].ownership = Some(Ownership::Shared);
+        for value in [ValueId::new(100), ValueId::new(101)] {
+            target.parameters.push(crate::canonical_safewir::BlockParameter {
+                value,
+                value_type: ValueType::Size,
+                ownership: None,
+            });
+        }
+        target
+    }
+
+    #[test]
+    fn shared_phi_capacity_guard_cannot_authorize_read_past_length() {
+        with_checker_capacity(true, 4, |checker, list| {
+            let mut left = checker.state.objects[&SOURCE].clone();
+            left.ownership = Ownership::Shared;
+            let mut right = left.clone();
+            let Extent::Counted { capacity, .. } = &mut right.extent else { unreachable!() };
+            *capacity = LONG_LENGTH;
+            let joined = shared_phi_meet(&left, &right).expect("shared capacities meet at count");
+            assert!(matches!(joined.extent, Extent::Counted { count: COUNT, capacity: COUNT, .. }));
+            checker.state.objects.insert(SOURCE, joined);
+            checker.state.header_values.remove(&(SOURCE, HeaderField::Length));
+            checker.state.constants.remove(&LENGTH);
+            checker.check(&Operation::Load {
+                destination: LENGTH,
+                place: Place::projected(SOURCE, Projection::Header(HeaderField::Capacity), ValueType::Size, AccessMode::Read),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("physical capacity can be read");
+            checker.check(&Operation::ConstSize { destination: END, value: 2 }).expect("index between length and capacity");
+            checker.state.guards.insert((ComparisonOperator::LessUnsigned, END, LENGTH));
+            assert!(!checker.same_scalar(LENGTH, COUNT), "physical capacity is not logical length");
+            let LayoutKind::PackedList { element, .. } = checker.layouts.get(list).unwrap().kind() else { unreachable!() };
+            let LayoutKind::RuntimePointerValueSlot { pointee, .. } = checker.layouts.get(*element).unwrap().kind() else { unreachable!() };
+            let place = Place::projected(SOURCE, Projection::Element { index: END }, ValueType::Ref(*pointee), AccessMode::Read);
+            assert!(matches!(checker.check_place(&place), Err(InitialCheckError::MissingBoundsGuard { index: END, .. })));
+        });
+    }
+
+    #[test]
+    fn shared_phi_extent_transport_accepts_exact_and_authenticated_length() {
+        with_checker(true, |checker, list| {
+            let target = shared_extent_target(list);
+            checker.transfer_edge(&target, &[SOURCE, COUNT, CAPACITY]).expect("exact extent lanes");
+            checker.state.constants.clear();
+            checker.check(&Operation::Load {
+                destination: LENGTH,
+                place: Place::projected(SOURCE, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("authenticated length load");
+            let edge = checker.transfer_edge(&target, &[SOURCE, LENGTH, CAPACITY]).expect("equivalent count lane");
+            assert!(matches!(edge.objects[&ValueId::new(99)].extent,
+                Extent::Counted { count, capacity, .. }
+                    if count == ValueId::new(100) && capacity == ValueId::new(101)));
+        });
+    }
+
+    #[test]
+    fn shared_phi_extent_transport_accepts_one_count_identity_and_constants() {
+        with_checker(true, |checker, list| {
+            checker.state.constants.clear();
+            let object = checker.state.objects.get_mut(&SOURCE).unwrap();
+            let Extent::Counted { capacity, .. } = &mut object.extent else { unreachable!() };
+            *capacity = COUNT;
+            checker.check(&Operation::Load {
+                destination: LENGTH,
+                place: Place::projected(SOURCE, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("authenticated shared count");
+            let edge = checker.transfer_edge(&shared_extent_target(list), &[SOURCE, LENGTH, START]).expect("one scalar transports both identical bounds");
+            assert!(matches!(edge.objects[&ValueId::new(99)].extent,
+                Extent::Counted { count, capacity, .. }
+                    if count == ValueId::new(100) && capacity == ValueId::new(100)));
+        });
+        with_checker(true, |checker, list| {
+            let edge = checker.transfer_edge(&shared_extent_target(list), &[SOURCE, LENGTH, CAPACITY]).expect("checked equal constants transport count");
+            assert!(matches!(edge.objects[&ValueId::new(99)].extent,
+                Extent::Counted { count, .. } if count == ValueId::new(100)));
+        });
+    }
+
+    #[test]
+    fn shared_phi_extent_transport_rejects_unproved_replacements() {
+        for (read_object, read_field) in [(DESTINATION, HeaderField::Length), (SOURCE, HeaderField::Capacity)] {
+            with_checker(true, |checker, list| {
+                checker.state.constants.clear();
+                checker.check(&Operation::Load {
+                    destination: LENGTH,
+                    place: Place::projected(read_object, Projection::Header(read_field), ValueType::Size, AccessMode::Read),
+                    transfer: LoadTransfer::CopyScalar,
+                }).expect("valid but unrelated header read");
+                assert!(checker.transfer_edge(&shared_extent_target(list), &[SOURCE, LENGTH, CAPACITY]).is_err());
+            });
+        }
+        with_checker(true, |checker, list| {
+            checker.state.constants.clear();
+            assert!(checker.transfer_edge(&shared_extent_target(list), &[SOURCE, LENGTH, CAPACITY]).is_err(), "arbitrary Size is not a count proof");
+        });
+        with_checker(true, |checker, list| {
+            checker.state.constants.clear();
+            checker.check(&Operation::Load {
+                destination: LONG_LENGTH,
+                place: Place::projected(SOURCE, Projection::Header(HeaderField::Capacity), ValueType::Size, AccessMode::Read),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("physical capacity read");
+            assert!(checker.transfer_edge(&shared_extent_target(list), &[SOURCE, COUNT, LONG_LENGTH]).is_err(), "physical capacity is not a replacement for a conservative bound");
+        });
+        with_checker(true, |checker, list| {
+            checker.state.constants.clear();
+            checker.state.header_values.clear();
+            let object = checker.state.objects.get_mut(&SOURCE).unwrap();
+            let Extent::Counted { header_bytes, .. } = object.extent else { unreachable!() };
+            object.extent = Extent::HeaderPrefix { minimum_bytes: header_bytes };
+            assert!(checker.transfer_edge(&shared_extent_target(list), &[SOURCE, COUNT, CAPACITY]).is_err(), "unpromoted prefix is not a counted extent");
         });
     }
 
