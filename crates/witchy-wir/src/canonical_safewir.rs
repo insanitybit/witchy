@@ -426,6 +426,27 @@ pub struct CanonicalAbiCatalog {
 /// so 32 leaves the host no way to overrun it.
 pub const FLOAT_RENDER_BUFFER_BYTES: u64 = 32;
 
+/// The fixed ABI kind of a `Dir` token. Rights (`Dir[Read]`, `Dir[Write]`)
+/// and subtree scope live in the host's authority object behind the
+/// externref, never in the kind, so every `Dir` spelling is this one kind.
+pub const DIR_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(1);
+
+/// The fixed ABI kind of the `Env` token.
+pub const ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(2);
+
+/// The canonical signatures the module declares for the six `Dir`/`Env`
+/// operations. Lowering owns the signature ids; the catalog owns everything
+/// authenticated about the imports themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityImportSignatures {
+    pub dir_read_into: FunctionSignatureId,
+    pub dir_exists_at: FunctionSignatureId,
+    pub dir_write_at: FunctionSignatureId,
+    pub dir_subtree_at: FunctionSignatureId,
+    pub env_has_var: FunctionSignatureId,
+    pub env_get_into: FunctionSignatureId,
+}
+
 /// One prelude import as an authenticated contract: the generated ABI must
 /// carry it with exactly the expected Wasm shape and as authority-free pure
 /// infrastructure; its identity digest binds the ABI version, linkage, and
@@ -438,6 +459,41 @@ fn authenticated_prelude_import(
     parameter_roles: Vec<HostParameterRole>,
     result_roles: Vec<HostResultRole>,
     mutation: HostMutation,
+) -> Result<ImportContract, String> {
+    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, None)
+}
+
+/// One capability import as an authenticated contract: the mirror image of
+/// the pure-infrastructure rule. The generated ABI must carry it as a
+/// capability-authority import whose authorities are exactly the ones this
+/// operation exercises, so an authority-free (or differently authorized)
+/// import can never be projected as a `Dir`/`Env` operation.
+fn authenticated_capability_import(
+    name: &str,
+    params: &[crate::wir_prelude::WasmTy],
+    results: &[crate::wir_prelude::WasmTy],
+    signature: FunctionSignatureId,
+    parameter_roles: Vec<HostParameterRole>,
+    result_roles: Vec<HostResultRole>,
+    mutation: HostMutation,
+    authorities: &[crate::wir_prelude::AbiImportAuthority],
+) -> Result<ImportContract, String> {
+    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, Some(authorities))
+}
+
+/// The shared projection. `authorities` is `None` for pure infrastructure,
+/// which must carry no authority at all, and `Some(expected)` for a
+/// capability operation, which must carry exactly `expected`.
+#[allow(clippy::too_many_arguments)]
+fn authenticated_import(
+    name: &str,
+    params: &[crate::wir_prelude::WasmTy],
+    results: &[crate::wir_prelude::WasmTy],
+    signature: FunctionSignatureId,
+    parameter_roles: Vec<HostParameterRole>,
+    result_roles: Vec<HostResultRole>,
+    mutation: HostMutation,
+    authorities: Option<&[crate::wir_prelude::AbiImportAuthority]>,
 ) -> Result<ImportContract, String> {
     use crate::wir_prelude::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
 
@@ -452,8 +508,23 @@ fn authenticated_prelude_import(
     }
     let info = abi_import_info(&import.name)
         .ok_or_else(|| format!("generated ABI witchy.{name} import has no authenticated metadata"))?;
-    if info.class != AbiImportClass::PureInfrastructure || !info.authorities.is_empty() {
-        return Err(format!("generated witchy.{name} ABI is authority-bearing"));
+    match authorities {
+        None => {
+            if info.class != AbiImportClass::PureInfrastructure || !info.authorities.is_empty() {
+                return Err(format!("generated witchy.{name} ABI is authority-bearing"));
+            }
+        }
+        Some(expected) => {
+            if info.class != AbiImportClass::CapabilityAuthority {
+                return Err(format!("generated witchy.{name} ABI is not a capability operation"));
+            }
+            if info.authorities.is_empty() {
+                return Err(format!("generated witchy.{name} ABI names no authority"));
+            }
+            if info.authorities != expected {
+                return Err(format!("generated witchy.{name} ABI names unexpected authorities"));
+            }
+        }
     }
 
     let mut digest = blake3::Hasher::new();
@@ -535,6 +606,101 @@ impl CanonicalAbiCatalog {
             HostMutation::WriteBuffers,
         )?;
         Ok(Self::from_imports(vec![print, float_to_str]))
+    }
+
+    /// Project the six canonical `Dir`/`Env` operations onto an existing
+    /// catalog. Each one is authenticated as a capability-authority import
+    /// carrying exactly the authority it exercises: a path or name arrives as
+    /// a checked read slice, a filled buffer as a checked write slice bounded
+    /// by its capacity, and a narrowed `Dir` only ever as a host-minted token
+    /// of [`DIR_CAPABILITY_KIND`].
+    pub fn with_capability_imports(
+        mut self,
+        signatures: CapabilityImportSignatures,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+
+        let read_slice = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout),
+            access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let write_slice = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout),
+            access: AccessMode::Write,
+            extent: HostBufferExtent::Slice,
+        };
+        let dir = || HostParameterRole::Capability(DIR_CAPABILITY_KIND);
+        let env = || HostParameterRole::Capability(ENV_CAPABILITY_KIND);
+        let size = || vec![HostResultRole::Value(ValueType::Size)];
+
+        let imports = vec![
+            authenticated_capability_import(
+                "dir_read_into",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32],
+                signatures.dir_read_into,
+                vec![dir(), read_slice(), write_slice()],
+                size(),
+                HostMutation::WriteBuffers,
+                &[AbiImportAuthority::DirRead],
+            )?,
+            authenticated_capability_import(
+                "dir_exists_at",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32],
+                signatures.dir_exists_at,
+                vec![dir(), read_slice()],
+                size(),
+                HostMutation::ReadOnly,
+                &[AbiImportAuthority::DirRead],
+            )?,
+            authenticated_capability_import(
+                "dir_write_at",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+                &[],
+                signatures.dir_write_at,
+                vec![dir(), read_slice(), read_slice()],
+                Vec::new(),
+                HostMutation::ReadOnly,
+                &[AbiImportAuthority::DirWrite],
+            )?,
+            authenticated_capability_import(
+                "dir_subtree_at",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::ExternRef],
+                signatures.dir_subtree_at,
+                vec![dir(), read_slice()],
+                vec![HostResultRole::Capability(DIR_CAPABILITY_KIND)],
+                HostMutation::ReadOnly,
+                &[AbiImportAuthority::DirGrant],
+            )?,
+            authenticated_capability_import(
+                "env_has_var",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32],
+                signatures.env_has_var,
+                vec![env(), read_slice()],
+                size(),
+                HostMutation::ReadOnly,
+                &[AbiImportAuthority::Env],
+            )?,
+            authenticated_capability_import(
+                "env_get_into",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32],
+                signatures.env_get_into,
+                vec![env(), read_slice(), write_slice()],
+                size(),
+                HostMutation::WriteBuffers,
+                &[AbiImportAuthority::Env],
+            )?,
+        ];
+        for import in imports {
+            self.imports.insert(import.id, import);
+        }
+        Ok(self)
     }
 
     pub fn imports(&self) -> Vec<ImportContract> {
@@ -1146,5 +1312,115 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn closure_layouts(&self) -> &BTreeMap<LayoutId, FunctionSignatureId> {
         &self.closure_layouts
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+
+    const STRING_LAYOUT: LayoutId = LayoutId::from_bytes([5; 32]);
+
+    fn signatures() -> CapabilityImportSignatures {
+        CapabilityImportSignatures {
+            dir_read_into: FunctionSignatureId::new(1),
+            dir_exists_at: FunctionSignatureId::new(2),
+            dir_write_at: FunctionSignatureId::new(3),
+            dir_subtree_at: FunctionSignatureId::new(4),
+            env_has_var: FunctionSignatureId::new(5),
+            env_get_into: FunctionSignatureId::new(6),
+        }
+    }
+
+    fn catalog() -> CanonicalAbiCatalog {
+        CanonicalAbiCatalog::from_authenticated_prelude(
+            FunctionSignatureId::new(0),
+            FunctionSignatureId::new(7),
+            STRING_LAYOUT,
+        )
+        .expect("authenticated prelude")
+        .with_capability_imports(signatures(), STRING_LAYOUT)
+        .expect("authenticated capability imports")
+    }
+
+    #[test]
+    fn capability_imports_project_with_their_contract_roles() {
+        let catalog = catalog();
+        let imports = catalog.imports();
+        assert_eq!(imports.len(), 8, "two prelude imports and the six capability operations");
+        let read = imports.iter().find(|import| import.name == "dir_read_into").expect("dir_read_into");
+        assert_eq!(
+            read.parameter_roles,
+            vec![
+                HostParameterRole::Capability(DIR_CAPABILITY_KIND),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(STRING_LAYOUT),
+                    access: AccessMode::Read,
+                    extent: HostBufferExtent::Slice,
+                },
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(STRING_LAYOUT),
+                    access: AccessMode::Write,
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+        );
+        assert_eq!(read.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
+        assert_eq!(read.mutation, HostMutation::WriteBuffers);
+        assert_eq!(read.reentrancy, HostReentrancy::Forbidden);
+        assert!(matches!(read.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+
+        // A narrowed `Dir` only ever arrives as a host-minted token.
+        let subtree = imports.iter().find(|import| import.name == "dir_subtree_at").expect("dir_subtree_at");
+        assert_eq!(subtree.result_roles, vec![HostResultRole::Capability(DIR_CAPABILITY_KIND)]);
+        assert_eq!(subtree.mutation, HostMutation::ReadOnly);
+
+        let env = imports.iter().find(|import| import.name == "env_get_into").expect("env_get_into");
+        assert_eq!(env.parameter_roles[0], HostParameterRole::Capability(ENV_CAPABILITY_KIND));
+    }
+
+    #[test]
+    fn a_capability_projection_requires_the_contract_authority() {
+        let projected = authenticated_capability_import(
+            "dir_read_into",
+            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::I32],
+            FunctionSignatureId::new(1),
+            vec![HostParameterRole::Capability(DIR_CAPABILITY_KIND)],
+            Vec::new(),
+            HostMutation::WriteBuffers,
+            &[AbiImportAuthority::DirWrite],
+        );
+        assert!(projected.is_err(), "a mismatched authority must not project");
+    }
+
+    #[test]
+    fn an_authority_free_import_is_not_a_capability_operation() {
+        let projected = authenticated_capability_import(
+            "print",
+            &[WasmTy::I32, WasmTy::I32],
+            &[],
+            FunctionSignatureId::new(0),
+            Vec::new(),
+            Vec::new(),
+            HostMutation::ReadOnly,
+            &[AbiImportAuthority::DirRead],
+        );
+        assert!(projected.is_err(), "pure infrastructure carries no authority to project");
+    }
+
+    #[test]
+    fn an_authority_bearing_import_is_refused_as_pure_infrastructure() {
+        let projected = authenticated_prelude_import(
+            "dir_exists_at",
+            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::I32],
+            FunctionSignatureId::new(2),
+            Vec::new(),
+            Vec::new(),
+            HostMutation::ReadOnly,
+        );
+        assert!(projected.is_err(), "a capability operation is not prelude infrastructure");
     }
 }

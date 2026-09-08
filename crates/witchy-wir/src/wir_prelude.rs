@@ -327,11 +327,17 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "heap_unregister" (func $heap_unregister_host (param i32)))
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
+  (import "witchy" "dir_read_into" (func $dir_read_into_host (param externref i32 i32 i32 i32) (result i32)))
+  (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_subtree_at" (func $dir_subtree_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "env_has_var" (func $env_has_var_host (param externref i32 i32) (result i32)))
+  (import "witchy" "env_get_into" (func $env_get_into_host (param externref i32 i32 i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 108;
+pub const IMPORT_COUNT: usize = 114;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v10: adds native regex counting and literal global replacement imports.
@@ -550,7 +556,15 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "rand_u64"
         | "mint_exec"
         | "exec_only"
-        | "exec_run" => C::CapabilityAuthority,
+        | "exec_run"
+        // The canonical route's stateless `Dir`/`Env` operations. They take a
+        // capability token and checked slices, never host-staged state.
+        | "dir_read_into"
+        | "dir_exists_at"
+        | "dir_write_at"
+        | "dir_subtree_at"
+        | "env_has_var"
+        | "env_get_into" => C::CapabilityAuthority,
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
 
@@ -578,8 +592,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     let authorities = match name {
         "console_read_len" => AUTH_CONSOLE_READ,
         "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
-        "mint_env" | "env_only" | "env_len" | "env_fill" => AUTH_ENV,
-        "mint_dir" => AUTH_DIR_GRANT,
+        "mint_env" | "env_only" | "env_len" | "env_fill" | "env_has_var" | "env_get_into" => AUTH_ENV,
+        "mint_dir" | "dir_subtree_at" => AUTH_DIR_GRANT,
         "dir_read_len"
         | "dir_read_bytes_len"
         | "dir_list_size"
@@ -587,9 +601,12 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_only"
         | "dir_exists"
         | "dir_is_dir"
-        | "dir_open" => AUTH_DIR_READ,
+        | "dir_open"
+        | "dir_read_into"
+        | "dir_exists_at" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
-        | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename" => AUTH_DIR_WRITE,
+        | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
+        | "dir_write_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,

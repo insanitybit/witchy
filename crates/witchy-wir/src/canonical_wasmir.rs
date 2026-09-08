@@ -446,6 +446,22 @@ fn validate_host_call_lowering(
                 }
                 let _ = runtime_byte_slice(function, value_types, layouts, argument)?;
             }
+            // A checked write slice: the same (ptr, len) pair as a read
+            // slice, with the length the buffer's capacity. The checker
+            // bounds the range by that capacity, and the guest publishes the
+            // written count itself under its own guard.
+            (
+                HostParameterRole::Buffer { value_type: ValueType::Ref(layout), access: AccessMode::Write, extent: HostBufferExtent::Slice },
+                HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice },
+            ) => {
+                if place.value_type() != ValueType::Ref(*layout) {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer type" });
+                }
+                let Projection::Slice { length, .. } = place.projection() else {
+                    return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer projection" });
+                };
+                let _ = raw_byte_slice_place(function, value_types, layouts, place, AccessMode::Write, *length)?;
+            }
             // A write buffer of a declared minimum size: the host receives
             // the checked slice's address only; the checker bounded the
             // slice by the object's capacity.
@@ -488,7 +504,8 @@ fn host_import_wasm_signature(
         match role {
             HostParameterRole::Value(value_type) => parameters.push(host_scalar_wasm_type(function, ValueId::new(u32::MAX), *value_type)?),
             HostParameterRole::Capability(_) => parameters.push(ValType::EXTERNREF),
-            HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Read, extent: HostBufferExtent::Slice } => {
+            HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Read, extent: HostBufferExtent::Slice }
+            | HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Write, extent: HostBufferExtent::Slice } => {
                 parameters.extend([ValType::I32, ValType::I32]);
             }
             HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Write, extent: HostBufferExtent::AtLeast(_) } => {
@@ -2481,7 +2498,10 @@ fn emit_host_slice(
     argument: &HostCallArgument,
 ) -> Result<(), EncodeError> {
     let (place, access, with_length) = match argument {
-        HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } => (place, AccessMode::Read, true),
+        // A checked slice passes (ptr, len) in either direction; the place's
+        // own access mode decides whether the range is bounded by the
+        // object's count or by its capacity.
+        HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } => (place, place.access(), true),
         // A write buffer of a declared minimum size passes its address only.
         HostCallArgument::Buffer { place, extent: HostBufferExtent::AtLeast(_) } => (place, AccessMode::Write, false),
         _ => return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function, operation: "HostCall buffer" })),
@@ -4487,7 +4507,10 @@ fn push_host_slice_plan(
     argument: &HostCallArgument,
 ) -> Result<(), CanonicalAdmissionError> {
     let (place, access, with_length) = match argument {
-        HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } => (place, AccessMode::Read, true),
+        // A checked slice passes (ptr, len) in either direction; the place's
+        // own access mode decides whether the range is bounded by the
+        // object's count or by its capacity.
+        HostCallArgument::Buffer { place, extent: HostBufferExtent::Slice } => (place, place.access(), true),
         // A write buffer of a declared minimum size passes its address only.
         HostCallArgument::Buffer { place, extent: HostBufferExtent::AtLeast(_) } => (place, AccessMode::Write, false),
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
@@ -6851,6 +6874,25 @@ fn admit_canonical_with_bytes_for_test(
 }
 #[cfg(test)]
 mod tests {
+    /// Every entry capability tag survives the custom section, so a
+    /// launcher reading a `.wasm` back mints exactly the tokens the checked
+    /// signature declared.
+    #[test]
+    fn entry_capability_tags_round_trip() {
+        let entry = super::CanonicalEntry {
+            export: "f0".to_string(),
+            capabilities: vec![
+                super::CanonicalEntryCapability::Console,
+                super::CanonicalEntryCapability::Dir,
+                super::CanonicalEntryCapability::Env,
+            ],
+            result: super::CanonicalEntryResult::Int,
+        };
+        let encoded = entry.encode();
+        assert_eq!(encoded[encoded.len() - 4..encoded.len() - 1], [0, 1, 2]);
+        assert_eq!(super::CanonicalEntry::decode(&encoded), Ok(entry));
+    }
+
     use super::*;
     use crate::canonical_safewir::{
         BasicBlock, BlockId, BlockParameter, CallableContract, CheckedSourceIdentity,

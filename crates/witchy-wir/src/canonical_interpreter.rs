@@ -18,6 +18,20 @@ use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind
 
 const SIZE_MAX: u64 = u32::MAX as u64;
 
+/// The canonical capability operations the oracle serves, by import name.
+const CAPABILITY_IMPORTS: [&str; 6] = [
+    "dir_read_into",
+    "dir_exists_at",
+    "dir_write_at",
+    "dir_subtree_at",
+    "env_has_var",
+    "env_get_into",
+];
+
+/// The fixed ABI kinds of the tokens those operations take.
+const DIR_KIND: u32 = crate::canonical_safewir::DIR_CAPABILITY_KIND.get();
+const ENV_KIND: u32 = crate::canonical_safewir::ENV_CAPABILITY_KIND.get();
+
 /// A value observable at a SafeWIR function boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpreterValue {
@@ -30,9 +44,62 @@ pub enum InterpreterValue {
     InlineAggregate { layout: LayoutId, fields: Vec<InterpreterValue> },
     ObjectRef(u64),
     Function(FunctionId),
-    /// An opaque host token for a capability parameter; the interpreter
-    /// never reads it, only passes it along and hands it to host calls.
-    Capability(u32),
+    /// An opaque host token for a capability parameter. The program never
+    /// reads it; only the oracle's host calls do, and only for the authority
+    /// the token's kind and scope carry.
+    Capability(CapabilityToken),
+}
+
+/// A host-minted capability token. Kind 1 (`Dir`) carries the subtree it is
+/// confined to — the empty string for a root grant — and kind 2 (`Env`)
+/// carries none. A token is only ever minted here: by the launcher for an
+/// entry parameter, or by the host narrowing one it was handed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityToken {
+    kind: u32,
+    scope: String,
+}
+
+impl CapabilityToken {
+    /// The root token a launcher mints for one entry capability parameter.
+    pub fn root(kind: u32) -> Self {
+        Self { kind, scope: String::new() }
+    }
+
+    pub fn kind(&self) -> u32 {
+        self.kind
+    }
+
+    /// The subtree prefix this token is confined to, `""` at the root.
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+}
+
+impl InterpreterValue {
+    /// The launcher's entry token for a capability parameter of `kind`.
+    pub fn capability(kind: u32) -> Self {
+        Self::Capability(CapabilityToken::root(kind))
+    }
+
+    /// The token a launcher mints for one entry capability parameter: a
+    /// `Dir` parameter receives its granted root, scoped to the whole tree.
+    pub fn entry_capability(capability: crate::CanonicalEntryCapability) -> Self {
+        Self::capability(match capability {
+            crate::CanonicalEntryCapability::Console => 0,
+            crate::CanonicalEntryCapability::Dir => DIR_KIND,
+            crate::CanonicalEntryCapability::Env => ENV_KIND,
+        })
+    }
+}
+
+/// The confined world the oracle serves `Dir` and `Env` host calls from.
+/// Paths are relative and "/"-separated, without a leading "/", exactly as a
+/// `Dir` grant addresses its root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OracleFixture {
+    pub files: BTreeMap<String, Vec<u8>>,
+    pub environment: BTreeMap<String, String>,
 }
 
 /// The observable outcome of running a program entry to completion.
@@ -93,15 +160,17 @@ impl fmt::Display for InterpretError {
 impl std::error::Error for InterpretError {}
 
 /// Bounds execution so malformed or accidentally nonterminating fixtures do
-/// not hang a differential test.
-#[derive(Debug, Clone, Copy)]
+/// not hang a differential test, and carries the host world the capability
+/// imports observe.
+#[derive(Debug, Clone)]
 pub struct InterpreterConfig {
     pub max_steps: u64,
+    pub fixture: OracleFixture,
 }
 
 impl Default for InterpreterConfig {
     fn default() -> Self {
-        Self { max_steps: 1_000_000 }
+        Self { max_steps: 1_000_000, fixture: OracleFixture::default() }
     }
 }
 
@@ -554,6 +623,9 @@ impl<'a> Engine<'a> {
             values.insert(*destination, InterpreterValue::Size(written));
             return Ok(());
         }
+        if let Some(name) = CAPABILITY_IMPORTS.iter().find(|name| **name == contract.name) {
+            return self.capability_host_call(name, destinations, arguments, values);
+        }
         if contract.name != "print" || !destinations.is_empty() {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
         }
@@ -574,6 +646,180 @@ impl<'a> Engine<'a> {
         // The console host records a line with its trailing newlines removed.
         self.output.push(String::from_utf8_lossy(&bytes).trim_end_matches('\n').to_owned());
         Ok(())
+    }
+
+    /// The canonical `Dir`/`Env` operations, served from the fixture. Every
+    /// refusal the runtime host would trap on — a missing file, an unset
+    /// variable, a path that escapes the token's subtree — is an abort here,
+    /// never a different answer.
+    fn capability_host_call(
+        &mut self,
+        name: &str,
+        destinations: &[ValueId],
+        arguments: &[HostCallArgument],
+        values: &mut BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(), InterpretError> {
+        match (name, arguments, destinations) {
+            (
+                "dir_read_into",
+                [token, HostCallArgument::Buffer { place: path, .. }, HostCallArgument::Buffer { place: out, .. }],
+                [destination],
+            ) => {
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let path = self.host_path(&scope, &self.host_string(path, values)?)?;
+                let contents = self
+                    .config
+                    .fixture
+                    .files
+                    .get(&path)
+                    .cloned()
+                    .ok_or(InterpretError::ExplicitTrap)?;
+                let length = self.fill_host_buffer(out, &contents, values)?;
+                values.insert(*destination, InterpreterValue::Size(length));
+                Ok(())
+            }
+            ("dir_exists_at", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let path = self.host_path(&scope, &self.host_string(path, values)?)?;
+                let prefix = format!("{path}/");
+                let exists = self.config.fixture.files.contains_key(&path)
+                    || self.config.fixture.files.keys().any(|name| name.starts_with(&prefix));
+                values.insert(*destination, InterpreterValue::Size(u64::from(exists)));
+                Ok(())
+            }
+            (
+                "dir_write_at",
+                [token, HostCallArgument::Buffer { place: path, .. }, HostCallArgument::Buffer { place: data, .. }],
+                [],
+            ) => {
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let path = self.host_path(&scope, &self.host_string(path, values)?)?;
+                let data = self.host_bytes(data, values)?;
+                self.config.fixture.files.insert(path, data);
+                Ok(())
+            }
+            ("dir_subtree_at", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let scope = self.host_path(&scope, &self.host_string(path, values)?)?;
+                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { kind: DIR_KIND, scope }));
+                Ok(())
+            }
+            ("env_has_var", [token, HostCallArgument::Buffer { place: name, .. }], [destination]) => {
+                let _ = self.capability_scope(token, ENV_KIND, values)?;
+                let name = self.host_string(name, values)?;
+                let present = self.config.fixture.environment.contains_key(&name);
+                values.insert(*destination, InterpreterValue::Size(u64::from(present)));
+                Ok(())
+            }
+            (
+                "env_get_into",
+                [token, HostCallArgument::Buffer { place: name, .. }, HostCallArgument::Buffer { place: out, .. }],
+                [destination],
+            ) => {
+                let _ = self.capability_scope(token, ENV_KIND, values)?;
+                let name = self.host_string(name, values)?;
+                let value = self
+                    .config
+                    .fixture
+                    .environment
+                    .get(&name)
+                    .cloned()
+                    .ok_or(InterpretError::ExplicitTrap)?;
+                let length = self.fill_host_buffer(out, value.as_bytes(), values)?;
+                values.insert(*destination, InterpreterValue::Size(length));
+                Ok(())
+            }
+            _ => Err(InterpretError::UnsupportedOperation("HostCall capability arguments")),
+        }
+    }
+
+    /// The subtree a capability argument of the expected kind is confined to.
+    fn capability_scope(
+        &self,
+        argument: &HostCallArgument,
+        kind: u32,
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<String, InterpretError> {
+        let HostCallArgument::Capability(value) = argument else {
+            return Err(InterpretError::UnsupportedOperation("HostCall capability argument"));
+        };
+        let InterpreterValue::Capability(token) = self.value(*value, values)? else {
+            return Err(InterpretError::TypeMismatch("capability token"));
+        };
+        if token.kind != kind {
+            return Err(InterpretError::TypeMismatch("capability kind"));
+        }
+        Ok(token.scope.clone())
+    }
+
+    /// A checked read slice's bytes.
+    fn host_bytes(
+        &self,
+        place: &Place,
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<Vec<u8>, InterpretError> {
+        let (object, start, length) = self.slice_place(place, values)?;
+        self.check_range(object, start, length, false)?;
+        let cells = &self.object(object)?.cells;
+        let mut bytes = Vec::with_capacity(length as usize);
+        for index in start..start.checked_add(length).ok_or(InterpretError::ArithmeticTrap)? {
+            match cells.get(&CellKey::Element(index)) {
+                Some(InterpreterValue::Size(byte)) => bytes.push(u8::try_from(*byte).map_err(|_| InterpretError::TypeMismatch("byte cell"))?),
+                Some(_) => return Err(InterpretError::TypeMismatch("byte cell")),
+                None => return Err(InterpretError::UninitializedPlace),
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// A path or variable name arrives as a string slice, so it is UTF-8 or
+    /// the host refuses it.
+    fn host_string(
+        &self,
+        place: &Place,
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<String, InterpretError> {
+        String::from_utf8(self.host_bytes(place, values)?)
+            .map_err(|_| InterpretError::TypeMismatch("host string is not UTF-8"))
+    }
+
+    /// Confine one relative path to a token's subtree, refusing exactly what
+    /// the runtime's `dir_guard` refuses: an absolute path, a `..` or `.`
+    /// component, and an empty component.
+    fn host_path(&self, scope: &str, path: &str) -> Result<String, InterpretError> {
+        if path.starts_with('/') {
+            return Err(InterpretError::ExplicitTrap);
+        }
+        for component in path.split('/') {
+            if component.is_empty() || component == "." || component == ".." {
+                return Err(InterpretError::ExplicitTrap);
+            }
+        }
+        Ok(if scope.is_empty() { path.to_owned() } else { format!("{scope}/{path}") })
+    }
+
+    /// Write the leading bytes that fit into a checked write slice and answer
+    /// the payload's FULL length: the guest publishes `min(length, capacity)`
+    /// itself, under its own guard.
+    fn fill_host_buffer(
+        &mut self,
+        place: &Place,
+        payload: &[u8],
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<u64, InterpretError> {
+        let (object, start, capacity) = self.slice_place(place, values)?;
+        self.check_range(object, start, capacity, true)?;
+        let full = u64::try_from(payload.len()).map_err(|_| InterpretError::ArithmeticTrap)?;
+        if full > i32::MAX as u64 {
+            return Err(InterpretError::ArithmeticTrap);
+        }
+        let written = full.min(capacity);
+        let cells = &mut self.object_mut(object)?.cells;
+        for offset in 0..written {
+            let byte = payload[offset as usize];
+            cells.insert(CellKey::Element(start + offset), InterpreterValue::Size(u64::from(byte)));
+        }
+        Ok(full)
     }
 
     fn slice_place(
@@ -2474,9 +2720,14 @@ mod tests {
                 vec![InterpreterValue::Int(300_000)],
                 InterpreterConfig {
                     max_steps: 2_000_010,
+                    ..Default::default()
                 },
             ),
             Ok(vec![InterpreterValue::Int(0)])
         );
     }
 }
+
+#[cfg(test)]
+#[path = "canonical_interpreter/capability_tests.rs"]
+mod capability_tests;

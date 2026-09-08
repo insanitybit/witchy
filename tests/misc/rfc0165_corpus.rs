@@ -36,8 +36,8 @@ fn three_legs(source: &str, label: &str) -> Vec<String> {
     let entry = artifact.entry().unwrap_or_else(|| panic!("{label}: a program has an entry"));
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
     let validated = codegen::validate_checked_module_for_oracle(&checked).unwrap_or_else(|e| panic!("{label}: {e}"));
-    let arguments = entry.capabilities().iter().map(|_| InterpreterValue::Capability(0)).collect();
-    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 20_000_000_000 })
+    let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 20_000_000_000, ..Default::default() })
         .unwrap_or_else(|e| panic!("{label}: oracle refused: {e:?}"));
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime

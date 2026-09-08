@@ -696,8 +696,8 @@ fn safewir_oracle_agrees(
         .and_then(|id| id.parse::<u32>().ok())
         .map(witchy_wir::canonical_safewir::FunctionId::new)
         .ok_or_else(|| format!("entry export `{}` names no canonical function", entry.export()))?;
-    let arguments = entry.capabilities().iter().map(|_| InterpreterValue::Capability(0)).collect();
-    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 20_000_000_000 });
+    let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    let run = interpret_program(&validated, function, arguments, InterpreterConfig { max_steps: 20_000_000_000, ..Default::default() });
     match (run, compiled) {
         (Ok(run), Ok(lines)) => {
             if run.output != *lines {

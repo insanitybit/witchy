@@ -640,8 +640,12 @@ fn candidate_signature_matches_source_inner(
 
 fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
     match source {
+        // A capability token is a scalar-like value: copied on pass, never
+        // released, so every convention carries it. `Dir` names its rights in
+        // type arguments, which change no ABI fact about the token.
+        witchy_syntax::ast::Type::Named(name, _) if name == "Dir" => true,
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => {
-            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes")
+            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes" | "Console" | "Env")
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             ordinary_own_source_type_supported(&arguments[0])
@@ -660,6 +664,13 @@ fn value_type_matches_source(
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
     match source.unqualified() {
+        // `Dir` carries its rights as type arguments (`Dir[Read]`), and the
+        // rights live in the host's authority object behind the token, so
+        // every spelling is the one fixed ABI kind. This arm precedes the
+        // argument-free one because `Dir` may appear with no arguments too.
+        witchy_syntax::ast::Type::Named(name, _) if name == "Dir" => {
+            actual == super::ValueType::Capability(super::DIR_CAPABILITY_KIND)
+        }
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
             "Int" | "Duration" => actual == super::ValueType::Int,
             "Float" => actual == super::ValueType::Float,
@@ -669,6 +680,8 @@ fn value_type_matches_source(
             // capability the fixed ABI kind 0; no candidate-selected kind is
             // accepted at this source boundary.
             "Console" => actual == super::ValueType::Capability(super::CapabilityKindId::new(0)),
+            // The process environment grant, the one `Env` token.
+            "Env" => actual == super::ValueType::Capability(super::ENV_CAPABILITY_KIND),
             // `Bytes` is the same raw-byte buffer under its own source type.
             "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
             // A scalar aggregate: one reference to a fixed layout whose slots
@@ -1197,6 +1210,31 @@ mod tests {
             check_initial_with_witness(candidate, checked.canonical_source().unwrap()),
             Err(InitialWitnessError::CandidateAbi(CandidateAbiBindingError::CandidateSignatureMismatch { .. }))
         ));
+    }
+
+    /// `Dir` matches kind 1 whatever rights it names, and `Env` kind 2. The
+    /// rights live in the host's authority object, so they change no ABI
+    /// fact about the token the entry receives.
+    #[test]
+    fn source_dir_and_env_match_their_authenticated_capability_kinds() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), b"fn main(dir: Dir[Read], env: Env):
+    let _ = dir.exists(\"a\")
+".to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).unwrap();
+        let source = checked.canonical_source().unwrap();
+        let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
+        let matches = |actual, source: &witchy_syntax::ast::Type| {
+            value_type_matches_source(actual, source, &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new())
+        };
+        assert!(matches(ValueType::Capability(super::super::DIR_CAPABILITY_KIND), &parameters[0]));
+        assert!(!matches(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0]));
+        assert!(matches(ValueType::Capability(super::super::ENV_CAPABILITY_KIND), &parameters[1]));
+        assert!(!matches(ValueType::Capability(super::super::DIR_CAPABILITY_KIND), &parameters[1]));
+        // Both are admissible as ordinary `own` parameters too.
+        assert!(ordinary_own_source_type_supported(&parameters[0]));
+        assert!(ordinary_own_source_type_supported(&parameters[1]));
     }
 
     #[test]

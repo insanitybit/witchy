@@ -2498,6 +2498,189 @@ mod tests {
         (module, catalog)
     }
 
+    /// How the guest states the length lane of a checked WRITE slice.
+    #[derive(Debug, Clone, Copy)]
+    enum WriteSliceLength {
+        /// The buffer's own capacity value: the whole writable body.
+        Capacity,
+        /// A constant length the checker must prove against the capacity.
+        Constant(u64),
+    }
+
+    /// A `dir_read_into`-shaped host call: the guest hands the host a checked
+    /// WRITE slice — (ptr, len) with `len` the buffer's capacity — and
+    /// publishes `min(returned, capacity)` itself afterwards.
+    fn write_slice_host_module(
+        length: WriteSliceLength,
+    ) -> (
+        CanonicalModule<super::super::LoweredCandidate>,
+        CanonicalAbiCatalog,
+    ) {
+        let (layouts, layout) = dynamic_byte_layout();
+        let start = ValueId::new(0);
+        let count = ValueId::new(1);
+        let capacity = ValueId::new(2);
+        let capacity_ok = ValueId::new(3);
+        let object = ValueId::new(4);
+        let written = ValueId::new(5);
+        let written_ok = ValueId::new(6);
+        let constant_length = ValueId::new(7);
+        let import_signature_id = FunctionSignatureId::new(1);
+        let import = ImportContract {
+            id: ImportId::new(0),
+            signature: import_signature_id,
+            abi_identity: ImportContractIdentity::AuthenticatedAbi([9; 32]),
+            module: "test".to_string(),
+            name: "dir_read_into".to_string(),
+            parameter_roles: vec![HostParameterRole::Buffer {
+                value_type: ValueType::Ref(layout),
+                access: AccessMode::Write,
+                extent: HostBufferExtent::Slice,
+            }],
+            result_roles: vec![HostResultRole::Value(ValueType::Size)],
+            mutation: HostMutation::WriteBuffers,
+            reentrancy: HostReentrancy::Forbidden,
+        };
+        let mut value_types: BTreeMap<ValueId, ValueType> = [
+            (start, ValueType::Size),
+            (count, ValueType::Size),
+            (capacity, ValueType::Size),
+            (capacity_ok, ValueType::Bool),
+            (object, ValueType::Ref(layout)),
+            (written, ValueType::Size),
+            (written_ok, ValueType::Bool),
+        ]
+        .into_iter()
+        .collect();
+        let mut operations = vec![
+            Operation::ConstSize { destination: start, value: 0 },
+            Operation::ConstSize { destination: count, value: 32 },
+            Operation::ConstSize { destination: capacity, value: 32 },
+            Operation::Compare {
+                destination: capacity_ok,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: count,
+                right: capacity,
+            },
+            Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
+            Operation::Alloc {
+                destination: object,
+                layout,
+                extent: Extent::Counted {
+                    header_bytes: 4,
+                    count,
+                    capacity,
+                    stride_bytes: 1,
+                },
+                class: AllocationClass::ReferenceCounted,
+            },
+            Operation::UpdateCount { object, count },
+        ];
+        let slice_length = match length {
+            WriteSliceLength::Capacity => capacity,
+            WriteSliceLength::Constant(value) => {
+                value_types.insert(constant_length, ValueType::Size);
+                operations.push(Operation::ConstSize { destination: constant_length, value });
+                constant_length
+            }
+        };
+        operations.extend([
+            Operation::HostCall {
+                destinations: vec![written],
+                import: ImportId::new(0),
+                arguments: vec![HostCallArgument::Buffer {
+                    place: Place::projected(
+                        object,
+                        Projection::Slice { start, length: slice_length },
+                        ValueType::Ref(layout),
+                        AccessMode::Write,
+                    ),
+                    extent: HostBufferExtent::Slice,
+                }],
+            },
+            // The guest publishes the host-written length under its own guard.
+            Operation::Compare {
+                destination: written_ok,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: written,
+                right: capacity,
+            },
+            Operation::Guard { condition: written_ok, kind: GuardKind::Bounds },
+            Operation::UpdateCount { object, count: written },
+            Operation::DropRef { object },
+        ]);
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: vec![ValueType::Size],
+                    contract: contract(vec![ResultContract::Value(ValueType::Size)]),
+                },
+                FunctionSignature {
+                    id: import_signature_id,
+                    parameters: vec![ValueType::Ref(layout)],
+                    results: vec![ValueType::Size],
+                    contract: CallableContract {
+                        parameters: vec![ParameterContract {
+                            value_type: ValueType::Ref(layout),
+                            ownership: ParameterOwnership::Value,
+                        }],
+                        results: vec![ResultContract::Value(ValueType::Size)],
+                        parameter_effects: BTreeMap::new(),
+                    },
+                },
+            ],
+            imports: vec![import.clone()],
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types,
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: vec![written] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        let catalog = CanonicalAbiCatalog::from_imports(vec![import]);
+        (module, catalog)
+    }
+
+    /// The new backend form: a WRITE slice of the buffer's whole capacity on
+    /// a unique, non-static raw-byte buffer.
+    #[test]
+    fn write_slice_host_call_is_admitted_at_capacity() {
+        let (module, catalog) = write_slice_host_module(WriteSliceLength::Capacity);
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// A shorter lane than the capacity is admitted only because constants
+    /// prove it lies inside the capacity.
+    #[test]
+    fn write_slice_host_call_admits_a_constant_range_inside_capacity() {
+        let (module, catalog) = write_slice_host_module(WriteSliceLength::Constant(16));
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn write_slice_host_call_refuses_a_lane_beyond_capacity() {
+        let (module, catalog) = write_slice_host_module(WriteSliceLength::Constant(64));
+        let result = super::check_initial_with_catalog(module, &catalog);
+        assert!(
+            matches!(result, Err(InitialCheckError::MissingBoundsGuard { .. })),
+            "{result:?}"
+        );
+    }
+
     #[test]
     fn write_buffer_host_call_is_admitted_within_capacity() {
         let (module, catalog) = write_buffer_host_module(32, HostMutation::WriteBuffers, false);
