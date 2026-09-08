@@ -74,6 +74,25 @@ fn main(console: Console):
     console.print(string.from_code(57343))
 "#;
 
+const TERMINAL_MATCH_SOURCE: &str = r#"
+fn scan(values: List(String)) -> Result(String, String):
+    var i = 0
+    while i < list.length(values):
+        let s = list.at(values, i)
+        match s:
+            "bad" -> return Err(s)
+            _ -> i = i + 1
+    Ok("done")
+
+fn main(console: Console):
+    match scan(["ok", "ok"]):
+        Ok(value) -> console.print(value)
+        Err(_) -> console.print("unexpected error")
+    match scan(["ok", "bad"]):
+        Ok(_) -> console.print("unexpected success")
+        Err(e) -> console.print(e)
+"#;
+
 #[test]
 fn real_std_string_from_code_matches_rust_scalar_encoding_across_boundaries() {
     let checked = witchy::resolve_std_only_checked(STRING_FROM_CODE_SOURCE).expect("real std string source checks");
@@ -107,6 +126,39 @@ fn real_std_string_from_code_matches_rust_scalar_encoding_across_boundaries() {
         .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
         .expect("spawn admitted real std string.from_code");
     vm.run().expect("admitted Wasm runs real std string.from_code");
+    assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
+}
+
+#[test]
+fn terminal_match_arm_does_not_join_consumed_string_into_loop() {
+    let checked = witchy::resolve_std_only_checked(TERMINAL_MATCH_SOURCE).expect("terminal match source checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("terminal match source must admit");
+    let expected = vec!["done".to_owned(), "bad".to_owned()];
+    let source_output = witchy::interpreter::run_module_args(checked.module().clone(), ".", Vec::new(), Vec::new())
+        .expect("source interpreter runs terminal match source");
+    assert_eq!(source_output, expected, "source interpreter expected terminal-match output");
+
+    let entry = artifact.entry().expect("terminal match program entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("terminal match validates for oracle");
+    let arguments = entry
+        .capabilities()
+        .iter()
+        .copied()
+        .map(InterpreterValue::entry_capability)
+        .collect();
+    let oracle = interpret_program(&validated, function, arguments, InterpreterConfig::default())
+        .expect("canonical oracle runs terminal match source");
+    assert_eq!(oracle.output, source_output, "canonical oracle must match source interpreter");
+    assert_eq!(oracle.leaked_objects, 0, "terminal match oracle must not leak");
+
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+        .expect("spawn admitted terminal match source");
+    vm.run().expect("admitted Wasm runs terminal match source");
     assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
 }

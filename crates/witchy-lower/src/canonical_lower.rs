@@ -2577,13 +2577,12 @@ impl FunctionLowerer<'_> {
         // guessing it is dead (BUG-canonical-match-cfg-unstructured-block).
         let mut next = Some(self.current);
 
-        let mut arm_facts = Vec::new();
+        let mut continuing_facts = Vec::new();
         for (arm_index, arm) in arms.iter().enumerate() {
             let Some(current) = next else { break };
             // Each arm starts from the facts before the `match`; every arm's
             // facts are merged back for the join's lane planning.
             if arm_index > 0 {
-                arm_facts.push(self.snapshot_facts());
                 self.restore_snapshot(facts.clone());
             }
             self.current = current;
@@ -2666,14 +2665,14 @@ impl FunctionLowerer<'_> {
             };
             let body_end = self.current;
             let bindings = self.bindings.clone();
-            arm_results.push((body_end, bindings, value));
+            let continues = self.blocks[body_end.get() as usize].terminator.is_none();
+            if continues {
+                continuing_facts.push(self.snapshot_facts());
+                arm_results.push((body_end, bindings, value));
+            }
             self.bindings = outer.clone();
             next = next_block;
         }
-        for previous in arm_facts {
-            self.absorb_facts(previous);
-        }
-
         // Exhaustiveness is the type checker's judgment; a dispatch that falls
         // off the last refutable arm is unreachable by that judgment and traps.
         self.bindings = outer.clone();
@@ -2684,6 +2683,14 @@ impl FunctionLowerer<'_> {
         if tail.is_some() {
             self.bindings = outer;
             return Ok(None);
+        }
+        self.restore_snapshot(facts.clone());
+        for arm_facts in continuing_facts {
+            self.absorb_facts(arm_facts);
+        }
+        if arm_results.is_empty() {
+            self.bindings = outer;
+            return Err(CanonicalLoweringError::UnsupportedStatement("match has no continuing arm"));
         }
 
         let mut changed_names = outer
