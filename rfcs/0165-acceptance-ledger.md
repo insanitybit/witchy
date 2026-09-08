@@ -9,10 +9,12 @@ event for the cutover candidate.
 Status values are `missing`, `partial`, `candidate-green`, and `merged-green`.
 Only `merged-green` completes a row.
 
-## Coverage integration candidate (2026-09-08)
+## Coverage integration landed (2026-09-08)
 
-The current integration branch is `impl/rfc0165-concat-integration`.
-This is focused branch evidence, not a new master census or a landing claim.
+The merge queue landed `impl/rfc0165-concat-integration` on master as
+`5bd7f6bb73de856e2fec1c52c2e9f4a3a6fd0a2e` at 17:13:17Z. Workspace tests,
+Witchy formatting, prose, compile check, bug lints, playground build, and
+Rust-class paired correctness passed in the serialized gate.
 
 - Recursive nominal and concrete generic layouts, nullable active-payload
   cloning, and bounded-stack destruction are integrated. `95dbdba91` binds
@@ -35,20 +37,32 @@ This is focused branch evidence, not a new master census or a landing claim.
   Use the existing warmed absolute target:
   `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-drop-worklist-target`.
 
-Still required: a terminal green integration gate, one classified coverage
-measurement on the integrated state, and final current-master evidence.
-No additional deferred-test exclusions were added. These results establish
-neither optimizer correctness nor compiler-wide memory safety.
+The fresh measurement on that exact master revision admits 132 of 163
+examples, with 75 runnable parity agreements and zero disagreements. The first
+attempt could not create its report directory; these numbers come from the
+recorded retry, not that failed reporting attempt.
+
+The 31 first refusals classify as nine task/channel cases, six Net cases, one
+regex case, one opt-mode case, and fourteen remaining in-scope first refusals:
+five recursive `List(Json)` layouts, four iterator/generator layouts, and one
+each for branded capabilities, dynamic reflection, File, a list of function
+values, and raw base64 decoding. Later refusals may further classify a program;
+this is not a claim that fixing its first refusal completes it.
+
+Still required: the remaining in-scope coverage and review obligations, then
+final current-master census and queue evidence. No additional deferred-test
+exclusions were added. These results establish neither optimizer correctness
+nor compiler-wide memory safety.
 
 | ID | Status | Current evidence | Evidence still required |
 |---|---|---|---|
-| B1 | candidate-green | The operation-to-rule manifest exists and is mechanical (2026-09-07): `crates/witchy-wir/src/canonical_safewir/manifest.rs` (rendered as `rfcs/0165-rule-manifest.md`, drift-checked) lists every `CanonicalRuleId` exactly once in declaration order (a new variant fails to compile until it has a row), names each rule's checker judgment, predicate, interpreter semantics, and backend correspondence rule, and cites the focused admitting and refusing tests, each of which must exist in the file it is attributed to. `Retain` is the one rule the checker refuses and the backend does not map (`retain_is_refused_in_v1`). | Landed 2026-09-07 (`53e168b22`). Still open: an independent review of the rendered manifest against the RFC's rule list. The slice-40 reviews (census) challenged the closure, host-buffer, copy, and loop-lane boundaries in code and by probe; none read the manifest against the RFC row by row, so this row does not close on them. |
+| B1 | partial | The operation-to-rule manifest exists and is mechanical (2026-09-07): `crates/witchy-wir/src/canonical_safewir/manifest.rs` (rendered as `rfcs/0165-rule-manifest.md`, drift-checked) lists every `CanonicalRuleId` exactly once in declaration order (a new variant fails to compile until it has a row), names each rule's checker judgment, predicate, interpreter semantics, and backend correspondence rule, and cites the focused admitting and refusing tests, each of which must exist in the file it is attributed to. `Retain` is the one rule the checker refuses and the backend does not map (`retain_is_refused_in_v1`). | Independent review on 2026-09-08 found the implementation-rule enumeration internally complete, but missing explicit RFC-kernel dispositions for aliases, composites, restricted forms, and unsupported operations. An RFC-to-implementation crosswalk and its completeness gate remain required; internal enum exhaustiveness alone does not close B1. |
 | B2 | merged-green | The B2 table in the same manifest records clone, move, replace, drop, reclaim, count overflow, and count underflow for `String`, `List(Int)`, and `List(String)` with a verdict and evidence per cell (`ownership_manifest_covers_every_transfer_of_every_storage_class`); replacement of a stored reference is refused rather than leaked (`store_cannot_overwrite_a_stored_reference`); pointer-bearing prefixes clone by retaining every element and drop recursively; counts trap at the i32 maximum and below zero. | Merged gate evidence. |
 | B3 | merged-green | Guard near-misses are pinned end to end (`admitted_guard_near_misses_trap_exactly_at_the_boundary`, 2026-09-07): the last valid index reads, the index equal to the length traps, a negative index traps, an empty list's first element traps, and a push past the capacity grows. Header bootstrap and length/capacity transitions remain pinned by `logical_length_guard_is_not_satisfied_by_capacity_guard`, `update_count_grows_logical_length_only_after_capacity_guard`, and the header-projection tests. | Merged gate evidence. |
 | B4 | merged-green | The B4 table in the manifest is the compact supported-call manifest: direct calls by scalar value, `let` (cloned token), `own` (moved token), and `var` (write-back lane); indirect scalar calls; proper tail calls direct and indirect (300,000-transition probes); host calls only with a capability value of the declared kind; memory-bearing value arguments, indirect reference arguments, and undischarged or doubly discharged tail sites refuse; `CallBorrow` does not exist in v1. | Merged gate evidence. |
 | B5 | merged-green | Canonical host checking uses authenticated import contracts, rejects generic value roles carrying references or capabilities, and directly refuses integer and linear-memory-reference values disguised as `Cap<K>` arguments. Broader capability APIs are outside the foundation subset. | Merged gate evidence. |
 | B6 | merged-green | The digest-bound foundation corpus exists (2026-09-07): `rfcs/0165-safewir-corpus.json` names 43 programs under `tests/rfc0165/corpus/` with their SHA-256 and an independently written expected stdout; `tests/misc/rfc0165_corpus.rs` refuses digest drift, admits every program through canonical SafeWIR, and requires the SafeWIR oracle, the admitted Wasm, and the expected stdout to agree with no leaked objects. Adversarial ownership and bounds probes are the manifest's refusing evidence (B1-B4) plus the near-miss traps (B3). | Merged gate evidence. |
-| B7 | candidate-green | The SafeWIR-to-WasmIR mapping is one reviewed table keyed by rule, `canonical_wasmir::rule_backend` (2026-09-07): every rule maps under exactly one correspondence rule or is refused (`Retain`), `operation_rule` delegates to it, `check_correspondence` requires one mapping per operation and terminator, and the manifest's backend column is checked equal to it. Admission refusals carry the encoder's own diagnostics; the structuring backend accepts reducible control flow only. | Landed 2026-09-07 (`53e168b22`). Still open: an independent review of the rendered rule-to-backend mapping as a whole. The slice-40 closure review confirmed the encoder and plan mirror token-identical for the callable lane, the write buffer, and the tail call through a closure; the rest of the table has not been reviewed independently. |
+| B7 | candidate-green | The SafeWIR-to-WasmIR mapping is one reviewed table keyed by rule, `canonical_wasmir::rule_backend` (2026-09-07): every rule maps under exactly one correspondence rule or is refused (`Retain`), `operation_rule` delegates to it, `check_correspondence` requires one mapping per operation and terminator, and the manifest's backend column is checked equal to it. Admission refusals carry the encoder's own diagnostics; the structuring backend accepts reducible control flow only. | Independent review on 2026-09-08 covered all 39 current rule identities, the rendered manifest, rule_backend, and check_correspondence; no current mapping-row mismatch was found. ClosureSlot is a Load/Store subjudgment, not a standalone receipt; Retain remains explicitly refused. This establishes metadata/table correspondence only, not correctness of checker predicates, interpreter semantics, or emitted Wasm. Land this review record before closing the remaining evidence obligation. |
 | B8 | merged-green | Ordinary checked-source production compilation invokes no optional optimization: it lowers, validates initially, performs the mandatory tail-call legalization, validates finally, and admits. The optional optimization session was deleted from this path. | Landed 2026-09-07 (`53e168b22`). There is no separate legalization pass to register: `canonical_pipeline::validate_checked_module` is lower, `check_initial_with_witness`, `validate_final`, with no transformation between them, and proper tail calls are emitted by the lowering as `TailCall`/`VarTailCall` terminators at exactly the checked manifest's sites, which the checker enforces (`MissingTailObligation`, `TailSiteFunctionMismatch`, `UnexpectedTailSite` in `check.rs`). Evidence: `checked_proper_tail_call_reaches_return_call_execution`, `checked_function_value_tail_call_reaches_admitted_execution`, `indirect_own_list_tail_call_reaches_admitted_execution` (`canonical_pipeline.rs`), and `admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack` (launch). |
 | B9 | merged-green | The digest-bound corpus (B6) covers scalars, control flow (`if`/`match`/`while`/`for`/`while let`/`break`/`continue`), UTF-8 strings, scalar/string lists, runtime indexing, mutation, direct/indirect top-level calls, `let`/`var`/`own`, loops, proper tails, reclamation, packed scalar records, and (beyond the compact list) heap records, sums, tuples, and lists of aggregates. Every excluded family has a precise canonical refusal recorded in the census (`CENSUS-2026-09-05-canonical-examples.md`, 42 slices; 127/163 examples check, 71 runnable agree). | Merged gate evidence. |
 | B10 | partial | `compile_checked_module_binary` admits exclusively through canonical SafeWIR and returns only bytes projected from `AdmittedCanonicalArtifact`; checked generated-test, development/Glamour, island execution, and build-module entrypoints fail closed before legacy lowering; the raw module encoder remains test-feature-gated. `emit-wat` is diagnostic text only and has no internal compiler publish path. Explicit external-module execution through `Runtime::spawn` is outside the compiler-generated-artifact claim. Until 2026-09-05 the entry-scope predicate excluded a bare `main` from any program not in a module named `main`, so admitted artifacts omitted the program (`BUG-canonical-entry-scope-drops-bare-main.md`); one shared predicate now governs the ABI manifest, tail ordinals, layouts, and lowering. | Since the `witchy.entry` section (2026-09-06) `Runtime::spawn` enters admitted bytes through their own entry, so `witchy stats` runs an admitted example (verified on `examples/hello`); the bench harness follows the same spawn path. Update gate expectations for intentionally unsupported workflows and obtain merged evidence. |
@@ -297,3 +311,14 @@ landing, and B10-B12 remain partial.
 These probes establish only their named behavior on the implementation branch.
 They do not establish corpus coverage, backend correspondence, optimization
 equivalence, source type-system soundness, or compiler-wide memory safety.
+
+### Follow-up integration evidence (2026-09-08)
+
+- `impl/rfc0165-coverage-next` at `9a642d234` is submitted as `mq-218b9530edf45572b2354c51860789e0efece89e`; landing is not yet established. Ongoing implementation is isolated on `impl/rfc0165-unicode-decode`.
+- `806b0abc8` reserves recursive nominal identities before binding bodies. Two layout-order/closure tests and the recursive list/tuple three-leg execution probe passed, with zero leaked references in the execution probe.
+- `46940b7d8` and `20796ed4a` supply the reviewed RFC-kernel crosswalk. Ten manifest-family tests passed. This resolves the previously recorded B1 crosswalk gap at candidate-green, not merged-green; it does not independently certify runtime semantics.
+- `e6045165f` preserves divergent valued-if arms without fake values. The scalar/string surviving-arm execution probe passed all three legs with zero leaks. Both-arms-divergent value forms remain unsupported.
+- The existing typed-error family at this source revision ran nine tests: Bytes and OAuth passed; seven refused. `9a642d234` removes only OAuth's deferred entry, with its source execution, exact expected output, and parity assertions unchanged.
+- Remaining typed-error refusals: duration owned-edge mismatch; URL block statement; encoding and JWT raw Base64 decoders; time incompatible memory join; HTTP divergent value block; semver missing checked closure type. These are not passing evidence or new exclusions.
+- `config_merge` advanced past recursive-container layout and valued-if lowering to `MissingBinding("string.from_code")`. No execution agreement is claimed for it yet.
+- Unicode construction integrated as `cd341fcd8` (worker `71fe823f3`): focused Rust-scalar expected encoding, source interpreter, SafeWIR oracle, admitted Wasm, and zero-leak probe passed. Bounded independent review found no concrete defect; adjacent scalar boundaries remain additional test opportunities. The real `config_merge` forward probe now refuses `UnsupportedType(Named("t0", []))`, not the missing Unicode intrinsic.
