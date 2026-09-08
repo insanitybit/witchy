@@ -739,25 +739,10 @@ pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bo
 /// lowering. The scope is one judgment shared by the proper-tail manifest, the
 /// callable witness, the layouts, and the lowering, so their ordinals agree.
 pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
-    use std::hash::{Hash, Hasher};
-    thread_local! {
-        static SCOPE_CACHE: std::cell::RefCell<Option<(u64, std::sync::Arc<BTreeSet<String>>)>> =
-            const { std::cell::RefCell::new(None) };
-    }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    module.linked_entry.hash(&mut hasher);
-    for item in &module.items {
-        if let witchy_syntax::ast::Item::Function(function) = item {
-            function.name.hash(&mut hasher);
-            function.body.stmts.len().hash(&mut hasher);
-        }
-    }
-    let fingerprint = hasher.finish();
-    if let Some(scope) = SCOPE_CACHE.with(|cache| {
-        cache.borrow().as_ref().filter(|(key, _)| *key == fingerprint).map(|(_, scope)| scope.clone())
-    }) {
-        return scope;
-    }
+    // No cache: a fingerprint over function names and statement counts once
+    // served two different programs of the same shape the same scope (a
+    // method call resolved to a std function in one and not the other), so
+    // callers that need the scope for many lookups take the set once.
     let entry = module.linked_entry.as_deref();
     let functions = module
         .items
@@ -806,9 +791,7 @@ pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
             Ok(())
         });
     }
-    let scope = std::sync::Arc::new(scope);
-    SCOPE_CACHE.with(|cache| *cache.borrow_mut() = Some((fingerprint, scope.clone())));
-    scope
+    std::sync::Arc::new(scope)
 }
 
 /// Whether `name` is a canonical function of `module` (see [`canonical_scope`]).

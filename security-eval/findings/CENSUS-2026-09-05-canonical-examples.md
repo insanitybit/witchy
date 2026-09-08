@@ -1104,3 +1104,38 @@ the block's own count lane); `Callable` lanes share one Wasm function type per s
 signature identity rests on the checker, not on `call_indirect`. Census unchanged at
 125/163 check, 69 runnable three-legged parity, 0 disagree; wir lib 567, lower canonical
 91, launch 57.
+
+## Slice 41 (2026-09-07): `Bytes`
+
+`Bytes` is admitted as the raw-byte buffer layout under its own source type: every
+extent, ownership, copy, and release rule for strings applies unchanged (the authority
+matches a `Bytes` parameter or result against the runtime buffer layout the way it matches
+`String`; aggregate fields, list elements, and empty slots take the same layout). The
+`__bytes_*` intrinsics behind `std/bytes` (and the public `bytes.at` alias, which the scope
+resolves to the intrinsic rather than the wrapper) are byte kernels over that buffer with
+the interpreter's rules: `at`/`set_at`/`swap` abort on an out-of-range index, a byte value
+outside `0..=255` and a negative count abort, `slice` clamps both ends and yields empty for
+a start past the end, `push`/`append`/`concat`/`reserve`/`from_string`/`from_list` copy into
+a fresh buffer, `with_capacity` allocates an empty buffer of that capacity, and
+`to_string` is the lossy UTF-8 decode of `String::from_utf8_lossy` (a lead-byte class
+table with the exact continuation ranges; each maximal invalid prefix, the lead plus the
+continuation bytes found valid before the first bad or missing one, becomes one U+FFFD,
+whose payload is registered whenever the program decodes). A render shows `Bytes(len=N)`.
+Two facts that bit: the checker bounds a raw-byte element write by the buffer's
+*capacity*, so a growing kernel guards its stores against the capacity lane it allocated
+rather than the count it publishes (`push_byte_store`); and the 4-byte lead `F4` admits
+only continuation `80..8F` (the first table let `F4 90 80 80` through as valid; the
+interpreter, and Rust, replace all four bytes).
+
+Also fixed on the way: `canonical_scope` cached its result under a fingerprint of function
+names and statement counts, so two programs of the same shape compiled on one thread (the
+launch tests' sequential fixtures) shared a stale scope, and a std function reached only by
+the second (`bytes.length`) was reported as a missing binding. The cache is gone; each
+lowering pass takes the scope once (`lower_typed_module`, `project_layouts`, the payload
+and render scans, `canonical_tail_sites`).
+
+Newly agree: `brainfuck`. Census: 126/163 check, 70 runnable three-legged parity, 0
+disagree; launch 60 (kernels, a `from_utf8_lossy`-adjudicated decode battery, and the
+abort fixtures), lower canonical 91, wir lib 567. `time_and_encoding` remains refused on
+the `encoding.*` intrinsics (hex/base64 kernels), the next byte-level slice.
+

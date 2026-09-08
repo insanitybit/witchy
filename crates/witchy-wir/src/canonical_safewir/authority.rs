@@ -641,7 +641,7 @@ fn candidate_signature_matches_source_inner(
 fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
     match source {
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => {
-            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String")
+            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes")
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             ordinary_own_source_type_supported(&arguments[0])
@@ -669,7 +669,8 @@ fn value_type_matches_source(
             // capability the fixed ABI kind 0; no candidate-selected kind is
             // accepted at this source boundary.
             "Console" => actual == super::ValueType::Capability(super::CapabilityKindId::new(0)),
-            "String" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
+            // `Bytes` is the same raw-byte buffer under its own source type.
+            "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
             // A scalar aggregate: one reference to a fixed layout whose slots
             // are exactly the shape's fields, in order.
             _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
@@ -758,7 +759,7 @@ fn layout_matches_source(
         return record_layout_matches(layout, &shape.fields, layouts, records);
     }
     match source.unqualified() {
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+        witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
             let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { return false };
             layouts.get(*element).is_some_and(|element| matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte)))
         }

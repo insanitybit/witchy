@@ -109,7 +109,7 @@ fn field_type_ok(ty: &Type, definitions: &BTreeMap<String, TypeDef>, allow_nomin
     }
     match ty.unqualified() {
         _ if is_scalar_type(ty) => true,
-        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => true,
+        Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => true,
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             field_type_ok(&arguments[0], definitions, allow_nominal)
         }

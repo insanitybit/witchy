@@ -93,6 +93,7 @@ pub fn lower_typed_module(
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
     let typed = source.typed_module();
+    let scope = witchy_types::pipeline::canonical_scope(typed.module());
     // Checked source records what it could not bind as canonical authority
     // (RFC-0165): library specializations, closures the v1 witness cannot
     // authenticate, callable ABIs it cannot encode. Canonical v1 has no
@@ -106,7 +107,7 @@ pub fn lower_typed_module(
     }
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         if let Some(unsupported) = function
@@ -158,7 +159,7 @@ pub fn lower_typed_module(
     let mut callable_types = Vec::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         if let Some(function_type) = source.callable_signature(&function.name) {
@@ -167,7 +168,7 @@ pub fn lower_typed_module(
     }
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
@@ -256,7 +257,7 @@ pub fn lower_typed_module(
                 Item::Function(_) => unreachable!(),
             }
         };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         let Some(function_type) = source.callable_signature(&function.name).cloned() else {
@@ -284,7 +285,7 @@ pub fn lower_typed_module(
     let source_function_names = functions_by_name.keys().cloned().collect::<HashSet<String>>();
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         let item_index = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
@@ -363,7 +364,7 @@ pub fn lower_typed_module(
     let mut adapter_targets = BTreeSet::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
@@ -410,7 +411,7 @@ pub fn lower_typed_module(
     }
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
@@ -494,10 +495,15 @@ pub fn lower_typed_module(
         abi_catalog = Some(catalog);
     }
 
+    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+        let mut names = functions_by_name.keys().collect::<Vec<_>>();
+        names.sort();
+        eprintln!("canonical scope: {names:?}");
+    }
     let mut functions = Vec::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
         let Some((function_id, signature_id)) = functions_by_name.get(&function.name).copied() else {
@@ -4731,6 +4737,12 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if is_console_print(name) => Err(
                 CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
             ),
+            // The `Bytes` intrinsics behind `std/bytes`.
+            Expr::Call { name, args }
+                if (name.starts_with("__bytes_") || name == "bytes.at") && !self.functions.contains_key(name.as_str()) =>
+            {
+                self.lower_bytes_call(name, args)
+            }
             // A `dict.` name that is not a linked function is a dictionary
             // intrinsic; the std wrappers themselves are ordinary calls.
             Expr::Call { name, args } if name.starts_with("dict.") && !self.functions.contains_key(name.as_str()) => {
@@ -5343,7 +5355,7 @@ impl FunctionLowerer<'_> {
     /// its own token).
     fn owned_for_storage(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
         match ty.unqualified() {
-            Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+            Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
                 self.ensure_string_extent(value)?;
                 self.clone_string_for_storage(value)
             }
@@ -5373,7 +5385,7 @@ impl FunctionLowerer<'_> {
     /// every owned pointer slot must hold an object for the destructor.
     fn push_empty_value(&mut self, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
         match ty.unqualified() {
-            Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
+            Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
                 let layout = self.string_layout_id()?;
                 let zero = self.push_const_size(0)?;
                 let object = self.fresh(ValueType::Ref(layout))?;
@@ -6956,6 +6968,17 @@ impl FunctionLowerer<'_> {
                     return Ok(value);
                 }
                 ("Int", [], ValueType::Int) => return self.lower_render_int(value),
+                ("Bytes", [], ValueType::Ref(_)) => {
+                    // The interpreter shows a byte buffer by its length only.
+                    let count = self.string_length_of(value)?;
+                    let length = self.fresh(ValueType::Int)?;
+                    self.push_operation(Operation::WidenSize { destination: length, value: count });
+                    let digits = self.lower_render_int(length)?;
+                    let open = self.lower_string_literal("Bytes(len=")?;
+                    let out = self.concat_string_values(open, digits)?;
+                    let close = self.lower_string_literal(")")?;
+                    return self.concat_string_values(out, close);
+                }
                 ("Bool", [], ValueType::Bool) => return self.lower_render_bool(value),
                 ("Float", [], ValueType::Float) => return self.lower_render_float(value),
                 ("Duration", _, _) => return Err(CanonicalLoweringError::UnsupportedExpression("render Duration")),
@@ -7454,6 +7477,442 @@ impl FunctionLowerer<'_> {
         let (folded, _) = self.accumulator_lanes(grown)?;
         let mut folded = self.split_folded_lanes(folded)?;
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        folded.push(next);
+        self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
+        self.current = exit;
+        let exit_values = self.block_parameter_values(exit);
+        self.track_accumulator_lanes(&exit_values);
+        Ok(exit_values[0])
+    }
+
+    /// `Bytes` is the raw-byte buffer layout under its own source type; its
+    /// intrinsics are byte kernels over that buffer with the interpreter's
+    /// rules: an index or a byte value out of range aborts, `slice` clamps,
+    /// `to_string` decodes UTF-8 lossily.
+    fn lower_bytes_call(&mut self, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let size_limit = u64::from(u32::MAX - 4);
+        match (name, args) {
+            ("__bytes_from_string", [source]) | ("__bytes_reserve", [source, _]) => {
+                let value = self.lower_expr(source)?;
+                if name == "__bytes_reserve" {
+                    let additional = self.lower_expr(&args[1])?;
+                    let _ = self.int_to_size_checked(additional, size_limit)?;
+                }
+                self.owned_string_copy(value)
+            }
+            ("__bytes_length", [source]) => {
+                let value = self.lower_expr(source)?;
+                let count = self.string_length_of(value)?;
+                let length = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize { destination: length, value: count });
+                Ok(length)
+            }
+            ("__bytes_at" | "bytes.at", [source, index]) => {
+                let value = self.lower_expr(source)?;
+                let index = self.lower_expr(index)?;
+                let index = self.bytes_index_checked(value, index)?;
+                let byte = self.push_string_byte_load(value, index, layout)?;
+                let widened = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize { destination: widened, value: byte });
+                Ok(widened)
+            }
+            ("__bytes_concat", [left, right]) | ("__bytes_append", [left, right]) => {
+                let left = self.lower_expr(left)?;
+                let right = self.lower_expr(right)?;
+                self.concat_string_values(left, right)
+            }
+            ("__bytes_slice", [source, start, end]) => {
+                let value = self.lower_expr(source)?;
+                let start = self.lower_expr(start)?;
+                let end = self.lower_expr(end)?;
+                let total = self.string_length_of(value)?;
+                let length_int = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::WidenSize { destination: length_int, value: total });
+                let zero_int = self.push_const_int(0)?;
+                // lo = max(start, 0); hi = max(min(max(end, 0), len), lo);
+                // a start past the end yields the empty buffer.
+                let start_negative = self.push_compare(ComparisonOperator::LessSigned, start, zero_int)?;
+                let lo = self.lower_int_select(start_negative, zero_int, start)?;
+                let end_negative = self.push_compare(ComparisonOperator::LessSigned, end, zero_int)?;
+                let end = self.lower_int_select(end_negative, zero_int, end)?;
+                let end_past = self.push_compare(ComparisonOperator::GreaterSigned, end, length_int)?;
+                let hi = self.lower_int_select(end_past, length_int, end)?;
+                let hi_below = self.push_compare(ComparisonOperator::LessSigned, hi, lo)?;
+                let hi = self.lower_int_select(hi_below, lo, hi)?;
+                let lo_past = self.push_compare(ComparisonOperator::GreaterSigned, lo, length_int)?;
+                let lo = self.lower_int_select(lo_past, length_int, lo)?;
+                let hi = self.lower_int_select(lo_past, length_int, hi)?;
+                let width = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, hi, lo, OverflowBehavior::Wrap)?;
+                let lo = self.int_to_size_checked(lo, size_limit)?;
+                let width = self.int_to_size_checked(width, size_limit)?;
+                self.copy_checked_slice(value, lo, width, total, layout)
+            }
+            ("__bytes_with_capacity", [capacity]) => {
+                let capacity = self.lower_expr(capacity)?;
+                let capacity = self.int_to_size_checked(capacity, size_limit)?;
+                let zero = self.push_const_size(0)?;
+                self.alloc_bytes(zero, capacity)
+            }
+            ("__bytes_repeat", [value, count]) => {
+                let value = self.lower_expr(value)?;
+                let count = self.lower_expr(count)?;
+                let byte = self.byte_value_checked(value)?;
+                let count = self.int_to_size_checked(count, size_limit)?;
+                let count_copy = self.fresh(ValueType::Size)?;
+                self.push_operation(Operation::MoveValue { destination: count_copy, source: count });
+                let object = self.alloc_bytes(count, count_copy)?;
+                self.lower_byte_fill_loop(object, count, |_, _| Ok(byte))?;
+                Ok(object)
+            }
+            ("__bytes_push", [source, value]) => {
+                let source = self.lower_expr(source)?;
+                let value = self.lower_expr(value)?;
+                let byte = self.byte_value_checked(value)?;
+                let total = self.string_length_of(source)?;
+                let maximum = self.push_const_size(size_limit - 1)?;
+                let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, maximum)?;
+                self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+                let one = self.push_const_size(1)?;
+                let grown = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, one, OverflowBehavior::Wrap)?;
+                let grown_copy = self.fresh(ValueType::Size)?;
+                self.push_operation(Operation::MoveValue { destination: grown_copy, source: grown });
+                let object = self.alloc_bytes(grown, grown_copy)?;
+                let zero = self.push_const_size(0)?;
+                let source_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, grown)?;
+                self.push_guard(source_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+                self.push_byte_copy(object, zero, source, zero, total, layout);
+                self.push_byte_store(object, total, byte)?;
+                Ok(object)
+            }
+            ("__bytes_set_at", [source, index, value]) => {
+                let source = self.lower_expr(source)?;
+                let index = self.lower_expr(index)?;
+                let value = self.lower_expr(value)?;
+                let byte = self.byte_value_checked(value)?;
+                let copy = self.owned_string_copy(source)?;
+                let index = self.bytes_index_checked(copy, index)?;
+                self.push_byte_store(copy, index, byte)?;
+                Ok(copy)
+            }
+            ("__bytes_swap", [source, first, second]) => {
+                let source = self.lower_expr(source)?;
+                let first = self.lower_expr(first)?;
+                let second = self.lower_expr(second)?;
+                let copy = self.owned_string_copy(source)?;
+                let first = self.bytes_index_checked(copy, first)?;
+                let second = self.bytes_index_checked(copy, second)?;
+                let a = self.push_string_byte_load(copy, first, layout)?;
+                let b = self.push_string_byte_load(copy, second, layout)?;
+                let a = self.proven_byte(a)?;
+                let b = self.proven_byte(b)?;
+                self.push_byte_store(copy, first, b)?;
+                self.push_byte_store(copy, second, a)?;
+                Ok(copy)
+            }
+            ("__bytes_from_list", [source]) => {
+                let list = self.lower_expr(source)?;
+                self.ensure_list_extent(list)?;
+                let count = *self.list_counts.get(&list).ok_or(CanonicalLoweringError::UnsupportedExpression("bytes source extent"))?;
+                let count_copy = self.fresh(ValueType::Size)?;
+                self.push_operation(Operation::MoveValue { destination: count_copy, source: count });
+                let object = self.alloc_bytes(count, count_copy)?;
+                self.lower_byte_fill_loop(object, count, |this, cursor| {
+                    let element = this.load_list_element(list, cursor, ValueType::Int)?;
+                    this.byte_value_checked(element)
+                })?;
+                Ok(object)
+            }
+            ("__bytes_to_string", [source]) => {
+                let value = self.lower_expr(source)?;
+                self.lower_bytes_to_string(value)
+            }
+            _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
+        }
+    }
+
+    /// A fresh raw-byte buffer of `count` bytes (to be stored by the caller)
+    /// within `capacity`; both are `Size` and `count <= capacity` is guarded.
+    fn alloc_bytes(&mut self, count: ValueId, capacity: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, capacity, maximum)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let count_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, capacity)?;
+        self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted { header_bytes: 4, count, capacity, stride_bytes: 1 },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::UpdateCount { object, count });
+        self.string_lengths.insert(object, count);
+        self.string_capacities.insert(object, capacity);
+        Ok(object)
+    }
+
+    /// Store `byte_at(cursor)` into every position of a fresh `count`-byte
+    /// buffer.
+    fn lower_byte_fill_loop(
+        &mut self,
+        object: ValueId,
+        count: ValueId,
+        mut byte_at: impl FnMut(&mut Self, ValueId) -> Result<ValueId, CanonicalLoweringError>,
+    ) -> Result<(), CanonicalLoweringError> {
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let header = self.new_block(&[ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        self.current = header;
+        let cursor = self.block_parameter_values(header)[0];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: vec![cursor],
+            else_target: exit,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = body;
+        let cursor = self.block_parameter_values(body)[0];
+        let byte = byte_at(self, cursor)?;
+        self.push_byte_store(object, cursor, byte)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.current = exit;
+        Ok(())
+    }
+
+    /// An `Int` as a `Size` in `0..=maximum`; anything else aborts, as the
+    /// interpreter's negative-count and out-of-range errors do.
+    fn int_to_size_checked(&mut self, value: ValueId, maximum: u64) -> Result<ValueId, CanonicalLoweringError> {
+        let zero = self.push_const_int(0)?;
+        let non_negative = self.push_compare(ComparisonOperator::GreaterEqualSigned, value, zero)?;
+        self.push_trap_unless(non_negative)?;
+        let limit = self.push_const_int(i64::try_from(maximum).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+        let bounded = self.push_compare(ComparisonOperator::LessEqualSigned, value, limit)?;
+        self.push_trap_unless(bounded)?;
+        let narrowed = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: narrowed, value });
+        Ok(narrowed)
+    }
+
+    /// An `Int` index into `object`'s bytes as a `Size`; out of range aborts.
+    fn bytes_index_checked(&mut self, object: ValueId, index: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let total = self.string_length_of(object)?;
+        let index = self.int_to_size_checked(index, u64::from(u32::MAX - 4))?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
+        self.push_trap_unless(in_bounds)?;
+        let again = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
+        self.push_guard(again, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        Ok(index)
+    }
+
+    /// An `Int` byte value as a `Size` proven at most 255; out of range aborts.
+    fn byte_value_checked(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let narrowed = self.int_to_size_checked(value, 255)?;
+        self.proven_byte(narrowed)
+    }
+
+    /// Re-establish the `<= 255` fact a raw-byte store needs on a `Size`.
+    fn proven_byte(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let limit = self.push_const_size(255)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, value, limit)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        Ok(value)
+    }
+
+    /// Store one proven byte at `index`; the checker bounds a raw-byte
+    /// element write by the buffer's capacity, so that guard is pushed here.
+    fn push_byte_store(&mut self, object: ValueId, index: ValueId, byte: ValueId) -> Result<(), CanonicalLoweringError> {
+        let capacity = *self.string_capacities.get(&object).ok_or(CanonicalLoweringError::UnsupportedExpression("byte store capacity"))?;
+        let within = self.push_compare(ComparisonOperator::LessUnsigned, index, capacity)?;
+        self.push_guard(within, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Element { index },
+                ValueType::Size,
+                AccessMode::Write,
+            ),
+            value: byte,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        Ok(())
+    }
+
+    /// `if condition: when_true else: when_false` over two `Int` values.
+    fn lower_int_select(&mut self, condition: ValueId, when_true: ValueId, when_false: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
+        let yes = self.new_block(&[])?;
+        let no = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Int])?;
+        self.finish_current(Terminator::BranchIf {
+            condition,
+            then_target: yes,
+            then_arguments: Vec::new(),
+            else_target: no,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = yes;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![when_true] })?;
+        self.current = no;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![when_false] })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        Ok(self.block_parameter_values(join)[0])
+    }
+
+    /// `bytes.to_string`: the interpreter's lossy UTF-8 decode (Rust's
+    /// `from_utf8_lossy`). Each position classifies its lead byte; a
+    /// well-formed sequence is copied, otherwise the lead byte and the
+    /// continuation bytes found valid before the first bad or missing one are
+    /// replaced by a single U+FFFD.
+    fn lower_bytes_to_string(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let total = self.string_length_of(object)?;
+        let zero = self.push_const_size(0)?;
+        let accumulator = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
+        let (lanes, mut shapes) = self.accumulator_lanes(accumulator)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(zero);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        let header_values = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&header_values);
+        self.current = header;
+        let cursor = header_values[3];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..3].to_vec(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&body_values);
+        self.current = body;
+        let cursor = body_values[3];
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let lead = self.push_string_byte_load(object, cursor, layout)?;
+        // `decided(valid, consumed)` is reached once per lead-byte class.
+        let facts = self.snapshot_facts();
+        let decided = self.new_block(&[ValueType::Bool, ValueType::Size])?;
+        let yes = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: yes, value: true });
+        let no = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::ConstBool { destination: no, value: false });
+        let one = self.push_const_size(1)?;
+        // Lead-byte classes: (low, high, the range of each continuation byte).
+        let classes: [(u64, u64, &[(u64, u64)]); 9] = [
+            (0x00, 0x7F, &[]),
+            (0xC2, 0xDF, &[(0x80, 0xBF)]),
+            (0xE0, 0xE0, &[(0xA0, 0xBF), (0x80, 0xBF)]),
+            (0xE1, 0xEC, &[(0x80, 0xBF), (0x80, 0xBF)]),
+            (0xED, 0xED, &[(0x80, 0x9F), (0x80, 0xBF)]),
+            (0xEE, 0xEF, &[(0x80, 0xBF), (0x80, 0xBF)]),
+            (0xF0, 0xF0, &[(0x90, 0xBF), (0x80, 0xBF), (0x80, 0xBF)]),
+            (0xF1, 0xF3, &[(0x80, 0xBF), (0x80, 0xBF), (0x80, 0xBF)]),
+            (0xF4, 0xF4, &[(0x80, 0x8F), (0x80, 0xBF), (0x80, 0xBF)]),
+        ];
+        for (low, high, continuations) in classes {
+            let low_value = self.push_const_size(low)?;
+            let high_value = self.push_const_size(high)?;
+            let above = self.push_compare(ComparisonOperator::GreaterEqualUnsigned, lead, low_value)?;
+            let below = self.push_compare(ComparisonOperator::LessEqualUnsigned, lead, high_value)?;
+            let matches = self.short_circuit_and(above, |_| Ok(Some(below)))?;
+            let arm = self.new_block(&[])?;
+            let next_class = self.new_block(&[])?;
+            self.finish_current(Terminator::BranchIf {
+                condition: matches,
+                then_target: arm,
+                then_arguments: Vec::new(),
+                else_target: next_class,
+                else_arguments: Vec::new(),
+            })?;
+            self.current = arm;
+            self.restore_snapshot(facts.clone());
+            // Each continuation byte in order: present and in range, or the
+            // sequence ends after the `k` bytes examined so far.
+            for (offset, (continuation_low, continuation_high)) in continuations.iter().enumerate() {
+                let k = self.push_const_size(offset as u64 + 1)?;
+                let position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, k, OverflowBehavior::Wrap)?;
+                let present = self.push_compare(ComparisonOperator::LessUnsigned, position, total)?;
+                let (low_c, high_c) = (*continuation_low, *continuation_high);
+                let ok = self.short_circuit_and(present, |this| {
+                    let guard = this.push_compare(ComparisonOperator::LessUnsigned, position, total)?;
+                    this.push_guard(guard, witchy_wir::canonical_safewir::GuardKind::Bounds);
+                    let byte = this.push_string_byte_load(object, position, layout)?;
+                    let low_value = this.push_const_size(low_c)?;
+                    let high_value = this.push_const_size(high_c)?;
+                    let above = this.push_compare(ComparisonOperator::GreaterEqualUnsigned, byte, low_value)?;
+                    let below = this.push_compare(ComparisonOperator::LessEqualUnsigned, byte, high_value)?;
+                    this.short_circuit_and(above, |_| Ok(Some(below))).map(Some)
+                })?;
+                let keep_going = self.new_block(&[])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: ok,
+                    then_target: keep_going,
+                    then_arguments: Vec::new(),
+                    else_target: decided,
+                    else_arguments: vec![no, k],
+                })?;
+                self.current = keep_going;
+            }
+            let need = self.push_const_size(continuations.len() as u64 + 1)?;
+            self.finish_current(Terminator::Branch { target: decided, arguments: vec![yes, need] })?;
+            self.current = next_class;
+            self.restore_snapshot(facts.clone());
+        }
+        // No class matched: an invalid lead byte, replaced on its own.
+        self.finish_current(Terminator::Branch { target: decided, arguments: vec![no, one] })?;
+        self.restore_facts(facts, decided);
+        self.current = decided;
+        let decided_values = self.block_parameter_values(decided);
+        let (valid, consumed) = (decided_values[0], decided_values[1]);
+        // The piece: the sequence itself, or the replacement character.
+        let facts = self.snapshot_facts();
+        let copy_block = self.new_block(&[])?;
+        let replace_block = self.new_block(&[])?;
+        let piece_join = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: valid,
+            then_target: copy_block,
+            then_arguments: Vec::new(),
+            else_target: replace_block,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = copy_block;
+        let piece = self.copy_checked_slice(object, cursor, consumed, total, layout)?;
+        let (piece_lanes, _) = self.accumulator_lanes(piece)?;
+        self.finish_current(Terminator::Branch { target: piece_join, arguments: piece_lanes })?;
+        self.current = replace_block;
+        self.restore_snapshot(facts.clone());
+        let replacement = self.lower_string_literal("\u{FFFD}")?;
+        let replacement = self.owned_string_copy(replacement)?;
+        let (piece_lanes, _) = self.accumulator_lanes(replacement)?;
+        self.finish_current(Terminator::Branch { target: piece_join, arguments: piece_lanes })?;
+        self.restore_facts(facts, piece_join);
+        self.current = piece_join;
+        let piece_values = self.block_parameter_values(piece_join);
+        self.track_accumulator_lanes(&piece_values);
+        let out = self.concat_string_values(body_values[0], piece_values[0])?;
+        let (folded, _) = self.accumulator_lanes(out)?;
+        let mut folded = self.split_folded_lanes(folded)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, consumed, OverflowBehavior::Wrap)?;
         folded.push(next);
         self.finish_current(Terminator::Branch { target: header, arguments: folded })?;
         self.current = exit;
@@ -9253,8 +9712,10 @@ fn source_value_type(
             let tuple = dictionary_as_tuple(source).expect("a two-argument Dict has a tuple form");
             source_value_type(&tuple, layout_bundle, layouts, closure_layouts, definitions)
         }
-        Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
-            string_layout(source, layout_bundle, layouts).map(ValueType::Ref)
+        // `Bytes` shares the raw-byte buffer layout; only its source type
+        // (and the operations the lowering admits on it) differ.
+        Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
+            string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts).map(ValueType::Ref)
         }
         Type::Named(name, arguments) if name == "Console" && arguments.is_empty() => {
             Ok(ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)))
@@ -9277,8 +9738,8 @@ fn aggregate_layout(
             (Some(scalar), None)
         } else {
             let pointee = match field.unqualified() {
-                Type::Named(name, arguments) if name == "String" && arguments.is_empty() => {
-                    string_layout(field, layout_bundle, layouts)?
+                Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => {
+                    string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?
                 }
                 Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                     list_layout(field, layout_bundle, layouts, definitions)?.0
@@ -9421,9 +9882,10 @@ struct HostImports {
 /// Whether any canonical source function renders a `Float`, which reaches
 /// the `float_to_str` import.
 fn renders_float(module: &witchy_syntax::ast::Module, table: &TypeTable, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let scope = witchy_types::pipeline::canonical_scope(module);
     module.items.iter().any(|item| {
         let Item::Function(function) = item else { return false };
-        if !is_canonical_source_function(module, &function.name) {
+        if !scope.contains(&function.name) {
             return false;
         }
         let mut found = false;
@@ -9449,7 +9911,7 @@ fn type_renders_float(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> boo
     if let Type::Named(name, arguments) = ty {
         match (name.as_str(), arguments.as_slice()) {
             ("Float", []) => return true,
-            ("String", []) | ("Int", []) | ("Bool", []) | ("Duration", _) | ("Dict", _) => return false,
+            ("String", []) | ("Int", []) | ("Bool", []) | ("Duration", _) | ("Dict", _) | ("Bytes", []) => return false,
             ("List", [element]) => return type_renders_float(element, definitions),
             _ => {}
         }
@@ -9479,6 +9941,12 @@ fn collect_render_payloads(
             ("String", []) | ("Float", _) | ("Duration", _) => return,
             ("Int", []) => {
                 *renders_int = true;
+                return;
+            }
+            ("Bytes", []) => {
+                *renders_int = true;
+                payloads.insert(b"Bytes(len=".to_vec());
+                payloads.insert(b")".to_vec());
                 return;
             }
             ("Bool", []) => {
@@ -9526,15 +9994,17 @@ fn render_variant_name(variant: &ScalarVariant) -> String {
 }
 
 fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTable, definitions: &BTreeMap<String, TypeDef>) -> Vec<Vec<u8>> {
+    let scope = witchy_types::pipeline::canonical_scope(module);
     let mut literal_uses = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_inputs = BTreeMap::<Vec<u8>, usize>::new();
     let mut chars_outputs = BTreeSet::new();
     let mut renders_int = false;
     let mut renders_bool = false;
     let mut render_payloads = BTreeSet::new();
+    let mut decodes_bytes = false;
     for item in &module.items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(module, &function.name) { continue; }
+        if !scope.contains(&function.name) { continue; }
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             if let Expr::Str(value) = expression {
                 *literal_uses.entry(value.as_bytes().to_vec()).or_default() += 1;
@@ -9555,6 +10025,9 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
             {
                 collect_render_payloads(&ty, definitions, &mut render_payloads, &mut renders_int, &mut renders_bool);
             }
+            if let Expr::Call { name, .. } = expression && name == "__bytes_to_string" {
+                decodes_bytes = true;
+            }
             if let Expr::Call { name, args } = expression
                 && matches!(name.as_str(), "string.chars" | "string.__chars")
             {
@@ -9570,6 +10043,9 @@ fn collect_string_payloads(module: &witchy_syntax::ast::Module, table: &TypeTabl
     }
     let mut payloads = chars_outputs;
     payloads.extend(render_payloads);
+    if decodes_bytes {
+        payloads.insert("\u{FFFD}".as_bytes().to_vec());
+    }
     if renders_int {
         payloads.insert(RENDER_DIGIT_TABLE.as_bytes().to_vec());
         payloads.insert(RENDER_MINUS_SIGN.as_bytes().to_vec());
@@ -9603,8 +10079,9 @@ fn collect_pattern_literals(pattern: &Pattern, literal_uses: &mut BTreeMap<Vec<u
 }
 
 fn contains_console_print(module: &witchy_syntax::ast::Module) -> bool {
+    let scope = witchy_types::pipeline::canonical_scope(module);
     module.items.iter().filter_map(|item| match item {
-        Item::Function(function) if is_canonical_source_function(module, &function.name) => {
+        Item::Function(function) if scope.contains(&function.name) => {
             Some(&function.body)
         }
         _ => None,
@@ -9640,8 +10117,8 @@ fn list_layout(
         Type::Named(element, args) if element == "Int" && args.is_empty() => ValueType::Int,
         Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
         Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
-        Type::Named(element, args) if element == "String" && args.is_empty() => {
-            ValueType::Ref(string_layout(&arguments[0], layout_bundle, layouts)?)
+        Type::Named(element, args) if matches!(element.as_str(), "String" | "Bytes") && args.is_empty() => {
+            ValueType::Ref(string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?)
         }
         Type::Named(element, _) if element == "List" => {
             ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, definitions)?.0)
@@ -9763,6 +10240,7 @@ fn canonical_tail_sites(
     module: &witchy_syntax::ast::Module,
     lambda_functions: &HashMap<ProperTailCallableId, FunctionId>,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
+    let scope = witchy_types::pipeline::canonical_scope(module);
     manifest
         .sites()
         .iter()
@@ -9772,7 +10250,7 @@ fn canonical_tail_sites(
                 .get(site.key.callable.item as usize)
                 .is_some_and(|item| match item {
                     Item::Function(function) => {
-                        is_canonical_source_function(module, &function.name)
+                        scope.contains(&function.name)
                             && !is_intrinsic_tail_site(site, function)
                     }
                     _ => false,
@@ -9802,7 +10280,7 @@ fn canonical_tail_sites(
                 .enumerate()
                 .filter_map(|(item_index, item)| {
                     let Item::Function(function) = item else { return None };
-                    if is_canonical_source_function(module, &function.name) {
+                    if scope.contains(&function.name) {
                         Some((item_index, function))
                     } else {
                         None
@@ -9878,10 +10356,6 @@ fn expr_in_tail_path<'a>(expression: &'a Expr, path: &[ProperTailPathStep]) -> O
     }
 }
 
-
-fn is_canonical_source_function(module: &witchy_syntax::ast::Module, name: &str) -> bool {
-    witchy_types::pipeline::in_canonical_scope(module, name)
-}
 
 #[cfg(test)]
 mod tests {

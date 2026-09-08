@@ -822,3 +822,87 @@ fn admitted_closures_are_records_of_code_and_int_captures() {
         vec!["15 81 21", "15 120", "108 [2, 4, 6, 8, 10] [101, 102, 103, 104, 105]"].into_iter().map(str::to_string).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn admitted_bytes_kernels_index_grow_slice_and_render() {
+    // `Bytes` is the raw-byte buffer layout under its own source type. Its
+    // intrinsics are byte kernels with the interpreter's rules: `at`,
+    // `set_at` and `swap` abort out of range, `slice` clamps both ends and
+    // yields empty for a start past the end, `push`/`append`/`concat` copy
+    // into a fresh buffer, and a render shows only the length.
+    let output = run_admitted(
+        "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"héllo\")\n    console.print(\"${b.length()} ${b.at(1)}\")\n    var c = b\n    c.push(33)\n    console.print(bytes.to_string(c))\n    var d = c\n    d.set_at(0, 72)\n    console.print(bytes.to_string(d))\n    var e = d\n    e.swap(0, 5)\n    console.print(bytes.to_string(e))\n    console.print(\"${e.slice(-3, 2).length()} ${e.slice(2, 100).length()} ${e.slice(5, 2).length()} ${e.slice(100, 200).length()} ${bytes.to_string(e.slice(0, 1))}\")\n    let r = bytes.repeat(65, 4)\n    let w = bytes.with_capacity(16)\n    let f: Bytes = match bytes.from_list([104, 105]):\n        Ok(v) -> v\n        Err(_) -> bytes.from_string(\"\")\n    console.print(\"${bytes.to_string(r)} ${w.length()} ${bytes.to_string(f.concat(r))} ${f} ${bytes.from_string(\"\")}\")\n    var g = f\n    g.append(r)\n    g.reserve(10)\n    console.print(\"${g.length()} ${f.get(1)} ${f.get(2)} ${f.is_empty()}\")\n",
+    );
+    assert_eq!(
+        output,
+        vec!["6 195", "héllo!", "Héllo!", "oéllH!", "2 5 0 0 o", "AAAA 0 hiAAAA Bytes(len=2) Bytes(len=0)", "6 Some(105) None false"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn admitted_bytes_to_string_decodes_utf8_lossily_like_the_standard_library() {
+    // `bytes.to_string` replaces each maximal invalid prefix with U+FFFD the
+    // way `String::from_utf8_lossy` does: an invalid lead byte on its own, a
+    // truncated or broken sequence as the lead plus the continuation bytes
+    // that were valid before the first bad or missing one. The expected
+    // result is Rust's decoder, independent of either backend.
+    let inputs: Vec<Vec<u8>> = vec![
+        vec![104, 105],
+        vec![0xC3, 0xA9],
+        vec![0xE2, 0x82, 0xAC],
+        vec![0xF0, 0x9F, 0x98, 0x80],
+        vec![0x80],
+        vec![0xC0, 0x80],
+        vec![0xC1, 0xBF],
+        vec![0xC3],
+        vec![0xC3, 0x28],
+        vec![0xE2, 0x28, 0xA1],
+        vec![0xE2, 0x82, 0x28],
+        vec![0xE2, 0x82],
+        vec![0xE0, 0x80, 0x80],
+        vec![0xE0, 0xA0, 0x80],
+        vec![0xED, 0xA0, 0x80],
+        vec![0xED, 0x9F, 0xBF],
+        vec![0xF0, 0x80, 0x80, 0x80],
+        vec![0xF0, 0x90, 0x80, 0x80],
+        vec![0xF4, 0x8F, 0xBF, 0xBF],
+        vec![0xF4, 0x90, 0x80, 0x80],
+        vec![0xF5, 0x80],
+        vec![0xFF, 0xFE],
+        vec![0xF0, 0x9F, 0x98],
+        vec![0xF0, 0x9F, 0x98, 0x28, 0x41],
+        vec![0x41, 0xE2, 0x82, 0xAC, 0xC3, 0x28, 0x42],
+        vec![],
+    ];
+    let mut source = String::from(
+        "import bytes\n\nfn decode(console: Console, xs: List(Int)):\n    let b: Bytes = match bytes.from_list(xs):\n        Ok(v) -> v\n        Err(_) -> bytes.from_string(\"\")\n    let s = bytes.to_string(b)\n    console.print(\"${s.length()} ${s}\")\n\nfn main(console: Console):\n",
+    );
+    let mut expected = Vec::new();
+    for input in &inputs {
+        let list = input.iter().map(|byte| byte.to_string()).collect::<Vec<_>>().join(", ");
+        source.push_str(&format!("    decode(console, [{list}])\n"));
+        let decoded = String::from_utf8_lossy(input);
+        expected.push(format!("{} {}", decoded.len(), decoded));
+    }
+    assert_eq!(run_admitted(&source), expected);
+}
+
+#[test]
+fn admitted_bytes_out_of_range_index_value_and_count_trap() {
+    // The interpreter aborts on an out-of-range index, a byte value outside
+    // `0..=255` and a negative count; the admitted artifact traps.
+    let fixtures = [
+        "import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    console.print(\"${b.at(3)}\")\n",
+        "import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(300, 2)\n    console.print(\"${b.length()}\")\n",
+        "import bytes\n\nfn main(console: Console):\n    let b = bytes.with_capacity(0 - 1)\n    console.print(\"${b.length()}\")\n",
+        "import bytes\n\nfn main(console: Console):\n    var b = bytes.repeat(1, 3)\n    b.set_at(0 - 1, 7)\n    console.print(\"${b.length()}\")\n",
+    ];
+    for fixture in fixtures {
+        assert!(run_admitted_result(fixture).is_err(), "{fixture}");
+    }
+    let output = run_admitted("import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    console.print(\"${b.at(2)} ${b.slice(1, 3).length()}\")\n");
+    assert_eq!(output, vec!["1 2".to_string()]);
+}

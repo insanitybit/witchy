@@ -146,6 +146,17 @@ Testing/fuzzing is evidence, not a universal proof of pass composition.
 6. Complete supported-corpus admission/execution evidence and independent
    security review, then perform the coordinated production cutover and gate.
 
+`Bytes` is the same raw-byte buffer layout as `String` under its own source
+type, so every extent, ownership, copy, and release rule for strings applies
+unchanged; the two differ only in the operations lowering admits on them. The
+`Bytes` intrinsics are byte kernels over that buffer, with the interpreter's
+rules as the expected result: an index or a byte value out of range aborts,
+`slice` clamps both ends, and `to_string` decodes UTF-8 lossily (each maximal
+invalid prefix becomes one U+FFFD, the `from_utf8_lossy` contract). A raw-byte
+element write is bounded by the buffer's capacity, so a growing kernel guards
+its stores against the capacity lane it allocated, not the count it will
+publish.
+
 No new SafeWIR completion claim follows from the frozen legacy route. Before
 cutover, canonical lowering remains the development route, with no per-program
 fallback disguising its coverage gaps. After atomic cutover, production bytes

@@ -156,6 +156,7 @@ fn project_layouts(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutProjection, CanonicalLayoutError> {
     let typed = source.typed_module();
+    let scope = witchy_types::pipeline::canonical_scope(typed.module());
     // The checker spells an entry-module type as `entry.Name` while the
     // definition keeps its bare source name; key both spellings.
     let entry_module = typed.module().linked_entry.as_deref();
@@ -177,7 +178,7 @@ fn project_layouts(
 
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !is_canonical_source_function(typed.module(), &function.name) {
+        if !scope.contains(&function.name) {
             continue;
         }
 
@@ -562,10 +563,6 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
         && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
             Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
         ))
-}
-
-fn is_canonical_source_function(module: &ast::Module, name: &str) -> bool {
-    witchy_types::pipeline::in_canonical_scope(module, name)
 }
 
 #[cfg(test)]
