@@ -2472,6 +2472,7 @@ impl FunctionLowerer<'_> {
         let mut parameter_index = 0;
         let mut merged = outer;
         let mut rebound_references = Vec::new();
+        let mut dynamic_join_parameters = Vec::new();
         for plan in &plans {
             then_arguments.push(plan.values[0]);
             else_arguments.push(plan.values[1]);
@@ -2481,9 +2482,7 @@ impl FunctionLowerer<'_> {
                 if plan.has_lanes() {
                     then_arguments.extend([extents[0].0, extents[0].1]);
                     else_arguments.extend([extents[1].0, extents[1].1]);
-                    let count = join_parameters[parameter_index + 1].value;
-                    let capacity = join_parameters[parameter_index + 2].value;
-                    self.record_joined_extent(parameter, count, capacity, &plan.values);
+                    dynamic_join_parameters.push(parameter);
                     parameter_index += 2;
                 }
                 if plan.all_tokens {
@@ -2512,14 +2511,7 @@ impl FunctionLowerer<'_> {
                     self.current = else_end;
                     let (else_count, else_capacity) = self.split_lanes(else_count, else_capacity)?;
                     else_arguments.extend([else_count, else_capacity]);
-                    let count = join_parameters[parameter_index + 1].value;
-                    let capacity = join_parameters[parameter_index + 2].value;
-                    self.record_joined_extent(
-                        result,
-                        count,
-                        capacity,
-                        &[then_value, else_value],
-                    );
+                    dynamic_join_parameters.push(result);
                 }
                 Some(result)
             }
@@ -2535,11 +2527,17 @@ impl FunctionLowerer<'_> {
         });
         self.restore_facts(facts, join_id);
         self.current = join_id;
+        // CFG lanes preserve ownership/shape correspondence, but are not
+        // authenticated physical extents after the checker consumes the join.
+        // Reload the actual headers at the shared join instead of caching the
+        // synthetic lane values for later reads.
+        for parameter in dynamic_join_parameters {
+            self.reload_dynamic_extent(parameter)?;
+        }
         // A rebound list or string arrives without extent facts; a loop
         // back edge or a later index needs them, so load the header once here.
         for parameter in rebound_references {
-            self.ensure_list_extent(parameter)?;
-            self.ensure_string_extent(parameter)?;
+            self.reload_dynamic_extent(parameter)?;
         }
         self.bindings = merged;
         Ok(result)
@@ -6008,6 +6006,15 @@ impl FunctionLowerer<'_> {
         // join over two such strings has both extent lanes.
         self.string_capacities.insert(value, length);
         Ok(())
+    }
+
+    fn reload_dynamic_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
+        self.string_lengths.remove(&value);
+        self.string_capacities.remove(&value);
+        self.list_counts.remove(&value);
+        self.list_capacities.remove(&value);
+        self.ensure_list_extent(value)?;
+        self.ensure_string_extent(value)
     }
 
     fn ensure_list_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
