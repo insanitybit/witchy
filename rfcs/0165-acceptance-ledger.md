@@ -9,6 +9,37 @@ event for the cutover candidate.
 Status values are `missing`, `partial`, `candidate-green`, and `merged-green`.
 Only `merged-green` completes a row.
 
+## Coverage integration candidate (2026-09-08)
+
+The current integration branch is `impl/rfc0165-concat-integration`.
+This is focused branch evidence, not a new master census or a landing claim.
+
+- Recursive nominal and concrete generic layouts, nullable active-payload
+  cloning, and bounded-stack destruction are integrated. `95dbdba91` binds
+  proper-tail obligations to the concrete runtime-function inventory;
+  the real `generic_stack` program agrees across source, oracle, and Wasm.
+- `297ae14d2` admits raw hex decoding with independent alphabet and byte-range
+  guards. All four encoding probes pass, including malformed ASCII, UTF-8,
+  and odd-length raw inputs, private-helper rejection, and leak checks.
+- `1bd530bf7` adds generic `list.concat`. The real `bst` example agrees between
+  interpreter and Wasm (three output lines). Scalar and string concat inputs
+  also pass a persistent three-way execution and zero-leak probe.
+- The gate for `297ae14d2` stopped on an obsolete test requiring recursive
+  source to refuse. That same nullable-variant fixture now checks execution
+  and reclamation on all three legs. The earlier test-binary budget failure
+  is repaired by consolidation, not by raising the budget or dropping tests.
+- Reproduce the changed execution families with `cargo test --test misc
+  rfc0165_encoding`, `cargo test --test misc
+  list_concat_preserves_owned_inputs_across_three_legs`, and `cargo test
+  --test misc recursive_source_graph_executes_and_reclaims_nullable_variants`.
+  Use the existing warmed absolute target:
+  `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-drop-worklist-target`.
+
+Still required: a terminal green integration gate, one classified coverage
+measurement on the integrated state, and final current-master evidence.
+No additional deferred-test exclusions were added. These results establish
+neither optimizer correctness nor compiler-wide memory safety.
+
 | ID | Status | Current evidence | Evidence still required |
 |---|---|---|---|
 | B1 | candidate-green | The operation-to-rule manifest exists and is mechanical (2026-09-07): `crates/witchy-wir/src/canonical_safewir/manifest.rs` (rendered as `rfcs/0165-rule-manifest.md`, drift-checked) lists every `CanonicalRuleId` exactly once in declaration order (a new variant fails to compile until it has a row), names each rule's checker judgment, predicate, interpreter semantics, and backend correspondence rule, and cites the focused admitting and refusing tests, each of which must exist in the file it is attributed to. `Retain` is the one rule the checker refuses and the backend does not map (`retain_is_refused_in_v1`). | Landed 2026-09-07 (`53e168b22`). Still open: an independent review of the rendered manifest against the RFC's rule list. The slice-40 reviews (census) challenged the closure, host-buffer, copy, and loop-lane boundaries in code and by probe; none read the manifest against the RFC row by row, so this row does not close on them. |

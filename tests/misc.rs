@@ -97,8 +97,6 @@ mod rfc0165_encoding;
 mod rfc0165_nullable_source;
 #[path = "misc/rfc0165_calc.rs"]
 mod rfc0165_calc;
-#[path = "misc/rfc0165_launch_arguments.rs"]
-mod rfc0165_launch_arguments;
 #[path = "misc/rfc0165_recursive.rs"]
 mod rfc0165_recursive;
 #[path = "misc/rfc0165_recursive_generic.rs"]
