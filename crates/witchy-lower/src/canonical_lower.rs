@@ -4877,9 +4877,11 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args }
                 if matches!(
                     name.as_str(),
-                    "encoding.hex_encode"
+                        "encoding.hex_encode"
                         | "encoding.hex_decode_bytes_raw"
                         | "encoding.base64_encode"
+                        | "encoding.base64_encode_bytes"
+                        | "encoding.base64url_encode_bytes"
                         | "encoding.base64_decode_bytes_raw"
                         | "encoding.base64url_decode_bytes_raw"
                 ) =>
@@ -8610,7 +8612,8 @@ impl FunctionLowerer<'_> {
             // wrapper validation never substitutes for memory safety. Keep the
             // byte result distinct from the lossy text wrapper above it.
             "encoding.hex_decode_bytes_raw" => self.lower_hex_decode(source, true),
-            "encoding.base64_encode" => self.lower_base64_encode(source, false),
+            "encoding.base64_encode" | "encoding.base64_encode_bytes" => self.lower_base64_encode(source, false),
+            "encoding.base64url_encode_bytes" => self.lower_base64_encode(source, true),
             "encoding.base64_decode_bytes_raw" => self.lower_base64_decode(source, false),
             "encoding.base64url_decode_bytes_raw" => self.lower_base64_decode(source, true),
             _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
@@ -8782,14 +8785,14 @@ impl FunctionLowerer<'_> {
         let output_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, output_length, maximum)?;
         self.push_guard(output_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let output = self.alloc_bytes(output_length, output_length)?;
-        let zero = self.push_const_size(0)?;
+        let loop_zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
         let four = self.push_const_int(4)?;
         let fifteen = self.push_const_int(15)?;
         let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
         let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
         let exit = self.new_block(&[])?;
-        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero] })?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![loop_zero, loop_zero] })?;
         let header_values = self.block_parameter_values(header);
         self.current = header;
         let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], total)?;
@@ -8885,12 +8888,12 @@ impl FunctionLowerer<'_> {
         let output_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, output_length, maximum)?;
         self.push_guard(output_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let output = self.alloc_bytes(output_length, output_length)?;
-        let zero = self.push_const_size(0)?;
+        let loop_zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
         let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
         let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
         let exit = self.new_block(&[])?;
-        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero] })?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![loop_zero, loop_zero] })?;
         let header_values = self.block_parameter_values(header);
         self.current = header;
         let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], total)?;
@@ -8910,9 +8913,9 @@ impl FunctionLowerer<'_> {
         let b0 = self.push_string_byte_load(source, input, layout)?;
         let input1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input, one, OverflowBehavior::Wrap)?;
         let input2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input1, one, OverflowBehavior::Wrap)?;
-        let zero = self.push_const_size(0)?;
-        let b1 = self.lower_optional_byte(source, input1, total, zero)?;
-        let b2 = self.lower_optional_byte(source, input2, total, zero)?;
+        let missing_zero = self.push_const_size(0)?;
+        let b1 = self.lower_optional_byte(source, input1, total, missing_zero)?;
+        let b2 = self.lower_optional_byte(source, input2, total, missing_zero)?;
         let has_b1 = self.push_compare(ComparisonOperator::LessUnsigned, input1, total)?;
         let has_b2 = self.push_compare(ComparisonOperator::LessUnsigned, input2, total)?;
         let b0 = self.widen_size_to_int(b0)?;
@@ -8961,9 +8964,11 @@ impl FunctionLowerer<'_> {
             let two_remainder = self.push_compare(ComparisonOperator::Equal, remainder, two)?;
             let two_pad = self.push_const_size(2)?;
             let one_pad = self.push_const_size(1)?;
-            let pad = self.lower_size_select(one_remainder, two_pad, zero)?;
+            let pad = self.lower_size_select(one_remainder, two_pad, loop_zero)?;
             let pad = self.lower_size_select(two_remainder, one_pad, pad)?;
             let count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, output_length, pad, OverflowBehavior::Wrap)?;
+            let count_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, output_length)?;
+            self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
             self.push_operation(Operation::UpdateCount { object: output, count });
             self.string_lengths.insert(output, count);
         }
