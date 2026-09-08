@@ -5,7 +5,7 @@
 //! closed so differential execution cannot accidentally bless backend behavior
 //! that the oracle does not model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::canonical_safewir::{
@@ -19,6 +19,7 @@ use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind
 const SIZE_MAX: u64 = u32::MAX as u64;
 
 mod launch;
+mod nullable;
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.
@@ -344,6 +345,8 @@ struct Object {
     references: u64,
     immutable: bool,
     cells: BTreeMap<CellKey, InterpreterValue>,
+    // Initialized absence is storage state, never an SSA reference value.
+    absent_owned_slots: BTreeSet<CellKey>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,6 +617,9 @@ impl<'a> Engine<'a> {
                 value,
                 transfer,
             } => self.store(place, *value, *transfer, values)?,
+            Operation::InitNullableOwned { place } => {
+                self.init_nullable_owned(place, values)?;
+            }
             Operation::CopyBytes { destination, source, length } => {
                 self.copy_range(destination, source, *length, RangeTransfer::Copy, values)?;
             }
@@ -1288,6 +1294,7 @@ impl<'a> Engine<'a> {
                 references: 1,
                 immutable,
                 cells: BTreeMap::new(),
+                absent_owned_slots: BTreeSet::new(),
             },
         );
         Ok(object)
@@ -1314,6 +1321,7 @@ impl<'a> Engine<'a> {
                 references: 0,
                 immutable: true,
                 cells,
+                absent_owned_slots: BTreeSet::new(),
             },
         );
         Ok(object)
@@ -1390,6 +1398,19 @@ impl<'a> Engine<'a> {
                 _ => return Err(InterpretError::UnsupportedOperation("reference-bearing Load place")),
             };
             return match transfer {
+                LoadTransfer::ClonePresent => {
+                    let root = self.object(object)?;
+                    if root.absent_owned_slots.contains(&key) {
+                        return Err(InterpretError::GuardTrap);
+                    }
+                    let value = root.cells.get(&key).cloned()
+                        .ok_or(InterpretError::UninitializedPlace)?;
+                    let InterpreterValue::ObjectRef(child) = value else {
+                        return Err(InterpretError::TypeMismatch("ClonePresent reference cell"));
+                    };
+                    self.retain(child)?;
+                    Ok(InterpreterValue::ObjectRef(child))
+                }
                 LoadTransfer::CloneShared => {
                     let value = self.object(object)?.cells.get(&key).cloned().ok_or(InterpretError::UninitializedPlace)?;
                     if let InterpreterValue::ObjectRef(child) = value {
@@ -1471,7 +1492,9 @@ impl<'a> Engine<'a> {
                 return Err(InterpretError::UnsupportedOperation("Slice store"));
             }
         };
-        self.object_mut(object)?.cells.insert(key, value);
+        let root = self.object_mut(object)?;
+        root.absent_owned_slots.remove(&key);
+        root.cells.insert(key, value);
         Ok(())
     }
 
@@ -1895,7 +1918,53 @@ mod tests {
             cells: children.iter().enumerate().map(|(index, child)|
                 (CellKey::Field(index as u32), InterpreterValue::ObjectRef(*child))
             ).collect(),
+            absent_owned_slots: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn nullable_owned_oracle_distinguishes_absent_uninitialized_and_present() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let root = ValueId::new(100);
+        let child = ValueId::new(101);
+        let layout = LayoutId::from_bytes([0; 32]);
+        let place = Place::projected(root, Projection::Field { index: 0 }, ValueType::Ref(layout), crate::canonical_safewir::AccessMode::Write);
+        let values = BTreeMap::from([
+            (root, InterpreterValue::ObjectRef(10)),
+            (child, InterpreterValue::ObjectRef(11)),
+        ]);
+        engine.objects.insert(10, release_test_object(1, &[]));
+        engine.objects.insert(11, release_test_object(1, &[]));
+        assert!(matches!(engine.load(&place, LoadTransfer::ClonePresent, &values), Err(InterpretError::UninitializedPlace)));
+        engine.init_nullable_owned(&place, &values).unwrap();
+        assert!(engine.init_nullable_owned(&place, &values).is_err());
+        assert!(matches!(engine.load(&place, LoadTransfer::ClonePresent, &values), Err(InterpretError::GuardTrap)));
+        assert_eq!(engine.objects[&11].references, 1);
+        engine.store(&place, child, StoreTransfer::MoveUnique, &values).unwrap();
+        assert!(engine.objects[&10].absent_owned_slots.is_empty());
+        assert!(engine.init_nullable_owned(&place, &values).is_err());
+        assert_eq!(engine.load(&place, LoadTransfer::ClonePresent, &values).unwrap(), InterpreterValue::ObjectRef(11));
+        assert_eq!(engine.objects[&11].references, 2);
+        engine.release(10).unwrap();
+        assert_eq!(engine.objects[&11].references, 1);
+        engine.release(11).unwrap();
+        assert!(engine.objects.is_empty());
+    }
+
+    #[test]
+    fn nullable_owned_oracle_absence_drops_without_a_child_and_requires_uniqueness() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let root = ValueId::new(100);
+        let place = Place::projected(root, Projection::Field { index: 0 }, ValueType::Ref(LayoutId::from_bytes([0; 32])), crate::canonical_safewir::AccessMode::Write);
+        let values = BTreeMap::from([(root, InterpreterValue::ObjectRef(10))]);
+        engine.objects.insert(10, release_test_object(2, &[]));
+        assert!(matches!(engine.init_nullable_owned(&place, &values), Err(InterpretError::ReclaimWithAliases { .. })));
+        engine.release(10).unwrap();
+        engine.init_nullable_owned(&place, &values).unwrap();
+        engine.release(10).unwrap();
+        assert!(engine.objects.is_empty());
     }
 
     #[test]

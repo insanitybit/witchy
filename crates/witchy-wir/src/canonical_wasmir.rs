@@ -925,7 +925,6 @@ fn lower_operation(
         Operation::Store { place, value, transfer } => {
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
-                Some(_) if access.pointer_slot == Some(PointerSlot::OwnedNullable) => false,
                 Some(pointee) => {
                     *transfer == StoreTransfer::MoveUnique
                         && place.value_type() == ValueType::Ref(pointee)
@@ -2605,6 +2604,7 @@ fn emit_move_range(
         || destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
         || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
         || destination_layout != source_layout
+    {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "MoveRange" }));
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
@@ -2658,6 +2658,7 @@ fn emit_clone_range(
     if destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
         || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
         || destination_layout != source_layout
+    {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "CloneRange" }));
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {

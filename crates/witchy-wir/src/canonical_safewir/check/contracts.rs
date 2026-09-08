@@ -465,6 +465,7 @@ fn propagate_operation_origins(
         | Operation::WidenSize { destination, .. }
         | Operation::FloatUnary { destination, .. } => join_origin(origins, *destination, Origin::Unknown),
         Operation::Guard { .. }
+        | Operation::InitNullableOwned { .. }
         | Operation::Store { .. }
         | Operation::CopyBytes { .. }
         | Operation::MoveRange { .. }
@@ -555,6 +556,7 @@ fn derive_operation(
                 load_result_origin(function, *destination, place.value_type(), *transfer),
             );
         }
+        Operation::InitNullableOwned { place } => { add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write); }
         Operation::Store { place, value, .. } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
             mark_escape(summary, origin_of(origins, *value));

@@ -250,11 +250,11 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::InitNullableOwned,
         judgment: "check/memory.rs::MemoryChecker::init_nullable_owned",
-        predicate: "reserved pending nullable ownership integration; the initial catalog gate refuses nullable-owned storage",
-        interpreter: "refused before execution",
-        backend: RuleBackend::Refused,
-        admits: &[],
-        refuses: &[t(Check, "nullable_owned_slot_is_refused_at_the_initial_catalog_gate")],
+        predicate: "unique RC root and typed nullable fixed slot, never a live-edge overwrite; production catalog admission remains sealed",
+        interpreter: "explicit absent storage state, distinct from uninitialized storage and SSA references",
+        backend: RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
+        admits: &[t(Memory, "nullable_owned_checker_requires_initialization_and_checked_presence"), t(Interpreter, "nullable_owned_oracle_distinguishes_absent_uninitialized_and_present")],
+        refuses: &[t(Memory, "nullable_owned_checker_refuses_nonnullable_and_shared_initialization"), t(Check, "nullable_owned_slot_is_refused_at_the_initial_catalog_gate")],
     },
     RuleEntry {
         rule: CanonicalRuleId::Store,

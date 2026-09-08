@@ -42,6 +42,7 @@ pub fn interpret_entry_program(
                     immutable: false,
                     cells: argument.bytes().enumerate().map(|(index, byte)|
                         (CellKey::Element(index as u64), InterpreterValue::Size(u64::from(byte)))).collect(),
+                    absent_owned_slots: BTreeSet::new(),
                 });
                 cells.insert(CellKey::Element(index as u64), InterpreterValue::ObjectRef(object));
             }
@@ -56,6 +57,7 @@ pub fn interpret_entry_program(
                 references: 1,
                 immutable: false,
                 cells,
+                absent_owned_slots: BTreeSet::new(),
             });
             values.push(InterpreterValue::ObjectRef(object));
         } else if matches!(parameter, ValueType::Capability(_)) {

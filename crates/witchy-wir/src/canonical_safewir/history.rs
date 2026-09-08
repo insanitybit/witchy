@@ -246,6 +246,7 @@ impl CanonicalWriter {
             LoadTransfer::CopyScalar => 0,
             LoadTransfer::CloneShared => 1,
             LoadTransfer::MoveUnique => 2,
+            LoadTransfer::ClonePresent => 3,
         });
     }
 
@@ -568,6 +569,7 @@ impl CanonicalWriter {
                 self.place(place);
                 self.load_transfer(*transfer);
             }
+            Operation::InitNullableOwned { place } => { self.u8(29); self.place(place); }
             Operation::Store { place, value, transfer } => {
                 self.u8(11);
                 self.place(place);

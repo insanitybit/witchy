@@ -489,9 +489,12 @@ mod tests {
         put(&mut present, 16, 64);
         let (mut store, instance, memory) = fixture_with_slot(&present, PointerSlot::OwnedNullable);
         instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).unwrap();
-        assert_eq!(global(&instance, &mut store, "free"), 64, "present child is reclaimed before root");
-        assert_eq!(word(memory.data(&store), 64), 40, "present child free-list link preserves balanced release");
-        assert_eq!(word(memory.data(&store), 40), 0);
+        // Reclaim prepends to the free list: child first, then root, produces
+        // root -> child -> null. The heap starts at 32 and the child payload
+        // begins at heap offset 32, hence its absolute address is 64.
+        assert_eq!(global(&instance, &mut store, "free"), 40, "root is prepended after its child");
+        assert_eq!(word(memory.data(&store), 40), 64, "present child is released exactly once");
+        assert_eq!(word(memory.data(&store), 64), 0);
 
         let (mut store, instance, _) = fixture_with_slot(&absent, PointerSlot::Owned);
         assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());

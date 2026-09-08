@@ -81,6 +81,9 @@ pub(super) struct MemoryState {
     /// became one allocation merely because control flow joined.
     shared_phi_origins: BTreeMap<ValueId, BTreeSet<ValueId>>,
     stored_objects: BTreeMap<(ValueId, SlotIdentity), ObjectState>,
+    /// Explicitly initialized nullable fixed slots that contain absence. This
+    /// is distinct from an uninitialized slot and from a live stored edge.
+    nullable_absent_slots: BTreeSet<(ValueId, SlotIdentity)>,
     range_states: BTreeMap<RangeIdentity, RangeState>,
     constants: BTreeMap<ValueId, u64>,
     exact_additions: BTreeMap<ValueId, (ValueId, ValueId)>,
@@ -130,6 +133,7 @@ impl<'a> MemoryChecker<'a> {
                 objects: BTreeMap::new(),
                 shared_phi_origins: BTreeMap::new(),
                 stored_objects: BTreeMap::new(),
+                nullable_absent_slots: BTreeSet::new(),
                 range_states: BTreeMap::new(),
                 constants: BTreeMap::new(),
                 exact_additions: BTreeMap::new(),
@@ -377,6 +381,9 @@ impl<'a> MemoryChecker<'a> {
                     )
                 })
                 .collect(),
+            nullable_absent_slots: self.state.nullable_absent_slots.iter().map(|(container, slot)| {
+                (remap_value(&renames, *container), *slot)
+            }).collect(),
             range_states: self
                 .state
                 .range_states
@@ -595,6 +602,7 @@ impl<'a> MemoryChecker<'a> {
             objects,
             shared_phi_origins: meet_shared_phi_origins(existing, incoming),
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
+            nullable_absent_slots: existing.nullable_absent_slots.intersection(&incoming.nullable_absent_slots).copied().collect(),
             callable_slots: existing.callable_slots.intersection(&incoming.callable_slots).copied().collect(),
             range_states: meet_range_states(existing, incoming),
             constants: intersect_map(&existing.constants, &incoming.constants),
@@ -1212,6 +1220,12 @@ impl<'a> MemoryChecker<'a> {
             .map(|(_, stored)| stored)
     }
 
+    fn nullable_slot_absent(&self, object: ValueId, slot: SlotIdentity) -> bool {
+        self.state.nullable_absent_slots.iter().any(|(container, candidate)| {
+            *candidate == slot && self.same_allocation(object, *container)
+        })
+    }
+
     fn require_owned_slots_initialized(
         &self,
         object: ValueId,
@@ -1243,7 +1257,9 @@ impl<'a> MemoryChecker<'a> {
             // or the per-slot facts before consolidation).
             let pointer_fields = self.fixed_pointer_fields(state.layout)?;
             if pointer_fields.iter().all(|(index, _)| {
-                self.state.stored_objects.contains_key(&(object, SlotIdentity::Constant(*index)))
+                let slot = SlotIdentity::Constant(*index);
+                self.stored_slot_by_identity(object, slot).is_some()
+                    || self.nullable_slot_absent(object, slot)
             }) {
                 return Ok(());
             }
@@ -1763,6 +1779,10 @@ impl<'a> MemoryChecker<'a> {
                 self.load(*destination, place, *transfer)?;
                 Ok(true)
             }
+            Operation::InitNullableOwned { place } => {
+                self.init_nullable_owned(place)?;
+                Ok(true)
+            }
             Operation::Store { place, value, transfer } => {
                 self.store(place, *value, *transfer)?;
                 Ok(true)
@@ -2000,6 +2020,54 @@ impl<'a> MemoryChecker<'a> {
         };
         self.require_ref_type(destination, layout)?;
         let key = self.reference_slot(place)?;
+        let nullable = self.nullable_fixed_field(place)?.is_some();
+        if nullable != (transfer == LoadTransfer::ClonePresent) {
+            return self.unsupported("Load(nullable transfer mismatch)");
+        }
+        if transfer == LoadTransfer::ClonePresent {
+            let root = self.live_object(place.object())?.clone();
+            let stored = self.stored_slot_by_identity(key.0, key.1).cloned();
+            if !root.initialized_owned_slots && stored.is_none()
+                && !self.nullable_slot_absent(key.0, key.1)
+            {
+                return self.unsupported("Load(uninitialized nullable slot)");
+            }
+            if !Self::is_managed_storage(&root) {
+                return self.unsupported("Load(nullable unmanaged root)");
+            }
+            // ClonePresent's runtime presence check dominates both retain and
+            // the result. Even a definitely absent slot is legal: that execution
+            // traps, so it never reaches the continuation described here.
+            let mut result = if let Some(stored) = stored {
+                if !Self::is_managed_storage(&stored)
+                    || !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
+                {
+                    return self.unsupported("Load(nullable invalid child)");
+                }
+                stored
+            } else {
+                let extent = match self.descriptor(layout)?.size() {
+                    LayoutSize::Fixed(bytes) => Extent::FixedBytes(u64::from(bytes)),
+                    LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
+                };
+                ObjectState {
+                    identity: destination, layout, extent, ownership: Ownership::Shared,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    shared_immutable: false, initialized_owned_slots: true,
+                }
+            };
+            result.ownership = Ownership::Shared;
+            // A recorded present child must no longer appear uniquely owned
+            // through any alias of its parent after the clone.
+            let aliases = self.state.stored_objects.keys().copied().filter(|(container, slot)| {
+                *slot == key.1 && self.same_allocation(key.0, *container)
+            }).collect::<Vec<_>>();
+            for alias in aliases {
+                self.state.stored_objects.get_mut(&alias).expect("recorded slot").ownership = Ownership::Shared;
+            }
+            self.state.objects.insert(destination, result);
+            return Ok(());
+        }
         let mut stored = if let Some(stored) = self.state.stored_objects.get(&key).cloned() {
             stored
         } else {
@@ -2098,6 +2166,7 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         match transfer {
+            LoadTransfer::ClonePresent => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::CloneShared => {
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
                     || !Self::is_managed_storage(&stored)
@@ -2189,8 +2258,15 @@ impl<'a> MemoryChecker<'a> {
         // so a later load or drop of it needs no per-slot facts.
         self.require_owned_slots_initialized(value, "Store(uninitialized owned slot)")?;
         let key = self.reference_slot(place)?;
-        if self.state.stored_objects.contains_key(&key) {
+        if self.stored_slot_by_identity(key.0, key.1).is_some()
+            || (matches!(place.projection(), Projection::Field { .. })
+                && self.live_object(place.object())?.initialized_owned_slots
+                && !self.nullable_slot_absent(key.0, key.1))
+        {
             return self.unsupported("Store(overwrite reference)");
+        }
+        if self.same_allocation(place.object(), value) {
+            return self.unsupported("Store(self-owned edge)");
         }
         if let Projection::Element { index } = place.projection() {
             if self.state.range_states.iter().any(|(identity, state)| {
@@ -2241,9 +2317,57 @@ impl<'a> MemoryChecker<'a> {
             }
             StoreTransfer::CopyScalar => return self.unsupported("Store(reference copy)"),
         }
+        let absent_aliases = self.state.nullable_absent_slots.iter().copied().filter(|(container, slot)| {
+            *slot == key.1 && self.same_allocation(key.0, *container)
+        }).collect::<Vec<_>>();
+        for absent in absent_aliases {
+            self.state.nullable_absent_slots.remove(&absent);
+        }
         self.state.stored_objects.insert(key, stored);
         self.consolidate_fixed_fields(place.object())?;
         Ok(())
+    }
+
+    fn init_nullable_owned(&mut self, place: &Place) -> Result<(), InitialCheckError> {
+        if place.access() != AccessMode::Write {
+            return self.unsupported("InitNullableOwned(access)");
+        }
+        self.check_place(place)?;
+        let root = self.live_object(place.object())?;
+        if root.ownership != Ownership::Unique
+            || root.allocation_class != Some(AllocationClass::ReferenceCounted)
+            || !self.is_sole_live_token(place.object(), root.identity)
+        {
+            return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: place.object() });
+        }
+        let Some(_) = self.nullable_fixed_field(place)? else {
+            return self.unsupported("InitNullableOwned(non-nullable slot)");
+        };
+        let key = self.reference_slot(place)?;
+        if self.live_object(place.object())?.initialized_owned_slots
+            || self.stored_slot_by_identity(key.0, key.1).is_some()
+        {
+            return self.unsupported("InitNullableOwned(overwrite live edge)");
+        }
+        if self.nullable_slot_absent(key.0, key.1) {
+            return self.unsupported("InitNullableOwned(duplicate)");
+        }
+        self.state.nullable_absent_slots.insert(key);
+        self.consolidate_fixed_fields(place.object())?;
+        Ok(())
+    }
+
+    fn nullable_fixed_field(&self, place: &Place) -> Result<Option<crate::layout::LayoutId>, InitialCheckError> {
+        let Projection::Field { index } = place.projection() else { return Ok(None) };
+        let descriptor = self.descriptor(self.live_object(place.object())?.layout)?;
+        Ok(descriptor.fields().get(*index as usize).and_then(|field| match field.kind() {
+            crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::OwnedNullable } => Some(pointee),
+            crate::layout::FieldKind::Inline(slot) => match self.layouts.get(slot).map(|slot| slot.kind()) {
+                Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::OwnedNullable }) => Some(*pointee),
+                _ => None,
+            },
+            _ => None,
+        }))
     }
 
     /// The owned pointer fields of a fixed layout: `(field index, pointee)`.
@@ -2257,11 +2381,11 @@ impl<'a> MemoryChecker<'a> {
             .iter()
             .enumerate()
             .filter_map(|(index, field)| match field.kind() {
-                crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned } => Some((index as u64, pointee)),
+                crate::layout::FieldKind::Pointer { pointee, slot: PointerSlot::Owned | PointerSlot::OwnedNullable } => Some((index as u64, pointee)),
                 // A record child interned as an owned pointer value slot is
                 // an inline field whose layout is that slot.
                 crate::layout::FieldKind::Inline(slot) => match self.layouts.get(slot).map(|slot| slot.kind()) {
-                    Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) => Some((index as u64, *pointee)),
+                    Some(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned | PointerSlot::OwnedNullable }) => Some((index as u64, *pointee)),
                     _ => None,
                 },
                 _ => None,
@@ -2281,7 +2405,11 @@ impl<'a> MemoryChecker<'a> {
         }
         let complete = pointer_fields
             .iter()
-            .all(|(index, _)| self.state.stored_objects.contains_key(&(object, SlotIdentity::Constant(*index))));
+            .all(|(index, _)| {
+                let slot = SlotIdentity::Constant(*index);
+                self.stored_slot_by_identity(object, slot).is_some()
+                    || self.nullable_slot_absent(object, slot)
+            });
         if !complete {
             return Ok(());
         }
@@ -2378,6 +2506,11 @@ impl<'a> MemoryChecker<'a> {
                 let raw_byte = self.descriptor(element).is_ok_and(|element| {
                     element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)
                 });
+                if matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot {
+                    semantics: PointerSlot::OwnedNullable, ..
+                }) {
+                    return self.unsupported("Place(nullable collection element)");
+                }
                 if raw_byte {
                     ValueType::Size
                 } else {
@@ -3080,7 +3213,7 @@ impl<'a> MemoryChecker<'a> {
             LayoutKind::Scalar(kind) => self.value_type_for_scalar(*kind),
             LayoutKind::RuntimePointerValueSlot {
                 pointee,
-                semantics: PointerSlot::Owned,
+                semantics: PointerSlot::Owned | PointerSlot::OwnedNullable,
             } => Ok(ValueType::Ref(*pointee)),
             LayoutKind::RuntimePointerValueSlot { .. } => {
                 self.unsupported("borrowed or raw pointer slot")
@@ -3199,7 +3332,7 @@ fn drop_ref_layout_supported(
         LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields.iter().all(|field| {
             layouts.get(*field).is_some_and(|field| match field.kind() {
                 LayoutKind::Scalar(_) => true,
-                LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } => {
+                LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned | PointerSlot::OwnedNullable } => {
                     drop_ref_layout_supported(layouts, *pointee, visiting)
                 }
                 _ => false,
@@ -3975,6 +4108,114 @@ mod tests {
                 })
                 .expect("unchecked wrapping addition remains representable");
             assert!(!checker.state.exact_additions.contains_key(&END));
+        });
+    }
+
+    fn with_nullable_checker(test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId)) {
+        with_fixed_pointer_checker(PointerSlot::OwnedNullable, test);
+    }
+
+    fn with_fixed_pointer_checker(semantics: PointerSlot, test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId)) {
+        let mut layouts = LayoutInterner::new();
+        let child = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(child, semantics).unwrap();
+        let record = layouts.intern_packed_record(vec![slot]).unwrap();
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: BTreeMap::from([
+                (SOURCE, ValueType::Ref(record)), (DESTINATION, ValueType::Ref(record)),
+                (CHILD, ValueType::Ref(child)), (LOADED, ValueType::Ref(child)),
+            ]),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0), parameters: vec![], operations: vec![],
+                terminator: crate::canonical_safewir::Terminator::Return { values: vec![] },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature, parameters: vec![], results: vec![],
+            contract: CallableContract { parameters: vec![], results: vec![], parameter_effects: BTreeMap::new() },
+        };
+        let closures = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closures).unwrap();
+        for (destination, layout) in [(SOURCE, record), (CHILD, child)] {
+            let LayoutSize::Fixed(bytes) = layouts.get(layout).unwrap().size() else { panic!("fixed fixture"); };
+            checker.check(&Operation::Alloc {
+                destination, layout, extent: Extent::FixedBytes(u64::from(bytes)),
+                class: AllocationClass::ReferenceCounted,
+            }).unwrap();
+        }
+        test(&mut checker, child);
+    }
+
+    fn nullable_field(object: ValueId, child: crate::layout::LayoutId, access: AccessMode) -> Place {
+        Place::projected(object, Projection::Field { index: 0 }, ValueType::Ref(child), access)
+    }
+
+    #[test]
+    fn nullable_owned_checker_requires_initialization_and_checked_presence() {
+        with_nullable_checker(|checker, child| {
+            let read = nullable_field(SOURCE, child, AccessMode::Read);
+            assert!(checker.check(&Operation::Load { destination: LOADED, place: read.clone(), transfer: LoadTransfer::ClonePresent }).is_err());
+            assert!(checker.check(&Operation::DropRef { object: SOURCE }).is_err());
+            let init = Operation::InitNullableOwned { place: nullable_field(SOURCE, child, AccessMode::Write) };
+            assert_eq!(checker.check(&init), Ok(true));
+            assert!(checker.check(&init).is_err());
+            for transfer in [LoadTransfer::CopyScalar, LoadTransfer::CloneShared, LoadTransfer::MoveUnique] {
+                assert!(checker.check(&Operation::Load { destination: LOADED, place: read.clone(), transfer }).is_err());
+            }
+            // A known absent load is still a well-defined trapping operation.
+            assert_eq!(checker.check(&Operation::Load { destination: LOADED, place: read, transfer: LoadTransfer::ClonePresent }), Ok(true));
+            assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Shared);
+        });
+    }
+
+    #[test]
+    fn nullable_owned_checker_store_replaces_absence_not_a_live_edge_after_move() {
+        with_nullable_checker(|checker, child| {
+            checker.check(&Operation::InitNullableOwned { place: nullable_field(SOURCE, child, AccessMode::Write) }).unwrap();
+            checker.check(&Operation::MoveValue { destination: DESTINATION, source: SOURCE }).unwrap();
+            let write = nullable_field(DESTINATION, child, AccessMode::Write);
+            checker.check(&Operation::Store { place: write.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }).unwrap();
+            assert!(!checker.nullable_slot_absent(DESTINATION, SlotIdentity::Constant(0)));
+            checker.check(&Operation::Load {
+                destination: LOADED, place: nullable_field(DESTINATION, child, AccessMode::Read), transfer: LoadTransfer::ClonePresent,
+            }).unwrap();
+            assert!(matches!(checker.check(&Operation::Store { place: write.clone(), value: LOADED, transfer: StoreTransfer::CloneShared }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(overwrite reference)", .. })));
+            assert!(checker.check(&Operation::InitNullableOwned { place: write }).is_err());
+            checker.check(&Operation::DropRef { object: LOADED }).unwrap();
+            checker.check(&Operation::DropRef { object: DESTINATION }).unwrap();
+        });
+    }
+
+    #[test]
+    fn nullable_owned_checker_keeps_ordinary_completed_fields_non_overwritable() {
+        with_fixed_pointer_checker(PointerSlot::Owned, |checker, child| {
+            let write = nullable_field(SOURCE, child, AccessMode::Write);
+            checker.check(&Operation::Store { place: write.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }).unwrap();
+            assert!(checker.state.objects[&SOURCE].initialized_owned_slots);
+            assert!(checker.state.stored_objects.is_empty());
+            checker.check(&Operation::Alloc {
+                destination: LOADED, layout: child, extent: Extent::FixedBytes(8),
+                class: AllocationClass::ReferenceCounted,
+            }).unwrap();
+            assert!(matches!(checker.check(&Operation::Store { place: write, value: LOADED, transfer: StoreTransfer::MoveUnique }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(overwrite reference)", .. })));
+        });
+    }
+
+    #[test]
+    fn nullable_owned_checker_refuses_nonnullable_and_shared_initialization() {
+        with_pointer_slot_checker(|checker, _list, pointee| {
+            assert!(checker.check(&Operation::InitNullableOwned {
+                place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Write),
+            }).is_err());
+        });
+        with_nullable_checker(|checker, child| {
+            checker.check(&Operation::CloneRef { destination: DESTINATION, source: SOURCE }).unwrap();
+            assert!(checker.check(&Operation::InitNullableOwned { place: nullable_field(SOURCE, child, AccessMode::Write) }).is_err());
         });
     }
 
