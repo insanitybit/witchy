@@ -662,6 +662,155 @@ pub const CALLS: &[CallEntry] = &[
     CallEntry { form: "`CallBorrow`", convention: "any", verdict: "absent from v1: no such rule exists", evidence: &[] },
 ];
 
+/// The operation vocabulary frozen by the RFC. The implementation manifest is
+/// intentionally allowed to split, restrict, defer, or refuse these names;
+/// this typed list prevents that relationship from being implicit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RfcKernelId {
+    AllocRc,
+    AllocRegion,
+    CloneRef,
+    MoveRef,
+    DropRef,
+    IsUnique,
+    Project,
+    Load,
+    Initialize,
+    Replace,
+    StoreScalar,
+    ByteCopy,
+    MoveValue,
+    CloneValue,
+    MoveRange,
+    CloneRange,
+    UpdateCount,
+    Guard,
+    CheckedNarrow,
+    Call,
+    VarCall,
+    TailCall,
+    MakeClosure,
+    HostCall,
+    Trap,
+}
+
+impl RfcKernelId {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::AllocRc => "AllocRc",
+            Self::AllocRegion => "AllocRegion",
+            Self::CloneRef => "CloneRef",
+            Self::MoveRef => "MoveRef",
+            Self::DropRef => "DropRef",
+            Self::IsUnique => "IsUnique",
+            Self::Project => "Project",
+            Self::Load => "Load",
+            Self::Initialize => "Initialize",
+            Self::Replace => "Replace",
+            Self::StoreScalar => "StoreScalar",
+            Self::ByteCopy => "ByteCopy",
+            Self::MoveValue => "MoveValue",
+            Self::CloneValue => "CloneValue",
+            Self::MoveRange => "MoveRange",
+            Self::CloneRange => "CloneRange",
+            Self::UpdateCount => "UpdateCount",
+            Self::Guard => "Guard",
+            Self::CheckedNarrow => "CheckedNarrow",
+            Self::Call => "Call",
+            Self::VarCall => "VarCall",
+            Self::TailCall => "TailCall",
+            Self::MakeClosure => "MakeClosure",
+            Self::HostCall => "HostCall",
+            Self::Trap => "Trap",
+        }
+    }
+}
+
+/// How one RFC kernel name relates to the current canonical implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RfcKernelDisposition {
+    /// One current rule implements this RFC name within the stated scope.
+    ExactAlias { rules: &'static [CanonicalRuleId], scope: &'static str },
+    /// Several current rules compose the RFC operation.
+    Composite { rules: &'static [CanonicalRuleId], scope: &'static str },
+    /// The RFC name is a judgment over existing rules, not another receipt.
+    Subjudgment { rules: &'static [CanonicalRuleId], scope: &'static str },
+    /// A current rule exists, but only the stated subset is admitted.
+    Restricted { rules: &'static [CanonicalRuleId], scope: &'static str },
+    /// No current rule is claimed; this remains future work.
+    Deferred { reason: &'static str },
+    /// The current v1 boundary explicitly refuses this operation.
+    Refused { reason: &'static str },
+}
+
+impl RfcKernelDisposition {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::ExactAlias { .. } => "exact scoped alias",
+            Self::Composite { .. } => "composite",
+            Self::Subjudgment { .. } => "subjudgment",
+            Self::Restricted { .. } => "restricted",
+            Self::Deferred { .. } => "deferred",
+            Self::Refused { .. } => "refused",
+        }
+    }
+
+    fn rules(self) -> &'static [CanonicalRuleId] {
+        match self {
+            Self::ExactAlias { rules, .. }
+            | Self::Composite { rules, .. }
+            | Self::Subjudgment { rules, .. }
+            | Self::Restricted { rules, .. } => rules,
+            Self::Deferred { .. } | Self::Refused { .. } => &[],
+        }
+    }
+
+    fn scope(self) -> &'static str {
+        match self {
+            Self::ExactAlias { scope, .. }
+            | Self::Composite { scope, .. }
+            | Self::Subjudgment { scope, .. }
+            | Self::Restricted { scope, .. } => scope,
+            Self::Deferred { reason } | Self::Refused { reason } => reason,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RfcKernelEntry {
+    pub kernel: RfcKernelId,
+    pub disposition: RfcKernelDisposition,
+}
+
+/// The RFC kernel crosswalk, in the exact order of the RFC's operation list.
+pub const RFC_KERNEL_CROSSWALK: &[RfcKernelEntry] = &[
+    RfcKernelEntry { kernel: RfcKernelId::AllocRc, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Alloc], scope: "reference-counted allocation only; region and scratch classes are not aliases" } },
+    RfcKernelEntry { kernel: RfcKernelId::AllocRegion, disposition: RfcKernelDisposition::Refused { reason: "bump/region allocation is outside the current v1 admission boundary" } },
+    RfcKernelEntry { kernel: RfcKernelId::CloneRef, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::CloneRef], scope: "reference-counted or static shared clone" } },
+    RfcKernelEntry { kernel: RfcKernelId::MoveRef, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::MoveValue], scope: "reference-token moves; scalar moves share the same typed rule" } },
+    RfcKernelEntry { kernel: RfcKernelId::DropRef, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::DropRef], scope: "complete owned reference-counted objects" } },
+    RfcKernelEntry { kernel: RfcKernelId::IsUnique, disposition: RfcKernelDisposition::Deferred { reason: "no implemented runtime uniqueness predicate is claimed by the current v1 kernel" } },
+    RfcKernelEntry { kernel: RfcKernelId::Project, disposition: RfcKernelDisposition::Subjudgment { rules: &[CanonicalRuleId::Load, CanonicalRuleId::Store], scope: "typed Place projections are checked only through their load/store judgment" } },
+    RfcKernelEntry { kernel: RfcKernelId::Load, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Load], scope: "typed initialized header, element, field, and slot reads" } },
+    RfcKernelEntry { kernel: RfcKernelId::Initialize, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::InitNullableOwned, CanonicalRuleId::Store], scope: "nullable owned initialization is explicit; ordinary empty-slot initialization uses Store" } },
+    RfcKernelEntry { kernel: RfcKernelId::Replace, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Store], scope: "scalar replacement is admitted through Store; reference replacement of an initialized slot is refused" } },
+    RfcKernelEntry { kernel: RfcKernelId::StoreScalar, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Store], scope: "scalar and byte stores under their typed bounds; reference stores are a separate Store transfer" } },
+    RfcKernelEntry { kernel: RfcKernelId::ByteCopy, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::CopyBytes], scope: "raw-byte slices only" } },
+    RfcKernelEntry { kernel: RfcKernelId::MoveValue, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::MoveValue], scope: "typed scalar or reference value movement" } },
+    RfcKernelEntry { kernel: RfcKernelId::CloneValue, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::Load, CanonicalRuleId::Store, CanonicalRuleId::CloneRef, CanonicalRuleId::CloneRange], scope: "typed value copies compose fresh construction, loads, stores, retains, and range cloning" } },
+    RfcKernelEntry { kernel: RfcKernelId::MoveRange, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::MoveRange], scope: "typed scalar or initialized pointer prefixes" } },
+    RfcKernelEntry { kernel: RfcKernelId::CloneRange, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::CloneRange], scope: "typed scalar or initialized pointer prefixes" } },
+    RfcKernelEntry { kernel: RfcKernelId::UpdateCount, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::UpdateCount], scope: "counted logical length under capacity and initialization facts" } },
+    RfcKernelEntry { kernel: RfcKernelId::Guard, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Guard], scope: "typed false-condition traps and dominating bounds facts" } },
+    RfcKernelEntry { kernel: RfcKernelId::CheckedNarrow, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::NarrowSize], scope: "Int to i32-width Size conversion" } },
+    RfcKernelEntry { kernel: RfcKernelId::Call, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Call], scope: "authenticated direct calls" } },
+    RfcKernelEntry { kernel: RfcKernelId::VarCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::VarCall], scope: "authenticated indirect calls under v1 argument restrictions" } },
+    RfcKernelEntry { kernel: RfcKernelId::TailCall, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::TailCall, CanonicalRuleId::VarTailCall], scope: "direct and indirect checked proper-tail sites" } },
+    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::Store], scope: "validated closure record/environment construction, including captured closures; FunctionValue alone is not MakeClosure" } },
+    RfcKernelEntry { kernel: RfcKernelId::HostCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::HostCall], scope: "authenticated capability and buffer contracts" } },
+    RfcKernelEntry { kernel: RfcKernelId::Trap, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Trap], scope: "explicit terminal traps" } },
+];
+
 fn backend_name(rule: RuleBackend) -> String {
     match rule {
         RuleBackend::Receipt(rule) => format!("{rule:?}"),
@@ -727,6 +876,24 @@ pub fn render_markdown() -> String {
             cite(entry.refuses),
         ));
     }
+    out.push_str("\n## RFC v1 operation kernel crosswalk\n\n");
+    out.push_str("| RFC kernel | Disposition | Current canonical rule(s) | Scope or reason |\n|---|---|---|---|\n");
+    for entry in RFC_KERNEL_CROSSWALK {
+        let rules = entry
+            .disposition
+            .rules()
+            .iter()
+            .map(|rule| format!("`{rule:?}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            entry.kernel.name(),
+            entry.disposition.kind(),
+            if rules.is_empty() { "—".to_owned() } else { rules },
+            entry.disposition.scope(),
+        ));
+    }
     out.push_str("\n## B2: ownership transfers of reference-counted storage\n\n");
     out.push_str("| Storage | Transfer | Verdict | Evidence |\n|---|---|---|---|\n");
     for entry in OWNERSHIP {
@@ -760,6 +927,68 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue
             | R::Call | R::VarCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
             | R::Trap | R::Unreachable => {}
+        }
+    }
+    ordered.to_vec()
+}
+
+/// Every RFC kernel name, in the operation order frozen by
+/// `rfcs/0165-safewir-canonical-ir.md`.
+pub fn all_rfc_kernels() -> Vec<RfcKernelId> {
+    let ordered = [
+        RfcKernelId::AllocRc,
+        RfcKernelId::AllocRegion,
+        RfcKernelId::CloneRef,
+        RfcKernelId::MoveRef,
+        RfcKernelId::DropRef,
+        RfcKernelId::IsUnique,
+        RfcKernelId::Project,
+        RfcKernelId::Load,
+        RfcKernelId::Initialize,
+        RfcKernelId::Replace,
+        RfcKernelId::StoreScalar,
+        RfcKernelId::ByteCopy,
+        RfcKernelId::MoveValue,
+        RfcKernelId::CloneValue,
+        RfcKernelId::MoveRange,
+        RfcKernelId::CloneRange,
+        RfcKernelId::UpdateCount,
+        RfcKernelId::Guard,
+        RfcKernelId::CheckedNarrow,
+        RfcKernelId::Call,
+        RfcKernelId::VarCall,
+        RfcKernelId::TailCall,
+        RfcKernelId::MakeClosure,
+        RfcKernelId::HostCall,
+        RfcKernelId::Trap,
+    ];
+    for kernel in ordered {
+        match kernel {
+            RfcKernelId::AllocRc
+            | RfcKernelId::AllocRegion
+            | RfcKernelId::CloneRef
+            | RfcKernelId::MoveRef
+            | RfcKernelId::DropRef
+            | RfcKernelId::IsUnique
+            | RfcKernelId::Project
+            | RfcKernelId::Load
+            | RfcKernelId::Initialize
+            | RfcKernelId::Replace
+            | RfcKernelId::StoreScalar
+            | RfcKernelId::ByteCopy
+            | RfcKernelId::MoveValue
+            | RfcKernelId::CloneValue
+            | RfcKernelId::MoveRange
+            | RfcKernelId::CloneRange
+            | RfcKernelId::UpdateCount
+            | RfcKernelId::Guard
+            | RfcKernelId::CheckedNarrow
+            | RfcKernelId::Call
+            | RfcKernelId::VarCall
+            | RfcKernelId::TailCall
+            | RfcKernelId::MakeClosure
+            | RfcKernelId::HostCall
+            | RfcKernelId::Trap => {}
         }
     }
     ordered.to_vec()
@@ -869,5 +1098,31 @@ mod tests {
             actual, expected,
             "rfcs/0165-rule-manifest.md is stale; regenerate with WITCHY_BLESS_RULE_MANIFEST=1"
         );
+    }
+
+    #[test]
+    fn rfc_kernel_crosswalk_is_complete_ordered_and_rule_bound() {
+        let listed = RFC_KERNEL_CROSSWALK.iter().map(|entry| entry.kernel).collect::<Vec<_>>();
+        assert_eq!(listed, all_rfc_kernels(), "the RFC kernel crosswalk must preserve the frozen operation order");
+        let rendered = render_markdown();
+        let crosswalk = rendered
+            .split_once("## RFC v1 operation kernel crosswalk\n\n")
+            .and_then(|(_, rest)| rest.split_once("\n## B2:"))
+            .map(|(section, _)| section)
+            .expect("rendered RFC kernel crosswalk section");
+        for (index, kernel) in listed.iter().enumerate() {
+            assert_eq!(listed.iter().filter(|candidate| *candidate == kernel).count(), 1, "RFC kernel {:?} appears more than once", kernel);
+            let marker = format!("| `{}` |", kernel.name());
+            assert_eq!(crosswalk.lines().filter(|line| line.starts_with(&marker)).count(), 1, "RFC kernel {} must render exactly once", kernel.name());
+            assert_eq!(RFC_KERNEL_CROSSWALK[index].kernel, *kernel);
+        }
+        for entry in RFC_KERNEL_CROSSWALK {
+            for rule in entry.disposition.rules() {
+                assert!(RULES.iter().any(|candidate| candidate.rule == *rule), "RFC kernel {} references missing rule {:?}", entry.kernel.name(), rule);
+            }
+        }
+        let closure = RFC_KERNEL_CROSSWALK.iter().find(|entry| entry.kernel == RfcKernelId::MakeClosure).unwrap();
+        assert!(matches!(closure.disposition, RfcKernelDisposition::Restricted { .. }));
+        assert!(closure.disposition.scope().contains("captured closures"));
     }
 }

@@ -50,6 +50,36 @@ Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memo
 | `Trap` | check.rs::check_terminator | always admitted; execution stops with a trap | execute_frame: a trap | Control | `encoded_trap_terminator_remains_terminal` (backend), `admitted_guard_near_misses_trap_exactly_at_the_boundary` (launch) | — |
 | `Unreachable` | check.rs::check_terminator | always admitted; the block must be unreachable, which the backend's structuring verifies | execute_frame: a trap if ever reached | Control | `valid_unreachable_block_is_available_to_pruning` (check) | `common_reachable_join_with_non_terminating_bypass_is_refused` (backend) |
 
+## RFC v1 operation kernel crosswalk
+
+| RFC kernel | Disposition | Current canonical rule(s) | Scope or reason |
+|---|---|---|---|
+| `AllocRc` | exact scoped alias | `Alloc` | reference-counted allocation only; region and scratch classes are not aliases |
+| `AllocRegion` | refused | — | bump/region allocation is outside the current v1 admission boundary |
+| `CloneRef` | exact scoped alias | `CloneRef` | reference-counted or static shared clone |
+| `MoveRef` | exact scoped alias | `MoveValue` | reference-token moves; scalar moves share the same typed rule |
+| `DropRef` | exact scoped alias | `DropRef` | complete owned reference-counted objects |
+| `IsUnique` | deferred | — | no implemented runtime uniqueness predicate is claimed by the current v1 kernel |
+| `Project` | subjudgment | `Load`, `Store` | typed Place projections are checked only through their load/store judgment |
+| `Load` | exact scoped alias | `Load` | typed initialized header, element, field, and slot reads |
+| `Initialize` | composite | `InitNullableOwned`, `Store` | nullable owned initialization is explicit; ordinary empty-slot initialization uses Store |
+| `Replace` | restricted | `Store` | scalar replacement is admitted through Store; reference replacement of an initialized slot is refused |
+| `StoreScalar` | exact scoped alias | `Store` | scalar and byte stores under their typed bounds; reference stores are a separate Store transfer |
+| `ByteCopy` | exact scoped alias | `CopyBytes` | raw-byte slices only |
+| `MoveValue` | exact scoped alias | `MoveValue` | typed scalar or reference value movement |
+| `CloneValue` | composite | `Alloc`, `Load`, `Store`, `CloneRef`, `CloneRange` | typed value copies compose fresh construction, loads, stores, retains, and range cloning |
+| `MoveRange` | exact scoped alias | `MoveRange` | typed scalar or initialized pointer prefixes |
+| `CloneRange` | exact scoped alias | `CloneRange` | typed scalar or initialized pointer prefixes |
+| `UpdateCount` | exact scoped alias | `UpdateCount` | counted logical length under capacity and initialization facts |
+| `Guard` | exact scoped alias | `Guard` | typed false-condition traps and dominating bounds facts |
+| `CheckedNarrow` | exact scoped alias | `NarrowSize` | Int to i32-width Size conversion |
+| `Call` | exact scoped alias | `Call` | authenticated direct calls |
+| `VarCall` | exact scoped alias | `VarCall` | authenticated indirect calls under v1 argument restrictions |
+| `TailCall` | composite | `TailCall`, `VarTailCall` | direct and indirect checked proper-tail sites |
+| `MakeClosure` | restricted | `Alloc`, `FunctionValue`, `Store` | validated closure record/environment construction, including captured closures; FunctionValue alone is not MakeClosure |
+| `HostCall` | exact scoped alias | `HostCall` | authenticated capability and buffer contracts |
+| `Trap` | exact scoped alias | `Trap` | explicit terminal traps |
+
 ## B2: ownership transfers of reference-counted storage
 
 | Storage | Transfer | Verdict | Evidence |
