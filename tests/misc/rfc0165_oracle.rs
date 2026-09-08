@@ -7,7 +7,7 @@
 
 use witchy::codegen;
 use witchy::runtime::{Capabilities, Runtime};
-use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig, InterpreterValue};
+use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
 use witchy_wir::canonical_safewir::FunctionId;
 
 fn oracle(source: &str, label: &str) {
@@ -30,7 +30,7 @@ fn oracle(source: &str, label: &str) {
             ..Default::default()
         },
     };
-    let run = interpret_program(&validated, function, arguments, config)
+    let run = interpret_entry_program(&validated, function, arguments, &[], config)
         .unwrap_or_else(|e| panic!("{label}: oracle refused: {e:?}"));
 
     let mut runtime = Runtime::batch().expect("runtime");

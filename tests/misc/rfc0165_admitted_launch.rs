@@ -10,6 +10,9 @@
 use witchy::codegen;
 use witchy::runtime::{Capabilities, Runtime};
 
+#[path = "rfc0165_launch_arguments.rs"]
+mod launch_arguments;
+
 /// Run an admitted program and report a runtime trap instead of panicking,
 /// for fixtures whose expected outcome is the trap.
 fn run_admitted_result(source: &str) -> Result<Vec<String>, String> {

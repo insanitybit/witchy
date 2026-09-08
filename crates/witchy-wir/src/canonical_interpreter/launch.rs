@@ -1,0 +1,72 @@
+//! Semantic launch inputs. This builds object values and cells, independently
+//! of the runtime's byte-image writer and the Wasm operation encoder.
+
+use super::*;
+use crate::canonical_safewir::ValueType;
+
+pub fn interpret_entry_program(
+    module: &ValidatedSafeWir,
+    function: FunctionId,
+    capabilities: Vec<InterpreterValue>,
+    arguments: &[String],
+    config: InterpreterConfig,
+) -> Result<ProgramRun, InterpretError> {
+    if let Some(grants) = config.fixture.dir_grants {
+        let roots = capabilities.iter().filter(|value| matches!(value,
+            InterpreterValue::Capability(token) if token.kind == DIR_KIND && token.scope.is_empty())).count();
+        if roots > grants { return Err(InterpretError::ExplicitTrap); }
+    }
+    let (list_layout, string_layout) = crate::canonical_launch::argument_layouts()
+        .map_err(|_| InterpretError::TypeMismatch("launch argument layouts"))?;
+    let program = module.module();
+    let body = program.functions().iter().find(|body| body.id == function)
+        .ok_or(InterpretError::FunctionNotFound(function))?;
+    let signature = program.signatures().iter().find(|signature| signature.id == body.signature)
+        .ok_or(InterpretError::TypeMismatch("entry signature"))?;
+    let mut engine = Engine::new(program, config);
+    let mut capabilities = capabilities.into_iter();
+    let mut values = Vec::new();
+    for parameter in &signature.parameters {
+        if *parameter == ValueType::Ref(list_layout) {
+            let mut cells = BTreeMap::new();
+            for (index, argument) in arguments.iter().enumerate() {
+                if argument.len() as u64 > SIZE_MAX - 12 { return Err(InterpretError::ArithmeticTrap); }
+                let object = engine.next_object;
+                engine.next_object += 1;
+                engine.objects.insert(object, Object {
+                    layout: string_layout,
+                    storage: RuntimeStorage::Allocation(AllocationClass::ReferenceCounted),
+                    extent: RuntimeExtent::Counted { header_bytes: 4, count: argument.len() as u64,
+                        capacity: argument.len() as u64, stride_bytes: 1 },
+                    references: 1,
+                    immutable: false,
+                    cells: argument.bytes().enumerate().map(|(index, byte)|
+                        (CellKey::Element(index as u64), InterpreterValue::Size(u64::from(byte)))).collect(),
+                });
+                cells.insert(CellKey::Element(index as u64), InterpreterValue::ObjectRef(object));
+            }
+            if arguments.len() as u64 > (SIZE_MAX - 16) / 8 { return Err(InterpretError::ArithmeticTrap); }
+            let object = engine.next_object;
+            engine.next_object += 1;
+            engine.objects.insert(object, Object {
+                layout: list_layout,
+                storage: RuntimeStorage::Allocation(AllocationClass::ReferenceCounted),
+                extent: RuntimeExtent::Counted { header_bytes: 8, count: arguments.len() as u64,
+                    capacity: arguments.len() as u64, stride_bytes: 8 },
+                references: 1,
+                immutable: false,
+                cells,
+            });
+            values.push(InterpreterValue::ObjectRef(object));
+        } else if matches!(parameter, ValueType::Capability(_)) {
+            values.push(capabilities.next().ok_or(InterpretError::TypeMismatch("missing launch capability"))?);
+        } else {
+            return Err(InterpretError::TypeMismatch("unsupported launch input"));
+        }
+    }
+    if capabilities.next().is_some() { return Err(InterpretError::TypeMismatch("extra launch capability")); }
+    let results = engine.execute(function, values)?;
+    let leaked_objects = engine.objects.values().filter(|object|
+        matches!(object.storage, RuntimeStorage::Allocation(_))).count();
+    Ok(ProgramRun { results, output: engine.output, leaked_objects })
+}

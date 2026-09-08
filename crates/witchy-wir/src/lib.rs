@@ -24,6 +24,7 @@ pub mod canonical_safewir;
 pub mod canonical_interpreter;
 mod canonical_wasmir;
 mod canonical_entry;
+pub mod canonical_launch;
 pub use canonical_entry::{CANONICAL_ENTRY_SECTION, canonical_entry_from_wasm};
 pub use canonical_wasmir::{
     AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,

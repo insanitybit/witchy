@@ -18,6 +18,9 @@ use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind
 
 const SIZE_MAX: u64 = u32::MAX as u64;
 
+mod launch;
+pub use launch::interpret_entry_program;
+
 /// The canonical capability operations the oracle serves, by import name.
 const CAPABILITY_IMPORTS: [&str; 7] = [
     "dir_read_into",

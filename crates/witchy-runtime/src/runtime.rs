@@ -23,6 +23,7 @@ use witchy_wir::wir_prelude::abi_import_info;
 
 mod compiler;
 mod host;
+mod launch_arguments;
 
 const LAYOUT_SECTION: &str = "witchy.layouts";
 
@@ -1454,6 +1455,12 @@ impl Vm {
                 }
             };
             params.push(Val::ExternRef(Some(token)));
+        }
+        // Capabilities are all checked before writing launch-owned memory.
+        // Insert data arguments in checked ABI order, never as authority.
+        for position in entry.argument_positions() {
+            let pointer = self.materialize_entry_arguments()?;
+            params.insert(usize::from(*position), Val::I32(pointer as i32));
         }
         let mut results = vec![
             Val::I32(0);

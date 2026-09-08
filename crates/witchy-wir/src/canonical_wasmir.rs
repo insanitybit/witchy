@@ -1498,6 +1498,7 @@ pub enum CanonicalEntryResult {
 pub struct CanonicalEntry {
     export: String,
     capabilities: Vec<CanonicalEntryCapability>,
+    argument_positions: Vec<u8>,
     result: CanonicalEntryResult,
 }
 
@@ -1520,7 +1521,7 @@ impl CanonicalEntry {
     /// (count-prefixed), result tag. Every field is derived from the validated
     /// signature; nothing here is authority on its own.
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut bytes = vec![ENTRY_VERSION];
+        let mut bytes = vec![if self.argument_positions.is_empty() { ENTRY_VERSION } else { 2 }];
         let export = self.export.as_bytes();
         bytes.push(u8::try_from(export.len()).expect("canonical export names are short"));
         bytes.extend_from_slice(export);
@@ -1537,13 +1538,17 @@ impl CanonicalEntry {
             CanonicalEntryResult::Int => 1,
             CanonicalEntryResult::Float => 2,
         });
+        if !self.argument_positions.is_empty() {
+            bytes.push(self.argument_positions.len() as u8);
+            bytes.extend_from_slice(&self.argument_positions);
+        }
         bytes
     }
 
     pub(crate) fn decode(data: &[u8]) -> Result<Self, String> {
         let invalid = |detail: &str| format!("invalid `{ENTRY_SECTION}` metadata: {detail}");
         let (&version, rest) = data.split_first().ok_or_else(|| invalid("truncated header"))?;
-        if version != ENTRY_VERSION {
+        if version != ENTRY_VERSION && version != 2 {
             return Err(invalid(&format!("unsupported version {version}")));
         }
         let (&export_len, rest) = rest.split_first().ok_or_else(|| invalid("truncated export name"))?;
@@ -1553,7 +1558,7 @@ impl CanonicalEntry {
         let (export, rest) = rest.split_at(usize::from(export_len));
         let export = std::str::from_utf8(export).map_err(|_| invalid("export name is not UTF-8"))?.to_owned();
         let (&count, rest) = rest.split_first().ok_or_else(|| invalid("truncated capability count"))?;
-        if rest.len() != usize::from(count) + 1 {
+        if rest.len() < usize::from(count) + 1 {
             return Err(invalid("capability count does not match the payload length"));
         }
         let (tags, result) = rest.split_at(usize::from(count));
@@ -1572,7 +1577,26 @@ impl CanonicalEntry {
             2 => CanonicalEntryResult::Float,
             other => return Err(invalid(&format!("unknown result tag {other}"))),
         };
-        Ok(Self { export, capabilities, result })
+        let suffix = &rest[usize::from(count) + 1..];
+        let argument_positions = if version == ENTRY_VERSION {
+            if !suffix.is_empty() {
+                return Err(invalid("trailing entry bytes"));
+            }
+            Vec::new()
+        } else {
+            let (&argument_count, positions) = suffix.split_first()
+                .ok_or_else(|| invalid("truncated argument positions"))?;
+            let total = usize::from(count) + usize::from(argument_count);
+            if argument_count == 0 || positions.len() != usize::from(argument_count)
+                || total > usize::from(u8::MAX)
+                || positions.iter().any(|position| usize::from(*position) >= total)
+                || positions.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err(invalid("invalid argument positions"));
+            }
+            positions.to_vec()
+        };
+        Ok(Self { export, capabilities, argument_positions, result })
     }
 
     pub fn export(&self) -> &str {
@@ -1581,6 +1605,12 @@ impl CanonicalEntry {
 
     pub fn capabilities(&self) -> &[CanonicalEntryCapability] {
         &self.capabilities
+    }
+
+    /// Indices in the complete parameter list that receive fresh owned
+    /// `List(String)` values. Remaining positions receive capability tokens.
+    pub fn argument_positions(&self) -> &[u8] {
+        &self.argument_positions
     }
 
     pub fn result(&self) -> CanonicalEntryResult {
@@ -6751,8 +6781,19 @@ fn derive_entry(
         .iter()
         .find(|signature| signature.id == function.signature)
         .ok_or_else(|| CanonicalAdmissionError::UnsupportedEntry("entry function has no signature".into()))?;
+    let Some(witchy_syntax::ast::Type::Fn(source_parameters, _, _, _)) =
+        source.callable_signature("main").map(|ty| ty.unqualified())
+    else {
+        return Err(CanonicalAdmissionError::UnsupportedEntry("entry lacks its checked source signature".into()));
+    };
+    if signature.parameters.len() != source_parameters.len() || signature.parameters.len() > usize::from(u8::MAX) {
+        return Err(CanonicalAdmissionError::UnsupportedEntry("entry parameter count is not representable".into()));
+    }
+    let (argument_layout, _) = crate::canonical_launch::argument_layouts()
+        .map_err(|error| CanonicalAdmissionError::UnsupportedEntry(error.to_string()))?;
     let mut capabilities = Vec::with_capacity(signature.parameters.len());
-    for parameter in &signature.parameters {
+    let mut argument_positions = Vec::new();
+    for (index, (parameter, source_parameter)) in signature.parameters.iter().zip(source_parameters).enumerate() {
         match parameter {
             ValueType::Capability(kind) if *kind == CapabilityKindId::new(0) => {
                 capabilities.push(CanonicalEntryCapability::Console);
@@ -6762,6 +6803,14 @@ fn derive_entry(
             }
             ValueType::Capability(kind) if *kind == CapabilityKindId::new(2) => {
                 capabilities.push(CanonicalEntryCapability::Env);
+            }
+            ValueType::Ref(layout) if *layout == argument_layout && matches!(
+                source_parameter.unqualified(),
+                witchy_syntax::ast::Type::Named(name, elements) if name == "List" && elements.len() == 1
+                    && matches!(elements[0].unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                        if name == "String" && arguments.is_empty())
+            ) => {
+                argument_positions.push(index as u8);
             }
             other => {
                 return Err(CanonicalAdmissionError::UnsupportedEntry(format!(
@@ -6783,6 +6832,7 @@ fn derive_entry(
     Ok(Some(CanonicalEntry {
         export: format!("f{}", function_id.get()),
         capabilities,
+        argument_positions,
         result,
     }))
 }
@@ -6881,6 +6931,7 @@ mod tests {
     fn entry_capability_tags_round_trip() {
         let entry = super::CanonicalEntry {
             export: "f0".to_string(),
+            argument_positions: Vec::new(),
             capabilities: vec![
                 super::CanonicalEntryCapability::Console,
                 super::CanonicalEntryCapability::Dir,
@@ -6891,6 +6942,29 @@ mod tests {
         let encoded = entry.encode();
         assert_eq!(encoded[encoded.len() - 4..encoded.len() - 1], [0, 1, 2]);
         assert_eq!(super::CanonicalEntry::decode(&encoded), Ok(entry));
+    }
+
+    #[test]
+    fn entry_argument_positions_round_trip_and_refuse_malformed_order() {
+        let entry = super::CanonicalEntry {
+            export: "f0".into(),
+            capabilities: vec![super::CanonicalEntryCapability::Console],
+            argument_positions: vec![0, 2],
+            result: super::CanonicalEntryResult::Unit,
+        };
+        let bytes = entry.encode();
+        assert_eq!(bytes[0], 2);
+        assert_eq!(super::CanonicalEntry::decode(&bytes), Ok(entry));
+        let last = bytes.len() - 1;
+        for bad_position in [0, 3, u8::MAX] {
+            let mut bad = bytes.clone();
+            bad[last] = bad_position;
+            assert!(super::CanonicalEntry::decode(&bad).is_err());
+        }
+        assert!(super::CanonicalEntry::decode(&bytes[..last]).is_err());
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(super::CanonicalEntry::decode(&trailing).is_err());
     }
 
     use super::*;
@@ -8994,6 +9068,7 @@ mod tests {
     fn canonical_entry_round_trips_through_its_section_encoding() {
         let entry = CanonicalEntry {
             export: "f3".to_owned(),
+            argument_positions: Vec::new(),
             capabilities: vec![CanonicalEntryCapability::Console],
             result: CanonicalEntryResult::Int,
         };
