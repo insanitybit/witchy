@@ -329,3 +329,30 @@ fn entry_tokens_are_root_scoped() {
         InterpreterValue::capability(2)
     );
 }
+
+/// The root fallback never follows a symbolic link (the runtime's confined
+/// directory refuses one that leads out of the root), reads only regular
+/// files, and tolerates an empty path component like the runtime does.
+#[test]
+fn root_fallback_refuses_symlinks_and_non_files() {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
+    let root = std::env::temp_dir().join(format!("witchy-oracle-root-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(root.join("inner")).expect("root");
+    std::fs::write(root.join("inner/note.txt"), b"hello").expect("file");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/", root.join("escape")).expect("symlink");
+    let fixture = super::OracleFixture { root: Some(root.clone()), ..Default::default() };
+    assert_eq!(fixture.file("inner/note.txt"), Some(b"hello".to_vec()));
+    assert_eq!(fixture.file("inner//note.txt"), Some(b"hello".to_vec()), "an empty component is tolerated");
+    assert!(fixture.exists("inner"));
+    assert!(fixture.is_directory("inner"));
+    assert_eq!(fixture.file("inner"), None, "a directory is not a readable file");
+    #[cfg(unix)]
+    {
+        assert_eq!(fixture.file("escape/etc/hosts"), None, "a link is never followed");
+        assert!(!fixture.exists("escape"), "a link does not exist to the oracle");
+        assert!(!fixture.is_directory("escape"));
+    }
+    assert_eq!(fixture.file("missing.txt"), None);
+    std::fs::remove_dir_all(&root).expect("cleanup");
+}

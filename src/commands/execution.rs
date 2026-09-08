@@ -705,6 +705,7 @@ fn safewir_oracle_agrees(
         fixture: witchy_wir::canonical_interpreter::OracleFixture {
             root: Some(std::path::PathBuf::from(".")),
             process_environment: true,
+            dir_grants: Some(1),
             ..Default::default()
         },
     });

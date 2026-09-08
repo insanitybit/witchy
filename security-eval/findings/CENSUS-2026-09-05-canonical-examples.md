@@ -1191,3 +1191,20 @@ allow-list trap, entry refusal without a grant), wir lib 580, lower canonical 91
 protocol mints capabilities only); `caps_audit`/`caps_guard`/`coven_check` at `json`,
 `capability_rights` at `Net`, `branded_caps` at a nominal wrapper `Option`.
 
+A bounded adversarial review of the slice (runtime host functions, the Write+Slice checker
+and backend form, capability argument typing, the lowering's two-call read, the oracle)
+could not break the runtime, the checker, or the lowering. Its findings were all on the
+oracle's filesystem fallback, fixed: the fallback followed a symbolic link out of the root
+(a lexical path check only; it now refuses any link along the path and reads only regular
+files, `root_fallback_refuses_symlinks_and_non_files`); a non-UTF-8 file decoded lossily
+where the runtime traps (now a trap); `dir.subtree` of a missing directory minted a token
+where the runtime's confined open traps (now a trap); an entry with more `Dir` parameters
+than the fixture grants ran (`OracleFixture::dir_grants`, one for parity); an empty path
+component was refused where the runtime tolerates it (now tolerated). Also: the runtime's
+`fill_slice` now requires the declared out capacity, not only the written prefix, to lie
+inside guest memory, and the ABI encodes a capability's rights sorted and deduplicated so
+`Dir[Read, Write]` and `Dir[Write, Read]` are one identity. Observed and left: the frozen
+interpreter mints every `Dir` parameter of `main` at the working directory under dev
+grants while both compiled routes refuse a second ungranted `Dir` (`review-probes-caps/two`),
+a pre-existing interpreter grant-model divergence outside this slice.
+

@@ -106,22 +106,54 @@ pub struct OracleFixture {
     pub root: Option<std::path::PathBuf>,
     /// Consult the process environment for a name not in `environment`.
     pub process_environment: bool,
+    /// How many root `Dir` grants the launcher holds (`None`: unlimited, for
+    /// fixtures that model no launcher); an entry with more `Dir` parameters
+    /// is refused, as the runtime refuses to mint an ungranted one.
+    pub dir_grants: Option<usize>,
 }
 
 impl OracleFixture {
+    /// Resolve `path` under the fallback root without following a symbolic
+    /// link anywhere along it: the runtime's confined directory refuses a
+    /// link that leads out of the root, and the oracle must be no weaker.
+    fn root_entry(&self, path: &str) -> Option<std::path::PathBuf> {
+        let root = self.root.as_ref()?;
+        let mut resolved = root.clone();
+        for component in path.split('/').filter(|component| !component.is_empty()) {
+            resolved.push(component);
+            let metadata = std::fs::symlink_metadata(&resolved).ok()?;
+            if metadata.file_type().is_symlink() {
+                return None;
+            }
+        }
+        Some(resolved)
+    }
+
     fn file(&self, path: &str) -> Option<Vec<u8>> {
         if let Some(contents) = self.files.get(path) {
             return Some(contents.clone());
         }
-        let root = self.root.as_ref()?;
-        std::fs::read(root.join(path)).ok()
+        let entry = self.root_entry(path)?;
+        if !std::fs::symlink_metadata(&entry).ok()?.is_file() {
+            return None;
+        }
+        std::fs::read(entry).ok()
     }
 
     fn exists(&self, path: &str) -> bool {
         let prefix = format!("{path}/");
         self.files.contains_key(path)
             || self.files.keys().any(|name| name.starts_with(&prefix))
-            || self.root.as_ref().is_some_and(|root| root.join(path).exists())
+            || self.root_entry(path).is_some()
+    }
+
+    fn is_directory(&self, path: &str) -> bool {
+        let prefix = format!("{path}/");
+        self.files.keys().any(|name| name.starts_with(&prefix))
+            || self
+                .root_entry(path)
+                .and_then(|entry| std::fs::symlink_metadata(entry).ok())
+                .is_some_and(|metadata| metadata.is_dir())
     }
 
     fn variable(&self, name: &str) -> Option<String> {
@@ -235,6 +267,17 @@ pub fn interpret_program(
     arguments: Vec<InterpreterValue>,
     config: InterpreterConfig,
 ) -> Result<ProgramRun, InterpretError> {
+    // The launcher mints one root `Dir` token per grant; an entry asking for
+    // more than the fixture grants is refused before it runs.
+    if let Some(grants) = config.fixture.dir_grants {
+        let roots = arguments
+            .iter()
+            .filter(|argument| matches!(argument, InterpreterValue::Capability(token) if token.kind == DIR_KIND && token.scope.is_empty()))
+            .count();
+        if roots > grants {
+            return Err(InterpretError::ExplicitTrap);
+        }
+    }
     let mut engine = Engine::new(module.module(), config);
     let results = engine.execute(function, arguments)?;
     let leaked_objects = engine
@@ -700,7 +743,12 @@ impl<'a> Engine<'a> {
             ) => {
                 let scope = self.capability_scope(token, DIR_KIND, values)?;
                 let path = self.host_path(&scope, &self.host_string(path, values)?)?;
+                // A `dir.read` is text: the runtime refuses a file that is
+                // not UTF-8, so the oracle does too.
                 let contents = self.config.fixture.file(&path).ok_or(InterpretError::ExplicitTrap)?;
+                if std::str::from_utf8(&contents).is_err() {
+                    return Err(InterpretError::ExplicitTrap);
+                }
                 let length = self.fill_host_buffer(out, &contents, values)?;
                 values.insert(*destination, InterpreterValue::Size(length));
                 Ok(())
@@ -726,6 +774,11 @@ impl<'a> Engine<'a> {
             ("dir_subtree_at", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
                 let scope = self.capability_scope(token, DIR_KIND, values)?;
                 let scope = self.host_path(&scope, &self.host_string(path, values)?)?;
+                // Narrowing opens the directory: a missing one traps, as the
+                // runtime's confined open does.
+                if !self.config.fixture.is_directory(&scope) {
+                    return Err(InterpretError::ExplicitTrap);
+                }
                 values.insert(*destination, InterpreterValue::Capability(CapabilityToken { kind: DIR_KIND, scope }));
                 Ok(())
             }
@@ -809,12 +862,14 @@ impl<'a> Engine<'a> {
         if path.starts_with('/') {
             return Err(InterpretError::ExplicitTrap);
         }
-        for component in path.split('/') {
-            if component.is_empty() || component == "." || component == ".." {
-                return Err(InterpretError::ExplicitTrap);
-            }
+        // An empty component (`a//b`) is tolerated like the runtime's
+        // confined path; `.` and `..` are refused.
+        let components = path.split('/').filter(|component| !component.is_empty()).collect::<Vec<_>>();
+        if components.iter().any(|component| *component == "." || *component == "..") {
+            return Err(InterpretError::ExplicitTrap);
         }
-        Ok(if scope.is_empty() { path.to_owned() } else { format!("{scope}/{path}") })
+        let path = components.join("/");
+        Ok(if scope.is_empty() { path } else if path.is_empty() { scope.to_owned() } else { format!("{scope}/{path}") })
     }
 
     /// Write the leading bytes that fit into a checked write slice and answer

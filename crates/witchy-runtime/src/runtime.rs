@@ -2769,6 +2769,13 @@ fn fill_slice(
     })?;
     let written = bytes.len().min(out_cap as usize);
     let mem = memory_of(caller)?;
+    // The declared capacity must lie inside guest memory, not only the
+    // written prefix (the contract's rule; a short payload does not excuse an
+    // out-of-range slice).
+    let end = (out_ptr as usize).checked_add(out_cap as usize).ok_or_else(|| Error::msg("host out slice overflows"))?;
+    if end > mem.data_size(&*caller) {
+        return Err(Error::msg(format!("host out slice ({out_ptr}, {out_cap}) lies outside guest memory")));
+    }
     mem.write(&mut *caller, out_ptr as usize, &bytes[..written])
         .map_err(|e| Error::msg(format!("writing {what} into guest memory: {e}")))?;
     Ok(full)
