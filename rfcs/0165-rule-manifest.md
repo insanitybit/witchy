@@ -60,14 +60,14 @@ Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memo
 | `MoveRef` | exact scoped alias | `MoveValue` | reference-token moves; scalar moves share the same typed rule |
 | `DropRef` | exact scoped alias | `DropRef` | complete owned reference-counted objects |
 | `IsUnique` | deferred | — | no implemented runtime uniqueness predicate is claimed by the current v1 kernel |
-| `Project` | subjudgment | `Load`, `Store` | typed Place projections are checked only through their load/store judgment |
+| `Project` | subjudgment | `Load`, `Store`, `InitNullableOwned`, `CopyBytes`, `MoveRange`, `CloneRange` | typed Place projections are checked through the applicable load/store, nullable initialization, byte-copy, or range-transfer judgment; Project is not a standalone instruction |
 | `Load` | exact scoped alias | `Load` | typed initialized header, element, field, and slot reads |
 | `Initialize` | composite | `InitNullableOwned`, `Store` | nullable owned initialization is explicit; ordinary empty-slot initialization uses Store |
 | `Replace` | restricted | `Store` | scalar replacement is admitted through Store; reference replacement of an initialized slot is refused |
 | `StoreScalar` | exact scoped alias | `Store` | scalar and byte stores under their typed bounds; reference stores are a separate Store transfer |
 | `ByteCopy` | exact scoped alias | `CopyBytes` | raw-byte slices only |
 | `MoveValue` | exact scoped alias | `MoveValue` | typed scalar or reference value movement |
-| `CloneValue` | composite | `Alloc`, `Load`, `Store`, `CloneRef`, `CloneRange` | typed value copies compose fresh construction, loads, stores, retains, and range cloning |
+| `CloneValue` | composite | `Alloc`, `Load`, `Store`, `CloneRef`, `CloneRange` | currently admitted typed value-copy templates only: String/Bytes, admitted scalar/reference lists, and admitted record/tuple/sum shapes; the generic RFC operation is not universal |
 | `MoveRange` | exact scoped alias | `MoveRange` | typed scalar or initialized pointer prefixes |
 | `CloneRange` | exact scoped alias | `CloneRange` | typed scalar or initialized pointer prefixes |
 | `UpdateCount` | exact scoped alias | `UpdateCount` | counted logical length under capacity and initialization facts |
@@ -76,7 +76,7 @@ Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memo
 | `Call` | exact scoped alias | `Call` | authenticated direct calls |
 | `VarCall` | exact scoped alias | `VarCall` | authenticated indirect calls under v1 argument restrictions |
 | `TailCall` | composite | `TailCall`, `VarTailCall` | direct and indirect checked proper-tail sites |
-| `MakeClosure` | restricted | `Alloc`, `FunctionValue`, `Store` | validated closure record/environment construction, including captured closures; FunctionValue alone is not MakeClosure |
+| `MakeClosure` | restricted | `Alloc`, `FunctionValue`, `Store` | validated closure record/environment construction with checked Int/CopyScalar captures only; FunctionValue alone is insufficient and arbitrary capture types are not implied |
 | `HostCall` | exact scoped alias | `HostCall` | authenticated capability and buffer contracts |
 | `Trap` | exact scoped alias | `Trap` | explicit terminal traps |
 

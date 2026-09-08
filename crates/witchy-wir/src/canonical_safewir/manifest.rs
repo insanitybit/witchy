@@ -790,14 +790,14 @@ pub const RFC_KERNEL_CROSSWALK: &[RfcKernelEntry] = &[
     RfcKernelEntry { kernel: RfcKernelId::MoveRef, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::MoveValue], scope: "reference-token moves; scalar moves share the same typed rule" } },
     RfcKernelEntry { kernel: RfcKernelId::DropRef, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::DropRef], scope: "complete owned reference-counted objects" } },
     RfcKernelEntry { kernel: RfcKernelId::IsUnique, disposition: RfcKernelDisposition::Deferred { reason: "no implemented runtime uniqueness predicate is claimed by the current v1 kernel" } },
-    RfcKernelEntry { kernel: RfcKernelId::Project, disposition: RfcKernelDisposition::Subjudgment { rules: &[CanonicalRuleId::Load, CanonicalRuleId::Store], scope: "typed Place projections are checked only through their load/store judgment" } },
+    RfcKernelEntry { kernel: RfcKernelId::Project, disposition: RfcKernelDisposition::Subjudgment { rules: &[CanonicalRuleId::Load, CanonicalRuleId::Store, CanonicalRuleId::InitNullableOwned, CanonicalRuleId::CopyBytes, CanonicalRuleId::MoveRange, CanonicalRuleId::CloneRange], scope: "typed Place projections are checked through the applicable load/store, nullable initialization, byte-copy, or range-transfer judgment; Project is not a standalone instruction" } },
     RfcKernelEntry { kernel: RfcKernelId::Load, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Load], scope: "typed initialized header, element, field, and slot reads" } },
     RfcKernelEntry { kernel: RfcKernelId::Initialize, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::InitNullableOwned, CanonicalRuleId::Store], scope: "nullable owned initialization is explicit; ordinary empty-slot initialization uses Store" } },
     RfcKernelEntry { kernel: RfcKernelId::Replace, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Store], scope: "scalar replacement is admitted through Store; reference replacement of an initialized slot is refused" } },
     RfcKernelEntry { kernel: RfcKernelId::StoreScalar, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Store], scope: "scalar and byte stores under their typed bounds; reference stores are a separate Store transfer" } },
     RfcKernelEntry { kernel: RfcKernelId::ByteCopy, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::CopyBytes], scope: "raw-byte slices only" } },
     RfcKernelEntry { kernel: RfcKernelId::MoveValue, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::MoveValue], scope: "typed scalar or reference value movement" } },
-    RfcKernelEntry { kernel: RfcKernelId::CloneValue, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::Load, CanonicalRuleId::Store, CanonicalRuleId::CloneRef, CanonicalRuleId::CloneRange], scope: "typed value copies compose fresh construction, loads, stores, retains, and range cloning" } },
+    RfcKernelEntry { kernel: RfcKernelId::CloneValue, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::Load, CanonicalRuleId::Store, CanonicalRuleId::CloneRef, CanonicalRuleId::CloneRange], scope: "currently admitted typed value-copy templates only: String/Bytes, admitted scalar/reference lists, and admitted record/tuple/sum shapes; the generic RFC operation is not universal" } },
     RfcKernelEntry { kernel: RfcKernelId::MoveRange, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::MoveRange], scope: "typed scalar or initialized pointer prefixes" } },
     RfcKernelEntry { kernel: RfcKernelId::CloneRange, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::CloneRange], scope: "typed scalar or initialized pointer prefixes" } },
     RfcKernelEntry { kernel: RfcKernelId::UpdateCount, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::UpdateCount], scope: "counted logical length under capacity and initialization facts" } },
@@ -806,7 +806,7 @@ pub const RFC_KERNEL_CROSSWALK: &[RfcKernelEntry] = &[
     RfcKernelEntry { kernel: RfcKernelId::Call, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Call], scope: "authenticated direct calls" } },
     RfcKernelEntry { kernel: RfcKernelId::VarCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::VarCall], scope: "authenticated indirect calls under v1 argument restrictions" } },
     RfcKernelEntry { kernel: RfcKernelId::TailCall, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::TailCall, CanonicalRuleId::VarTailCall], scope: "direct and indirect checked proper-tail sites" } },
-    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::Store], scope: "validated closure record/environment construction, including captured closures; FunctionValue alone is not MakeClosure" } },
+    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::Store], scope: "validated closure record/environment construction with checked Int/CopyScalar captures only; FunctionValue alone is insufficient and arbitrary capture types are not implied" } },
     RfcKernelEntry { kernel: RfcKernelId::HostCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::HostCall], scope: "authenticated capability and buffer contracts" } },
     RfcKernelEntry { kernel: RfcKernelId::Trap, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Trap], scope: "explicit terminal traps" } },
 ];
@@ -1123,6 +1123,6 @@ mod tests {
         }
         let closure = RFC_KERNEL_CROSSWALK.iter().find(|entry| entry.kernel == RfcKernelId::MakeClosure).unwrap();
         assert!(matches!(closure.disposition, RfcKernelDisposition::Restricted { .. }));
-        assert!(closure.disposition.scope().contains("captured closures"));
+        assert!(closure.disposition.scope().contains("checked Int/CopyScalar captures only"));
     }
 }
