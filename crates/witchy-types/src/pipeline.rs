@@ -52,10 +52,9 @@ struct CanonicalCallableWitness {
 /// where they are detected.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CanonicalObligation {
-    /// A generated specialization outside the entry scope (a library generic
-    /// instantiated at a program type, such as `List.any` at a `task` type).
-    /// It is not a canonical runtime function and carries no signature or
-    /// ABI here.
+    /// A generated specialization outside the entry scope that could not be
+    /// discarded because its exact checked body was not available. It is not
+    /// a canonical runtime function and carries no signature or ABI here.
     Specialization(String),
     /// The canonical closure witness could not authenticate every lambda in
     /// the program; the payload is the witness's own diagnostic.
@@ -821,6 +820,25 @@ fn bind_canonical_callable_witness(
     let linked_entry = typed.module().linked_entry.as_deref();
     let scope = canonical_scope(typed.module());
     let in_entry_scope = |name: &str| scope.contains(name);
+    let checked_function_names = typed
+        .module()
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => Some(function.name.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    // Monomorphization currently records a whole-module fixed point. Drop
+    // only identities with an exact checked concrete body that canonical
+    // reachability proves is outside the entry scope. Missing-body identities
+    // remain below so forged or incomplete witness entries still refuse.
+    let generic_instances = generic_instances
+        .into_iter()
+        .filter(|(name, _)| {
+            !checked_function_names.contains(name.as_str()) || scope.contains(name)
+        })
+        .collect::<BTreeMap<_, _>>();
     let runtime_functions = typed
         .module()
         .items
@@ -847,12 +865,11 @@ fn bind_canonical_callable_witness(
     // Generated instances split along the same entry scope. An instance inside
     // the scope is a direct call target: it must carry an exact rechecked body
     // and signature, and anything else is a forged or corrupted entry that
-    // refuses here. An instance outside the scope is a library specialization
-    // (`List.any` at a `task` type, `util.identity` at `Int`) that canonical
-    // v1 does not lower. It is not filtered away: it becomes a sorted,
-    // digest-bound obligation that `lower_typed_module` refuses precisely, so
-    // an unsupported family fails at canonical lowering instead of turning a
-    // valid checked program into a type error.
+    // refuses here. An instance outside the scope with an exact checked body
+    // was proven unreachable above and is omitted; an outside-scope identity
+    // without that body remains a sorted, digest-bound obligation and fails at
+    // canonical lowering instead of turning a valid checked program into a
+    // type error.
     let mut obligations = BTreeSet::new();
     for name in generic_instances.keys() {
         if functions.contains(name.as_str()) && signatures.contains_key(name) {

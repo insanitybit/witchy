@@ -4819,6 +4819,12 @@ impl FunctionLowerer<'_> {
             {
                 self.lower_bytes_call(name, args)
             }
+            // The encoding intrinsics are guest-side byte kernels on the same
+            // raw-byte layout as String and Bytes. The std wrappers validate
+            // fallible input before reaching the raw decode kernels.
+            Expr::Call { name, args } if name == "encoding.hex_encode" => {
+                self.lower_encoding_call(name, args)
+            }
             // A `dict.` name that is not a linked function is a dictionary
             // intrinsic; the std wrappers themselves are ordinary calls.
             Expr::Call { name, args } if name.starts_with("dict.") && !self.functions.contains_key(name.as_str()) => {
@@ -7971,6 +7977,428 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    fn lower_encoding_call(&mut self, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let [source] = args else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("encoding arity"));
+        };
+        let source = self.lower_expr(source)?;
+        self.ensure_string_extent(source)?;
+        match name {
+            "encoding.hex_encode" => self.lower_hex_encode(source),
+            _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
+        }
+    }
+
+    fn lower_hex_encode(&mut self, source: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let total = self.string_length_of(source)?;
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let half = self.push_const_size(u64::from(u32::MAX - 4) / 2)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, half)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let two = self.push_const_size(2)?;
+        let output_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, total, two, OverflowBehavior::Wrap)?;
+        let output_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, output_length, maximum)?;
+        self.push_guard(output_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let output = self.alloc_bytes(output_length, output_length)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let four = self.push_const_int(4)?;
+        let fifteen = self.push_const_int(15)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: Vec::new(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, body_values[0], total)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(source, body_values[0], self.string_layout_id()?)?;
+        let byte = self.widen_size_to_int(byte)?;
+        let high = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, byte, four, OverflowBehavior::Wrap)?;
+        let high = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, high, fifteen, OverflowBehavior::Wrap)?;
+        let low = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, byte, fifteen, OverflowBehavior::Wrap)?;
+        let high = self.push_hex_char(high)?;
+        let low = self.push_hex_char(low)?;
+        self.push_byte_store(output, body_values[1], high)?;
+        let second = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], one, OverflowBehavior::Wrap)?;
+        self.push_byte_store(output, second, low)?;
+        let next_input = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[0], one, OverflowBehavior::Wrap)?;
+        let next_output = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, second, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next_input, next_output] })?;
+        self.current = exit;
+        Ok(output)
+    }
+
+    fn lower_hex_decode(&mut self, source: ValueId, _bytes_result: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let total = self.string_length_of(source)?;
+        let two = self.push_const_size(2)?;
+        let remainder = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, total, two, OverflowBehavior::Wrap)?;
+        let zero = self.push_const_size(0)?;
+        let even = self.push_compare(ComparisonOperator::Equal, remainder, zero)?;
+        self.push_trap_unless(even)?;
+        let output_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, total, two, OverflowBehavior::Wrap)?;
+        let output = self.alloc_bytes(output_length, output_length)?;
+        let one = self.push_const_size(1)?;
+        let four = self.push_const_int(4)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: Vec::new(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let first_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, body_values[0], total)?;
+        self.push_guard(first_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let first = self.push_string_byte_load(source, body_values[0], self.string_layout_id()?)?;
+        let second_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[0], one, OverflowBehavior::Wrap)?;
+        let second_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, second_index, total)?;
+        self.push_guard(second_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let second = self.push_string_byte_load(source, second_index, self.string_layout_id()?)?;
+        let first = self.widen_size_to_int(first)?;
+        let second = self.widen_size_to_int(second)?;
+        let first = self.push_hex_value(first)?;
+        let second = self.push_hex_value(second)?;
+        let first = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftLeft, first, four, OverflowBehavior::Wrap)?;
+        let byte = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, first, second, OverflowBehavior::Wrap)?;
+        let byte = self.int_to_byte(byte)?;
+        self.push_byte_store(output, body_values[1], byte)?;
+        let next_input = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, second_index, one, OverflowBehavior::Wrap)?;
+        let next_output = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next_input, next_output] })?;
+        self.current = exit;
+        Ok(output)
+    }
+
+    fn lower_base64_encode(&mut self, source: ValueId, url: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let total = self.string_length_of(source)?;
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let two = self.push_const_size(2)?;
+        let three = self.push_const_size(3)?;
+        let four = self.push_const_size(4)?;
+        let limit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, maximum, two, OverflowBehavior::Wrap)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, limit)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let rounded = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, two, OverflowBehavior::Wrap)?;
+        let groups = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, rounded, three, OverflowBehavior::Wrap)?;
+        let output_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, groups, four, OverflowBehavior::Wrap)?;
+        let output_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, output_length, maximum)?;
+        self.push_guard(output_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let output = self.alloc_bytes(output_length, output_length)?;
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block(&[])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: Vec::new(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let input = body_values[0];
+        let input_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, input, total)?;
+        self.push_guard(input_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let layout = self.string_layout_id()?;
+        let b0 = self.push_string_byte_load(source, input, layout)?;
+        let input1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input, one, OverflowBehavior::Wrap)?;
+        let input2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input1, one, OverflowBehavior::Wrap)?;
+        let b1 = self.lower_optional_byte(source, input1, total)?;
+        let b2 = self.lower_optional_byte(source, input2, total)?;
+        let has_b1 = self.push_compare(ComparisonOperator::LessUnsigned, input1, total)?;
+        let has_b2 = self.push_compare(ComparisonOperator::LessUnsigned, input2, total)?;
+        let b0 = self.widen_size_to_int(b0)?;
+        let b1 = self.widen_size_to_int(b1)?;
+        let b2 = self.widen_size_to_int(b2)?;
+        let sixteen = self.push_const_int(16)?;
+        let eight = self.push_const_int(8)?;
+        let n = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftLeft, b0, sixteen, OverflowBehavior::Wrap)?;
+        let b1_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftLeft, b1, eight, OverflowBehavior::Wrap)?;
+        let n = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, n, b1_shifted, OverflowBehavior::Wrap)?;
+        let n = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, n, b2, OverflowBehavior::Wrap)?;
+        let mask = self.push_const_int(63)?;
+        let eighteen = self.push_const_int(18)?;
+        let twelve = self.push_const_int(12)?;
+        let six = self.push_const_int(6)?;
+        let s0_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, n, eighteen, OverflowBehavior::Wrap)?;
+        let s1_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, n, twelve, OverflowBehavior::Wrap)?;
+        let s2_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, n, six, OverflowBehavior::Wrap)?;
+        let s0 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, s0_shifted, mask, OverflowBehavior::Wrap)?;
+        let s1 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, s1_shifted, mask, OverflowBehavior::Wrap)?;
+        let s2 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, s2_shifted, mask, OverflowBehavior::Wrap)?;
+        let s3 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, n, mask, OverflowBehavior::Wrap)?;
+        let c0 = self.push_base64_char(s0, url)?;
+        let c1 = self.push_base64_char(s1, url)?;
+        let c2 = self.push_base64_char(s2, url)?;
+        let c3 = self.push_base64_char(s3, url)?;
+        let pad = self.push_const_size(61)?;
+        let c2 = self.lower_size_select(has_b1, c2, pad)?;
+        let c3 = self.lower_size_select(has_b2, c3, pad)?;
+        self.push_byte_store(output, body_values[1], c0)?;
+        let out1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], one, OverflowBehavior::Wrap)?;
+        self.push_byte_store(output, out1, c1)?;
+        let out2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, out1, one, OverflowBehavior::Wrap)?;
+        self.push_byte_store(output, out2, c2)?;
+        let out3 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, out2, one, OverflowBehavior::Wrap)?;
+        self.push_byte_store(output, out3, c3)?;
+        let next_input = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input2, one, OverflowBehavior::Wrap)?;
+        let next_output = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, out3, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next_input, next_output] })?;
+        self.current = exit;
+        if url {
+            let remainder = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, total, three, OverflowBehavior::Wrap)?;
+            let one_remainder = self.push_compare(ComparisonOperator::Equal, remainder, one)?;
+            let two_remainder = self.push_compare(ComparisonOperator::Equal, remainder, two)?;
+            let two_pad = self.push_const_size(2)?;
+            let one_pad = self.push_const_size(1)?;
+            let pad = self.lower_size_select(one_remainder, two_pad, zero)?;
+            let pad = self.lower_size_select(two_remainder, one_pad, pad)?;
+            let count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, output_length, pad, OverflowBehavior::Wrap)?;
+            self.push_operation(Operation::UpdateCount { object: output, count });
+            self.string_lengths.insert(output, count);
+        }
+        Ok(output)
+    }
+
+    fn lower_base64_decode(&mut self, source: ValueId, url: bool, _bytes_result: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let total = self.string_length_of(source)?;
+        let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
+        let three = self.push_const_size(3)?;
+        let four = self.push_const_size(4)?;
+        let limit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, maximum, three, OverflowBehavior::Wrap)?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, limit)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let rounded = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, three, OverflowBehavior::Wrap)?;
+        let groups = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, rounded, four, OverflowBehavior::Wrap)?;
+        let capacity = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, groups, three, OverflowBehavior::Wrap)?;
+        let capacity_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, capacity, maximum)?;
+        self.push_guard(capacity_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let zero = self.push_const_size(0)?;
+        let output = self.alloc_bytes(zero, capacity)?;
+        let one = self.push_const_size(1)?;
+        let header = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let body = self.new_block(&[ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block(&[ValueType::Size])?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero] })?;
+        let header_values = self.block_parameter_values(header);
+        self.current = header;
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: vec![header_values[1]],
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.current = body;
+        let layout = self.string_layout_id()?;
+        let cursor = body_values[0];
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let i1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        let i2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, i1, one, OverflowBehavior::Wrap)?;
+        let i3 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, i2, one, OverflowBehavior::Wrap)?;
+        let c0 = self.push_string_byte_load(source, cursor, layout)?;
+        let c1 = self.lower_optional_byte(source, i1, total)?;
+        let c2 = self.lower_optional_byte(source, i2, total)?;
+        let c3 = self.lower_optional_byte(source, i3, total)?;
+        let pad = self.push_const_size(61)?;
+        let v0 = self.push_base64_value(c0, url)?;
+        let v1 = self.push_base64_value(c1, url)?;
+        let v2 = self.push_base64_value(c2, url)?;
+        let v3 = self.push_base64_value(c3, url)?;
+        let v0 = self.widen_size_to_int(v0)?;
+        let v1 = self.widen_size_to_int(v1)?;
+        let v2 = self.widen_size_to_int(v2)?;
+        let v3 = self.widen_size_to_int(v3)?;
+        let eighteen = self.push_const_int(18)?;
+        let twelve = self.push_const_int(12)?;
+        let six = self.push_const_int(6)?;
+        let v0_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftLeft, v0, eighteen, OverflowBehavior::Wrap)?;
+        let v1_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftLeft, v1, twelve, OverflowBehavior::Wrap)?;
+        let n = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, v0_shifted, v1_shifted, OverflowBehavior::Wrap)?;
+        let v2_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftLeft, v2, six, OverflowBehavior::Wrap)?;
+        let n = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, n, v2_shifted, OverflowBehavior::Wrap)?;
+        let n = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, n, v3, OverflowBehavior::Wrap)?;
+        let mask = self.push_const_int(255)?;
+        let sixteen = self.push_const_int(16)?;
+        let eight = self.push_const_int(8)?;
+        let b0_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, n, sixteen, OverflowBehavior::Wrap)?;
+        let b1_shifted = self.push_arithmetic(ValueType::Int, ArithmeticOperator::ShiftRightUnsigned, n, eight, OverflowBehavior::Wrap)?;
+        let b0_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, b0_shifted, mask, OverflowBehavior::Wrap)?;
+        let b1_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, b1_shifted, mask, OverflowBehavior::Wrap)?;
+        let b2_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, n, mask, OverflowBehavior::Wrap)?;
+        let b0 = self.int_to_byte(b0_value)?;
+        let b1 = self.int_to_byte(b1_value)?;
+        let b2 = self.int_to_byte(b2_value)?;
+        self.push_byte_store(output, body_values[1], b0)?;
+        let out1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], one, OverflowBehavior::Wrap)?;
+        self.push_byte_store(output, out1, b1)?;
+        let out2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, out1, one, OverflowBehavior::Wrap)?;
+        self.push_byte_store(output, out2, b2)?;
+        let has_b1 = self.push_compare(ComparisonOperator::NotEqual, c2, pad)?;
+        let has_b2 = self.push_compare(ComparisonOperator::NotEqual, c3, pad)?;
+        let extra_one = self.lower_size_select(has_b1, one, zero)?;
+        let extra_two = self.lower_size_select(has_b2, one, zero)?;
+        let produced = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, one, extra_one, OverflowBehavior::Wrap)?;
+        let produced = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, produced, extra_two, OverflowBehavior::Wrap)?;
+        let next_output = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], produced, OverflowBehavior::Wrap)?;
+        let next_input = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, i3, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![next_input, next_output] })?;
+        self.current = exit;
+        let count = self.block_parameter_values(exit)[0];
+        self.push_operation(Operation::UpdateCount { object: output, count });
+        self.string_lengths.insert(output, count);
+        Ok(output)
+    }
+
+    fn widen_size_to_int(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination, value });
+        Ok(destination)
+    }
+
+    fn int_to_byte(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let destination = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination, value });
+        self.proven_byte(destination)
+    }
+
+    fn push_hex_char(&mut self, nibble: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let ten = self.push_const_int(10)?;
+        let ascii_zero = self.push_const_int(48)?;
+        let ascii_a_offset = self.push_const_int(87)?;
+        let digit = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, nibble, ascii_zero, OverflowBehavior::Wrap)?;
+        let letter = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, nibble, ascii_a_offset, OverflowBehavior::Wrap)?;
+        let is_digit = self.push_compare(ComparisonOperator::LessSigned, nibble, ten)?;
+        let value = self.lower_int_select(is_digit, digit, letter)?;
+        self.int_to_byte(value)
+    }
+
+    fn push_hex_value(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let case_bit = self.push_const_int(32)?;
+        let ascii_zero = self.push_const_int(48)?;
+        let ascii_a_offset = self.push_const_int(87)?;
+        let nine = self.push_const_int(57)?;
+        let lower = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitOr, value, case_bit, OverflowBehavior::Wrap)?;
+        let digit_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, ascii_zero, OverflowBehavior::Wrap)?;
+        let letter_value = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, lower, ascii_a_offset, OverflowBehavior::Wrap)?;
+        let is_digit = self.push_compare(ComparisonOperator::LessEqualSigned, value, nine)?;
+        let digit = self.lower_int_select(is_digit, digit_value, letter_value)?;
+        Ok(digit)
+    }
+
+    fn push_base64_char(&mut self, value: ValueId, url: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let index = value;
+        let twenty_six = self.push_const_int(26)?;
+        let fifty_two = self.push_const_int(52)?;
+        let sixty_two = self.push_const_int(62)?;
+        let ascii_upper = self.push_const_int(65)?;
+        let ascii_lower_offset = self.push_const_int(71)?;
+        let ascii_digit_offset = self.push_const_int(4)?;
+        let upper = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, value, ascii_upper, OverflowBehavior::Wrap)?;
+        let lower = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, value, ascii_lower_offset, OverflowBehavior::Wrap)?;
+        let digit = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, ascii_digit_offset, OverflowBehavior::Wrap)?;
+        let upper_case = self.push_compare(ComparisonOperator::LessSigned, index, twenty_six)?;
+        let value = self.lower_int_select(upper_case, upper, lower)?;
+        let digit_case = self.push_compare(ComparisonOperator::LessSigned, index, fifty_two)?;
+        let value = self.lower_int_select(digit_case, value, digit)?;
+        let first = self.push_const_int(if url { 45 } else { 43 })?;
+        let second = self.push_const_int(if url { 95 } else { 47 })?;
+        let special_case = self.push_compare(ComparisonOperator::Equal, index, sixty_two)?;
+        let special = self.lower_int_select(special_case, first, second)?;
+        let normal_case = self.push_compare(ComparisonOperator::LessSigned, index, sixty_two)?;
+        let value = self.lower_int_select(normal_case, value, special)?;
+        self.int_to_byte(value)
+    }
+
+    fn push_base64_value(&mut self, value: ValueId, url: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let byte = value;
+        let widened = self.widen_size_to_int(byte)?;
+        let zero = self.push_const_int(0)?;
+        let pad = self.push_const_int(61)?;
+        let is_pad = self.push_compare(ComparisonOperator::Equal, widened, pad)?;
+        let mapped = self.push_base64_digit(widened, url)?;
+        let selected = self.lower_int_select(is_pad, zero, mapped)?;
+        self.int_to_byte(selected)
+    }
+
+    fn push_base64_digit(&mut self, value: ValueId, url: bool) -> Result<ValueId, CanonicalLoweringError> {
+        let lower_bound = self.push_const_int(97)?;
+        let digit_bound = self.push_const_int(48)?;
+        let ascii_upper = self.push_const_int(65)?;
+        let ascii_lower_offset = self.push_const_int(71)?;
+        let ascii_digit_offset = self.push_const_int(4)?;
+        let upper = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, ascii_upper, OverflowBehavior::Wrap)?;
+        let lower = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, value, ascii_lower_offset, OverflowBehavior::Wrap)?;
+        let digit = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, value, ascii_digit_offset, OverflowBehavior::Wrap)?;
+        let lower_case = self.push_compare(ComparisonOperator::GreaterEqualSigned, value, lower_bound)?;
+        let letters = self.lower_int_select(lower_case, lower, upper)?;
+        let digit_case = self.push_compare(ComparisonOperator::GreaterEqualSigned, value, digit_bound)?;
+        let mut result = self.lower_int_select(digit_case, digit, letters)?;
+        let special_first = self.push_const_int(if url { 62 } else { 62 })?;
+        let special_second = self.push_const_int(if url { 63 } else { 63 })?;
+        let first_symbol = self.push_const_int(if url { 45 } else { 43 })?;
+        let second_symbol = self.push_const_int(if url { 95 } else { 47 })?;
+        let dash_or_plus = self.push_compare(ComparisonOperator::Equal, value, first_symbol)?;
+        let slash_or_underscore = self.push_compare(ComparisonOperator::Equal, value, second_symbol)?;
+        result = self.lower_int_select(dash_or_plus, special_first, result)?;
+        Ok(self.lower_int_select(slash_or_underscore, special_second, result)?)
+    }
+
+    fn lower_optional_byte(&mut self, object: ValueId, index: ValueId, total: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
+        let yes = self.new_block(&[])?;
+        let no = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Size])?;
+        let present = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: present,
+            then_target: yes,
+            then_arguments: Vec::new(),
+            else_target: no,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = yes;
+        let layout = self.string_layout_id()?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, index, layout)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![byte] })?;
+        self.current = no;
+        let pad = self.push_const_size(61)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![pad] })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        Ok(self.block_parameter_values(join)[0])
+    }
+
     /// A fresh raw-byte buffer of `count` bytes (to be stored by the caller)
     /// within `capacity`; both are `Size` and `count <= capacity` is guarded.
     fn alloc_bytes(&mut self, count: ValueId, capacity: ValueId) -> Result<ValueId, CanonicalLoweringError> {
@@ -8091,6 +8519,27 @@ impl FunctionLowerer<'_> {
         let yes = self.new_block(&[])?;
         let no = self.new_block(&[])?;
         let join = self.new_block(&[ValueType::Int])?;
+        self.finish_current(Terminator::BranchIf {
+            condition,
+            then_target: yes,
+            then_arguments: Vec::new(),
+            else_target: no,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = yes;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![when_true] })?;
+        self.current = no;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![when_false] })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        Ok(self.block_parameter_values(join)[0])
+    }
+
+    fn lower_size_select(&mut self, condition: ValueId, when_true: ValueId, when_false: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
+        let yes = self.new_block(&[])?;
+        let no = self.new_block(&[])?;
+        let join = self.new_block(&[ValueType::Size])?;
         self.finish_current(Terminator::BranchIf {
             condition,
             then_target: yes,
