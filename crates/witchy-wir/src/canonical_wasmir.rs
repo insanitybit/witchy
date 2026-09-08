@@ -1452,6 +1452,11 @@ pub struct AdmittedCanonicalArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalEntryCapability {
     Console,
+    /// A root `Dir` grant, minted by the launcher from the grant ordinal
+    /// among the entry's `Dir` parameters (kind 1).
+    Dir,
+    /// The process environment grant (kind 2).
+    Env,
 }
 
 /// What the program entry returns, for the frozen exit-code convention: an
@@ -1506,6 +1511,8 @@ impl CanonicalEntry {
         for capability in &self.capabilities {
             bytes.push(match capability {
                 CanonicalEntryCapability::Console => 0,
+                CanonicalEntryCapability::Dir => 1,
+                CanonicalEntryCapability::Env => 2,
             });
         }
         bytes.push(match self.result {
@@ -1537,6 +1544,8 @@ impl CanonicalEntry {
             .iter()
             .map(|tag| match tag {
                 0 => Ok(CanonicalEntryCapability::Console),
+                1 => Ok(CanonicalEntryCapability::Dir),
+                2 => Ok(CanonicalEntryCapability::Env),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -6724,6 +6733,12 @@ fn derive_entry(
         match parameter {
             ValueType::Capability(kind) if *kind == CapabilityKindId::new(0) => {
                 capabilities.push(CanonicalEntryCapability::Console);
+            }
+            ValueType::Capability(kind) if *kind == CapabilityKindId::new(1) => {
+                capabilities.push(CanonicalEntryCapability::Dir);
+            }
+            ValueType::Capability(kind) if *kind == CapabilityKindId::new(2) => {
+                capabilities.push(CanonicalEntryCapability::Env);
             }
             other => {
                 return Err(CanonicalAdmissionError::UnsupportedEntry(format!(

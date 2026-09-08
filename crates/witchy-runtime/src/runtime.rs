@@ -1433,6 +1433,9 @@ impl Vm {
                     }
                     ExternRef::new(&mut self.store, ConsoleCapability)?
                 }
+                CanonicalEntryCapability::Dir | CanonicalEntryCapability::Env => {
+                    bail!("the program's `main` requires a {capability:?} grant the canonical launch protocol does not mint yet");
+                }
             };
             params.push(Val::ExternRef(Some(token)));
         }

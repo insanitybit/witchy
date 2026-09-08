@@ -131,6 +131,82 @@ floor. Later transformations emit candidates for independent rechecking;
 semantic-preservation confidence is a separate obligation from memory safety.
 Testing/fuzzing is evidence, not a universal proof of pass composition.
 
+## Capability host calls: `Dir` and `Env` (design, slice 42)
+
+Console is the only capability the canonical route carries today, and its one
+operation (`print`) is a pure-infrastructure import over a read slice. `Dir`
+and `Env` are the first authority-bearing operations, so they fix the shape
+for every later capability. The design covers the four points a capability
+needs beyond a print-shaped contract: host behavior, buffer ownership, scope,
+and reentrancy.
+
+**Kinds and tokens.** A capability is a `ValueType::Capability(kind)` token
+whose kind is fixed by the authenticated catalog, never selected by the
+candidate: `0` Console, `1` Dir, `2` Env. The token is an externref minted by
+the host; it is never an integer, never lives in linear memory, and the checker
+treats it as opaque (the standing constraint). Rights (`Dir[Read]`,
+`Dir[Write]`) and scope (a subtree) live in the host's authority object behind
+the externref, exactly as the frozen route's `DirAuthority` does; a violation is
+a host trap, which is the interpreter's abort. Narrowing (`dir.subtree(p)`,
+`dir as Dir[Read]`) is a host call whose result role is `Capability(1)`
+(`HostResultRole::Capability`), so a narrowed token only ever comes from the
+host and only from a token of the same kind. There is no `Mint` operation in the
+module: the entry's `Dir`/`Env` parameters are minted by the launcher by grant
+ordinal (`CanonicalEntryCapability::{Dir, Env}` beside `Console`; the runtime
+mints from `dirs[i]` / the `Env` grant and refuses to launch without the grant,
+as it does for Console).
+
+**Host behavior and buffer ownership.** The frozen route stages a read in host
+state (`dir_read_len` fills `pending`, the guest allocates, `fill_pending`
+writes an unbounded staged payload at a guest pointer). That protocol is not
+admissible here: it trusts the guest allocation, and it keeps host state across
+two calls. The canonical imports are stateless and bounded, on the
+`float_to_str` pattern: `dir_read_into(dir, path: Read Slice, out: Write
+AtLeast(capacity)) -> Size` writes at most `capacity` bytes of the file and
+returns the file's full length; `env_get_into(env, name: Read Slice, out: Write
+AtLeast(capacity)) -> Int` does the same for a variable and returns `-1` when it
+is unset. The guest allocates a unique, non-static buffer, calls, and publishes
+`min(returned, capacity)` as the count after a guard; a length above the
+capacity means reallocate to that length and call again, and the count is again
+bounded by the second call's guard, never by the first call's answer (the file
+may change between calls). `dir_exists(dir, path: Read Slice) -> Bool`,
+`dir_write(dir, path: Read Slice, data: Read Slice)`, and
+`dir_subtree(dir, path: Read Slice) -> Capability(1)` take checked slices; a
+path is a string slice the memory checker re-establishes, not a length-prefixed
+object address. The host never retains a guest pointer past the call and never
+writes outside the slice it was handed. `dir.list()` (a list of strings laid out
+by the host through `write_pending_list`) stays refused until the list is built
+guest-side from a bounded fill of a separator-joined payload.
+
+**Scope and reentrancy.** Every capability import is `HostReentrancy::Forbidden`
+and `HostMutation::WriteBuffers` (reads) or `ReadOnly` (existence, write,
+narrowing, which mutate the host, not guest memory). The import's authenticated
+metadata must name the authority it exercises (`DirRead`, `DirWrite`,
+`DirGrant`, `Env`); the projection refuses a capability import whose authorities
+are empty or do not match its kind, the mirror image of the pure-infrastructure
+rule that refuses an authority-bearing `print`. A call site passes the token as
+`HostCallArgument::Capability` and the checker requires exactly the contract's
+kind (`check/host.rs`); a scalar, a reference, or a token of another kind
+rejects. Nothing in this slice claims RFC-0163's ghost-authority validation; it
+claims the object-level boundary only, and the acceptance ledger keeps the
+authority-flow judgment as a separate obligation.
+
+**Oracle.** Capability, confinement, and ABI security take strict differential
+coverage (RFC-0135), so the canonical interpreter serves these imports through
+the shared fixture host (`witchy-test-host`, filesystem and environment
+providers) rather than recording a debt. The launch tests run the same program
+on the runtime against a temporary directory and on the oracle against a
+fixture seeded with that directory's contents; the expected result is the
+fixture plan's, independent of both. `witchy parity`'s third leg seeds the
+fixture from the granted root the same way.
+
+**Source surface admitted by the slice.** `dir.read(path)`, `dir.exists(path)`,
+`dir.write(path, data)`, `dir.subtree(path)`, `env.get_env(name)`, `Dir` and
+`Env` as entry parameters and as ordinary parameters passed down (the token is a
+scalar-like value: copied on pass, no release), and `dir as Dir[Read]`. The
+census targets are `files`, `minigrep`, `caps_audit`, `caps_guard`,
+`capability_rights`, `coven_check`, and `branded_caps`.
+
 ## Implementation order and evidence
 
 1. Repair recorded checker, owned-ABI, source-binding, and executable-oracle
