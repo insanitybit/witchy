@@ -794,11 +794,6 @@ pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
     std::sync::Arc::new(scope)
 }
 
-/// Whether `name` is a canonical function of `module` (see [`canonical_scope`]).
-pub fn in_canonical_scope(module: &Module, name: &str) -> bool {
-    canonical_scope(module).contains(name)
-}
-
 /// A declaration qualified by a user library module (`strutil.shout`) is part
 /// of the checked program: the linker qualifies every non-entry module's
 /// declarations with that module's name, and only the standard library and

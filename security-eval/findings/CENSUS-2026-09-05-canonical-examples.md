@@ -1134,6 +1134,16 @@ the second (`bytes.length`) was reported as a missing binding. The cache is gone
 lowering pass takes the scope once (`lower_typed_module`, `project_layouts`, the payload
 and render scans, `canonical_tail_sites`).
 
+A bounded adversarial review of the slice (memory safety of the emitted IR, 240 randomized
+UTF-8 sequences plus the hand-picked edges, twelve abort fixtures, leak receipts through the
+oracle) found one divergence, fixed: a `with_capacity`/`reserve` hint above `u32::MAX - 4`
+trapped compiled where the interpreter clamps; the hint is now sign-checked and clamped
+(`BYTES_CAPACITY_HINT_LIMIT`), since capacity is unobservable. Recorded limit: the witness
+matches `String` and `Bytes` against the same runtime buffer layout, so a signature that
+swaps the two spellings is invisible to admission (bit-identical representation, no
+memory-safety consequence, a weaker typed witness). Pre-existing, not Bytes-specific:
+mutating an aliased copy inside a `while` is refused with `InvalidExtent` for strings too.
+
 Newly agree: `brainfuck`. Census: 126/163 check, 70 runnable three-legged parity, 0
 disagree; launch 60 (kernels, a `from_utf8_lossy`-adjudicated decode battery, and the
 abort fixtures), lower canonical 91, wir lib 567. `time_and_encoding` remains refused on

@@ -7496,8 +7496,13 @@ impl FunctionLowerer<'_> {
             ("__bytes_from_string", [source]) | ("__bytes_reserve", [source, _]) => {
                 let value = self.lower_expr(source)?;
                 if name == "__bytes_reserve" {
+                    // A capacity hint is unobservable (every kernel copies
+                    // into an exact-size buffer); only its sign is checked,
+                    // as the interpreter does.
                     let additional = self.lower_expr(&args[1])?;
-                    let _ = self.int_to_size_checked(additional, size_limit)?;
+                    let zero = self.push_const_int(0)?;
+                    let non_negative = self.push_compare(ComparisonOperator::GreaterEqualSigned, additional, zero)?;
+                    self.push_trap_unless(non_negative)?;
                 }
                 self.owned_string_copy(value)
             }
@@ -7549,8 +7554,17 @@ impl FunctionLowerer<'_> {
                 self.copy_checked_slice(value, lo, width, total, layout)
             }
             ("__bytes_with_capacity", [capacity]) => {
+                // The hint is honored up to `BYTES_CAPACITY_HINT_LIMIT`; a
+                // negative hint aborts (the interpreter's rule) and a larger
+                // one is clamped, since capacity is unobservable.
                 let capacity = self.lower_expr(capacity)?;
-                let capacity = self.int_to_size_checked(capacity, size_limit)?;
+                let zero_int = self.push_const_int(0)?;
+                let non_negative = self.push_compare(ComparisonOperator::GreaterEqualSigned, capacity, zero_int)?;
+                self.push_trap_unless(non_negative)?;
+                let limit = self.push_const_int(BYTES_CAPACITY_HINT_LIMIT)?;
+                let large = self.push_compare(ComparisonOperator::GreaterSigned, capacity, limit)?;
+                let capacity = self.lower_int_select(large, limit, capacity)?;
+                let capacity = self.int_to_size_checked(capacity, u64::try_from(BYTES_CAPACITY_HINT_LIMIT).expect("positive limit"))?;
                 let zero = self.push_const_size(0)?;
                 self.alloc_bytes(zero, capacity)
             }
@@ -9663,6 +9677,11 @@ fn same_record_name(checked: &str, constructor: &str) -> bool {
         || checked.strip_suffix(constructor).is_some_and(|prefix| prefix.ends_with('.'))
         || constructor.strip_suffix(checked).is_some_and(|prefix| prefix.ends_with('.'))
 }
+
+/// The largest `bytes.with_capacity` hint honored as-is; larger hints allocate
+/// this much (capacity is unobservable, every kernel copies into an exact-size
+/// buffer, and the interpreter clamps its own hint too).
+const BYTES_CAPACITY_HINT_LIMIT: i64 = 65_536;
 
 /// Static payloads the `Int` renderer copies digits and the sign from.
 const RENDER_DIGIT_TABLE: &str = "0123456789";

@@ -903,6 +903,8 @@ fn admitted_bytes_out_of_range_index_value_and_count_trap() {
     for fixture in fixtures {
         assert!(run_admitted_result(fixture).is_err(), "{fixture}");
     }
-    let output = run_admitted("import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    console.print(\"${b.at(2)} ${b.slice(1, 3).length()}\")\n");
-    assert_eq!(output, vec!["1 2".to_string()]);
+    // A capacity hint is unobservable: a huge one is clamped, not an abort
+    // (the interpreter clamps its own hint).
+    let output = run_admitted("import bytes\n\nfn main(console: Console):\n    let b = bytes.repeat(1, 3)\n    var c = bytes.with_capacity(9223372036854775807)\n    c.reserve(9223372036854775807)\n    console.print(\"${b.at(2)} ${b.slice(1, 3).length()} ${c.length()}\")\n");
+    assert_eq!(output, vec!["1 2 0".to_string()]);
 }
