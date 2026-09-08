@@ -15,6 +15,7 @@ use super::{
 
 const BUNDLE_MAGIC: &[u8; 4] = b"WLAB";
 const BUNDLE_VERSION: u32 = 1;
+const NOMINAL_BUNDLE_VERSION: u32 = 2;
 const MAX_BUNDLE_DESCRIPTORS: usize = 1 << 20;
 const MAX_DESCRIPTOR_BYTES: usize = 1 << 24;
 
@@ -25,6 +26,7 @@ const MAX_DESCRIPTOR_BYTES: usize = 1 << 24;
 pub struct LayoutBundle {
     descriptors: Vec<(LayoutId, Vec<u8>)>,
     roots: Vec<LayoutId>,
+    nominal_bindings: BTreeMap<LayoutId, LayoutId>,
 }
 
 impl LayoutBundle {
@@ -42,6 +44,22 @@ impl LayoutBundle {
         for root in &roots {
             visit(*root, interner, &mut visited, &mut active, &mut ordered)?;
         }
+        // Descriptor dependencies remain acyclic. Nominal bindings are a
+        // separate authenticated relation and may close cycles only through
+        // opaque pointer identities. Include exactly the reachable bindings.
+        let mut nominal_bindings = BTreeMap::new();
+        let mut cursor = 0;
+        while cursor < ordered.len() {
+            let id = ordered[cursor].0;
+            if matches!(interner.get(id).map(|descriptor| descriptor.kind()), Some(LayoutKind::OpaqueNominal { .. })) {
+                let target = interner.nominal_target(id).ok_or(
+                    LayoutTransportError::Invalid("unbound nominal layout identity"),
+                )?;
+                nominal_bindings.insert(id, target);
+                visit(target, interner, &mut visited, &mut active, &mut ordered)?;
+            }
+            cursor += 1;
+        }
         if ordered.len() > MAX_BUNDLE_DESCRIPTORS {
             return Err(LayoutTransportError::Invalid(
                 "layout bundle descriptor limit exceeded",
@@ -52,7 +70,7 @@ impl LayoutBundle {
                 "layout descriptor size limit exceeded",
             ));
         }
-        Ok(Self { descriptors: ordered, roots: roots.into_iter().collect() })
+        Ok(Self { descriptors: ordered, roots: roots.into_iter().collect(), nominal_bindings })
     }
 
     pub fn roots(&self) -> &[LayoutId] {
@@ -66,7 +84,7 @@ impl LayoutBundle {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(BUNDLE_MAGIC);
-        push_u32(&mut bytes, BUNDLE_VERSION);
+        push_u32(&mut bytes, if self.nominal_bindings.is_empty() { BUNDLE_VERSION } else { NOMINAL_BUNDLE_VERSION });
         push_u32(&mut bytes, LAYOUT_SCHEMA_VERSION);
         push_u32(
             &mut bytes,
@@ -87,6 +105,13 @@ impl LayoutBundle {
         for root in &self.roots {
             bytes.extend_from_slice(root.as_bytes());
         }
+        if !self.nominal_bindings.is_empty() {
+            push_u32(&mut bytes, u32::try_from(self.nominal_bindings.len()).expect("validated nominal count fits u32"));
+            for (nominal, target) in &self.nominal_bindings {
+                bytes.extend_from_slice(nominal.as_bytes());
+                bytes.extend_from_slice(target.as_bytes());
+            }
+        }
         bytes
     }
 
@@ -101,7 +126,7 @@ impl LayoutBundle {
             return Err(LayoutTransportError::Invalid("bad layout bundle magic"));
         }
         let version = decoder.u32()?;
-        if version != BUNDLE_VERSION {
+        if version != BUNDLE_VERSION && version != NOMINAL_BUNDLE_VERSION {
             return Err(LayoutTransportError::UnsupportedBundleVersion(version));
         }
         let schema = decoder.u32()?;
@@ -124,6 +149,19 @@ impl LayoutBundle {
         let mut roots = Vec::with_capacity(root_count);
         for _ in 0..root_count {
             roots.push(decoder.id()?);
+        }
+        if version == NOMINAL_BUNDLE_VERSION {
+            let count = decoder.count(MAX_BUNDLE_DESCRIPTORS)?;
+            let mut previous = None;
+            for _ in 0..count {
+                let nominal = decoder.id()?;
+                if previous.is_some_and(|previous| previous >= nominal) {
+                    return Err(LayoutTransportError::Invalid("nominal bindings are not strictly sorted"));
+                }
+                let target = decoder.id()?;
+                interner.bind_nominal(nominal, target)?;
+                previous = Some(nominal);
+            }
         }
         if !decoder.is_done() {
             return Err(LayoutTransportError::Invalid("trailing layout bundle bytes"));
@@ -371,6 +409,7 @@ fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
                     | ScalarKind::Callable,
                 )
                 | LayoutKind::RuntimeBuffer { .. }
+                | LayoutKind::OpaqueNominal { .. }
                 | LayoutKind::ScratchBuffer { .. }
                 | LayoutKind::RuntimePointerBuffer { .. }
                 | LayoutKind::RuntimeDictionaryBody { .. }
@@ -466,7 +505,7 @@ fn visit(
 
 fn children(kind: &LayoutKind) -> Vec<LayoutId> {
     match kind {
-        LayoutKind::Scalar(_) => Vec::new(),
+        LayoutKind::Scalar(_) | LayoutKind::OpaqueNominal { .. } => Vec::new(),
         LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } => fields.clone(),
         LayoutKind::PackedList { element, .. } => vec![*element],
         LayoutKind::ClosedSum { variants } => variants.iter().flatten().copied().collect(),

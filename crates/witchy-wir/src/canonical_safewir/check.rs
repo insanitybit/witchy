@@ -245,6 +245,14 @@ fn check_candidate<S: ModuleStage>(
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
+    // Layout transport can represent recursive graphs before the reference
+    // and destructor rules are implemented. No such graph may acquire encoder
+    // authority until those rules and source binding are integrated together.
+    if layouts.iter().any(|(_, descriptor)| matches!(descriptor.kind(), crate::layout::LayoutKind::OpaqueNominal { .. })) {
+        return Err(InitialCheckError::InvalidLayoutBundle(
+            "recursive nominal values require canonical ownership and destruction support".into(),
+        ));
+    }
     check_static_data(candidate, &layouts)?;
     let signatures = index_signatures(candidate.signatures())?;
     let imports = index_imports(candidate.imports())?;

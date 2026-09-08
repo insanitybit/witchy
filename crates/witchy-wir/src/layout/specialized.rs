@@ -460,6 +460,10 @@ impl OperationShapes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutKind {
     Scalar(ScalarKind),
+    /// A nominal identity used only behind a pointer. It has no storage of its
+    /// own. The bundle binds it to a concrete descriptor; source admission must
+    /// independently check that binding against the checked type definition.
+    OpaqueNominal { key: [u8; 32] },
     Tuple { fields: Vec<LayoutId> },
     PackedRecord { fields: Vec<LayoutId> },
     PackedList { element: LayoutId, rc: RcHeader },
@@ -607,6 +611,7 @@ impl LayoutKind {
             | Self::PackedList { .. }
             | Self::ClosedSum { .. } => true,
             Self::RuntimeBuffer { .. }
+            | Self::OpaqueNominal { .. }
             | Self::ScratchBuffer { .. }
             | Self::RuntimePointerBuffer { .. }
             | Self::RuntimeDictionaryBody { .. }
@@ -960,6 +965,7 @@ pub trait ClosedTypeResolver {
 #[derive(Debug, Default)]
 pub struct LayoutInterner {
     descriptors: BTreeMap<LayoutId, LayoutDescriptor>,
+    nominal_bindings: BTreeMap<LayoutId, LayoutId>,
 }
 
 impl LayoutInterner {
@@ -977,6 +983,49 @@ impl LayoutInterner {
 
     pub fn get(&self, id: LayoutId) -> Option<&LayoutDescriptor> {
         self.descriptors.get(&id)
+    }
+
+    /// Intern an identity, not a storage descriptor or memory authority.
+    pub fn intern_opaque_nominal(&mut self, key: [u8; 32]) -> Result<LayoutId, LayoutError> {
+        self.intern_kind(LayoutKind::OpaqueNominal { key })
+    }
+
+    /// Bind once, after the concrete body and its pointer fields are interned.
+    /// A concrete body may point back to this identity, but aliases of opaque
+    /// identities are forbidden so resolution itself always takes one step.
+    pub fn bind_nominal(&mut self, nominal: LayoutId, target: LayoutId) -> Result<(), LayoutError> {
+        if !matches!(self.get(nominal).map(LayoutDescriptor::kind), Some(LayoutKind::OpaqueNominal { .. })) {
+            return Err(LayoutError::DescriptorInvariant("nominal binding requires an opaque identity"));
+        }
+        let descriptor = self.get(target).ok_or(LayoutError::UnknownLayout(target))?;
+        if matches!(descriptor.kind(), LayoutKind::OpaqueNominal { .. }) {
+            return Err(LayoutError::DescriptorInvariant("nominal binding requires a concrete body"));
+        }
+        if let Some(previous) = self.nominal_bindings.get(&nominal) {
+            return if *previous == target {
+                Ok(())
+            } else {
+                Err(LayoutError::DescriptorInvariant("nominal binding cannot be replaced"))
+            };
+        }
+        self.nominal_bindings.insert(nominal, target);
+        Ok(())
+    }
+
+    pub fn nominal_target(&self, nominal: LayoutId) -> Option<LayoutId> {
+        self.nominal_bindings.get(&nominal).copied()
+    }
+
+    /// Resolve an explicitly bound identity. `get` deliberately does not do
+    /// this: descriptor hashing and byte authentication must see the identity
+    /// descriptor itself, never silently substitute a different descriptor.
+    pub fn resolve_nominal(&self, id: LayoutId) -> Result<LayoutId, LayoutError> {
+        match self.get(id).ok_or(LayoutError::UnknownLayout(id))?.kind() {
+            LayoutKind::OpaqueNominal { .. } => self.nominal_target(id).ok_or(
+                LayoutError::DescriptorInvariant("unbound nominal layout identity"),
+            ),
+            _ => Ok(id),
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (LayoutId, &LayoutDescriptor)> {
@@ -1614,6 +1663,7 @@ fn validate_descriptor_item_counts(descriptor: &LayoutDescriptor) -> Result<(), 
 
     match &descriptor.kind {
         LayoutKind::Scalar(_)
+        | LayoutKind::OpaqueNominal { .. }
         | LayoutKind::PackedList { .. }
         | LayoutKind::RuntimeBuffer { .. }
         | LayoutKind::ScratchBuffer { .. }
@@ -1763,6 +1813,18 @@ fn build_descriptor<'a>(
     mut lookup: impl FnMut(LayoutId) -> Option<&'a LayoutDescriptor>,
 ) -> Result<LayoutDescriptor, LayoutError> {
     match &kind {
+        LayoutKind::OpaqueNominal { .. } => Ok(LayoutDescriptor {
+            schema_version: LAYOUT_SCHEMA_VERSION,
+            kind: kind.clone(),
+            size: LayoutSize::Fixed(0),
+            alignment: 1,
+            fields: Vec::new(),
+            variants: Vec::new(),
+            ownership: Vec::new(),
+            header: HeaderLayout::None,
+            anchor: RootAnchor::AllocationBase,
+            operations: no_runtime_operations(),
+        }),
         LayoutKind::Scalar(scalar) => {
             let operation = OperationShape::Scalar(*scalar);
             Ok(LayoutDescriptor {
@@ -2543,6 +2605,9 @@ fn validate_source_inline_child(
     id: LayoutId,
     descriptor: &LayoutDescriptor,
 ) -> Result<(), LayoutError> {
+    if matches!(descriptor.kind, LayoutKind::OpaqueNominal { .. }) {
+        return Err(LayoutError::DescriptorInvariant("an opaque nominal cannot be embedded inline"));
+    }
     if descriptor.anchor != RootAnchor::AllocationBase {
         return Err(LayoutError::DescriptorInvariant(
             "an exposed-root layout cannot be embedded inline",
@@ -2694,6 +2759,10 @@ impl Encoder {
 
     fn kind(&mut self, kind: &LayoutKind) {
         match kind {
+            LayoutKind::OpaqueNominal { key } => {
+                self.byte(16);
+                self.bytes(key);
+            }
             LayoutKind::Scalar(scalar) => {
                 self.byte(0);
                 self.scalar(*scalar);
@@ -3042,6 +3111,11 @@ impl<'a> Decoder<'a> {
     fn kind(&mut self) -> Result<LayoutKind, LayoutError> {
         let offset = self.offset;
         match self.byte()? {
+            16 => {
+                let mut key = [0; 32];
+                key.copy_from_slice(self.bytes(32)?);
+                Ok(LayoutKind::OpaqueNominal { key })
+            }
             0 => Ok(LayoutKind::Scalar(self.scalar()?)),
             1 => Ok(LayoutKind::Tuple {
                 fields: self.ids()?,
