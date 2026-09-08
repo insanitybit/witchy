@@ -251,7 +251,13 @@ fn operation_flow(
             if is_reference(function, *destination) { owned.insert(*destination); }
         }
         Operation::CloneRef { destination, source } => {
-            if !owned.contains(source) { return Err(ReleasePlacementError::MissingToken(*source)); }
+            let immortal = function.blocks.iter().any(|block| block.operations.iter().any(|operation| {
+                matches!(operation, Operation::StaticData { destination, .. } if destination == source)
+            }));
+            // StaticData has no releasable source token. A clone still creates
+            // an explicit reference value for ordinary call/store accounting;
+            // the independent checker authenticates the static segment.
+            if !owned.contains(source) && !immortal { return Err(ReleasePlacementError::MissingToken(*source)); }
             owned.insert(*destination);
         }
         Operation::MoveValue { destination, source } if is_reference(function, *source) => {

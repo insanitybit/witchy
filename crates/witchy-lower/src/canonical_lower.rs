@@ -4038,7 +4038,7 @@ impl FunctionLowerer<'_> {
             block.operations.iter().any(|operation| match operation {
                 Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
                 | Operation::CloneRef { destination, .. } => *destination == value,
-                Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared, .. } => {
+                Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent, .. } => {
                     *destination == value
                 }
                 Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
@@ -4264,7 +4264,7 @@ impl FunctionLowerer<'_> {
                 | Operation::CloneRef { destination, .. } => *destination == value,
                 Operation::Load {
                     destination,
-                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent,
                     ..
                 } => *destination == value,
                 // A call's reference result is a shared token (its result
@@ -5608,19 +5608,25 @@ impl FunctionLowerer<'_> {
                         });
                     }
                     let reference = matches!(expected, ValueType::Ref(_));
-                    let value = if reference && !move_references {
-                        self.owned_for_storage(value, field_type)?
+                    let (value, transfer) = if reference && !move_references {
+                        // A field owns one reference, not a deep copy of every
+                        // possible variant payload. Cloning the token makes its
+                        // shared state explicit; Store retains the field's edge
+                        // and release placement drops this temporary token.
+                        let shared = self.fresh(expected)?;
+                        self.push_operation(Operation::CloneRef { destination: shared, source: value });
+                        (shared, witchy_wir::canonical_safewir::StoreTransfer::CloneShared)
                     } else {
-                        value
+                        (value, if reference {
+                            witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+                        } else {
+                            witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+                        })
                     };
                     self.push_operation(Operation::Store {
                         place,
                         value,
-                        transfer: if reference {
-                            witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
-                        } else {
-                            witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
-                        },
+                        transfer,
                     });
                 }
                 None if matches!(expected, ValueType::Ref(_)) && nullable_references => {
@@ -10646,8 +10652,7 @@ fn aggregate_layout(
                     None,
                     Some(pointee),
                 ) => actual == pointee
-                    && (*semantics == PointerSlot::Owned
-                        || (nullable_references && *semantics == PointerSlot::OwnedNullable)),
+                    && *semantics == if nullable_references { PointerSlot::OwnedNullable } else { PointerSlot::Owned },
                 _ => false,
             }
         });

@@ -5,21 +5,28 @@ use crate::canonical_safewir::{AllocationClass, ValueType};
 const FUNCTION: FunctionId = FunctionId::new(101);
 
 fn candidate(present: bool) -> CanonicalModule<LoweredCandidate> {
+    candidate_with_transfer(present, false, true)
+}
+
+fn candidate_with_transfer(present: bool, shared: bool, nullable: bool) -> CanonicalModule<LoweredCandidate> {
     let mut layouts = LayoutInterner::new();
     let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
     let child_layout = layouts.intern_packed_record(vec![int]).unwrap();
-    let slot = layouts.intern_runtime_pointer_value_slot(child_layout, PointerSlot::OwnedNullable).unwrap();
+    let slot = layouts.intern_runtime_pointer_value_slot(child_layout,
+        if nullable { PointerSlot::OwnedNullable } else { PointerSlot::Owned }).unwrap();
     let parent_layout = layouts.intern_packed_record(vec![slot]).unwrap();
     let [parent, child, literal, loaded, result] = [1, 2, 3, 4, 5].map(ValueId::new);
+    let external = ValueId::new(6);
+    let after_drop = ValueId::new(7);
     let field = |object, value_type, access| Place::projected(object, Projection::Field { index: 0 }, value_type, access);
     let alloc = |destination, layout| {
         let LayoutSize::Fixed(bytes) = layouts.get(layout).unwrap().size() else { panic!("fixed fixture"); };
         Operation::Alloc { destination, layout, extent: Extent::FixedBytes(u64::from(bytes)), class: AllocationClass::ReferenceCounted }
     };
-    let mut operations = vec![
-        alloc(parent, parent_layout),
-        Operation::InitNullableOwned { place: field(parent, ValueType::Ref(child_layout), AccessMode::Write) },
-    ];
+    let mut operations = vec![alloc(parent, parent_layout)];
+    if nullable {
+        operations.push(Operation::InitNullableOwned { place: field(parent, ValueType::Ref(child_layout), AccessMode::Write) });
+    }
     let mut value_types = BTreeMap::from([
         (parent, ValueType::Ref(parent_layout)), (loaded, ValueType::Ref(child_layout)), (result, ValueType::Int),
     ]);
@@ -29,15 +36,30 @@ fn candidate(present: bool) -> CanonicalModule<LoweredCandidate> {
             alloc(child, child_layout),
             Operation::ConstInt { destination: literal, value: 42 },
             Operation::Store { place: field(child, ValueType::Int, AccessMode::Write), value: literal, transfer: StoreTransfer::CopyScalar },
-            Operation::Store { place: field(parent, ValueType::Ref(child_layout), AccessMode::Write), value: child, transfer: StoreTransfer::MoveUnique },
         ]);
+        if shared {
+            value_types.extend([(external, ValueType::Ref(child_layout)), (after_drop, ValueType::Int)]);
+            operations.push(Operation::CloneRef { destination: external, source: child });
+        }
+        operations.push(Operation::Store {
+            place: field(parent, ValueType::Ref(child_layout), AccessMode::Write), value: child,
+            transfer: if shared { StoreTransfer::CloneShared } else { StoreTransfer::MoveUnique },
+        });
+        if shared { operations.push(Operation::DropRef { object: child }); }
     }
     operations.extend([
-        Operation::Load { destination: loaded, place: field(parent, ValueType::Ref(child_layout), AccessMode::Read), transfer: LoadTransfer::ClonePresent },
+        Operation::Load { destination: loaded, place: field(parent, ValueType::Ref(child_layout), AccessMode::Read),
+            transfer: if nullable { LoadTransfer::ClonePresent } else { LoadTransfer::CloneShared } },
         Operation::Load { destination: result, place: field(loaded, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
         Operation::DropRef { object: loaded },
         Operation::DropRef { object: parent },
     ]);
+    if shared {
+        operations.extend([
+            Operation::Load { destination: after_drop, place: field(external, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+            Operation::DropRef { object: external },
+        ]);
+    }
     let signature = FunctionSignature {
         id: FunctionSignatureId::new(101), parameters: vec![], results: vec![ValueType::Int],
         contract: CallableContract { parameters: vec![], results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new() },
@@ -48,7 +70,8 @@ fn candidate(present: bool) -> CanonicalModule<LoweredCandidate> {
         signatures: vec![signature], imports: vec![], proper_tail_sites: vec![],
         functions: vec![Function {
             id: FUNCTION, signature: FunctionSignatureId::new(101), entry: BlockId::new(0), value_types,
-            blocks: vec![BasicBlock { id: BlockId::new(0), parameters: vec![], operations, terminator: Terminator::Return { values: vec![result] } }],
+            blocks: vec![BasicBlock { id: BlockId::new(0), parameters: vec![], operations,
+                terminator: Terminator::Return { values: vec![if shared { after_drop } else { result }] } }],
         }],
     })
 }
@@ -78,6 +101,24 @@ fn nullable_admission_present_and_absent_agree_with_oracle() {
             assert!(matches!(oracle, Err(InterpretError::GuardTrap)));
             assert!(output.is_err());
         }
+    }
+}
+
+#[test]
+fn shared_store_preserves_external_owner_after_parent_drop() {
+    for nullable in [false, true] {
+        let initial = check_initial_with_test_witness(candidate_with_transfer(true, true, nullable)).unwrap();
+        let checked = validate_final_for_test(initial).unwrap();
+        let oracle = interpret_program(&checked, FUNCTION, vec![], InterpreterConfig::default()).unwrap();
+        assert_eq!(oracle.results, vec![InterpreterValue::Int(42)]);
+        assert_eq!(oracle.leaked_objects, 0);
+        let artifact = admit_canonical(checked).expect("shared store exact admission");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let output = instance.get_typed_func::<(), i64>(&mut store, "f101").unwrap().call(&mut store, ()).unwrap();
+        assert_eq!(output, 42, "external child survives parent destruction; nullable={nullable}");
     }
 }
 

@@ -926,7 +926,7 @@ fn lower_operation(
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
                 Some(pointee) => {
-                    *transfer == StoreTransfer::MoveUnique
+                    matches!(*transfer, StoreTransfer::MoveUnique | StoreTransfer::CloneShared)
                         && place.value_type() == ValueType::Ref(pointee)
                         && value_types.get(value) == Some(&ValueType::Ref(pointee))
                 }
@@ -2882,10 +2882,15 @@ fn emit_instruction(
             }
         }
         ScalarInstruction::Store { place, value, transfer } => {
-            if !matches!(*transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique) {
+            if !matches!(*transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared) {
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Store transfer" });
             }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
+            if *transfer == StoreTransfer::CloneShared {
+                // Retain before publishing the second edge. Assigning the
+                // source local to itself preserves its existing owned token.
+                emit_clone_ref(body, layout, *value, *value, function)?;
+            }
             emit_typed_store(body, function, layout, access, *value)?;
         }
         ScalarInstruction::CopyBytes { destination, source, length } => {
@@ -5211,8 +5216,11 @@ fn expected_linear_function_plan(
                 }
             }
             Operation::Store { place, value, transfer }
-                if matches!(transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique) =>
+                if matches!(transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared) =>
             {
+                if *transfer == StoreTransfer::CloneShared {
+                    push_share_plan(&mut plan, &layout, *value, *value)?;
+                }
                 push_memory_store_plan(&mut plan, function, layouts, &layout, place, *value)?;
             }
             Operation::CopyBytes { destination, source, length } => {

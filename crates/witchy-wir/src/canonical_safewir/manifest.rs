@@ -264,10 +264,11 @@ pub const RULES: &[RuleEntry] = &[
         rule: CanonicalRuleId::Store,
         judgment: "check/memory.rs::MemoryChecker::store",
         predicate: "the object is uniquely owned and writable; a scalar store copies (a byte slot takes a `Size` the path proves fits a byte); a reference store moves a unique token or a shared clone into an empty slot and never overwrites a stored reference or an initialized prefix; the stored value is complete",
-        interpreter: "store: writes the cell; a reference store transfers the token",
+        interpreter: "store: writes the cell; MoveUnique transfers its token and CloneShared retains the new field edge",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
         admits: &[
             t(Interpreter, "validated_counted_element_store_and_load_execute"),
+            t(EvidenceFile::NullableBackend, "shared_store_preserves_external_owner_after_parent_drop"),
             t(Backend, "packed_scalar_collection_access_mutates_and_preserves_headers"),
             t(Memory, "pointer_slot_move_and_clone_preserve_structural_ownership"),
             t(Launch, "admitted_ascii_case_mapping_writes_bytes_under_a_byte_bound"),
