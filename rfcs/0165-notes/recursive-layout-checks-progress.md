@@ -83,3 +83,32 @@ env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= taskpolicy -c utility cargo test
 Five shape tests and one ABI test passed. This is not a claim that complete
 generic programs lower or execute: source layout construction and constructor
 lookup still require the remaining integration work above.
+
+## Recursive catalog follow-up
+
+Source layout projection now reserves opaque identities for cycle-participating
+user heap types, then binds each to its concrete record body. A domain-separated
+SHA-256 of the instantiated aggregate key determines the identity independently
+of traversal order. Acyclic types continue through concrete layout construction.
+
+Cycle membership is determined from the completed reachable user-type graph.
+Review caught a root-order bug in an earlier active-path-only implementation:
+`A -> [B, C], B -> A, C -> B` could leave `C` unclassified. The corrected graph
+walk and a regression for that graph are included.
+
+```sh
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= taskpolicy -c utility cargo test -p witchy-lower --lib canonical_layouts::tests -- --nocapture
+```
+
+Nine projection tests passed on the same warmed target, including canonical
+binding roundtrip, mutual and branching cycles under reversed root order,
+acyclic nested aggregates, nested lists, Bytes, tuples, and dictionaries.
+
+The separate review observation about opaque identities embedded in inline
+field descriptors was withdrawn as a reachable defect: catalog construction
+and decoding reject such inline descriptors before checker entry. This does
+not relax that catalog invariant or establish general checker soundness.
+
+Remaining: source value/constructor lookup must consistently retain nominal
+reference identities while using the bound physical body for places and sizes.
+The initial production opaque-layout refusal remains present.

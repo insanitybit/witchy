@@ -7,13 +7,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
+use sha2::{Digest, Sha256};
 use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
 use witchy_wir::layout::{
-    ClosedTypeResolver, LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ResolvedNamed,
-    ScalarKind,
+    ClosedTypeResolver, LayoutBundle, LayoutId, LayoutInterner, PointerSlot, RcHeader,
+    ResolvedNamed, ScalarKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -364,10 +365,11 @@ impl LayoutProjection {
     }
 
     fn finish(self) -> Result<LayoutBundle, CanonicalLayoutError> {
+        let recursive_types = recursive_heap_types(&self.roots, &self.definitions);
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
         for ty in self.roots {
-            let root = intern_v1_layout(&mut interner, &ty, &self.definitions)?;
+            let root = intern_v1_layout(&mut interner, &ty, &self.definitions, &recursive_types)?;
             roots.insert(root);
         }
         for (_, slots) in closure_slot_assignment(self.closures.into_values().collect()) {
@@ -382,23 +384,43 @@ fn intern_v1_layout(
     interner: &mut LayoutInterner,
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
+    recursive_types: &HashSet<Type>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    intern_v1_layout_checked(interner, ty, definitions, &mut HashSet::new())
+    intern_v1_layout_checked(interner, ty, definitions, recursive_types, &mut HashSet::new())
 }
 
 fn intern_v1_layout_checked(
     interner: &mut LayoutInterner,
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
+    recursive_types: &HashSet<Type>,
     active: &mut HashSet<Type>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     let key = ty.unqualified().clone();
+    if recursive_types.contains(&key) {
+        let nominal = intern_recursive_nominal(interner, &key)?;
+        if interner.nominal_target(nominal).is_some() {
+            return Ok(nominal);
+        }
+        if !active.insert(key.clone()) {
+            // The identity is reserved before its body is visited. A back
+            // edge carries that identity into the physical pointer slot.
+            return Ok(nominal);
+        }
+        let result = intern_v1_layout_fields(interner, &key, definitions, recursive_types, active);
+        active.remove(&key);
+        let body = result?;
+        interner
+            .bind_nominal(nominal, body)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        return Ok(nominal);
+    }
     if !active.insert(key.clone()) {
         return Err(CanonicalLayoutError::UnsupportedType(format!(
             "recursive nominal layout {key:?} requires nullable owned-slot lowering"
         )));
     }
-    let result = intern_v1_layout_fields(interner, ty, definitions, active);
+    let result = intern_v1_layout_fields(interner, &key, definitions, recursive_types, active);
     active.remove(&key);
     result
 }
@@ -407,6 +429,7 @@ fn intern_v1_layout_fields(
     interner: &mut LayoutInterner,
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
+    recursive_types: &HashSet<Type>,
     active: &mut HashSet<Type>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
@@ -423,7 +446,7 @@ fn intern_v1_layout_fields(
         && name == "List"
         && arguments.len() == 1
     {
-        let element = intern_v1_layout_checked(interner, &arguments[0], definitions, active)?;
+        let element = intern_v1_layout_checked(interner, &arguments[0], definitions, recursive_types, active)?;
         let element = if !is_scalar_type(&arguments[0]) {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
@@ -436,7 +459,7 @@ fn intern_v1_layout_fields(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
-        return intern_v1_layout_checked(interner, &tuple, definitions, active);
+        return intern_v1_layout_checked(interner, &tuple, definitions, recursive_types, active);
     }
     if let Some(shape) = scalar_aggregate_shape(ty, definitions)
         && !shape.packed
@@ -451,7 +474,7 @@ fn intern_v1_layout_fields(
                     .intern_scalar(scalar)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
             } else {
-                let pointee = intern_v1_layout_checked(interner, field, definitions, active)?;
+                let pointee = intern_v1_layout_checked(interner, field, definitions, recursive_types, active)?;
                 interner
                     .intern_runtime_pointer_value_slot(
                         pointee,
@@ -474,13 +497,120 @@ fn intern_v1_layout_fields(
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
+fn intern_recursive_nominal(
+    interner: &mut LayoutInterner,
+    ty: &Type,
+) -> Result<LayoutId, CanonicalLayoutError> {
+    let key = aggregate_key(ty).ok_or_else(|| {
+        CanonicalLayoutError::UnsupportedType(format!("recursive nominal layout {ty:?}"))
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(b"witchy/canonical-layout/recursive-nominal-v1\0");
+    digest.update((key.len() as u64).to_le_bytes());
+    digest.update(key.as_bytes());
+    interner
+        .intern_opaque_nominal(digest.finalize().into())
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
+}
+
+/// Find the reachable user-defined heap types that are actually on a source
+/// cycle. Acyclic heap records retain their existing concrete content IDs;
+/// only cycle participants need an opaque identity reserved before their body.
+/// The graph is completed before cycle membership is classified, so the result
+/// cannot depend on which source root happened to be visited first.
+fn recursive_heap_types(roots: &[Type], definitions: &BTreeMap<String, TypeDef>) -> HashSet<Type> {
+    let mut graph: HashMap<Type, HashSet<Type>> = HashMap::new();
+    let mut pending = Vec::new();
+    let mut reachable = HashSet::new();
+    for root in roots {
+        collect_heap_targets(root, definitions, &mut pending);
+    }
+    while let Some(node) = pending.pop() {
+        let node = node.unqualified().clone();
+        if !reachable.insert(node.clone()) || !is_heap_user_type(&node, definitions) {
+            continue;
+        }
+        let mut edges = HashSet::new();
+        if let Some(shape) = scalar_aggregate_shape(&node, definitions) {
+            for field in shape.fields.iter().filter(|field| !is_scalar_type(field)) {
+                collect_heap_targets(field, definitions, &mut edges);
+            }
+        }
+        pending.extend(edges.iter().cloned());
+        graph.insert(node, edges);
+    }
+
+    graph
+        .keys()
+        .filter(|node| graph_reaches(&graph, node, node, &mut HashSet::new()))
+        .cloned()
+        .collect()
+}
+
+fn collect_heap_targets(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    targets: &mut impl Extend<Type>,
+) {
+    let ty = ty.unqualified();
+    if is_heap_user_type(ty, definitions) {
+        targets.extend(std::iter::once(ty.clone()));
+        return;
+    }
+    if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
+        collect_heap_targets(&tuple, definitions, targets);
+        return;
+    }
+    if let Some(shape) = scalar_aggregate_shape(ty, definitions) {
+        for field in shape.fields.iter().filter(|field| !is_scalar_type(field)) {
+            collect_heap_targets(field, definitions, targets);
+        }
+        return;
+    }
+    match ty {
+        Type::Qualified(_, inner) => collect_heap_targets(inner, definitions, targets),
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            collect_heap_targets(&arguments[0], definitions, targets)
+        }
+        Type::Tuple(fields) => {
+            for field in fields {
+                collect_heap_targets(field, definitions, targets);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn graph_reaches(
+    graph: &HashMap<Type, HashSet<Type>>,
+    current: &Type,
+    target: &Type,
+    visited: &mut HashSet<Type>,
+) -> bool {
+    graph.get(current).is_some_and(|edges| {
+        edges.iter().any(|child| {
+            child == target
+                || (visited.insert(child.clone()) && graph_reaches(graph, child, target, visited))
+        })
+    })
+}
+
+fn is_heap_user_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    let Type::Named(name, _) = ty.unqualified() else {
+        return false;
+    };
+    definitions.contains_key(name)
+        && scalar_aggregate_shape(ty, definitions).is_some_and(|shape| !shape.packed)
+}
+
 fn intern_dictionary_slot(
     interner: &mut LayoutInterner,
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
+    recursive_types: &HashSet<Type>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
-        let pointee = intern_v1_layout(interner, ty, definitions)?;
+        let pointee = intern_v1_layout(interner, ty, definitions, recursive_types)?;
         return interner
             .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
@@ -636,24 +766,86 @@ mod tests {
     }
 
     #[test]
-    fn recursive_layout_projection_collects_finite_roots_and_refuses_expansion() {
+    fn recursive_layout_projection_roundtrips_finite_nominal_binding() {
         let mut projection = LayoutProjection::default();
         projection.definitions.insert("Tree".into(), heap_definition("Tree", vec![named("Int"), named("Tree")]));
         projection.visit_type(&named("Tree")).expect("source root graph is finite");
         assert_eq!(projection.roots, vec![named("Tree")]);
-        let error = projection.finish().expect_err("recursive source admission is still sealed");
-        assert!(error.to_string().contains("requires nullable owned-slot lowering"));
+        let bundle = projection.finish().expect("recursive source layout is finite");
+        let bytes = bundle.canonical_bytes();
+        let (decoded, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bytes)
+            .expect("recursive nominal bundle decodes canonically");
+        assert_eq!(decoded.canonical_bytes(), bytes);
+        let root = decoded.roots()[0];
+        let target = layouts.nominal_target(root).expect("recursive root has one binding");
+        let LayoutKind::PackedRecord { fields } = layouts.get(target).expect("bound body").kind() else {
+            panic!("recursive nominal target must be a packed record");
+        };
+        assert_eq!(fields.len(), 2);
+        let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
+            layouts.get(fields[1]).expect("recursive child slot").kind()
+        else {
+            panic!("recursive child must remain an owned pointer slot");
+        };
+        assert_eq!(*pointee, root, "recursive child slot retains the nominal identity");
     }
 
     #[test]
-    fn recursive_layout_projection_handles_mutual_cycles() {
-        let mut projection = LayoutProjection::default();
-        projection.definitions.insert("A".into(), heap_definition("A", vec![named("B")]));
-        projection.definitions.insert("B".into(), heap_definition("B", vec![named("A")]));
-        projection.visit_type(&named("A")).expect("mutual root graph is finite");
-        assert_eq!(projection.roots.len(), 2);
-        let error = projection.finish().expect_err("mutual layout expansion must refuse");
-        assert!(error.to_string().contains("requires nullable owned-slot lowering"));
+    fn mutual_recursive_nominals_are_stable_across_root_order() {
+        fn bundle(order: &[&str]) -> witchy_wir::layout::LayoutBundle {
+            let mut projection = LayoutProjection::default();
+            projection.definitions.insert("A".into(), heap_definition("A", vec![named("B")]));
+            projection.definitions.insert("B".into(), heap_definition("B", vec![named("A")]));
+            for name in order {
+                projection.visit_type(&named(name)).expect("mutual root graph is finite");
+            }
+            projection.finish().expect("mutual recursive layout is finite")
+        }
+
+        let first = bundle(&["A", "B"]);
+        let second = bundle(&["B", "A"]);
+        assert_eq!(first.canonical_bytes(), second.canonical_bytes());
+        assert_eq!(first.roots(), second.roots());
+
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&first.canonical_bytes())
+            .expect("mutual nominal bundle decodes canonically");
+        assert_eq!(first.roots().len(), 2);
+        for root in first.roots() {
+            let target = layouts.nominal_target(*root).expect("mutual root has one binding");
+            let LayoutKind::PackedRecord { fields } = layouts.get(target).expect("bound mutual body").kind() else {
+                panic!("mutual nominal target must be a packed record");
+            };
+            let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
+                layouts.get(fields[0]).expect("mutual child slot").kind()
+            else {
+                panic!("mutual child must remain an owned pointer slot");
+            };
+            assert!(first.roots().contains(pointee), "mutual child retains a nominal root identity");
+        }
+    }
+
+    #[test]
+    fn recursive_nominal_scc_membership_is_stable_for_branching_cycles() {
+        fn bundle(order: &[&str]) -> witchy_wir::layout::LayoutBundle {
+            let mut projection = LayoutProjection::default();
+            projection.definitions.insert("A".into(), heap_definition("A", vec![named("B"), named("C")]));
+            projection.definitions.insert("B".into(), heap_definition("B", vec![named("A")]));
+            projection.definitions.insert("C".into(), heap_definition("C", vec![named("B")]));
+            for name in order {
+                projection.visit_type(&named(name)).expect("branching cycle is finite");
+            }
+            projection.finish().expect("branching recursive layout is finite")
+        }
+
+        let first = bundle(&["A", "B", "C"]);
+        let second = bundle(&["C", "B", "A"]);
+        assert_eq!(first.canonical_bytes(), second.canonical_bytes());
+        assert_eq!(first.roots(), second.roots());
+
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&first.canonical_bytes())
+            .expect("branching nominal bundle decodes canonically");
+        assert_eq!(first.roots().len(), 3);
+        assert!(first.roots().iter().all(|root| layouts.nominal_target(*root).is_some()));
     }
 
     #[test]
