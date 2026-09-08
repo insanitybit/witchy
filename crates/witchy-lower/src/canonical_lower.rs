@@ -1473,6 +1473,10 @@ impl<'a> FunctionLowerer<'a> {
     }
 }
 
+fn base64_encode_max_input() -> u64 {
+    (u64::from(u32::MAX - 4) / 4) * 3
+}
+
 impl FunctionLowerer<'_> {
     fn lower_body(
         &mut self,
@@ -4822,7 +4826,7 @@ impl FunctionLowerer<'_> {
             // The encoding intrinsics are guest-side byte kernels on the same
             // raw-byte layout as String and Bytes. The std wrappers validate
             // fallible input before reaching the raw decode kernels.
-            Expr::Call { name, args } if name == "encoding.hex_encode" => {
+            Expr::Call { name, args } if matches!(name.as_str(), "encoding.hex_encode" | "encoding.base64_encode") => {
                 self.lower_encoding_call(name, args)
             }
             // A `dict.` name that is not a linked function is a dictionary
@@ -7985,6 +7989,7 @@ impl FunctionLowerer<'_> {
         self.ensure_string_extent(source)?;
         match name {
             "encoding.hex_encode" => self.lower_hex_encode(source),
+            "encoding.base64_encode" => self.lower_base64_encode(source, false),
             _ => Err(CanonicalLoweringError::MissingBinding(name.to_owned())),
         }
     }
@@ -8094,7 +8099,7 @@ impl FunctionLowerer<'_> {
         let two = self.push_const_size(2)?;
         let three = self.push_const_size(3)?;
         let four = self.push_const_size(4)?;
-        let limit = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, maximum, two, OverflowBehavior::Wrap)?;
+        let limit = self.push_const_size(base64_encode_max_input())?;
         let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, limit)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
         let rounded = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, two, OverflowBehavior::Wrap)?;
@@ -8128,8 +8133,9 @@ impl FunctionLowerer<'_> {
         let b0 = self.push_string_byte_load(source, input, layout)?;
         let input1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input, one, OverflowBehavior::Wrap)?;
         let input2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, input1, one, OverflowBehavior::Wrap)?;
-        let b1 = self.lower_optional_byte(source, input1, total)?;
-        let b2 = self.lower_optional_byte(source, input2, total)?;
+        let zero = self.push_const_size(0)?;
+        let b1 = self.lower_optional_byte(source, input1, total, zero)?;
+        let b2 = self.lower_optional_byte(source, input2, total, zero)?;
         let has_b1 = self.push_compare(ComparisonOperator::LessUnsigned, input1, total)?;
         let has_b2 = self.push_compare(ComparisonOperator::LessUnsigned, input2, total)?;
         let b0 = self.widen_size_to_int(b0)?;
@@ -8152,13 +8158,15 @@ impl FunctionLowerer<'_> {
         let s1 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, s1_shifted, mask, OverflowBehavior::Wrap)?;
         let s2 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, s2_shifted, mask, OverflowBehavior::Wrap)?;
         let s3 = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, n, mask, OverflowBehavior::Wrap)?;
-        let c0 = self.push_base64_char(s0, url)?;
-        let c1 = self.push_base64_char(s1, url)?;
-        let c2 = self.push_base64_char(s2, url)?;
-        let c3 = self.push_base64_char(s3, url)?;
+        let c0 = self.push_base64_encode_char(s0, url)?;
+        let c1 = self.push_base64_encode_char(s1, url)?;
+        let c2 = self.push_base64_encode_char(s2, url)?;
+        let c3 = self.push_base64_encode_char(s3, url)?;
         let pad = self.push_const_size(61)?;
         let c2 = self.lower_size_select(has_b1, c2, pad)?;
         let c3 = self.lower_size_select(has_b2, c3, pad)?;
+        let c2 = self.proven_byte(c2)?;
+        let c3 = self.proven_byte(c3)?;
         self.push_byte_store(output, body_values[1], c0)?;
         let out1 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, body_values[1], one, OverflowBehavior::Wrap)?;
         self.push_byte_store(output, out1, c1)?;
@@ -8225,10 +8233,10 @@ impl FunctionLowerer<'_> {
         let i2 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, i1, one, OverflowBehavior::Wrap)?;
         let i3 = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, i2, one, OverflowBehavior::Wrap)?;
         let c0 = self.push_string_byte_load(source, cursor, layout)?;
-        let c1 = self.lower_optional_byte(source, i1, total)?;
-        let c2 = self.lower_optional_byte(source, i2, total)?;
-        let c3 = self.lower_optional_byte(source, i3, total)?;
         let pad = self.push_const_size(61)?;
+        let c1 = self.lower_optional_byte(source, i1, total, pad)?;
+        let c2 = self.lower_optional_byte(source, i2, total, pad)?;
+        let c3 = self.lower_optional_byte(source, i3, total, pad)?;
         let v0 = self.push_base64_value(c0, url)?;
         let v1 = self.push_base64_value(c1, url)?;
         let v2 = self.push_base64_value(c2, url)?;
@@ -8314,7 +8322,9 @@ impl FunctionLowerer<'_> {
         Ok(digit)
     }
 
-    fn push_base64_char(&mut self, value: ValueId, url: bool) -> Result<ValueId, CanonicalLoweringError> {
+    fn push_base64_encode_char(&mut self, value: ValueId, url: bool) -> Result<ValueId, CanonicalLoweringError> {
+        // The encoder's six-bit index is in 0..=63. Keep A-Z, a-z, and 0-9
+        // disjoint so the digit branch cannot classify a letter as a digit.
         let index = value;
         let twenty_six = self.push_const_int(26)?;
         let fifty_two = self.push_const_int(52)?;
@@ -8372,7 +8382,7 @@ impl FunctionLowerer<'_> {
         Ok(self.lower_int_select(slash_or_underscore, special_second, result)?)
     }
 
-    fn lower_optional_byte(&mut self, object: ValueId, index: ValueId, total: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_optional_byte(&mut self, object: ValueId, index: ValueId, total: ValueId, missing: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let facts = self.snapshot_facts();
         let yes = self.new_block(&[])?;
         let no = self.new_block(&[])?;
@@ -8392,8 +8402,7 @@ impl FunctionLowerer<'_> {
         let byte = self.push_string_byte_load(object, index, layout)?;
         self.finish_current(Terminator::Branch { target: join, arguments: vec![byte] })?;
         self.current = no;
-        let pad = self.push_const_size(61)?;
-        self.finish_current(Terminator::Branch { target: join, arguments: vec![pad] })?;
+        self.finish_current(Terminator::Branch { target: join, arguments: vec![missing] })?;
         self.restore_facts(facts, join);
         self.current = join;
         Ok(self.block_parameter_values(join)[0])
@@ -11941,5 +11950,21 @@ mod tests {
         let canonical = checked.canonical_source().expect("canonical source");
         let candidate = lower_typed_module(canonical, empty_layouts()).expect("lowers as an effect");
         assert!(check_initial(candidate).is_ok());
+    }
+
+    #[test]
+    fn base64_encode_bounds_reject_output_wrap_before_allocation() {
+        let maximum_output = u64::from(u32::MAX - 4);
+        let maximal_input = super::base64_encode_max_input();
+        assert_eq!(maximal_input, 3_221_225_466);
+        let maximal_groups = (maximal_input + 2) / 3;
+        assert_eq!(maximal_groups * 4, 4_294_967_288);
+        assert!(maximal_groups * 4 <= maximum_output);
+
+        let wrapping_input = 3_221_225_470;
+        assert!(wrapping_input > maximal_input);
+        let wrapping_groups = (wrapping_input + 2) / 3;
+        assert_eq!(wrapping_groups * 4, 4_294_967_296);
+        assert!(wrapping_groups * 4 > maximum_output);
     }
 }

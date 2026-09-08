@@ -23,6 +23,18 @@ fn main(console: Console):
         Err(_) -> console.print("decode error")
 "#;
 
+const BASE64_ENCODE_SOURCE: &str = r#"
+import encoding
+
+fn main(console: Console):
+    console.print(encoding.base64_encode(""))
+    console.print(encoding.base64_encode("f"))
+    console.print(encoding.base64_encode("fo"))
+    console.print(encoding.base64_encode("foo"))
+    console.print(encoding.base64_encode("foob"))
+    console.print(encoding.base64_encode("é🙂"))
+"#;
+
 #[test]
 fn real_std_hex_encode_agrees_with_oracle_and_admitted_wasm() {
     let checked = witchy::resolve_std_only_checked(HEX_ENCODE_SOURCE).expect("real std hex source checks");
@@ -55,6 +67,44 @@ fn real_std_hex_encode_agrees_with_oracle_and_admitted_wasm() {
         .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
         .expect("spawn admitted real std hex_encode");
     vm.run().expect("admitted Wasm runs real std hex_encode");
+    assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
+}
+
+#[test]
+fn real_std_base64_encode_agrees_on_lengths_and_utf8() {
+    let checked = witchy::resolve_std_only_checked(BASE64_ENCODE_SOURCE).expect("real std base64 source checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("real std base64_encode must admit");
+    let expected = vec!["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "w6nwn5mC"];
+    let source_output = witchy::interpreter::run_module_args(checked.module().clone(), ".", Vec::new(), Vec::new())
+        .expect("source interpreter runs the real std checked base64 module");
+    assert_eq!(source_output, expected, "source interpreter expected base64 output");
+
+    let entry = artifact.entry().expect("base64_encode program entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("base64 source validates for oracle");
+    let arguments = entry
+        .capabilities()
+        .iter()
+        .copied()
+        .map(InterpreterValue::entry_capability)
+        .collect();
+    let oracle = interpret_program(
+        &validated,
+        function,
+        arguments,
+        InterpreterConfig { max_steps: 20_000_000_000, ..Default::default() },
+    )
+    .expect("canonical oracle runs real std base64_encode");
+    assert_eq!(oracle.output, source_output, "canonical oracle must match source interpreter");
+    assert_eq!(oracle.leaked_objects, 0, "base64 source oracle must not leak");
+
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256)
+        .expect("spawn admitted real std base64_encode");
+    vm.run().expect("admitted Wasm runs real std base64_encode");
     assert_eq!(vm.output(), source_output, "admitted Wasm must match source interpreter");
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"), 0);
 }
