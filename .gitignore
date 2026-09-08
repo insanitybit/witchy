@@ -45,3 +45,4 @@ dist/
 # source PDFs (e.g. the papers under external-refs/) — keep locally as
 # reference; commit the markdown notes/index, not the binaries
 *.pdf
+scripts/rfc0165-dev/status/
