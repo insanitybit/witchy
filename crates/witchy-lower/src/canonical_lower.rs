@@ -11499,7 +11499,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_source_type_lowers_to_the_catalog_nominal_before_checker_seal() {
+    fn recursive_source_type_lowers_to_the_catalog_nominal_and_passes_initial_check() {
         let source = r#"
 type Tree:
     Leaf
@@ -11551,14 +11551,7 @@ fn main() -> Int:
             }),
             "lowered candidate must retain the checked nominal Ref identity"
         );
-        let refusal = check_initial(candidate)
-            .expect_err("initial opaque nominal seal must still refuse recursive candidate");
-        assert!(
-            refusal
-                .to_string()
-                .contains("recursive nominal values require canonical ownership and destruction support"),
-            "unexpected initial seal refusal: {refusal}"
-        );
+        check_initial(candidate).expect("recursive nominal candidate passes initial checks");
     }
 
     #[test]

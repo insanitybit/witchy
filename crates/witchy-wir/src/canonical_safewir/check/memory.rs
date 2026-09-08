@@ -3005,13 +3005,11 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Reclaim(pointer-bearing layout requires DropRef)");
         }
         let descriptor = self.descriptor(state.layout)?;
-        if descriptor.kind().packed_element_layout().is_some_and(|element| {
-            matches!(
-                self.layouts.get(element).map(|layout| layout.kind()),
-                Some(LayoutKind::RuntimePointerValueSlot { .. })
-            )
-        }) {
-            return self.unsupported("Reclaim(pointer-bearing layout requires DropRef)");
+        if let Some(element) = descriptor.kind().packed_element_layout() {
+            let element_descriptor = self.descriptor(element)?;
+            if matches!(element_descriptor.kind(), LayoutKind::RuntimePointerValueSlot { .. }) {
+                return self.unsupported("Reclaim(pointer-bearing layout requires DropRef)");
+            }
         }
         if self.state.range_states.iter().any(|(range, state)| {
             range.object == object && state.initialized && !self.is_zero(range.length)
@@ -4249,11 +4247,28 @@ mod tests {
             crate::layout::LayoutId,
         ),
     ) {
+        with_nominal_pointer_slot_checker( |checker, list, pointee, _nominal| {
+            test(checker, list, pointee);
+        });
+    }
+
+    fn with_nominal_pointer_slot_checker(
+        test: impl FnOnce(
+            &mut MemoryChecker<'_>,
+            crate::layout::LayoutId,
+            crate::layout::LayoutId,
+            crate::layout::LayoutId,
+        ),
+    ) {
         let mut layouts = LayoutInterner::new();
         let pointee = layouts.intern_scalar(ScalarKind::Int).expect("pointee layout");
         let pointer = layouts
             .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
             .expect("owned pointer slot");
+        let nominal = layouts
+            .intern_opaque_nominal([0x4e; 32])
+            .expect("nominal element layout");
+        layouts.bind_nominal(nominal, pointer).expect("bind nominal element");
         let list = layouts
             .intern_packed_list(pointer, RcHeader::Required)
             .expect("pointer list layout");
@@ -4368,7 +4383,7 @@ mod tests {
                 class: AllocationClass::ReferenceCounted,
             })
             .expect("destination allocation is accepted");
-        test(&mut checker, list, pointee);
+        test(&mut checker, list, pointee, nominal);
     }
 
     #[test]
@@ -4540,6 +4555,34 @@ mod tests {
 
     #[test]
     fn pointer_bearing_reclaim_requires_recursive_drop() {
+        with_pointer_slot_checker(|checker, list, _pointee| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState { element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
+            );
+            assert!(matches!(
+                checker.check(&Operation::Reclaim { object: SOURCE }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Reclaim(pointer-bearing layout requires DropRef)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn nominal_pointer_element_resolves_to_pointer_bearing_physical_descriptor() {
+        with_nominal_pointer_slot_checker( |checker, _list, _pointee, nominal| {
+            assert!(matches!(
+                checker.descriptor(nominal).unwrap().kind(),
+                LayoutKind::RuntimePointerValueSlot { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn admitted_pointer_list_reclaim_still_requires_recursive_drop() {
         with_pointer_slot_checker(|checker, list, _pointee| {
             let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
             checker.state.range_states.insert(

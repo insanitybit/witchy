@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use witchy_wir::layout::{LayoutBundle, LayoutInterner, PointerSlot, ScalarKind};
 
 fn tree(layouts: &mut LayoutInterner, key: [u8; 32]) -> (witchy_wir::layout::LayoutId, witchy_wir::layout::LayoutId) {
@@ -54,25 +56,76 @@ fn nominal_binding_changes_the_authenticated_bundle() {
 }
 
 #[test]
-fn recursive_layout_does_not_grant_production_encoder_authority() {
+fn recursive_nominal_static_data_cannot_claim_empty_storage() {
     use witchy_wir::canonical_safewir::{
-        CanonicalModule, CheckedSourceIdentity, InitialCheckError, LoweredModuleParts,
-        Revision, check_initial,
+        BasicBlock, BlockId, CallableContract, CanonicalModule, CheckedSourceIdentity,
+        Extent, Function, FunctionId, FunctionSignature, FunctionSignatureId,
+        InitialCheckError, LoweredModuleParts, Operation, Revision, StaticDataId,
+        StaticDataSegment, Terminator, ValueId, ValueType, check_initial,
     };
     let mut layouts = LayoutInterner::new();
     let (nominal, body) = tree(&mut layouts, [4; 32]);
+    layouts.bind_nominal(nominal, body).unwrap();
+    let function = FunctionId::new(0);
+    let object = ValueId::new(0);
+    let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
+        revision: Revision::new(0),
+        checked_source: CheckedSourceIdentity::from_digest([0; 32]),
+        layouts: LayoutBundle::from_interner(&layouts, [body]).unwrap(),
+        signatures: vec![FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        }],
+        imports: vec![],
+        functions: vec![Function {
+            id: function,
+            signature: FunctionSignatureId::new(0),
+            entry: BlockId::new(0),
+            value_types: [(object, ValueType::Ref(nominal))].into_iter().collect(),
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                parameters: Vec::new(),
+                operations: vec![Operation::StaticData {
+                    destination: object,
+                    layout: nominal,
+                    extent: Extent::FixedBytes(0),
+                    data: StaticDataId::new(0),
+                }],
+                terminator: Terminator::Return { values: Vec::new() },
+            }],
+        }],
+        proper_tail_sites: vec![],
+    }, vec![StaticDataSegment::new(StaticDataId::new(0), Vec::new())]);
+    assert!(matches!(check_initial(candidate), Err(InitialCheckError::PointerBearingStaticData {
+        function: actual_function,
+        object: actual_object,
+    }) if actual_function == function && actual_object == object));
+}
+
+#[test]
+fn well_bound_unused_nominal_catalog_is_initially_valid() {
+    use witchy_wir::canonical_safewir::{
+        CanonicalModule, CheckedSourceIdentity, LoweredModuleParts, Revision, check_initial,
+    };
+    let mut layouts = LayoutInterner::new();
+    let (nominal, body) = tree(&mut layouts, [7; 32]);
     layouts.bind_nominal(nominal, body).unwrap();
     let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest([0; 32]),
         layouts: LayoutBundle::from_interner(&layouts, [body]).unwrap(),
-        signatures: vec![],
-        imports: vec![],
-        functions: vec![],
-        proper_tail_sites: vec![],
+        signatures: Vec::new(),
+        imports: Vec::new(),
+        functions: Vec::new(),
+        proper_tail_sites: Vec::new(),
     });
-    assert!(matches!(check_initial(candidate), Err(InitialCheckError::InvalidLayoutBundle(reason))
-        if reason == "recursive nominal values require canonical ownership and destruction support"));
+    assert!(check_initial(candidate).is_ok(), "an unused, bound nominal catalog is transport metadata, not an operation admission");
 }
 
 #[test]
