@@ -1217,6 +1217,49 @@ mod tests {
     }
 
     #[test]
+    fn canonical_source_omits_unreachable_checked_generic_instances() {
+        let mut module = parse(
+            "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+        );
+        module.linked_entry = Some("main".to_string());
+        let (mut module, mut instances) =
+            crate::traits::lower_for_wasm_with_specializations(module).into_parts();
+        let identity_name = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function) if function.name.starts_with("identity__") => Some(function.name.clone()),
+                _ => None,
+            })
+            .expect("monomorphization produced the checked identity body");
+        let identity_body = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function) if function.name == identity_name => Some(function.clone()),
+                _ => None,
+            })
+            .expect("exact identity body");
+        let identity = instances
+            .get(&identity_name)
+            .expect("identity specialization identity")
+            .clone();
+        let mut unreachable_body = identity_body;
+        unreachable_body.name = "util.unreachable__Int".to_string();
+        module.items.push(witchy_syntax::ast::Item::Function(unreachable_body));
+        let typed = typeck::annotate_checked(module).expect("rechecked exact unreachable body");
+        instances.insert("util.unreachable__Int".to_string(), identity);
+        let witness = bind_canonical_callable_witness(&typed, instances)
+            .expect("exact checked body outside canonical scope is safely omitted");
+        assert!(!witness.runtime_functions.iter().any(|name| name == "util.unreachable__Int"));
+        assert!(!witness.generic_instances.contains_key("util.unreachable__Int"));
+        assert!(!witness.obligations.iter().any(|obligation| {
+            matches!(obligation, CanonicalObligation::Specialization(name) if name == "util.unreachable__Int")
+        }));
+        assert!(witness.runtime_functions.iter().any(|name| name == &identity_name));
+    }
+
+    #[test]
     fn canonical_source_refuses_specialization_without_checked_body() {
         let module = parse(
             "fn identity(value: a) -> a:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
