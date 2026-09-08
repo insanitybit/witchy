@@ -29,6 +29,43 @@ pub(super) enum ReleasePlacementError {
     BlockIdOverflow,
 }
 
+#[cfg(test)]
+mod nullable_tests {
+    use super::*;
+    use witchy_wir::canonical_safewir::{AccessMode, Place, Projection};
+    use witchy_wir::layout::LayoutId;
+
+    #[test]
+    fn nullable_owned_release_placement_tracks_storage_use_and_loaded_token() {
+        let parent = ValueId::new(1);
+        let child = ValueId::new(2);
+        let reference = ValueType::Ref(LayoutId::from_bytes([0; 32]));
+        let function = Function {
+            id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: BlockId::new(0),
+            value_types: BTreeMap::from([(parent, reference), (child, reference)]), blocks: vec![],
+        };
+        let init = Operation::InitNullableOwned {
+            place: Place::projected(parent, Projection::Field { index: 0 }, reference, AccessMode::Write),
+        };
+        assert!(definitions(&init).is_empty());
+        assert_eq!(uses(&init), vec![parent]);
+        let load = Operation::Load {
+            destination: child,
+            place: Place::projected(parent, Projection::Field { index: 0 }, reference, AccessMode::Read),
+            transfer: LoadTransfer::ClonePresent,
+        };
+        let mut owned = Values::from([parent]);
+        operation_flow(&function, &init, &mut owned, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(owned, Values::from([parent]));
+        operation_flow(&function, &load, &mut owned, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(owned, Values::from([parent, child]));
+        let mut drops = vec![];
+        release_dead(&mut owned, &Values::new(), &mut drops);
+        assert_eq!(drops, vec![Operation::DropRef { object: parent }, Operation::DropRef { object: child }]);
+        assert!(owned.is_empty());
+    }
+}
+
 fn argument_value(argument: &CallArgument) -> ValueId {
     match argument {
         CallArgument::Value(value) | CallArgument::Move(value) => *value,
@@ -49,7 +86,7 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
         | Operation::CloneRef { destination, .. } | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
-        Operation::Guard { .. } | Operation::Store { .. } | Operation::CopyBytes { .. }
+        Operation::Guard { .. } | Operation::InitNullableOwned { .. } | Operation::Store { .. } | Operation::CopyBytes { .. }
         | Operation::MoveRange { .. } | Operation::CloneRange { .. } | Operation::UpdateCount { .. }
         | Operation::Retain { .. } | Operation::Release { .. } | Operation::DropRef { .. }
         | Operation::Reclaim { .. } => Vec::new(),
@@ -61,7 +98,7 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
         Operation::Arithmetic { left, right, .. } | Operation::Compare { left, right, .. } => vec![*left, *right],
         Operation::NarrowSize { value, .. } | Operation::WidenSize { value, .. } | Operation::FloatUnary { value, .. } => vec![*value],
         Operation::Guard { condition, .. } => vec![*condition],
-        Operation::Load { place, .. } => vec![place.object()],
+        Operation::Load { place, .. } | Operation::InitNullableOwned { place } => vec![place.object()],
         Operation::Store { place, value, .. } => vec![place.object(), *value],
         Operation::CopyBytes { destination, source, .. }
         | Operation::MoveRange { destination, source, .. }
@@ -210,7 +247,7 @@ fn operation_flow(
 ) -> Result<(), ReleasePlacementError> {
     match operation {
         Operation::Alloc { destination, class: AllocationClass::ReferenceCounted, .. }
-        | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::MoveUnique, .. } => {
+        | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique, .. } => {
             if is_reference(function, *destination) { owned.insert(*destination); }
         }
         Operation::CloneRef { destination, source } => {
