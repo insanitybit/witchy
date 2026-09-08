@@ -8460,12 +8460,16 @@ mod tests {
             .collect(),
             blocks: Vec::new(),
         };
+        let scratch_count = u32::try_from(drop_worklist::SCRATCH).unwrap();
+        // One non-parameter local is the clone destination; the rest are
+        // exactly the production destructor's scratch area.
+        let local_count = scratch_count + 1;
         let layout = LocalLayout {
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
-            extra_types: vec![ValType::I32; 5],
-            scratch: vec![2, 3, 4, 5, 6],
+            extra_types: vec![ValType::I32; usize::try_from(local_count).unwrap()],
+            scratch: (2..2 + scratch_count).collect(),
         };
-        let mut boundary = WasmFunctionEncoder::new(vec![(5, ValType::I32)]);
+        let mut boundary = WasmFunctionEncoder::new(vec![(local_count, ValType::I32)]);
         if share {
             emit_clone_ref(&mut boundary, &layout, destination, object, &function).unwrap();
             boundary.instruction(&wasm_encoder::Instruction::I32Const(0));
