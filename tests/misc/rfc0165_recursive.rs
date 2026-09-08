@@ -21,6 +21,30 @@ fn main(console: Console):
     console.print("${sum(tree)}")
 "#;
 
+const TERMINAL_LOOP_EXIT_SOURCE: &str = r#"
+fn scan(raw: String) -> Result(String, String):
+    var i = 0
+    while i < raw.char_count():
+        let c = raw.substring(i, i + 1)
+        if c == "x":
+            return Err(raw)
+        if c == "y":
+            return Err(raw)
+        i = i + 1
+    Ok("ok")
+
+fn main(console: Console):
+    match scan("ab"):
+        Ok(value) -> console.print(value)
+        Err(value) -> console.print("err:" + value)
+    match scan("ax"):
+        Ok(value) -> console.print(value)
+        Err(value) -> console.print("err:" + value)
+    match scan("ay"):
+        Ok(value) -> console.print(value)
+        Err(value) -> console.print("err:" + value)
+"#;
+
 #[test]
 fn checked_recursive_sum_matches_source_oracle_and_admitted_wasm() {
     let checked = witchy::resolve_std_only_checked(SOURCE).expect("recursive source checks");
@@ -70,6 +94,59 @@ fn checked_recursive_sum_matches_source_oracle_and_admitted_wasm() {
         vm.canonical_heap_leaks()
             .expect("heap audit")
             .expect("canonical artifact"),
+        0,
+        "admitted Wasm must not leak"
+    );
+}
+
+#[test]
+fn loop_with_multiple_owned_terminal_exits_matches_source_oracle_and_wasm() {
+    let checked = witchy::resolve_std_only_checked(TERMINAL_LOOP_EXIT_SOURCE)
+        .expect("terminal-loop source checks");
+    let expected = vec!["ok", "err:ax", "err:ay"];
+    let source_output = witchy::interpreter::run_module_args(
+        checked.module().clone(),
+        ".",
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("source interpreter runs terminal-loop source");
+    assert_eq!(source_output, expected, "source interpreter expected output");
+
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("terminal-loop source must admit production lowering");
+    let entry = artifact.entry().expect("terminal-loop source entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked)
+        .expect("terminal-loop source validates for oracle");
+    let arguments = entry
+        .capabilities()
+        .iter()
+        .copied()
+        .map(InterpreterValue::entry_capability)
+        .collect();
+    let oracle = interpret_program(
+        &validated,
+        function,
+        arguments,
+        InterpreterConfig { max_steps: 20_000_000, ..Default::default() },
+    )
+    .expect("canonical oracle runs terminal-loop source");
+    assert_eq!(oracle.output, source_output, "canonical oracle must match source interpreter");
+    assert_eq!(oracle.leaked_objects, 0, "canonical oracle must not leak");
+
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn admitted terminal-loop source");
+    vm.run().expect("admitted Wasm runs terminal-loop source");
+    assert_eq!(vm.output(), source_output, "Wasm must match source interpreter");
+    assert_eq!(
+        vm.canonical_heap_leaks().expect("heap audit").expect("canonical artifact"),
         0,
         "admitted Wasm must not leak"
     );

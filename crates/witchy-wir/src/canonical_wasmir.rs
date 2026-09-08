@@ -3125,6 +3125,38 @@ impl StructuredEmitter<'_> {
         ))
     }
 
+    /// True only for a loop-leaving tail that can be emitted inside the loop:
+    /// every path terminates without returning to `header`, and no nonterminal
+    /// cleanup block is shared with code outside that loop.  A terminal sink
+    /// may be shared: it has no successor or cleanup operation to duplicate.
+    fn is_exclusive_terminal_loop_tail(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        header: crate::canonical_safewir::BlockId,
+        members: &[crate::canonical_safewir::BlockId],
+    ) -> Result<bool, EncodeError> {
+        if self.reaches(start, header)? {
+            return Ok(false);
+        }
+        let reach = self.reachable_until(start, &[header])?;
+        if !self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())? {
+            return Ok(false);
+        }
+        for reached in &reach {
+            if self.is_terminal(*reached)? {
+                continue;
+            }
+            if self
+                .predecessors(*reached)?
+                .into_iter()
+                .any(|predecessor| !members.contains(&predecessor) && !reach.contains(&predecessor))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Check finite paths to a proposed merge (any of `merges`).  A terminal
     /// path is allowed to bypass a merge, but a cycle that can avoid it is
     /// not.  Recognized loop headers are treated as structured boundaries:
@@ -3237,36 +3269,14 @@ impl StructuredEmitter<'_> {
                 }
             }
         }
-        // An edge whose every path terminates through blocks nothing outside
-        // the loop enters is an early return, emitted inline; the rest are
-        // exits. A return block shared with a path from before the loop
-        // (`if n == 0: return` ahead of a search) is a continuation.
+        // An exclusive terminal tail is emitted inline; every other leaving
+        // edge is a continuation. Shared terminal sinks are harmless, but a
+        // shared cleanup block would duplicate an observable operation.
         let mut candidates = BTreeSet::new();
         for block in &leaving {
-            // Every path from the edge terminates when its reach (never
-            // re-entering this header) holds no loop header: acyclic, and a
-            // block without successors is terminal. This stays a plain
-            // reachability question so exits of one loop never walk into the
-            // path check of another.
-            let reach = self.reachable_until(*block, &[header])?;
-            let mut only_returns = Some(*block) != classic_exit;
-            for reached in &reach {
-                if self.is_loop_header(*reached)? {
-                    only_returns = false;
-                    break;
-                }
-            }
-            if only_returns {
-                'blocks: for reached in &reach {
-                    for predecessor in self.predecessors(*reached)? {
-                        if !reach.contains(&predecessor) && !members.contains(&predecessor) {
-                            only_returns = false;
-                            break 'blocks;
-                        }
-                    }
-                }
-            }
-            if !only_returns {
+            if Some(*block) == classic_exit
+                || !self.is_exclusive_terminal_loop_tail(*block, header, &members)?
+            {
                 candidates.insert(*block);
             }
         }
@@ -5524,6 +5534,35 @@ impl PlanEmitter<'_> {
         ))
     }
 
+    /// Mirror of the encoder's exclusive terminal-tail judgment.
+    fn is_exclusive_terminal_loop_tail(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        header: crate::canonical_safewir::BlockId,
+        members: &[crate::canonical_safewir::BlockId],
+    ) -> Result<bool, CanonicalAdmissionError> {
+        if self.reaches(start, header)? {
+            return Ok(false);
+        }
+        let reach = self.reachable_until(start, &[header])?;
+        if !self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())? {
+            return Ok(false);
+        }
+        for reached in &reach {
+            if self.is_terminal(*reached)? {
+                continue;
+            }
+            if self
+                .predecessors(*reached)?
+                .into_iter()
+                .any(|predecessor| !members.contains(&predecessor) && !reach.contains(&predecessor))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn all_paths_reach_or_terminate(
         &self,
         start: crate::canonical_safewir::BlockId,
@@ -5618,36 +5657,13 @@ impl PlanEmitter<'_> {
                 }
             }
         }
-        // An edge whose every path terminates through blocks nothing outside
-        // the loop enters is an early return, emitted inline; the rest are
-        // exits. A return block shared with a path from before the loop
-        // (`if n == 0: return` ahead of a search) is a continuation.
+        // Mirror of the encoder: only an exclusive terminal tail is emitted
+        // inline; shared terminal sinks need no duplicated cleanup.
         let mut candidates = BTreeSet::new();
         for block in &leaving {
-            // Every path from the edge terminates when its reach (never
-            // re-entering this header) holds no loop header: acyclic, and a
-            // block without successors is terminal. This stays a plain
-            // reachability question so exits of one loop never walk into the
-            // path check of another.
-            let reach = self.reachable_until(*block, &[header])?;
-            let mut only_returns = Some(*block) != classic_exit;
-            for reached in &reach {
-                if self.is_loop_header(*reached)? {
-                    only_returns = false;
-                    break;
-                }
-            }
-            if only_returns {
-                'blocks: for reached in &reach {
-                    for predecessor in self.predecessors(*reached)? {
-                        if !reach.contains(&predecessor) && !members.contains(&predecessor) {
-                            only_returns = false;
-                            break 'blocks;
-                        }
-                    }
-                }
-            }
-            if !only_returns {
+            if Some(*block) == classic_exit
+                || !self.is_exclusive_terminal_loop_tail(*block, header, &members)?
+            {
                 candidates.insert(*block);
             }
         }
