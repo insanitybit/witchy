@@ -705,6 +705,10 @@ fn value_type_matches_source(
             })
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
+        // Concrete user generics use the same independently matched field
+        // graph as other aggregates. A type name or its arguments alone never
+        // grant a candidate reference its layout authority.
+        witchy_syntax::ast::Type::Named(_, _) => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
         // A `fn` value is a closure record: a reference to a layout the
         // module registered with a closure signature, which, past its
         // environment parameter, is the source signature.
@@ -1218,6 +1222,40 @@ mod tests {
         let pair = layouts.intern_packed_record(vec![slot, slot]).unwrap();
         assert!(!layout_matches_source(pair, &Type::Tuple(vec![named("Tree"), named("Other")]), &layouts, &records), "visited keys must include the source type, not just the layout");
         assert!(!layout_matches_source(nominal, &Type::Named("Option".into(), vec![named("Tree")]), &layouts, &records), "recursive identity cannot substitute for a tagged nullable layout");
+    }
+
+    #[test]
+    fn source_generic_layout_graph_checks_instantiated_payload_types() {
+        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
+        use witchy_syntax::ast::Type;
+        use witchy_types::canonical_aggregates::ScalarAggregateShape;
+        let named = |name: &str| Type::Named(name.into(), vec![]);
+        let mut definition = ScalarAggregateShape {
+            name: "Box".into(), fields: vec![named("a")], variants: vec![],
+            tagged: false, packed: false,
+        }.packed_view();
+        definition.packed = false;
+        definition.params = vec!["a".into()];
+        let records = BTreeMap::from([("Box".into(), definition)]);
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = layouts.intern_runtime_buffer(byte).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(string, PointerSlot::Owned).unwrap();
+        let int_box = layouts.intern_packed_record(vec![int]).unwrap();
+        let string_box = layouts.intern_packed_record(vec![slot]).unwrap();
+        for (argument, correct, wrong) in [("Int", int_box, string_box), ("String", string_box, int_box)] {
+            let source = Type::Named("Box".into(), vec![named(argument)]);
+            assert!(value_type_matches_source(
+                super::super::ValueType::Ref(correct), &source, &layouts,
+                &[], &mut BTreeSet::new(), &records, &BTreeMap::new(),
+            ));
+            assert!(!value_type_matches_source(
+                super::super::ValueType::Ref(wrong), &source, &layouts,
+                &[], &mut BTreeSet::new(), &records, &BTreeMap::new(),
+            ));
+        }
+        assert!(!layout_matches_source(int_box, &Type::Named("Box".into(), vec![named("Missing")]), &layouts, &records));
     }
 
     fn source() -> witchy_types::pipeline::CheckedModule {

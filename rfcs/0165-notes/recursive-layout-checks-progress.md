@@ -60,3 +60,26 @@ must be repaired before the combined branch can land. The recursive checks above
 do not repair or waive it.
 
 Compiler-wide memory safety and optimizer correctness are not established.
+
+## Concrete generic shape follow-up
+
+Canonical aggregate shapes now substitute concrete user type arguments into
+fields and key recursive occurrences by the instantiated type. Recognition
+checks unused arguments too, so a phantom parameter cannot hide an unresolved
+type. Both a depth limit and a 4,096-node instantiated work budget reject
+unbounded expansion before materializing the next substituted field.
+
+The source ABI matcher accepts a user generic reference only when its candidate
+layout matches the independently instantiated field graph. `Box(Int)` cannot
+use `Box(String)`'s payload layout or vice versa.
+
+Focused evidence on the same absolute warmed target:
+
+```sh
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= taskpolicy -c utility cargo test -p witchy-types --lib canonical_aggregates::recursive_shape_tests -- --nocapture
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= taskpolicy -c utility cargo test -p witchy-wir --lib --features native source_generic_layout_graph_checks_instantiated_payload_types -- --nocapture
+```
+
+Five shape tests and one ABI test passed. This is not a claim that complete
+generic programs lower or execute: source layout construction and constructor
+lookup still require the remaining integration work above.
