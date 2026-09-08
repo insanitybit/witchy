@@ -23,7 +23,22 @@ fn main(console: Console):
     let words = Push("x", Push("yy", Empty))
     console.print("${sum_int(ints) + string_weight(words)}")
 "#;
-    let expected = vec!["5".to_owned()];
+    assert_three_legs(source, vec!["5".to_owned()]);
+}
+
+#[test]
+fn generic_templates_do_not_shift_executable_tail_site_owners() {
+    assert_three_legs(include_str!("../examples/generic_stack/src/generic_stack.witchy"), vec![
+        "nums size:  3".to_owned(),
+        "words size: 2".to_owned(),
+        "nums top:   1".to_owned(),
+        "words top:  first".to_owned(),
+        "rev nums top:  3".to_owned(),
+        "rev words top: second".to_owned(),
+    ]);
+}
+
+fn assert_three_legs(source: &str, expected: Vec<String>) {
 
     let checked = witchy::resolve_std_only_checked(source)
         .expect("recursive generic source checks");

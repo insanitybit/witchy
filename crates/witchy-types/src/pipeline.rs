@@ -1006,7 +1006,7 @@ fn link_checked_source_bundle_with(
         .proper_tail_manifest()
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     let proper_tail_manifest =
-        proper_tail_manifest.for_canonical_functions(typed_source.module());
+        proper_tail_manifest.for_canonical_functions(typed_source.module(), &callable_witness.runtime_functions);
     let mut obligations = callable_witness.obligations.clone();
     // A closure the v1 witness cannot authenticate (a capture without an exact
     // checked type, a lambda the table did not type, a borrowed capture) is a

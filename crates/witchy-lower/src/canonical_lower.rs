@@ -670,7 +670,7 @@ pub fn lower_typed_module(
         signatures,
         imports,
         functions,
-        proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module(), &lambda_callables)?,
+        proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module(), &functions_by_name, &lambda_callables)?,
     }, static_data_segments)
         .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
         .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
@@ -11346,6 +11346,7 @@ const fn is_unit(value_type: ValueType) -> bool {
 fn canonical_tail_sites(
     manifest: &ProperTailSiteManifest,
     module: &witchy_syntax::ast::Module,
+    functions_by_name: &HashMap<String, (FunctionId, FunctionSignatureId)>,
     lambda_functions: &HashMap<ProperTailCallableId, FunctionId>,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
     let scope = witchy_types::pipeline::canonical_scope(module);
@@ -11368,6 +11369,17 @@ fn canonical_tail_sites(
             if site.key.callable.method.is_some() {
                 return Err(CanonicalLoweringError::UnsupportedExpression("method tail site"));
             }
+            let expected_function = match module.items.get(site.key.callable.item as usize) {
+                Some(Item::Function(owner)) => functions_by_name.get(&owner.name).map(|(id, _)| *id),
+                _ => None,
+            }.ok_or(CanonicalLoweringError::MissingProperTailSite(
+                "proper-tail callable is not an emitted canonical function".to_string(),
+            ))?;
+            if expected_function.get() != site.canonical_function {
+                return Err(CanonicalLoweringError::TailManifest(
+                    "proper-tail callable identity does not match canonical function mapping".to_string(),
+                ));
+            }
             // A site inside a lambda belongs to the function synthesized for
             // that lambda; a lambda without one is outside the subset.
             if !site.key.callable.lambda_path.is_empty() {
@@ -11378,38 +11390,13 @@ fn canonical_tail_sites(
                     id: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
                     // The checked manifest attributes the site to its owner;
                     // the synthesized lambda function discharges it.
-                    function: FunctionId::new(site.canonical_function),
+                    function: expected_function,
                     discharged_by: Some(function),
                 });
             }
-            let expected_function = module
-                .items
-                .iter()
-                .enumerate()
-                .filter_map(|(item_index, item)| {
-                    let Item::Function(function) = item else { return None };
-                    if scope.contains(&function.name) {
-                        Some((item_index, function))
-                    } else {
-                        None
-                    }
-                })
-                .position(|(item_index, _)| {
-                    u32::try_from(item_index).ok() == Some(site.key.callable.item)
-                })
-                .ok_or(CanonicalLoweringError::MissingProperTailSite(
-                    "proper-tail callable is not a canonical function".to_string(),
-                ))?;
-            if u32::try_from(expected_function).map_err(|_| CanonicalLoweringError::IdOverflow)?
-                != site.canonical_function
-            {
-                return Err(CanonicalLoweringError::TailManifest(
-                    "proper-tail callable identity does not match canonical function mapping".to_string(),
-                ));
-            }
             Ok(witchy_wir::canonical_safewir::ProperTailSite {
                 id: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
-                function: FunctionId::new(site.canonical_function), discharged_by: None,
+                function: expected_function, discharged_by: None,
             })
         })
         .collect()

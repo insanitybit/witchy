@@ -11820,20 +11820,21 @@ impl ProperTailSiteManifest {
         )
     }
 
-    /// Retain the obligations belonging to the canonical function scope that
-    /// the current SafeWIR lowering consumes. This filtering is performed
+    /// Retain obligations in the finalized executable callable sequence.
+    /// Generic templates have no runtime ordinal; their concrete instances do.
+    /// This filtering is performed
     /// while the frontend still owns the checked typed module; lowering only
     /// transports the resulting witness and cannot choose its expected digest.
-    pub fn for_canonical_functions(&self, module: &Module) -> Self {
-        let scope = crate::pipeline::canonical_scope(module);
+    pub fn for_canonical_functions(&self, module: &Module, runtime_functions: &[String]) -> Self {
+        let runtime_ordinals = runtime_functions.iter().enumerate()
+            .map(|(ordinal, name)| (name.as_str(), u32::try_from(ordinal).expect("validated function count")))
+            .collect::<HashMap<_, _>>();
         let mut canonical_ordinals = HashMap::default();
-        let mut ordinal = 0u32;
         for (item_index, item) in module.items.iter().enumerate() {
             let Item::Function(function) = item else { continue };
-            if scope.contains(&function.name) {
+            if let Some(&ordinal) = runtime_ordinals.get(function.name.as_str()) {
                 let item_index = u32::try_from(item_index).expect("validated item index");
                 canonical_ordinals.insert(item_index, ordinal);
-                ordinal = ordinal.checked_add(1).expect("validated function count");
             }
         }
         Self {
