@@ -1425,6 +1425,10 @@ impl Vm {
             .get_func(&mut self.store, entry.export())
             .ok_or_else(|| Error::msg(format!("admitted artifact lacks its entry export `{}`", entry.export())))?;
         let mut params = Vec::with_capacity(entry.capabilities().len());
+        // `Dir` parameters are minted by ordinal among THIS entry's Dir
+        // parameters, exactly as the frozen wrapper's `mint_dir(i)` calls do, so
+        // the i-th `Dir` in `main`'s signature is backed by the i-th grant.
+        let mut dir_ordinal = 0usize;
         for capability in entry.capabilities() {
             let token = match capability {
                 CanonicalEntryCapability::Console => {
@@ -1433,8 +1437,20 @@ impl Vm {
                     }
                     ExternRef::new(&mut self.store, ConsoleCapability)?
                 }
-                CanonicalEntryCapability::Dir | CanonicalEntryCapability::Env => {
-                    bail!("the program's `main` requires a {capability:?} grant the canonical launch protocol does not mint yet");
+                CanonicalEntryCapability::Dir => {
+                    let Some(authority) = host::filesystem::dir_grant(self.store.data(), dir_ordinal)
+                    else {
+                        bail!("the program's `main` requires a Dir capability for parameter {dir_ordinal} that was not granted");
+                    };
+                    dir_ordinal += 1;
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::Env => {
+                    if !self.store.data().caps.env {
+                        bail!("the program's `main` requires an Env capability that was not granted");
+                    }
+                    let authority = host::clock_env_rand::env_authority(self.store.data());
+                    ExternRef::new(&mut self.store, authority)?
                 }
             };
             params.push(Val::ExternRef(Some(token)));
@@ -2715,6 +2731,47 @@ fn memory_of(caller: &mut Caller<'_, VmState>) -> Result<Memory> {
         Some(Extern::Memory(m)) => Ok(m),
         _ => Err(Error::msg("VM does not export a linear `memory`")),
     }
+}
+
+/// Read a canonical host-call `Read Slice` — the raw `(ptr, len)` bytes the
+/// caller handed us, NOT a length-prefixed witchy string object. The canonical
+/// ABI types these slices as strings, so invalid UTF-8 is a contract violation
+/// and traps here rather than being lossily repaired the way `read_wstr`
+/// repairs the frozen route's already-checked objects.
+fn read_slice_str(data: &[u8], ptr: i32, len: i32) -> Result<String> {
+    if ptr < 0 || len < 0 {
+        return Err(Error::msg(format!("negative host slice ({ptr}, {len})")));
+    }
+    let bytes = slice(data, ptr, len)?;
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|e| Error::msg(format!("host slice is not valid UTF-8: {e}")))
+}
+
+/// Fill a canonical host-call `Write Slice`: write `min(payload, out_cap)` bytes
+/// at `out_ptr` and report the payload's FULL length. Returning the full length
+/// is how the guest learns its buffer was short and calls again with a bigger
+/// one; bounding the copy by the capacity the guest declared is why the host
+/// never writes past a buffer the guest owns. `Memory::write` bounds-checks the
+/// copy against linear memory, so a capacity that does not fit traps.
+fn fill_slice(
+    caller: &mut Caller<'_, VmState>,
+    out_ptr: i32,
+    out_cap: i32,
+    bytes: &[u8],
+    what: &str,
+) -> Result<i32> {
+    if out_ptr < 0 || out_cap < 0 {
+        return Err(Error::msg(format!("negative host out slice ({out_ptr}, {out_cap})")));
+    }
+    let full = i32::try_from(bytes.len()).map_err(|_| {
+        Error::msg(format!("{what} is {} bytes, over the guest ABI size limit", bytes.len()))
+    })?;
+    let written = bytes.len().min(out_cap as usize);
+    let mem = memory_of(caller)?;
+    mem.write(&mut *caller, out_ptr as usize, &bytes[..written])
+        .map_err(|e| Error::msg(format!("writing {what} into guest memory: {e}")))?;
+    Ok(full)
 }
 
 fn slice(data: &[u8], ptr: i32, len: i32) -> Result<&[u8]> {

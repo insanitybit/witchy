@@ -1,8 +1,8 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
 use super::super::{
-    confine, memory_of, read_wbytes, read_wstr, read_wstr_list, DirAuthority, DirBacking,
-    ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
+    confine, fill_slice, memory_of, read_slice_str, read_wbytes, read_wstr, read_wstr_list,
+    DirAuthority, DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
 };
 
 /// Register the root `Dir` grant mint.
@@ -22,6 +22,12 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
     linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
     linker.func_wrap("witchy", "dir_open", host_dir_open)?;
+    // (RFC-0165 slice 42) The canonical route's read family, gated by the SAME
+    // `Dir[Read]` grant as its frozen siblings above: a program without the
+    // right cannot even link the import.
+    linker.func_wrap("witchy", "dir_read_into", host_dir_read_into)?;
+    linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
+    linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
     Ok(())
 }
 
@@ -38,6 +44,9 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
     linker.func_wrap("witchy", "dir_append_bytes", host_dir_append_bytes)?;
     linker.func_wrap("witchy", "dir_set_executable", host_dir_set_executable)?;
+    // (RFC-0165 slice 42) The canonical route's write op, under the same
+    // `Dir[Write]` gate as its frozen siblings.
+    linker.func_wrap("witchy", "dir_write_at", host_dir_write_at)?;
     Ok(())
 }
 
@@ -117,12 +126,18 @@ fn host_exec_only(
 /// Look up a root Dir grant by ordinal while minting the root `Dir` externref
 /// for `main`. This ordinal never crosses into guest code.
 fn dir_grant_by_ordinal(caller: &Caller<'_, VmState>, h: i32) -> Result<DirAuthority> {
-    caller
-        .data()
-        .dirs
-        .get(h as usize)
-        .cloned()
+    usize::try_from(h)
+        .ok()
+        .and_then(|i| dir_grant(caller.data(), i))
         .ok_or_else(|| Error::msg(format!("invalid Dir grant index {h}")))
+}
+
+/// The root `Dir` grant at ordinal `i`, or `None` when the launch did not carry
+/// one. The frozen route reaches it through `mint_dir` and the canonical
+/// launcher mints its entry parameters from it directly, so both routes hand
+/// the guest the SAME authority object rather than two constructions of it.
+pub(in crate::runtime) fn dir_grant(state: &VmState, i: usize) -> Option<DirAuthority> {
+    state.dirs.get(i).cloned()
 }
 
 /// Recover the authority object carried by a guest `Dir` value.
@@ -401,6 +416,96 @@ fn host_dir_read_len(
     let len = contents.len() as i32;
     caller.data_mut().pending = Some(contents.into_bytes());
     Ok(len)
+}
+
+// --- (RFC-0165 slice 42) the canonical Dir family ---
+//
+// Same authority, same confinement, same entry policy as the frozen ops above —
+// only the buffer protocol differs. A path arrives as a raw checked `(ptr, len)`
+// slice rather than a length-prefixed object, and a read writes a BOUNDED prefix
+// into the guest's own buffer instead of staging an unbounded payload in host
+// state for a second call to place. Nothing here touches `pending`, so no host
+// state survives a canonical call.
+
+/// `dir_read_into(dir, path, path_len, out, out_cap) -> Size`: read the confined
+/// file NOW under `dir_read_len`'s exact rules (a missing or denied file, or one
+/// whose bytes are not UTF-8, traps), write `min(length, out_cap)` bytes at
+/// `out`, and return the file's FULL byte length. A guest whose buffer was short
+/// sees that in the answer and calls again with a bigger one; it must never
+/// index by the first answer, because the file may have changed in between.
+fn host_dir_read_into(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    path_ptr: i32,
+    path_len: i32,
+    out_ptr: i32,
+    out_cap: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let contents = read_file_backing(&dir_file_backing(&dir, &rel, false)?)?;
+    fill_slice(&mut caller, out_ptr, out_cap, contents.as_bytes(), "file contents")
+}
+
+/// `dir_exists_at(dir, path, path_len) -> Bool`: `dir_exists`'s semantics over a
+/// checked slice — total, so an escaping or denied path is `false`, not a trap.
+fn host_dir_exists_at(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    path_ptr: i32,
+    path_len: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let rel = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let ok = visible_entry_kind(&dir, &rel).ok().flatten().is_some();
+    Ok(ok as i32)
+}
+
+/// `dir_write_at(dir, path, path_len, data, data_len)`: `dir_write`'s semantics
+/// over checked slices — the data is UTF-8 text, and the write needs `Dir[Write]`.
+fn host_dir_write_at(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    path_ptr: i32,
+    path_len: i32,
+    data_ptr: i32,
+    data_len: i32,
+) -> Result<()> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let rel = read_slice_str(data, path_ptr, path_len)?;
+    let contents = read_slice_str(data, data_ptr, data_len)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let file = dir_file_backing(&dir, &rel, true)?;
+    write_file_backing(&file, contents)
+}
+
+/// `dir_subtree_at(dir, path, path_len) -> Dir`: `dir_subdir`'s semantics over a
+/// checked slice. The result is a fresh host-minted token carrying the narrowed
+/// authority, so a narrowed `Dir` only ever comes from the host.
+fn host_dir_subtree_at(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    path_ptr: i32,
+    path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let mem = memory_of(&mut caller)?;
+    let name = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    dir_guard(&dir, &name, true)?;
+    ExternRef::new(&mut caller, DirAuthority {
+        backing: dir_child_backing(&dir, &name)?,
+        policy: dir.policy,
+        rights: dir.rights,
+    }).map(Some)
 }
 
 /// (RFC-0095) `dir_read_bytes_len(h, rel) -> byte length`: like `dir_read_len` but
@@ -759,5 +864,167 @@ fn host_dir_rename(
         DirBacking::Fs(base) => base.rename(&from, &to).map_err(|e| {
             Error::msg(format!("rename failed (`{from}` -> `{to}`): {}", e.0))
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::{Capabilities, FsRights, Runtime};
+
+    /// Read `a.txt` into a 3-byte buffer at 64 and record the answer at 256.
+    const READ_INTO: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_into"
+            (func $dir_read_into (param externref i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "a.txt")
+          (func (export "run")
+            (i32.store (i32.const 256)
+              (call $dir_read_into (call $mint_dir (i32.const 0))
+                (i32.const 0) (i32.const 5) (i32.const 64) (i32.const 3)))))
+    "#;
+
+    /// The same read, aimed outside the granted root.
+    const READ_ESCAPING: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_into"
+            (func $dir_read_into (param externref i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "../escape.txt")
+          (func (export "run")
+            (drop (call $dir_read_into (call $mint_dir (i32.const 0))
+              (i32.const 0) (i32.const 13) (i32.const 64) (i32.const 64)))))
+    "#;
+
+    /// Write through the FIRST Dir grant, which the tests below grant read-only.
+    const WRITE_AT: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_write_at"
+            (func $dir_write_at (param externref i32 i32 i32 i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "w.txt")
+          (data (i32.const 16) "data")
+          (func (export "run")
+            (call $dir_write_at (call $mint_dir (i32.const 0))
+              (i32.const 0) (i32.const 5) (i32.const 16) (i32.const 4))))
+    "#;
+
+    fn seeded_root(name: &str, contents: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("granted root");
+        std::fs::write(root.path().join(name), contents).expect("seed the granted root");
+        root
+    }
+
+    /// The bounded-buffer protocol: the host writes only what the guest's
+    /// declared capacity admits, and reports the length the guest needs to
+    /// allocate for a second, complete call.
+    #[test]
+    fn dir_read_into_writes_at_most_the_declared_capacity_and_reports_the_full_length() {
+        let root = seeded_root("a.txt", "hello");
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(
+                READ_INTO,
+                Capabilities {
+                    dir_root: Some(root.path().to_path_buf()),
+                    dir_read: true,
+                    ..Capabilities::default()
+                },
+                4,
+            )
+            .expect("instantiate the canonical read probe");
+        vm.run().expect("run the canonical read probe");
+
+        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("guest memory");
+        let mut answer = [0u8; 4];
+        memory.read(&vm.store, 256, &mut answer).expect("read the reported length");
+        assert_eq!(i32::from_le_bytes(answer), 5, "the FULL file length is reported");
+        let mut out = [0u8; 4];
+        memory.read(&vm.store, 64, &mut out).expect("read the out buffer");
+        assert_eq!(&out, b"hel\0", "only the declared capacity may be written");
+    }
+
+    /// Confinement is the frozen route's, unchanged: a path that leaves the
+    /// granted root traps rather than reading.
+    #[test]
+    fn dir_read_into_traps_on_a_path_escaping_the_root() {
+        let root = seeded_root("a.txt", "hello");
+        std::fs::write(root.path().parent().expect("temp parent").join("escape.txt"), "secret")
+            .expect("seed a file outside the grant");
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(
+                READ_ESCAPING,
+                Capabilities {
+                    dir_root: Some(root.path().to_path_buf()),
+                    dir_read: true,
+                    ..Capabilities::default()
+                },
+                4,
+            )
+            .expect("instantiate the escaping-read probe");
+        let error = vm.run().expect_err("an escaping path must trap");
+        let detail = format!("{error:?}");
+        assert!(
+            !detail.contains("secret"),
+            "the trap must not leak the escaped file, got: {detail}"
+        );
+    }
+
+    /// Rights live in the authority object, so a read-only token refuses the
+    /// write even when a sibling grant made the import linkable.
+    #[test]
+    fn dir_write_at_refuses_a_read_only_dir() {
+        let read_only = seeded_root("a.txt", "hello");
+        let writable = tempfile::tempdir().expect("writable root");
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(
+                WRITE_AT,
+                Capabilities {
+                    dir_root: Some(read_only.path().to_path_buf()),
+                    dir_roots: vec![writable.path().to_path_buf()],
+                    dir_rights: vec![FsRights::new(true, false), FsRights::new(true, true)],
+                    ..Capabilities::default()
+                },
+                4,
+            )
+            .expect("a writable sibling grant links the write family");
+        let error = vm.run().expect_err("a read-only Dir must refuse a write");
+        assert!(
+            format!("{error:?}").contains("does not grant Write"),
+            "expected a rights refusal, got: {error:?}"
+        );
+        assert!(
+            !read_only.path().join("w.txt").exists(),
+            "the refused write must not have touched the read-only root"
+        );
+    }
+
+    /// The gate before the gate: with no Write right anywhere, the canonical
+    /// write import does not exist for the VM at all.
+    #[test]
+    fn dir_write_at_is_not_linked_without_a_write_grant() {
+        let root = seeded_root("a.txt", "hello");
+        let mut runtime = Runtime::new().expect("runtime");
+        let error = runtime
+            .spawn(
+                WRITE_AT,
+                Capabilities {
+                    dir_root: Some(root.path().to_path_buf()),
+                    dir_read: true,
+                    ..Capabilities::default()
+                },
+                4,
+            )
+            .map(|_| ())
+            .expect_err("an ungranted write import must not link");
+        assert!(
+            error.to_string().contains("unknown import"),
+            "expected an unknown-import error, got: {error}"
+        );
     }
 }
