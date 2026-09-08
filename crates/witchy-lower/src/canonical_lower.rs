@@ -2559,16 +2559,7 @@ impl FunctionLowerer<'_> {
         let scrutinee = self.lower_expr(scrutinee)?;
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
-        let result_type = if with_value {
-            let first = self.expression_type(&arms[0].body)?;
-            let first = source_value_type(&first, self.layout_bundle, self.layouts, &HashMap::new(), self.definitions)?;
-            if is_unit(first) {
-                return Err(CanonicalLoweringError::UnsupportedExpression("unit match value"));
-            }
-            Some(first)
-        } else {
-            None
-        };
+        let mut result_type = None;
         let mut arm_results = Vec::with_capacity(arms.len());
         // The dispatch block the next arm tests in. It is `None` once an
         // irrefutable arm has ended dispatch: allocating a fallthrough block
@@ -2653,12 +2644,11 @@ impl FunctionLowerer<'_> {
                 continue;
             }
             let value = if with_value {
-                let value = self.lower_expr(&arm.body)?;
-                let value = self.detach_bound_result(value)?;
-                if Some(self.values[&value]) != result_type {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("match arm types"));
-                }
-                Some(value)
+                let value = match &arm.body {
+                    Expr::Block(block) => self.lower_block_flow_value(block)?,
+                    _ => Some(self.lower_expr(&arm.body)?),
+                };
+                value.map(|value| self.detach_bound_result(value)).transpose()?
             } else {
                 self.lower_effect_expr(&arm.body)?;
                 None
@@ -2667,6 +2657,19 @@ impl FunctionLowerer<'_> {
             let bindings = self.bindings.clone();
             let continues = self.blocks[body_end.get() as usize].terminator.is_none();
             if continues {
+                if let Some(value) = value {
+                    let value_type = self.values[&value];
+                    if is_unit(value_type) {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("unit match value"));
+                    }
+                    if let Some(expected) = result_type {
+                        if value_type != expected {
+                            return Err(CanonicalLoweringError::UnsupportedExpression("match arm types"));
+                        }
+                    } else {
+                        result_type = Some(value_type);
+                    }
+                }
                 continuing_facts.push(self.snapshot_facts());
                 arm_results.push((body_end, bindings, value));
             }
