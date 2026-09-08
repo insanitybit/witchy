@@ -38,6 +38,27 @@ fn generic_templates_do_not_shift_executable_tail_site_owners() {
     ]);
 }
 
+#[test]
+fn list_concat_preserves_owned_inputs_across_three_legs() {
+    assert_three_legs(r#"
+fn scalar() -> Int:
+    let left = [1, 2]
+    let right = [3, 4]
+    let joined = left.concat(right)
+    joined[0] + joined[3] + left[1] + right[0]
+
+fn strings() -> Int:
+    let left = ["a", "bb"]
+    let right = ["ccc"]
+    let joined = left.concat(right)
+    joined[0].length() + joined[2].length() + left[1].length() + right[0].length()
+
+fn main(console: Console):
+    console.print("${scalar()}")
+    console.print("${strings()}")
+"#, vec!["10".to_owned(), "9".to_owned()]);
+}
+
 fn assert_three_legs(source: &str, expected: Vec<String>) {
 
     let checked = witchy::resolve_std_only_checked(source)
