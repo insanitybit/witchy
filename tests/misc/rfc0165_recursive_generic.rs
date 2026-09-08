@@ -81,6 +81,31 @@ fn main(console: Console):
 "#, vec!["items: 2".to_owned()]);
 }
 
+#[test]
+fn valued_if_continues_only_with_the_surviving_value() {
+    assert_three_legs(r#"
+fn scalar(flag: Bool) -> Int:
+    let value = if flag:
+        return 7
+    else:
+        10
+    value + 1
+
+fn text(flag: Bool) -> String:
+    let value = if flag:
+        return "early"
+    else:
+        "late"
+    value + "!"
+
+fn main(console: Console):
+    console.print("${scalar(true)}")
+    console.print("${scalar(false)}")
+    console.print(text(true))
+    console.print(text(false))
+"#, vec!["7".to_owned(), "11".to_owned(), "early".to_owned(), "late!".to_owned()]);
+}
+
 fn assert_three_legs(source: &str, expected: Vec<String>) {
 
     let checked = witchy::resolve_std_only_checked(source)

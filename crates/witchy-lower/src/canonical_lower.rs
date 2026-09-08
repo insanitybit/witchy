@@ -1882,6 +1882,17 @@ impl FunctionLowerer<'_> {
         &mut self,
         block: &witchy_syntax::ast::Block,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_block_flow_value(block)?.ok_or(
+            CanonicalLoweringError::UnsupportedExpression("divergent block used as a value"),
+        )
+    }
+
+    /// A terminating arm contributes no value or edge to a value join.
+    /// Stop at its terminator instead of lowering an unreachable tail.
+    fn lower_block_flow_value(
+        &mut self,
+        block: &witchy_syntax::ast::Block,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let outer = self.bindings.keys().cloned().collect::<Vec<_>>();
         let (tail, statements) = block
             .stmts
@@ -1919,15 +1930,33 @@ impl FunctionLowerer<'_> {
                     self.bindings.insert(name.clone(), value);
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
+                Stmt::Return(value) => {
+                    let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
+                    let results = self.results.clone();
+                    let terminator = self.return_value(value, &results)?;
+                    self.finish_current(terminator)?;
+                }
                 _ => return Err(CanonicalLoweringError::UnsupportedStatement("block statement")),
+            }
+            if self.blocks[self.current.get() as usize].terminator.is_some() {
+                self.drop_bindings_except(&outer);
+                return Ok(None);
             }
         }
         let value = match tail {
             Stmt::Expr(value) => self.lower_expr(value)?,
+            Stmt::Return(value) => {
+                let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
+                let results = self.results.clone();
+                let terminator = self.return_value(value, &results)?;
+                self.finish_current(terminator)?;
+                self.drop_bindings_except(&outer);
+                return Ok(None);
+            }
             _ => return Err(CanonicalLoweringError::UnsupportedStatement("block tail")),
         };
         self.drop_bindings_except(&outer);
-        Ok(value)
+        Ok(self.blocks[self.current.get() as usize].terminator.is_none().then_some(value))
     }
 
     /// The value a `let`/`var` binds. A `var` that aliases a reference another
@@ -2305,8 +2334,10 @@ impl FunctionLowerer<'_> {
         self.current = then_id;
         self.bindings = outer.clone();
         let then_value = if with_value {
-            let value = self.lower_block_value(then_block)?;
-            Some(self.detach_bound_result(value)?)
+            match self.lower_block_flow_value(then_block)? {
+                Some(value) => Some(self.detach_bound_result(value)?),
+                None => None,
+            }
         } else {
             self.lower_block_effect(then_block)?;
             None
@@ -2322,8 +2353,10 @@ impl FunctionLowerer<'_> {
         self.current = else_id;
         self.bindings = outer.clone();
         let else_value = if with_value {
-            let value = self.lower_block_value(else_block)?;
-            Some(self.detach_bound_result(value)?)
+            match self.lower_block_flow_value(else_block)? {
+                Some(value) => Some(self.detach_bound_result(value)?),
+                None => None,
+            }
         } else {
             self.lower_block_effect(else_block)?;
             None
@@ -2335,27 +2368,24 @@ impl FunctionLowerer<'_> {
         self.absorb_facts(then_facts.clone());
 
         // An arm that returned early has no edge into the join. With one arm
-        // gone the other simply continues as the fall-through; the `if` is a
-        // statement here, so it carries no value.
+        // gone the other simply continues as the fall-through, carrying only
+        // its own result when this is a valued expression.
         if then_terminated || else_terminated {
-            if with_value {
-                return Err(CanonicalLoweringError::UnsupportedExpression("return inside a valued if"));
-            }
             if then_terminated && else_terminated {
                 return Err(CanonicalLoweringError::UnsupportedStatement("return in every if arm"));
             }
             // Only the continuing arm's facts remain valid: a terminated
             // arm's cached loads never dominate what follows.
-            let (end, bindings, arm_facts) = if then_terminated {
-                (else_end, else_bindings, else_facts)
+            let (end, bindings, arm_facts, value) = if then_terminated {
+                (else_end, else_bindings, else_facts, else_value)
             } else {
-                (then_end, then_bindings, then_facts)
+                (then_end, then_bindings, then_facts, then_value)
             };
             self.restore_snapshot(facts);
             self.absorb_facts(arm_facts);
             self.current = end;
             self.bindings = bindings;
-            return Ok(None);
+            return Ok(value);
         }
 
         // A static lane joined with a token lane: materialize the static one
