@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
-use witchy_types::canonical_aggregates::{aggregate_key, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
+use witchy_types::canonical_aggregates::{aggregate_key, concrete_aggregate_identity, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -251,7 +251,7 @@ struct LayoutProjection {
 
 impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
-        let key = ty.unqualified().clone();
+        let key = canonical_layout_type(ty, &self.definitions);
         if self.visited.contains(&key) || !self.visiting.insert(key.clone()) {
             return Ok(());
         }
@@ -396,7 +396,7 @@ fn intern_v1_layout_checked(
     recursive_types: &HashSet<Type>,
     active: &mut HashSet<Type>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    let key = ty.unqualified().clone();
+    let key = canonical_layout_type(ty, definitions);
     if recursive_types.contains(&key) {
         let nominal = intern_recursive_nominal(interner, &key)?;
         if interner.nominal_target(nominal).is_some() {
@@ -519,6 +519,30 @@ pub(crate) fn recursive_nominal_layout_id(ty: &Type) -> Result<LayoutId, Canonic
     intern_recursive_nominal(&mut LayoutInterner::new(), ty)
 }
 
+/// Like [`recursive_nominal_layout_id`], but derives the opaque identity from
+/// the checked aggregate identity rather than a declaration-local spelling.
+/// The catalog uses this normalization for every graph edge; lowering must use
+/// this companion when it maps a checked aggregate source type back to the
+/// catalog root.
+pub(crate) fn recursive_nominal_layout_id_for_shape(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<LayoutId, CanonicalLayoutError> {
+    let identity = concrete_aggregate_identity(ty, definitions).ok_or_else(|| {
+        CanonicalLayoutError::UnsupportedType(format!("recursive nominal layout {ty:?}"))
+    })?;
+    intern_recursive_nominal(&mut LayoutInterner::new(), &identity)
+}
+
+/// Aggregate aliases and recursively substituted fields must enter the layout
+/// graph in the exact checked identity domain.  In particular, an entry root
+/// `main.Stack(Int)` and the `Stack(a)` field substituted from its definition
+/// become one `main.Stack(Int)` node before cycle detection or nominal hashing.
+/// Non-aggregate types retain their checked structural spelling.
+fn canonical_layout_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
+    concrete_aggregate_identity(ty, definitions).unwrap_or_else(|| ty.unqualified().clone())
+}
+
 /// Find the reachable user-defined heap types that are actually on a source
 /// cycle. Acyclic heap records retain their existing concrete content IDs;
 /// only cycle participants need an opaque identity reserved before their body.
@@ -532,7 +556,7 @@ fn recursive_heap_types(roots: &[Type], definitions: &BTreeMap<String, TypeDef>)
         collect_heap_targets(root, definitions, &mut pending);
     }
     while let Some(node) = pending.pop() {
-        let node = node.unqualified().clone();
+        let node = canonical_layout_type(&node, definitions);
         if !reachable.insert(node.clone()) || !is_heap_user_type(&node, definitions) {
             continue;
         }
@@ -558,7 +582,8 @@ fn collect_heap_targets(
     definitions: &BTreeMap<String, TypeDef>,
     targets: &mut impl Extend<Type>,
 ) {
-    let ty = ty.unqualified();
+    let normalized = canonical_layout_type(ty, definitions);
+    let ty = normalized.unqualified();
     if is_heap_user_type(ty, definitions) {
         targets.extend(std::iter::once(ty.clone()));
         return;
@@ -768,6 +793,12 @@ mod tests {
             name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false,
         }.packed_view();
         definition.packed = false;
+        definition
+    }
+
+    fn generic_heap_definition(name: &str, parameters: &[&str], fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
+        let mut definition = heap_definition(name, fields);
+        definition.params = parameters.iter().map(|parameter| (*parameter).to_owned()).collect();
         definition
     }
 
@@ -1003,5 +1034,55 @@ mod tests {
             };
             assert_ne!(length_offset, capacity_offset);
         }
+    }
+
+    #[test]
+    fn concrete_recursive_generic_nominals_are_distinct_stable_and_closed() {
+        fn stack() -> witchy_syntax::ast::TypeDef {
+            generic_heap_definition(
+                "Stack",
+                &["a"],
+                vec![
+                    Type::Named("a".into(), Vec::new()),
+                    Type::Named("Stack".into(), vec![Type::Named("a".into(), Vec::new())]),
+                ],
+            )
+        }
+
+        fn bundle(order: &[Type]) -> witchy_wir::layout::LayoutBundle {
+            let definition = stack();
+            let mut projection = LayoutProjection::default();
+            projection.definitions.insert("Stack".into(), definition.clone());
+            projection.definitions.insert("main.Stack".into(), definition);
+            for ty in order {
+                projection.visit_type(ty).expect("concrete recursive generic root");
+            }
+            projection.finish().expect("closed generic recursive catalog")
+        }
+
+        let int_stack = Type::Named("main.Stack".into(), vec![named("Int")]);
+        let string_stack = Type::Named("main.Stack".into(), vec![named("String")]);
+        let first = bundle(&[int_stack.clone(), string_stack.clone()]);
+        let second = bundle(&[string_stack, int_stack]);
+        assert_eq!(first.canonical_bytes(), second.canonical_bytes());
+        assert_eq!(first.roots(), second.roots());
+
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&first.canonical_bytes())
+            .expect("decode generic recursive catalog");
+        let nominal_roots = first.roots().iter().copied().filter(|root| {
+            matches!(layouts.get(*root).map(|layout| layout.kind()), Some(LayoutKind::OpaqueNominal { .. }))
+        }).collect::<Vec<_>>();
+        assert_eq!(nominal_roots.len(), 2, "Stack(Int) and Stack(String) retain separate identities");
+        assert_ne!(nominal_roots[0], nominal_roots[1]);
+        for root in nominal_roots {
+            assert!(layouts.nominal_target(root).is_some(), "every generic nominal root is bound");
+        }
+
+        let definition = stack();
+        let mut projection = LayoutProjection::default();
+        projection.definitions.insert("Stack".into(), definition.clone());
+        projection.definitions.insert("main.Stack".into(), definition);
+        assert!(projection.visit_type(&Type::Named("main.Stack".into(), vec![named("a")])).is_err(),
+            "unresolved generic arguments must not acquire a layout");
     }
 }

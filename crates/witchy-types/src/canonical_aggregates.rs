@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use witchy_syntax::ast::{Item, Module, Type, TypeDef, Variant};
+use witchy_syntax::ast::{effective_type_def_params, Item, Module, Type, TypeDef, Variant};
 
 /// One constructor of a scalar aggregate: its payload occupies `arity`
 /// consecutive slots starting at `first_field`.
@@ -152,7 +152,8 @@ fn definition_fields_ok(
     depth: usize,
     budget: &mut usize,
 ) -> bool {
-    if definition.params.len() != arguments.len()
+    let parameters = effective_type_def_params(definition);
+    if parameters.len() != arguments.len()
         || definition.is_capability
         || definition.variants.is_empty()
         || depth == MAX_AGGREGATE_SHAPE_EXPANSION
@@ -173,7 +174,7 @@ fn definition_fields_ok(
     if !active.insert(key) {
         return !definition.packed;
     }
-    let substitutions = definition.params.iter().cloned().zip(arguments.iter().cloned()).collect();
+    let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect();
     let valid = definition.variants.iter().all(|variant| {
         variant.fields.iter().all(|field| {
             let Some(nodes) = substituted_node_count(field, &substitutions, *budget) else { return false };
@@ -303,6 +304,77 @@ pub fn aggregate_key(ty: &Type) -> Option<String> {
     }
 }
 
+/// Normalize checked declaration names and concrete arguments for layout
+/// identity. This does not validate or expand bodies: the bounded aggregate
+/// shape checker owns that separate obligation.
+pub fn concrete_aggregate_identity(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    concrete_identity_at(ty, definitions, 0, &mut MAX_AGGREGATE_SHAPE_NODES)
+}
+
+fn aggregate_declaration<'a>(
+    name: &str,
+    definitions: &'a BTreeMap<String, TypeDef>,
+) -> Option<(&'a str, &'a TypeDef)> {
+    if name.contains('.') {
+        return definitions.get_key_value(name).map(|(key, definition)| (key.as_str(), definition));
+    }
+    let bare = definitions.get_key_value(name);
+    let mut qualified = definitions.iter().filter(|(key, _)| {
+        key.contains('.') && key.rsplit('.').next() == Some(name)
+    });
+    let first = qualified.next();
+    if qualified.next().is_some() {
+        return None;
+    }
+    match (bare, first) {
+        (Some((_, bare)), Some((key, definition))) if bare == definition => Some((key.as_str(), definition)),
+        (None, Some((key, definition))) => Some((key.as_str(), definition)),
+        (Some((key, definition)), None) => Some((key.as_str(), definition)),
+        _ => None,
+    }
+}
+
+fn concrete_identity_at(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    depth: usize,
+    budget: &mut usize,
+) -> Option<Type> {
+    if depth >= MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
+        return None;
+    }
+    match ty.unqualified() {
+        ty if is_scalar_type(ty) => Some(ty.clone()),
+        Type::Tuple(items) => Some(Type::Tuple(items.iter()
+            .map(|item| concrete_identity_at(item, definitions, depth + 1, budget))
+            .collect::<Option<Vec<_>>>()?)),
+        Type::Named(name, arguments) => {
+            let (canonical_name, arity) = match name.as_str() {
+                "String" | "Bytes" => (name.as_str(), 0),
+                "List" | "Option" => (name.as_str(), 1),
+                "Result" | "Dict" => (name.as_str(), 2),
+                _ => {
+                    let (key, definition) = aggregate_declaration(name, definitions)?;
+                    if definition.is_capability {
+                        return None;
+                    }
+                    (key, effective_type_def_params(definition).len())
+                }
+            };
+            if arguments.len() != arity {
+                return None;
+            }
+            Some(Type::Named(canonical_name.to_owned(), arguments.iter()
+                .map(|argument| concrete_identity_at(argument, definitions, depth + 1, budget))
+                .collect::<Option<Vec<_>>>()?))
+        }
+        _ => None,
+    }
+}
+
 /// The module's type definitions keyed by bare and entry-qualified names.
 pub fn type_definitions(module: &Module) -> BTreeMap<String, TypeDef> {
     let mut definitions = BTreeMap::new();
@@ -333,7 +405,7 @@ fn shape_from_instantiation(
     if !definition_fields_ok(definition, arguments, definitions, &mut BTreeSet::new(), 0, &mut budget) {
         return None;
     }
-    let substitutions = definition.params.iter().cloned().zip(arguments.iter().cloned()).collect();
+    let substitutions = effective_type_def_params(definition).into_iter().zip(arguments.iter().cloned()).collect();
     let name = definition.name.rsplit('.').next().unwrap_or(&definition.name).to_owned();
     if definition.variants.len() == 1 {
         let variant = &definition.variants[0];

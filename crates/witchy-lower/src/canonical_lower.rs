@@ -10698,7 +10698,7 @@ fn aggregate_layout_for_source(
     layouts: &LayoutInterner,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
-    if let Ok(nominal) = crate::canonical_layouts::recursive_nominal_layout_id(source)
+    if let Ok(nominal) = crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
         && layout_bundle.roots().contains(&nominal)
         && matches!(layouts.get(nominal).map(|descriptor| descriptor.kind()), Some(LayoutKind::OpaqueNominal { .. }))
     {
