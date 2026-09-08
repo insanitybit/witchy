@@ -5485,11 +5485,59 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    /// A fresh copy of an aggregate value: every slot is loaded and stored
-    /// again, reference slots through their own copies.
+    /// A fresh aggregate shell with owned references to its active payload.
+    /// Inactive tagged payloads are never loaded; their nullable slots are
+    /// initialized by the ordinary constructor path.
     fn clone_aggregate_for_storage(&mut self, value: ValueId, ty: &Type) -> Result<ValueId, CanonicalLoweringError> {
         let shape = scalar_aggregate_shape(ty, self.definitions)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(ty.clone()))?;
+        if shape.tagged {
+            if shape.variants.is_empty() {
+                return Err(CanonicalLoweringError::UnsupportedExpression("tagged aggregate has no variants"));
+            }
+            let tag = self.load_record_field(value, 0, ValueType::Int)?;
+            let facts = self.snapshot_facts();
+            let join = self.new_block(&[self.values[&value]])?;
+            self.blocks[join.get() as usize].parameters[0].ownership = Some(Ownership::Unique);
+            let result = self.blocks[join.get() as usize].parameters[0].value;
+            self.token_join_parameters.insert(result);
+            for (index, variant) in shape.variants.iter().enumerate() {
+                let expected = self.push_const_int(i64::try_from(index)
+                    .map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                let selected = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
+                let next = if index + 1 == shape.variants.len() {
+                    self.push_trap_unless(selected)?;
+                    None
+                } else {
+                    let arm = self.new_block(&[])?;
+                    let next = self.new_block(&[])?;
+                    self.finish_current(Terminator::BranchIf {
+                        condition: selected,
+                        then_target: arm,
+                        then_arguments: Vec::new(),
+                        else_target: next,
+                        else_arguments: Vec::new(),
+                    })?;
+                    self.current = arm;
+                    Some(next)
+                };
+                let mut payload = Vec::with_capacity(variant.arity);
+                for slot in variant.first_field..variant.first_field + variant.arity {
+                    let value_type = self.field_value_type(&shape.fields[slot])?;
+                    let field = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                    payload.push(self.load_record_field(value, field, value_type)?);
+                }
+                let copy = self.lower_aggregate_for_source(ty, &shape, index, payload)?;
+                self.finish_current(Terminator::Branch { target: join, arguments: vec![copy] })?;
+                if let Some(next) = next {
+                    self.restore_snapshot(facts.clone());
+                    self.current = next;
+                }
+            }
+            self.restore_facts(facts, join);
+            self.current = join;
+            return Ok(result);
+        }
         let mut slots = Vec::with_capacity(shape.fields.len());
         for (index, field) in shape.fields.iter().enumerate() {
             let value_type = self.field_value_type(field)?;
