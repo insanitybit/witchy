@@ -1,5 +1,41 @@
     use super::*;
 
+    #[test]
+    fn checked_noncompletion_preserves_source_identity_and_suppresses_transients() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn choose(value: Option(Int)) -> Int:\n    match value:\n        Some(n) ->\n            return n\n        None ->\n            return 2\n    0\n",
+        ).expect("all-returning match parses");
+        let typed = annotate_checked(module).expect("all-returning match checks");
+        let Item::Function(function) = &typed.module().items[0] else { panic!("function") };
+        let Stmt::Expr(matched @ Expr::Match { arms, .. }) = &function.body.stmts[0] else {
+            panic!("effect-position match")
+        };
+        assert!(typed.table().is_non_completing(matched));
+        assert!(typed.table().type_of(matched).is_none(), "no invented result type");
+        for arm in arms {
+            assert!(typed.table().is_non_completing(&arm.body));
+        }
+        let detached = matched.clone();
+        assert!(!typed.table().is_non_completing(&detached), "facts belong to the checked AST");
+        let Stmt::Expr(normal) = &function.body.stmts[1] else { panic!("normal expression") };
+        assert!(!typed.table().is_non_completing(normal));
+        assert_eq!(typed.table().type_of(normal), Some(&Ty::Int));
+
+        // While-let inference checks a temporary desugared tree. Its returning
+        // arm must not leave address-keyed facts after that tree is discarded.
+        let module = witchy_syntax::parser::parse_module(
+            "fn transient(flag: Bool) -> Int:\n    while let true = flag:\n        return 3\n    0\n",
+        ).expect("transient source parses");
+        let typed = annotate_checked(module).expect("transient source checks");
+        assert!(typed.table().non_completing.is_empty(), "temporary expressions must not be recorded");
+        let Item::Function(function) = &typed.module().items[0] else { panic!("function") };
+        let Stmt::Expr(loop_expr @ Expr::WhileLet { .. }) = &function.body.stmts[0] else {
+            panic!("transient desugaring site")
+        };
+        assert!(!typed.table().is_non_completing(loop_expr));
+        assert!(typed.table().type_of(loop_expr).is_some(), "recording resumes for the persistent node");
+    }
+
     fn check_source(source: &str) -> Result<(), TypeError> {
         let module = witchy_syntax::parser::parse_module(source).expect("source parses");
         check(&module)

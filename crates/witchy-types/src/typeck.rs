@@ -3796,7 +3796,9 @@ struct Checker {
     resolve_cache: std::cell::RefCell<HashMap<u32, Ty>>,
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
-    type_record: Option<HashMap<usize, Ty>>,
+    // The boolean is checked non-completion, recorded in the same session so
+    // infer_transient suppresses both facts for temporary AST allocations.
+    type_record: Option<HashMap<usize, (Ty, bool)>>,
     /// Directed concrete-to-existential coercions discovered while checking.
     /// The types remain checker types until the ending substitution is known.
     /// [`TypeTable`] preserves unresolved requests so final existential
@@ -7658,7 +7660,7 @@ impl Checker {
         }
         self.reject_runtime_compiler_syntax_ty(&t, "expression")?;
         if let Some(rec) = &mut self.type_record {
-            rec.insert(expr as *const Expr as usize, t.clone());
+            rec.insert(expr as *const Expr as usize, (t.clone(), !expr_can_complete(expr)));
         }
         Ok(t)
     }
@@ -11667,6 +11669,10 @@ fn check_with_compiler_syntax(
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    /// Checked expressions with no normal continuation. Unlike value types,
+    /// this fact survives an unresolved result variable; it supplies no value
+    /// representation and does not exempt descendants from type checking.
+    non_completing: HashSet<usize>,
     /// Complete callable identity for each concrete named declaration.
     functions: HashMap<String, Ty>,
     existential_packs: HashMap<usize, (Ty, Ty)>,
@@ -12194,6 +12200,12 @@ fn encode_site_key(key: &ProperTailSiteKey, bytes: &mut Vec<u8>) {
 }
 
 impl TypeTable {
+    /// Whether this exact checked expression cannot complete normally.
+    /// Absence means unknown or completing, never permission to omit a type.
+    pub fn is_non_completing(&self, e: &Expr) -> bool {
+        self.non_completing.contains(&(e as *const Expr as usize))
+    }
+
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
     }
@@ -13288,7 +13300,11 @@ fn run_check_selected(
     }
     if let Some(rec) = c.type_record.take() {
         let mut types = HashMap::new();
-        for (k, ty) in rec {
+        let mut non_completing = HashSet::new();
+        for (k, (ty, cannot_complete)) in rec {
+            if cannot_complete {
+                non_completing.insert(k);
+            }
             let resolved = c.resolve(&ty);
             if !ty_has_var(&resolved) {
                 types.insert(k, resolved);
@@ -13325,6 +13341,7 @@ fn run_check_selected(
             .collect();
         return Ok(Some(TypeTable {
             types,
+            non_completing,
             functions,
             existential_packs,
             existential_upcasts,
