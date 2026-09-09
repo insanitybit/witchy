@@ -127,7 +127,7 @@ fn host_compiler_footprint_into(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
-    let src = read_slice_str(data, src_ptr, src_len)?;
+    let src = read_unsigned_slice_str(data, src_ptr, src_len)?;
     checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
     let json = caller.data().compiler_services.clone().footprint(&src)?;
     let bytes = json.into_bytes();
@@ -147,8 +147,8 @@ fn host_compiler_diff_into(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
-    let old_src = read_slice_str(data, old_ptr, old_len)?;
-    let new_src = read_slice_str(data, new_ptr, new_len)?;
+    let old_src = read_unsigned_slice_str(data, old_ptr, old_len)?;
+    let new_src = read_unsigned_slice_str(data, new_ptr, new_len)?;
     checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
     let json = caller
         .data()
@@ -160,13 +160,20 @@ fn host_compiler_diff_into(
 }
 
 fn checked_guest_range(data_len: usize, ptr: i32, len: i32, what: &str) -> Result<(usize, usize)> {
-    let start = u32::try_from(ptr).map_err(|_| Error::msg(format!("negative {what} pointer")))?;
-    let length = u32::try_from(len).map_err(|_| Error::msg(format!("negative {what} length")))?;
-    let end = u64::from(start) + u64::from(length);
+    let start = u64::from(u32::from_ne_bytes(ptr.to_ne_bytes()));
+    let length = u64::from(u32::from_ne_bytes(len.to_ne_bytes()));
+    let end = start + length;
     if end > data_len as u64 {
         return Err(Error::msg(format!("{what} ({start}..{end}) lies outside guest memory")));
     }
     Ok((start as usize, length as usize))
+}
+
+fn read_unsigned_slice_str(data: &[u8], ptr: i32, len: i32) -> Result<String> {
+    let (start, length) = checked_guest_range(data.len(), ptr, len, "host input")?;
+    std::str::from_utf8(&data[start..start + length])
+        .map(str::to_owned)
+        .map_err(|e| Error::msg(format!("host slice is not valid UTF-8: {e}")))
 }
 
 fn write_result_bytes(caller: &mut Caller<'_, VmState>, out_ptr: i32, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
@@ -176,12 +183,17 @@ fn write_result_bytes(caller: &mut Caller<'_, VmState>, out_ptr: i32, out_capaci
 
 fn write_result_bytes_to_memory(data: &mut [u8], out_ptr: i32, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
     let (start, capacity) = checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
-    let required = i32::try_from(bytes.len())
-        .map_err(|_| Error::msg("compiler service result exceeds i32 byte length"))?;
+    let required = required_result_size(bytes.len())?;
     if bytes.len() <= capacity {
         data[start..start + bytes.len()].copy_from_slice(bytes);
     }
     Ok(required)
+}
+
+fn required_result_size(byte_len: usize) -> Result<i32> {
+    let required = u32::try_from(byte_len)
+        .map_err(|_| Error::msg("compiler service result exceeds wasm32 byte length"))?;
+    Ok(required as i32)
 }
 
 /// `compiler_doc_len(name_ptr, src_ptr) -> Int`: render the guest's source string to
@@ -220,7 +232,7 @@ fn host_compiler_doc_result_json_len(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_slice_str, write_result_bytes_to_memory};
+    use super::{checked_guest_range, read_slice_str, required_result_size, write_result_bytes_to_memory};
     use crate::runtime::{Capabilities, Runtime};
     use std::sync::Arc;
     use wasmtime::Error;
@@ -319,6 +331,15 @@ mod tests {
 
         assert!(read_slice_str(&memory, 2, 4).is_err());
         assert!(write_result_bytes_to_memory(&mut memory, 31, 2, b"x").is_err());
+    }
+
+    #[test]
+    fn bounded_compiler_lanes_preserve_unsigned_wasm32_bits() {
+        let wasm32_max = u32::MAX as usize;
+        assert_eq!(checked_guest_range(wasm32_max, 0, -1, "input").unwrap(), (0, wasm32_max));
+        assert_eq!(checked_guest_range(wasm32_max, -1, 0, "input").unwrap(), (wasm32_max, 0));
+        assert_eq!(required_result_size(0x8000_0000usize).unwrap(), i32::MIN);
+        assert!(required_result_size((u32::MAX as usize) + 1).is_err());
     }
 
     #[test]
