@@ -76,6 +76,8 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ConstInt { destination, .. } | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. } | Operation::ConstSize { destination, .. }
+        | Operation::CapabilityNone { destination, .. } | Operation::CapabilitySome { destination, .. }
+        | Operation::CapabilityIsPresent { destination, .. } | Operation::CapabilityUnwrap { destination, .. }
         | Operation::Arithmetic { destination, .. } | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. } | Operation::WidenSize { destination, .. }
         | Operation::FloatUnary { destination, .. }
@@ -106,6 +108,8 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
         Operation::UpdateCount { object, .. } | Operation::Retain { object }
         | Operation::Release { object } | Operation::DropRef { object } | Operation::Reclaim { object } => vec![*object],
         Operation::MoveValue { source, .. } | Operation::CloneRef { source, .. } => vec![*source],
+        Operation::CapabilitySome { source, .. } | Operation::CapabilityIsPresent { source, .. }
+        | Operation::CapabilityUnwrap { source, .. } => vec![*source],
         Operation::MakeInlineAggregate { fields, .. } => fields.clone(),
         Operation::ExtractInlineField { aggregate, .. } => vec![*aggregate],
         Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. } => {
@@ -118,6 +122,7 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
         }).collect(),
         Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. }
         | Operation::ConstSize { .. } | Operation::Alloc { .. } | Operation::StaticData { .. }
+        | Operation::CapabilityNone { .. }
         | Operation::FunctionValue { .. } => Vec::new(),
     }
 }

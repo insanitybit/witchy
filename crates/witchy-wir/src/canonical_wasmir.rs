@@ -5182,6 +5182,24 @@ fn expected_linear_function_plan(
                 plan.push(PlanToken::I32Const(value as i32));
                 push_set(&mut plan, &layout, *destination)?;
             }
+            Operation::CapabilityNone { destination, .. } => {
+                plan.push(PlanToken::RefNull(format!("{:?}", wasmparser::HeapType::EXTERN)));
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::CapabilitySome { destination, source } => {
+                push_get(&mut plan, &layout, *source)?;
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::CapabilityIsPresent { destination, source } => {
+                push_get(&mut plan, &layout, *source)?;
+                plan.extend([PlanToken::RefIsNull, PlanToken::I32Eqz]);
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::CapabilityUnwrap { destination, source } => {
+                push_get(&mut plan, &layout, *source)?;
+                plan.push(PlanToken::RefAsNonNull);
+                push_set(&mut plan, &layout, *destination)?;
+            }
             Operation::StaticData { destination, data, .. } => {
                 let offset = static_data_offsets
                     .get(data)

@@ -12112,6 +12112,7 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         // value: there is no callee to transfer to.
         Expr::Call { name, .. }
             if matches!(name.as_str(), "__capop.print" | "int_to_duration" | "duration_to_int")
+                || (name.starts_with("__capop.") && witchy_syntax::cap_ops::is_op_name(name))
                 || witchy_syntax::intrinsics::lookup(name).is_some()
                 || witchy_syntax::intrinsics::lookup(name.strip_prefix("list.__").map_or(name.as_str(), |_| name.as_str())).is_some() => None,
         Expr::Call { .. } | Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } | Expr::MethodCall { .. } => Some(ProperTailDispatchKind::Direct),
@@ -13452,5 +13453,18 @@ mod proper_tail_manifest_tests {
             "fn chars() -> List(String):\n    string.chars(\"x\")\n\nfn len(xs: List(Int)) -> Int:\n    list.length(xs)\n",
         );
         assert!(manifest.sites().is_empty());
+    }
+
+    #[test]
+    fn resolved_capability_operations_do_not_hide_guest_tail_calls() {
+        for name in ["__capop.read", "__capop.subtree"] {
+            let call = witchy_syntax::ast::Expr::Call { name: name.into(), args: Vec::new() };
+            assert_eq!(super::proper_tail_dispatch(&call), None);
+        }
+        for name in ["read", "subtree", "__capop.not_an_operation"] {
+            let call = witchy_syntax::ast::Expr::Call { name: name.into(), args: Vec::new() };
+            assert_eq!(super::proper_tail_dispatch(&call), Some(ProperTailDispatchKind::Direct));
+        }
+        assert_eq!(manifest("fn read(n: Int) -> Int:\n    read(n)\n").sites().len(), 1);
     }
 }

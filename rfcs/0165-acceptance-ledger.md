@@ -377,3 +377,12 @@ A focused production check of jq now admits; this is not yet jq execution parity
 - `typed_errors::url_typed_errors_are_matchable_and_bridge_to_string`: passed (2.97 seconds); its deferral is removed.
 - Dynamic `if` joins reload live bound strings through existing checked headers and guards. Validator rules and list count/capacity identities are unchanged.
 - Bounded independent review found no concrete soundness or correctness objection. No fresh census totals or broad soundness claim are inferred from this probe.
+
+### Nullable capability coverage slice (2026-09-09)
+
+- String-join predecessor: `12bd84baf` merged at 15:04:08Z, queue `mq-0c3d012e3312b605411c1100a7bd916e3f1c5515`, full gate green.
+- Nullable capability core and lowering: direct checked brands and optional externrefs, no linear-memory authority or nullable host role. Queue pending.
+- Focused evidence: two `rfc0165_admitted_launch::nullable_capabilities` tests pass, including expected source/oracle/admitted-Wasm presence and absence; two host-role refusal probes pass; absent-unwrap/kind oracle probe passes; resolved-capability versus guest-tail manifest probe passes.
+- Production example: `witchy parity examples/branded_caps/src/branded_caps.witchy` agrees on one output line. This CLI result is interpreter/Wasm evidence, not a separate oracle run for that file.
+- Bounded review findings on host roles, expected byte plans, and bare-name tail filtering were corrected and reviewed closed before submission.
+- Last full classified census remains 133/163 checks, 76 runnable agreements, zero disagreements, measured before the string-join and nullable-capability fixes. No new total or milestone-completion claim.

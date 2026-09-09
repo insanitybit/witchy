@@ -2902,6 +2902,24 @@ impl FunctionLowerer<'_> {
         pattern: &Pattern,
         scrutinee_type: &Type,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        if let Pattern::Ctor { name, args } = pattern
+            && witchy_types::canonical_capabilities::representation(scrutinee_type, self.definitions).is_some()
+        {
+            let payload = capability_constructor_payload(scrutinee_type, name, self.definitions)?;
+            let expected = usize::from(payload.is_some());
+            if args.len() != expected {
+                return Err(CanonicalLoweringError::CallArityMismatch {
+                    callee: name.clone(), expected, actual: args.len(),
+                });
+            }
+            let Some(payload_type) = payload else { return Ok(Vec::new()) };
+            let payload = if let ValueType::NullableCapability(kind) = self.values[&scrutinee] {
+                let destination = self.fresh(ValueType::Capability(kind))?;
+                self.push_operation(Operation::CapabilityUnwrap { destination, source: scrutinee });
+                destination
+            } else { scrutinee };
+            return self.lower_match_pattern(payload, &args[0], &payload_type);
+        }
         match pattern {
             Pattern::Var(name) if name != "_" => Ok(vec![(name.clone(), scrutinee)]),
             Pattern::Tuple(args) => {
@@ -3096,6 +3114,36 @@ impl FunctionLowerer<'_> {
         pattern: &Pattern,
         scrutinee_type: &Type,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        if let Pattern::Ctor { name, args } = pattern
+            && witchy_types::canonical_capabilities::representation(scrutinee_type, self.definitions).is_some()
+        {
+            let payload = capability_constructor_payload(scrutinee_type, name, self.definitions)?;
+            let expected = usize::from(payload.is_some());
+            if args.len() != expected {
+                return Err(CanonicalLoweringError::CallArityMismatch {
+                    callee: name.clone(), expected, actual: args.len(),
+                });
+            }
+            if let ValueType::NullableCapability(kind) = self.values[&scrutinee] {
+                let present = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::CapabilityIsPresent { destination: present, source: scrutinee });
+                let Some(payload_type) = payload else {
+                    let absent = self.fresh(ValueType::Bool)?;
+                    self.push_operation(Operation::ConstBool { destination: absent, value: false });
+                    return self.push_compare(ComparisonOperator::Equal, present, absent).map(Some);
+                };
+                if matches!(&args[0], Pattern::Var(_) | Pattern::Wildcard) {
+                    return Ok(Some(present));
+                }
+                return self.short_circuit_and(present, |this| {
+                    let destination = this.fresh(ValueType::Capability(kind))?;
+                    this.push_operation(Operation::CapabilityUnwrap { destination, source: scrutinee });
+                    this.match_pattern_condition(destination, &args[0], &payload_type)
+                }).map(Some);
+            }
+            let payload_type = payload.ok_or(CanonicalLoweringError::UnsupportedExpression("capability brand payload"))?;
+            return self.match_pattern_condition(scrutinee, &args[0], &payload_type);
+        }
         let (value, expected_type) = match pattern {
             Pattern::Ctor { name, args } => {
                 // A sum type's tag selects the arm; a one-variant record's
@@ -5299,6 +5347,35 @@ impl FunctionLowerer<'_> {
         arguments: &[Expr],
     ) -> Result<ValueId, CanonicalLoweringError> {
         let source_type = self.expression_type(expression)?;
+        if witchy_types::canonical_capabilities::representation(&source_type, self.definitions).is_some() {
+            let payload = capability_constructor_payload(&source_type, name, self.definitions)?;
+            let expected = usize::from(payload.is_some());
+            if arguments.len() != expected {
+                return Err(CanonicalLoweringError::CallArityMismatch {
+                    callee: name.to_owned(), expected, actual: arguments.len(),
+                });
+            }
+            let value_type = source_value_type(&source_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+            if let Some(payload_type) = payload {
+                let source = self.lower_expr(&arguments[0])?;
+                let expected_type = source_value_type(&payload_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+                if self.values[&source] != expected_type {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("capability constructor payload type"));
+                }
+                if matches!(value_type, ValueType::NullableCapability(_)) {
+                    let destination = self.fresh(value_type)?;
+                    self.push_operation(Operation::CapabilitySome { destination, source });
+                    return Ok(destination);
+                }
+                return Ok(source);
+            }
+            let ValueType::NullableCapability(kind) = value_type else {
+                return Err(CanonicalLoweringError::UnsupportedExpression("absent non-null capability"));
+            };
+            let destination = self.fresh(value_type)?;
+            self.push_operation(Operation::CapabilityNone { destination, kind });
+            return Ok(destination);
+        }
         let shape = scalar_aggregate_shape(&source_type, self.definitions).ok_or(
             CanonicalLoweringError::UnsupportedExpression("non-record constructor"),
         )?;
@@ -11481,6 +11558,19 @@ fn source_value_type(
     closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
+    use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
+    if let Some(representation) = witchy_types::canonical_capabilities::representation(source, definitions) {
+        let (CapabilityRepresentation::Direct(kind) | CapabilityRepresentation::Nullable(kind)) = representation;
+        let kind = match kind {
+            CapabilityKind::Console => witchy_wir::canonical_safewir::CapabilityKindId::new(0),
+            CapabilityKind::Dir => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
+            CapabilityKind::Env => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
+        };
+        return Ok(match representation {
+            CapabilityRepresentation::Direct(_) => ValueType::Capability(kind),
+            CapabilityRepresentation::Nullable(_) => ValueType::NullableCapability(kind),
+        });
+    }
     if let Some(shape) = scalar_aggregate_shape(source, definitions)
         && !shape.packed
     {
@@ -11524,6 +11614,31 @@ fn source_value_type(
 
 /// The interned record layout whose slots are exactly `expected_fields`: a
 /// scalar in its slot, a string or list behind an owned pointer slot.
+fn capability_constructor_payload(
+    source: &Type,
+    constructor: &str,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<Option<Type>, CanonicalLoweringError> {
+    use witchy_types::canonical_capabilities::{representation, brand_payload, CapabilityRepresentation};
+    match representation(source, definitions) {
+        Some(CapabilityRepresentation::Nullable(_)) => {
+            let Type::Named(_, arguments) = source.unqualified() else { unreachable!() };
+            if same_record_name("Some", constructor) { return Ok(Some(arguments[0].clone())); }
+            if same_record_name("None", constructor) { return Ok(None); }
+        }
+        Some(CapabilityRepresentation::Direct(_)) => {
+            if let Type::Named(name, _) = source.unqualified()
+                && same_record_name(name, constructor)
+                && let Some(payload) = brand_payload(source, definitions)
+            {
+                return Ok(Some(payload.clone()));
+            }
+        }
+        None => {}
+    }
+    Err(CanonicalLoweringError::UnsupportedExpression("unchecked capability constructor"))
+}
+
 fn physical_layout_descriptor(
     layouts: &LayoutInterner,
     layout: witchy_wir::layout::LayoutId,
@@ -12213,6 +12328,7 @@ fn is_intrinsic_tail_site(
         expr_at_tail_path(&function.body, &site.key.path),
         Some(Expr::Call { name, .. })
             if is_console_print(name)
+                || (name.starts_with("__capop.") && witchy_syntax::cap_ops::is_op_name(name))
                 || matches!(name.as_str(), "list.length" | "list.__length" | "string.chars" | "string.__chars")
                 || witchy_syntax::ast::is_render_intrinsic(name)
     )

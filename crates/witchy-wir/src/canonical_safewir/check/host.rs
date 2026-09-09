@@ -279,7 +279,8 @@ fn require_type(
 }
 
 fn is_reference_like(value_type: ValueType) -> bool {
-    matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Callable(_) | ValueType::Capability(_))
+    matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Callable(_)
+        | ValueType::Capability(_) | ValueType::NullableCapability(_))
 }
 
 fn require_arity(
@@ -519,9 +520,24 @@ mod tests {
     }
 
     #[test]
+    fn nullable_capability_cannot_cross_generic_or_direct_host_roles() {
+        let kind = CapabilityKindId::new(4);
+        let nullable = ValueType::NullableCapability(kind);
+        assert!(matches!(
+            check(nullable, HostParameterRole::Value(nullable), HostCallArgument::Value(VALUE)),
+            Err(super::InitialCheckError::HostContractRoleMismatch { .. })
+        ));
+        assert!(matches!(
+            check(nullable, HostParameterRole::Capability(kind), HostCallArgument::Capability(VALUE)),
+            Err(super::InitialCheckError::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn reference_results_cannot_be_declared_as_generic_host_values() {
         for value_type in [
             ValueType::Capability(CapabilityKindId::new(4)),
+            ValueType::NullableCapability(CapabilityKindId::new(4)),
             ValueType::Ref(LayoutId::from_bytes([3; 32])),
             ValueType::Gc(GcTypeId::new(1)),
             ValueType::Callable(SIGNATURE),

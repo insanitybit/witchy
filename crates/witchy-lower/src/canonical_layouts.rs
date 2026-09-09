@@ -264,6 +264,11 @@ impl LayoutProjection {
     }
 
     fn visit_type_fields(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
+        // Checked capability brands and their optional form are externrefs,
+        // never heap aggregates with pointer-bearing payload slots.
+        if witchy_types::canonical_capabilities::representation(ty, &self.definitions).is_some() {
+            return Ok(());
+        }
         // A dictionary is laid out as its canonical tuple of the key list
         // and the value list, before any aggregate rule sees the name.
         if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {

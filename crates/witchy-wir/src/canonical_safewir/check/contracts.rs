@@ -92,7 +92,7 @@ impl Origin {
             // A scalar carries no memory provenance: wherever it came from
             // (a constant, a parameter, arithmetic), the callable's result
             // contract is just its value type. Only references need an origin.
-            (_, value_type) if is_scalar(value_type) => DerivedResult::Value(value_type),
+            (_, value_type) if is_non_memory_result(value_type) => DerivedResult::Value(value_type),
             (Origin::Fresh { layout, class, extent }, ValueType::Ref(actual)) if layout == actual => {
                 DerivedResult::Fresh { layout, class, extent }
             }
@@ -191,7 +191,7 @@ fn initial_summary(
             .iter()
             .copied()
             .map(|value_type| {
-                if is_scalar(value_type) {
+                if is_non_memory_result(value_type) {
                     DerivedResult::Value(value_type)
                 } else {
                     DerivedResult::Unseen
@@ -832,7 +832,11 @@ fn contract_mismatch(signature: FunctionSignatureId, site: &'static str) -> Init
     InitialCheckError::CallableContractMismatch { signature }
 }
 
-fn is_scalar(value_type: ValueType) -> bool { matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128) }
+fn is_non_memory_result(value_type: ValueType) -> bool {
+    matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool
+        | ValueType::Unit | ValueType::Size | ValueType::V128
+        | ValueType::Capability(_) | ValueType::NullableCapability(_))
+}
 
 fn is_indirect_result(result: &DerivedResult) -> bool {
     matches!(

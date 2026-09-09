@@ -16,6 +16,8 @@ mod launch_arguments;
 mod drop_worklist;
 #[path = "rfc0165_recursive_source.rs"]
 mod recursive_source;
+#[path = "rfc0165_nullable_capabilities.rs"]
+mod nullable_capabilities;
 
 /// Run an admitted program and report a runtime trap instead of panicking,
 /// for fixtures whose expected outcome is the trap.
