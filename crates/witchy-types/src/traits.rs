@@ -257,7 +257,7 @@ pub fn lower(module: Module) -> Module {
 /// flavor so the error reads "`Float` does not implement `Show`" at check
 /// time instead of "unknown function `show`" after lowering.
 pub fn lower_checked(module: Module) -> Result<Module, String> {
-    let (lowered, missing, _) = lower_with(module, false);
+    let (lowered, missing, _, _) = lower_with(module, false);
     match missing.into_iter().next() {
         Some(msg) => Err(msg),
         None => Ok(lowered),
@@ -276,11 +276,23 @@ pub fn lower_for_wasm(module: Module) -> Module {
 /// metadata instead of reverse-engineering mangled function names.
 pub struct WasmTraitLowering {
     module: Module,
+    witness_catalog: crate::witness::WitnessCatalog,
     generic_specializations:
         std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
 }
 
 impl WasmTraitLowering {
+    /// Consume the lowering with the exact pre-erasure trait/impl catalog.
+    pub fn into_parts_with_witness_catalog(
+        self,
+    ) -> (
+        Module,
+        std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
+        crate::witness::WitnessCatalog,
+    ) {
+        (self.module, self.generic_specializations, self.witness_catalog)
+    }
+
     pub fn into_parts(
         self,
     ) -> (
@@ -294,8 +306,8 @@ impl WasmTraitLowering {
 /// Wasm trait lowering with retained generic-instantiation identity for the
 /// RFC-0111 physical callable-specialization phase.
 pub fn lower_for_wasm_with_specializations(module: Module) -> WasmTraitLowering {
-    let (module, _, generic_specializations) = lower_with(module, true);
-    WasmTraitLowering { module, generic_specializations }
+    let (module, _, generic_specializations, witness_catalog) = lower_with(module, true);
+    WasmTraitLowering { module, generic_specializations, witness_catalog }
 }
 
 /// Start a mono-phase profiling timer, but ONLY when `WITCHY_DEBUG_MONO_TIMING`
@@ -316,13 +328,17 @@ fn lower_with(
     Module,
     Vec<String>,
     std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
+    crate::witness::WitnessCatalog,
 ) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
     let inlined = witchy_syntax::consts::inline(module);
     let module = match witchy_syntax::aliases::resolve(inlined.clone()) {
         Ok(module) => module,
-        Err(message) => return (inlined, vec![message], std::collections::BTreeMap::new()),
+        Err(message) => {
+            let catalog = crate::witness::WitnessCatalog::from_module(&inlined);
+            return (inlined, vec![message], std::collections::BTreeMap::new(), catalog);
+        }
     };
     // Retain the resolved trait/impl universe while ordinary trait lowering
     // erases declarations. Existential method calls use this to resolve their
@@ -338,7 +354,7 @@ fn lower_with(
                 || !signature_type_vars(f).is_empty())
     }) || module_needs_lowering(&module.items);
     if !needs_lowering {
-        return (module, Vec::new(), std::collections::BTreeMap::new());
+        return (module, Vec::new(), std::collections::BTreeMap::new(), witness_catalog);
     }
 
     // method name -> owning trait(s), and each trait's full method list (for
@@ -1015,6 +1031,7 @@ fn lower_with(
             d
         },
         generic_specializations,
+        witness_catalog,
     )
 }
 

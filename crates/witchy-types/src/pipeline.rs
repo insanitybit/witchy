@@ -21,6 +21,7 @@ use witchy_caps::capabilities;
 
 use crate::runtime_type::{
     AuthenticatedModuleOwners, DeclarationKind, RuntimeDeclarationCatalog, RuntimeTypeError,
+    RuntimeTypePlan,
 };
 use crate::canonical_abi::{self, CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
 use crate::canonical_closure::{ClosureWitnessError, ClosureWitnessManifest};
@@ -148,6 +149,7 @@ impl CheckedSourceWitness {
 #[derive(Debug, PartialEq)]
 pub struct CanonicalCheckedSource {
     typed: typeck::TypedModule,
+    dynamic_runtime_plan: Option<RuntimeTypePlan>,
     source_witness: CheckedSourceWitness,
     proper_tail_manifest: ProperTailSiteManifest,
     closure_witness: ClosureWitnessManifest,
@@ -157,6 +159,13 @@ pub struct CanonicalCheckedSource {
 }
 
 impl CanonicalCheckedSource {
+    /// Dynamic metadata for this exact checked source and its authenticated
+    /// declaration owners. This does not authorize dynamic AST expansion.
+    #[doc(hidden)]
+    pub fn dynamic_runtime_plan(&self) -> Option<&RuntimeTypePlan> {
+        self.dynamic_runtime_plan.as_ref()
+    }
+
     /// Borrow the exact typed module retained for canonical lowering.
     #[doc(hidden)]
     pub fn typed_module(&self) -> &typeck::TypedModule {
@@ -672,11 +681,13 @@ fn attach_canonical_source(
     closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
     obligations: BTreeSet<CanonicalObligation>,
+    dynamic_runtime_plan: Option<RuntimeTypePlan>,
 ) -> Result<CheckedModule, PipelineError> {
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     checked.canonical_source = Some(CanonicalCheckedSource {
         typed,
+        dynamic_runtime_plan,
         source_witness: CheckedSourceWitness {
             source_bundle_digest,
             proper_tail_manifest_digest: proper_tail_manifest.digest(),
@@ -701,12 +712,13 @@ fn attach_canonical_source(
 /// and signature.
 fn canonicalize_callable_instances(
     typed: typeck::TypedModule,
-) -> Result<(typeck::TypedModule, CanonicalCallableWitness), PipelineError> {
-    let (module, generic_instances) =
-        crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
+) -> Result<(typeck::TypedModule, CanonicalCallableWitness, crate::witness::WitnessCatalog), PipelineError> {
+    let (module, generic_instances, witness_catalog) =
+        crate::traits::lower_for_wasm_with_specializations(typed.into_module())
+            .into_parts_with_witness_catalog();
     let typed = typeck::annotate_checked(module)?;
     let callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
-    Ok((typed, callable_witness))
+    Ok((typed, callable_witness, witness_catalog))
 }
 
 /// Whether a linked declaration belongs to the checked program's entry module
@@ -1001,7 +1013,26 @@ fn link_checked_source_bundle_with(
             message: "canonical checked link did not return its typed source".to_string(),
         })
     })?;
-    let (typed_source, callable_witness) = canonicalize_callable_instances(typed_source)?;
+    let (typed_source, callable_witness, witness_catalog) =
+        canonicalize_callable_instances(typed_source)?;
+    // Ownership is taken only from this checked link, never from a catalog
+    // supplied at the plan's use site or a cache keyed by source shape.
+    let dynamic_runtime_plan = if checked.module_owners.is_some() {
+        let runtime_catalog = checked.runtime_declaration_catalog()?;
+        Some(crate::existential::build_dynamic_runtime_plan(
+            &typed_source,
+            &witness_catalog,
+            &runtime_catalog,
+        ).map_err(|message| PipelineError::Type(TypeError { message }))?)
+    } else {
+        crate::existential::build_dynamic_runtime_plan_inner(
+            &typed_source,
+            &witness_catalog,
+            None,
+        ).map_err(|message| PipelineError::Type(TypeError { message }))?;
+        None
+    };
+
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
@@ -1032,6 +1063,7 @@ fn link_checked_source_bundle_with(
         closure_witness,
         callable_witness,
         obligations,
+        dynamic_runtime_plan,
     )
 }
 
@@ -1182,6 +1214,83 @@ mod tests {
         assert_eq!(checked.module(), &old.module);
         assert_eq!(checked.origins(), &old.origins);
         assert_eq!(EXPANSIONS.load(Ordering::SeqCst), before + 1);
+    }
+
+    fn dynamic_source_owners(package: &str) -> AuthenticatedModuleOwners {
+        let application = PackageCoordinate::new(PackageSource::Workspace, package, "0.1.0")
+            .expect("application coordinate");
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0")
+            .expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "main".to_string(),
+            ModuleLoadIdentity::new(application, ["main"]).expect("main owner"),
+        )];
+        assignments.extend(linker::STD_MODULES.iter().map(|module| (
+            (*module).to_string(),
+            ModuleLoadIdentity::new(toolchain.clone(), ["std", *module]).expect("std owner"),
+        )));
+        AuthenticatedModuleOwners::from_loader_assignments(assignments).expect("owners")
+    }
+
+    fn dynamic_source(field: &str) -> Vec<(String, Vec<u8>)> {
+        vec![("main".to_string(), format!(
+            "import dynamic\n\ntype User:\n    value: {field}\n\nfn main() -> Int:\n    let _ = dynamic.runtime_type(User)\n    0\n"
+        ).into_bytes())]
+    }
+
+    #[test]
+    fn canonical_dynamic_runtime_plan_authenticated_and_pure() {
+        let checked = link_checked_source_bundle_with(
+            dynamic_source("Int"), "main", no_expand, None,
+            Some(dynamic_source_owners("example/first")),
+        ).expect("authenticated dynamic source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let plan = canonical.dynamic_runtime_plan().expect("authenticated plan");
+        let runtime_catalog = checked.runtime_declaration_catalog().expect("catalog");
+        let identity = runtime_catalog.descriptor_type_identity(
+            &witchy_syntax::ast::Type::Named("main.User".into(), vec![]),
+            canonical.typed_module().module(),
+        ).expect("authenticated User identity");
+        assert!(plan.id(&identity).is_some());
+        let before = canonical.typed_module().module().clone();
+        let rebuilt = crate::existential::build_dynamic_runtime_plan(
+            canonical.typed_module(), &crate::witness::WitnessCatalog::default(), &runtime_catalog,
+        ).expect("pure plan rebuild");
+        assert_eq!(plan, &rebuilt);
+        assert_eq!(canonical.typed_module().module(), &before);
+        let mut has_runtime_type = false;
+        witchy_syntax::ast::visit::visit_module_exprs::<String>(&before, &mut |expr| {
+            if let witchy_syntax::ast::Expr::Call { name, .. } = expr {
+                has_runtime_type |= name.contains("runtime_type");
+            }
+            Ok(())
+        }).expect("visit unchanged dynamic operation");
+        assert!(has_runtime_type, "dynamic operation must remain in the AST");
+    }
+
+    #[test]
+    fn canonical_dynamic_runtime_plan_rejects_missing_owner_and_separates_sources() {
+        let error = link_checked_from_source_bundle(dynamic_source("Int"), "main", no_expand)
+            .expect_err("dynamic source requires owners");
+        assert!(error.to_string().contains("require authenticated runtime declaration ownership"), "{error}");
+        let ordinary = link_checked_from_source_bundle(
+            vec![("main".into(), b"fn main() -> Int:\n    0\n".to_vec())],
+            "main", no_expand,
+        ).expect("ordinary ownerless source");
+        assert!(ordinary.canonical_source().unwrap().dynamic_runtime_plan().is_none());
+        let check = |field, package| link_checked_source_bundle_with(
+            dynamic_source(field), "main", no_expand, None, Some(dynamic_source_owners(package)),
+        ).expect("authenticated source");
+        let first = check("Int", "example/first");
+        let other_owner = check("Int", "example/second");
+        let other_source = check("Float", "example/first");
+        let first = first.canonical_source().unwrap();
+        let other_owner = other_owner.canonical_source().unwrap();
+        let other_source = other_source.canonical_source().unwrap();
+        assert_eq!(first.source_witness().source_bundle_digest(), other_owner.source_witness().source_bundle_digest());
+        assert_ne!(first.dynamic_runtime_plan(), other_owner.dynamic_runtime_plan());
+        assert_ne!(first.source_witness().source_bundle_digest(), other_source.source_witness().source_bundle_digest());
+        assert_ne!(first.dynamic_runtime_plan(), other_source.dynamic_runtime_plan());
     }
 
     #[test]

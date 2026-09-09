@@ -119,24 +119,25 @@ pub fn lower_explicit_packs_with_runtime_types_for_build(
     )
 }
 
-fn lower_explicit_packs_inner(
-    typed: TypedModule,
+/// Build dynamic descriptors, checked methods, and trait relations without
+/// changing the typed module or authorizing any generated executable helpers.
+/// The caller must retain the plan with the exact checked source and its
+/// authenticated declaration catalog; this standalone value is not a source witness.
+pub fn build_dynamic_runtime_plan(
+    typed: &TypedModule,
+    catalog: &WitnessCatalog,
+    runtime_catalog: &RuntimeDeclarationCatalog,
+) -> Result<RuntimeTypePlan, String> {
+    build_dynamic_runtime_plan_inner(typed, catalog, Some(runtime_catalog))
+}
+
+/// The legacy ownerless route still diagnoses dynamic requests, while ordinary
+/// programs can pass without acquiring runtime declaration authority.
+pub(crate) fn build_dynamic_runtime_plan_inner(
+    typed: &TypedModule,
     catalog: &WitnessCatalog,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
-    reannotation: ReannotationPolicy,
-) -> Result<PreparedExistentials, String> {
-    if typed
-        .module()
-        .items
-        .iter()
-        .any(|item| matches!(item, Item::Trait(_) | Item::Impl(_)))
-    {
-        return Err(
-            "existential preparation requires a trait-lowered, monomorphic executable module"
-                .to_string(),
-        );
-    }
-    let typed = crate::record_projection::lower_explicit_projections(typed)?;
+) -> Result<RuntimeTypePlan, String> {
     let access_facts = crate::access::checked_facts(typed.module(), typed.table())
         .map_err(|error| error.to_string())?;
     let dynamic_methods =
@@ -179,6 +180,28 @@ fn lower_explicit_packs_inner(
             &runtime_types,
         )?);
     }
+    Ok(runtime_types)
+}
+
+fn lower_explicit_packs_inner(
+    typed: TypedModule,
+    catalog: &WitnessCatalog,
+    runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+    reannotation: ReannotationPolicy,
+) -> Result<PreparedExistentials, String> {
+    if typed
+        .module()
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Trait(_) | Item::Impl(_)))
+    {
+        return Err(
+            "existential preparation requires a trait-lowered, monomorphic executable module"
+                .to_string(),
+        );
+    }
+    let typed = crate::record_projection::lower_explicit_projections(typed)?;
+    let runtime_types = build_dynamic_runtime_plan_inner(&typed, catalog, runtime_catalog)?;
     let (module, _, dynamic_result) = typed.rewrite_into_module(|table, module| {
         rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)
     });
