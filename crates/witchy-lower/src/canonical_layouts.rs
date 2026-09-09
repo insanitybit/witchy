@@ -238,34 +238,11 @@ fn project_layouts(
         }
 
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-            // Non-completion has no result layout, but visit_block still
-            // visits every scrutinee, guard, and arm expression independently.
-            if typed.table().is_non_completing(expression) {
-                return Ok(());
-            }
-            let Some(checked) = typed.table().type_of(expression) else {
-                // Intrinsic scalar literals and variable references are
-                // intentionally absent from the expression side table. Their
-                // semantics are fixed by the AST constructor or checked
-                // declaration and they add no layout root. A string literal is
-                // memory-bearing, so materialize its semantic type and let the
-                // v1 layout policy accept or reject it explicitly.
-                return match expression {
-                    ast::Expr::Int(_)
-                    | ast::Expr::Float(_)
-                    | ast::Expr::Duration(_)
-                    | ast::Expr::Bool(_)
-                    | ast::Expr::Var(_) => Ok(()),
-                    ast::Expr::Str(_) => projection.visit_type(&Type::Named("String".into(), Vec::new())),
-                    _ => Err(CanonicalLayoutError::MissingCheckedExpressionType(
-                        format!("{expression:?}"),
-                    )),
-                };
-            };
-            let source_type = typeck::ty_to_ast(checked).ok_or_else(|| {
-                CanonicalLayoutError::NonConcreteExpressionType(checked.to_string())
-            })?;
-            projection.visit_type(&source_type)
+            projection.visit_expression(
+                expression,
+                typed.table().type_of(expression),
+                typed.table().is_non_completing(expression),
+            )
         })
         .map_err(|error| error)?;
     }
@@ -286,6 +263,38 @@ struct LayoutProjection {
 }
 
 impl LayoutProjection {
+    fn visit_expression(
+        &mut self,
+        expression: &ast::Expr,
+        checked: Option<&typeck::Ty>,
+        checked_noncompletion: bool,
+    ) -> Result<(), CanonicalLayoutError> {
+        // This callback omits only the result layout. The AST visitor still
+        // checks every descendant, including values on terminating edges.
+        if checked_noncompletion {
+            return Ok(());
+        }
+        let Some(checked) = checked else {
+            // Scalar literals and checked variable references add no root.
+            // String literals are memory-bearing and retain their layout.
+            return match expression {
+                ast::Expr::Int(_)
+                | ast::Expr::Float(_)
+                | ast::Expr::Duration(_)
+                | ast::Expr::Bool(_)
+                | ast::Expr::Var(_) => Ok(()),
+                ast::Expr::Str(_) => self.visit_type(&Type::Named("String".into(), Vec::new())),
+                _ => Err(CanonicalLayoutError::MissingCheckedExpressionType(
+                    format!("{expression:?}"),
+                )),
+            };
+        };
+        let source_type = typeck::ty_to_ast(checked).ok_or_else(|| {
+            CanonicalLayoutError::NonConcreteExpressionType(checked.to_string())
+        })?;
+        self.visit_type(&source_type)
+    }
+
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         let key = canonical_layout_type(ty, &self.definitions);
         if self.visited.contains(&key) || !self.visiting.insert(key.clone()) {
@@ -958,6 +967,56 @@ mod tests {
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned(), Vec::new())
+    }
+
+    #[test]
+    fn noncompletion_still_requires_checked_memory_bearing_descendants() {
+        use witchy_syntax::ast::{Expr, Item, Stmt, visit::visit_block};
+        let module = witchy_syntax::parser::parse_module(
+            "fn choose(flag: Bool) -> List(String):\n    match flag:\n        true ->\n            return [\"left\"]\n        false ->\n            return [\"right\"]\n    [\"unreachable\"]\n",
+        ).expect("source parses");
+        let typed = witchy_types::typeck::annotate_checked(module).expect("source checks");
+        let Item::Function(function) = &typed.module().items[0] else { panic!("function") };
+        let Stmt::Expr(parent @ Expr::Match { arms, .. }) = &function.body.stmts[0] else {
+            panic!("all-returning match")
+        };
+        let Expr::Block(arm) = &arms[0].body else { panic!("returning arm") };
+        let Stmt::Return(Some(child @ Expr::List(_))) = &arm.stmts[0] else {
+            panic!("returned list")
+        };
+        assert!(typed.table().is_non_completing(parent));
+        assert!(typed.table().type_of(parent).is_none());
+        assert!(!typed.table().is_non_completing(child));
+        let list_string = Type::Named("List".into(), vec![named("String")]);
+        assert_eq!(typed.table().type_of(child).and_then(witchy_types::typeck::ty_to_ast), Some(list_string.clone()));
+
+        let mut positive = LayoutProjection::default();
+        let mut visited_child = false;
+        visit_block(&function.body, &mut |expression| {
+            visited_child |= std::ptr::eq(expression, child);
+            positive.visit_expression(expression, typed.table().type_of(expression), typed.table().is_non_completing(expression))
+        }).expect("checked descendants still project");
+        assert!(visited_child);
+        assert!(positive.roots.contains(&list_string));
+        assert!(positive.roots.contains(&named("String")));
+        positive.finish().expect("valid owned string-list layout");
+
+        let mut negative = LayoutProjection::default();
+        let mut visited_parent = false;
+        let mut withheld = 0;
+        let error = visit_block(&function.body, &mut |expression| {
+            visited_parent |= std::ptr::eq(expression, parent);
+            let supplied = if std::ptr::eq(expression, child) {
+                withheld += 1;
+                None
+            } else {
+                typed.table().type_of(expression)
+            };
+            negative.visit_expression(expression, supplied, typed.table().is_non_completing(expression))
+        }).expect_err("parent noncompletion cannot hide a missing child type");
+        assert!(visited_parent);
+        assert_eq!(withheld, 1);
+        assert_eq!(error, super::CanonicalLayoutError::MissingCheckedExpressionType(format!("{child:?}")));
     }
 
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
