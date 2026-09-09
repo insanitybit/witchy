@@ -12673,6 +12673,58 @@ fn main() -> Int:
     }
 
     #[test]
+    fn typed_closure_refuses_post_prefix_environment_payload_reload() {
+        let checked = checked(r#"
+fn main() -> Int:
+    let values = [2, 3]
+    let closure = fn(value: Int): value + values[0]
+    closure(5)
+"#);
+        let source = checked.canonical_source().expect("canonical source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("layouts");
+        let candidate = lower_typed_module(source, layouts).expect("lower closure family");
+        let mut functions = candidate.functions().to_vec();
+        let mut changed = false;
+        for function in &mut functions {
+            let Some(block) = function.blocks.iter_mut().find(|block| block.id == function.entry) else { continue };
+            let Some(mut payload_reload) = block.operations.iter().find_map(|operation| match operation {
+                Operation::Load { destination, place, transfer }
+                    if matches!(place.projection(), Projection::Field { index } if *index > 0)
+                        && matches!(place.value_type(), ValueType::Ref(_)) =>
+                    Some(Operation::Load { destination: *destination, place: place.clone(), transfer: *transfer }),
+                _ => None,
+            }) else { continue };
+            let next = function.value_types.keys().map(|value| value.get()).max().unwrap_or(0).checked_add(1).expect("value id");
+            let Operation::Load { destination, .. } = &mut payload_reload else { unreachable!() };
+            *destination = witchy_wir::canonical_safewir::ValueId::new(next);
+            function.value_types.insert(*destination, match &payload_reload {
+                Operation::Load { place, .. } => place.value_type(),
+                _ => unreachable!(),
+            });
+            let cleanup = block.operations.iter().rposition(|operation| matches!(operation,
+                Operation::Release { .. } | Operation::DropRef { .. }
+            )).expect("lowered closure retains explicit cleanup");
+            block.operations.insert(cleanup, payload_reload);
+            changed = true;
+            break;
+        }
+        assert!(changed, "fixture must contain an authenticated capture load");
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: candidate.revision(), checked_source: candidate.checked_source(), layouts: candidate.layouts().clone(),
+            signatures: candidate.signatures().to_vec(), imports: candidate.imports().to_vec(), functions,
+            proper_tail_sites: candidate.proper_tail_sites().to_vec(),
+        }).with_source_abi_bindings(candidate.source_abi_bindings().clone())
+            .with_closure_bindings(candidate.closure_bindings().clone())
+            .with_adapter_bindings(candidate.adapter_bindings().clone())
+            .with_closure_layouts(candidate.closure_layouts().clone());
+        let error = match check_initial_with_witness(candidate, source) {
+            Err(error) => error,
+            Ok(_) => panic!("post-prefix reload must be rejected"),
+        };
+        assert!(format!("{error:?}").contains("CapturingClosureBinding"));
+    }
+
+    #[test]
     fn recursive_source_type_lowers_to_the_catalog_nominal_and_passes_initial_check() {
         let source = r#"
 type Tree:
