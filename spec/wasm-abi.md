@@ -166,6 +166,7 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
+
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -175,6 +176,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `crypto.rune_hash` | `(i32, i32, i32)` | non-authority infrastructure | none | provided |
 | `compiler_footprint_len` | `(i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_footprint_into` | `(i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_diff_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_result_json_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `user_cap_field_len` | `(i32, i32) -> i32` | launch input | none | provided |
@@ -283,6 +286,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
 | `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
 | `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
+
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI
