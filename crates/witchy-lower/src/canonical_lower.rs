@@ -2308,6 +2308,12 @@ impl FunctionLowerer<'_> {
                 // both lanes. That load is the arm's own fact: it must not
                 // stay cached for code the arm does not dominate.
                 self.current = *end;
+                // The same string value can occur in both predecessors, but
+                // an absorbed branch-local header load belongs to only one.
+                // Build string lanes from reads in this predecessor instead
+                // of letting that cache select another arm's definition.
+                let saved_string_length = self.string_lengths.remove(value);
+                let saved_string_capacity = self.string_capacities.remove(value);
                 let authenticated = self.dynamic_extent_lanes(*value).is_some();
                 if !authenticated {
                     self.ensure_list_extent(*value)?;
@@ -2319,6 +2325,12 @@ impl FunctionLowerer<'_> {
                     self.string_capacities.remove(value);
                     self.list_counts.remove(value);
                     self.list_capacities.remove(value);
+                }
+                if let Some(length) = saved_string_length {
+                    self.string_lengths.insert(*value, length);
+                }
+                if let Some(capacity) = saved_string_capacity {
+                    self.string_capacities.insert(*value, capacity);
                 }
                 let Some((count, capacity)) = lanes else {
                     extents.clear();
@@ -2553,12 +2565,11 @@ impl FunctionLowerer<'_> {
                     self.current = else_end;
                     let (else_count, else_capacity) = self.split_lanes(else_count, else_capacity)?;
                     else_arguments.extend([else_count, else_capacity]);
-                    if self.list_counts.contains_key(&then_value) && self.list_counts.contains_key(&else_value) {
-                        self.record_joined_extent(result, join_parameters[parameter_index + 1].value,
-                            join_parameters[parameter_index + 2].value, &[then_value, else_value]);
-                    } else {
-                        dynamic_join_parameters.push(result);
-                    }
+                    // Both extent lanes are authenticated by this result phi.
+                    // Reloading only the length here loses the distinct capacity
+                    // lane needed when this result crosses another join.
+                    self.record_joined_extent(result, join_parameters[parameter_index + 1].value,
+                        join_parameters[parameter_index + 2].value, &[then_value, else_value]);
                 }
                 Some(result)
             }
