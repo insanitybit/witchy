@@ -489,10 +489,16 @@ pub fn lambda_sites(typed: &TypedModule) -> Result<Vec<LambdaSite>, ClosureWitne
 
 fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> {
     let mut builder = Builder { typed, module: typed.module(), entries: Vec::new(), scopes: Vec::new(), sites: Vec::new() };
+    let scope = crate::pipeline::canonical_scope(typed.module());
     for (item_index, item_def) in typed.module().items.iter().enumerate() {
         let item = u32::try_from(item_index).map_err(|_| ClosureWitnessError::PathOverflow)?;
         match item_def {
             Item::Function(function) => {
+                // Use the same runtime inventory as layouts, callable/tail
+                // witnesses, and lowering. Unused generic library templates
+                // need not have concrete lambda types. Keep original item
+                // indices so admitted callable identities do not shift.
+                if !scope.contains(&function.name) { continue; }
                 let callable = ProperTailCallableId { item, method: None, lambda_path: Vec::new() };
                 let param_types = typed.table().function_type(&function.name).and_then(|ty| match ty { Type::Fn(inputs, _, _, _) => Some(inputs), _ => None }).unwrap_or_default();
                 builder.walk_callable(&function.body, callable, &function.params, &param_types)?;
@@ -525,6 +531,34 @@ impl TypedModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closure_witness_uses_the_canonical_runtime_scope() {
+        let mut module = witchy_syntax::parser::parse_module(
+            "fn helper(value: a) -> fn(a) -> a:\n    fn(inner: a): inner\n\nfn main() -> Int:\n    1\n",
+        ).expect("parse unused generic library lambda");
+        let Item::Function(helper) = &mut module.items[0] else { panic!("helper") };
+        helper.name = "semver.helper".into();
+        module.linked_entry = Some("app".into());
+        let typed = typeck::annotate_checked(module).expect("type check generic template");
+        assert!(derive_closure_witness(&typed).expect("unused template is outside runtime scope").entries().is_empty());
+
+        let mut module = witchy_syntax::parser::parse_module(
+            "fn helper(value: Int) -> fn(Int) -> Int:\n    fn(inner: Int): value + inner\n\nfn main() -> Int:\n    let f = helper(1)\n    f(2)\n",
+        ).expect("parse reachable library lambda");
+        let Item::Function(helper) = &mut module.items[0] else { panic!("helper") };
+        helper.name = "semver.helper".into();
+        let Item::Function(main) = &mut module.items[1] else { panic!("main") };
+        let Stmt::Let { value: Expr::Call { name, .. }, .. } = &mut main.body.stmts[0] else { panic!("linked call") };
+        *name = "semver.helper".into();
+        module.linked_entry = Some("app".into());
+        let typed = typeck::annotate_checked(module).expect("type check reachable lambda");
+        let witness = derive_closure_witness(&typed).expect("reachable lambda remains witnessed");
+        assert_eq!(witness.entries().len(), 1);
+        assert_eq!(witness.entries()[0].id().item, 0);
+        assert_eq!(witness.entries()[0].captures().len(), 1);
+        assert_eq!(witness.entries()[0].captures()[0].binding().name(), "value");
+    }
 
     #[test]
     fn unresolved_capture_is_rejected_but_checked_module_reference_is_not_a_capture() {
