@@ -9,6 +9,31 @@ event for the cutover candidate.
 Status values are `missing`, `partial`, `candidate-green`, and `merged-green`.
 Only `merged-green` completes a row.
 
+## Current coverage (2026-09-09)
+
+Both `impl/rfc0165-coverage-next` and
+`impl/rfc0165-dynamic-plan-integration` have terminal merged events at
+`c299719d618b71830712222b37ec66547198f96c`, also confirmed as master. This lands
+File host support, typed managed closure captures, the source-bound dynamic
+plan (not dynamic execution), and the structural/nominal selector repair.
+
+The single post-integration census reports **140/163 checking, 83 runnable
+parity agreements, zero disagreements**. It used the existing production
+binary for this revision; the measurement worktree differed only in manifest
+code, documentation, and the unintegrated callable-review finding. Command:
+`WITCHY_DEV_TARGET=/private/tmp/witchy-rfc0165-drop-worklist-target bash
+scripts/rfc0165-dev/census.sh`. Log:
+`/private/tmp/rfc0165-post-closure-file-census.log`. Its final grep exits one
+when there are no disagreement lines; that is not a failed program probe.
+
+Six in-scope first refusals remain: `dedup`, `generators`, `lazy_fib`, and
+`pascal` (recursive Iter/function storage), `dynamic_reflection` (Dynamic
+lowering), and `plugin_host` (function collections first; later capability
+capture obligations remain). The other 17 are nine task/channel programs,
+six Net programs, regex, and opt mode. This supersedes the older counts below,
+not the remaining acceptance obligations. Recursive callable patches remain
+withheld pending signature-correspondence and cross-graph cycle checks.
+
 ## Coverage integration landed (2026-09-08)
 
 The merge queue landed `impl/rfc0165-concat-integration` on master as
@@ -59,7 +84,7 @@ nor compiler-wide memory safety.
 | B1 | candidate-green | `canonical_safewir/manifest.rs` enumerates implementation rules, backend decisions, and cited tests. Its RFC crosswalk explicitly records aliases, composites, restrictions, deferred operations, and refusals. On 2026-09-09 the completeness test was strengthened to compare directly against the RFC's V1 operation-kernel block, not only a second Rust enum/list. The native manifest shard passed all eight tests; the generated Markdown is current. The first run passed seven tests but could not write the generated document under the sandbox; the authorized direct-binary retry passed eight. | Terminal merged evidence for the strengthened crosswalk and independent review of its dispositions. Table completeness does not establish the correctness of checker predicates or emitted instructions. |
 | B2 | merged-green | The B2 table in the same manifest records clone, move, replace, drop, reclaim, count overflow, and count underflow for `String`, `List(Int)`, and `List(String)` with a verdict and evidence per cell (`ownership_manifest_covers_every_transfer_of_every_storage_class`); replacement of a stored reference is refused rather than leaked (`store_cannot_overwrite_a_stored_reference`); pointer-bearing prefixes clone by retaining every element and drop recursively; counts trap at the i32 maximum and below zero. | Merged gate evidence. |
 | B3 | merged-green | Guard near-misses are pinned end to end (`admitted_guard_near_misses_trap_exactly_at_the_boundary`, 2026-09-07): the last valid index reads, the index equal to the length traps, a negative index traps, an empty list's first element traps, and a push past the capacity grows. Header bootstrap and length/capacity transitions remain pinned by `logical_length_guard_is_not_satisfied_by_capacity_guard`, `update_count_grows_logical_length_only_after_capacity_guard`, and the header-projection tests. | Merged gate evidence. |
-| B4 | merged-green | The B4 table in the manifest is the compact supported-call manifest: direct calls by scalar value, `let` (cloned token), `own` (moved token), and `var` (write-back lane); indirect scalar calls; proper tail calls direct and indirect (300,000-transition probes); host calls only with a capability value of the declared kind; memory-bearing value arguments, indirect reference arguments, and undischarged or doubly discharged tail sites refuse; `CallBorrow` does not exist in v1. | Merged gate evidence. |
+| B4 | merged-green | The B4 table in the manifest is the compact supported-call manifest: direct calls by scalar value, `let` (cloned token), `own` (moved token), and `var` (write-back lane); indirect scalar and explicit owned/shared reference calls; proper tail calls direct and indirect (300,000-transition probes); host calls only with a capability value of the declared kind; memory-bearing Value arguments and undischarged or doubly discharged tail sites refuse; reference Move arguments require checked ownership transfer. `CallBorrow` does not exist in v1. | Merged gate evidence. |
 | B5 | merged-green | Canonical host checking uses authenticated import contracts, rejects generic value roles carrying references or capabilities, and directly refuses integer and linear-memory-reference values disguised as `Cap<K>` arguments. Broader capability APIs are outside the foundation subset. | Merged gate evidence. |
 | B6 | merged-green | The digest-bound foundation corpus exists (2026-09-07): `rfcs/0165-safewir-corpus.json` names 43 programs under `tests/rfc0165/corpus/` with their SHA-256 and an independently written expected stdout; `tests/misc/rfc0165_corpus.rs` refuses digest drift, admits every program through canonical SafeWIR, and requires the SafeWIR oracle, the admitted Wasm, and the expected stdout to agree with no leaked objects. Adversarial ownership and bounds probes are the manifest's refusing evidence (B1-B4) plus the near-miss traps (B3). | Merged gate evidence. |
 | B7 | candidate-green | The SafeWIR-to-WasmIR mapping is one reviewed table keyed by rule, `canonical_wasmir::rule_backend` (2026-09-07): every rule maps under exactly one correspondence rule or is refused (`Retain`), `operation_rule` delegates to it, `check_correspondence` requires one mapping per operation and terminator, and the manifest's backend column is checked equal to it. Admission refusals carry the encoder's own diagnostics; the structuring backend accepts reducible control flow only. | Independent review on 2026-09-08 covered all 39 current rule identities, the rendered manifest, rule_backend, and check_correspondence; no current mapping-row mismatch was found. ClosureSlot is a Load/Store subjudgment, not a standalone receipt; Retain remains explicitly refused. This establishes metadata/table correspondence only, not correctness of checker predicates, interpreter semantics, or emitted Wasm. Land this review record before closing the remaining evidence obligation. |

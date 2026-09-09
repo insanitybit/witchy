@@ -513,7 +513,7 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::VarCall,
         judgment: "check.rs::check_call (check_indirect_reference_arguments)",
-        predicate: "an indirect call through a function value of the declared signature; reference arguments refuse in v1",
+        predicate: "an indirect call through a function value of the declared signature; memory Value arguments refuse, while reference Move arguments require the declared owned/shared convention and checked token transfer",
         interpreter: "execute: the callee is the function value",
         backend: RuleBackend::Receipt(CorrespondenceRule::ScalarCall),
         admits: &[t(Backend, "admitted_scalar_var_call_uses_authenticated_table_and_executes"), t(Launch, "admitted_scalar_var_write_back_through_an_indirect_call")],
@@ -843,7 +843,7 @@ pub const RFC_KERNEL_CROSSWALK: &[RfcKernelEntry] = &[
     RfcKernelEntry { kernel: RfcKernelId::Call, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Call], scope: "authenticated direct calls" } },
     RfcKernelEntry { kernel: RfcKernelId::VarCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::VarCall], scope: "authenticated indirect calls under v1 argument restrictions" } },
     RfcKernelEntry { kernel: RfcKernelId::TailCall, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::TailCall, CanonicalRuleId::VarTailCall], scope: "direct and indirect checked proper-tail sites" } },
-    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::InitNullableOwned, CanonicalRuleId::Store], scope: "validated closure record/environment construction with checked scalar and supported managed-reference captures; inactive owned slots are explicitly absent; FunctionValue alone is insufficient and arbitrary capture types are not implied" } },
+    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::InitNullableOwned, CanonicalRuleId::CloneRef, CanonicalRuleId::Store], scope: "validated closure record/environment construction with checked scalar and supported managed-reference captures; inactive owned slots are explicitly absent; FunctionValue alone is insufficient and arbitrary capture types are not implied" } },
     RfcKernelEntry { kernel: RfcKernelId::HostCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::HostCall], scope: "authenticated capability and buffer contracts" } },
     RfcKernelEntry { kernel: RfcKernelId::Trap, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Trap], scope: "explicit terminal traps" } },
 ];
