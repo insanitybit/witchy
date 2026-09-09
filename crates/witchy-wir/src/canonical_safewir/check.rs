@@ -884,7 +884,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
     }
 }
 
-fn operation_uses(operation: &Operation) -> Vec<ValueId> {
+pub(crate) fn operation_uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ConstInt { .. }
         | Operation::ConstFloat { .. }
@@ -971,7 +971,7 @@ fn host_argument_uses(arguments: &[HostCallArgument]) -> Vec<ValueId> {
     result
 }
 
-fn terminator_uses(terminator: &Terminator) -> Vec<ValueId> {
+pub(crate) fn terminator_uses(terminator: &Terminator) -> Vec<ValueId> {
     match terminator {
         Terminator::Branch { arguments, .. } | Terminator::Return { values: arguments } => {
             arguments.clone()

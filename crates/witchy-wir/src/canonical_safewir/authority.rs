@@ -668,7 +668,8 @@ fn closure_environment_prefix_matches(
     if !matches!(guard, super::Operation::Guard { condition: guard_condition, kind: super::GuardKind::DynamicType } if *guard_condition == *condition) {
         return false;
     }
-    fields.iter().enumerate().all(|(offset, field)| {
+    let capture_start = if fields.is_empty() && matches!(block.operations.get(2), Some(super::Operation::Release { object } | super::Operation::DropRef { object }) if *object == *environment) { 6 } else { 5 };
+    let captures_match = fields.iter().enumerate().all(|(offset, field)| {
         let Some(value_type) = field else { return false };
         let Some(super::Operation::Load { place, transfer, .. }) = capture_loads.get(offset) else { return false };
         place.object() == *environment
@@ -679,7 +680,42 @@ fn closure_environment_prefix_matches(
                 super::ValueType::Ref(_) => *transfer == super::LoadTransfer::ClonePresent,
                 _ => *transfer == super::LoadTransfer::CopyScalar,
             }
-    })
+    });
+    captures_match
+        && hidden_environment_uses_are_closed(function, closure, *environment, capture_start, fields.len())
+}
+
+/// The synthesized closure and environment parameters are compiler-private.
+/// After the authenticated prefix, only their affine cleanup may mention them;
+/// no alias, reload, call argument, branch argument, or later place can expose
+/// an inactive family payload.
+fn hidden_environment_uses_are_closed(
+    function: &super::Function,
+    closure: super::ValueId,
+    environment: super::ValueId,
+    capture_start: usize,
+    capture_count: usize,
+) -> bool {
+    for block in &function.blocks {
+        if crate::canonical_safewir::check::terminator_uses(&block.terminator)
+            .iter().any(|value| *value == closure || *value == environment)
+        {
+            return false;
+        }
+        for (index, operation) in block.operations.iter().enumerate() {
+            let mentions_hidden = crate::canonical_safewir::check::operation_uses(operation)
+                .iter().any(|value| *value == closure || *value == environment);
+            if !mentions_hidden { continue; }
+            let prefix_use = block.id == function.entry
+                && (index == 0 || index == 1 || (capture_start..capture_start + capture_count).contains(&index));
+            let cleanup = matches!(operation,
+                super::Operation::Release { object } | super::Operation::DropRef { object }
+                if *object == closure || *object == environment
+            );
+            if !prefix_use && !cleanup { return false; }
+        }
+    }
+    true
 }
 
 /// The checked module's type definitions, keyed by bare and entry-qualified
