@@ -1272,6 +1272,93 @@ mod tests {
     }
 
     #[test]
+    fn canonical_dynamic_preparation_rejects_empty_and_wrong_witness_catalogs() {
+        use crate::witness::WitnessCatalog;
+        use witchy_syntax::ast::{Item, Type};
+
+        let source = r#"import dynamic
+import reflect
+
+trait Named:
+    fn name(self) -> String
+
+type Counter:
+    value: Int
+
+impl Named for Counter:
+    fn name(self) -> String:
+        "counter"
+
+impl Reflect for Counter:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.reflect_one(self.value)
+
+fn main() -> Int:
+    let value = dynamic.dynamic(Counter(4))
+    let _ = dynamic.implements(value, dynamic.runtime_type(dyn Named))
+    0
+"#;
+        let original = |source: &str| {
+            let (checked, typed) = link_checked_with(
+                vec![("main".into(), parse(source))], "main", no_expand,
+                LinkMode::Production, None, true,
+                Some(dynamic_source_owners("example/catalog-binding")),
+            ).expect("authenticated original crosses the semantic source boundary");
+            let (typed, _) = canonicalize_callable_instances(typed.unwrap())
+                .expect("original pre-preparation callable instances");
+            (checked, typed)
+        };
+        let (checked, typed) = original(source);
+        let catalog = WitnessCatalog::from_module(checked.module());
+        let declarations = checked.runtime_declaration_catalog().unwrap();
+        let plan = crate::existential::build_dynamic_runtime_plan(&typed, &catalog, &declarations)
+            .expect("correct plan from the checked original");
+        let counter = Type::Named("main.Counter".into(), vec![]);
+        let named = Type::Dyn("main.Named".into(), vec![]);
+        let counter_id = plan.id(&declarations.type_identity(&counter).unwrap()).unwrap();
+        let named_id = plan.id(&declarations.type_identity(&named).unwrap()).unwrap();
+        assert!(plan.trait_relations().contains(&(counter_id, named_id)));
+        assert!(catalog.implements(&counter, &named).unwrap());
+
+        // Each consuming preparation gets a fresh address-keyed table for an
+        // unchanged clone of the same checked original, never another source.
+        let fresh_original = || typeck::annotate_checked(typed.module().clone()).unwrap();
+        let prepared = crate::existential::prepare_closed_dynamic(
+            fresh_original(), &catalog, &declarations, &plan,
+        ).expect("same-source catalog and authenticated plan still succeed");
+        assert!(prepared.module().items.iter().any(|item| matches!(item,
+            Item::Type(definition) if definition.name == "$canonical.DynamicPayload")));
+
+        let empty_error = crate::existential::prepare_closed_dynamic(
+            fresh_original(), &WitnessCatalog::default(), &declarations, &plan,
+        ).expect_err("empty witness catalog must not prepare the checked original");
+        assert_eq!(empty_error,
+            "runtime trait query references unknown trait `main.Named`");
+
+        // Keep the concrete payload and Reflect impl identical, but change the
+        // nominal trait identity. The original plan must not retain a positive
+        // Named relation while preparation accepts this OtherNamed catalog.
+        let (other, _) = original(&source.replace("Named", "OtherNamed"));
+        let wrong_catalog = WitnessCatalog::from_module(other.module());
+        assert!(wrong_catalog.implements(&counter, &named).is_err());
+        let error = crate::existential::prepare_closed_dynamic(
+            fresh_original(), &wrong_catalog, &declarations, &plan,
+        ).expect_err("a nonempty catalog with the wrong nominal trait identity must refuse");
+        assert_eq!(error,
+            "runtime trait query references unknown trait `main.Named`");
+
+        let without_impl = source.replace(
+            "impl Named for Counter:\n    fn name(self) -> String:\n        \"counter\"\n\n", "");
+        let (other, _) = original(&without_impl);
+        let missing_relation_catalog = WitnessCatalog::from_module(other.module());
+        let error = crate::existential::prepare_closed_dynamic(
+            fresh_original(), &missing_relation_catalog, &declarations, &plan,
+        ).expect_err("matching descriptors cannot hide a missing impl relation");
+        assert_eq!(error,
+            "closed Dynamic runtime plan does not match its checked source and catalogs");
+    }
+
+    #[test]
     fn canonical_dynamic_runtime_plan_prepares_reflection_example_witnesses() {
         use crate::runtime_type::RuntimeTypeIdentity;
         use witchy_syntax::ast::{Item, Type};
@@ -1445,6 +1532,13 @@ impl Reflect for Counter:
         ).expect("pure plan rebuild");
         assert_eq!(plan, &rebuilt);
         assert_eq!(canonical.typed_module().module(), &before);
+        let error = crate::existential::prepare_closed_dynamic(
+            typeck::annotate_checked(before.clone()).unwrap(),
+            &crate::witness::WitnessCatalog::default(), &runtime_catalog,
+            &crate::runtime_type::RuntimeTypePlan::default(),
+        ).expect_err("descriptor-only early return must not accept another plan");
+        assert_eq!(error,
+            "closed Dynamic runtime plan does not match its checked source and catalogs");
         let mut has_runtime_type = false;
         witchy_syntax::ast::visit::visit_module_exprs::<String>(&before, &mut |expr| {
             if let witchy_syntax::ast::Expr::Call { name, .. } = expr {

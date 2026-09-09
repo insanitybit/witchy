@@ -22,6 +22,13 @@ pub(crate) fn prepare(
     runtime_catalog: &RuntimeDeclarationCatalog,
     plan: &RuntimeTypePlan,
 ) -> Result<TypedModule, String> {
+    // Authenticate the complete supplied plan before even the descriptor-only
+    // early return. In particular, matching descriptors cannot substitute for
+    // the retained catalog's checked methods and nominal trait relations.
+    let rebuilt = build_dynamic_runtime_plan(&typed, catalog, runtime_catalog)?;
+    if plan != &rebuilt {
+        return Err("closed Dynamic runtime plan does not match its checked source and catalogs".into());
+    }
     let scope = crate::pipeline::canonical_scope(typed.module());
     let mut constructs_dynamic = false;
     for item in &typed.module().items {
