@@ -27,6 +27,26 @@ fn main(console: Console):
 }
 
 #[test]
+fn match_shadowed_reference_stays_local_and_outer_mutation_survives() {
+    assert_three_legs(r#"
+fn main(console: Console):
+    let decoded: Option(Int) = Some(42)
+    var count = 0
+    let result = match decoded:
+        Some(decoded) ->
+            count = count + 1
+            decoded
+        None -> 0
+    let original = match decoded:
+        Some(value) -> value
+        None -> 0
+    console.print("${result}")
+    console.print("${original}")
+    console.print("${count}")
+"#, vec!["42".to_owned(), "42".to_owned(), "1".to_owned()]);
+}
+
+#[test]
 fn typed_closure_family_carries_scalar_and_list_captures_across_three_legs() {
     assert_three_legs(r#"
 fn apply(f: fn(Int) -> Int, value: Int) -> Int:

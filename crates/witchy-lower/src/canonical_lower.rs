@@ -2760,7 +2760,11 @@ impl FunctionLowerer<'_> {
             self.bindings = outer.clone();
             // Pattern bindings are emitted in the arm block: a list pattern's
             // element loads are guarded by the length test that reached it.
-            for (name, value) in self.lower_match_pattern(scrutinee, &arm.pattern, &scrutinee_type)? {
+            let pattern_bindings = self.lower_match_pattern(scrutinee, &arm.pattern, &scrutinee_type)?;
+            let shadowed_outer = pattern_bindings.iter()
+                .filter_map(|(name, _)| outer.get(name).map(|value| (name.clone(), *value)))
+                .collect::<Vec<_>>();
+            for (name, value) in pattern_bindings {
                 self.bindings.insert(name, value);
             }
             if let Some(guard) = &arm.guard {
@@ -2808,7 +2812,13 @@ impl FunctionLowerer<'_> {
                 None
             };
             let body_end = self.current;
-            let bindings = self.bindings.clone();
+            let mut bindings = self.bindings.clone();
+            // Pattern bindings belong to this arm, even when their spelling
+            // shadows a live outer reference. Only genuine outer writes may
+            // become join lanes; returning an arm value was detached above.
+            for (name, value) in shadowed_outer {
+                bindings.insert(name, value);
+            }
             let continues = self.blocks[body_end.get() as usize].terminator.is_none();
             if continues {
                 if let Some(value) = value {
