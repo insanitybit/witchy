@@ -11871,7 +11871,11 @@ fn aggregate_layout(
     }
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
+        // Nominal source records are selected by exact identity in
+        // aggregate_layout_for_source. Do not erase nominal identity here:
+        // a closure environment can have the same fields without being a
+        // candidate for this structural source aggregate.
+        let Some(descriptor) = layouts.get(*root) else { continue };
         let LayoutKind::PackedRecord { fields } = descriptor.kind() else { continue };
         if fields.len() != expected.len() {
             continue;
@@ -11908,7 +11912,9 @@ fn packed_scalar_layout(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let mut candidates = Vec::new();
     for root in layout_bundle.roots() {
-        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
+        // Packed source values must not select nominal heap environments by
+        // their backing record's coincidentally identical field shape.
+        let Some(descriptor) = layouts.get(*root) else { continue };
         let fields = match descriptor.kind() {
             LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fields,
             _ => continue,
