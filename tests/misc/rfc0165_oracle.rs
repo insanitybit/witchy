@@ -197,13 +197,13 @@ fn main(console: Console):
 #[test]
 fn integer_list_match_result_is_string_free() {
     let source = r#"
-fn choose(values: List(Int), index: Int) -> Int:
+fn choose(left: List(Int), right: List(Int), index: Int) -> List(Int):
     match index:
-        0 -> values[0]
-        _ -> values[1]
+        0 -> left
+        _ -> right
 
 fn main() -> Int:
-    choose([4, 7], 1)
+    choose([4], [7, 8], 1).length()
 "#;
     witchy::resolve_std_only_checked(source).expect("string-free integer match checks");
     oracle(source, "string-free integer match");
