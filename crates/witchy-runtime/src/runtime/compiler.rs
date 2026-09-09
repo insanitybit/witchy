@@ -145,3 +145,209 @@ fn host_compiler_doc_result_json_len(
     caller.data_mut().pending = Some(json.into_bytes());
     Ok(len)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{read_slice_str, write_result_bytes_to_memory};
+    use crate::runtime::{Capabilities, Runtime};
+    use std::sync::Arc;
+    use wasmtime::Error;
+
+    struct FixtureCompilerServices;
+
+    impl super::CompilerServices for FixtureCompilerServices {
+        fn footprint(&self, src: &str) -> wasmtime::Result<String> {
+            Ok(format!(r#"{{"footprint":{}}}"#, src.len()))
+        }
+
+        fn footprint_diff(&self, old_src: &str, new_src: &str) -> wasmtime::Result<String> {
+            Ok(format!(r#"{{"old":{},"new":{}}}"#, old_src.len(), new_src.len()))
+        }
+
+        fn doc(&self, _name: &str, _src: &str) -> wasmtime::Result<String> {
+            Err(Error::msg("fixture does not provide compiler docs"))
+        }
+
+        fn doc_result_json(&self, _name: &str, _src: &str) -> wasmtime::Result<String> {
+            Err(Error::msg("fixture does not provide compiler doc results"))
+        }
+    }
+
+    const FOOTPRINT_FIXTURE: &str = r#"
+        (module
+          (import "witchy" "compiler_footprint_into"
+            (func $footprint (param i32 i32 i32 i32) (result i32)))
+          (import "witchy" "compiler_diff_into"
+            (func $diff (param i32 i32 i32 i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "footprint")
+            (param $src i32) (param $src_len i32)
+            (param $out i32) (param $out_capacity i32) (result i32)
+            local.get $src
+            local.get $src_len
+            local.get $out
+            local.get $out_capacity
+            call $footprint)
+          (func (export "diff")
+            (param $old i32) (param $old_len i32)
+            (param $new i32) (param $new_len i32)
+            (param $out i32) (param $out_capacity i32) (result i32)
+            local.get $old
+            local.get $old_len
+            local.get $new
+            local.get $new_len
+            local.get $out
+            local.get $out_capacity
+            call $diff))
+    "#;
+
+    const SOURCE: &str = "pub fn answer() -> Int:\n    1\n";
+    const UPDATED_SOURCE: &str = "pub fn answer() -> Int:\n    2\n";
+    const SOURCE_PTR: i32 = 0;
+    const UPDATED_SOURCE_PTR: i32 = 256;
+    const OUTPUT_PTR: i32 = 1024;
+
+    fn fixture_vm() -> (Runtime, crate::runtime::Vm) {
+        let mut runtime = Runtime::new().expect("runtime");
+        runtime.compiler_services = Arc::new(FixtureCompilerServices);
+        let vm = runtime
+            .spawn(FOOTPRINT_FIXTURE, Capabilities::none(), 1)
+            .expect("the runtime linker must register the bounded compiler imports");
+        (runtime, vm)
+    }
+
+    fn write_fixture_inputs(vm: &mut crate::runtime::Vm) {
+        let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
+        memory
+            .write(&mut vm.store, SOURCE_PTR as usize, SOURCE.as_bytes())
+            .unwrap();
+        memory
+            .write(
+                &mut vm.store,
+                UPDATED_SOURCE_PTR as usize,
+                UPDATED_SOURCE.as_bytes(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn bounded_compiler_result_requires_full_capacity_and_valid_utf8_input() {
+        let mut memory = vec![0xa5; 32];
+        memory[2..5].copy_from_slice("old".as_bytes());
+        assert_eq!(read_slice_str(&memory, 2, 3).unwrap(), "old");
+
+        let required = write_result_bytes_to_memory(&mut memory, 8, 3, b"abc").unwrap();
+        assert_eq!(required, 3);
+        assert_eq!(&memory[8..11], b"abc");
+
+        memory[12..16].fill(0xa5);
+        let required = write_result_bytes_to_memory(&mut memory, 12, 2, b"abcd").unwrap();
+        assert_eq!(required, 4);
+        assert_eq!(&memory[12..16], &[0xa5; 4]);
+
+        assert!(read_slice_str(&memory, 2, 4).is_err());
+        assert!(write_result_bytes_to_memory(&mut memory, 31, 2, b"x").is_err());
+    }
+
+    #[test]
+    fn bounded_compiler_imports_execute_utf8_bounds_and_no_partial_write() {
+        let (_runtime, mut vm) = fixture_vm();
+        write_fixture_inputs(&mut vm);
+        let footprint = vm
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut vm.store, "footprint")
+            .unwrap();
+        let diff = vm
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32, i32, i32), i32>(&mut vm.store, "diff")
+            .unwrap();
+        let expected_footprint = format!(r#"{{"footprint":{}}}"#, SOURCE.len()).into_bytes();
+        let expected_diff = format!(
+            r#"{{"old":{},"new":{}}}"#,
+            SOURCE.len(),
+            UPDATED_SOURCE.len()
+        )
+        .into_bytes();
+        let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
+
+        memory
+            .write(&mut vm.store, OUTPUT_PTR as usize, &[0xa5; 4096])
+            .unwrap();
+        let footprint_len = footprint
+            .call(
+                &mut vm.store,
+                (SOURCE_PTR, SOURCE.len() as i32, OUTPUT_PTR, expected_footprint.len() as i32),
+            )
+            .unwrap();
+        assert_eq!(footprint_len as usize, expected_footprint.len());
+        assert_eq!(
+            &memory.data(&vm.store)[OUTPUT_PTR as usize..][..expected_footprint.len()],
+            expected_footprint
+        );
+
+        memory
+            .write(&mut vm.store, OUTPUT_PTR as usize, &[0xa5; 4096])
+            .unwrap();
+        let short_len = footprint
+            .call(
+                &mut vm.store,
+                (
+                    SOURCE_PTR,
+                    SOURCE.len() as i32,
+                    OUTPUT_PTR,
+                    (expected_footprint.len() - 1) as i32,
+                ),
+            )
+            .unwrap();
+        assert_eq!(short_len as usize, expected_footprint.len());
+        assert_eq!(&memory.data(&vm.store)[OUTPUT_PTR as usize..][..4096], &[0xa5; 4096]);
+
+        let diff_len = diff
+            .call(
+                &mut vm.store,
+                (
+                    SOURCE_PTR,
+                    SOURCE.len() as i32,
+                    UPDATED_SOURCE_PTR,
+                    UPDATED_SOURCE.len() as i32,
+                    OUTPUT_PTR,
+                    expected_diff.len() as i32,
+                ),
+            )
+            .unwrap();
+        assert_eq!(diff_len as usize, expected_diff.len());
+        assert_eq!(
+            &memory.data(&vm.store)[OUTPUT_PTR as usize..][..expected_diff.len()],
+            expected_diff
+        );
+
+        let (_runtime, mut invalid_vm) = fixture_vm();
+        let invalid_memory = invalid_vm
+            .instance
+            .get_memory(&mut invalid_vm.store, "memory")
+            .unwrap();
+        invalid_memory
+            .write(&mut invalid_vm.store, SOURCE_PTR as usize, &[0xff])
+            .unwrap();
+        let invalid_footprint = invalid_vm
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut invalid_vm.store, "footprint")
+            .unwrap();
+        assert!(invalid_footprint
+            .call(&mut invalid_vm.store, (SOURCE_PTR, 1, OUTPUT_PTR, 16))
+            .is_err());
+
+        let (_runtime, mut bounds_vm) = fixture_vm();
+        write_fixture_inputs(&mut bounds_vm);
+        let bounds_footprint = bounds_vm
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut bounds_vm.store, "footprint")
+            .unwrap();
+        assert!(bounds_footprint
+            .call(&mut bounds_vm.store, (SOURCE_PTR, SOURCE.len() as i32, 65_535, 2))
+            .is_err());
+        assert!(bounds_footprint
+            .call(&mut bounds_vm.store, (65_535, 2, OUTPUT_PTR, 16))
+            .is_err());
+    }
+}
