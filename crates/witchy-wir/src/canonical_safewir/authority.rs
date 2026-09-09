@@ -401,7 +401,8 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                         let crate::layout::LayoutKind::RuntimePointerValueSlot {
                             pointee, semantics: crate::layout::PointerSlot::Owned,
                         } = closure_layout_catalog.get(fields[1])?.kind() else { return None };
-                        closure_layout_catalog.get(*pointee).and_then(|environment| match environment.kind() {
+                        let physical = closure_layout_catalog.resolve_nominal(*pointee).ok()?;
+                        closure_layout_catalog.get(physical).and_then(|environment| match environment.kind() {
                             crate::layout::LayoutKind::PackedRecord { fields } => Some((*pointee, fields.clone())),
                             _ => None,
                         })

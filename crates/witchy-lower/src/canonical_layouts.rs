@@ -432,12 +432,24 @@ impl LayoutProjection {
         }
         let mut families = HashMap::new();
         for (_, (signature, variants)) in self.closures {
-            let (environment, variants) = intern_closure_environment(
+            let (environment_body, variants) = intern_closure_environment(
                 &mut interner,
                 variants,
                 &self.definitions,
                 &recursive_types,
             )?;
+            // Equal storage shapes do not make distinct callable ABIs
+            // interchangeable. Bind the physical environment to its checked
+            // signature identity, rather than distinguishing it with padding.
+            let key = format!("{:?}", closure_key(&signature));
+            let mut digest = Sha256::new();
+            digest.update(b"witchy/canonical-layout/closure-environment-v1\0");
+            digest.update((key.len() as u64).to_le_bytes());
+            digest.update(key.as_bytes());
+            let environment = interner.intern_opaque_nominal(digest.finalize().into())
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            interner.bind_nominal(environment, environment_body)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             let closure = intern_closure_layout_with_environment(&mut interner, environment)?;
             roots.insert(environment);
             roots.insert(closure);

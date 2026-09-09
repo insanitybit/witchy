@@ -681,26 +681,14 @@ fn admitted_capture_free_scalar_lambdas_are_function_values_bound_to_their_witne
 }
 
 #[test]
-fn lambdas_with_non_integer_captures_are_refused_by_name() {
-    // v1 has no closure environments: a lambda that captures a binding, or
-    // one whose parameters or result are references, is refused at
-    // canonical lowering with the construct named; nothing falls back.
-    for (label, source) in [
-        (
-            "string capture",
-            "pub fn greeter(prefix: String) -> fn(String) -> String:\n    fn(name: String): prefix + name\n\nfn main(console: Console):\n    console.print(greeter(\"hi \")(\"you\"))\n",
-        ),
-    ] {
-        let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
-        match codegen::compile_checked_module_artifact(&checked) {
-            codegen::LoweringOutcome::Unsupported(reason) => {
-                let text = reason.to_string();
-                assert!(text.contains("lambda with non-integer captures"), "{label}: {text}");
-            }
-            codegen::LoweringOutcome::Lowered(_) => panic!("{label}: a lambda outside the v1 subset must be refused"),
-            codegen::LoweringOutcome::Rejected(error) => panic!("{label}: refused for the wrong reason: {error}"),
-        }
-    }
+fn admitted_string_capture_survives_its_creating_call() {
+    // The returned closure owns its captured string independently of the
+    // creating call. Typed environment slots replace the former Int-only
+    // coverage restriction without introducing an erased payload.
+    let output = run_admitted(
+        "pub fn greeter(prefix: String) -> fn(String) -> String:\n    fn(name: String): prefix + name\n\nfn main(console: Console):\n    console.print(greeter(\"hi \")(\"you\"))\n",
+    );
+    assert_eq!(output, vec!["hi you".to_string()]);
 }
 
 #[test]

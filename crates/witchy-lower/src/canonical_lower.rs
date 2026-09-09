@@ -4750,7 +4750,9 @@ impl FunctionLowerer<'_> {
         if fields.len() != 2 || family.closure != layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("closure family layout"));
         }
-        let environment_descriptor = self.layouts.get(family.environment)
+        let physical_environment = self.layouts.resolve_nominal(family.environment)
+            .map_err(|_| CanonicalLoweringError::UnsupportedExpression("unbound closure environment"))?;
+        let environment_descriptor = self.layouts.get(physical_environment)
             .ok_or_else(|| CanonicalLoweringError::MissingLayout(Type::Named("__closure_environment".into(), Vec::new())))?;
         let LayoutSize::Fixed(environment_bytes) = environment_descriptor.size() else {
             return Err(CanonicalLoweringError::UnsupportedExpression("closure environment layout size"));
