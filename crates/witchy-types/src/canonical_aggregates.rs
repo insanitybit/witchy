@@ -82,7 +82,7 @@ pub fn is_v1_list_element_type(ty: &Type, definitions: &BTreeMap<String, TypeDef
 }
 
 /// A field an aggregate may carry: a scalar in its slot, or a string,
-/// list, tuple, or aggregate behind an owned pointer slot.
+/// list, tuple, aggregate, or checked function behind an owned pointer slot.
 pub fn is_v1_field_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     field_type_ok(ty, definitions, &mut BTreeSet::new())
 }
@@ -135,6 +135,19 @@ fn field_type_ok_at(
                 && arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget))
         }
         Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok_at(item, definitions, active, depth + 1, budget)),
+        Type::Fn(parameters, result, conventions, _) => {
+            // The closure occupies an owned pointer slot. Its signature still
+            // has to close over supported concrete types; a nominal back-edge
+            // uses the same instantiation-sensitive guard as ordinary fields.
+            (conventions.is_empty() || conventions.len() == parameters.len())
+                && parameters.iter().chain(std::iter::once(result.as_ref())).all(|lane| {
+                    if is_callable_only_lane(lane, definitions) {
+                        consume_shape_nodes(budget, 1)
+                    } else {
+                        field_type_ok_at(lane, definitions, active, depth + 1, budget)
+                    }
+                })
+        }
         Type::Named(name, arguments) => {
             definitions.get(name).is_some_and(|definition| {
                 definition_fields_ok(definition, arguments, definitions, active, depth + 1, budget)
@@ -142,6 +155,14 @@ fn field_type_ok_at(
         }
         _ => false,
     }
+}
+
+// Unit and capability parameters/results have callable ABI lanes, but are not
+// thereby admissible as directly stored aggregate fields or closure captures.
+fn is_callable_only_lane(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if arguments.is_empty() && matches!(name.as_str(), "Nil" | "Unit"))
+        || crate::canonical_capabilities::representation(ty, definitions).is_some()
 }
 
 fn definition_fields_ok(
@@ -287,6 +308,9 @@ fn render_type(ty: &Type) -> Option<String> {
             rendered.push(')');
             Some(rendered)
         }
+        // Keep the complete checked signature in generic-instantiation keys,
+        // including conventions and qualifiers, rather than an erased Fn name.
+        Type::Fn(..) => Some(format!("{:?}", ty.unqualified())),
         _ => None,
     }
 }
@@ -351,6 +375,19 @@ fn concrete_identity_at(
         Type::Tuple(items) => Some(Type::Tuple(items.iter()
             .map(|item| concrete_identity_at(item, definitions, depth + 1, budget))
             .collect::<Option<Vec<_>>>()?)),
+        Type::Fn(parameters, result, conventions, qualifiers) => {
+            if !conventions.is_empty() && conventions.len() != parameters.len() {
+                return None;
+            }
+            Some(Type::Fn(
+                parameters.iter().map(|parameter| {
+                    concrete_callable_lane_identity_at(parameter, definitions, depth + 1, budget)
+                }).collect::<Option<Vec<_>>>()?,
+                Box::new(concrete_callable_lane_identity_at(result, definitions, depth + 1, budget)?),
+                conventions.clone(),
+                *qualifiers,
+            ))
+        }
         Type::Named(name, arguments) => {
             let (canonical_name, arity) = match name.as_str() {
                 "String" | "Bytes" => (name.as_str(), 0),
@@ -373,6 +410,26 @@ fn concrete_identity_at(
         }
         _ => None,
     }
+}
+
+fn concrete_callable_lane_identity_at(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    depth: usize,
+    budget: &mut usize,
+) -> Option<Type> {
+    if depth >= MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
+        return None;
+    }
+    if let Type::Qualified(qualifier, inner) = ty {
+        return Some(Type::Qualified(qualifier.clone(), Box::new(
+            concrete_callable_lane_identity_at(inner, definitions, depth + 1, budget)?,
+        )));
+    }
+    if is_callable_only_lane(ty, definitions) {
+        return Some(ty.clone());
+    }
+    concrete_identity_at(ty, definitions, depth, budget)
 }
 
 /// The module's type definitions keyed by bare and entry-qualified names.
@@ -528,6 +585,57 @@ mod recursive_shape_tests {
         assert!(scalar_aggregate_shape(&Type::Named("Grow".into(), vec![named("Int")]), &definitions).is_none());
         assert!(scalar_aggregate_shape(&Type::Named("Phantom".into(), vec![named("Missing")]), &definitions).is_none());
         assert!(scalar_aggregate_shape(&Type::Named("PackedNode".into(), vec![named("Int")]), &definitions).is_none());
+    }
+
+    #[test]
+    fn recursive_fn_shapes_preserve_signatures_and_reject_invalid_lanes() {
+        use witchy_syntax::ast::{CallableQualifiers, Convention};
+
+        let applied = |name: &str, argument: Type| Type::Named(name.into(), vec![argument]);
+        let thunk = |result: Type| Type::Fn(Vec::new(), Box::new(result), Vec::new(), CallableQualifiers::default());
+        let cursor = generic_definition("model.Cursor", &["a"], vec![thunk(applied("model.Step", named("a")))], false);
+        let mut step = generic_definition("model.Step", &["a"], vec![named("a"), applied("model.Cursor", named("a"))], false);
+        step.variants.push(Variant { name: "Empty".into(), line: 0, fields: Vec::new(), field_names: Vec::new(), field_lines: Vec::new() });
+        let holder = generic_definition("model.Holder", &["f"], vec![named("f")], false);
+        let mut definitions = BTreeMap::from([
+            ("model.Cursor".into(), cursor), ("model.Step".into(), step), ("model.Holder".into(), holder),
+        ]);
+        let cursor = applied("model.Cursor", named("Int"));
+        let signature = thunk(applied("model.Step", named("Int")));
+        assert_eq!(scalar_aggregate_shape(&cursor, &definitions).unwrap().fields, vec![signature.clone()]);
+        let holder = applied("model.Holder", signature.clone());
+        assert_eq!(scalar_aggregate_shape(&holder, &definitions).unwrap().fields, vec![signature.clone()]);
+        assert_eq!(concrete_aggregate_identity(&holder, &definitions), Some(holder.clone()));
+        assert!(is_v1_list_element_type(&signature, &definitions));
+        assert!(is_v1_field_type(&thunk(named("Nil")), &definitions));
+        let consuming = Type::Fn(vec![cursor.clone()], Box::new(named("Int")), vec![Convention::Own], CallableQualifiers::new(true, false));
+        let borrowing = Type::Fn(vec![cursor], Box::new(named("Int")), vec![Convention::Borrow], CallableQualifiers::default());
+        for callable in [&consuming, &borrowing] {
+            let generic = applied("model.Holder", callable.clone());
+            assert_eq!(scalar_aggregate_shape(&generic, &definitions).unwrap().fields, vec![callable.clone()]);
+            assert_eq!(concrete_aggregate_identity(&generic, &definitions), Some(generic));
+        }
+        assert_ne!(aggregate_key(&applied("model.Holder", consuming)), aggregate_key(&applied("model.Holder", borrowing)));
+
+        for invalid in [
+            thunk(named("Missing")),
+            thunk(applied("model.Step", named("a"))),
+            thunk(Type::Named("model.Step".into(), Vec::new())),
+            Type::Fn(vec![named("Missing")], Box::new(named("Int")), Vec::new(), CallableQualifiers::default()),
+            Type::Fn(vec![named("Int")], Box::new(named("Int")), vec![Convention::Let, Convention::Own], CallableQualifiers::default()),
+        ] {
+            assert!(!is_v1_field_type(&invalid, &definitions), "{invalid:?}");
+            let generic = applied("model.Holder", invalid);
+            assert!(scalar_aggregate_shape(&generic, &definitions).is_none());
+            assert!(concrete_aggregate_identity(&generic, &definitions).is_none());
+        }
+        // A cycle does not waive another signature lane, even with a qualified
+        // nominal of the same short name present in the declaration catalog.
+        definitions.insert("other.Step".into(), definition("other.Step", vec![named("Missing")], false));
+        definitions.get_mut("model.Cursor").unwrap().variants[0].fields = vec![
+            Type::Fn(vec![named("other.Step")], Box::new(applied("model.Step", named("a"))), Vec::new(), CallableQualifiers::default()),
+        ];
+        assert!(scalar_aggregate_shape(&applied("model.Cursor", named("Int")), &definitions).is_none());
     }
 }
 
