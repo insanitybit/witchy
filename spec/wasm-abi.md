@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **10**. The JavaScript host pins it as
+The current ABI version is **11**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -38,7 +38,8 @@ version-8 production imports declare an empty accepted set and therefore reject
 specialized structured values until their real adapters land. Earlier
 pre-release import counts were not separately published ABI versions.
 Version 10 adds native regex match counting and literal global replacement so
-the common aggregate and rewrite operations avoid span serialization.
+the common aggregate and rewrite operations avoid span serialization. Version
+11 adds the canonical confined `Dir.read_file` and bounded `File.read` imports.
 
 ## Import inclusion is tree-shaken
 
@@ -166,7 +167,6 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
-
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -284,9 +284,10 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_exists_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
+| `dir_read_file` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `file_read_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
 | `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
 | `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
-
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

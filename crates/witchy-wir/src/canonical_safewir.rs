@@ -1505,6 +1505,36 @@ mod catalog_tests {
         );
         assert_eq!(read.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
         assert_eq!(read.mutation, HostMutation::WriteBuffers);
+        let open_file = imports.iter().find(|import| import.name == "dir_read_file").expect("dir_read_file");
+        assert_eq!(
+            open_file.parameter_roles,
+            vec![
+                HostParameterRole::Capability(DIR_CAPABILITY_KIND),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(STRING_LAYOUT),
+                    access: AccessMode::Read,
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+        );
+        assert_eq!(open_file.result_roles, vec![HostResultRole::Capability(FILE_CAPABILITY_KIND)]);
+        assert!(matches!(open_file.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+        assert!(crate::wir_prelude::abi_import_uses_authority("dir_read_file", AbiImportAuthority::DirRead));
+        let file_read = imports.iter().find(|import| import.name == "file_read_into").expect("file_read_into");
+        assert_eq!(
+            file_read.parameter_roles,
+            vec![
+                HostParameterRole::Capability(FILE_CAPABILITY_KIND),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(STRING_LAYOUT),
+                    access: AccessMode::Write,
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+        );
+        assert_eq!(file_read.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
+        assert!(matches!(file_read.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+        assert!(crate::wir_prelude::abi_import_uses_authority("file_read_into", AbiImportAuthority::FileAuthority));
         assert_eq!(read.reentrancy, HostReentrancy::Forbidden);
         assert!(matches!(read.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
 
