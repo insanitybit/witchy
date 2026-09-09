@@ -415,6 +415,12 @@ fn propagate_operation_origins(
         | Operation::ExtractInlineField { destination, .. } => {
             join_origin(origins, *destination, Origin::Unknown);
         }
+        Operation::CapabilityNone { destination, .. }
+        | Operation::CapabilitySome { destination, .. }
+        | Operation::CapabilityIsPresent { destination, .. }
+        | Operation::CapabilityUnwrap { destination, .. } => {
+            join_origin(origins, *destination, Origin::Unknown);
+        }
         Operation::FunctionValue { .. } => {}
         Operation::Load {
             destination,
@@ -604,7 +610,7 @@ fn derive_operation(
                 );
             }
         }
-        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
+        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::CapabilityNone { .. } | Operation::CapabilitySome { .. } | Operation::CapabilityIsPresent { .. } | Operation::CapabilityUnwrap { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
     }
     Ok(())
 }

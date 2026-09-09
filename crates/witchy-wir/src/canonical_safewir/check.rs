@@ -850,6 +850,10 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. }
         | Operation::ConstSize { destination, .. }
+        | Operation::CapabilityNone { destination, .. }
+        | Operation::CapabilitySome { destination, .. }
+        | Operation::CapabilityIsPresent { destination, .. }
+        | Operation::CapabilityUnwrap { destination, .. }
         | Operation::Arithmetic { destination, .. }
         | Operation::Compare { destination, .. }
         | Operation::NarrowSize { destination, .. }
@@ -886,6 +890,7 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::ConstFloat { .. }
         | Operation::ConstBool { .. }
         | Operation::ConstSize { .. }
+        | Operation::CapabilityNone { .. }
         | Operation::Alloc { .. }
         | Operation::StaticData { .. }
         | Operation::FunctionValue { .. } => Vec::new(),
@@ -901,6 +906,9 @@ fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::Release { object: value }
         | Operation::DropRef { object: value }
         | Operation::Reclaim { object: value } => vec![*value],
+        Operation::CapabilitySome { source: value, .. }
+        | Operation::CapabilityIsPresent { source: value, .. }
+        | Operation::CapabilityUnwrap { source: value, .. } => vec![*value],
         Operation::MakeInlineAggregate { fields, .. } => fields.clone(),
         Operation::ExtractInlineField { aggregate, .. } => vec![*aggregate],
         Operation::Load { place, .. } | Operation::InitNullableOwned { place } => place_uses(place),
@@ -1165,6 +1173,23 @@ fn check_operation(
         }
         Operation::ConstSize { destination, .. } => {
             require_type(function, *destination, ValueType::Size)
+        }
+        Operation::CapabilityNone { destination, kind } => require_type(function, *destination, ValueType::NullableCapability(*kind)),
+        Operation::CapabilitySome { destination, source } => {
+            let actual = value_type(function, *source)?;
+            let ValueType::Capability(kind) = actual else { return Err(type_mismatch(function, *source, ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(0)), actual)); };
+            require_type(function, *destination, ValueType::NullableCapability(kind))
+        }
+        Operation::CapabilityIsPresent { destination, source } => {
+            require_type(function, *destination, ValueType::Bool)?;
+            let actual = value_type(function, *source)?;
+            if !matches!(actual, ValueType::NullableCapability(_)) { return Err(type_mismatch(function, *source, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(0)), actual)); }
+            Ok(())
+        }
+        Operation::CapabilityUnwrap { destination, source } => {
+            let actual = value_type(function, *source)?;
+            let ValueType::NullableCapability(kind) = actual else { return Err(type_mismatch(function, *source, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(0)), actual)); };
+            require_type(function, *destination, ValueType::Capability(kind))
         }
         Operation::Arithmetic { destination, operator, left, right, .. } => {
             let result = value_type(function, *destination)?;
@@ -3310,6 +3335,40 @@ mod tests {
         );
 
         assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn nullable_capability_operations_are_checked() {
+        let absent = ValueId::new(40);
+        let present = ValueId::new(41);
+        let module = lowered(
+            [(absent, ValueType::NullableCapability(super::super::CapabilityKindId::new(1))), (present, ValueType::Bool)]
+                .into_iter()
+                .collect(),
+            vec![
+                Operation::CapabilityNone { destination: absent, kind: super::super::CapabilityKindId::new(1) },
+                Operation::CapabilityIsPresent { destination: present, source: absent },
+            ],
+            Terminator::Return { values: vec![present] },
+            vec![ValueType::Bool],
+            Vec::new(),
+        );
+        assert!(check_initial(module).is_ok());
+
+        let scalar = ValueId::new(42);
+        let invalid = lowered(
+            [(scalar, ValueType::Int), (absent, ValueType::NullableCapability(super::super::CapabilityKindId::new(1)))]
+                .into_iter()
+                .collect(),
+            vec![
+                Operation::ConstInt { destination: scalar, value: 0 },
+                Operation::CapabilitySome { destination: absent, source: scalar },
+            ],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(matches!(check_initial(invalid), Err(InitialCheckError::TypeMismatch { .. })));
     }
 
     #[test]

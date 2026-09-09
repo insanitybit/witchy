@@ -663,6 +663,20 @@ fn value_type_matches_source(
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
+    if let Some(representation) = witchy_types::canonical_capabilities::representation(source, records) {
+        use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
+        let kind = match representation {
+            CapabilityRepresentation::Direct(CapabilityKind::Console) | CapabilityRepresentation::Nullable(CapabilityKind::Console) => super::CapabilityKindId::new(0),
+            CapabilityRepresentation::Direct(CapabilityKind::Dir) | CapabilityRepresentation::Nullable(CapabilityKind::Dir) => super::DIR_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::Env) | CapabilityRepresentation::Nullable(CapabilityKind::Env) => super::ENV_CAPABILITY_KIND,
+        };
+        return matches!(
+            (representation, actual),
+            (CapabilityRepresentation::Direct(_), super::ValueType::Capability(actual_kind))
+                | (CapabilityRepresentation::Nullable(_), super::ValueType::NullableCapability(actual_kind))
+                if actual_kind == kind
+        );
+    }
     match source.unqualified() {
         // `Dir` carries its rights as type arguments (`Dir[Read]`), and the
         // rights live in the host's authority object behind the token, so

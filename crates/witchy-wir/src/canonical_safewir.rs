@@ -84,6 +84,9 @@ pub enum ValueType {
     Ref(LayoutId),
     Gc(GcTypeId),
     Capability(CapabilityKindId),
+    /// An SSA-only optional authenticated capability. It is never a memory
+    /// value, host ABI lane, or entry argument.
+    NullableCapability(CapabilityKindId),
     Callable(FunctionSignatureId),
 }
 
@@ -740,6 +743,10 @@ pub enum CanonicalRuleId {
     ConstFloat,
     ConstBool,
     ConstSize,
+    CapabilityNone,
+    CapabilitySome,
+    CapabilityIsPresent,
+    CapabilityUnwrap,
     Arithmetic,
     Compare,
     NarrowSize,
@@ -787,6 +794,10 @@ pub enum Operation {
     ConstFloat { destination: ValueId, bits: u64 },
     ConstBool { destination: ValueId, value: bool },
     ConstSize { destination: ValueId, value: u64 },
+    CapabilityNone { destination: ValueId, kind: CapabilityKindId },
+    CapabilitySome { destination: ValueId, source: ValueId },
+    CapabilityIsPresent { destination: ValueId, source: ValueId },
+    CapabilityUnwrap { destination: ValueId, source: ValueId },
     Arithmetic {
         destination: ValueId,
         operator: ArithmeticOperator,
@@ -918,6 +929,10 @@ impl Operation {
             Self::ConstFloat { .. } => CanonicalRuleId::ConstFloat,
             Self::ConstBool { .. } => CanonicalRuleId::ConstBool,
             Self::ConstSize { .. } => CanonicalRuleId::ConstSize,
+            Self::CapabilityNone { .. } => CanonicalRuleId::CapabilityNone,
+            Self::CapabilitySome { .. } => CanonicalRuleId::CapabilitySome,
+            Self::CapabilityIsPresent { .. } => CanonicalRuleId::CapabilityIsPresent,
+            Self::CapabilityUnwrap { .. } => CanonicalRuleId::CapabilityUnwrap,
             Self::Arithmetic { .. } => CanonicalRuleId::Arithmetic,
             Self::Compare { .. } => CanonicalRuleId::Compare,
             Self::NarrowSize { .. } => CanonicalRuleId::NarrowSize,

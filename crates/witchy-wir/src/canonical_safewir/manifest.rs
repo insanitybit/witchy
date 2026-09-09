@@ -137,6 +137,42 @@ pub const RULES: &[RuleEntry] = &[
         refuses: &[t(Interpreter, "validated_size_values_reject_values_wider_than_i32")],
     },
     RuleEntry {
+        rule: CanonicalRuleId::CapabilityNone,
+        judgment: "check.rs::check_operation",
+        predicate: "defines only `NullableCapability(kind)` and has no host or memory representation",
+        interpreter: "execute_operation: binds absence without authority",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        admits: &[t(Check, "nullable_capability_operations_are_checked")],
+        refuses: &[t(Check, "nullable_capability_operations_are_checked")],
+    },
+    RuleEntry {
+        rule: CanonicalRuleId::CapabilitySome,
+        judgment: "check.rs::check_operation",
+        predicate: "wraps only an authenticated `Capability(kind)` into the same nullable kind",
+        interpreter: "execute_operation: preserves the opaque token behind a present optional value",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        admits: &[t(Check, "nullable_capability_operations_are_checked")],
+        refuses: &[t(Check, "nullable_capability_operations_are_checked")],
+    },
+    RuleEntry {
+        rule: CanonicalRuleId::CapabilityIsPresent,
+        judgment: "check.rs::check_operation",
+        predicate: "reads only a nullable capability and defines `Bool`",
+        interpreter: "execute_operation: tests absence without exposing a token",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        admits: &[t(Check, "nullable_capability_operations_are_checked")],
+        refuses: &[t(Check, "nullable_capability_operations_are_checked")],
+    },
+    RuleEntry {
+        rule: CanonicalRuleId::CapabilityUnwrap,
+        judgment: "check.rs::check_operation",
+        predicate: "converts only `NullableCapability(kind)` to the same non-null `Capability(kind)`; absence traps",
+        interpreter: "execute_operation: traps before producing authority on absence",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        admits: &[t(Check, "nullable_capability_operations_are_checked")],
+        refuses: &[t(Check, "nullable_capability_operations_are_checked")],
+    },
+    RuleEntry {
         rule: CanonicalRuleId::Arithmetic,
         judgment: "check.rs::check_operation; check/memory.rs::MemoryChecker (exact-addition facts)",
         predicate: "operands and destination share one scalar type; `Size` overflow policy is `Trap` or `Wrap`; a trapping `Size` add records an exact relation for bounds",
@@ -912,7 +948,7 @@ pub fn render_markdown() -> String {
 pub fn all_rules() -> Vec<CanonicalRuleId> {
     use CanonicalRuleId as R;
     let ordered = [
-        R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
+        R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::CapabilityNone, R::CapabilitySome, R::CapabilityIsPresent, R::CapabilityUnwrap, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
         R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
         R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
         R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
@@ -921,7 +957,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
     for rule in ordered {
         // Exhaustive by construction: adding a variant fails here.
         match rule {
-            R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::Arithmetic | R::Compare | R::NarrowSize
+            R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::CapabilityNone | R::CapabilitySome | R::CapabilityIsPresent | R::CapabilityUnwrap | R::Arithmetic | R::Compare | R::NarrowSize
             | R::WidenSize | R::FloatUnary | R::Guard | R::Alloc | R::StaticData | R::Load | R::InitNullableOwned | R::Store | R::CopyBytes
             | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue

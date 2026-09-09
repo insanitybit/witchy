@@ -65,6 +65,10 @@ enum ScalarInstruction {
     FloatConst { destination: ValueId, bits: u64 },
     BoolConst { destination: ValueId, value: bool },
     SizeConst { destination: ValueId, value: u64 },
+    CapabilityNone { destination: ValueId },
+    CapabilitySome { destination: ValueId, source: ValueId },
+    CapabilityIsPresent { destination: ValueId, source: ValueId },
+    CapabilityUnwrap { destination: ValueId, source: ValueId },
     Arithmetic {
         destination: ValueId,
         operator: ArithmeticOperator,
@@ -848,6 +852,10 @@ fn lower_operation(
         Operation::ConstFloat { destination, bits } => ScalarInstruction::FloatConst { destination: *destination, bits: *bits },
         Operation::ConstBool { destination, value } => ScalarInstruction::BoolConst { destination: *destination, value: *value },
         Operation::ConstSize { destination, value } => ScalarInstruction::SizeConst { destination: *destination, value: *value },
+        Operation::CapabilityNone { destination, .. } => ScalarInstruction::CapabilityNone { destination: *destination },
+        Operation::CapabilitySome { destination, source } => ScalarInstruction::CapabilitySome { destination: *destination, source: *source },
+        Operation::CapabilityIsPresent { destination, source } => ScalarInstruction::CapabilityIsPresent { destination: *destination, source: *source },
+        Operation::CapabilityUnwrap { destination, source } => ScalarInstruction::CapabilityUnwrap { destination: *destination, source: *source },
         Operation::Arithmetic { destination, operator, left, right, overflow } => {
             ScalarInstruction::Arithmetic {
                 destination: *destination,
@@ -1085,6 +1093,10 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::ConstFloat { .. } => "ConstFloat",
         Operation::ConstBool { .. } => "ConstBool",
         Operation::ConstSize { .. } => "ConstSize",
+        Operation::CapabilityNone { .. } => "CapabilityNone",
+        Operation::CapabilitySome { .. } => "CapabilitySome",
+        Operation::CapabilityIsPresent { .. } => "CapabilityIsPresent",
+        Operation::CapabilityUnwrap { .. } => "CapabilityUnwrap",
         Operation::Arithmetic { .. } => "Arithmetic",
         Operation::Compare { .. } => "Compare",
         Operation::NarrowSize { .. } => "NarrowSize",
@@ -1299,6 +1311,7 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> R
     use crate::canonical_safewir::CanonicalRuleId as Rule;
     match rule {
         Rule::ConstInt | Rule::ConstFloat | Rule::ConstBool | Rule::ConstSize | Rule::FunctionValue => RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
+        Rule::CapabilityNone | Rule::CapabilitySome | Rule::CapabilityIsPresent | Rule::CapabilityUnwrap => RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
         Rule::Arithmetic => RuleBackend::Receipt(CorrespondenceRule::ScalarArithmetic),
         Rule::Compare => RuleBackend::Receipt(CorrespondenceRule::ScalarComparison),
         Rule::NarrowSize | Rule::WidenSize | Rule::FloatUnary => RuleBackend::Receipt(CorrespondenceRule::ScalarConversion),
@@ -1336,6 +1349,10 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         (Operation::ConstFloat { destination, bits }, ScalarInstruction::FloatConst { destination: actual, bits: actual_bits }) => destination == actual && bits == actual_bits,
         (Operation::ConstBool { destination, value }, ScalarInstruction::BoolConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
         (Operation::ConstSize { destination, value }, ScalarInstruction::SizeConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
+        (Operation::CapabilityNone { destination, .. }, ScalarInstruction::CapabilityNone { destination: actual }) => destination == actual,
+        (Operation::CapabilitySome { destination, source }, ScalarInstruction::CapabilitySome { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::CapabilityIsPresent { destination, source }, ScalarInstruction::CapabilityIsPresent { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
+        (Operation::CapabilityUnwrap { destination, source }, ScalarInstruction::CapabilityUnwrap { destination: actual_destination, source: actual_source }) => destination == actual_destination && source == actual_source,
         (Operation::Arithmetic { destination, operator, left, right, overflow }, ScalarInstruction::Arithmetic { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right, overflow: actual_overflow }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right && overflow == actual_overflow,
         (Operation::Compare { destination, operator, left, right }, ScalarInstruction::Compare { destination: actual_destination, operator: actual_operator, left: actual_left, right: actual_right }) => destination == actual_destination && operator == actual_operator && left == actual_left && right == actual_right,
         (Operation::NarrowSize { destination, value }, ScalarInstruction::NarrowSize { destination: actual_destination, value: actual_value }) => destination == actual_destination && value == actual_value,
@@ -1749,6 +1766,7 @@ fn wasm_value_type(
         crate::canonical_safewir::ValueType::Size => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Ref(_) => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Capability(_) => Ok(ValType::EXTERNREF),
+        crate::canonical_safewir::ValueType::NullableCapability(_) => Ok(ValType::EXTERNREF),
         crate::canonical_safewir::ValueType::V128 => Ok(ValType::V128),
         // SafeWIR never exposes this representation. The callable is an
         // authenticated table-index value only after private WasmIR lowering.
@@ -2853,6 +2871,10 @@ fn emit_instruction(
             body.instruction(&wasm_encoder::Instruction::I32Const(value as i32));
             emit_set(body, layout, function.id, *destination)?;
         }
+        ScalarInstruction::CapabilityNone { destination } => { body.instruction(&wasm_encoder::Instruction::RefNull(wasm_encoder::HeapType::EXTERN)); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::CapabilitySome { destination, source } => { emit_get(body, layout, function.id, *source)?; emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::CapabilityIsPresent { destination, source } => { emit_get(body, layout, function.id, *source)?; body.instruction(&wasm_encoder::Instruction::RefIsNull); body.instruction(&wasm_encoder::Instruction::I32Eqz); emit_set(body, layout, function.id, *destination)?; }
+        ScalarInstruction::CapabilityUnwrap { destination, source } => { emit_get(body, layout, function.id, *source)?; body.instruction(&wasm_encoder::Instruction::RefAsNonNull); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::Arithmetic { destination, operator, left, right, overflow } => {
             emit_checked_arithmetic(
                 body,
@@ -4077,6 +4099,9 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
 enum PlanToken {
     LocalGet(u32),
     LocalSet(u32),
+    RefNull(String),
+    RefIsNull,
+    RefAsNonNull,
     LocalTee(u32),
     I32Const(i32),
     I64Const(i64),
@@ -4177,6 +4202,9 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
     Ok(match operator {
         wasmparser::Operator::LocalGet { local_index } => PlanToken::LocalGet(local_index),
         wasmparser::Operator::LocalSet { local_index } => PlanToken::LocalSet(local_index),
+        wasmparser::Operator::RefNull { hty } => PlanToken::RefNull(format!("{hty:?}")),
+        wasmparser::Operator::RefIsNull => PlanToken::RefIsNull,
+        wasmparser::Operator::RefAsNonNull => PlanToken::RefAsNonNull,
         wasmparser::Operator::I32Const { value } => PlanToken::I32Const(value),
         wasmparser::Operator::I64Const { value } => PlanToken::I64Const(value),
         wasmparser::Operator::I64ExtendI32U => PlanToken::I64ExtendI32U,

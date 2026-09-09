@@ -146,6 +146,10 @@ impl CanonicalWriter {
                 self.u8(8);
                 self.u32(kind.get());
             }
+            ValueType::NullableCapability(kind) => {
+                self.u8(11);
+                self.u32(kind.get());
+            }
             ValueType::Callable(signature) => {
                 self.u8(9);
                 self.u32(signature.get());
@@ -509,6 +513,10 @@ impl CanonicalWriter {
                 self.value_id(*destination);
                 self.u64(*value);
             }
+            Operation::CapabilityNone { destination, kind } => { self.u8(30); self.value_id(*destination); self.u32(kind.get()); }
+            Operation::CapabilitySome { destination, source } => { self.u8(31); self.value_id(*destination); self.value_id(*source); }
+            Operation::CapabilityIsPresent { destination, source } => { self.u8(32); self.value_id(*destination); self.value_id(*source); }
+            Operation::CapabilityUnwrap { destination, source } => { self.u8(33); self.value_id(*destination); self.value_id(*source); }
             Operation::Arithmetic { destination, operator, left, right, overflow } => {
                 self.u8(4);
                 self.value_id(*destination);

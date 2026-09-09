@@ -53,6 +53,7 @@ pub enum InterpreterValue {
     /// reads it; only the oracle's host calls do, and only for the authority
     /// the token's kind and scope carry.
     Capability(CapabilityToken),
+    NullableCapability(Option<CapabilityToken>),
 }
 
 /// A host-minted capability token. Kind 1 (`Dir`) carries the subtree it is
@@ -486,6 +487,21 @@ impl<'a> Engine<'a> {
             }
             Operation::ConstSize { destination, value } => {
                 values.insert(*destination, InterpreterValue::Size(self.size_from_u64(*value)?));
+            }
+            Operation::CapabilityNone { destination, .. } => {
+                values.insert(*destination, InterpreterValue::NullableCapability(None));
+            }
+            Operation::CapabilitySome { destination, source } => {
+                let InterpreterValue::Capability(token) = self.value(*source, values)? else { return Err(InterpretError::TypeMismatch("capability token")); };
+                values.insert(*destination, InterpreterValue::NullableCapability(Some(token.clone())));
+            }
+            Operation::CapabilityIsPresent { destination, source } => {
+                let InterpreterValue::NullableCapability(value) = self.value(*source, values)? else { return Err(InterpretError::TypeMismatch("nullable capability")); };
+                values.insert(*destination, InterpreterValue::Bool(value.is_some()));
+            }
+            Operation::CapabilityUnwrap { destination, source } => {
+                let InterpreterValue::NullableCapability(value) = self.value(*source, values)? else { return Err(InterpretError::TypeMismatch("nullable capability")); };
+                values.insert(*destination, InterpreterValue::Capability(value.clone().ok_or(InterpretError::ExplicitTrap)?));
             }
             Operation::MakeInlineAggregate { destination, layout, fields } => {
                 values.insert(*destination, InterpreterValue::InlineAggregate {
