@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use witchy_syntax::ast::{self, Block, Convention, Expr, Item, Pattern, Stmt, Type};
+use witchy_syntax::ast::{self, Block, Expr, Item, Pattern, Stmt, Type};
 
 use crate::canonical_abi;
 use crate::typeck::{self, ProperTailCallableId, ProperTailExprKind, ProperTailPathStep, Ty, TypedModule};
@@ -153,7 +153,6 @@ impl std::error::Error for ClosureWitnessError {}
 struct Binding {
     id: ClosureBindingId,
     ty: Option<Type>,
-    convention: Convention,
     borrowed: bool,
 }
 
@@ -248,8 +247,9 @@ fn is_capability(ty: &Type, module: &ast::Module) -> bool {
     }) || witchy_cap_model::CapabilityKind::from_name(name).is_some()
 }
 
-fn capture_transfer(ty: &Type, convention: Convention, module: &ast::Module) -> ClosureCaptureTransfer {
-    if convention == Convention::Own { return ClosureCaptureTransfer::ExplicitOwnedMove; }
+fn capture_transfer(ty: &Type, module: &ast::Module) -> ClosureCaptureTransfer {
+    // Ordinary closures capture by value, including values received by own.
+    // Parameter transfer conventions do not describe closure construction.
     if is_capability(ty, module) { return ClosureCaptureTransfer::CopyCapability; }
     match ty.unqualified() {
         Type::Named(name, args) if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "Nil") => ClosureCaptureTransfer::CopyScalar,
@@ -322,7 +322,7 @@ impl<'a> Builder<'a> {
         let mut scope = Vec::new();
         for (index, param) in params.iter().enumerate() {
             let ty = param.ty.clone().or_else(|| param_types.get(index).cloned());
-            scope.push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), convention: param.convention, borrowed: ty.as_ref().is_some_and(explicit_borrow) });
+            scope.push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), borrowed: ty.as_ref().is_some_and(explicit_borrow) });
         }
         self.scopes.push(scope);
         let mut initial_path = Vec::new();
@@ -341,13 +341,13 @@ impl<'a> Builder<'a> {
                     self.child(value, callable.clone(), path, 0)?;
                     let checked = ty.clone().or_else(|| type_from_expr(self.typed, value));
                     let borrowed = ty.as_ref().is_some_and(explicit_borrow) || matches!(value, Expr::Unary { op: ast::UnOp::Borrow | ast::UnOp::BorrowMut, .. }) || matches!(value, Expr::Var(source) if self.resolve(source).is_some_and(|binding| binding.borrowed));
-                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index)], name: name.clone() }, ty: checked, convention: Convention::Let, borrowed });
+                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index)], name: name.clone() }, ty: checked, borrowed });
                 }
                 Stmt::Assign { value, .. } => self.child(value, callable.clone(), path, 0)?,
                 Stmt::LetPattern { pattern, value } => {
                     self.child(value, callable.clone(), path, 0)?;
                     for (slot, name) in pattern_names(pattern).into_iter().enumerate() {
-                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index), ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, convention: Convention::Let, borrowed: false });
+                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index), ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, borrowed: false });
                     }
                 }
                 Stmt::Return(Some(value)) => {
@@ -393,7 +393,7 @@ impl<'a> Builder<'a> {
                 self.scopes.push(Vec::new());
                 for (index, param) in params.iter().enumerate() {
                     let ty = param.ty.clone().or_else(|| param_types.get(index).cloned());
-                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: id.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), convention: param.convention, borrowed: ty.as_ref().is_some_and(explicit_borrow) });
+                    self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: id.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), borrowed: ty.as_ref().is_some_and(explicit_borrow) });
                 }
                 self.walk_block(body, id.clone(), &mut body_path)?;
                 self.scopes.pop();
@@ -409,7 +409,7 @@ impl<'a> Builder<'a> {
                     if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
                     let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
                         .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
-                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, binding.convention, self.module), checked_type, checked_type_encoding });
+                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, self.module), checked_type, checked_type_encoding });
                 }
                 self.entries.push(ClosureWitness { id, signature, signature_encoding, captures: capture_witnesses });
             }
@@ -429,7 +429,7 @@ impl<'a> Builder<'a> {
                     path.push(ProperTailPathStep::Arm(u32::try_from(index).map_err(|_| ClosureWitnessError::PathOverflow)?));
                     self.scopes.push(Vec::new());
                     for (slot, name) in pattern_names(&arm.pattern).into_iter().enumerate() {
-                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, convention: Convention::Let, borrowed: false });
+                        self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, borrowed: false });
                     }
                     if let Some(guard) = &arm.guard { path.push(ProperTailPathStep::Guard); self.walk_expr(guard, callable.clone(), path)?; path.pop(); }
                     path.push(ProperTailPathStep::Value); self.walk_expr(&arm.body, callable.clone(), path)?; path.pop();
@@ -442,7 +442,7 @@ impl<'a> Builder<'a> {
             Expr::For { var, iter, body } => {
                 self.child(iter, callable.clone(), path, 0)?;
                 path.push(ProperTailPathStep::Child(1));
-                self.scopes.push(vec![Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::LoopVariable], name: var.clone() }, ty: None, convention: Convention::Let, borrowed: false }]);
+                self.scopes.push(vec![Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::LoopVariable], name: var.clone() }, ty: None, borrowed: false }]);
                 self.walk_block(body, callable.clone(), path)?;
                 self.scopes.pop();
                 path.pop();
@@ -450,7 +450,7 @@ impl<'a> Builder<'a> {
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.child(scrutinee, callable.clone(), path, 0)?;
                 path.push(ProperTailPathStep::Child(1));
-                let bindings = pattern_names(pattern).into_iter().enumerate().map(|(slot, name)| Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, convention: Convention::Let, borrowed: false }).collect();
+                let bindings = pattern_names(pattern).into_iter().enumerate().map(|(slot, name)| Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Pattern(slot as u32)], name }, ty: None, borrowed: false }).collect();
                 self.scopes.push(bindings);
                 self.walk_block(body, callable.clone(), path)?;
                 self.scopes.pop();
@@ -547,6 +547,59 @@ impl TypedModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_parameter_capture_uses_checked_value_semantics() {
+        for (ty, transfer) in [
+            ("Int", ClosureCaptureTransfer::CopyScalar),
+            ("String", ClosureCaptureTransfer::ManagedReferenceByValue),
+            ("List(String)", ClosureCaptureTransfer::ManagedReferenceByValue),
+        ] {
+            let source = format!("fn make(own value: {ty}) -> fn() -> {ty}:\n    let captured = fn(): value\n    let retained = value\n    captured\n");
+            let module = witchy_syntax::parser::parse_module(&source).expect("parse ordinary capture");
+            let typed = typeck::annotate_checked(module).expect("capture does not consume its source");
+            let manifest = derive_closure_witness(&typed).expect("ordinary capture is witnessed");
+            assert_eq!(manifest.entries().len(), 1);
+            let captures = manifest.entries()[0].captures();
+            assert_eq!(captures.len(), 1);
+            assert_eq!(captures[0].transfer(), transfer);
+            assert_eq!(captures[0].binding().path(), &[ClosureBindingPathStep::Parameter(0)]);
+        }
+    }
+
+    #[test]
+    fn own_parameter_capture_preserves_excluded_capture_boundaries() {
+        for (source, diagnostic) in [
+            ("fn make(own value: once fn() -> Int) -> fn() -> Int:\n    fn(): value()\n", "captures affine once-callable"),
+            ("must type Ticket:\n    Ticket(Int)\n\nfn make() -> fn() -> Ticket:\n    let value = Ticket(1)\n    fn(): value\n", "closure environment carries must-consume"),
+        ] {
+            let module = witchy_syntax::parser::parse_module(source).expect("parse excluded capture");
+            let error = typeck::annotate_checked(module).expect_err("excluded captures remain rejected");
+            assert!(error.message.contains(diagnostic), "{error:?}");
+        }
+        let module = witchy_syntax::parser::parse_module(
+            "fn make(own console: Console) -> fn() -> Console:\n    fn(): console\n",
+        ).expect("parse capability capture");
+        let typed = typeck::annotate_checked(module).expect("ordinary source capability capture checks");
+        let manifest = derive_closure_witness(&typed).expect("capability stays explicitly classified");
+        assert_eq!(manifest.entries()[0].captures()[0].transfer(), ClosureCaptureTransfer::CopyCapability);
+        // Borrow rejection is independent of transfer classification.
+        let module = witchy_syntax::parser::parse_module(
+            "fn make(value: String) -> fn() -> String:\n    fn(): value\n",
+        ).expect("parse lexical capture");
+        let typed = typeck::annotate_checked(module).expect("check lexical capture");
+        let mut builder = walk_module(&typed).expect("ordinary witness");
+        let capture = builder.entries[0].captures[0].clone();
+        let borrowed = Binding { id: capture.binding, ty: Some(capture.checked_type), borrowed: true };
+        builder.entries.clear();
+        builder.sites.clear();
+        builder.scopes = vec![vec![borrowed]];
+        let Item::Function(function) = &typed.module().items[0] else { panic!("function") };
+        let Stmt::Expr(lambda) = &function.body.stmts[0] else { panic!("lambda") };
+        let error = builder.walk_expr(lambda, ProperTailCallableId { item: 0, method: None, lambda_path: Vec::new() }, &mut Vec::new())
+            .expect_err("borrowed lexical capture is still refused");
+        assert!(matches!(error, ClosureWitnessError::BorrowedCapture { .. }));
+    }
 
     #[test]
     fn pattern_capture_types_come_from_checked_lexical_occurrences() {
