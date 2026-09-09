@@ -214,11 +214,12 @@ fn project_layouts(
             .map(|entry| (format!("{entry}.{}", definition.name), definition.clone()));
         std::iter::once((definition.name.clone(), definition.clone())).chain(qualified)
     }).collect();
+    let capture_variants = closure_capture_variants(source, &definitions)?;
     let mut projection = LayoutProjection {
         roots: Vec::new(),
         definitions,
         closures: BTreeMap::new(),
-        capture_variants: closure_capture_variants(source, &definitions)?,
+        capture_variants,
         visiting: HashSet::new(),
         visited: HashSet::new(),
     };
