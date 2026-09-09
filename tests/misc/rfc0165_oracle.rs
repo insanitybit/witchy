@@ -10,6 +10,45 @@ use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
 use witchy_wir::canonical_safewir::FunctionId;
 
+#[test]
+fn own_string_capture_by_value_three_legs() {
+    let source = r#"
+fn make(own text: String, console: Console) -> fn() -> String:
+    let captured = fn(): text
+    console.print(text)
+    captured
+
+fn main(console: Console):
+    let captured = make("held", console)
+    console.print(captured())
+    console.print(captured())
+"#;
+    let expected = vec!["held".to_owned(); 3];
+    let checked = witchy::resolve_std_only_checked(source).expect("source checks after capture reuse");
+    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter");
+    assert_eq!(source_output, expected);
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("existing canonical authority accepts by-value capture");
+    let entry = artifact.entry().unwrap();
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("oracle validation");
+    let capabilities = entry.capabilities().iter().copied()
+        .map(InterpreterValue::entry_capability).collect();
+    let oracle = witchy_wir::canonical_interpreter::interpret_program(
+        &validated, function, capabilities, Default::default(),
+    ).expect("oracle execution");
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        print: true, quiet: true, ..Default::default()
+    }, 256).expect("admitted Wasm");
+    vm.run().expect("Wasm execution");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+}
+
 fn oracle(source: &str, label: &str) {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let artifact = codegen::compile_checked_module_artifact(&checked)
