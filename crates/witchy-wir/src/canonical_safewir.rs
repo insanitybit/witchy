@@ -438,6 +438,8 @@ pub const DIR_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(1);
 /// The fixed ABI kind of the `Env` token.
 pub const ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(2);
 
+pub const FILE_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(3);
+
 /// The canonical signatures the module declares for the six `Dir`/`Env`
 /// operations. Lowering owns the signature ids; the catalog owns everything
 /// authenticated about the imports themselves.
@@ -448,6 +450,8 @@ pub struct CapabilityImportSignatures {
     pub dir_exists_at: FunctionSignatureId,
     pub dir_write_at: FunctionSignatureId,
     pub dir_subtree_at: FunctionSignatureId,
+    pub dir_read_file: FunctionSignatureId,
+    pub file_read_into: FunctionSignatureId,
     pub env_has_var: FunctionSignatureId,
     pub env_get_into: FunctionSignatureId,
 }
@@ -647,7 +651,7 @@ impl CanonicalAbiCatalog {
         Ok(Self::from_imports(vec![print, float_to_str]))
     }
 
-    /// Project the six canonical `Dir`/`Env` operations onto an existing
+    /// Project the canonical `Dir`/`File`/`Env` operations onto an existing
     /// catalog. Each one is authenticated as a capability-authority import
     /// carrying exactly the authority it exercises: a path or name arrives as
     /// a checked read slice, a filled buffer as a checked write slice bounded
@@ -671,6 +675,7 @@ impl CanonicalAbiCatalog {
             extent: HostBufferExtent::Slice,
         };
         let dir = || HostParameterRole::Capability(DIR_CAPABILITY_KIND);
+        let file = || HostParameterRole::Capability(FILE_CAPABILITY_KIND);
         let env = || HostParameterRole::Capability(ENV_CAPABILITY_KIND);
         let size = || vec![HostResultRole::Value(ValueType::Size)];
 
@@ -726,6 +731,26 @@ impl CanonicalAbiCatalog {
                 vec![HostResultRole::Capability(DIR_CAPABILITY_KIND)],
                 HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirGrant],
+            )?,
+            authenticated_capability_import(
+                "dir_read_file",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::ExternRef],
+                signatures.dir_read_file,
+                vec![dir(), read_slice()],
+                vec![HostResultRole::Capability(FILE_CAPABILITY_KIND)],
+                HostMutation::ReadOnly,
+                &[AbiImportAuthority::DirRead],
+            )?,
+            authenticated_capability_import(
+                "file_read_into",
+                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32],
+                signatures.file_read_into,
+                vec![file(), write_slice()],
+                size(),
+                HostMutation::WriteBuffers,
+                &[AbiImportAuthority::FileAuthority],
             )?,
             authenticated_capability_import(
                 "env_has_var",
@@ -1424,8 +1449,10 @@ mod catalog_tests {
             dir_exists_at: FunctionSignatureId::new(2),
             dir_write_at: FunctionSignatureId::new(3),
             dir_subtree_at: FunctionSignatureId::new(4),
-            env_has_var: FunctionSignatureId::new(5),
-            env_get_into: FunctionSignatureId::new(6),
+            dir_read_file: FunctionSignatureId::new(5),
+            file_read_into: FunctionSignatureId::new(6),
+            env_has_var: FunctionSignatureId::new(7),
+            env_get_into: FunctionSignatureId::new(8),
         }
     }
 
@@ -1444,7 +1471,7 @@ mod catalog_tests {
     fn capability_imports_project_with_their_contract_roles() {
         let catalog = catalog();
         let imports = catalog.imports();
-        assert_eq!(imports.len(), 9, "two prelude imports and the seven capability operations");
+        assert_eq!(imports.len(), 11, "two prelude imports and the nine capability operations");
         let listing = imports.iter().find(|import| import.name == "dir_list_into").expect("dir_list_into");
         assert_eq!(
             listing.parameter_roles,

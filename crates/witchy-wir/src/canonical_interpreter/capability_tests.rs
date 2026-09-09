@@ -46,6 +46,8 @@ fn capability_signatures() -> CapabilityImportSignatures {
         dir_exists_at: READ_SIGNATURE,
         dir_write_at: READ_SIGNATURE,
         dir_subtree_at: READ_SIGNATURE,
+        dir_read_file: READ_SIGNATURE,
+        file_read_into: READ_SIGNATURE,
         env_has_var: READ_SIGNATURE,
         env_get_into: READ_SIGNATURE,
     }

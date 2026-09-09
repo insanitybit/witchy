@@ -800,7 +800,7 @@ fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool
         // A capability token is a scalar-like value: copied on pass, never
         // released, so every convention carries it. `Dir` names its rights in
         // type arguments, which change no ABI fact about the token.
-        witchy_syntax::ast::Type::Named(name, _) if name == "Dir" => true,
+        witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Dir" | "File") => true,
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => {
             matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes" | "Console" | "Env")
         }
@@ -826,6 +826,7 @@ fn value_type_matches_source(
             CapabilityRepresentation::Direct(CapabilityKind::Console) | CapabilityRepresentation::Nullable(CapabilityKind::Console) => super::CapabilityKindId::new(0),
             CapabilityRepresentation::Direct(CapabilityKind::Dir) | CapabilityRepresentation::Nullable(CapabilityKind::Dir) => super::DIR_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::Env) | CapabilityRepresentation::Nullable(CapabilityKind::Env) => super::ENV_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::File) | CapabilityRepresentation::Nullable(CapabilityKind::File) => super::FILE_CAPABILITY_KIND,
         };
         return matches!(
             (representation, actual),

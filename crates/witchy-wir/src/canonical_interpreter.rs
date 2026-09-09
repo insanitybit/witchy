@@ -23,12 +23,14 @@ mod nullable;
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.
-const CAPABILITY_IMPORTS: [&str; 7] = [
+const CAPABILITY_IMPORTS: [&str; 9] = [
     "dir_read_into",
     "dir_list_into",
     "dir_exists_at",
     "dir_write_at",
     "dir_subtree_at",
+    "dir_read_file",
+    "file_read_into",
     "env_has_var",
     "env_get_into",
 ];
@@ -36,6 +38,7 @@ const CAPABILITY_IMPORTS: [&str; 7] = [
 /// The fixed ABI kinds of the tokens those operations take.
 const DIR_KIND: u32 = crate::canonical_safewir::DIR_CAPABILITY_KIND.get();
 const ENV_KIND: u32 = crate::canonical_safewir::ENV_CAPABILITY_KIND.get();
+const FILE_KIND: u32 = crate::canonical_safewir::FILE_CAPABILITY_KIND.get();
 
 /// A value observable at a SafeWIR function boundary.
 #[derive(Debug, Clone, PartialEq)]
@@ -817,7 +820,7 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// The canonical `Dir`/`Env` operations, served from the fixture. Every
+/// The canonical `Dir`/`File`/`Env` operations, served from the fixture. Every
     /// refusal the runtime host would trap on — a missing file, an unset
     /// variable, a path that escapes the token's subtree — is an abort here,
     /// never a different answer.
@@ -880,6 +883,25 @@ impl<'a> Engine<'a> {
                     return Err(InterpretError::ExplicitTrap);
                 }
                 values.insert(*destination, InterpreterValue::Capability(CapabilityToken { kind: DIR_KIND, scope }));
+                Ok(())
+            }
+            ("dir_read_file", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let path = self.host_path(&scope, &self.host_string(path, values)?)?;
+                if self.config.fixture.file(&path).is_none() {
+                    return Err(InterpretError::ExplicitTrap);
+                }
+                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { kind: FILE_KIND, scope: path }));
+                Ok(())
+            }
+            ("file_read_into", [token, HostCallArgument::Buffer { place: out, .. }], [destination]) => {
+                let path = self.capability_scope(token, FILE_KIND, values)?;
+                let contents = self.config.fixture.file(&path).ok_or(InterpretError::ExplicitTrap)?;
+                if std::str::from_utf8(&contents).is_err() {
+                    return Err(InterpretError::ExplicitTrap);
+                }
+                let length = self.fill_host_buffer(out, &contents, values)?;
+                values.insert(*destination, InterpreterValue::Size(length));
                 Ok(())
             }
             ("env_has_var", [token, HostCallArgument::Buffer { place: name, .. }], [destination]) => {

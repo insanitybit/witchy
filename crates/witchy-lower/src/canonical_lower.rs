@@ -512,6 +512,7 @@ pub fn lower_typed_module(
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
         if !capability_imports.is_empty() || !compiler_imports.is_empty() {
             let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
+            let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
             let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
             let text = ValueType::Ref(string_layout);
             let mut push_import_signature = |parameters: Vec<ValueType>, results: Vec<ValueType>, writes: Option<usize>| {
@@ -548,6 +549,8 @@ pub fn lower_typed_module(
                 dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
                 dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
                 dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
+                dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
+                file_read_into: push_import_signature(vec![file, text], vec![ValueType::Size], Some(1))?,
                 env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
                 env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
             };
@@ -6415,6 +6418,7 @@ impl FunctionLowerer<'_> {
         };
         let receiver_kind = match self.expression_type(receiver)?.unqualified() {
             Type::Named(kind, _) if kind == "Dir" => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
+            Type::Named(kind, _) if kind == "File" => witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "Env" && arguments.is_empty() => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("capability operation receiver")),
         };
@@ -6423,13 +6427,15 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability operation token"));
         }
         let layout = self.string_layout_id()?;
-        match (name, receiver_kind == witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND, &arguments[1..]) {
-            ("__capop.read", true, [path]) => {
+        let is_dir = receiver_kind == witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND;
+        let is_file = receiver_kind == witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND;
+        match (name, is_dir, is_file, &arguments[1..]) {
+            ("__capop.read", true, false, [path]) => {
                 let path = self.lower_string_argument(path)?;
                 let value = self.lower_host_read_into("dir_read_into", token, Some(path))?;
                 Ok(Some(value))
             }
-            ("__capop.list", true, []) => {
+            ("__capop.list", true, false, []) => {
                 // The names arrive NUL-separated; an empty payload is the
                 // empty list (a split would yield one empty name).
                 let names = self.lower_host_read_into("dir_list_into", token, None)?;
@@ -6469,7 +6475,7 @@ impl FunctionLowerer<'_> {
                 self.track_accumulator_lanes(&joined);
                 Ok(Some(joined[0]))
             }
-            ("__capop.exists", true, [path]) => {
+            ("__capop.exists", true, false, [path]) => {
                 let path = self.lower_string_argument(path)?;
                 let import = self.capability_import("dir_exists_at")?;
                 let flag = self.fresh(ValueType::Size)?;
@@ -6483,7 +6489,7 @@ impl FunctionLowerer<'_> {
                 let exists = self.push_compare(ComparisonOperator::NotEqual, flag, zero)?;
                 Ok(Some(exists))
             }
-            ("__capop.write", true, [path, data]) => {
+            ("__capop.write", true, false, [path, data]) => {
                 let path = self.lower_string_argument(path)?;
                 let data = self.lower_string_argument(data)?;
                 let import = self.capability_import("dir_write_at")?;
@@ -6496,7 +6502,7 @@ impl FunctionLowerer<'_> {
                 });
                 Ok(None)
             }
-            ("__capop.subtree", true, [path]) => {
+            ("__capop.subtree", true, false, [path]) => {
                 let path = self.lower_string_argument(path)?;
                 let import = self.capability_import("dir_subtree_at")?;
                 let narrowed = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND))?;
@@ -6508,7 +6514,23 @@ impl FunctionLowerer<'_> {
                 });
                 Ok(Some(narrowed))
             }
-            ("__capop.get_env", false, [variable]) => {
+            ("__capop.read_file", true, false, [path]) => {
+                let path = self.lower_string_argument(path)?;
+                let import = self.capability_import("dir_read_file")?;
+                let value = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND))?;
+                let path_slice = self.string_slice_argument(path, layout)?;
+                self.push_operation(Operation::HostCall {
+                    destinations: vec![value],
+                    import,
+                    arguments: vec![HostCallArgument::Capability(token), path_slice],
+                });
+                Ok(Some(value))
+            }
+            ("__capop.read", false, true, []) => {
+                let value = self.lower_host_read_into("file_read_into", token, None)?;
+                Ok(Some(value))
+            }
+            ("__capop.get_env", false, false, [variable]) => {
                 let variable = self.lower_string_argument(variable)?;
                 let has_import = self.capability_import("env_has_var")?;
                 let flag = self.fresh(ValueType::Size)?;
@@ -11707,6 +11729,7 @@ fn source_value_type(
             CapabilityKind::Console => witchy_wir::canonical_safewir::CapabilityKindId::new(0),
             CapabilityKind::Dir => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
             CapabilityKind::Env => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
+            CapabilityKind::File => witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND,
         };
         return Ok(match representation {
             CapabilityRepresentation::Direct(_) => ValueType::Capability(kind),
@@ -11975,8 +11998,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 7] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "env_has_var", "env_get_into"];
+const CAPABILITY_IMPORTS: [&str; 9] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -12012,7 +12035,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
-    matches!(name, "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.get_env")
+    matches!(name, "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -12038,6 +12061,8 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     ("__capop.exists", "Dir") => { needed.insert("dir_exists_at"); }
                     ("__capop.write", "Dir") => { needed.insert("dir_write_at"); }
                     ("__capop.subtree", "Dir") => { needed.insert("dir_subtree_at"); }
+                    ("__capop.read_file", "Dir") => { needed.insert("dir_read_file"); }
+                    ("__capop.read", "File") => { needed.insert("file_read_into"); }
                     ("__capop.get_env", "Env") => {
                         needed.insert("env_has_var");
                         needed.insert("env_get_into");
