@@ -689,7 +689,8 @@ pub const CALLS: &[CallEntry] = &[
     CallEntry { form: "direct call", convention: "`var` scalar (write-back result lane)", verdict: "admitted", evidence: &[t(Launch, "admitted_scalar_var_parameters_write_back"), t(Memory, "affine_boundary_rejects_duplicate_owned_return_lanes")] },
     CallEntry { form: "direct call", convention: "memory-bearing value argument", verdict: "refused", evidence: &[t(Check, "memory_value_call_is_fail_closed")] },
     CallEntry { form: "indirect call", convention: "scalar value through a function value", verdict: "admitted", evidence: &[t(Backend, "admitted_scalar_var_call_uses_authenticated_table_and_executes"), t(Launch, "admitted_scalar_var_write_back_through_an_indirect_call")] },
-    CallEntry { form: "indirect call", convention: "reference argument", verdict: "refused in v1", evidence: &[t(Check, "indirect_reference_value_argument_is_refused"), t(Backend, "variable_call_is_refused_fail_closed")] },
+    CallEntry { form: "indirect call", convention: "reference value argument without an owned/shared transfer convention", verdict: "refused", evidence: &[t(Check, "indirect_reference_value_argument_is_refused"), t(Backend, "variable_call_is_refused_fail_closed")] },
+    CallEntry { form: "indirect call", convention: "reference under an explicit owned/shared signature convention", verdict: "admitted with checked token transfer", evidence: &[t(Launch, "admitted_lambdas_over_references_pass_through_indirect_calls_and_std_combinators")] },
     CallEntry { form: "proper tail call", convention: "direct, every owned token transferred", verdict: "admitted; constant stack over 300,000 transitions", evidence: &[t(Interpreter, "validated_tail_call_trampolines_three_hundred_thousand_times"), t(Backend, "proper_tail_call_encodes_as_wasm_return_call"), t(Launch, "admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack")] },
     CallEntry { form: "proper tail call", convention: "indirect", verdict: "admitted", evidence: &[t(Backend, "admitted_scalar_var_tail_call_executes_with_return_call_indirect")] },
     CallEntry { form: "proper tail call", convention: "site not in the checked manifest, or discharged twice", verdict: "refused", evidence: &[t(Check, "proper_tail_site_is_matched_exactly_once"), t(Check, "duplicate_tail_terminators_cannot_discharge_one_obligation"), t(Check, "ordinary_return_cannot_discharge_a_tail_obligation")] },
@@ -842,7 +843,7 @@ pub const RFC_KERNEL_CROSSWALK: &[RfcKernelEntry] = &[
     RfcKernelEntry { kernel: RfcKernelId::Call, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Call], scope: "authenticated direct calls" } },
     RfcKernelEntry { kernel: RfcKernelId::VarCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::VarCall], scope: "authenticated indirect calls under v1 argument restrictions" } },
     RfcKernelEntry { kernel: RfcKernelId::TailCall, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::TailCall, CanonicalRuleId::VarTailCall], scope: "direct and indirect checked proper-tail sites" } },
-    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::Store], scope: "validated closure record/environment construction with checked Int/CopyScalar captures only; FunctionValue alone is insufficient and arbitrary capture types are not implied" } },
+    RfcKernelEntry { kernel: RfcKernelId::MakeClosure, disposition: RfcKernelDisposition::Restricted { rules: &[CanonicalRuleId::Alloc, CanonicalRuleId::FunctionValue, CanonicalRuleId::InitNullableOwned, CanonicalRuleId::Store], scope: "validated closure record/environment construction with checked scalar and supported managed-reference captures; inactive owned slots are explicitly absent; FunctionValue alone is insufficient and arbitrary capture types are not implied" } },
     RfcKernelEntry { kernel: RfcKernelId::HostCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::HostCall], scope: "authenticated capability and buffer contracts" } },
     RfcKernelEntry { kernel: RfcKernelId::Trap, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Trap], scope: "explicit terminal traps" } },
 ];
@@ -1140,6 +1141,19 @@ mod tests {
     fn rfc_kernel_crosswalk_is_complete_ordered_and_rule_bound() {
         let listed = RFC_KERNEL_CROSSWALK.iter().map(|entry| entry.kernel).collect::<Vec<_>>();
         assert_eq!(listed, all_rfc_kernels(), "the RFC kernel crosswalk must preserve the frozen operation order");
+        // Compare with the specification itself, not only a second Rust list.
+        // A new RFC operation must acquire an explicit implementation
+        // disposition even when no implementation enum has changed yet.
+        let rfc = include_str!("../../../../rfcs/0165-safewir-canonical-ir.md");
+        let section = rfc.split_once("## V1 operation kernel\n")
+            .expect("RFC v1 kernel heading").1;
+        let vocabulary = section.split_once("```text\n")
+            .expect("RFC v1 kernel vocabulary").1.split_once("```")
+            .expect("RFC v1 kernel closing fence").0;
+        let specified = vocabulary.split(|character: char| character == ',' || character.is_whitespace())
+            .filter(|name| !name.is_empty()).collect::<Vec<_>>();
+        let implemented = listed.iter().map(|kernel| kernel.name()).collect::<Vec<_>>();
+        assert_eq!(implemented, specified, "every RFC operation needs exactly one ordered crosswalk disposition");
         let rendered = render_markdown();
         let crosswalk = rendered
             .split_once("## RFC v1 operation kernel crosswalk\n\n")
@@ -1159,6 +1173,6 @@ mod tests {
         }
         let closure = RFC_KERNEL_CROSSWALK.iter().find(|entry| entry.kernel == RfcKernelId::MakeClosure).unwrap();
         assert!(matches!(closure.disposition, RfcKernelDisposition::Restricted { .. }));
-        assert!(closure.disposition.scope().contains("checked Int/CopyScalar captures only"));
+        assert!(closure.disposition.scope().contains("checked scalar and supported managed-reference captures"));
     }
 }

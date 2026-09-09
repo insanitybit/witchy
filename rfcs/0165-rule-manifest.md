@@ -80,7 +80,7 @@ Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memo
 | `Call` | exact scoped alias | `Call` | authenticated direct calls |
 | `VarCall` | exact scoped alias | `VarCall` | authenticated indirect calls under v1 argument restrictions |
 | `TailCall` | composite | `TailCall`, `VarTailCall` | direct and indirect checked proper-tail sites |
-| `MakeClosure` | restricted | `Alloc`, `FunctionValue`, `Store` | validated closure record/environment construction with checked Int/CopyScalar captures only; FunctionValue alone is insufficient and arbitrary capture types are not implied |
+| `MakeClosure` | restricted | `Alloc`, `FunctionValue`, `InitNullableOwned`, `Store` | validated closure record/environment construction with checked scalar and supported managed-reference captures; inactive owned slots are explicitly absent; FunctionValue alone is insufficient and arbitrary capture types are not implied |
 | `HostCall` | exact scoped alias | `HostCall` | authenticated capability and buffer contracts |
 | `Trap` | exact scoped alias | `Trap` | explicit terminal traps |
 
@@ -116,7 +116,8 @@ Evidence files: check = `crates/witchy-wir/src/canonical_safewir/check.rs`, memo
 | direct call | `var` scalar (write-back result lane) | admitted | `admitted_scalar_var_parameters_write_back` (launch), `affine_boundary_rejects_duplicate_owned_return_lanes` (memory) |
 | direct call | memory-bearing value argument | refused | `memory_value_call_is_fail_closed` (check) |
 | indirect call | scalar value through a function value | admitted | `admitted_scalar_var_call_uses_authenticated_table_and_executes` (backend), `admitted_scalar_var_write_back_through_an_indirect_call` (launch) |
-| indirect call | reference argument | refused in v1 | `indirect_reference_value_argument_is_refused` (check), `variable_call_is_refused_fail_closed` (backend) |
+| indirect call | reference value argument without an owned/shared transfer convention | refused | `indirect_reference_value_argument_is_refused` (check), `variable_call_is_refused_fail_closed` (backend) |
+| indirect call | reference under an explicit owned/shared signature convention | admitted with checked token transfer | `admitted_lambdas_over_references_pass_through_indirect_calls_and_std_combinators` (launch) |
 | proper tail call | direct, every owned token transferred | admitted; constant stack over 300,000 transitions | `validated_tail_call_trampolines_three_hundred_thousand_times` (interpreter), `proper_tail_call_encodes_as_wasm_return_call` (backend), `admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack` (launch) |
 | proper tail call | indirect | admitted | `admitted_scalar_var_tail_call_executes_with_return_call_indirect` (backend) |
 | proper tail call | site not in the checked manifest, or discharged twice | refused | `proper_tail_site_is_matched_exactly_once` (check), `duplicate_tail_terminators_cannot_discharge_one_obligation` (check), `ordinary_return_cannot_discharge_a_tail_obligation` (check) |
