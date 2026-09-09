@@ -22,6 +22,7 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
     linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
     linker.func_wrap("witchy", "dir_open", host_dir_open)?;
+    linker.func_wrap("witchy", "dir_read_file", host_dir_read_file)?;
     // (RFC-0165 slice 42) The canonical route's read family, gated by the SAME
     // `Dir[Read]` grant as its frozen siblings above: a program without the
     // right cannot even link the import.
@@ -54,6 +55,7 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
 /// Register the File read leaf op (RFC-0012).
 pub(in crate::runtime) fn link_file_read(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
+    linker.func_wrap("witchy", "file_read_into", host_file_read_into)?;
     Ok(())
 }
 
@@ -351,6 +353,25 @@ fn host_dir_open(
     }).map(Some)
 }
 
+/// `dir_read_file(d, path, path_len) -> File[Read]`: open an existing regular
+/// file under a readable Dir using the canonical raw UTF-8 slice ABI.
+fn host_dir_read_file(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    path_ptr: i32,
+    path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let mem = memory_of(&mut caller)?;
+    let path = read_unsigned_slice_str(mem.data(&caller), path_ptr, path_len, "File path")?;
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    dir_guard(&dir, &path, false)?;
+    ExternRef::new(&mut caller, FileAuthority {
+        backing: dir_file_backing(&dir, &path, false)?,
+        rights: FsRights::new(true, false),
+    }).map(Some)
+}
+
 /// `dir_create(h, rel) -> File`: like `dir_open` but for a not-yet-existing target
 /// (confined via its parent, like `dir_write`).
 fn host_dir_create(
@@ -381,6 +402,63 @@ fn host_file_read_len(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRe
     let len = contents.len() as i32;
     caller.data_mut().pending = Some(contents.into_bytes());
     Ok(len)
+}
+
+/// `file_read_into(f, out, out_capacity) -> byte length`: validate the complete
+/// output range, read the current confined file as strict UTF-8, and write only
+/// when the supplied capacity fits the complete value. No pending host state or
+/// cursor is involved, and the returned i32 carries the unsigned wasm32 length.
+fn host_file_read_into(
+    mut caller: Caller<'_, VmState>,
+    f: Option<Rooted<ExternRef>>,
+    out_ptr: i32,
+    out_capacity: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let (out_start, out_capacity) = checked_unsigned_guest_range(
+        mem.data(&caller).len(),
+        out_ptr,
+        out_capacity,
+        "File output",
+    )?;
+    let file = file_authority_ref(&caller, f)?;
+    if !file.rights.read {
+        return Err(Error::msg("this File capability does not grant Read"));
+    }
+    let contents = read_file_backing(&file.backing)?;
+    let required = u32::try_from(contents.len())
+        .map_err(|_| Error::msg("File contents exceed the wasm32 size limit"))?;
+    if usize::try_from(required).expect("u32 fits usize on supported targets") <= out_capacity {
+        let bytes = contents.as_bytes();
+        mem.data_mut(&mut caller)[out_start..out_start + bytes.len()].copy_from_slice(bytes);
+    }
+    Ok(required as i32)
+}
+
+fn read_unsigned_slice_str(data: &[u8], ptr: i32, len: i32, what: &str) -> Result<String> {
+    let (start, len) = checked_unsigned_guest_range(data.len(), ptr, len, what)?;
+    std::str::from_utf8(&data[start..start + len])
+        .map(str::to_owned)
+        .map_err(|error| Error::msg(format!("{what} is not valid UTF-8: {error}")))
+}
+
+fn checked_unsigned_guest_range(
+    data_len: usize,
+    ptr: i32,
+    len: i32,
+    what: &str,
+) -> Result<(usize, usize)> {
+    let start = ptr as u32 as usize;
+    let len = len as u32 as usize;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| Error::msg(format!("{what} range overflows wasm32 address space")))?;
+    if end > data_len {
+        return Err(Error::msg(format!(
+            "{what} range [{start}, {end}) exceeds guest memory ({data_len} bytes)"
+        )));
+    }
+    Ok((start, len))
 }
 
 /// `file_write(f, contents)`: write a confined File externref

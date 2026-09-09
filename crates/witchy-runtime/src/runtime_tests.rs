@@ -734,6 +734,123 @@ fi
             (drop (call $file_read_len (ref.null extern)))))
     "#;
 
+    const DIR_READ_FILE_INTO: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_file"
+            (func $dir_read_file (param externref i32 i32) (result externref)))
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "config.txt")
+          (func (export "run")
+            (local $file externref)
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            i32.const 10
+            call $dir_read_file
+            local.set $file
+            i32.const 256
+            local.get $file
+            i32.const 128
+            i32.const 32
+            call $file_read_into
+            i32.store)
+        )
+    "#;
+
+    const DIR_READ_FILE_INTO_SHORT: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_file"
+            (func $dir_read_file (param externref i32 i32) (result externref)))
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "config.txt")
+          (data (i32.const 128) "XY")
+          (func (export "run")
+            (local $file externref)
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            i32.const 10
+            call $dir_read_file
+            local.set $file
+            i32.const 256
+            local.get $file
+            i32.const 128
+            i32.const 2
+            call $file_read_into
+            i32.store)
+        )
+    "#;
+
+    const DIR_READ_FILE_INVALID_PATH: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_file"
+            (func $dir_read_file (param externref i32 i32) (result externref)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "\ff")
+          (func (export "run")
+            (local $dir externref)
+            i32.const 0
+            call $mint_dir
+            local.set $dir
+            local.get $dir
+            i32.const 0
+            i32.const 1
+            call $dir_read_file
+            drop)
+        )
+    "#;
+
+    const FILE_READ_INTO_WRONG_EXTERNREF: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (local $dir externref)
+            i32.const 0
+            call $mint_dir
+            local.set $dir
+            local.get $dir
+            i32.const 128
+            i32.const 16
+            call $file_read_into
+            drop)
+        )
+    "#;
+
+    const DIR_READ_FILE_INVALID_FILE_UTF8: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_file"
+            (func $dir_read_file (param externref i32 i32) (result externref)))
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "bad.txt")
+          (func (export "run")
+            (local $file externref)
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            i32.const 7
+            call $dir_read_file
+            local.set $file
+            local.get $file
+            i32.const 128
+            i32.const 16
+            call $file_read_into
+            drop)
+        )
+    "#;
+
     const NULL_DIR_READ: &str = r#"
         (module
           (import "witchy" "dir_read_len" (func $dir_read_len (param externref i32) (result i32)))
@@ -992,6 +1109,88 @@ fi
         }
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dir_read_file_and_file_read_into_preserve_opaque_bounded_utf8_semantics() {
+        let root = tempfile::tempdir().expect("temporary capability root");
+        std::fs::write(root.path().join("config.txt"), "hello").expect("fixture file");
+
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(
+                DIR_READ_FILE_INTO,
+                Capabilities {
+                    dir_root: Some(root.path().to_owned()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("Dir read capability links both imports");
+        vm.run().expect("Dir -> File -> bounded read");
+        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("memory");
+        assert_eq!(&memory.data(&vm.store)[128..133], b"hello");
+        assert_eq!(memory.data(&vm.store)[256..260], 5_i32.to_le_bytes());
+    }
+
+    #[test]
+    fn file_read_into_validates_full_short_range_and_does_not_partially_write() {
+        let root = tempfile::tempdir().expect("temporary capability root");
+        std::fs::write(root.path().join("config.txt"), "hello").expect("fixture file");
+
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime
+            .spawn(
+                DIR_READ_FILE_INTO_SHORT,
+                Capabilities {
+                    dir_root: Some(root.path().to_owned()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("short-read fixture links");
+        vm.run().expect("undersized output is not a trap");
+        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("memory");
+        assert_eq!(&memory.data(&vm.store)[128..130], b"XY");
+        assert_eq!(memory.data(&vm.store)[256..260], 5_i32.to_le_bytes());
+    }
+
+    #[test]
+    fn file_read_into_rejects_invalid_path_file_utf8_and_unrelated_externrefs() {
+        let root = tempfile::tempdir().expect("temporary capability root");
+        std::fs::write(root.path().join("bad.txt"), [0xff]).expect("invalid UTF-8 fixture");
+        let caps = Capabilities {
+            dir_root: Some(root.path().to_owned()),
+            dir_read: true,
+            ..Default::default()
+        };
+
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut invalid_path = runtime
+            .spawn(DIR_READ_FILE_INVALID_PATH, caps.clone(), 4)
+            .expect("invalid-path fixture links");
+        let path_error = invalid_path.run().expect_err("invalid UTF-8 path must trap");
+        let path_detail = format!("{path_error:?}");
+        assert!(path_detail.contains("not valid UTF-8"), "{path_detail}");
+
+        let mut invalid_file = runtime
+            .spawn(DIR_READ_FILE_INVALID_FILE_UTF8, caps.clone(), 4)
+            .expect("invalid-file fixture links");
+        let file_error = invalid_file.run().expect_err("invalid UTF-8 file must trap");
+        let file_detail = format!("{file_error:?}");
+        assert!(file_detail.contains("UTF-8"), "{file_detail}");
+
+        let mut wrong_ref = runtime
+            .spawn(FILE_READ_INTO_WRONG_EXTERNREF, caps, 4)
+            .expect("wrong-reference fixture links");
+        let ref_error = wrong_ref.run().expect_err("Dir is not a File");
+        let ref_detail = format!("{ref_error:?}");
+        assert!(
+            ref_detail.contains("File externref has wrong host data"),
+            "{ref_detail}"
+        );
     }
 
     #[test]
