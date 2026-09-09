@@ -364,7 +364,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     // owns a tagged environment record; captures are its checked scalar or
     // managed-reference payloads, never capabilities or an erased value.
     let closures = source.closure_witness().entries();
-    let (_, closure_layout_catalog) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
+    let (_bundle, closure_layout_catalog) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
         Ok(value) => value,
         Err(_) => return Err(CandidateAbiBindingError::MissingCanonicalLayouts),
     };
@@ -384,7 +384,16 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(signature) = candidate.signatures().iter().find(|signature| signature.id == function.signature) else {
             return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.function() });
         };
-        let capture_slots = match signature.parameters.first() {
+        let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
+            return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
+        };
+        let family = closures.iter().filter(|entry| {
+            witchy_types::typeck::ty_to_ast(entry.signature()).as_ref() == Some(&source_signature)
+        }).collect::<Vec<_>>();
+        let Some(tag) = family.iter().position(|entry| entry.id() == witness.id()) else {
+            return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
+        };
+        let environment = match signature.parameters.first() {
             Some(super::ValueType::Ref(layout)) => closure_layout_catalog
                 .get(*layout)
                 .and_then(|descriptor| match descriptor.kind() {
@@ -393,28 +402,58 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                             pointee, semantics: crate::layout::PointerSlot::Owned,
                         } = closure_layout_catalog.get(fields[1])?.kind() else { return None };
                         closure_layout_catalog.get(*pointee).and_then(|environment| match environment.kind() {
-                            crate::layout::LayoutKind::PackedRecord { fields } => Some(fields.len().saturating_sub(1)),
+                            crate::layout::LayoutKind::PackedRecord { fields } => Some((*pointee, fields.clone())),
                             _ => None,
                         })
                     }
                     _ => None,
                 })
-                .unwrap_or(0),
-            _ => 0,
+                .ok_or(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() })?,
+            _ => return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() }),
         };
-        let family_capture = |capture: &witchy_types::canonical_closure::ClosureCaptureWitness| {
-            matches!(
-                capture.transfer(),
-                witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar
-                    | witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue
+        let (environment_layout, environment_fields) = environment;
+        let expected = family.iter().flat_map(|entry| entry.captures()).collect::<Vec<_>>();
+        let own_offset = family[..tag].iter().map(|entry| entry.captures().len()).sum::<usize>();
+        let tag_is_int = environment_fields.first().is_some_and(|field| matches!(
+            closure_layout_catalog.get(*field).map(|field| field.kind()),
+            Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))
+        ));
+        let expected_field_types = expected.iter().enumerate().map(|(index, capture)| {
+                let field = *environment_fields.get(index + 1)?;
+                let actual = match closure_layout_catalog.get(field).map(|field| field.kind()) {
+                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int | crate::layout::ScalarKind::Duration)) => super::ValueType::Int,
+                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Float)) => super::ValueType::Float,
+                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool)) => super::ValueType::Bool,
+                    Some(crate::layout::LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::OwnedNullable }) => super::ValueType::Ref(*pointee),
+                    _ => return None,
+                };
+                let transfer_matches = matches!(
+                    (actual, capture.transfer()),
+                    (super::ValueType::Ref(_), witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue)
+                        | (super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool,
+                           witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
+                );
+                (transfer_matches && value_type_matches_source(
+                    actual, capture.checked_type(), &closure_layout_catalog, candidate.signatures(), &mut BTreeSet::new(),
+                    &records, candidate.closure_layouts(),
+                )).then_some(actual)
+            }).collect::<Vec<_>>();
+        let fields_match = environment_fields.len() == expected.len() + 1
+            && expected_field_types.iter().all(Option::is_some);
+        // Tag zero is reserved for the adapter environment.  The binding's
+        // source-witness ordinal therefore selects its exact nonzero variant.
+        if !tag_is_int
+            || !fields_match
+            || !closure_environment_prefix_matches(
+                function,
+                environment_layout,
+                i64::try_from(tag + 1).ok(),
+                u32::try_from(own_offset + 1).ok(),
+                &expected_field_types[own_offset..own_offset + witness.captures().len()],
             )
-        };
-        if witness.captures().len() > capture_slots || !witness.captures().iter().all(family_capture) {
+        {
             return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
         }
-        let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
-            return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
-        };
         // The synthesized function takes the closure object first; only the
         // remaining lanes correspond to the source lambda's own signature.
         let Some(source_lanes) = strip_closure_environment(signature, candidate) else {
@@ -569,6 +608,78 @@ fn adapter_body_forwards(
         _ => return false,
     }
     matches!(&block.terminator, super::Terminator::Return { values } if values == destinations)
+}
+
+/// The candidate itself is not trusted to pair a lambda's code with its
+/// environment.  The source witness ordinal fixes the nonzero tag and the
+/// lambda must check that tag before it can load any capture payload.
+fn closure_environment_prefix_matches(
+    function: &super::Function,
+    environment_layout: crate::layout::LayoutId,
+    expected_tag: Option<i64>,
+    first_capture_field: Option<u32>,
+    fields: &[Option<super::ValueType>],
+) -> bool {
+    let Some(expected_tag) = expected_tag else { return false };
+    let Some(first_capture_field) = first_capture_field else { return false };
+    let Some(block) = function.blocks.iter().find(|block| block.id == function.entry) else { return false };
+    let Some(closure) = block.parameters.first().map(|parameter| parameter.value) else { return false };
+    let Some((environment_load, tail)) = block.operations.split_first() else { return false };
+    let super::Operation::Load { destination: environment, place, transfer } = environment_load else { return false };
+    if place.object() != closure
+        || !matches!(place.projection(), super::Projection::Field { index: 1 })
+        || place.value_type() != super::ValueType::Ref(environment_layout)
+        || place.access() != super::AccessMode::Read
+        || *transfer != super::LoadTransfer::CloneShared
+    {
+        return false;
+    }
+    let Some((tag_load, tail)) = tail.split_first() else { return false };
+    let super::Operation::Load { destination: tag, place, transfer } = tag_load else { return false };
+    if place.object() != *environment
+        || !matches!(place.projection(), super::Projection::Field { index: 0 })
+        || place.value_type() != super::ValueType::Int
+        || place.access() != super::AccessMode::Read
+        || *transfer != super::LoadTransfer::CopyScalar
+    {
+        return false;
+    }
+    // Only a capture-free lambda can release the cloned environment before
+    // its guard: no subsequent operation can load an environment payload.
+    let tail = if fields.is_empty() {
+        match tail.split_first() {
+            Some((super::Operation::Release { object } | super::Operation::DropRef { object }, rest)) if *object == *environment => rest,
+            _ => tail,
+        }
+    } else {
+        tail
+    };
+    let Some((constant, tail)) = tail.split_first() else { return false };
+    let super::Operation::ConstInt { destination: expected, value } = constant else { return false };
+    if *value != expected_tag { return false; }
+    let Some((comparison, tail)) = tail.split_first() else { return false };
+    let super::Operation::Compare { destination: condition, operator, left, right } = comparison else { return false };
+    if *operator != super::ComparisonOperator::Equal
+        || !((*left == *tag && *right == *expected) || (*left == *expected && *right == *tag))
+    {
+        return false;
+    }
+    let Some((guard, capture_loads)) = tail.split_first() else { return false };
+    if !matches!(guard, super::Operation::Guard { condition: guard_condition, kind: super::GuardKind::DynamicType } if *guard_condition == *condition) {
+        return false;
+    }
+    fields.iter().enumerate().all(|(offset, field)| {
+        let Some(value_type) = field else { return false };
+        let Some(super::Operation::Load { place, transfer, .. }) = capture_loads.get(offset) else { return false };
+        place.object() == *environment
+            && matches!(place.projection(), super::Projection::Field { index } if *index == first_capture_field + offset as u32)
+            && place.value_type() == *value_type
+            && place.access() == super::AccessMode::Read
+            && match value_type {
+                super::ValueType::Ref(_) => *transfer == super::LoadTransfer::ClonePresent,
+                _ => *transfer == super::LoadTransfer::CopyScalar,
+            }
+    })
 }
 
 /// The checked module's type definitions, keyed by bare and entry-qualified

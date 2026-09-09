@@ -328,11 +328,7 @@ pub fn lower_typed_module(
                     visit_error = Some(CanonicalLoweringError::IdOverflow);
                     return Err(());
                 };
-                let Ok(tag) = i64::try_from(tag) else {
-                    visit_error = Some(CanonicalLoweringError::IdOverflow);
-                    return Err(());
-                };
-                capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field, tag });
+                capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field });
             }
             let name = format!("{}#lambda{}", function.name, lambda_functions.len());
             let params = std::iter::once(closure_environment_param())
@@ -364,7 +360,14 @@ pub fn lower_typed_module(
             };
             functions_by_name.insert(name.clone(), (function_id, signature_id));
             lambda_names.insert(address, name);
-            closure_context.lambda_captures.insert(address, capture_fields.clone());
+            // Variant zero is exclusively the named-function adapter. `tag`
+            // is the authenticated physical family variant, so source
+            // witnesses already begin at one.
+            let environment_tag = i64::try_from(tag).expect("closure tag fits i64");
+            closure_context.lambda_captures.insert(address, ClosureEnvironment {
+                tag: environment_tag,
+                captures: capture_fields.clone(),
+            });
             lambda_functions.push(LambdaFunction {
                 synthesized,
                 body,
@@ -373,6 +376,7 @@ pub fn lower_typed_module(
                 lambda_path: site.id.lambda_path.clone(),
                 signature_id,
                 witness_index,
+                environment_tag,
                 captures: capture_fields,
             });
             Ok(())
@@ -621,7 +625,7 @@ pub fn lower_typed_module(
             &packed_records,
             &definitions,
             &closure_context,
-            &[],
+            None,
         )?);
     }
 
@@ -665,7 +669,7 @@ pub fn lower_typed_module(
             &packed_records,
             &definitions,
             &closure_context,
-            &lambda.captures,
+            Some(&ClosureEnvironment { tag: lambda.environment_tag, captures: lambda.captures.clone() }),
         )?);
         closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
     }
@@ -728,6 +732,7 @@ struct LambdaFunction<'a> {
     lambda_path: Vec<ProperTailPathStep>,
     signature_id: FunctionSignatureId,
     witness_index: u32,
+    environment_tag: i64,
     captures: Vec<ClosureCapture>,
 }
 
@@ -736,7 +741,6 @@ struct ClosureCapture {
     name: String,
     ty: Type,
     field: u32,
-    tag: i64,
 }
 
 /// A named function used as a value: its adapter forwards the closure
@@ -756,8 +760,14 @@ struct ClosureContext {
     families: HashMap<Type, crate::canonical_layouts::ClosureFamilyLayout>,
     signature_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
     declaration_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
-    lambda_captures: HashMap<usize, Vec<ClosureCapture>>,
+    lambda_captures: HashMap<usize, ClosureEnvironment>,
     adapters: HashMap<String, (FunctionId, FunctionSignatureId, Type)>,
+}
+
+#[derive(Clone)]
+struct ClosureEnvironment {
+    tag: i64,
+    captures: Vec<ClosureCapture>,
 }
 
 /// The leading parameter of a lambda's synthesized function: its closure
@@ -1155,7 +1165,7 @@ fn lower_function(
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
     closures: &ClosureContext,
-    captures: &[ClosureCapture],
+    environment: Option<&ClosureEnvironment>,
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
@@ -1233,7 +1243,7 @@ fn lower_function(
     // A lambda receives the uniform closure record.  Its owned environment is
     // a checked tagged family record; the tag must match this exact source
     // witness before any typed capture field is loaded.
-    if !captures.is_empty() {
+    if let Some(environment_schema) = environment {
         let closure = parameters.first().map(|parameter| parameter.value).ok_or_else(|| {
             CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
         })?;
@@ -1244,13 +1254,13 @@ fn lower_function(
             .ok_or_else(|| CanonicalLoweringError::MissingLayout(Type::Named("__closure_environment".into(), Vec::new())))?;
         let environment = lowerer.load_record_field(closure, 1, ValueType::Ref(family.environment))?;
         let tag = lowerer.load_record_field(environment, 0, ValueType::Int)?;
-        let expected = lowerer.push_const_int(captures[0].tag)?;
+        let expected = lowerer.push_const_int(environment_schema.tag)?;
         let matches = lowerer.push_compare(ComparisonOperator::Equal, tag, expected)?;
         lowerer.push_operation(Operation::Guard {
             condition: matches,
             kind: witchy_wir::canonical_safewir::GuardKind::DynamicType,
         });
-        for capture in captures {
+        for capture in &environment_schema.captures {
             let value_type = source_value_type(
                 &capture.ty,
                 layout_bundle,
@@ -4721,6 +4731,7 @@ impl FunctionLowerer<'_> {
         signature: FunctionSignatureId,
         function: FunctionId,
         family: &crate::canonical_layouts::ClosureFamilyLayout,
+        tag: i64,
         captures: Vec<(ClosureCapture, ValueId)>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let descriptor = self
@@ -4748,7 +4759,6 @@ impl FunctionLowerer<'_> {
             extent: witchy_wir::canonical_safewir::Extent::FixedBytes(u64::from(environment_bytes)),
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
-        let tag = captures.first().map(|(capture, _)| capture.tag).unwrap_or(0);
         let tag_value = self.push_const_int(tag)?;
         self.push_operation(Operation::Store {
             place: witchy_wir::canonical_safewir::Place::projected(environment, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
@@ -5072,7 +5082,7 @@ impl FunctionLowerer<'_> {
                     let layout = *self.closures.layouts.get(&fn_type).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
                     let family = self.closures.families.get(&fn_type)
                         .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                    self.alloc_closure(layout, signature, adapter, family, Vec::new())?
+                    self.alloc_closure(layout, signature, adapter, family, 0, Vec::new())?
                 } else if self.functions.contains_key(name) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("function value without adapter"));
                 } else {
@@ -5378,16 +5388,17 @@ impl FunctionLowerer<'_> {
                 let (function, signature) = *self.functions.get(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                 let fn_type = self.expression_type(expression)?;
                 let layout = *self.closures.layouts.get(&crate::canonical_layouts::closure_key(&fn_type)).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                let captures = self.closures.lambda_captures.get(&address).cloned().unwrap_or_default();
-                let mut values = Vec::with_capacity(captures.len());
-                for capture in captures {
+                let environment = self.closures.lambda_captures.get(&address).cloned()
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("closure environment witness"))?;
+                let mut values = Vec::with_capacity(environment.captures.len());
+                for capture in environment.captures {
                     let value = *self.bindings.get(&capture.name).ok_or_else(|| CanonicalLoweringError::MissingBinding(capture.name.clone()))?;
                     values.push((capture, value));
                 }
                 let key = crate::canonical_layouts::closure_key(&fn_type);
                 let family = self.closures.families.get(&key)
                     .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                self.alloc_closure(layout, signature, function, family, values)
+                self.alloc_closure(layout, signature, function, family, environment.tag, values)
             }
             Expr::Record { name, fields, spread } => {
                 self.lower_record_literal(expression, name, fields, spread.as_deref())
@@ -12534,7 +12545,8 @@ mod tests {
     use witchy_syntax::ast::{Convention, Item};
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
-        check_initial, check_initial_with_witness, CallArgument, Extent, GuardKind, LoadTransfer, Operation,
+        check_initial, check_initial_with_witness, validate_final, CallArgument, CanonicalModule, Extent,
+        GuardKind, LoadTransfer, LoweredModuleParts, Operation,
         Ownership, ParameterOwnership, Projection, Terminator, ValueType,
     };
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ResolvedNamed, ScalarKind};
@@ -12607,6 +12619,57 @@ mod tests {
         let layouts = crate::canonical_layouts::derive_layout_bundle(canonical)
             .expect("derive canonical layouts");
         lower_typed_module(canonical, layouts).expect("lower canonical SafeWIR")
+    }
+
+    #[test]
+    fn mismatched_typed_closure_environment_tag_is_refused_before_capture_load() {
+        let source_text = r#"
+fn main() -> Int:
+    let scalar = 7
+    let values = [2, 3]
+    let from_scalar = fn(value: Int): value + scalar
+    let from_list = fn(value: Int): value + values[0] + values[1]
+    from_scalar(5)
+"#;
+        let checked = checked(source_text);
+        let source = checked.canonical_source().expect("canonical source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("layouts");
+        let candidate = lower_typed_module(source, layouts).expect("lower closure family");
+        let mut functions = candidate.functions().to_vec();
+        let mut changed = false;
+        for function in &mut functions {
+            for block in &mut function.blocks {
+                for operation in &mut block.operations {
+                    if let Operation::ConstInt { value, .. } = operation
+                        && *value == 1
+                    {
+                        // Tag one belongs to `from_scalar`; tag two belongs
+                        // to `from_list`. Keep the callable target intact and
+                        // pair it with the wrong authenticated variant.
+                        *value = 2;
+                        changed = true;
+                        break;
+                    }
+                }
+                if changed { break; }
+            }
+            if changed { break; }
+        }
+        assert!(changed, "lowering must materialize the scalar closure tag");
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: candidate.revision(),
+            checked_source: candidate.checked_source(),
+            layouts: candidate.layouts().clone(),
+            signatures: candidate.signatures().to_vec(),
+            imports: candidate.imports().to_vec(),
+            functions,
+            proper_tail_sites: candidate.proper_tail_sites().to_vec(),
+        })
+        .with_source_abi_bindings(candidate.source_abi_bindings().clone())
+        .with_closure_bindings(candidate.closure_bindings().clone())
+        .with_adapter_bindings(candidate.adapter_bindings().clone())
+        .with_closure_layouts(candidate.closure_layouts().clone());
+        assert!(check_initial_with_witness(candidate, source).is_err());
     }
 
     #[test]

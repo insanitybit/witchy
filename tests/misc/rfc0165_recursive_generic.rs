@@ -51,6 +51,18 @@ fn main(console: Console):
 }
 
 #[test]
+fn typed_closure_zero_capture_uses_its_non_adapter_family_tag() {
+    assert_three_legs(r#"
+fn main(console: Console):
+    let offset = 7
+    let captured = fn(value: Int): value + offset
+    let empty = fn(value: Int): value + 5
+    console.print("${captured(5)}")
+    console.print("${empty(5)}")
+"#, vec!["12".to_owned(), "10".to_owned()]);
+}
+
+#[test]
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect
