@@ -12683,32 +12683,41 @@ fn main() -> Int:
         let source = checked.canonical_source().expect("canonical source");
         let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("layouts");
         let candidate = lower_typed_module(source, layouts).expect("lower closure family");
+        let binding = candidate.closure_bindings().entries().iter().find(|binding| {
+            source.closure_witness().entries().get(binding.closure() as usize)
+                .is_some_and(|witness| !witness.captures().is_empty())
+        }).expect("capturing closure witness binding");
+        let bound_function = binding.function();
         let mut functions = candidate.functions().to_vec();
-        let mut changed = false;
-        for function in &mut functions {
-            let Some(block) = function.blocks.iter_mut().find(|block| block.id == function.entry) else { continue };
-            let Some(mut payload_reload) = block.operations.iter().find_map(|operation| match operation {
+        let function = functions.iter_mut().find(|function| function.id == bound_function)
+            .expect("bound lambda function");
+        let block = function.blocks.iter_mut().find(|block| block.id == function.entry)
+            .expect("bound lambda entry");
+        let closure = block.parameters.first().expect("hidden closure parameter").value;
+        let environment = block.operations.iter().find_map(|operation| match operation {
+            Operation::Load { destination, place, .. }
+                if place.object() == closure
+                    && matches!(place.projection(), Projection::Field { index: 1 }) => Some(*destination),
+            _ => None,
+        }).expect("hidden environment load from closure field 1");
+        let (payload_index, mut payload_reload) = block.operations.iter().enumerate().find_map(|(index, operation)| match operation {
                 Operation::Load { destination, place, transfer }
-                    if matches!(place.projection(), Projection::Field { index } if *index > 0)
+                    if place.object() == environment
+                        && matches!(place.projection(), Projection::Field { index } if *index > 0)
                         && matches!(place.value_type(), ValueType::Ref(_)) =>
-                    Some(Operation::Load { destination: *destination, place: place.clone(), transfer: *transfer }),
+                    Some((index, Operation::Load { destination: *destination, place: place.clone(), transfer: *transfer })),
                 _ => None,
-            }) else { continue };
-            let next = function.value_types.keys().map(|value| value.get()).max().unwrap_or(0).checked_add(1).expect("value id");
-            let Operation::Load { destination, .. } = &mut payload_reload else { unreachable!() };
-            *destination = witchy_wir::canonical_safewir::ValueId::new(next);
-            function.value_types.insert(*destination, match &payload_reload {
-                Operation::Load { place, .. } => place.value_type(),
-                _ => unreachable!(),
-            });
-            let cleanup = block.operations.iter().rposition(|operation| matches!(operation,
-                Operation::Release { .. } | Operation::DropRef { .. }
-            )).expect("lowered closure retains explicit cleanup");
-            block.operations.insert(cleanup, payload_reload);
-            changed = true;
-            break;
-        }
-        assert!(changed, "fixture must contain an authenticated capture load");
+            }).expect("authenticated managed capture payload load");
+        let next = function.value_types.keys().map(|value| value.get()).max().unwrap_or(0).checked_add(1).expect("value id");
+        let Operation::Load { destination, .. } = &mut payload_reload else { unreachable!() };
+        *destination = witchy_wir::canonical_safewir::ValueId::new(next);
+        function.value_types.insert(*destination, match &payload_reload {
+            Operation::Load { place, .. } => place.value_type(), _ => unreachable!(),
+        });
+        let cleanup = block.operations.iter().enumerate().skip(payload_index + 1).find_map(|(index, operation)| matches!(operation,
+            Operation::Release { object } | Operation::DropRef { object } if *object == environment
+        ).then_some(index)).expect("hidden environment cleanup after payload prefix");
+        block.operations.insert(cleanup, payload_reload);
         let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: candidate.revision(), checked_source: candidate.checked_source(), layouts: candidate.layouts().clone(),
             signatures: candidate.signatures().to_vec(), imports: candidate.imports().to_vec(), functions,
