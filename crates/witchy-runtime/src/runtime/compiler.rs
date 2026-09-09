@@ -7,7 +7,7 @@
 //! shed its parser/type/WIR implementation dependencies as the
 //! implementation moves above the kernel.
 
-use super::{memory_of, read_wstr, VmState};
+use super::{memory_of, read_slice_str, read_wstr, VmState};
 use wasmtime::{Caller, Error, Linker, Result};
 use witchy_syntax::intrinsics;
 
@@ -74,6 +74,8 @@ impl CompilerServices for RegistryCompilerServices {
 pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
+    linker.func_wrap("witchy", "compiler_footprint_into", host_compiler_footprint_into)?;
+    linker.func_wrap("witchy", "compiler_diff_into", host_compiler_diff_into)?;
     linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
     linker.func_wrap(
         "witchy",
@@ -110,6 +112,76 @@ fn host_compiler_diff_len(
     let len = json.len() as i32;
     caller.data_mut().pending = Some(json.into_bytes());
     Ok(len)
+}
+
+/// `compiler_footprint_into(src_ptr, src_len, out_ptr, out_capacity)`: compute
+/// the footprint JSON from an explicitly bounded UTF-8 source slice. The
+/// complete output range is checked before invoking the service; a short
+/// output buffer receives no prefix and the required byte length is returned.
+fn host_compiler_footprint_into(
+    mut caller: Caller<'_, VmState>,
+    src_ptr: i32,
+    src_len: i32,
+    out_ptr: i32,
+    out_capacity: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let src = read_slice_str(data, src_ptr, src_len)?;
+    checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
+    let json = caller.data().compiler_services.clone().footprint(&src)?;
+    let bytes = json.into_bytes();
+    write_result_bytes(&mut caller, out_ptr, out_capacity, &bytes)
+}
+
+/// `compiler_diff_into(old_ptr, old_len, new_ptr, new_len, out_ptr,
+/// out_capacity)`: the bounded, non-staged counterpart to `compiler_diff_len`.
+fn host_compiler_diff_into(
+    mut caller: Caller<'_, VmState>,
+    old_ptr: i32,
+    old_len: i32,
+    new_ptr: i32,
+    new_len: i32,
+    out_ptr: i32,
+    out_capacity: i32,
+) -> Result<i32> {
+    let mem = memory_of(&mut caller)?;
+    let data = mem.data(&caller);
+    let old_src = read_slice_str(data, old_ptr, old_len)?;
+    let new_src = read_slice_str(data, new_ptr, new_len)?;
+    checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
+    let json = caller
+        .data()
+        .compiler_services
+        .clone()
+        .footprint_diff(&old_src, &new_src)?;
+    let bytes = json.into_bytes();
+    write_result_bytes(&mut caller, out_ptr, out_capacity, &bytes)
+}
+
+fn checked_guest_range(data_len: usize, ptr: i32, len: i32, what: &str) -> Result<(usize, usize)> {
+    let start = u32::try_from(ptr).map_err(|_| Error::msg(format!("negative {what} pointer")))?;
+    let length = u32::try_from(len).map_err(|_| Error::msg(format!("negative {what} length")))?;
+    let end = u64::from(start) + u64::from(length);
+    if end > data_len as u64 {
+        return Err(Error::msg(format!("{what} ({start}..{end}) lies outside guest memory")));
+    }
+    Ok((start as usize, length as usize))
+}
+
+fn write_result_bytes(caller: &mut Caller<'_, VmState>, out_ptr: i32, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
+    let mem = memory_of(caller)?;
+    write_result_bytes_to_memory(mem.data_mut(caller), out_ptr, out_capacity, bytes)
+}
+
+fn write_result_bytes_to_memory(data: &mut [u8], out_ptr: i32, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
+    let (start, capacity) = checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
+    let required = i32::try_from(bytes.len())
+        .map_err(|_| Error::msg("compiler service result exceeds i32 byte length"))?;
+    if bytes.len() <= capacity {
+        data[start..start + bytes.len()].copy_from_slice(bytes);
+    }
+    Ok(required)
 }
 
 /// `compiler_doc_len(name_ptr, src_ptr) -> Int`: render the guest's source string to
