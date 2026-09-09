@@ -27,6 +27,30 @@ fn main(console: Console):
 }
 
 #[test]
+fn typed_closure_family_carries_scalar_and_list_captures_across_three_legs() {
+    assert_three_legs(r#"
+fn apply(f: fn(Int) -> Int, value: Int) -> Int:
+    f(value)
+
+fn choose(first: Bool, left: fn(Int) -> Int, right: fn(Int) -> Int) -> fn(Int) -> Int:
+    if first:
+        left
+    else:
+        right
+
+fn main(console: Console):
+    let offset = 7
+    let values = [2, 3]
+    let scalar = fn(value: Int): value + offset
+    let list = fn(value: Int): value + values[0] + values[1]
+    let selected = choose(false, scalar, list)
+    console.print("${apply(scalar, 5)}")
+    console.print("${apply(list, 5)}")
+    console.print("${apply(selected, 5)}")
+"#, vec!["12".to_owned(), "10".to_owned(), "10".to_owned()]);
+}
+
+#[test]
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect

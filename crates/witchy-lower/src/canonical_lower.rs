@@ -137,8 +137,11 @@ pub fn lower_typed_module(
     let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let tail_manifest = source.proper_tail_manifest();
-    let closure_layouts = crate::canonical_layouts::closure_layouts(source)
+    let closure_families = crate::canonical_layouts::closure_families(source)
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let closure_layouts = closure_families.iter()
+        .map(|(signature, family)| (signature.clone(), family.closure))
+        .collect::<HashMap<_, _>>();
     let string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     let string_data_ids = string_payloads
         .iter()
@@ -215,6 +218,7 @@ pub fn lower_typed_module(
     let mut closure_signatures: HashMap<Type, FunctionSignatureId> = HashMap::new();
     let mut closure_context = ClosureContext {
         layouts: closure_layouts.clone(),
+        families: closure_families,
         signature_by_layout: HashMap::new(),
         declaration_by_layout: HashMap::new(),
         lambda_captures: HashMap::new(),
@@ -296,13 +300,40 @@ pub fn lower_typed_module(
             let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
             let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
             let captures = witnesses[witness_index].captures();
-            if captures.iter().any(|capture| !is_int_type(capture.checked_type())) {
-                return Ok(());
-            }
             let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
             let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
             let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
             let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::closure_key(&fn_type)) else { return Ok(()) };
+            let key = crate::canonical_layouts::closure_key(&fn_type);
+            let Some(family) = closure_context.families.get(&key) else {
+                visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
+                return Err(());
+            };
+            let witness_index = match u32::try_from(witness_index) {
+                Ok(index) => index,
+                Err(_) => { visit_error = Some(CanonicalLoweringError::IdOverflow); return Err(()); }
+            };
+            let Some((tag, variant)) = family.variants.iter().enumerate()
+                .find(|(_, variant)| variant.witness == Some(witness_index)) else {
+                visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness family"));
+                return Err(());
+            };
+            if variant.fields.len() != capture_names.len() {
+                visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness fields"));
+                return Err(());
+            }
+            let mut capture_fields = Vec::with_capacity(capture_names.len());
+            for (index, (name, ty)) in capture_names.iter().zip(&variant.fields).enumerate() {
+                let Ok(field) = u32::try_from(variant.first_field + index) else {
+                    visit_error = Some(CanonicalLoweringError::IdOverflow);
+                    return Err(());
+                };
+                let Ok(tag) = i64::try_from(tag) else {
+                    visit_error = Some(CanonicalLoweringError::IdOverflow);
+                    return Err(());
+                };
+                capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field, tag });
+            }
             let name = format!("{}#lambda{}", function.name, lambda_functions.len());
             let params = std::iter::once(closure_environment_param())
                 .chain(params
@@ -333,14 +364,7 @@ pub fn lower_typed_module(
             };
             functions_by_name.insert(name.clone(), (function_id, signature_id));
             lambda_names.insert(address, name);
-            closure_context.lambda_captures.insert(address, capture_names.clone());
-            let witness_index = match u32::try_from(witness_index) {
-                Ok(index) => index,
-                Err(_) => {
-                    visit_error = Some(CanonicalLoweringError::IdOverflow);
-                    return Err(());
-                }
-            };
+            closure_context.lambda_captures.insert(address, capture_fields.clone());
             lambda_functions.push(LambdaFunction {
                 synthesized,
                 body,
@@ -349,7 +373,7 @@ pub fn lower_typed_module(
                 lambda_path: site.id.lambda_path.clone(),
                 signature_id,
                 witness_index,
-                captures: capture_names,
+                captures: capture_fields,
             });
             Ok(())
         });
@@ -704,7 +728,15 @@ struct LambdaFunction<'a> {
     lambda_path: Vec<ProperTailPathStep>,
     signature_id: FunctionSignatureId,
     witness_index: u32,
-    captures: Vec<String>,
+    captures: Vec<ClosureCapture>,
+}
+
+#[derive(Clone)]
+struct ClosureCapture {
+    name: String,
+    ty: Type,
+    field: u32,
+    tag: i64,
 }
 
 /// A named function used as a value: its adapter forwards the closure
@@ -721,9 +753,10 @@ struct AdapterFunction {
 /// layout, each lambda's capture names, and each named function's adapter.
 struct ClosureContext {
     layouts: HashMap<Type, witchy_wir::layout::LayoutId>,
+    families: HashMap<Type, crate::canonical_layouts::ClosureFamilyLayout>,
     signature_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
     declaration_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
-    lambda_captures: HashMap<usize, Vec<String>>,
+    lambda_captures: HashMap<usize, Vec<ClosureCapture>>,
     adapters: HashMap<String, (FunctionId, FunctionSignatureId, Type)>,
 }
 
@@ -1122,7 +1155,7 @@ fn lower_function(
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
     closures: &ClosureContext,
-    captures: &[String],
+    captures: &[ClosureCapture],
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
@@ -1197,17 +1230,37 @@ fn lower_function(
         .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
         .filter_map(|(parameter, _)| parameter.ty.clone().map(|ty| (parameter.name.clone(), ty)))
         .collect();
-    // A lambda's captures are the `Int` slots of its closure record, the
-    // leading parameter, bound by their source names.
+    // A lambda receives the uniform closure record.  Its owned environment is
+    // a checked tagged family record; the tag must match this exact source
+    // witness before any typed capture field is loaded.
     if !captures.is_empty() {
-        let environment = parameters.first().map(|parameter| parameter.value).ok_or_else(|| {
+        let closure = parameters.first().map(|parameter| parameter.value).ok_or_else(|| {
             CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
         })?;
-        for (index, capture) in captures.iter().enumerate() {
-            let slot = u32::try_from(index + 1).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-            let value = lowerer.load_record_field(environment, slot, ValueType::Int)?;
-            if lowerer.bindings.insert(capture.clone(), value).is_some() {
-                return Err(CanonicalLoweringError::DuplicateBinding(capture.clone()));
+        let ValueType::Ref(closure_layout) = lowerer.values[&closure] else {
+            return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
+        };
+        let family = closures.families.values().find(|family| family.closure == closure_layout)
+            .ok_or_else(|| CanonicalLoweringError::MissingLayout(Type::Named("__closure_environment".into(), Vec::new())))?;
+        let environment = lowerer.load_record_field(closure, 1, ValueType::Ref(family.environment))?;
+        let tag = lowerer.load_record_field(environment, 0, ValueType::Int)?;
+        let expected = lowerer.push_const_int(captures[0].tag)?;
+        let matches = lowerer.push_compare(ComparisonOperator::Equal, tag, expected)?;
+        lowerer.push_operation(Operation::Guard {
+            condition: matches,
+            kind: witchy_wir::canonical_safewir::GuardKind::DynamicType,
+        });
+        for capture in captures {
+            let value_type = source_value_type(
+                &capture.ty,
+                layout_bundle,
+                layouts,
+                &closures.layouts,
+                definitions,
+            )?;
+            let value = lowerer.load_record_field(environment, capture.field, value_type)?;
+            if lowerer.bindings.insert(capture.name.clone(), value).is_some() {
+                return Err(CanonicalLoweringError::DuplicateBinding(capture.name.clone()));
             }
         }
     }
@@ -4667,7 +4720,8 @@ impl FunctionLowerer<'_> {
         layout: witchy_wir::layout::LayoutId,
         signature: FunctionSignatureId,
         function: FunctionId,
-        captures: Vec<ValueId>,
+        family: &crate::canonical_layouts::ClosureFamilyLayout,
+        captures: Vec<(ClosureCapture, ValueId)>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let descriptor = self
             .layouts
@@ -4679,9 +4733,51 @@ impl FunctionLowerer<'_> {
         let LayoutKind::PackedRecord { fields } = descriptor.kind() else {
             return Err(CanonicalLoweringError::UnsupportedExpression("closure layout"));
         };
-        let slots = fields.len().saturating_sub(1);
-        if captures.len() > slots {
-            return Err(CanonicalLoweringError::UnsupportedExpression("closure capture count"));
+        if fields.len() != 2 || family.closure != layout {
+            return Err(CanonicalLoweringError::UnsupportedExpression("closure family layout"));
+        }
+        let environment_descriptor = self.layouts.get(family.environment)
+            .ok_or_else(|| CanonicalLoweringError::MissingLayout(Type::Named("__closure_environment".into(), Vec::new())))?;
+        let LayoutSize::Fixed(environment_bytes) = environment_descriptor.size() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("closure environment layout size"));
+        };
+        let environment = self.fresh(ValueType::Ref(family.environment))?;
+        self.push_operation(Operation::Alloc {
+            destination: environment,
+            layout: family.environment,
+            extent: witchy_wir::canonical_safewir::Extent::FixedBytes(u64::from(environment_bytes)),
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        let tag = captures.first().map(|(capture, _)| capture.tag).unwrap_or(0);
+        let tag_value = self.push_const_int(tag)?;
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(environment, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
+            value: tag_value,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        let captures = captures.into_iter().map(|(capture, value)| (capture.field, (capture.ty, value))).collect::<HashMap<_, _>>();
+        for variant in &family.variants {
+            for (offset, field) in variant.fields.iter().enumerate() {
+                let index = u32::try_from(variant.first_field + offset).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                let expected = self.field_value_type(field)?;
+                let place = witchy_wir::canonical_safewir::Place::projected(environment, Projection::Field { index }, expected, AccessMode::Write);
+                if let Some((_field_type, value)) = captures.get(&index) {
+                    if self.values[value] != expected {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("closure capture value type"));
+                    }
+                    let (value, transfer) = if matches!(expected, ValueType::Ref(_)) {
+                        let shared = self.fresh(expected)?;
+                        self.push_operation(Operation::CloneRef { destination: shared, source: *value });
+                        (shared, witchy_wir::canonical_safewir::StoreTransfer::CloneShared)
+                    } else { (*value, witchy_wir::canonical_safewir::StoreTransfer::CopyScalar) };
+                    self.push_operation(Operation::Store { place, value, transfer });
+                } else if matches!(expected, ValueType::Ref(_)) {
+                    self.push_operation(Operation::InitNullableOwned { place });
+                } else {
+                    let zero = self.push_empty_value(field)?;
+                    self.push_operation(Operation::Store { place, value: zero, transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar });
+                }
+            }
         }
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
@@ -4702,22 +4798,11 @@ impl FunctionLowerer<'_> {
             value: code,
             transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
         });
-        for slot in 0..slots {
-            let value = match captures.get(slot) {
-                Some(value) => *value,
-                None => self.push_const_int(0)?,
-            };
-            self.push_operation(Operation::Store {
-                place: witchy_wir::canonical_safewir::Place::projected(
-                    object,
-                    Projection::Field { index: u32::try_from(slot + 1).map_err(|_| CanonicalLoweringError::IdOverflow)? },
-                    ValueType::Int,
-                    AccessMode::Write,
-                ),
-                value,
-                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
-            });
-        }
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(object, Projection::Field { index: 1 }, ValueType::Ref(family.environment), AccessMode::Write),
+            value: environment,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+        });
         Ok(object)
     }
 
@@ -4985,7 +5070,9 @@ impl FunctionLowerer<'_> {
                     // A named function as a value: a closure whose code is
                     // the function's adapter and whose environment is empty.
                     let layout = *self.closures.layouts.get(&fn_type).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                    self.alloc_closure(layout, signature, adapter, Vec::new())?
+                    let family = self.closures.families.get(&fn_type)
+                        .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                    self.alloc_closure(layout, signature, adapter, family, Vec::new())?
                 } else if self.functions.contains_key(name) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("function value without adapter"));
                 } else {
@@ -5293,14 +5380,14 @@ impl FunctionLowerer<'_> {
                 let layout = *self.closures.layouts.get(&crate::canonical_layouts::closure_key(&fn_type)).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
                 let captures = self.closures.lambda_captures.get(&address).cloned().unwrap_or_default();
                 let mut values = Vec::with_capacity(captures.len());
-                for capture in &captures {
-                    let value = *self.bindings.get(capture).ok_or_else(|| CanonicalLoweringError::MissingBinding(capture.clone()))?;
-                    if self.values[&value] != ValueType::Int {
-                        return Err(CanonicalLoweringError::UnsupportedExpression("closure capture type"));
-                    }
-                    values.push(value);
+                for capture in captures {
+                    let value = *self.bindings.get(&capture.name).ok_or_else(|| CanonicalLoweringError::MissingBinding(capture.name.clone()))?;
+                    values.push((capture, value));
                 }
-                self.alloc_closure(layout, signature, function, values)
+                let key = crate::canonical_layouts::closure_key(&fn_type);
+                let family = self.closures.families.get(&key)
+                    .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                self.alloc_closure(layout, signature, function, family, values)
             }
             Expr::Record { name, fields, spread } => {
                 self.lower_record_literal(expression, name, fields, spread.as_deref())

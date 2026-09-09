@@ -17,6 +17,25 @@ use witchy_wir::layout::{
     ResolvedNamed, ScalarKind,
 };
 
+/// The source-derived storage family for one `fn` signature.  The callable
+/// object remains the uniform value ABI; its second field owns one tagged
+/// environment record.  Variant zero is the empty environment used by named
+/// function adapters.  Every other variant is one closure witness, ordered by
+/// that witness manifest rather than by a source spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClosureFamilyLayout {
+    pub closure: LayoutId,
+    pub environment: LayoutId,
+    pub variants: Vec<ClosureEnvironmentVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClosureEnvironmentVariant {
+    pub witness: Option<u32>,
+    pub fields: Vec<Type>,
+    pub first_field: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalLayoutError {
     MissingCheckedFunctionType(String),
@@ -57,7 +76,7 @@ impl std::error::Error for CanonicalLayoutError {}
 pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
-    project_layouts(source)?.finish()
+    project_layouts(source)?.finish_with_families().map(|(bundle, _)| bundle)
 }
 
 /// The closure layout of every `fn` type the canonical functions reach: a
@@ -67,13 +86,20 @@ pub(crate) fn derive_layout_bundle(
 pub(crate) fn closure_layouts(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, witchy_wir::layout::LayoutId>, CanonicalLayoutError> {
-    let projection = project_layouts(source)?;
-    let mut map = HashMap::new();
-    for (fn_type, slots) in closure_slot_assignment(projection.closures.into_values().collect()) {
-        let mut interner = LayoutInterner::new();
-        map.insert(fn_type, intern_closure_layout(&mut interner, slots)?);
-    }
-    Ok(map)
+    closure_families(source).map(|families| families
+        .into_iter()
+        .map(|(signature, family)| (signature, family.closure))
+        .collect())
+}
+
+/// Derive the complete closure-family storage schema from the same checked
+/// source product as the canonical layout bundle.  This is intentionally not
+/// a caller-provided record schema: witness order, checked capture types, and
+/// every physical child layout are all reconstructed here.
+pub(crate) fn closure_families(
+    source: &CanonicalCheckedSource,
+) -> Result<HashMap<Type, ClosureFamilyLayout>, CanonicalLayoutError> {
+    project_layouts(source)?.finish_with_families().map(|(_, families)| families)
 }
 
 /// The identity of a `fn` type for closure purposes: the declared
@@ -101,17 +127,22 @@ pub(crate) fn closure_key(ty: &Type) -> Type {
     }
 }
 
-/// The number of `Int` capture slots each `fn` type's closures need: the
-/// widest capture list among the lambdas of that type in the closure
-/// witness manifest (a type with no lambda needs none).
-fn closure_capture_slots(source: &CanonicalCheckedSource) -> HashMap<Type, usize> {
-    let mut slots: HashMap<Type, usize> = HashMap::new();
-    for witness in source.closure_witness().entries() {
+/// The exact capture variants of each `fn` family, ordered by the checked
+/// closure witness manifest.  The manifest is the source authority for both
+/// tag values and capture types.
+fn closure_capture_variants(
+    source: &CanonicalCheckedSource,
+) -> Result<HashMap<Type, Vec<(u32, Vec<Type>)>>, CanonicalLayoutError> {
+    let mut variants = HashMap::new();
+    for (index, witness) in source.closure_witness().entries().iter().enumerate() {
         let Some(fn_type) = typeck::ty_to_ast(witness.signature()) else { continue };
-        let entry = slots.entry(closure_key(&fn_type)).or_default();
-        *entry = (*entry).max(witness.captures().len());
+        let index = u32::try_from(index).map_err(|_| CanonicalLayoutError::InvalidLayout("closure witness index overflow".into()))?;
+        variants.entry(closure_key(&fn_type)).or_insert_with(Vec::new).push((
+            index,
+            witness.captures().iter().map(|capture| capture.checked_type().clone()).collect(),
+        ));
     }
-    slots
+    Ok(variants)
 }
 
 /// Give every `fn` type a distinct slot count, so distinct signatures never
@@ -174,7 +205,7 @@ fn project_layouts(
         roots: Vec::new(),
         definitions,
         closures: BTreeMap::new(),
-        capture_slots: closure_capture_slots(source),
+        capture_variants: closure_capture_variants(source)?,
         visiting: HashSet::new(),
         visited: HashSet::new(),
     };
@@ -241,10 +272,10 @@ fn project_layouts(
 struct LayoutProjection {
     roots: Vec<Type>,
     definitions: BTreeMap<String, TypeDef>,
-    /// Every `fn` type reached, keyed by its rendering, with the capture
-    /// slots its closures need.
-    closures: BTreeMap<String, (Type, usize)>,
-    capture_slots: HashMap<Type, usize>,
+    /// Every `fn` type reached, keyed by its rendering, with its exact
+    /// source-witness environment variants.
+    closures: BTreeMap<String, (Type, Vec<(u32, Vec<Type>)>)>,
+    capture_variants: HashMap<Type, Vec<(u32, Vec<Type>)>>,
     visiting: HashSet<Type>,
     visited: HashSet<Type>,
 }
@@ -298,8 +329,8 @@ impl LayoutProjection {
             // parameters and result carry their own roots.
             Type::Fn(parameters, result, _, _) => {
                 let fn_type = closure_key(ty);
-                let slots = self.capture_slots.get(&fn_type).copied().unwrap_or(0);
-                self.closures.insert(format!("{fn_type:?}"), (fn_type, slots));
+                let variants = self.capture_variants.get(&fn_type).cloned().unwrap_or_default();
+                self.closures.insert(format!("{fn_type:?}"), (fn_type, variants));
                 for parameter in parameters {
                     self.visit_type(parameter)?;
                 }
@@ -370,6 +401,10 @@ impl LayoutProjection {
     }
 
     fn finish(self) -> Result<LayoutBundle, CanonicalLayoutError> {
+        self.finish_with_families().map(|(bundle, _)| bundle)
+    }
+
+    fn finish_with_families(self) -> Result<(LayoutBundle, HashMap<Type, ClosureFamilyLayout>), CanonicalLayoutError> {
         let recursive_types = recursive_heap_types(&self.roots, &self.definitions);
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
@@ -395,12 +430,85 @@ impl LayoutProjection {
             let root = intern_v1_layout(&mut interner, &ty, &self.definitions, &recursive_types)?;
             roots.insert(root);
         }
-        for (_, slots) in closure_slot_assignment(self.closures.into_values().collect()) {
-            roots.insert(intern_closure_layout(&mut interner, slots)?);
+        let mut families = HashMap::new();
+        for (_, (signature, variants)) in self.closures {
+            let (environment, variants) = intern_closure_environment(
+                &mut interner,
+                variants,
+                &self.definitions,
+                &recursive_types,
+            )?;
+            let closure = intern_closure_layout_with_environment(&mut interner, environment)?;
+            roots.insert(environment);
+            roots.insert(closure);
+            families.insert(signature, ClosureFamilyLayout { closure, environment, variants });
         }
-        LayoutBundle::from_interner(&interner, roots)
-            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
+        let bundle = LayoutBundle::from_interner(&interner, roots)
+            .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+        Ok((bundle, families))
     }
+}
+
+fn intern_closure_environment(
+    interner: &mut LayoutInterner,
+    witnesses: Vec<(u32, Vec<Type>)>,
+    definitions: &BTreeMap<String, TypeDef>,
+    recursive_types: &HashSet<Type>,
+) -> Result<(LayoutId, Vec<ClosureEnvironmentVariant>), CanonicalLayoutError> {
+    let tag = interner
+        .intern_scalar(ScalarKind::Int)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    let mut children = vec![tag];
+    // Variant zero is reserved for named-function adapters.  A lambda's tag
+    // is its index in this vector, never a declaration name or code pointer.
+    let mut variants = vec![ClosureEnvironmentVariant {
+        witness: None,
+        fields: Vec::new(),
+        first_field: 1,
+    }];
+    for (witness, fields) in witnesses {
+        let first_field = children.len();
+        for field in &fields {
+            if witchy_types::canonical_capabilities::representation(field, definitions).is_some()
+                || matches!(field.unqualified(), Type::Fn(..))
+            {
+                return Err(CanonicalLayoutError::UnsupportedType(format!(
+                    "closure capture requires unavailable typed storage: {field:?}"
+                )));
+            }
+            let child = if let Some(scalar) = scalar_kind_of(field) {
+                interner
+                    .intern_scalar(scalar)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            } else {
+                let pointee = intern_v1_layout(interner, field, definitions, recursive_types)?;
+                interner
+                    .intern_runtime_pointer_value_slot(pointee, PointerSlot::OwnedNullable)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            };
+            children.push(child);
+        }
+        variants.push(ClosureEnvironmentVariant { witness: Some(witness), fields, first_field });
+    }
+    let layout = interner
+        .intern_packed_record(children)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    Ok((layout, variants))
+}
+
+fn intern_closure_layout_with_environment(
+    interner: &mut LayoutInterner,
+    environment: LayoutId,
+) -> Result<LayoutId, CanonicalLayoutError> {
+    let code = interner
+        .intern_scalar(ScalarKind::Callable)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    let environment = interner
+        .intern_runtime_pointer_value_slot(environment, PointerSlot::Owned)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    interner
+        .intern_packed_record(vec![code, environment])
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))
 }
 
 fn intern_v1_layout(

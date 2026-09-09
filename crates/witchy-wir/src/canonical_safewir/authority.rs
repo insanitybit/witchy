@@ -360,10 +360,9 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         }
     }
     // A function synthesized for a lambda is bound to that lambda's closure
-    // witness instead of a source declaration: the witness must exist, its
-    // captures must be `Int` values copied into the closure record's slots
-    // (no more of them than the record holds), and it must carry the
-    // function's signature past the environment parameter.
+    // witness instead of a source declaration.  The uniform closure record
+    // owns a tagged environment record; captures are its checked scalar or
+    // managed-reference payloads, never capabilities or an erased value.
     let closures = source.closure_witness().entries();
     let (_, closure_layout_catalog) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
         Ok(value) => value,
@@ -389,17 +388,28 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             Some(super::ValueType::Ref(layout)) => closure_layout_catalog
                 .get(*layout)
                 .and_then(|descriptor| match descriptor.kind() {
-                    crate::layout::LayoutKind::PackedRecord { fields } => Some(fields.len().saturating_sub(1)),
+                    crate::layout::LayoutKind::PackedRecord { fields } if fields.len() == 2 => {
+                        let crate::layout::LayoutKind::RuntimePointerValueSlot {
+                            pointee, semantics: crate::layout::PointerSlot::Owned,
+                        } = closure_layout_catalog.get(fields[1])?.kind() else { return None };
+                        closure_layout_catalog.get(*pointee).and_then(|environment| match environment.kind() {
+                            crate::layout::LayoutKind::PackedRecord { fields } => Some(fields.len().saturating_sub(1)),
+                            _ => None,
+                        })
+                    }
                     _ => None,
                 })
                 .unwrap_or(0),
             _ => 0,
         };
-        let int_capture = |capture: &witchy_types::canonical_closure::ClosureCaptureWitness| {
-            matches!(capture.transfer(), witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
-                && matches!(capture.checked_type().unqualified(), witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty())
+        let family_capture = |capture: &witchy_types::canonical_closure::ClosureCaptureWitness| {
+            matches!(
+                capture.transfer(),
+                witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar
+                    | witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue
+            )
         };
-        if witness.captures().len() > capture_slots || !witness.captures().iter().all(int_capture) {
+        if witness.captures().len() > capture_slots || !witness.captures().iter().all(family_capture) {
             return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
         }
         let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
