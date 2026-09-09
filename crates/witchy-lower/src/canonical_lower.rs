@@ -226,7 +226,7 @@ pub fn lower_typed_module(
     };
     for ty in &callable_types {
         let declaration_id = function_types[ty];
-        let key = crate::canonical_layouts::closure_key(ty);
+        let key = crate::canonical_layouts::canonical_closure_key(ty, &definitions);
         // A `fn` type that is only ever a declaration's shape has no
         // closure layout and needs no closure signature.
         let Some(&layout) = closure_layouts.get(&key) else { continue };
@@ -303,8 +303,8 @@ pub fn lower_typed_module(
             let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
             let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
             let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
-            let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::closure_key(&fn_type)) else { return Ok(()) };
-            let key = crate::canonical_layouts::closure_key(&fn_type);
+            let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions)) else { return Ok(()) };
+            let key = crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions);
             let Some(family) = closure_context.families.get(&key) else {
                 visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
                 return Err(());
@@ -405,7 +405,7 @@ pub fn lower_typed_module(
     for target in adapter_targets {
         let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
         let Some(fn_type) = source.callable_signature(&target) else { continue };
-        let fn_type = crate::canonical_layouts::closure_key(fn_type);
+        let fn_type = crate::canonical_layouts::canonical_closure_key(fn_type, &definitions);
         let Some(&signature_id) = closure_signatures.get(&fn_type) else { continue };
         let adapter_id = FunctionId::new(
             u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
@@ -5576,7 +5576,7 @@ impl FunctionLowerer<'_> {
                 };
                 let (function, signature) = *self.functions.get(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                 let fn_type = self.expression_type(expression)?;
-                let layout = *self.closures.layouts.get(&crate::canonical_layouts::closure_key(&fn_type)).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                let layout = *self.closures.layouts.get(&crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions)).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
                 let environment = self.closures.lambda_captures.get(&address).cloned()
                     .ok_or(CanonicalLoweringError::UnsupportedExpression("closure environment witness"))?;
                 let mut values = Vec::with_capacity(environment.captures.len());
@@ -5584,7 +5584,7 @@ impl FunctionLowerer<'_> {
                     let value = *self.bindings.get(&capture.name).ok_or_else(|| CanonicalLoweringError::MissingBinding(capture.name.clone()))?;
                     values.push((capture, value));
                 }
-                let key = crate::canonical_layouts::closure_key(&fn_type);
+                let key = crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions);
                 let family = self.closures.families.get(&key)
                     .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
                 self.alloc_closure(layout, signature, function, family, environment.tag, values)
@@ -11925,7 +11925,7 @@ fn source_value_type(
     match source.unqualified() {
         // A `fn` value is a closure record.
         Type::Fn(..) => closure_layouts
-            .get(&crate::canonical_layouts::closure_key(source))
+            .get(&crate::canonical_layouts::canonical_closure_key(source, definitions))
             .copied()
             .map(ValueType::Ref)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
@@ -12038,7 +12038,7 @@ fn aggregate_layout(
                     list_layout(field, layout_bundle, layouts, closure_layouts, definitions)?.0
                 }
                 Type::Fn(..) => closure_layouts
-                    .get(&crate::canonical_layouts::closure_key(field))
+                    .get(&crate::canonical_layouts::canonical_closure_key(field, definitions))
                     .copied()
                     .ok_or_else(|| CanonicalLoweringError::UnsupportedType(field.clone()))?,
                 _ => match scalar_aggregate_shape(field, definitions) {
@@ -12527,7 +12527,7 @@ fn list_layout(
         }
         Type::Fn(..) => ValueType::Ref(
             *closure_layouts
-                .get(&crate::canonical_layouts::closure_key(&arguments[0]))
+                .get(&crate::canonical_layouts::canonical_closure_key(&arguments[0], definitions))
                 .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
         ),
         // An aggregate element (a record, sum, tuple, scalar Option/Result)
