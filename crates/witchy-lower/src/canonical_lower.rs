@@ -2857,6 +2857,12 @@ impl FunctionLowerer<'_> {
         }
         if arm_results.is_empty() {
             self.bindings = outer;
+            // An effect-position match may return or trap on every arm.
+            // Its current block remains terminated; there is no join value
+            // to manufacture and no continuing ownership edge.
+            if !with_value {
+                return Ok(None);
+            }
             return Err(CanonicalLoweringError::UnsupportedStatement("match has no continuing arm"));
         }
 

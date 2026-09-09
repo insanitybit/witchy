@@ -238,6 +238,11 @@ fn project_layouts(
         }
 
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            // Non-completion has no result layout, but visit_block still
+            // visits every scrutinee, guard, and arm expression independently.
+            if typed.table().is_non_completing(expression) {
+                return Ok(());
+            }
             let Some(checked) = typed.table().type_of(expression) else {
                 // Intrinsic scalar literals and variable references are
                 // intentionally absent from the expression side table. Their

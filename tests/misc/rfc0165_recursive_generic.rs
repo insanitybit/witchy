@@ -47,6 +47,25 @@ fn main(console: Console):
 }
 
 #[test]
+fn effect_match_with_only_returns_has_no_join_value() {
+    assert_three_legs(r#"
+fn choose(value: Option(Int), flag: Bool) -> Int:
+    if flag:
+        match value:
+            Some(n) ->
+                return n
+            None ->
+                return 2
+    0
+
+fn main(console: Console):
+    console.print("${choose(Some(7), true)}")
+    console.print("${choose(None, true)}")
+    console.print("${choose(None, false)}")
+"#, vec!["7".to_owned(), "2".to_owned(), "0".to_owned()]);
+}
+
+#[test]
 fn typed_closure_family_carries_scalar_and_list_captures_across_three_legs() {
     assert_three_legs(r#"
 fn apply(f: fn(Int) -> Int, value: Int) -> Int:
