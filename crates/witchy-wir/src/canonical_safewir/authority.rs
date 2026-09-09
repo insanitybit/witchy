@@ -387,8 +387,10 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         };
+        let family_key = source_closure_family_key(&source_signature, &records);
         let family = closures.iter().filter(|entry| {
-            witchy_types::typeck::ty_to_ast(entry.signature()).as_ref() == Some(&source_signature)
+            witchy_types::typeck::ty_to_ast(entry.signature())
+                .is_some_and(|signature| source_closure_family_key(&signature, &records) == family_key)
         }).collect::<Vec<_>>();
         let Some(tag) = family.iter().position(|entry| entry.id() == witness.id()) else {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
@@ -724,6 +726,32 @@ fn hidden_environment_uses_are_closed(
 /// `Option`/`Result`) binds to a candidate reference whose layout carries
 /// exactly the slots `witchy_types::canonical_aggregates` derives for it.
 type ScalarRecordFields = BTreeMap<String, witchy_syntax::ast::TypeDef>;
+
+/// A family selects environment variants, not callable authority. Resolve
+/// checked nominal aliases and spell out default conventions before grouping;
+/// full signature, capture, transfer, and tag checks remain independent above.
+fn source_closure_family_key(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> witchy_syntax::ast::Type {
+    use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
+    fn normalize(source: &Type) -> Type {
+        match source.unqualified() {
+            Type::Fn(parameters, result, conventions, _) => Type::Fn(
+                parameters.iter().map(normalize).collect(),
+                Box::new(normalize(result)),
+                if conventions.is_empty() { vec![Convention::Let; parameters.len()] }
+                else { conventions.clone() },
+                CallableQualifiers::default(),
+            ),
+            Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(normalize).collect()),
+            Type::Tuple(fields) => Type::Tuple(fields.iter().map(normalize).collect()),
+            other => other.clone(),
+        }
+    }
+    normalize(&witchy_types::canonical_aggregates::concrete_aggregate_identity(source, records)
+        .unwrap_or_else(|| source.unqualified().clone()))
+}
 
 const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;
 
@@ -1713,6 +1741,35 @@ mod tests {
                 proper_tail_sites: Vec::new(),
             }),
         ));
+    }
+
+    #[test]
+    fn source_closure_family_normalizes_nominals_and_default_let_not_own() {
+        use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), b"type Node:\n    value: Int\n\nfn main() -> Int:\n    0\n".to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+        ).unwrap();
+        let records = witchy_types::canonical_aggregates::type_definitions(
+            checked.canonical_source().unwrap().typed_module().module());
+        // Synthetic spellings exercise the helper contract. This does not
+        // claim the frontend emits both spellings for one source fixture.
+        let callable = |name: &str, conventions| Type::Fn(
+            vec![Type::Named(name.into(), vec![])],
+            Box::new(Type::Named(name.into(), vec![])), conventions, CallableQualifiers::default());
+        let bare = callable("Node", vec![]);
+        let qualified = callable("main.Node", vec![Convention::Let]);
+        assert_eq!(source_closure_family_key(&bare, &records), source_closure_family_key(&qualified, &records));
+        let nested = |inner| Type::Fn(vec![inner], Box::new(Type::Named("Int".into(), vec![])),
+            vec![Convention::Own], CallableQualifiers::default());
+        assert_eq!(source_closure_family_key(&nested(bare), &records),
+            source_closure_family_key(&nested(qualified.clone()), &records));
+        assert_ne!(source_closure_family_key(&qualified, &records),
+            source_closure_family_key(&callable("Node", vec![Convention::Own]), &records));
+        assert_ne!(source_closure_family_key(&nested(qualified), &records),
+            source_closure_family_key(&nested(callable("Node", vec![Convention::Own])), &records));
+        assert_ne!(source_closure_family_key(&callable("Node", vec![]), &records),
+            source_closure_family_key(&callable("Int", vec![]), &records));
     }
 
     #[test]

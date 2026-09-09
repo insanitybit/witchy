@@ -141,6 +141,39 @@ fn main(console: Console):
 }
 
 #[test]
+fn same_family_multi_witness_closures_call_and_reclaim_across_three_legs() {
+    let source = r#"
+type Node:
+    value: Int
+
+fn value_of(node: Node) -> Int:
+    node.value
+
+fn main(console: Console):
+    let left = [1]
+    let right = [2]
+    let bare = fn(node: Node): left[0]
+    let qualified = fn(node): value_of(node) + right[0]
+    console.print("${bare(Node(10))}")
+    console.print("${qualified(Node(10))}")
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("checked same-family witnesses");
+    let canonical = checked.canonical_source().unwrap();
+    let entries = canonical.closure_witness().entries();
+    assert_eq!(entries.len(), 2, "both source closures must have checked witnesses");
+    assert!(entries.iter().all(|entry| entry.captures().len() == 1));
+    let parameters = canonical.closure_witness().entries().iter().filter_map(|entry| {
+        let witchy::ast::Type::Fn(parameters, _, _, _) = witchy::typeck::ty_to_ast(entry.signature())? else { return None };
+        Some(parameters)
+    }).collect::<Vec<_>>();
+    assert_eq!(parameters.len(), 2);
+    assert!(parameters.iter().all(|parameters| matches!(parameters.as_slice(),
+        [witchy::ast::Type::Named(name, arguments)] if name == "main.Node" && arguments.is_empty())),
+        "the frontend normalizes both witnesses into the same nominal family: {parameters:?}");
+    assert_three_legs(source, vec!["1".to_owned(), "12".to_owned()]);
+}
+
+#[test]
 fn recursive_closure_family_stores_typed_function_capture_and_reclaims() {
     assert_three_legs(r#"
 fn compose(f: fn(Int) -> Int) -> fn(Int) -> Int:

@@ -1376,11 +1376,12 @@ mod tests {
 
     #[test]
     fn canonical_closure_key_normalizes_nominals_but_keeps_conventions() {
-        let definition = heap_definition("Node", vec![named("Int")]);
-        let definitions = BTreeMap::from([
-            ("Node".into(), definition.clone()),
-            ("main.Node".into(), definition),
-        ]);
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), b"type Node:\n    value: Int\n\nfn main() -> Int:\n    0\n".to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+        ).unwrap();
+        let definitions = witchy_types::canonical_aggregates::type_definitions(
+            checked.canonical_source().unwrap().typed_module().module());
         let callable = |name: &str, convention| Type::Fn(
             vec![named(name)],
             Box::new(named(name)),
