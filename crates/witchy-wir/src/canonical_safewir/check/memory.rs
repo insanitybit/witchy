@@ -197,6 +197,12 @@ impl<'a> MemoryChecker<'a> {
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
             if parameter.ownership == Some(Ownership::Shared) && self.state.objects.contains_key(argument) {
                 let _ = self.promote_header_extent(*argument);
+                // Preserve completeness of this predecessor's current logical
+                // value before phi renaming or extent demotion loses its count.
+                // Missing slot evidence remains missing; capacity is not proof.
+                if self.require_owned_slots_initialized(*argument, "shared phi(uninitialized owned slot)").is_ok() {
+                    self.state.objects.get_mut(argument).expect("object exists").initialized_owned_slots = true;
+                }
             }
         }
         let mut renames = BTreeMap::new();
@@ -1131,6 +1137,11 @@ impl<'a> MemoryChecker<'a> {
                     let identity = objects.get(&identity.object).map(|state| state.identity);
                     identity != source_identity && identity != destination_identity
                 });
+                for object in objects.values_mut() {
+                    if Some(object.identity) == source_identity || Some(object.identity) == destination_identity {
+                        object.initialized_owned_slots = false;
+                    }
+                }
             }
             self.state.range_states.insert(
                 RangeIdentity { object: destination.object, start: destination.start, length: destination.length },
@@ -2708,7 +2719,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        let Extent::Counted { header_bytes, capacity, stride_bytes, .. } = state.extent else {
+        let Extent::Counted { header_bytes, count: old_count, capacity, stride_bytes } = state.extent else {
             return Err(InitialCheckError::InvalidExtent {
                 function: self.function.id,
                 object,
@@ -2730,6 +2741,21 @@ impl<'a> MemoryChecker<'a> {
                 count,
                 capacity,
             });
+        }
+        if !self.same_scalar(old_count, count) {
+            // A complete value proves only its old logical prefix. Materialize
+            // that prefix before invalidating the summary; newly added slots
+            // must be justified by the ordinary store/range rules below.
+            if let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout()
+                && matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. })
+            {
+                self.seed_managed_prefix(object, old_count, element)?;
+            }
+            for candidate in self.state.objects.values_mut() {
+                if candidate.identity == state.identity {
+                    candidate.initialized_owned_slots = false;
+                }
+            }
         }
         self.consolidate_pointer_prefix(object, count)?;
         self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
@@ -2755,7 +2781,13 @@ impl<'a> MemoryChecker<'a> {
         element: crate::layout::LayoutId,
     ) -> Result<bool, InitialCheckError> {
         let state = self.live_object(object)?;
+        let current_count = match state.extent {
+            Extent::Counted { count, .. } => Some(count),
+            Extent::HeaderPrefix { .. } => self.state.header_values.get(&(object, HeaderField::Length)).copied(),
+            _ => None,
+        };
         if !state.initialized_owned_slots
+            || !current_count.is_some_and(|current| self.same_scalar(current, count))
             || self.state.range_states.iter().any(|(identity, range)| {
                 identity.object == object && range.initialized && range.zero_start
             })
@@ -3917,6 +3949,50 @@ mod tests {
             });
         }
         target
+    }
+
+    #[test]
+    fn owned_prefix_summary_does_not_authorize_count_growth() {
+        with_checker_capacity(true, 4, |checker, _| {
+            checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = true;
+            checker.state.range_states.retain(|identity, _| identity.object != SOURCE);
+            assert!(checker.update_count(SOURCE, LONG_LENGTH).is_err(), "old prefix cannot initialize new slots");
+        });
+    }
+
+    #[test]
+    fn owned_prefix_summary_is_invalidated_by_move() {
+        with_checker(true, |checker, list| {
+            checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = true;
+            checker.state.range_states.retain(|identity, _| identity.object != SOURCE);
+            checker.consolidate_pointer_prefix(SOURCE, COUNT).expect("authenticated current prefix");
+            checker.update_count(DESTINATION, START).expect("empty destination");
+            let LayoutKind::PackedList { element, .. } = checker.layouts.get(list).unwrap().kind() else { unreachable!() };
+            let LayoutKind::RuntimePointerValueSlot { pointee, .. } = checker.layouts.get(*element).unwrap().kind() else { unreachable!() };
+            let source = range_place(SOURCE, *pointee, COUNT, AccessMode::Read);
+            let destination = range_place(DESTINATION, *pointee, COUNT, AccessMode::Write);
+            checker.move_range(&destination, &source, COUNT).expect("move initialized prefix");
+            assert!(checker.require_owned_slots_initialized(SOURCE, "moved source").is_err());
+            checker.update_count(DESTINATION, COUNT).expect("moved destination is initialized");
+            checker.require_owned_slots_initialized(DESTINATION, "moved destination").expect("complete destination");
+        });
+    }
+
+    #[test]
+    fn owned_prefix_summary_at_shared_phi_requires_predecessor_evidence() {
+        for empty in [false, true] {
+            with_checker(true, |checker, list| {
+                let count = if empty {
+                    checker.update_count(SOURCE, START).expect("empty initialized prefix");
+                    START
+                } else {
+                    COUNT
+                };
+                let target = shared_extent_target(list);
+                let edge = checker.transfer_edge(&target, &[SOURCE, count, CAPACITY]).expect("shared phi");
+                assert_eq!(edge.objects[&target.parameters[0].value].initialized_owned_slots, empty);
+            });
+        }
     }
 
     #[test]

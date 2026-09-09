@@ -406,3 +406,15 @@ A focused production check of jq now admits; this is not yet jq execution parity
   opt_mode remain the explicit deferred families.
 - Compiler-service queue validation is pending. Coverage does not establish
   compiler-wide memory safety or optimizer correctness.
+
+### Owned-prefix initialization repair (2026-09-09)
+
+- Three focused native tests pass: count growth cannot reuse old initialization,
+  moved-from contents lose their summary, and shared-phi completeness requires
+  predecessor evidence. Bounded review found no concrete defect in the repair.
+- CLI parity passes for hello, wrap, jq, and coven_check. The exact existing
+  coven_check test passes and its deferral is removed.
+- The last full census above predates this repair; no updated total is claimed.
+- Compiler services required generated public ABI catalog refresh after a red
+  gate. The exact catalog test now passes; `a8251fb25` is resubmitted as
+  `impl/rfc0165-compiler-services-catalog-fix`. The ownership repair stacks on it.
