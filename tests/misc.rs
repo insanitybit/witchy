@@ -105,3 +105,5 @@ mod rfc0165_recursive;
 mod rfc0165_recursive_generic;
 #[path = "misc/rfc0165_reference_list_patterns.rs"]
 mod rfc0165_reference_list_patterns;
+#[path = "misc/rfc0165_nested_patterns.rs"]
+mod rfc0165_nested_patterns;

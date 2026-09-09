@@ -3037,6 +3037,14 @@ impl FunctionLowerer<'_> {
                             bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
                         }
                         Pattern::Wildcard | Pattern::Var(_) => {}
+                        Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } => {
+                            let field_type = shape.fields[slot].clone();
+                            let value_type = self.field_value_type(&field_type)?;
+                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
+                        }
+                        Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
                         _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested tuple pattern")),
                     }
                 }
@@ -3085,6 +3093,14 @@ impl FunctionLowerer<'_> {
                             let payload = self.load_record_field(scrutinee, slot, value_type)?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
+                        Pattern::List { .. } => {
+                            let slot = variant.first_field + offset;
+                            let field_type = shape.fields[slot].clone();
+                            let value_type = self.field_value_type(&field_type)?;
+                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
+                        }
                         // A literal payload binds nothing; its test ran in the
                         // dispatch block.
                         Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
@@ -3118,6 +3134,10 @@ impl FunctionLowerer<'_> {
         let (layout, element_type, header_bytes, stride_bytes) = list_layout(
             scrutinee_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
+        let element_source_type = match scrutinee_type.unqualified() {
+            Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => arguments[0].clone(),
+            _ => return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee")),
+        };
         if self.values[&scrutinee] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
         }
@@ -3125,14 +3145,20 @@ impl FunctionLowerer<'_> {
         let count = self.list_counts[&scrutinee];
         let mut bindings = Vec::new();
         for (position, pattern) in elems.iter().enumerate() {
-            let name = match pattern {
-                Pattern::Var(name) if name != "_" => name.clone(),
-                Pattern::Wildcard | Pattern::Var(_) => continue,
-                _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested list pattern element")),
-            };
             let index = self.push_const_size(u64::try_from(position).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-            let value = self.load_list_element(scrutinee, index, element_type)?;
-            bindings.push((name, value));
+            match pattern {
+                Pattern::Var(name) if name != "_" => {
+                    let value = self.load_list_element(scrutinee, index, element_type)?;
+                    bindings.push((name.clone(), value));
+                }
+                Pattern::Wildcard | Pattern::Var(_) => {}
+                Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } => {
+                    let value = self.load_list_element(scrutinee, index, element_type)?;
+                    bindings.extend(self.lower_match_pattern(value, pattern, &element_source_type)?);
+                }
+                Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
+                _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested list pattern element")),
+            }
         }
         let Some(Some(rest_name)) = rest else { return Ok(bindings) };
         // `..rest`: the elements after the named prefix, copied into a fresh
@@ -3355,12 +3381,14 @@ impl FunctionLowerer<'_> {
                 (destination, ValueType::Bool)
             }
             Pattern::Wildcard | Pattern::Var(_) => return Ok(None),
-            // A tuple pattern of names and wildcards always matches.
             Pattern::Tuple(args) => {
-                if args.iter().any(|argument| !matches!(argument, Pattern::Var(_) | Pattern::Wildcard)) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("nested tuple pattern"));
+                let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("tuple pattern scrutinee"),
+                )?;
+                if args.len() != shape.fields.len() {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("tuple pattern arity"));
                 }
-                return Ok(None);
+                return Ok(self.tuple_pattern_conditions(scrutinee, &shape.fields, args, 0)?);
             }
             // A string literal pattern is an equality test against the
             // static literal.
@@ -3373,8 +3401,8 @@ impl FunctionLowerer<'_> {
             }
             Pattern::List { elems, rest } => {
                 // The length test: exact for `[a, b]`, at least the prefix
-                // for `[a, ..]` / `[a, ..rest]`. Element bindings follow in
-                // the arm block.
+                // for `[a, ..]` / `[a, ..rest]`. Nested element tests remain
+                // behind this guard so no out-of-bounds load is emitted.
                 if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
                 }
@@ -3382,7 +3410,22 @@ impl FunctionLowerer<'_> {
                 let count = self.list_counts[&scrutinee];
                 let prefix = self.push_const_size(u64::try_from(elems.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
                 let operator = if rest.is_some() { ComparisonOperator::GreaterEqualUnsigned } else { ComparisonOperator::Equal };
-                return Ok(Some(self.push_compare(operator, count, prefix)?));
+                let length = self.push_compare(operator, count, prefix)?;
+                if elems.iter().all(|element| matches!(element, Pattern::Var(_) | Pattern::Wildcard)) {
+                    return Ok(Some(length));
+                }
+                let (_, element_type, _, _) = list_layout(
+                    scrutinee_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+                )?;
+                let element_source_type = match scrutinee_type.unqualified() {
+                    Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => arguments[0].clone(),
+                    _ => return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee")),
+                };
+                return Ok(Some(self.short_circuit_and(length, |this| {
+                    this.list_pattern_conditions_after_length(
+                        scrutinee, elems, &element_source_type, element_type, 0,
+                    )
+                })?));
             }
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         };
@@ -3397,6 +3440,63 @@ impl FunctionLowerer<'_> {
             right: value,
         });
         Ok(Some(condition))
+    }
+
+    fn tuple_pattern_conditions(
+        &mut self,
+        scrutinee: ValueId,
+        fields: &[Type],
+        args: &[Pattern],
+        offset: usize,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some((argument, rest)) = args.split_first() else { return Ok(None) };
+        if matches!(argument, Pattern::Var(_) | Pattern::Wildcard) {
+            return self.tuple_pattern_conditions(scrutinee, fields, rest, offset + 1);
+        }
+        let field_type = fields[offset].clone();
+        let value_type = self.field_value_type(&field_type)?;
+        let slot = u32::try_from(offset).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let payload = self.load_record_field(scrutinee, slot, value_type)?;
+        let Some(test) = self.match_pattern_condition(payload, argument, &field_type)? else {
+            return self.tuple_pattern_conditions(scrutinee, fields, rest, offset + 1);
+        };
+        if rest.is_empty() {
+            return Ok(Some(test));
+        }
+        Ok(Some(self.short_circuit_and(test, |this| {
+            this.tuple_pattern_conditions(scrutinee, fields, rest, offset + 1)
+        })?))
+    }
+
+    fn list_pattern_conditions_after_length(
+        &mut self,
+        scrutinee: ValueId,
+        elems: &[Pattern],
+        element_source_type: &Type,
+        element_type: ValueType,
+        position: usize,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some((pattern, rest)) = elems.split_first() else { return Ok(None) };
+        if matches!(pattern, Pattern::Var(_) | Pattern::Wildcard) {
+            return self.list_pattern_conditions_after_length(
+                scrutinee, rest, element_source_type, element_type, position + 1,
+            );
+        }
+        let index = self.push_const_size(u64::try_from(position).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+        let value = self.load_list_element(scrutinee, index, element_type.clone())?;
+        let Some(test) = self.match_pattern_condition(value, pattern, element_source_type)? else {
+            return self.list_pattern_conditions_after_length(
+                scrutinee, rest, element_source_type, element_type, position + 1,
+            );
+        };
+        if rest.is_empty() {
+            return Ok(Some(test));
+        }
+        Ok(Some(self.short_circuit_and(test, |this| {
+            this.list_pattern_conditions_after_length(
+                scrutinee, rest, element_source_type, element_type, position + 1,
+            )
+        })?))
     }
 
     /// The conjunction of the refutable payload patterns of one constructor
