@@ -434,7 +434,8 @@ pub fn lower_typed_module(
     let prints = contains_console_print(typed.module());
     let floats = renders_float(typed.module(), typed.table(), &definitions);
     let capability_imports = collect_capability_imports(typed.module(), typed.table());
-    if prints || floats || !capability_imports.is_empty() {
+    let compiler_imports = collect_compiler_imports(typed.module());
+    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -481,7 +482,7 @@ pub fn lower_typed_module(
         });
         let mut catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, float_signature_id, string_layout)
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        if !capability_imports.is_empty() {
+        if !capability_imports.is_empty() || !compiler_imports.is_empty() {
             let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
             let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
             let text = ValueType::Ref(string_layout);
@@ -525,6 +526,14 @@ pub fn lower_typed_module(
             catalog = catalog
                 .with_capability_imports(capability_signatures, string_layout)
                 .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            if !compiler_imports.is_empty() {
+                let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
+                    footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
+                    diff_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                };
+                catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
         }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
@@ -535,9 +544,13 @@ pub fn lower_typed_module(
                 (import.name == "print" && prints)
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
+                    || compiler_imports.contains(import.name.as_str())
             })
             .collect::<Vec<_>>();
         host_imports = HostImports {
+            compiler: compiler_imports.iter()
+                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
+                .collect(),
             print: projected.iter().find(|import| import.name == "print").map(|import| import.id),
             float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
             capabilities: CAPABILITY_IMPORTS
@@ -1745,6 +1758,10 @@ impl FunctionLowerer<'_> {
             Expr::For { var, iter, body } => self.lower_for(var, iter, body),
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
+            Expr::Call { name, args } if compiler_service_import(name).is_some() => {
+                self.lower_compiler_service(name, args)?;
+                Ok(())
+            }
             // A capability operation in statement position: `dir.write` has
             // no value; a value-bearing one is released like any other
             // discarded result.
@@ -4978,6 +4995,7 @@ impl FunctionLowerer<'_> {
                 self.ensure_list_extent(value)?;
                 Ok(value)
             }
+            Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
             Expr::Call { name, args } if is_capability_op(name) => self
                 .lower_capability_op(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("capability operation without a value")),
@@ -6496,14 +6514,43 @@ impl FunctionLowerer<'_> {
     fn lower_host_read_into(&mut self, import_name: &str, token: ValueId, key: Option<ValueId>) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let import = self.capability_import(import_name)?;
+        let mut inputs = vec![HostCallArgument::Capability(token)];
+        if let Some(key) = key {
+            inputs.push(self.string_slice_argument(key, layout)?);
+        }
+        self.lower_bounded_host_result(import, inputs)
+    }
+
+    fn lower_compiler_service(&mut self, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+        let (import_name, expected) = compiler_service_import(name)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("compiler service"))?;
+        if args.len() != expected {
+            return Err(CanonicalLoweringError::CallArityMismatch {
+                callee: name.to_owned(), expected, actual: args.len(),
+            });
+        }
+        let import = *self.host_imports.compiler.get(import_name)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("missing compiler service import"))?;
+        let layout = self.string_layout_id()?;
+        let mut inputs = Vec::with_capacity(args.len());
+        for argument in args {
+            let value = self.lower_string_argument(argument)?;
+            inputs.push(self.string_slice_argument(value, layout)?);
+        }
+        self.lower_bounded_host_result(import, inputs)
+    }
+
+    fn lower_bounded_host_result(
+        &mut self,
+        import: witchy_wir::canonical_safewir::ImportId,
+        inputs: Vec<HostCallArgument>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
         let zero = self.push_const_size(0)?;
         let probe = self.alloc_bytes(zero, zero)?;
         let full = self.fresh(ValueType::Size)?;
         let probe_capacity = self.string_capacities[&probe];
-        let mut arguments = vec![HostCallArgument::Capability(token)];
-        if let Some(key) = key {
-            arguments.push(self.string_slice_argument(key, layout)?);
-        }
+        let mut arguments = inputs.clone();
         arguments.push(HostCallArgument::Buffer {
             place: witchy_wir::canonical_safewir::Place::projected(
                 probe,
@@ -6519,10 +6566,7 @@ impl FunctionLowerer<'_> {
         let object = self.alloc_bytes(full, capacity)?;
         let written = self.fresh(ValueType::Size)?;
         let start = self.push_const_size(0)?;
-        let mut arguments = vec![HostCallArgument::Capability(token)];
-        if let Some(key) = key {
-            arguments.push(self.string_slice_argument(key, layout)?);
-        }
+        let mut arguments = inputs;
         arguments.push(HostCallArgument::Buffer {
             place: witchy_wir::canonical_safewir::Place::projected(
                 object,
@@ -11825,6 +11869,7 @@ fn string_layout(
 /// by the role the lowering reaches them through.
 #[derive(Clone, Default)]
 struct HostImports {
+    compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,
     float_to_str: Option<witchy_wir::canonical_safewir::ImportId>,
     /// The capability imports (RFC-0165 slice 42), keyed by import name.
@@ -11838,6 +11883,32 @@ const CAPABILITY_IMPORTS: [&str; 7] =
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
 const DIRECTORY_LISTING_SEPARATOR: &str = "\u{0}";
+
+fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
+    match name {
+        witchy_syntax::intrinsics::COMPILER_FOOTPRINT => Some(("compiler_footprint_into", 1)),
+        witchy_syntax::intrinsics::COMPILER_DIFF => Some(("compiler_diff_into", 2)),
+        _ => None,
+    }
+}
+
+fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'static str> {
+    let scope = witchy_types::pipeline::canonical_scope(module);
+    let mut needed = BTreeSet::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) { continue; }
+        witchy_syntax::ast::visit::visit_block::<()>(&function.body, &mut |expression| {
+            if let Expr::Call { name, .. } = expression
+                && let Some((import, _)) = compiler_service_import(name)
+            {
+                needed.insert(import);
+            }
+            Ok(())
+        }).expect("compiler service import visitor cannot fail");
+    }
+    needed
+}
 
 /// Whether `name` is a capability operation this lowering admits on a `Dir`
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,

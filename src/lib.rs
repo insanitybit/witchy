@@ -39,6 +39,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
 pub use witchy_lower::codegen;
+pub mod compiler_oracle;
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
 // `crate::{ast,parser,…}::…` paths unchanged.

@@ -699,6 +699,7 @@ fn safewir_oracle_agrees(
         .ok_or_else(|| format!("entry export `{}` names no canonical function", entry.export()))?;
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
     let run = interpret_entry_program(&validated, function, arguments, launch_arguments, InterpreterConfig {
+        compiler_services: Some(witchy::compiler_oracle::call),
         max_steps: 20_000_000_000,
         // The third leg reads the same root the backend was granted (dev
         // grants: the working directory and the process environment); its
