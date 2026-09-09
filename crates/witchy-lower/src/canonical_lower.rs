@@ -3099,39 +3099,28 @@ impl FunctionLowerer<'_> {
             | Pattern::Duration(_)
             | Pattern::Bool(_)
             | Pattern::Str(_) => Ok(Vec::new()),
-            Pattern::List { elems, rest } => self.lower_list_pattern_bindings(scrutinee, elems, rest.as_ref()),
+            Pattern::List { elems, rest } => self.lower_list_pattern_bindings(scrutinee, scrutinee_type, elems, rest.as_ref()),
             _ => Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         }
     }
 
     /// Bindings of a list pattern, emitted in the arm the length test
-    /// reached: each named element is a guarded scalar load, and `..rest`
+    /// reached: each named element is a guarded scalar or shared-clone load, and `..rest`
     /// is a fresh list holding a copy of the remaining elements (value
     /// semantics; the source is not consumed).
     fn lower_list_pattern_bindings(
         &mut self,
         scrutinee: ValueId,
+        scrutinee_type: &Type,
         elems: &[Pattern],
         rest: Option<&Option<String>>,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
-        let ValueType::Ref(layout) = self.values[&scrutinee] else {
+        let (layout, element_type, header_bytes, stride_bytes) = list_layout(
+            scrutinee_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+        )?;
+        if self.values[&scrutinee] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
-        };
-        let descriptor = self.physical_descriptor(layout).ok_or(CanonicalLoweringError::UnsupportedExpression("list pattern layout"))?;
-        let LayoutKind::PackedList { element, .. } = descriptor.kind() else {
-            return Err(CanonicalLoweringError::UnsupportedExpression("list pattern scrutinee"));
-        };
-        let element = *element;
-        let element_type = match self.layouts.get(element).map(|descriptor| descriptor.kind()) {
-            Some(LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
-            Some(LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
-            Some(LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
-            _ => return Err(CanonicalLoweringError::UnsupportedExpression("list pattern over reference elements")),
-        };
-        let (header_bytes, stride_bytes) = match (descriptor.header(), descriptor.size()) {
-            (HeaderLayout::PackedList { data_offset, .. }, LayoutSize::Dynamic { stride, .. }) if stride != 0 => (data_offset, stride),
-            _ => return Err(CanonicalLoweringError::UnsupportedExpression("list pattern layout")),
-        };
+        }
         self.ensure_list_extent(scrutinee)?;
         let count = self.list_counts[&scrutinee];
         let mut bindings = Vec::new();
@@ -3142,19 +3131,7 @@ impl FunctionLowerer<'_> {
                 _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested list pattern element")),
             };
             let index = self.push_const_size(u64::try_from(position).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-            let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, count)?;
-            self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
-            let value = self.fresh(element_type)?;
-            self.push_operation(Operation::Load {
-                destination: value,
-                place: witchy_wir::canonical_safewir::Place::projected(
-                    scrutinee,
-                    Projection::Element { index },
-                    element_type,
-                    AccessMode::Read,
-                ),
-                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
-            });
+            let value = self.load_list_element(scrutinee, index, element_type)?;
             bindings.push((name, value));
         }
         let Some(Some(rest_name)) = rest else { return Ok(bindings) };
@@ -3172,19 +3149,30 @@ impl FunctionLowerer<'_> {
         let source_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, prefix, rest_count, OverflowBehavior::Trap)?;
         let source_in_bounds = self.push_compare(ComparisonOperator::LessEqualUnsigned, source_end, count)?;
         self.push_guard(source_in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let zero = self.push_const_size(0)?;
+        // Pointer slots start empty. The reference-tail loop publishes only
+        // initialized owned elements, including the empty-tail case.
+        let allocation_count = if matches!(element_type, ValueType::Ref(_)) { zero } else { rest_count };
         let tail = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: tail,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes,
-                count: rest_count,
+                count: allocation_count,
                 capacity: rest_count,
                 stride_bytes,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
-        let zero = self.push_const_size(0)?;
+        if matches!(element_type, ValueType::Ref(_)) {
+            self.set_tracked_lanes(tail, zero, rest_count);
+            let tail = self.lower_list_pattern_reference_tail(
+                tail, scrutinee, prefix, count, scrutinee_type, element_type,
+            )?;
+            bindings.push((rest_name.clone(), tail));
+            return Ok(bindings);
+        }
         self.push_operation(Operation::CloneRange {
             destination: witchy_wir::canonical_safewir::Place::projected(
                 tail,
@@ -3205,6 +3193,74 @@ impl FunctionLowerer<'_> {
         self.list_capacities.insert(tail, rest_count);
         bindings.push((rest_name.clone(), tail));
         Ok(bindings)
+    }
+
+    /// Build an owned suffix without asking the range checker to infer a
+    /// dynamically sized subrange of the source's initialized prefix.
+    fn lower_list_pattern_reference_tail(
+        &mut self,
+        initial: ValueId,
+        source: ValueId,
+        prefix: ValueId,
+        count: ValueId,
+        list_type: &Type,
+        element_type: ValueType,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
+        let (initial_count, initial_capacity) = self.tracked_lanes(initial).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list pattern tail extent"),
+        )?;
+        let (initial_count, initial_capacity) = self.split_lanes(initial_count, initial_capacity)?;
+        let lanes = [
+            (self.values[&initial], Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ];
+        let header = self.new_block_owned(&lanes)?;
+        let body = self.new_block(&[self.values[&initial], ValueType::Size, ValueType::Size, ValueType::Size])?;
+        let exit = self.new_block_owned(&lanes[..3])?;
+        self.finish_current(Terminator::Branch {
+            target: header,
+            arguments: vec![initial, initial_count, initial_capacity, prefix],
+        })?;
+        self.current = header;
+        let values = self.block_parameter_values(header);
+        self.set_tracked_lanes(values[0], values[1], values[2]);
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, values[3], count)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: values.clone(),
+            else_target: exit,
+            else_arguments: values[..3].to_vec(),
+        })?;
+        self.current = body;
+        let values = self.block_parameter_values(body);
+        self.set_tracked_lanes(values[0], values[1], values[2]);
+        let element = self.load_list_element(source, values[3], element_type)?;
+        let Type::Named(_, arguments) = list_type.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedType(list_type.clone()));
+        };
+        let element = self.owned_for_storage(element, &arguments[0])?;
+        let next_object = self.push_owned_element(values[0], element, list_type)?;
+        let (next_count, next_capacity) = self.tracked_lanes(next_object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list pattern appended extent"),
+        )?;
+        let maximum = self.push_const_size(u64::from(u32::MAX))?;
+        let fits = self.push_compare(ComparisonOperator::LessUnsigned, values[3], maximum)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let one = self.push_const_size(1)?;
+        let next_cursor = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, values[3], one, OverflowBehavior::Wrap)?;
+        let (next_count, next_capacity) = self.split_lanes(next_count, next_capacity)?;
+        let back = vec![next_object, next_count, next_capacity, next_cursor];
+        self.demote_unique_lanes_carrying_shared(header, exit, &back);
+        self.finish_current(Terminator::Branch { target: header, arguments: back })?;
+        let values = self.block_parameter_values(exit);
+        self.restore_facts(facts, exit);
+        self.current = exit;
+        self.set_tracked_lanes(values[0], values[1], values[2]);
+        Ok(values[0])
     }
 
     fn match_pattern_condition(
