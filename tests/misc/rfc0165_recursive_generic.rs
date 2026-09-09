@@ -115,6 +115,28 @@ fn main(console: Console):
 }
 
 #[test]
+fn function_fields_and_function_lists_construct_call_and_reclaim() {
+    assert_three_legs(r#"
+type FnBox:
+    FnBox(fn(Int) -> Int)
+
+fn apply_box(box: FnBox, value: Int) -> Int:
+    match box:
+        FnBox(f) -> f(value)
+
+fn apply_second(functions: List(fn(Int) -> Int), value: Int) -> Int:
+    let f = functions[1]
+    f(value)
+
+fn main(console: Console):
+    let boxed = FnBox(fn(value: Int): value + 1)
+    let functions = [fn(value: Int): value + 1, fn(value: Int): value * 2]
+    console.print("${apply_box(boxed, 4)}")
+    console.print("${apply_second(functions, 4)}")
+"#, vec!["5".to_owned(), "8".to_owned()]);
+}
+
+#[test]
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect

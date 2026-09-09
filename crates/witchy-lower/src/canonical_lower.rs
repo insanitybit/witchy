@@ -3942,7 +3942,7 @@ impl FunctionLowerer<'_> {
         }
         let logical_type = self.expression_type(iterable)?;
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&logical_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let source = self.lower_expr(iterable)?;
         if self.values[&source] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list object type"));
@@ -5921,7 +5921,7 @@ impl FunctionLowerer<'_> {
             }
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                 let (layout, element_type, header_bytes, stride_bytes) =
-                    list_layout(ty, self.layout_bundle, self.layouts, self.definitions)?;
+                    list_layout(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
                 let _ = element_type;
                 // Distinct count and capacity ids, as the list literal
                 // allocates: a loop lane renames each to its own parameter.
@@ -6031,6 +6031,7 @@ impl FunctionLowerer<'_> {
                 nullable_references,
                 self.layout_bundle,
                 self.layouts,
+                &self.closures.layouts,
                 self.definitions,
             )?,
             None => aggregate_layout(
@@ -6038,6 +6039,7 @@ impl FunctionLowerer<'_> {
                 nullable_references,
                 self.layout_bundle,
                 self.layouts,
+                &self.closures.layouts,
                 self.definitions,
             )?,
         };
@@ -6463,7 +6465,7 @@ impl FunctionLowerer<'_> {
                 // empty list (a split would yield one empty name).
                 let names = self.lower_host_read_into("dir_list_into", token, None)?;
                 let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
-                let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+                let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
                 let length = self.string_length_of(names)?;
                 let zero = self.push_const_size(0)?;
                 let empty = self.push_compare(ComparisonOperator::Equal, length, zero)?;
@@ -6739,7 +6741,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(expression)?;
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&logical_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let count = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ConstSize {
             destination: count,
@@ -6784,6 +6786,10 @@ impl FunctionLowerer<'_> {
             if matches!(element_type, ValueType::Ref(_)) {
                 if self.string_lengths.contains_key(&value) {
                     value = self.clone_string_for_storage(value)?;
+                } else if matches!(item, Expr::Lambda { .. }) && matches!(element_type, ValueType::Ref(_)) {
+                    // A lambda expression is a fresh unique closure. Move it
+                    // directly into a pointer-element list; cloning it would
+                    // produce Shared, which cannot authenticate UpdateCount.
                 } else if !matches!(item, Expr::List(_)) {
                     let Type::Named(_, arguments) = logical_type.unqualified() else {
                         return Err(CanonicalLoweringError::UnsupportedListElement(logical_type.clone()));
@@ -6939,7 +6945,7 @@ impl FunctionLowerer<'_> {
         source_type: &Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(source_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(source_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         if self.values.get(&source).copied() != Some(ValueType::Ref(layout)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("nested list element type"));
         }
@@ -7010,7 +7016,7 @@ impl FunctionLowerer<'_> {
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
         let list_type = self.expression_type(&arguments[0])?;
         let (_, element_type, _, _) =
-            list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let pointer_elements = matches!(element_type, ValueType::Ref(_));
         let value_expression = value;
         let mut value = self.lower_expr(value_expression)?;
@@ -7041,9 +7047,9 @@ impl FunctionLowerer<'_> {
         let left_type = self.expression_type(left_expression)?;
         let right_type = self.expression_type(right_expression)?;
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&left_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&left_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let (right_layout, right_element_type, right_header_bytes, right_stride_bytes) =
-            list_layout(&right_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&right_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         if layout != right_layout
             || element_type != right_element_type
             || header_bytes != right_header_bytes
@@ -7232,6 +7238,7 @@ impl FunctionLowerer<'_> {
                     list_type,
                     self.layout_bundle,
                     self.layouts,
+                    &self.closures.layouts,
                     self.definitions,
                 )?;
                 element_type
@@ -7406,7 +7413,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver"));
         };
         let (expected_layout, element_type, header_bytes, stride_bytes) =
-            list_layout(list_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         if layout != expected_layout {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.push receiver layout"));
         }
@@ -7656,7 +7663,7 @@ impl FunctionLowerer<'_> {
             vec![Type::Named("String".into(), Vec::new())],
         );
         let (layout, element_type, header_bytes, stride_bytes) =
-            list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let characters = source.chars().collect::<Vec<_>>();
         let count = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ConstSize {
@@ -7729,7 +7736,7 @@ impl FunctionLowerer<'_> {
     fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let logical_type = self.expression_type(base)?;
         let (layout, element_type, _header_bytes, _stride_bytes) =
-            list_layout(&logical_type, self.layout_bundle, self.layouts, self.definitions)?;
+            list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let object = self.lower_expr(base)?;
         if self.values[&object] != ValueType::Ref(layout) {
             return Err(CanonicalLoweringError::UnsupportedExpression("list object type"));
@@ -8407,7 +8414,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict key type"));
         }
         let list_type = Type::Named("List".into(), vec![key_type.clone()]);
-        let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         self.ensure_list_extent(keys)?;
         let count = *self.list_counts.get(&keys).ok_or(CanonicalLoweringError::UnsupportedExpression("dict keys extent"))?;
         let zero = self.push_const_size(0)?;
@@ -8458,7 +8465,7 @@ impl FunctionLowerer<'_> {
     /// (a scalar as itself, a string as a fresh copy).
     fn lower_dict_value_at(&mut self, values: ValueId, index: ValueId, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
         let list_type = Type::Named("List".into(), vec![value_type.clone()]);
-        let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         self.ensure_list_extent(values)?;
         let count = *self.list_counts.get(&values).ok_or(CanonicalLoweringError::UnsupportedExpression("dict values extent"))?;
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, count)?;
@@ -8661,7 +8668,7 @@ impl FunctionLowerer<'_> {
             .then(|| scalar_aggregate_shape(&option_type, self.definitions))
             .flatten();
         let option_layout = if extract { Some(self.field_value_type(&option_type)?) } else { None };
-        let (_, element_type, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, self.definitions)?;
+        let (_, element_type, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let dict_layout = self.values[&dict];
         let facts = self.snapshot_facts();
         let bindings = self.bindings.clone();
@@ -8733,8 +8740,8 @@ impl FunctionLowerer<'_> {
         let list_type = Type::Named("List".into(), vec![pair_type.clone()]);
         let key_list = Type::Named("List".into(), vec![key_type.clone()]);
         let value_list = Type::Named("List".into(), vec![value_type.clone()]);
-        let (_, key_element, _, _) = list_layout(&key_list, self.layout_bundle, self.layouts, self.definitions)?;
-        let (_, value_element, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, self.definitions)?;
+        let (_, key_element, _, _) = list_layout(&key_list, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        let (_, value_element, _, _) = list_layout(&value_list, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         self.ensure_list_extent(keys)?;
         self.ensure_list_extent(values)?;
         let count = *self.list_counts.get(&keys).ok_or(CanonicalLoweringError::UnsupportedExpression("dict keys extent"))?;
@@ -10067,7 +10074,7 @@ impl FunctionLowerer<'_> {
     /// `[a, b, c]`: the elements rendered in order between brackets, folded
     /// into an owned accumulator by a counted loop.
     fn lower_render_list(&mut self, object: ValueId, list_type: &Type, element_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
-        let (_, element_value_type, _, _) = list_layout(list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let (_, element_value_type, _, _) = list_layout(list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         self.ensure_list_extent(object)?;
         let count = *self.list_counts.get(&object).ok_or(CanonicalLoweringError::UnsupportedExpression("render list extent"))?;
         let open = self.lower_string_literal("[")?;
@@ -10814,7 +10821,7 @@ impl FunctionLowerer<'_> {
     /// string as its one piece (the interpreter's rule).
     fn lower_string_split(&mut self, object: ValueId, separator: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
-        let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, self.definitions)?;
+        let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let separator_length = self.string_length_of(separator)?;
         let zero = self.push_const_size(0)?;
         let empty_separator = self.push_compare(ComparisonOperator::Equal, separator_length, zero)?;
@@ -11765,7 +11772,15 @@ fn source_value_type(
         // A scalar aggregate (record, sum, scalar `Option`/`Result`) is one
         // owned reference; a packed record stays an inline aggregate, which
         // the ABI does not carry (`scalar_type` refuses it below).
-        return aggregate_layout_for_source(source, &shape.fields, shape.tagged, layout_bundle, layouts, definitions)
+        return aggregate_layout_for_source(
+            source,
+            &shape.fields,
+            shape.tagged,
+            layout_bundle,
+            layouts,
+            closure_layouts,
+            definitions,
+        )
             .map(ValueType::Ref);
     }
     match source.unqualified() {
@@ -11776,7 +11791,7 @@ fn source_value_type(
             .map(ValueType::Ref)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone())),
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            list_layout(source, layout_bundle, layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
+            list_layout(source, layout_bundle, layouts, closure_layouts, definitions).map(|(layout, _, _, _)| ValueType::Ref(layout))
         }
         Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2 => {
             let tuple = dictionary_as_tuple(source).expect("a two-argument Dict has a tuple form");
@@ -11841,6 +11856,7 @@ fn aggregate_layout_for_source(
     nullable_references: bool,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     if let Ok(nominal) = crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
@@ -11852,7 +11868,14 @@ fn aggregate_layout_for_source(
         }
         return Ok(nominal);
     }
-    aggregate_layout(expected_fields, nullable_references, layout_bundle, layouts, definitions)
+    aggregate_layout(
+        expected_fields,
+        nullable_references,
+        layout_bundle,
+        layouts,
+        closure_layouts,
+        definitions,
+    )
 }
 
 fn aggregate_layout(
@@ -11860,6 +11883,7 @@ fn aggregate_layout(
     nullable_references: bool,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let mut expected = Vec::with_capacity(expected_fields.len());
@@ -11872,8 +11896,12 @@ fn aggregate_layout(
                     string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?
                 }
                 Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                    list_layout(field, layout_bundle, layouts, definitions)?.0
+                    list_layout(field, layout_bundle, layouts, closure_layouts, definitions)?.0
                 }
+                Type::Fn(..) => closure_layouts
+                    .get(&crate::canonical_layouts::closure_key(field))
+                    .copied()
+                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(field.clone()))?,
                 _ => match scalar_aggregate_shape(field, definitions) {
                     Some(shape) if !shape.packed => aggregate_layout_for_source(
                         field,
@@ -11881,6 +11909,7 @@ fn aggregate_layout(
                         shape.tagged,
                         layout_bundle,
                         layouts,
+                        closure_layouts,
                         definitions,
                     )?,
                     _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
@@ -12338,6 +12367,7 @@ fn list_layout(
     source: &Type,
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
+    closure_layouts: &HashMap<Type, witchy_wir::layout::LayoutId>,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<(witchy_wir::layout::LayoutId, ValueType, u32, u32), CanonicalLoweringError> {
     let Type::Named(name, arguments) = source.unqualified() else {
@@ -12354,8 +12384,13 @@ fn list_layout(
             ValueType::Ref(string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?)
         }
         Type::Named(element, _) if element == "List" => {
-            ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, definitions)?.0)
+            ValueType::Ref(list_layout(&arguments[0], layout_bundle, layouts, closure_layouts, definitions)?.0)
         }
+        Type::Fn(..) => ValueType::Ref(
+            *closure_layouts
+                .get(&crate::canonical_layouts::closure_key(&arguments[0]))
+                .ok_or_else(|| CanonicalLoweringError::UnsupportedType(arguments[0].clone()))?,
+        ),
         // An aggregate element (a record, sum, tuple, scalar Option/Result)
         // lives behind an owned pointer slot to its record layout.
         _ => match scalar_aggregate_shape(&arguments[0], definitions) {
@@ -12366,6 +12401,7 @@ fn list_layout(
                     shape.tagged,
                     layout_bundle,
                     layouts,
+                    closure_layouts,
                     definitions,
                 )?)
             }
