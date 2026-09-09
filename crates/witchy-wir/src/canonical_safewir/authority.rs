@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
@@ -435,7 +435,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                            witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
                 );
                 (transfer_matches && value_type_matches_source(
-                    actual, capture.checked_type(), &closure_layout_catalog, candidate.signatures(), &mut BTreeSet::new(),
+                    actual, capture.checked_type(), &closure_layout_catalog, candidate.signatures(), &mut HashSet::new(),
                     &records, candidate.closure_layouts(),
                 )).then_some(actual)
             }).collect::<Vec<_>>();
@@ -741,7 +741,7 @@ fn candidate_signature_matches_source_with_records<S: ModuleStage>(
 ) -> bool {
     let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
-    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut BTreeSet::new(), records, candidate.closure_layouts())
+    candidate_signature_matches_source_inner(actual, parameters, result, conventions, &layouts, candidate.signatures(), &mut HashSet::new(), records, candidate.closure_layouts())
 }
 
 fn candidate_signature_matches_source_inner(
@@ -751,7 +751,7 @@ fn candidate_signature_matches_source_inner(
     conventions: &[witchy_syntax::ast::Convention],
     layouts: &crate::layout::LayoutInterner,
     signatures: &[super::FunctionSignature],
-    seen: &mut BTreeSet<super::FunctionSignatureId>,
+    seen: &mut HashSet<(super::FunctionSignatureId, witchy_syntax::ast::Type)>,
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
@@ -817,7 +817,7 @@ fn value_type_matches_source(
     source: &witchy_syntax::ast::Type,
     layouts: &crate::layout::LayoutInterner,
     signatures: &[super::FunctionSignature],
-    seen: &mut BTreeSet<super::FunctionSignatureId>,
+    seen: &mut HashSet<(super::FunctionSignatureId, witchy_syntax::ast::Type)>,
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
@@ -856,11 +856,11 @@ fn value_type_matches_source(
             // The process environment grant, the one `Env` token.
             "Env" => actual == super::ValueType::Capability(super::ENV_CAPABILITY_KIND),
             // `Bytes` is the same raw-byte buffer under its own source type.
-            "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts)),
+            "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures)),
             // A scalar aggregate: one reference to a fixed layout whose slots
             // are exactly the shape's fields, in order.
             _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures))
             }),
         },
         // A dictionary is its canonical tuple of the key list and the value
@@ -869,27 +869,28 @@ fn value_type_matches_source(
             if matches!(name.as_str(), "Option" | "Result") || (name == "Dict" && arguments.len() == 2) =>
         {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures))
             })
         }
         witchy_syntax::ast::Type::Tuple(_) => {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts, signatures))
             })
         }
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts)),
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures)),
         // Concrete user generics use the same independently matched field
         // graph as other aggregates. A type name or its arguments alone never
         // grant a candidate reference its layout authority.
-        witchy_syntax::ast::Type::Named(_, _) => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts)),
+        witchy_syntax::ast::Type::Named(_, _) => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures)),
         // A `fn` value is a closure record: a reference to a layout the
         // module registered with a closure signature, which, past its
         // environment parameter, is the source signature.
         witchy_syntax::ast::Type::Fn(parameters, result, _, _) => match actual {
             super::ValueType::Ref(layout) => {
                 let Some(&id) = closure_layouts.get(&layout) else { return false };
-                if !seen.insert(id) {
-                    return false;
+                let pair = (id, source.unqualified().clone());
+                if !seen.insert(pair.clone()) {
+                    return true;
                 }
                 let matched = signatures
                     .iter()
@@ -899,7 +900,7 @@ fn value_type_matches_source(
                         let witchy_syntax::ast::Type::Fn(_, _, conventions, _) = source.unqualified() else { return false };
                         candidate_signature_matches_source_inner(&declaration, parameters, result, conventions, layouts, signatures, seen, records, closure_layouts)
                     });
-                seen.remove(&id);
+                seen.remove(&pair);
                 matched
             }
             _ => false,
@@ -915,7 +916,7 @@ fn record_layout_matches(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
-    record_layout_matches_with_closures(layout, fields, nullable_fields, layouts, records, &BTreeMap::new())
+    record_layout_matches_with_closures(layout, fields, nullable_fields, layouts, records, &BTreeMap::new(), &[])
 }
 
 fn record_layout_matches_with_closures(
@@ -925,12 +926,13 @@ fn record_layout_matches_with_closures(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+    signatures: &[super::FunctionSignature],
 ) -> bool {
     let mut pending = Vec::new();
     if !enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, &mut pending, closure_layouts) {
         return false;
     }
-    match_layout_graph(pending, layouts, records, closure_layouts)
+    match_layout_graph(pending, layouts, records, closure_layouts, signatures)
 }
 
 fn enqueue_record_fields(
@@ -980,7 +982,7 @@ fn layout_matches_source(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
-    layout_matches_source_with_closures(layout, source, layouts, records, &BTreeMap::new())
+    layout_matches_source_with_closures(layout, source, layouts, records, &BTreeMap::new(), &[])
 }
 
 fn layout_matches_source_with_closures(
@@ -989,8 +991,9 @@ fn layout_matches_source_with_closures(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+    signatures: &[super::FunctionSignature],
 ) -> bool {
-    match_layout_graph(vec![(layout, source.unqualified().clone())], layouts, records, closure_layouts)
+    match_layout_graph(vec![(layout, source.unqualified().clone())], layouts, records, closure_layouts, signatures)
 }
 
 /// Check every node in the finite layout/source-type product. A revisited
@@ -1001,6 +1004,7 @@ fn match_layout_graph(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+    signatures: &[super::FunctionSignature],
 ) -> bool {
     let mut seen = std::collections::HashSet::new();
     while let Some((layout, source)) = pending.pop() {
@@ -1013,7 +1017,7 @@ fn match_layout_graph(
             return false;
         }
         seen.insert((layout, source.clone()));
-        if !enqueue_layout_children(layout, &source, layouts, records, &mut pending, closure_layouts) {
+        if !enqueue_layout_children(layout, &source, layouts, records, &mut pending, closure_layouts, signatures) {
             return false;
         }
     }
@@ -1027,6 +1031,7 @@ fn enqueue_layout_children(
     records: &ScalarRecordFields,
     pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+    signatures: &[super::FunctionSignature],
 ) -> bool {
     use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
     let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
@@ -1053,7 +1058,21 @@ fn enqueue_layout_children(
         }
         witchy_syntax::ast::Type::Fn(..) => {
             let LayoutKind::PackedRecord { fields } = descriptor.kind() else { return false };
-            if fields.len() != 2 || !closure_layouts.contains_key(&layout) {
+            let Some(&id) = closure_layouts.get(&layout) else { return false };
+            let Some(signature) = signatures.iter().find(|signature| signature.id == id) else { return false };
+            let Some(declaration) = strip_closure_environment_with(signature, closure_layouts) else { return false };
+            let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
+            if fields.len() != 2 || !candidate_signature_matches_source_inner(
+                &declaration,
+                parameters,
+                result,
+                conventions,
+                layouts,
+                signatures,
+                &mut HashSet::new(),
+                records,
+                closure_layouts,
+            ) {
                 return false;
             }
             let Some(code) = layouts.get(fields[0]) else { return false };
@@ -1186,7 +1205,7 @@ fn check_initial_with_expected_digest(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
 
     use super::*;
     use crate::canonical_safewir::{
@@ -1467,11 +1486,11 @@ mod tests {
             let source = Type::Named("Box".into(), vec![named(argument)]);
             assert!(value_type_matches_source(
                 super::super::ValueType::Ref(correct), &source, &layouts,
-                &[], &mut BTreeSet::new(), &records, &BTreeMap::new(),
+                &[], &mut HashSet::new(), &records, &BTreeMap::new(),
             ));
             assert!(!value_type_matches_source(
                 super::super::ValueType::Ref(wrong), &source, &layouts,
-                &[], &mut BTreeSet::new(), &records, &BTreeMap::new(),
+                &[], &mut HashSet::new(), &records, &BTreeMap::new(),
             ));
         }
         assert!(!layout_matches_source(int_box, &Type::Named("Box".into(), vec![named("Missing")]), &layouts, &records));
@@ -1595,7 +1614,7 @@ mod tests {
         let source = checked.canonical_source().unwrap();
         let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
         let matches = |actual, source: &witchy_syntax::ast::Type| {
-            value_type_matches_source(actual, source, &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new())
+            value_type_matches_source(actual, source, &LayoutInterner::new(), &[], &mut HashSet::new(), &BTreeMap::new(), &BTreeMap::new())
         };
         assert!(matches(ValueType::Capability(super::super::DIR_CAPABILITY_KIND), &parameters[0]));
         assert!(!matches(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0]));
@@ -1614,8 +1633,8 @@ mod tests {
         ).unwrap();
         let source = checked.canonical_source().unwrap();
         let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
-        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new()));
-        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new()));
+        assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut HashSet::new(), &BTreeMap::new(), &BTreeMap::new()));
+        assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut HashSet::new(), &BTreeMap::new(), &BTreeMap::new()));
     }
 
     /// A closure record of one code slot and no captures.
@@ -1640,6 +1659,74 @@ mod tests {
         let mut candidate = candidate().with_closure_layouts([(closure, FunctionSignatureId::new(1))].into_iter().collect());
         candidate.signatures = vec![outer, inner];
         assert!(candidate_signature_matches_source(&candidate.signatures[0], source, &candidate));
+    }
+
+    #[test]
+    fn aggregate_callable_field_rejects_a_registered_wrong_signature() {
+        use crate::layout::{LayoutInterner, PointerSlot, ScalarKind};
+
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![
+                (
+                    "apply".to_string(),
+                    b"fn apply(f: fn(Int) -> Int) -> Int:\n    f(1)\n".to_vec(),
+                ),
+            ],
+            "apply",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .unwrap();
+        let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
+        let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.unqualified() else {
+            panic!("function")
+        };
+        let callable_source = parameters[0].clone();
+
+        let mut layouts = LayoutInterner::new();
+        let callable = layouts.intern_scalar(ScalarKind::Callable).unwrap();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let environment = layouts.intern_packed_record(vec![int]).unwrap();
+        let environment_slot = layouts
+            .intern_runtime_pointer_value_slot(environment, PointerSlot::Owned)
+            .unwrap();
+        let closure = layouts
+            .intern_packed_record(vec![callable, environment_slot])
+            .unwrap();
+        let closure_slot = layouts
+            .intern_runtime_pointer_value_slot(closure, PointerSlot::Owned)
+            .unwrap();
+        let aggregate = layouts.intern_packed_record(vec![closure_slot]).unwrap();
+
+        let signature_id = FunctionSignatureId::new(1);
+        let wrong_signature = FunctionSignature {
+            id: signature_id,
+            parameters: vec![ValueType::Ref(closure), ValueType::Bool],
+            results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![
+                    super::super::ParameterContract {
+                        value_type: ValueType::Ref(closure),
+                        ownership: super::super::ParameterOwnership::Shared,
+                    },
+                    super::super::ParameterContract {
+                        value_type: ValueType::Bool,
+                        ownership: super::super::ParameterOwnership::Value,
+                    },
+                ],
+                results: vec![ResultContract::Value(ValueType::Int)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+
+        assert!(!record_layout_matches_with_closures(
+            aggregate,
+            &[callable_source],
+            false,
+            &layouts,
+            &BTreeMap::new(),
+            &BTreeMap::from([(closure, signature_id)]),
+            &[wrong_signature],
+        ));
     }
 
     #[test]
