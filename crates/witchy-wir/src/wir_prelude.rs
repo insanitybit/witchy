@@ -340,7 +340,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 115;
+pub const IMPORT_COUNT: usize = 117;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v10: adds native regex counting and literal global replacement imports.
@@ -861,6 +861,11 @@ mod tests {
             .expect("the exact checked-heap retirement import is present");
         assert_eq!(unregister.params, vec![WasmTy::I32]);
         assert!(unregister.results.is_empty());
+        for (name, arity) in [("compiler_footprint_into", 4), ("compiler_diff_into", 6)] {
+            let import = imports.iter().find(|import| import.name == name).expect("bounded compiler service import");
+            assert_eq!(import.params, vec![WasmTy::I32; arity]);
+            assert_eq!(import.results, vec![WasmTy::I32]);
+        }
     }
 
     #[test]
