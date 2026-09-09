@@ -384,16 +384,6 @@ impl<'a> Builder<'a> {
                 let signature_encoding = canonical_abi::canonical_checked_ty_bytes(self.typed, &signature)
                     .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
                 let captures = witchy_syntax::lambda_scan::scan_lambda(params, body).captures();
-                let mut capture_witnesses = Vec::with_capacity(captures.len());
-                for name in captures {
-                    let Some(binding) = self.resolve_capture(&name)?.cloned() else { continue; };
-                    let checked_type = binding.ty.clone().ok_or_else(|| ClosureWitnessError::MissingCaptureType { name: name.clone() })?;
-                    if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
-                    let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
-                        .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
-                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, binding.convention, self.module), checked_type, checked_type_encoding });
-                }
-                self.entries.push(ClosureWitness { id: id.clone(), signature, signature_encoding, captures: capture_witnesses });
                 let param_types = match self.typed.table().type_of(expr) {
                     Some(Ty::Fn(inputs, _, _, _, _)) => inputs.iter().filter_map(typeck::ty_to_ast).collect::<Vec<_>>(),
                     _ => Vec::new(),
@@ -405,8 +395,23 @@ impl<'a> Builder<'a> {
                     let ty = param.ty.clone().or_else(|| param_types.get(index).cloned());
                     self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: id.clone(), path: vec![ClosureBindingPathStep::Parameter(index as u32)], name: param.name.clone() }, ty: ty.clone(), convention: param.convention, borrowed: ty.as_ref().is_some_and(explicit_borrow) });
                 }
-                self.walk_block(body, id, &mut body_path)?;
+                self.walk_block(body, id.clone(), &mut body_path)?;
                 self.scopes.pop();
+                // Visit the checked body before materializing captures. A
+                // destructuring binder has no separate type-table entry, but
+                // its resolved variable occurrences carry checked types in
+                // this exact AST. Parameter/local scopes prevent a shadowed
+                // occurrence from supplying an outer binding's type.
+                let mut capture_witnesses = Vec::with_capacity(captures.len());
+                for name in captures {
+                    let Some(binding) = self.resolve_capture(&name)?.cloned() else { continue; };
+                    let checked_type = binding.ty.clone().ok_or_else(|| ClosureWitnessError::MissingCaptureType { name: name.clone() })?;
+                    if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
+                    let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
+                        .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
+                    capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, binding.convention, self.module), checked_type, checked_type_encoding });
+                }
+                self.entries.push(ClosureWitness { id, signature, signature_encoding, captures: capture_witnesses });
             }
             Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } | Expr::List(args) | Expr::Tuple(args) => for (index, arg) in args.iter().enumerate() { self.child(arg, callable.clone(), path, index)?; },
             Expr::LabeledCall { args, .. } => for (index, (_, arg)) in args.iter().enumerate() { self.child(arg, callable.clone(), path, index)?; },
@@ -452,7 +457,18 @@ impl<'a> Builder<'a> {
                 path.pop();
             },
             Expr::Range { lo, hi, .. } | Expr::Index { base: lo, index: hi } => { self.child(lo, callable.clone(), path, 0)?; self.child(hi, callable, path, 1)?; },
-            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+            Expr::Var(name) => {
+                if let Some(checked_type) = type_from_expr(self.typed, expr)
+                    && let Some(binding) = self.scopes.iter_mut().rev()
+                        .flat_map(|scope| scope.iter_mut().rev())
+                        .find(|binding| binding.id.name == *name)
+                    && binding.ty.is_none()
+                {
+                    binding.borrowed |= explicit_borrow(&checked_type);
+                    binding.ty = Some(checked_type);
+                }
+            }
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
         path.pop();
         Ok(())
@@ -531,6 +547,21 @@ impl TypedModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pattern_capture_types_come_from_checked_lexical_occurrences() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn make(pair: (Int, String)) -> fn(Int) -> String:\n    let (number, text) = pair\n    fn(number: Int): text\n",
+        ).expect("parse pattern capture with a shadowed parameter");
+        let typed = typeck::annotate_checked(module).expect("type check pattern capture");
+        let witness = derive_closure_witness(&typed).expect("checked occurrence supplies capture type");
+        assert_eq!(witness.entries().len(), 1);
+        let captures = witness.entries()[0].captures();
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].binding().name(), "text");
+        assert_eq!(captures[0].checked_type(), &Type::Named("String".into(), Vec::new()));
+        assert_eq!(captures[0].transfer(), ClosureCaptureTransfer::ManagedReferenceByValue);
+    }
 
     #[test]
     fn closure_witness_uses_the_canonical_runtime_scope() {
