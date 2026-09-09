@@ -556,6 +556,15 @@ impl<'a> MemoryChecker<'a> {
             // one side leaves that side as it was, so nothing is widened.
             let promoted_current = self.promoted_object(existing, *value).unwrap_or_else(|| current.clone());
             let promoted_next = self.promoted_object(incoming, *value).unwrap_or_else(|| next.clone());
+            // Preserve a common logical count before the generic header-only
+            // fallback erases it. The shared meet drops capacity precision,
+            // never identity or ownership obligations.
+            if promoted_current != promoted_next
+                && let Some(met) = shared_phi_meet(&promoted_current, &promoted_next)
+            {
+                objects.insert(*value, met);
+                continue;
+            }
             // A back edge may carry a counted extent whose count was loaded
             // inside the loop body, which the entry edge cannot know. The
             // header-prefix form is the weaker fact of the same object, so the
@@ -3908,6 +3917,23 @@ mod tests {
             });
         }
         target
+    }
+
+    #[test]
+    fn shared_extent_meet_preserves_count_before_header_demotion() {
+        with_checker_capacity(true, 4, |checker, list| {
+            let mut left = checker.snapshot();
+            left.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Shared;
+            let mut right = left.clone();
+            let Extent::Counted { capacity, .. } = &mut right.objects.get_mut(&SOURCE).unwrap().extent else { unreachable!() };
+            *capacity = LONG_LENGTH;
+            let mut target = unique_phi_target(ValueId::new(99), list);
+            target.parameters.clear();
+            let joined = checker.meet(&target, &left, &right).expect("shared count survives capacity disagreement");
+            assert!(matches!(joined.objects[&SOURCE].extent, Extent::Counted { count: COUNT, capacity: COUNT, .. }));
+            assert_eq!(joined.objects[&SOURCE].ownership, Ownership::Shared);
+            assert_eq!(joined.objects[&SOURCE].identity, SOURCE);
+        });
     }
 
     #[test]
