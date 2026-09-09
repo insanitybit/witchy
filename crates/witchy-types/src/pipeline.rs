@@ -712,13 +712,12 @@ fn attach_canonical_source(
 /// and signature.
 fn canonicalize_callable_instances(
     typed: typeck::TypedModule,
-) -> Result<(typeck::TypedModule, CanonicalCallableWitness, crate::witness::WitnessCatalog), PipelineError> {
-    let (module, generic_instances, witness_catalog) =
-        crate::traits::lower_for_wasm_with_specializations(typed.into_module())
-            .into_parts_with_witness_catalog();
+) -> Result<(typeck::TypedModule, CanonicalCallableWitness), PipelineError> {
+    let (module, generic_instances) =
+        crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
     let typed = typeck::annotate_checked(module)?;
     let callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
-    Ok((typed, callable_witness, witness_catalog))
+    Ok((typed, callable_witness))
 }
 
 /// Whether a linked declaration belongs to the checked program's entry module
@@ -1013,8 +1012,11 @@ fn link_checked_source_bundle_with(
             message: "canonical checked link did not return its typed source".to_string(),
         })
     })?;
-    let (typed_source, callable_witness, witness_catalog) =
-        canonicalize_callable_instances(typed_source)?;
+    // Semantic checking has already erased traits from its typed projection.
+    // The same checked link retains the resolved pre-erasure declarations;
+    // capture their witnesses here, never from the later canonical AST.
+    let witness_catalog = crate::witness::WitnessCatalog::from_module(checked.module());
+    let (typed_source, callable_witness) = canonicalize_callable_instances(typed_source)?;
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
     let dynamic_runtime_plan = if checked.module_owners.is_some() {
@@ -1236,6 +1238,97 @@ mod tests {
         vec![("main".to_string(), format!(
             "import dynamic\n\ntype User:\n    value: {field}\n\nfn main() -> Int:\n    let _ = dynamic.runtime_type(User)\n    0\n"
         ).into_bytes())]
+    }
+
+    #[test]
+    fn canonical_dynamic_runtime_plan_prepares_reflection_example_witnesses() {
+        use crate::runtime_type::RuntimeTypeIdentity;
+        use witchy_syntax::ast::{Item, Type};
+
+        // The production comptime evaluator lives in witchy-interp, which
+        // depends on this crate. Supply the exact Counter derive output from
+        // std/meta.witchy's derive_reflect_source/dynamic_field_body at the
+        // existing expander seam; this probe tests preparation, not evaluation.
+        fn expand_counter_reflect(
+            name: &str,
+            module: &mut Module,
+            _siblings: &[(String, Module)],
+        ) -> Result<OriginTable, String> {
+            if name == "main" {
+                let mut generated = parse(r#"
+impl Reflect for Counter:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MRecord("Counter", [("value", reflect.reflect_one(self.value))])
+
+    fn __dynamic_field(self, __name: String) -> Option(reflect.DynamicFieldValue):
+        if __name == "value":
+            Some(reflect.DynamicFieldValue(__dynamic_descriptor_id(self), __dynamic_descriptor_id(self.value), self.value))
+        else:
+            None
+"#);
+                let Item::Impl(implementation) = &mut generated.items[0] else {
+                    panic!("Counter derive fixture must emit an impl");
+                };
+                // Match the existing typed emit_item boundary's impl marker.
+                implementation.origin = witchy_syntax::ast::ImplOrigin::CompilerGenerated;
+                module.items.append(&mut generated.items);
+                module.item_lines.append(&mut generated.item_lines);
+            }
+            Ok(OriginTable::default())
+        }
+
+        let checked = link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".to_string(), include_bytes!(
+                "../../../examples/dynamic_reflection/src/dynamic_reflection.witchy"
+            ).to_vec())],
+            "main",
+            expand_counter_reflect,
+            &HashSet::from(["main".to_string()]),
+            dynamic_source_owners("example/dynamic-reflection"),
+        ).expect("authenticated reflection example preparation");
+        let canonical = checked.canonical_source().expect("canonical checked source");
+        let typed = canonical.typed_module();
+        let plan = canonical.dynamic_runtime_plan().expect("retained dynamic plan");
+        let catalog = checked.runtime_declaration_catalog().expect("authenticated declarations");
+        let counter = Type::Named("main.Counter".into(), vec![]);
+        let named = Type::Dyn("main.Named".into(), vec![]);
+        let counter_identity = catalog.type_identity(&counter).expect("Counter identity");
+        let named_identity = catalog.type_identity(&named).expect("Named identity");
+        let counter_id = plan.id(&counter_identity).expect("Counter receiver descriptor");
+        let named_id = plan.id(&named_identity).expect("dyn Named descriptor");
+        assert_eq!(plan.get(counter_id).unwrap().identity, counter_identity);
+
+        let methods = plan.methods().iter().filter(|method| method.function == "main.add")
+            .collect::<Vec<_>>();
+        assert_eq!(methods.len(), 1, "exactly one checked add method");
+        let add = methods[0];
+        assert_eq!(add.name, "add");
+        assert_eq!(add.receiver, counter_id);
+        assert_eq!(add.receiver_type, counter);
+        assert_eq!(add.result, counter_id);
+        let facts = crate::access::checked_facts(typed.module(), typed.table())
+            .expect("access facts for the exact canonical typed module");
+        let signature = facts.declaration("main.add").expect("checked add declaration");
+        let callable = catalog.checked_callable_identity_with_authority(signature, typed.module())
+            .expect("checked add callable identity");
+        assert_eq!(add.callable_identity, callable);
+        let RuntimeTypeIdentity::Function { access, .. } = &callable else {
+            panic!("add must have a checked function identity");
+        };
+        assert_eq!(&add.access, access.as_ref());
+        let callable_id = plan.id(&callable).expect("checked add callable descriptor");
+        assert_eq!(plan.get(callable_id).unwrap().identity, callable);
+
+        assert!(plan.trait_relations().contains(&(counter_id, named_id)),
+            "Counter implements Named using the retained pre-erasure witness catalog");
+        assert!(!typed.module().items.iter().any(|item| matches!(item, Item::Trait(_) | Item::Impl(_))),
+            "the canonical AST cannot supply the erased Named impl");
+        let before = typed.module().clone();
+        let error = crate::existential::build_dynamic_runtime_plan(
+            typed, &crate::witness::WitnessCatalog::default(), &catalog,
+        ).expect_err("an empty catalog cannot reproduce the retained trait relations");
+        assert!(error.contains("runtime trait query references unknown trait"), "{error}");
+        assert_eq!(typed.module(), &before, "plan preparation must not rewrite dynamic operations");
     }
 
     #[test]
