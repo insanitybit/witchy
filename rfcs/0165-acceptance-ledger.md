@@ -458,3 +458,33 @@ refused. This is metadata correspondence evidence only, not validation of
 checker predicates, interpreter semantics, or emitted instructions. No tests
 were run and no new terminal queue evidence was obtained. B1/B7 statuses and
 broader semantic/landing evidence obligations remain unchanged.
+
+### Fresh master example census (2026-09-09)
+
+One fresh census at `0a6db8b073492978cc8c4bef1d07637a621776ed` recorded
+140/163 passing checks (23 refusals), 83 successful source-interpreter /
+SafeWIR-oracle / admitted-Wasm agreements, zero disagreements, and zero
+matching-error outcomes. The other 57 passing checks are check-only, not
+execution evidence. The census supplies no independent expected-output
+assertions. No deferrals were removed; historical measurements and acceptance
+statuses remain unchanged.
+
+The six remaining in-scope examples are `dedup`, `generators`, `lazy_fib`,
+`pascal`, `dynamic_reflection`, and `plugin_host`. The first four refuse Own
+conventions on aggregate/Iter signatures, not Fn storage or Own Fn support
+(which has landed). Dynamic refuses its payload layout; plugin_host refuses
+typed Console capture storage. Task/channel, Net, regex, and opt_mode refusals
+remain separately deferred; check-only results do not close any family.
+
+The matched binary is
+`/private/tmp/witchy-rfc0165-current-census-artifacts/bin/debug/witchy`, SHA-256
+`527c1b6a9d7e043be2839e4349680e04df702248b1994cf14838644bd24bf6b4`.
+Artifacts under `/private/tmp/witchy-rfc0165-current-census-artifacts/` are
+`identity.txt`, `summary.txt`, `raw-trace.log`, `parity-stats.txt`,
+`census-fail.txt`, and `census-parity.txt`. The isolated worktree is
+`/private/tmp/witchy-rfc0165-current-census`; the warmed target is
+`/private/tmp/witchy-rfc0165-reflect-specialization-target`, with build log
+`/private/tmp/witchy-rfc0165-current-census-build.log`. One matched build and
+one existing `scripts/rfc0165-dev/census.sh` run produced this evidence; the
+helper's exit 1 is its final grep finding no disagreements. This documentation
+handoff adds no rerun, source workaround, or queue evidence.
