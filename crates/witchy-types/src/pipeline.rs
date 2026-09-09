@@ -1033,16 +1033,30 @@ fn link_checked_source_bundle_with(
     // The same checked link retains the resolved pre-erasure declarations;
     // capture their witnesses here, never from the later canonical AST.
     let witness_catalog = crate::witness::WitnessCatalog::from_module(checked.module());
-    let (typed_source, callable_witness) = canonicalize_callable_instances(typed_source)?;
+    let (mut typed_source, mut callable_witness) = canonicalize_callable_instances(typed_source)?;
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
     let dynamic_runtime_plan = if checked.module_owners.is_some() {
         let runtime_catalog = checked.runtime_declaration_catalog()?;
-        Some(crate::existential::build_dynamic_runtime_plan(
+        let plan = crate::existential::build_dynamic_runtime_plan(
             &typed_source,
             &witness_catalog,
             &runtime_catalog,
-        ).map_err(|message| PipelineError::Type(TypeError { message }))?)
+        ).map_err(|message| PipelineError::Type(TypeError { message }))?;
+        // The plan never leaves this checked-source construction route before
+        // preparation. Generated bodies are rechecked before any final witness
+        // is bound; original source bytes and loader ownership stay unchanged.
+        typed_source = crate::existential::prepare_closed_dynamic(
+            typed_source, &witness_catalog, &runtime_catalog, &plan,
+        ).map_err(|message| PipelineError::Type(TypeError { message }))?;
+        let retained = typed_source.module().items.iter().filter_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        }).collect::<HashSet<_>>();
+        let instances = callable_witness.generic_instances.into_iter()
+            .filter(|(name, _)| retained.contains(name)).collect();
+        callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
+        Some(plan)
     } else {
         crate::existential::build_dynamic_runtime_plan_inner(
             &typed_source,
@@ -1340,12 +1354,75 @@ impl Reflect for Counter:
             "Counter implements Named using the retained pre-erasure witness catalog");
         assert!(!typed.module().items.iter().any(|item| matches!(item, Item::Trait(_) | Item::Impl(_))),
             "the canonical AST cannot supply the erased Named impl");
-        let before = typed.module().clone();
-        let error = crate::existential::build_dynamic_runtime_plan(
-            typed, &crate::witness::WitnessCatalog::default(), &catalog,
-        ).expect_err("an empty catalog cannot reproduce the retained trait relations");
-        assert!(error.contains("runtime trait query references unknown trait"), "{error}");
-        assert_eq!(typed.module(), &before, "plan preparation must not rewrite dynamic operations");
+        let payload = typed.module().items.iter().find_map(|item| match item {
+            Item::Type(definition) if definition.name == "$canonical.DynamicPayload" => Some(definition),
+            _ => None,
+        }).expect("closed owned payload sum");
+        assert!(payload.variants.iter().any(|variant| variant.fields == vec![counter.clone()]));
+        assert!(payload.variants.iter().any(|variant| variant.fields == vec![Type::Named("Int".into(), vec![])]));
+        for variant in &payload.variants {
+            let identity = catalog.capability_free_type_identity(&variant.fields[0], typed.module())
+                .expect("every payload is transitively capability-free");
+            assert!(plan.id(&identity).is_some(), "payload identity belongs to the source plan");
+        }
+        witchy_syntax::ast::visit::visit_module_exprs::<String>(typed.module(), &mut |expr| {
+            assert!(!matches!(expr, witchy_syntax::ast::Expr::ExistentialPack { .. }
+                | witchy_syntax::ast::Expr::ExistentialCall { .. }
+                | witchy_syntax::ast::Expr::ExistentialUpcast { .. }));
+            if let witchy_syntax::ast::Expr::Call { name, .. } = expr {
+                assert!(!name.starts_with("__dynamic"), "unprepared operation: {name}");
+            }
+            Ok(())
+        }).expect("ordinary prepared AST");
+        let tails = typed.proper_tail_manifest().expect("prepared tails")
+            .for_canonical_functions(typed.module(), &canonical.callable_witness.runtime_functions);
+        assert_eq!(&tails, canonical.proper_tail_manifest());
+        assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&[
+            ("main".into(), include_bytes!("../../../examples/dynamic_reflection/src/dynamic_reflection.witchy").to_vec()),
+        ]));
+    }
+
+    #[test]
+    fn canonical_dynamic_runtime_plan_keeps_capability_arguments_out_of_payloads() {
+        use witchy_syntax::ast::{Expr, Item, Type};
+        let source = b"import dynamic\n\n@dynamic\npub fn announce(self: Int, console: Console) -> Int:\n    console.print(\"called\")\n    self\n\nfn main(console: Console):\n    let value = dynamic.dynamic(7)\n    let _ = dynamic.call_with(value, \"announce\", [], console)\n";
+        let checked = link_checked_source_bundle_with(
+            vec![("main".into(), source.to_vec())], "main", no_expand, None,
+            Some(dynamic_source_owners("example/dynamic-capability")),
+        ).expect("capability arguments remain statically checked values");
+        let canonical = checked.canonical_source().unwrap();
+        let typed = canonical.typed_module();
+        let plan = canonical.dynamic_runtime_plan().unwrap();
+        let method = plan.methods().iter().find(|method| method.function == "main.announce").unwrap();
+        assert!(matches!(method.parameters.as_slice(),
+            [crate::runtime_type::RuntimeMethodParameterDescriptor::Capability(capability)]
+                if capability.ty == Type::Named("Console".into(), vec![])));
+        let mut calls = 0;
+        witchy_syntax::ast::visit::visit_module_exprs::<String>(typed.module(), &mut |expr| {
+            if let Expr::Call { name, args } = expr && name == "main.announce" {
+                calls += 1;
+                assert_eq!(args.len(), 2);
+                assert_eq!(typed.table().type_of(&args[1]).and_then(crate::typeck::ty_to_ast),
+                    Some(Type::Named("Console".into(), vec![])), "capability is not boxed or encoded as Int");
+            }
+            Ok(())
+        }).unwrap();
+        assert!(calls > 0, "authenticated method branch is generated");
+        let payload = typed.module().items.iter().find_map(|item| match item {
+            Item::Type(definition) if definition.name == "$canonical.DynamicPayload" => Some(definition),
+            _ => None,
+        }).unwrap();
+        assert!(payload.variants.iter().all(|variant|
+            variant.fields == vec![Type::Named("Int".into(), vec![])]));
+
+        for (declaration, receiver) in [("", "Console"), ("type Stash:\n    console: Console\n\n", "Stash")] {
+            let source = format!("import dynamic\n\n{declaration}@dynamic\npub fn bad(self: {receiver}) -> Int:\n    0\n\nfn main() -> Int:\n    0\n");
+            let error = link_checked_source_bundle_with(
+                vec![("main".into(), source.into_bytes())], "main", no_expand, None,
+                Some(dynamic_source_owners("example/forbidden-payload")),
+            ).expect_err("direct and transitive capability payloads must refuse");
+            assert!(error.to_string().contains("must be capability-free"), "{error}");
+        }
     }
 
     #[test]
