@@ -386,3 +386,23 @@ A focused production check of jq now admits; this is not yet jq execution parity
 - Production example: `witchy parity examples/branded_caps/src/branded_caps.witchy` agrees on one output line. This CLI result is interpreter/Wasm evidence, not a separate oracle run for that file.
 - Bounded review findings on host roles, expected byte plans, and bare-name tail filtering were corrected and reviewed closed before submission.
 - Last full classified census remains 133/163 checks, 76 runnable agreements, zero disagreements, measured before the string-join and nullable-capability fixes. No new total or milestone-completion claim.
+
+### Compiler-service coverage integration (2026-09-09)
+
+- The jq shared-extent repair and nullable-capability slice landed as
+  `89e4c095c7e8cd2927aa8f12e8149bd8f5596aec`, queue event
+  `2026-09-09T15:54:44Z`, with a green gate and no flakes.
+- The compiler-service candidate adds authenticated, stateless footprint/diff
+  buffer imports, strict UTF-8, unsigned wasm32 ranges, and all-or-nothing writes.
+  Its source/oracle/admitted-Wasm fixture passes with zero oracle and Wasm leaks.
+- Existing `caps_audit_example_audits_a_rune_in_witchy` and
+  `caps_guard_example_blocks_a_widening_in_witchy` each pass and are removed from
+  the deferred list. Both example files also pass CLI parity.
+- Fresh candidate census: 138/163 check; 81 runnable examples agree, zero
+  disagreements. This is candidate evidence, not a fresh master census.
+- Remaining in-scope refusals: coven_check (owned-prefix initialization at a
+  dynamic join), four Iter/generator examples, dynamic reflection, File(Read),
+  and plugin_host's list of function values. Tasks/channels, Net, regex, and
+  opt_mode remain the explicit deferred families.
+- Compiler-service queue validation is pending. Coverage does not establish
+  compiler-wide memory safety or optimizer correctness.

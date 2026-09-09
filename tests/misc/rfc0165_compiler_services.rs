@@ -3,6 +3,8 @@
 #[test]
 fn compiler_services_agree_across_source_oracle_and_admitted_wasm() {
     let source = r#"
+import compiler
+
 fn main(console: Console):
     let code = "fn main(console: Console):\n    console.print(\"hi\")\n"
     console.print(compiler.footprint(code))
