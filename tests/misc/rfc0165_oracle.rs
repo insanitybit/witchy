@@ -205,7 +205,21 @@ fn choose(left: List(Int), right: List(Int), index: Int) -> List(Int):
 fn main() -> Int:
     choose([4], [7, 8], 1).length()
 "#;
-    witchy::resolve_std_only_checked(source).expect("string-free integer match checks");
+    let checked = witchy::resolve_std_only_checked(source).expect("string-free integer match checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("string-free integer match lowers");
+    let entry = artifact.entry().expect("string-free integer match entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked)
+        .expect("string-free integer match validates");
+    let run = interpret_entry_program(
+        &validated,
+        function,
+        Vec::new(),
+        &[],
+        InterpreterConfig::default(),
+    ).expect("string-free integer match oracle");
+    assert_eq!(run.results.first(), Some(&InterpreterValue::Int(2)));
     oracle(source, "string-free integer match");
 }
 
