@@ -1113,6 +1113,7 @@ fn lower_function(
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
+        source_body: body,
         next_value: 0,
         values: BTreeMap::new(),
         bindings: HashMap::new(),
@@ -1404,6 +1405,9 @@ struct BlockBuilder {
 
 struct FunctionLowerer<'a> {
     function: String,
+    /// Original checked nodes, never cloned: explicit returns in ordinary
+    /// blocks still discharge their structural proper-tail obligations.
+    source_body: &'a witchy_syntax::ast::Block,
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
@@ -1849,10 +1853,7 @@ impl FunctionLowerer<'_> {
                     if !std::ptr::eq(statement, block.stmts.last().expect("iterating a statement")) {
                         return Err(CanonicalLoweringError::UnsupportedStatement("statements after return"));
                     }
-                    let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
-                    let results = self.results.clone();
-                    let terminator = self.return_value(value, &results)?;
-                    self.finish_current(terminator)?;
+                    self.lower_explicit_return(value.as_ref())?;
                     self.drop_bindings_except(&outer);
                     return Ok(());
                 }
@@ -1931,10 +1932,13 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
                 Stmt::Return(value) => {
-                    let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
-                    let results = self.results.clone();
-                    let terminator = self.return_value(value, &results)?;
-                    self.finish_current(terminator)?;
+                    self.lower_explicit_return(value.as_ref())?;
+                }
+                Stmt::LetPattern { pattern: Pattern::Wildcard, value } => {
+                    self.lower_effect_expr(value)?;
+                }
+                Stmt::LetPattern { pattern, value } => {
+                    self.lower_let_pattern(pattern, value)?;
                 }
                 _ => return Err(CanonicalLoweringError::UnsupportedStatement("block statement")),
             }
@@ -1946,10 +1950,7 @@ impl FunctionLowerer<'_> {
         let value = match tail {
             Stmt::Expr(value) => self.lower_expr(value)?,
             Stmt::Return(value) => {
-                let value = value.as_ref().map(|value| self.lower_expr(value)).transpose()?;
-                let results = self.results.clone();
-                let terminator = self.return_value(value, &results)?;
-                self.finish_current(terminator)?;
+                self.lower_explicit_return(value.as_ref())?;
                 self.drop_bindings_except(&outer);
                 return Ok(None);
             }
@@ -2053,6 +2054,42 @@ impl FunctionLowerer<'_> {
                 && site.key.path.starts_with(path)
                 && site.key.path.last() == Some(&ProperTailPathStep::Node(node))
         })
+    }
+
+    /// Recover an explicit return's source path from the checked manifest.
+    /// Node identity distinguishes equal-looking calls at different sites;
+    /// missing paths never discharge an obligation by name or expression shape.
+    fn lower_explicit_return(&mut self, expression: Option<&Expr>) -> Result<(), CanonicalLoweringError> {
+        if let Some(expression) = expression {
+            let path = self.tail_manifest.sites().iter().find_map(|site| {
+                if site.key.callable.item != self.item
+                    || site.key.callable.method.is_some()
+                    || site.key.callable.lambda_path != self.lambda_path
+                {
+                    return None;
+                }
+                for (index, step) in site.key.path.iter().enumerate() {
+                    if *step != ProperTailPathStep::ReturnValue {
+                        continue;
+                    }
+                    let Some(root_path) = site.key.path.get(..index + 2) else { continue };
+                    let Some(local_path) = root_path.strip_prefix(self.tail_prefix.as_slice()) else { continue };
+                    if expr_at_tail_path(self.source_body, local_path)
+                        .is_some_and(|node| std::ptr::eq(node, expression))
+                    {
+                        return Some(site.key.path[..=index].to_vec());
+                    }
+                }
+                None
+            });
+            if let Some(path) = path {
+                return self.lower_tail_expr(expression, path);
+            }
+        }
+        let value = expression.map(|value| self.lower_expr(value)).transpose()?;
+        let results = self.results.clone();
+        let terminator = self.return_value(value, &results)?;
+        self.finish_current(terminator)
     }
 
     /// Lower an expression in tail position so that every leaf terminates the
@@ -12098,6 +12135,12 @@ fn canonical_tail_sites(
                 })
         })
         .map(|site| {
+            if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+                eprintln!(
+                    "canonical proper-tail obligation {:?}: {:?}",
+                    site.id.as_bytes(), site.key,
+                );
+            }
             if site.key.callable.method.is_some() {
                 return Err(CanonicalLoweringError::UnsupportedExpression("method tail site"));
             }
@@ -12160,6 +12203,8 @@ fn expr_at_tail_path<'a>(
     match (block.stmts.get(*index as usize)?, rest) {
         (Stmt::Return(Some(value)), [ProperTailPathStep::ReturnValue, rest @ ..])
         | (Stmt::Expr(value), [ProperTailPathStep::Value, rest @ ..]) => expr_in_tail_path(value, rest),
+        (Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } | Stmt::Assign { value, .. },
+            [ProperTailPathStep::Child(0), rest @ ..]) => expr_in_tail_path(value, rest),
         _ => None,
     }
 }
@@ -12432,6 +12477,28 @@ fn main() -> Int:
         let candidate = lower("fn recurse(n: Int) -> Int:\n    return recurse(n)\n");
         let result = check_initial(candidate);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn explicit_return_in_statement_if_preserves_tail_manifest() {
+        let candidate = lower(
+            "fn recurse(n: Int) -> Int:\n    if n > 0:\n        return recurse(n - 1)\n    0\n",
+        );
+        assert_eq!(candidate.functions().iter().flat_map(|function| &function.blocks)
+            .filter(|block| matches!(block.terminator, Terminator::TailCall { .. })).count(), 1);
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "explicit early tail return rejected: {result:?}");
+    }
+
+    #[test]
+    fn explicit_return_in_value_if_preserves_tail_manifest() {
+        let candidate = lower(
+            "fn recurse(n: Int) -> Int:\n    let value = if n > 0:\n        return recurse(n - 1)\n    else:\n        0\n    value\n",
+        );
+        assert_eq!(candidate.functions().iter().flat_map(|function| &function.blocks)
+            .filter(|block| matches!(block.terminator, Terminator::TailCall { .. })).count(), 1);
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "explicit valued-arm tail return rejected: {result:?}");
     }
 
     #[test]

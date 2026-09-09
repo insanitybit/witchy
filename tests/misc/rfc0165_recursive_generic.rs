@@ -39,6 +39,25 @@ fn main(console: Console):
 }
 
 #[test]
+fn tuple_binding_in_value_block_preserves_owned_values_and_effects() {
+    assert_three_legs(r#"
+fn choose(flag: Bool, console: Console) -> String:
+    let result = if flag:
+        let (name, number) = ("selected", 7)
+        let _ = console.print("effect")
+        "${name}:${number}"
+    else:
+        let (name, number) = ("other", 9)
+        "${name}:${number}"
+    result
+
+fn main(console: Console):
+    console.print(choose(true, console))
+    console.print(choose(false, console))
+"#, vec!["effect".to_owned(), "selected:7".to_owned(), "other:9".to_owned()]);
+}
+
+#[test]
 fn jq_recursive_json_queries_execute_across_three_legs() {
     let expected = [
         ("user.name", r#""Ada""#),

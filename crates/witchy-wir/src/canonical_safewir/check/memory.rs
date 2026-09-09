@@ -491,9 +491,13 @@ impl<'a> MemoryChecker<'a> {
     /// slots count: rebasing a value while the same object remains stored
     /// elsewhere would leave a physical alias under the old identity.
     fn is_sole_live_token(&self, value: ValueId, identity: ValueId) -> bool {
-        self.state.objects.iter().all(|(candidate, state)| {
+        Self::is_sole_live_token_in(&self.state, value, identity)
+    }
+
+    fn is_sole_live_token_in(edge: &MemoryState, value: ValueId, identity: ValueId) -> bool {
+        edge.objects.iter().all(|(candidate, state)| {
             state.identity != identity || state.ownership == Ownership::Consumed || *candidate == value
-        }) && self.state.stored_objects.values().all(|state| {
+        }) && edge.stored_objects.values().all(|state| {
             state.identity != identity || state.ownership == Ownership::Consumed
         })
     }
@@ -570,6 +574,33 @@ impl<'a> MemoryChecker<'a> {
                 None => (promoted_current, promoted_next),
             };
             let (current, next) = (&current, &next);
+            // Predecessors are alternatives. A clone on only one path loses
+            // uniqueness, but does not create another token at the join. This
+            // rule never identifies different allocations or erases a release
+            // obligation; it only drops write/sole-token authority.
+            let unique_edge = match (current.ownership, next.ownership) {
+                (Ownership::Unique, Ownership::Shared) => Some((existing, current)),
+                (Ownership::Shared, Ownership::Unique) => Some((incoming, next)),
+                _ => None,
+            };
+            if let Some((edge, unique)) = unique_edge
+                && current.identity == next.identity
+                && current.layout == next.layout
+                && current.extent == next.extent
+                && unique.allocation_class == Some(AllocationClass::ReferenceCounted)
+                && Self::is_managed_storage(current)
+                && Self::is_managed_storage(next)
+                && Self::is_sole_live_token_in(edge, *value, unique.identity)
+            {
+                let mut met = current.clone();
+                met.ownership = Ownership::Shared;
+                met.allocation_class = (current.allocation_class == next.allocation_class)
+                    .then_some(current.allocation_class).flatten();
+                met.shared_immutable = true;
+                met.initialized_owned_slots = current.initialized_owned_slots && next.initialized_owned_slots;
+                objects.insert(*value, met);
+                continue;
+            }
             // A shared phi may join a parameter-derived shared reference with
             // a weakened fresh allocation: both are managed storage, so the
             // meet keeps only what both establish (unknown class, immutable,
@@ -3796,6 +3827,56 @@ mod tests {
             assert_eq!(joined.objects[&phi].identity, phi);
             assert_eq!(joined.objects[&phi].ownership, Ownership::Unique);
         });
+    }
+
+    #[test]
+    fn same_identity_ownership_meet_loses_only_unique_authority() {
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            let unique = checker.snapshot();
+            checker.clone_ref(DESTINATION, SOURCE).expect("clone on one predecessor");
+            checker.drop_ref(DESTINATION).expect("callee releases its clone");
+            let shared = checker.snapshot();
+            let mut target = unique_phi_target(ValueId::new(99), list);
+            target.parameters.clear();
+            let met = checker.meet(&target, &unique, &shared).expect("same object weakens at ordinary join");
+            assert_eq!(met.objects[&SOURCE].identity, SOURCE);
+            assert_eq!(met.objects[&SOURCE].ownership, Ownership::Shared);
+            checker.restore(met);
+            assert!(matches!(checker.move_value(DESTINATION, SOURCE), Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })));
+            let place = Place::projected(
+                SOURCE,
+                Projection::Element { index: START },
+                ValueType::Size,
+                AccessMode::Write,
+            );
+            assert!(matches!(checker.store(&place, COUNT, super::StoreTransfer::CopyScalar), Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })));
+        });
+    }
+
+    #[test]
+    fn same_identity_ownership_meet_rejects_identity_consumption_and_alias_changes() {
+        for case in 0..4 {
+            with_checker(false, |checker, list| {
+                let mut unique = checker.snapshot();
+                let mut shared = unique.clone();
+                shared.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Shared;
+                match case {
+                    0 => shared.objects.get_mut(&SOURCE).unwrap().identity = DESTINATION,
+                    1 => shared.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Consumed,
+                    2 => {
+                        let alias = shared.objects[&SOURCE].clone();
+                        unique.stored_objects.insert((DESTINATION, SlotIdentity::Constant(0)), alias.clone());
+                        shared.stored_objects.insert((DESTINATION, SlotIdentity::Constant(0)), alias);
+                    }
+                    3 => unique.objects.get_mut(&SOURCE).unwrap().allocation_class = Some(AllocationClass::Bump),
+                    _ => unreachable!(),
+                }
+                let mut target = unique_phi_target(ValueId::new(99), list);
+                target.parameters.clear();
+                assert!(matches!(checker.meet(&target, &unique, &shared), Err(InitialCheckError::IncompatibleMemoryJoin { object: SOURCE, .. })));
+            });
+        }
     }
 
     #[test]
