@@ -127,17 +127,30 @@ pub(crate) fn closure_key(ty: &Type) -> Type {
     }
 }
 
+/// The closure identity in the same concrete declaration domain as physical
+/// layout projection. Callable conventions remain part of the identity; only
+/// nominal aliases and concrete aggregate arguments are normalized.
+pub(crate) fn canonical_closure_key(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Type {
+    let identity = concrete_aggregate_identity(ty, definitions)
+        .unwrap_or_else(|| ty.unqualified().clone());
+    closure_key(&identity)
+}
+
 /// The exact capture variants of each `fn` family, ordered by the checked
 /// closure witness manifest.  The manifest is the source authority for both
 /// tag values and capture types.
 fn closure_capture_variants(
     source: &CanonicalCheckedSource,
+    definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<HashMap<Type, Vec<(u32, Vec<Type>)>>, CanonicalLayoutError> {
     let mut variants = HashMap::new();
     for (index, witness) in source.closure_witness().entries().iter().enumerate() {
         let Some(fn_type) = typeck::ty_to_ast(witness.signature()) else { continue };
         let index = u32::try_from(index).map_err(|_| CanonicalLayoutError::InvalidLayout("closure witness index overflow".into()))?;
-        variants.entry(closure_key(&fn_type)).or_insert_with(Vec::new).push((
+        variants.entry(canonical_closure_key(&fn_type, definitions)).or_insert_with(Vec::new).push((
             index,
             witness.captures().iter().map(|capture| capture.checked_type().clone()).collect(),
         ));
@@ -205,7 +218,7 @@ fn project_layouts(
         roots: Vec::new(),
         definitions,
         closures: BTreeMap::new(),
-        capture_variants: closure_capture_variants(source)?,
+        capture_variants: closure_capture_variants(source, &definitions)?,
         visiting: HashSet::new(),
         visited: HashSet::new(),
     };
@@ -342,7 +355,7 @@ impl LayoutProjection {
             // A `fn` type's values are closure records; the type's
             // parameters and result carry their own roots.
             Type::Fn(parameters, result, _, _) => {
-                let fn_type = closure_key(ty);
+                let fn_type = canonical_closure_key(ty, &self.definitions);
                 let variants = self.capture_variants.get(&fn_type).cloned().unwrap_or_default();
                 self.closures.insert(format!("{fn_type:?}"), (fn_type, variants));
                 for parameter in parameters {
@@ -431,7 +444,7 @@ impl LayoutProjection {
         let closure_specs = self.closures.into_values().collect::<Vec<_>>();
         let mut closure_environments = HashMap::new();
         for (signature, _) in &closure_specs {
-            let key = format!("{:?}", closure_key(signature));
+            let key = format!("{:?}", canonical_closure_key(signature, &self.definitions));
             let mut digest = Sha256::new();
             digest.update(b"witchy/canonical-layout/closure-environment-v1\0");
             digest.update((key.len() as u64).to_le_bytes());
@@ -578,7 +591,7 @@ fn intern_v1_layout_checked(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     let key = canonical_layout_type(ty, definitions);
     if matches!(key.unqualified(), Type::Fn(..)) {
-        return closure_layouts.get(&closure_key(&key)).copied().ok_or_else(|| {
+        return closure_layouts.get(&canonical_closure_key(&key, definitions)).copied().ok_or_else(|| {
             CanonicalLayoutError::UnsupportedType(format!("unregistered closure family {key:?}"))
         });
     }
@@ -962,7 +975,10 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{LayoutProjection, Type};
+    use witchy_syntax::ast::{CallableQualifiers, Convention};
     use witchy_wir::layout::{HeaderLayout, LayoutKind, PointerSlot, RcHeader};
 
     fn named(name: &str) -> Type {
@@ -1355,5 +1371,27 @@ mod tests {
         projection.definitions.insert("main.Stack".into(), definition);
         assert!(projection.visit_type(&Type::Named("main.Stack".into(), vec![named("a")])).is_err(),
             "unresolved generic arguments must not acquire a layout");
+    }
+
+    #[test]
+    fn canonical_closure_key_normalizes_nominals_but_keeps_conventions() {
+        let definition = heap_definition("Node", vec![named("Int")]);
+        let definitions = BTreeMap::from([
+            ("Node".into(), definition.clone()),
+            ("main.Node".into(), definition),
+        ]);
+        let callable = |name: &str, convention| Type::Fn(
+            vec![named(name)],
+            Box::new(named(name)),
+            vec![convention],
+            CallableQualifiers::default(),
+        );
+
+        let bare_own = super::canonical_closure_key(&callable("Node", Convention::Own), &definitions);
+        let qualified_own = super::canonical_closure_key(&callable("main.Node", Convention::Own), &definitions);
+        let bare_let = super::canonical_closure_key(&callable("Node", Convention::Let), &definitions);
+
+        assert_eq!(bare_own, qualified_own, "nominal spellings share one closure family");
+        assert_ne!(bare_own, bare_let, "ownership convention remains part of closure identity");
     }
 }
