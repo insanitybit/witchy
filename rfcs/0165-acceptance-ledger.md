@@ -362,3 +362,18 @@ A focused production check of jq now admits; this is not yet jq execution parity
 
 - `tests/misc/rfc0165_jq.rs` now pins the actual jq source program through checked source interpretation, the independent SafeWIR oracle, and admitted Wasm. The focused run recorded seven expected output lines and zero live heap objects (`/private/tmp/rfc0165-jq-three-legged.log`, 7.23s). This is focused candidate evidence only; it makes no new census claim.
 - Terminal-tail control-flow repair `d3edf2e1c` merged at 2026-09-08T21:20:30Z as queue item `mq-a7998f753674e9f6be9dbf221442c13d7d34bf2f`; its serialized gate completed in 1307s.
+
+### Integration slice: explicit tail returns and ownership joins (2026-09-09)
+
+- Candidate `97e43f55e`, queue `mq-7bb14b192a08a58838e5040b3044bd6b35625b56`; merged green at 2026-09-09T14:31:42Z (252-second gate, no recorded flakes).
+- `time_typed_errors_are_matchable_and_bridge_to_string`: passed on the current executable; its deferred entry is removed.
+- Same-identity ownership-join probes: 2 passed, including alias/consumption refusals and shared-write refusal.
+- Explicit-return tail-manifest probes: 2 passed (statement and value `if`); tuple-binding three-leg probe: 1 passed.
+- Independent bounded review found no concrete issue in the join rule or exact-node tail-path mapping. Corpus totals are unchanged here because no fresh census was run.
+
+### URL extent reauthentication (2026-09-09)
+
+- `impl/rfc0165-url-next`: focused-green, not yet confirmed landed.
+- `typed_errors::url_typed_errors_are_matchable_and_bridge_to_string`: passed (2.97 seconds); its deferral is removed.
+- Dynamic `if` joins reload live bound strings through existing checked headers and guards. Validator rules and list count/capacity identities are unchanged.
+- Bounded independent review found no concrete soundness or correctness objection. No fresh census totals or broad soundness claim are inferred from this probe.

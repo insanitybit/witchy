@@ -2588,6 +2588,20 @@ impl FunctionLowerer<'_> {
             self.ensure_string_extent(parameter)?;
         }
         self.bindings = merged;
+        // An extent lane can rename a count also used by an unchanged outer
+        // string. Its cached count need not survive the other incoming edge.
+        // Reauthenticate those live strings here rather than treating a phi's
+        // count as the extent of an independently retained reference.
+        if shared_result_extents.is_some() || plans.iter().any(|plan| plan.has_lanes()) {
+            let strings = self.bindings.values().copied()
+                .filter(|value| self.string_lengths.contains_key(value))
+                .collect::<BTreeSet<_>>();
+            for value in strings {
+                self.string_lengths.remove(&value);
+                self.string_capacities.remove(&value);
+                self.ensure_string_extent(value)?;
+            }
+        }
         Ok(result)
     }
 
