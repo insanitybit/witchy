@@ -155,6 +155,22 @@ fn main(console: Console):
 }
 
 #[test]
+fn owned_function_argument_moves_through_calls_and_reclaims() {
+    assert_three_legs(r#"
+fn invoke(own f: fn(Int) -> Int, value: Int) -> Int:
+    f(value)
+
+fn forward(own f: fn(Int) -> Int, value: Int) -> Int:
+    invoke(f, value)
+
+fn main(console: Console):
+    let offset = 3
+    let f = fn(value: Int): value + offset
+    console.print("${forward(f, 4)}")
+"#, vec!["7".to_owned()]);
+}
+
+#[test]
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect

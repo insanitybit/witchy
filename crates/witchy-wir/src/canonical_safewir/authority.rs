@@ -892,6 +892,10 @@ fn candidate_signature_matches_source_inner(
 
 fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
     match source {
+        // This admits the convention, not a signature or pointer claim:
+        // value_type_matches_source independently checks the closure record
+        // and its complete registered callable signature.
+        witchy_syntax::ast::Type::Fn(..) => true,
         // A capability token is a scalar-like value: copied on pass, never
         // released, so every convention carries it. `Dir` names its rights in
         // type arguments, which change no ABI fact about the token.

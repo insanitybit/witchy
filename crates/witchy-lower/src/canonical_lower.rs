@@ -1108,10 +1108,13 @@ fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<T
 }
 
 /// v1 represents scalar consumption and one existing owned token for ordinary
-/// String and recursively supported List values. Explicit qualifier state,
+/// String, callable, and recursively supported List values. Explicit qualifier state,
 /// capabilities, and other reference state remain fail-closed.
 fn ordinary_own_type_supported(ty: &Type) -> bool {
     match ty {
+        // Callable values use the same owned closure-record token as other
+        // references. source_value_type still requires its registered layout.
+        Type::Fn(..) => true,
         Type::Named(name, arguments) if arguments.is_empty() => {
             matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String")
         }
