@@ -245,6 +245,7 @@ pub enum InterpretError {
         capacity: u64,
     },
     UninitializedPlace,
+    UnsupportedHostImport,
     UnsupportedOperation(&'static str),
 }
 
@@ -263,13 +264,17 @@ impl std::error::Error for InterpretError {}
 pub struct InterpreterConfig {
     pub max_steps: u64,
     pub fixture: OracleFixture,
+    pub compiler_services: Option<fn(CompilerServiceKind, &[String]) -> Result<String, String>>,
 }
 
 impl Default for InterpreterConfig {
     fn default() -> Self {
-        Self { max_steps: 1_000_000, fixture: OracleFixture::default() }
+        Self { max_steps: 1_000_000, fixture: OracleFixture::default(), compiler_services: None }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerServiceKind { Footprint, Diff }
 
 /// Execute one function from an independently validated SafeWIR module.
 pub fn interpret(
@@ -751,6 +756,9 @@ impl<'a> Engine<'a> {
             values.insert(*destination, InterpreterValue::Size(written));
             return Ok(());
         }
+        if matches!(contract.name.as_str(), "compiler_footprint_into" | "compiler_diff_into") {
+            return self.compiler_host_call(&contract.name, destinations, arguments, values);
+        }
         if let Some(name) = CAPABILITY_IMPORTS.iter().find(|name| **name == contract.name) {
             return self.capability_host_call(name, destinations, arguments, values);
         }
@@ -773,6 +781,39 @@ impl<'a> Engine<'a> {
         }
         // The console host records a line with its trailing newlines removed.
         self.output.push(String::from_utf8_lossy(&bytes).trim_end_matches('\n').to_owned());
+        Ok(())
+    }
+
+    fn compiler_host_call(
+        &mut self,
+        name: &str,
+        destinations: &[ValueId],
+        arguments: &[HostCallArgument],
+        values: &mut BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(), InterpretError> {
+        let Some(service) = self.config.compiler_services else {
+            return Err(InterpretError::UnsupportedHostImport);
+        };
+        let (kind, inputs, output) = match (name, arguments) {
+            ("compiler_footprint_into", [HostCallArgument::Buffer { place: source, .. }, HostCallArgument::Buffer { place: output, .. }]) =>
+                (CompilerServiceKind::Footprint, vec![self.host_string(source, values)?], output),
+            ("compiler_diff_into", [HostCallArgument::Buffer { place: old, .. }, HostCallArgument::Buffer { place: new, .. }, HostCallArgument::Buffer { place: output, .. }]) =>
+                (CompilerServiceKind::Diff, vec![self.host_string(old, values)?, self.host_string(new, values)?], output),
+            _ => return Err(InterpretError::UnsupportedOperation("compiler host arguments")),
+        };
+        let [destination] = destinations else { return Err(InterpretError::UnsupportedOperation("compiler host result")); };
+        let payload = service(kind, &inputs).map_err(|_| InterpretError::ExplicitTrap)?.into_bytes();
+        let (object, start, capacity) = self.slice_place(output, values)?;
+        self.check_range(object, start, capacity, true)?;
+        let required = u64::try_from(payload.len()).map_err(|_| InterpretError::ArithmeticTrap)?;
+        if required > i32::MAX as u64 { return Err(InterpretError::ArithmeticTrap); }
+        if required <= capacity {
+            let cells = &mut self.object_mut(object)?.cells;
+            for (offset, byte) in payload.iter().enumerate() {
+                cells.insert(CellKey::Element(start + offset as u64), InterpreterValue::Size(u64::from(*byte)));
+            }
+        }
+        values.insert(*destination, InterpreterValue::Size(required));
         Ok(())
     }
 
@@ -1852,8 +1893,9 @@ mod tests {
     use crate::canonical_safewir::{
         check_initial_with_test_witness, validate_final_for_test, BasicBlock,
         AccessMode, BlockParameter, CallableContract, CheckedSourceIdentity, FunctionSignature,
-        FunctionSignatureId, LoweredModuleParts, Operation, ParameterContract, ParameterOwnership,
-        ProperTailSite, ResultContract, Revision, TailSiteId, ValueType,
+        FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredModuleParts, Operation,
+        ParameterContract, ParameterOwnership, Place, Projection, ProperTailSite, ResultContract,
+        Revision, TailSiteId, ValueType,
     };
     use crate::layout::{LayoutBundle, LayoutInterner, RcHeader, ScalarKind};
 
@@ -1936,6 +1978,106 @@ mod tests {
             ).collect(),
             absent_owned_slots: BTreeSet::new(),
         }
+    }
+
+    fn compiler_service(kind: CompilerServiceKind, inputs: &[String]) -> Result<String, String> {
+        match (kind, inputs) {
+            (CompilerServiceKind::Footprint, [source]) => Ok(format!("[{source}]")),
+            (CompilerServiceKind::Diff, [old, new]) => Ok(format!("{old}>{new}")),
+            _ => Err("unexpected compiler service invocation".to_owned()),
+        }
+    }
+
+    fn slice(object: ValueId, start: ValueId, length: ValueId, access: AccessMode) -> Place {
+        Place::projected(
+            object,
+            Projection::Slice { start, length },
+            ValueType::Ref(LayoutId::from_bytes([11; 32])),
+            access,
+        )
+    }
+
+    #[test]
+    fn compiler_services_are_stateless_and_fail_closed_without_a_fixture() {
+        let module = validated(
+            empty_layouts(),
+            Vec::new(),
+            BTreeMap::new(),
+            Vec::new(),
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+        );
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let input = engine.allocate(
+            LayoutId::from_bytes([11; 32]),
+            AllocationClass::ReferenceCounted,
+            RuntimeExtent::Counted { header_bytes: 0, count: 3, capacity: 3, stride_bytes: 1 },
+            false,
+        ).expect("input allocation");
+        for (index, byte) in b"foo".iter().enumerate() {
+            engine.object_mut(input).expect("input").cells.insert(
+                CellKey::Element(index as u64), InterpreterValue::Size(u64::from(*byte)),
+            );
+        }
+        let output = engine.allocate(
+            LayoutId::from_bytes([11; 32]),
+            AllocationClass::ReferenceCounted,
+            RuntimeExtent::Counted { header_bytes: 0, count: 0, capacity: 2, stride_bytes: 1 },
+            false,
+        ).expect("output allocation");
+        engine.object_mut(output).expect("output").cells.insert(
+            CellKey::Element(0), InterpreterValue::Size(u64::from(b'!')),
+        );
+        let source = ValueId::new(100);
+        let destination = ValueId::new(101);
+        let start = ValueId::new(102);
+        let input_length = ValueId::new(103);
+        let output_length = ValueId::new(104);
+        let mut values = BTreeMap::from([
+            (source, InterpreterValue::ObjectRef(input)),
+            (destination, InterpreterValue::ObjectRef(output)),
+            (start, InterpreterValue::Size(0)),
+            (input_length, InterpreterValue::Size(3)),
+            (output_length, InterpreterValue::Size(2)),
+        ]);
+        let arguments = vec![
+            HostCallArgument::Buffer { place: slice(source, start, input_length, AccessMode::Read), extent: HostBufferExtent::Slice },
+            HostCallArgument::Buffer { place: slice(destination, start, output_length, AccessMode::Write), extent: HostBufferExtent::Slice },
+        ];
+
+        assert_eq!(
+            engine.compiler_host_call("compiler_footprint_into", &[ValueId::new(105)], &arguments, &mut values),
+            Err(InterpretError::UnsupportedHostImport),
+        );
+
+        engine.config.compiler_services = Some(compiler_service);
+        engine.compiler_host_call("compiler_footprint_into", &[ValueId::new(105)], &arguments, &mut values)
+            .expect("service reports required size without partial output");
+        assert_eq!(values.get(&ValueId::new(105)), Some(&InterpreterValue::Size(5)));
+        assert_eq!(
+            engine.object(output).expect("output").cells.get(&CellKey::Element(0)),
+            Some(&InterpreterValue::Size(u64::from(b'!'))),
+            "an undersized buffer is untouched",
+        );
+
+        let RuntimeExtent::Counted { capacity, .. } = &mut engine.object_mut(output).expect("output").extent else {
+            unreachable!("test output is counted")
+        };
+        *capacity = 7;
+        values.insert(output_length, InterpreterValue::Size(7));
+        let diff_arguments = vec![
+            arguments[0].clone(),
+            arguments[0].clone(),
+            arguments[1].clone(),
+        ];
+        engine.compiler_host_call("compiler_diff_into", &[ValueId::new(106)], &diff_arguments, &mut values)
+            .expect("diff service follows the same checked ABI");
+        assert_eq!(values.get(&ValueId::new(106)), Some(&InterpreterValue::Size(7)));
+        let output_bytes = (0..7)
+            .map(|index| engine.object(output).expect("output").cells.get(&CellKey::Element(index)))
+            .map(|cell| match cell { Some(InterpreterValue::Size(byte)) => *byte as u8, _ => 0 })
+            .collect::<Vec<_>>();
+        assert_eq!(output_bytes, b"foo>foo");
     }
 
     #[test]

@@ -226,6 +226,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.rune_hash" (func $crypto_rune_hash_host (param i32 i32 i32)))
   (import "witchy" "compiler_footprint_len" (func $compiler_footprint_len_host (param i32) (result i32)))
   (import "witchy" "compiler_diff_len" (func $compiler_diff_len_host (param i32 i32) (result i32)))
+  (import "witchy" "compiler_footprint_into" (func $compiler_footprint_into_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "compiler_diff_into" (func $compiler_diff_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_len" (func $compiler_doc_len_host (param i32 i32) (result i32)))
   (import "witchy" "compiler_doc_result_json_len" (func $compiler_doc_result_json_len_host (param i32 i32) (result i32)))
   (import "witchy" "user_cap_field_len" (func $user_cap_field_len_host (param i32 i32) (result i32)))
@@ -572,6 +574,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
         "compiler_footprint_len"
         | "compiler_diff_len"
+        | "compiler_footprint_into"
+        | "compiler_diff_into"
         | "compiler_doc_len"
         | "compiler_doc_result_json_len"
         | "field_str_len"

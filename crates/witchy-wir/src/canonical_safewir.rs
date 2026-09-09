@@ -452,6 +452,14 @@ pub struct CapabilityImportSignatures {
     pub env_get_into: FunctionSignatureId,
 }
 
+/// Semantic signatures for stateless compiler introspection imports. The
+/// authenticated prelude, not lowering, assigns their stable import IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompilerImportSignatures {
+    pub footprint_into: FunctionSignatureId,
+    pub diff_into: FunctionSignatureId,
+}
+
 /// One prelude import as an authenticated contract: the generated ABI must
 /// carry it with exactly the expected Wasm shape and as authority-free pure
 /// infrastructure; its identity digest binds the ABI version, linkage, and
@@ -465,7 +473,22 @@ fn authenticated_prelude_import(
     result_roles: Vec<HostResultRole>,
     mutation: HostMutation,
 ) -> Result<ImportContract, String> {
-    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, None)
+    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, ImportAuthentication::PureInfrastructure)
+}
+
+/// An authenticated toolchain service has no capability authority but is not
+/// generic infrastructure: it is explicitly absent from hosts that do not
+/// implement this compiler-service ABI.
+fn authenticated_internal_service_import(
+    name: &str,
+    params: &[crate::wir_prelude::WasmTy],
+    results: &[crate::wir_prelude::WasmTy],
+    signature: FunctionSignatureId,
+    parameter_roles: Vec<HostParameterRole>,
+    result_roles: Vec<HostResultRole>,
+    mutation: HostMutation,
+) -> Result<ImportContract, String> {
+    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, ImportAuthentication::InternalService)
 }
 
 /// One capability import as an authenticated contract: the mirror image of
@@ -483,12 +506,18 @@ fn authenticated_capability_import(
     mutation: HostMutation,
     authorities: &[crate::wir_prelude::AbiImportAuthority],
 ) -> Result<ImportContract, String> {
-    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, Some(authorities))
+    authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, ImportAuthentication::Capability(authorities))
 }
 
-/// The shared projection. `authorities` is `None` for pure infrastructure,
-/// which must carry no authority at all, and `Some(expected)` for a
-/// capability operation, which must carry exactly `expected`.
+enum ImportAuthentication<'a> {
+    PureInfrastructure,
+    InternalService,
+    Capability(&'a [crate::wir_prelude::AbiImportAuthority]),
+}
+
+/// The shared projection binds the generated classification as well as the
+/// ABI shape.  An internal service remains authority-free, but cannot be
+/// projected through the ordinary pure-infrastructure path.
 #[allow(clippy::too_many_arguments)]
 fn authenticated_import(
     name: &str,
@@ -498,7 +527,7 @@ fn authenticated_import(
     parameter_roles: Vec<HostParameterRole>,
     result_roles: Vec<HostResultRole>,
     mutation: HostMutation,
-    authorities: Option<&[crate::wir_prelude::AbiImportAuthority]>,
+    authentication: ImportAuthentication<'_>,
 ) -> Result<ImportContract, String> {
     use crate::wir_prelude::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
 
@@ -513,13 +542,18 @@ fn authenticated_import(
     }
     let info = abi_import_info(&import.name)
         .ok_or_else(|| format!("generated ABI witchy.{name} import has no authenticated metadata"))?;
-    match authorities {
-        None => {
+    match authentication {
+        ImportAuthentication::PureInfrastructure => {
             if info.class != AbiImportClass::PureInfrastructure || !info.authorities.is_empty() {
                 return Err(format!("generated witchy.{name} ABI is authority-bearing"));
             }
         }
-        Some(expected) => {
+        ImportAuthentication::InternalService => {
+            if info.class != AbiImportClass::InternalService || !info.authorities.is_empty() {
+                return Err(format!("generated witchy.{name} ABI is not an authority-free internal service"));
+            }
+        }
+        ImportAuthentication::Capability(expected) => {
             if info.class != AbiImportClass::CapabilityAuthority {
                 return Err(format!("generated witchy.{name} ABI is not a capability operation"));
             }
@@ -717,6 +751,35 @@ impl CanonicalAbiCatalog {
         for import in imports {
             self.imports.insert(import.id, import);
         }
+        Ok(self)
+    }
+
+    /// Add pure, stateless compiler services. Inputs and output are checked
+    /// UTF-8 byte slices; no capability token or staged host state is present.
+    pub fn with_compiler_imports(
+        mut self,
+        signatures: CompilerImportSignatures,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
+        };
+        let write = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Write, extent: HostBufferExtent::Slice,
+        };
+        let result = || vec![HostResultRole::Value(ValueType::Size)];
+        let imports = vec![
+            authenticated_internal_service_import(
+                "compiler_footprint_into", &[WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32], signatures.footprint_into, vec![read(), write()], result(), HostMutation::WriteBuffers,
+            )?,
+            authenticated_internal_service_import(
+                "compiler_diff_into", &[WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+                &[WasmTy::I32], signatures.diff_into, vec![read(), read(), write()], result(), HostMutation::WriteBuffers,
+            )?,
+        ];
+        for import in imports { self.imports.insert(import.id, import); }
         Ok(self)
     }
 
@@ -1469,5 +1532,37 @@ mod catalog_tests {
             HostMutation::ReadOnly,
         );
         assert!(projected.is_err(), "a capability operation is not prelude infrastructure");
+    }
+
+    #[test]
+    fn compiler_imports_are_authenticated_internal_buffer_services() {
+        let catalog = catalog()
+            .with_compiler_imports(
+                CompilerImportSignatures {
+                    footprint_into: FunctionSignatureId::new(8),
+                    diff_into: FunctionSignatureId::new(9),
+                },
+                STRING_LAYOUT,
+            )
+            .expect("authenticated compiler imports");
+        let imports = catalog.imports();
+        let footprint = imports.iter()
+            .find(|import| import.name == "compiler_footprint_into")
+            .expect("footprint import");
+        assert!(matches!(footprint.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+        assert_eq!(footprint.reentrancy, HostReentrancy::Forbidden);
+        assert_eq!(footprint.mutation, HostMutation::WriteBuffers);
+        assert_eq!(footprint.parameter_roles.len(), 2);
+        assert!(matches!(footprint.parameter_roles[0], HostParameterRole::Buffer { access: AccessMode::Read, extent: HostBufferExtent::Slice, .. }));
+        assert!(matches!(footprint.parameter_roles[1], HostParameterRole::Buffer { access: AccessMode::Write, extent: HostBufferExtent::Slice, .. }));
+        assert_eq!(footprint.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
+
+        let diff = imports.iter()
+            .find(|import| import.name == "compiler_diff_into")
+            .expect("diff import");
+        assert_eq!(diff.parameter_roles.len(), 3);
+        assert!(matches!(diff.parameter_roles[0], HostParameterRole::Buffer { access: AccessMode::Read, .. }));
+        assert!(matches!(diff.parameter_roles[1], HostParameterRole::Buffer { access: AccessMode::Read, .. }));
+        assert!(matches!(diff.parameter_roles[2], HostParameterRole::Buffer { access: AccessMode::Write, .. }));
     }
 }
