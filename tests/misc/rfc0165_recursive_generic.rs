@@ -66,6 +66,24 @@ fn main(console: Console):
 }
 
 #[test]
+fn indexed_string_and_empty_string_result_join_preserves_ownership() {
+    assert_three_legs(r#"
+fn first_or_empty(parts: List(String), use_first: Bool) -> String:
+    let first = if use_first:
+        parts[0]
+    else:
+        ""
+    first
+
+fn main(console: Console):
+    let parts = ["held"]
+    console.print(first_or_empty(parts, true))
+    console.print("[${first_or_empty(parts, false)}]")
+    console.print(parts[0])
+"#, vec!["held".to_owned(), "[]".to_owned(), "held".to_owned()]);
+}
+
+#[test]
 fn typed_closure_family_carries_scalar_and_list_captures_across_three_legs() {
     assert_three_legs(r#"
 fn apply(f: fn(Int) -> Int, value: Int) -> Int:

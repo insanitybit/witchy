@@ -7951,38 +7951,9 @@ impl FunctionLowerer<'_> {
         // Only a string element carries a byte extent to authenticate here;
         // an aggregate or nested-list element records nothing, its extent
         // (if any) is loaded lazily at the first access that needs it.
-        let string = string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts).ok();
-        if let ValueType::Ref(element_layout) = element_type && Some(element_layout) == string {
-            let length = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::Load {
-                destination: length,
-                place: witchy_wir::canonical_safewir::Place::projected(
-                    destination,
-                    Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length),
-                    ValueType::Size,
-                    AccessMode::Read,
-                ),
-                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
-            });
-            let maximum_length = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::ConstSize {
-                destination: maximum_length,
-                value: u64::from(u32::MAX - 4),
-            });
-            let length_fits = self.fresh(ValueType::Bool)?;
-            self.push_operation(Operation::Compare {
-                destination: length_fits,
-                operator: ComparisonOperator::LessEqualUnsigned,
-                left: length,
-                right: maximum_length,
-            });
-            self.push_operation(Operation::Guard {
-                condition: length_fits,
-                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-            });
-            debug_assert_eq!(self.values[&destination], ValueType::Ref(element_layout));
-            self.string_lengths.insert(destination, length);
-        }
+        // Use the common checked-header path so length and capacity remain
+        // available together when this reference reaches a result join.
+        self.ensure_string_extent(destination)?;
         Ok(destination)
     }
 
