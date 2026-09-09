@@ -2474,6 +2474,77 @@ mod tests {
     }
 
     #[test]
+    fn nullable_capability_absent_unwrap_traps_and_kind_mismatch_refuses() {
+        let absent = ValueId::new(70);
+        let unwrapped = ValueId::new(71);
+        let module = validated(
+            empty_layouts(),
+            Vec::new(),
+            [
+                (absent, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(1))),
+                (unwrapped, ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1))),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::CapabilityNone {
+                    destination: absent,
+                    kind: crate::canonical_safewir::CapabilityKindId::new(1),
+                },
+                Operation::CapabilityUnwrap { destination: unwrapped, source: absent },
+            ],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+        );
+        assert_eq!(interpret(&module, FUNCTION, Vec::new()), Err(InterpretError::ExplicitTrap));
+
+        let capability = ValueId::new(72);
+        let wrong = ValueId::new(73);
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([32; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: vec![ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1))],
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: vec![ParameterContract {
+                        value_type: ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1)),
+                        ownership: ParameterOwnership::Value,
+                    }],
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (capability, ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1))),
+                    (wrong, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(2))),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: vec![BlockParameter {
+                        value: capability,
+                        value_type: ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(1)),
+                        ownership: None,
+                    }],
+                    operations: vec![Operation::CapabilitySome { destination: wrong, source: capability }],
+                    terminator: Terminator::Return { values: Vec::new() },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert!(check_initial_with_test_witness(candidate).is_err());
+    }
+
+    #[test]
     fn validated_counted_element_store_and_load_execute() {
         let count = ValueId::new(0);
         let capacity = ValueId::new(1);
