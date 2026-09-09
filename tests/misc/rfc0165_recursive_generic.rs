@@ -108,6 +108,27 @@ fn main(console: Console):
 }
 
 #[test]
+fn owned_recursive_aggregate_moves_through_calls_and_reclaims() {
+    assert_three_legs(r#"
+type Stack:
+    Empty
+    Push(Int, Stack)
+
+fn consume(own stack: Stack) -> Int:
+    match stack:
+        Empty -> 0
+        Push(value, rest) -> value + consume(rest)
+
+fn forward(own stack: Stack) -> Int:
+    consume(stack)
+
+fn main(console: Console):
+    let stack = Push(2, Push(5, Empty))
+    console.print("${forward(stack)}")
+"#, vec!["7".to_owned()]);
+}
+
+#[test]
 fn typed_closure_zero_capture_uses_its_non_adapter_family_tag() {
     assert_three_legs(r#"
 fn main(console: Console):

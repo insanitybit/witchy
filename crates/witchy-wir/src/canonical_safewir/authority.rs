@@ -822,6 +822,52 @@ fn candidate_signature_matches_source_with_records<S: ModuleStage>(
     candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, &layouts, candidate.signatures(), &mut CorrespondenceContext::default(), records, candidate.closure_layouts())
 }
 
+/// Check the original source graph before any ABI comparison erases wrappers.
+/// Only the outer Unique of a Var parameter denotes existing write-back ABI.
+fn source_abi_qualifiers_supported(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    use witchy_syntax::ast::{Convention, Type, TypeQual};
+    let mut pending = vec![(source, false)];
+    let mut definitions = HashSet::new();
+    let mut visited = 0;
+    while let Some((ty, var_parameter)) = pending.pop() {
+        visited += 1;
+        if visited > MAX_SOURCE_CORRESPONDENCE_PAIRS { return false; }
+        match ty {
+            Type::Qualified(TypeQual::Frozen, inner) => pending.push((inner, false)),
+            Type::Qualified(TypeQual::Unique, inner) if var_parameter => pending.push((inner, false)),
+            Type::Qualified(_, _) => return false,
+            Type::Fn(parameters, result, conventions, _) => {
+                if !conventions.is_empty() && conventions.len() != parameters.len() { return false; }
+                pending.push((result, false));
+                pending.extend(parameters.iter().enumerate().map(|(index, parameter)| {
+                    (parameter, conventions.get(index) == Some(&Convention::Var))
+                }));
+            }
+            Type::Named(name, arguments) => {
+                pending.extend(arguments.iter().map(|argument| (argument, false)));
+                // Generic arguments are checked above; qualifiers written in
+                // the declaration must also survive nominal layout recursion.
+                if definitions.insert(name) && let Some(definition) = records.get(name) {
+                    pending.extend(definition.variants.iter().flat_map(|variant|
+                        variant.fields.iter().map(|field| (field, false))));
+                }
+            }
+            Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+                pending.extend(arguments.iter().map(|argument| (argument, false)));
+            }
+            Type::Slice(inner) => pending.push((inner, false)),
+            Type::RecordCompose { base, fields } => {
+                pending.push((base, false));
+                pending.extend(fields.iter().map(|(_, field)| (field, false)));
+            }
+        }
+    }
+    true
+}
+
 fn candidate_signature_matches_source_inner(
     actual: &super::FunctionSignature,
     source: &witchy_syntax::ast::Type,
@@ -834,6 +880,7 @@ fn candidate_signature_matches_source_inner(
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
+    if !source_abi_qualifiers_supported(source, records) { return false; }
     let key = (actual.id, source.unqualified().clone());
     match context.enter_callable(key.clone()) {
         CorrespondenceVisit::Active | CorrespondenceVisit::Completed => return true,
@@ -848,7 +895,8 @@ fn candidate_signature_matches_source_inner(
     if !actual.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
         (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
-            || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
+            || matches!(convention, witchy_syntax::ast::Convention::Own)
+                && (ordinary_own_source_type_supported(source) || matches!(actual, super::ValueType::Ref(_))))
         && value_type_matches_source(*actual, source, layouts, signatures, context, records, closure_layouts)
     }) {
         context.finish_callable(key, false);
@@ -857,7 +905,8 @@ fn candidate_signature_matches_source_inner(
     if !actual.contract.parameters.iter().zip(parameters).enumerate().all(|(index, (actual, source))| {
         let convention = convention_at(index);
         if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
-            || matches!(convention, witchy_syntax::ast::Convention::Own) && ordinary_own_source_type_supported(source))
+            || matches!(convention, witchy_syntax::ast::Convention::Own)
+                && (ordinary_own_source_type_supported(source) || matches!(actual.value_type, super::ValueType::Ref(_))))
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, context, records, closure_layouts) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
@@ -1664,6 +1713,106 @@ mod tests {
                 proper_tail_sites: Vec::new(),
             }),
         ));
+    }
+
+    #[test]
+    fn source_owned_aggregate_abi_rejects_deep_qualifier_erasure() {
+        use witchy_syntax::ast::{CallableQualifiers, Convention, Item, Type, TypeQual};
+        use crate::layout::{PointerSlot, ScalarKind};
+        use crate::canonical_safewir::{ParameterContract, ParameterOwnership};
+        let string_ty = Type::Named("String".into(), vec![]);
+        let function = |parameter, result, convention| Type::Fn(
+            vec![parameter], Box::new(result), vec![convention], CallableQualifiers::default());
+        let mut layouts = LayoutInterner::new();
+        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = layouts.intern_runtime_buffer(byte).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(string, PointerSlot::Owned).unwrap();
+        let record = layouts.intern_packed_record(vec![slot]).unwrap();
+        let list = layouts.intern_packed_list(slot, crate::layout::RcHeader::Required).unwrap();
+        let code = layouts.intern_scalar(ScalarKind::Callable).unwrap();
+        let environment = layouts.intern_runtime_pointer_value_slot(record, PointerSlot::Owned).unwrap();
+        let closure = layouts.intern_packed_record(vec![code, environment]).unwrap();
+        let signature = |id, parameters: Vec<ValueType>, results: Vec<ValueType>| FunctionSignature {
+            id: FunctionSignatureId::new(id),
+            contract: CallableContract {
+                parameters: parameters.iter().map(|ty| ParameterContract {
+                    value_type: *ty, ownership: ParameterOwnership::Shared,
+                }).collect(),
+                results: results.iter().map(|ty| match ty {
+                    ValueType::Ref(layout) => ResultContract::Shared { layout: *layout },
+                    _ => unreachable!(),
+                }).collect(),
+                parameter_effects: BTreeMap::new(),
+            },
+            parameters, results,
+        };
+        let mut candidate = candidate().with_closure_layouts(
+            [(closure, FunctionSignatureId::new(1))].into_iter().collect());
+        candidate.layouts = LayoutBundle::from_interner(&layouts, [string, record, list, closure]).unwrap();
+        candidate.signatures = vec![
+            signature(0, vec![ValueType::Ref(string)], vec![ValueType::Ref(string)]),
+            signature(1, vec![ValueType::Ref(closure), ValueType::Ref(string)], vec![ValueType::Ref(string)]),
+        ];
+        let module = witchy_syntax::parser::parse_module("type Holder:\n    value: String\n").unwrap();
+        let Item::Type(definition) = &module.items[0] else { panic!("record") };
+        let qualifiers = [TypeQual::Unique, TypeQual::LocalUnique,
+            TypeQual::Borrow("a".into()), TypeQual::LegacyBorrow("a".into()), TypeQual::BorrowMut("a".into())];
+        for form in 0..6 {
+            let wrap = |leaf: Type| {
+                let mut records = BTreeMap::new();
+                let (ty, layout) = match form {
+                    0 => (leaf, string),
+                    1 => (Type::Tuple(vec![leaf]), record),
+                    2 => (Type::Named("List".into(), vec![leaf]), list),
+                    3 => {
+                        let mut definition = definition.clone();
+                        definition.variants[0].fields[0] = leaf;
+                        records.insert(definition.name.clone(), definition);
+                        (Type::Named("Holder".into(), vec![]), record)
+                    }
+                    4 => (function(leaf, string_ty.clone(), Convention::Own), closure),
+                    _ => (function(string_ty.clone(), leaf, Convention::Own), closure),
+                };
+                (ty, layout, records)
+            };
+            for leaf in [string_ty.clone(), Type::Qualified(TypeQual::Frozen, Box::new(string_ty.clone()))] {
+                let (ty, layout, records) = wrap(leaf);
+                candidate.signatures[0] = signature(0, vec![ValueType::Ref(layout)], vec![ValueType::Ref(layout)]);
+                assert!(candidate_signature_matches_source_with_records(
+                    &candidate.signatures[0], &function(ty.clone(), ty, Convention::Own), &candidate, &records,
+                ), "plain/Frozen form {form} must match");
+            }
+            for qualifier in &qualifiers {
+                let (bad, layout, records) = wrap(Type::Qualified(qualifier.clone(), Box::new(string_ty.clone())));
+                let (plain, _, _) = wrap(string_ty.clone());
+                candidate.signatures[0] = signature(0, vec![ValueType::Ref(layout)], vec![ValueType::Ref(layout)]);
+                for source in [function(bad.clone(), plain.clone(), Convention::Own),
+                    function(plain.clone(), bad.clone(), Convention::Own)] {
+                    assert!(!candidate_signature_matches_source_with_records(
+                        &candidate.signatures[0], &source, &candidate, &records,
+                    ), "qualifier {qualifier:?}, form {form} must not disappear");
+                }
+                let composed = Type::RecordCompose { base: Box::new(plain), fields: vec![("bad".into(), bad)] };
+                assert!(!source_abi_qualifiers_supported(&composed, &records));
+            }
+        }
+        candidate.signatures[0] = signature(0, vec![ValueType::Ref(string)],
+            vec![ValueType::Ref(string), ValueType::Ref(string)]);
+        candidate.signatures[0].contract.parameters[0].ownership = ParameterOwnership::WriteBack;
+        candidate.signatures[0].contract.results[1] = ResultContract::BodyDerived(ValueType::Ref(string));
+        let unique = Type::Qualified(TypeQual::Unique, Box::new(string_ty.clone()));
+        assert!(candidate_signature_matches_source(&candidate.signatures[0],
+            &function(unique.clone(), string_ty.clone(), Convention::Var), &candidate));
+        let nested_var = function(unique.clone(), string_ty.clone(), Convention::Var);
+        assert!(source_abi_qualifiers_supported(&nested_var, &BTreeMap::new()));
+        let double_unique = Type::Qualified(TypeQual::Unique, Box::new(unique));
+        assert!(!candidate_signature_matches_source(&candidate.signatures[0],
+            &function(double_unique, string_ty.clone(), Convention::Var), &candidate));
+        for qualifier in qualifiers.into_iter().skip(1) {
+            assert!(!candidate_signature_matches_source(&candidate.signatures[0],
+                &function(Type::Qualified(qualifier, Box::new(string_ty.clone())),
+                    string_ty.clone(), Convention::Var), &candidate));
+        }
     }
 
     #[test]

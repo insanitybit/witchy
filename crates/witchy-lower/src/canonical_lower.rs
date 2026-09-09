@@ -914,7 +914,10 @@ fn checked_signature(
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
-        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter) {
+        if matches!(convention, Convention::Own)
+            && !ordinary_own_type_supported(parameter)
+            && !matches!(value_parameters[parameter_index], ValueType::Ref(_))
+        {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
                 parameter: source.name.clone(),
@@ -963,14 +966,20 @@ fn signature_from_type(
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
     for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
-        if matches!(convention, Convention::Own) && !ordinary_own_type_supported(parameter) {
+        // A checked aggregate layout carries the same owned token as a string
+        // or closure. Deferred qualifiers were rejected above; mapping must
+        // succeed before a reference can authorize this convention.
+        let value_type = source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?;
+        if matches!(convention, Convention::Own)
+            && !ordinary_own_type_supported(parameter)
+            && !matches!(value_type, ValueType::Ref(_))
+        {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: format!("signature {:?}", id),
                 parameter: index.to_string(),
                 convention,
             });
         }
-        let value_type = source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?;
         // An explicit `let` (`Convention::Borrow`) has the default convention's
         // observable semantics; its no-escape rule is the type checker's. Under
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
