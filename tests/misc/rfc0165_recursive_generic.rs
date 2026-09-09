@@ -171,6 +171,24 @@ fn main(console: Console):
 }
 
 #[test]
+fn owned_function_with_string_capture_reclaims_when_branch_skips_invocation() {
+    assert_three_legs(r#"
+fn consume(own f: fn(Int) -> Int, invoke: Bool) -> Int:
+    if invoke:
+        f(4)
+    else:
+        0
+
+fn main(console: Console):
+    let suffix = "xx"
+    let skipped = fn(value: Int): value + suffix.length()
+    let invoked = fn(value: Int): value + suffix.length()
+    console.print("${consume(skipped, false)}")
+    console.print("${consume(invoked, true)}")
+"#, vec!["0".to_owned(), "6".to_owned()]);
+}
+
+#[test]
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect
