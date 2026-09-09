@@ -148,6 +148,68 @@ fn oracle(source: &str, label: &str) {
 }
 
 #[test]
+fn nested_if_and_multarm_string_results_reauthenticate_edges() {
+    let source = r#"
+fn nested(flag: Bool, left: String, right: String) -> String:
+    if flag:
+        if flag:
+            left + "!"
+        else:
+            right + "?"
+    else:
+        right + "."
+
+fn decorate(value: String) -> String:
+    value + "!"
+
+fn pick(values: List(String), index: Int) -> String:
+    match index:
+        0 -> decorate(values[0])
+        1 -> decorate(values[1])
+        _ -> decorate(values[2])
+
+fn choose_values(left: List(Int), right: List(Int), index: Int) -> List(Int):
+    match index:
+        0 -> left
+        _ -> right
+
+fn main(console: Console):
+    let values = ["a", "b", "c"]
+    let left = [1]
+    let right = [2, 3]
+    console.print(nested(true, "a", "c"))
+    console.print(nested(false, "a", "c"))
+    console.print(pick(values, 0))
+    console.print(pick(values, 1))
+    console.print(pick(values, 2))
+    console.print("${choose_values(left, right, 0).length()}")
+"#;
+    let expected = ["a!", "c.", "a!", "b!", "c!", "1"]
+        .into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let checked = witchy::resolve_std_only_checked(source).expect("extent result source checks");
+    let source_output = witchy::interpreter::run_module_args(
+        checked.module().clone(), ".", Vec::new(), Vec::new(),
+    ).expect("extent result source interpreter");
+    assert_eq!(source_output, expected);
+    oracle(source, "nested and multiarm extent results");
+}
+
+#[test]
+fn integer_list_match_result_is_string_free() {
+    let source = r#"
+fn choose(values: List(Int), index: Int) -> Int:
+    match index:
+        0 -> values[0]
+        _ -> values[1]
+
+fn main() -> Int:
+    choose([4, 7], 1)
+"#;
+    witchy::resolve_std_only_checked(source).expect("string-free integer match checks");
+    oracle(source, "string-free integer match");
+}
+
+#[test]
 fn oracle_agrees_on_the_foundation_programs() {
     let programs: &[(&str, &str)] = &[
         ("print", "fn main(console: Console):\n    console.print(\"ok\")\n"),

@@ -1342,6 +1342,19 @@ struct FactSnapshot {
     known_list_lengths: HashMap<ValueId, u64>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DynamicExtentFamily {
+    String,
+    List,
+}
+
+#[derive(Clone, Copy)]
+struct AuthenticatedExtentLane {
+    family: DynamicExtentFamily,
+    count: ValueId,
+    capacity: ValueId,
+}
+
 /// The loop a `break`/`continue` leaves or re-enters: its header and exit
 /// blocks, the state lanes both expect (every outer binding, then each
 /// tracked list's count/capacity), and how the loop advances.
@@ -1483,6 +1496,7 @@ struct BindingLanePlan {
     name: String,
     values: Vec<ValueId>,
     extents: Option<Vec<(ValueId, ValueId)>>,
+    family: Option<DynamicExtentFamily>,
     phi: Option<Ownership>,
     all_tokens: bool,
 }
@@ -2372,7 +2386,7 @@ impl FunctionLowerer<'_> {
         for name in changed_names {
             let mut values = arms.iter().map(|(_, bindings)| bindings[name]).collect::<Vec<_>>();
             if !matches!(self.values[&values[0]], ValueType::Ref(_)) {
-                plans.push(BindingLanePlan { name: name.clone(), values, extents: None, phi: None, all_tokens: false });
+                plans.push(BindingLanePlan { name: name.clone(), values, extents: None, family: None, phi: None, all_tokens: false });
                 continue;
             }
             for (index, (end, bindings)) in arms.iter().enumerate() {
@@ -2394,6 +2408,7 @@ impl FunctionLowerer<'_> {
                     if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_))))
             });
             let mut extents = Vec::with_capacity(values.len());
+            let mut family = None;
             for ((end, _), value) in arms.iter().zip(&values) {
                 if fixed_layout {
                     break;
@@ -2431,6 +2446,23 @@ impl FunctionLowerer<'_> {
                     extents.clear();
                     break;
                 };
+                let lane_family = if self.string_lengths.contains_key(value)
+                    && self.string_capacities.contains_key(value)
+                {
+                    DynamicExtentFamily::String
+                } else if self.list_counts.contains_key(value)
+                    && self.list_capacities.contains_key(value)
+                {
+                    DynamicExtentFamily::List
+                } else {
+                    extents.clear();
+                    break;
+                };
+                if family.is_some_and(|existing| existing != lane_family) {
+                    extents.clear();
+                    break;
+                }
+                family = Some(lane_family);
                 extents.push(self.split_lanes(count, capacity)?);
             }
             let phi = if eligible && (fixed_layout || extents.len() == values.len()) {
@@ -2443,7 +2475,7 @@ impl FunctionLowerer<'_> {
                 None
             };
             let extents = phi.is_some().then_some(extents);
-            plans.push(BindingLanePlan { name: name.clone(), values, extents, phi, all_tokens });
+            plans.push(BindingLanePlan { name: name.clone(), values, extents, family, phi, all_tokens });
         }
         Ok(plans)
     }
@@ -2459,6 +2491,7 @@ impl FunctionLowerer<'_> {
         else_block: &witchy_syntax::ast::Block,
         with_value: bool,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let string_layout = self.string_layout_id().ok();
         let condition = self.lower_expr(condition)?;
         if self.values[&condition] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
@@ -2491,7 +2524,7 @@ impl FunctionLowerer<'_> {
         let then_terminated = self.blocks[then_end.get() as usize].terminator.is_some();
         // The else arm starts from the facts before the `if`; the then arm's
         // are merged back for the join's lane planning.
-        let then_facts = self.snapshot_facts();
+        let mut then_facts = self.snapshot_facts();
         self.restore_snapshot(facts.clone());
 
         self.current = else_id;
@@ -2508,8 +2541,7 @@ impl FunctionLowerer<'_> {
         let else_bindings = self.bindings.clone();
         let else_end = self.current;
         let else_terminated = self.blocks[else_end.get() as usize].terminator.is_some();
-        let else_facts = self.snapshot_facts();
-        self.absorb_facts(then_facts.clone());
+        let mut else_facts = self.snapshot_facts();
 
         // An arm that returned early has no edge into the join. With one arm
         // gone the other simply continues as the fall-through, carrying only
@@ -2555,18 +2587,38 @@ impl FunctionLowerer<'_> {
             (None, None) => None,
             _ => unreachable!(),
         };
-        let shared_result_extents = result_type.and_then(|(then_value, else_value, result_type)| {
-            (matches!(result_type, ValueType::Ref(_))
-                && self.shared_phi_eligible(then_value)
-                && self.shared_phi_eligible(else_value))
-            .then(|| {
-                Some((
-                    self.dynamic_extent_lanes(then_value)?,
-                    self.dynamic_extent_lanes(else_value)?,
-                ))
-            })
-            .flatten()
-        });
+        let shared_result_extents = match result_type {
+            Some((then_value, else_value, result_type))
+                if matches!(result_type, ValueType::Ref(_))
+                    && self.shared_phi_eligible(then_value)
+                    && self.shared_phi_eligible(else_value) =>
+            {
+                self.restore_snapshot(then_facts.clone());
+                self.current = then_end;
+                let then_lane = self.authenticate_dynamic_result(then_value, string_layout)?;
+                then_facts = self.snapshot_facts();
+
+                self.restore_snapshot(else_facts.clone());
+                self.current = else_end;
+                let else_lane = self.authenticate_dynamic_result(else_value, string_layout)?;
+                else_facts = self.snapshot_facts();
+
+                match (then_lane, else_lane) {
+                    (Some(then_lane), Some(else_lane))
+                        if then_lane.family == else_lane.family => Some((then_lane, else_lane)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        // Every non-terminated arm contributes facts to ordinary binding-lane
+        // planning, including scalar, void, fixed-layout, and mixed-result
+        // if expressions. Result extent lanes above are per-edge records;
+        // these absorbed snapshots only restore predecessor facts that may
+        // be needed to authenticate changed outer bindings.
+        self.restore_snapshot(facts.clone());
+        self.absorb_facts(then_facts.clone());
+        self.absorb_facts(else_facts.clone());
         // A fixed-layout result (a heap record or sum) joins through a phi
         // without count/capacity lanes: unique when both arms hold their own
         // fresh token, shared otherwise.
@@ -2626,9 +2678,9 @@ impl FunctionLowerer<'_> {
                 if plan.has_lanes() {
                     then_arguments.extend([extents[0].0, extents[0].1]);
                     else_arguments.extend([extents[1].0, extents[1].1]);
-                    if plan.values.iter().all(|value| self.list_counts.contains_key(value)) {
-                        self.record_joined_extent(parameter, join_parameters[parameter_index + 1].value,
-                            join_parameters[parameter_index + 2].value, &plan.values);
+                    if let Some(family) = plan.family {
+                        self.record_joined_dynamic_extent(parameter, join_parameters[parameter_index + 1].value,
+                            join_parameters[parameter_index + 2].value, family);
                     } else {
                         dynamic_join_parameters.push(parameter);
                     }
@@ -2651,20 +2703,22 @@ impl FunctionLowerer<'_> {
                 if all_tokens {
                     self.token_join_parameters.insert(result);
                 }
-                if let Some(((then_count, then_capacity), (else_count, else_capacity))) =
-                    shared_result_extents
-                {
+                if let Some((then_lane, else_lane)) = shared_result_extents {
                     self.current = then_end;
-                    let (then_count, then_capacity) = self.split_lanes(then_count, then_capacity)?;
+                    let (then_count, then_capacity) = self.split_lanes(then_lane.count, then_lane.capacity)?;
                     then_arguments.extend([then_count, then_capacity]);
                     self.current = else_end;
-                    let (else_count, else_capacity) = self.split_lanes(else_count, else_capacity)?;
+                    let (else_count, else_capacity) = self.split_lanes(else_lane.count, else_lane.capacity)?;
                     else_arguments.extend([else_count, else_capacity]);
                     // Both extent lanes are authenticated by this result phi.
                     // Reloading only the length here loses the distinct capacity
                     // lane needed when this result crosses another join.
-                    self.record_joined_extent(result, join_parameters[parameter_index + 1].value,
-                        join_parameters[parameter_index + 2].value, &[then_value, else_value]);
+                    self.record_joined_dynamic_extent(
+                        result,
+                        join_parameters[parameter_index + 1].value,
+                        join_parameters[parameter_index + 2].value,
+                        then_lane.family,
+                    );
                 }
                 Some(result)
             }
@@ -2680,6 +2734,20 @@ impl FunctionLowerer<'_> {
         });
         self.restore_facts(facts, join_id);
         self.current = join_id;
+        if let Some((_, _)) = shared_result_extents {
+            if let Some(result) = result {
+                let family = shared_result_extents
+                    .as_ref()
+                    .map(|(then_lane, _)| then_lane.family)
+                    .expect("shared result extent family");
+                self.record_joined_dynamic_extent(
+                    result,
+                    join_parameters[parameter_index + 1].value,
+                    join_parameters[parameter_index + 2].value,
+                    family,
+                );
+            }
+        }
         // CFG lanes preserve ownership/shape correspondence, but are not
         // authenticated physical extents after the checker consumes the join.
         // Reload the actual headers at the shared join instead of caching the
@@ -2699,8 +2767,9 @@ impl FunctionLowerer<'_> {
         // Reauthenticate those live strings here rather than treating a phi's
         // count as the extent of an independently retained reference.
         if shared_result_extents.is_some() || plans.iter().any(|plan| plan.has_lanes()) {
+            let joined_result = result;
             let strings = self.bindings.values().copied()
-                .filter(|value| self.string_lengths.contains_key(value))
+                .filter(|value| Some(*value) != joined_result && self.string_lengths.contains_key(value))
                 .collect::<BTreeSet<_>>();
             for value in strings {
                 self.string_lengths.remove(&value);
@@ -2723,6 +2792,7 @@ impl FunctionLowerer<'_> {
         }
         let scrutinee_type = self.expression_type(scrutinee)?;
         let scrutinee = self.lower_expr(scrutinee)?;
+        let string_layout = self.string_layout_id().ok();
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let mut result_type = None;
@@ -2864,7 +2934,7 @@ impl FunctionLowerer<'_> {
             return Ok(None);
         }
         self.restore_snapshot(facts.clone());
-        for arm_facts in continuing_facts {
+        for arm_facts in continuing_facts.iter().cloned() {
             self.absorb_facts(arm_facts);
         }
         if arm_results.is_empty() {
@@ -2911,16 +2981,32 @@ impl FunctionLowerer<'_> {
             .iter()
             .filter_map(|(_, _, value)| *value)
             .collect::<Vec<_>>();
-        let shared_result_extents = (result_type.is_some()
+        let shared_result_extents = if matches!(result_type, Some(ValueType::Ref(_)))
             && !result_values.is_empty()
-            && result_values.iter().all(|value| self.shared_phi_eligible(*value)))
-        .then(|| {
-            result_values
-                .iter()
-                .map(|value| self.dynamic_extent_lanes(*value))
-                .collect::<Option<Vec<_>>>()
-        })
-        .flatten();
+            && result_values.iter().all(|value| self.shared_phi_eligible(*value))
+        {
+            let mut authenticated = Vec::with_capacity(result_values.len());
+            for (arm_index, (body_end, _, value)) in arm_results.iter().enumerate() {
+                let Some(value) = value else { continue };
+                self.current = *body_end;
+                let lane = self.authenticate_dynamic_result(*value, string_layout)?;
+                authenticated.push(lane);
+            }
+            // Binding-lane planning already authenticated and possibly
+            // cloned outer references. Do not restore arm snapshots here:
+            // that would erase those fresh lane facts. Result arguments use
+            // `authenticated` directly.
+            let family = authenticated.first().and_then(|lane| lane.map(|lane| lane.family));
+            let lanes = authenticated.into_iter().collect::<Option<Vec<_>>>();
+            match (family, lanes) {
+                (Some(family), Some(lanes)) if lanes.iter().all(|lane| lane.family == family) => {
+                    Some((family, lanes))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         if shared_result_extents.is_some() {
             parameter_types.extend([ValueType::Size, ValueType::Size]);
         }
@@ -2961,7 +3047,9 @@ impl FunctionLowerer<'_> {
                 if plan.has_lanes() {
                     let count = join_parameters[parameter_index + 1].value;
                     let capacity = join_parameters[parameter_index + 2].value;
-                    self.record_joined_extent(parameter, count, capacity, &plan.values);
+                    if let Some(family) = plan.family {
+                        self.record_joined_dynamic_extent(parameter, count, capacity, family);
+                    }
                     parameter_index += 2;
                 }
                 if plan.all_tokens {
@@ -2981,9 +3069,10 @@ impl FunctionLowerer<'_> {
             }
             if let Some(value) = value {
                 arguments.push(value);
-                if let Some(extents) = &shared_result_extents {
+                if let Some((_, extents)) = &shared_result_extents {
                     self.current = body_end;
-                    let (count, capacity) = self.split_lanes(extents[arm_index].0, extents[arm_index].1)?;
+                    let lane = extents[arm_index];
+                    let (count, capacity) = self.split_lanes(lane.count, lane.capacity)?;
                     arguments.extend([count, capacity]);
                 }
             }
@@ -2992,18 +3081,28 @@ impl FunctionLowerer<'_> {
                 arguments,
             });
         }
-        if shared_result_extents.is_some() {
+        if let Some((family, _)) = &shared_result_extents {
             let result = result.expect("a shared match join has a result parameter");
-            self.record_joined_extent(
+            self.record_joined_dynamic_extent(
                 result,
                 join_parameters[result_parameter_index + 1].value,
                 join_parameters[result_parameter_index + 2].value,
-                &result_values,
+                *family,
             );
         }
         self.restore_facts(facts, join);
         self.current = join;
         self.bindings = merged;
+        if let Some((family, _)) = &shared_result_extents {
+            if let Some(result) = result {
+                self.record_joined_dynamic_extent(
+                    result,
+                    join_parameters[result_parameter_index + 1].value,
+                    join_parameters[result_parameter_index + 2].value,
+                    *family,
+                );
+            }
+        }
         Ok(result)
     }
 
@@ -4528,10 +4627,17 @@ impl FunctionLowerer<'_> {
             if self.carries_token(*value) {
                 continue;
             }
+            self.current = *block;
+            if !self.string_lengths.contains_key(value) {
+                // A static String lane must authenticate its own header before
+                // it can be cloned into the token shape of the other edge.
+                // `ensure_string_extent` is a no-op for packed collections,
+                // so mixed List/static lanes remain fail-closed below.
+                self.ensure_string_extent(*value)?;
+            }
             if !self.string_lengths.contains_key(value) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("mixed token and static join lanes"));
             }
-            self.current = *block;
             *value = self.clone_string_for_storage(*value)?;
         }
         Ok(true)
@@ -4743,6 +4849,106 @@ impl FunctionLowerer<'_> {
             return Some((*length, *capacity));
         }
         Some((*self.list_counts.get(&value)?, *self.list_capacities.get(&value)?))
+    }
+
+    fn authenticate_dynamic_result(
+        &mut self,
+        value: ValueId,
+        string_layout: Option<witchy_wir::layout::LayoutId>,
+    ) -> Result<Option<AuthenticatedExtentLane>, CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.values[&value] else {
+            return Ok(None);
+        };
+        let prior_string_capacity = (string_layout == Some(layout) && !self.is_static_string(value))
+            .then(|| self.string_capacities.get(&value).copied())
+            .flatten();
+        // StaticData already carries an explicit counted extent whose count
+        // and capacity are authenticated ConstSize values. Preserve those
+        // physical lanes: replacing them with a header load plus a synthetic
+        // duplicate loses the checker-visible relation to the static object.
+        if string_layout == Some(layout) && self.is_static_string(value) {
+            if let (Some(&count), Some(&capacity)) = (
+                self.string_lengths.get(&value),
+                self.string_capacities.get(&value),
+            ) {
+                return Ok(Some(AuthenticatedExtentLane {
+                    family: DynamicExtentFamily::String,
+                    count,
+                    capacity,
+                }));
+            }
+        }
+        self.reload_dynamic_extent(value)?;
+        if string_layout == Some(layout) {
+            if let Some(&count) = self.string_lengths.get(&value) {
+                let capacity = prior_string_capacity.unwrap_or(count);
+                if prior_string_capacity.is_some() {
+                    let maximum = self.fresh(ValueType::Size)?;
+                    self.push_operation(Operation::ConstSize {
+                        destination: maximum,
+                        value: u64::from(u32::MAX - 4),
+                    });
+                    let capacity_fits = self.fresh(ValueType::Bool)?;
+                    self.push_operation(Operation::Compare {
+                        destination: capacity_fits,
+                        operator: ComparisonOperator::LessEqualUnsigned,
+                        left: capacity,
+                        right: maximum,
+                    });
+                    self.push_operation(Operation::Guard {
+                        condition: capacity_fits,
+                        kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+                    });
+                    let count_fits = self.fresh(ValueType::Bool)?;
+                    self.push_operation(Operation::Compare {
+                        destination: count_fits,
+                        operator: ComparisonOperator::LessEqualUnsigned,
+                        left: count,
+                        right: capacity,
+                    });
+                    self.push_operation(Operation::Guard {
+                        condition: count_fits,
+                        kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+                    });
+                }
+                self.string_capacities.insert(value, capacity);
+                return Ok(Some(AuthenticatedExtentLane {
+                    family: DynamicExtentFamily::String,
+                    count,
+                    capacity,
+                }));
+            }
+        }
+        if let (Some(&count), Some(&capacity)) = (
+            self.list_counts.get(&value),
+            self.list_capacities.get(&value),
+        ) {
+            return Ok(Some(AuthenticatedExtentLane {
+                family: DynamicExtentFamily::List,
+                count,
+                capacity,
+            }));
+        }
+        Ok(None)
+    }
+
+    fn record_joined_dynamic_extent(
+        &mut self,
+        result: ValueId,
+        count: ValueId,
+        capacity: ValueId,
+        family: DynamicExtentFamily,
+    ) {
+        match family {
+            DynamicExtentFamily::String => {
+                self.string_lengths.insert(result, count);
+                self.string_capacities.insert(result, capacity);
+            }
+            DynamicExtentFamily::List => {
+                self.list_counts.insert(result, count);
+                self.list_capacities.insert(result, capacity);
+            }
+        }
     }
 
     fn record_joined_extent(
