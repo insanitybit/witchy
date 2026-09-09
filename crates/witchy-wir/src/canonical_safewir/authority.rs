@@ -856,11 +856,11 @@ fn value_type_matches_source(
             // The process environment grant, the one `Env` token.
             "Env" => actual == super::ValueType::Capability(super::ENV_CAPABILITY_KIND),
             // `Bytes` is the same raw-byte buffer under its own source type.
-            "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
+            "String" | "Bytes" => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts)),
             // A scalar aggregate: one reference to a fixed layout whose slots
             // are exactly the shape's fields, in order.
             _ => witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts))
             }),
         },
         // A dictionary is its canonical tuple of the key list and the value
@@ -869,19 +869,19 @@ fn value_type_matches_source(
             if matches!(name.as_str(), "Option" | "Result") || (name == "Dict" && arguments.len() == 2) =>
         {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts))
             })
         }
         witchy_syntax::ast::Type::Tuple(_) => {
             witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches(layout, &shape.fields, shape.tagged, layouts, records))
+                matches!(actual, super::ValueType::Ref(layout) if record_layout_matches_with_closures(layout, &shape.fields, shape.tagged, layouts, records, closure_layouts))
             })
         }
-        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
+        witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts)),
         // Concrete user generics use the same independently matched field
         // graph as other aggregates. A type name or its arguments alone never
         // grant a candidate reference its layout authority.
-        witchy_syntax::ast::Type::Named(_, _) => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source(layout, source, layouts, records)),
+        witchy_syntax::ast::Type::Named(_, _) => matches!(actual, super::ValueType::Ref(layout) if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts)),
         // A `fn` value is a closure record: a reference to a layout the
         // module registered with a closure signature, which, past its
         // environment parameter, is the source signature.
@@ -915,11 +915,22 @@ fn record_layout_matches(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
+    record_layout_matches_with_closures(layout, fields, nullable_fields, layouts, records, &BTreeMap::new())
+}
+
+fn record_layout_matches_with_closures(
+    layout: crate::layout::LayoutId,
+    fields: &[witchy_syntax::ast::Type],
+    nullable_fields: bool,
+    layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+) -> bool {
     let mut pending = Vec::new();
-    if !enqueue_record_fields(layout, fields, nullable_fields, layouts, &mut pending) {
+    if !enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, &mut pending, closure_layouts) {
         return false;
     }
-    match_layout_graph(pending, layouts, records)
+    match_layout_graph(pending, layouts, records, closure_layouts)
 }
 
 fn enqueue_record_fields(
@@ -928,6 +939,17 @@ fn enqueue_record_fields(
     nullable_fields: bool,
     layouts: &crate::layout::LayoutInterner,
     pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+) -> bool {
+    enqueue_record_fields_with_closures(layout, fields, nullable_fields, layouts, pending, &BTreeMap::new())
+}
+
+fn enqueue_record_fields_with_closures(
+    layout: crate::layout::LayoutId,
+    fields: &[witchy_syntax::ast::Type],
+    nullable_fields: bool,
+    layouts: &crate::layout::LayoutInterner,
+    pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+    _closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
     use crate::layout::{LayoutKind, ScalarKind};
     let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
@@ -958,7 +980,17 @@ fn layout_matches_source(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
 ) -> bool {
-    match_layout_graph(vec![(layout, source.unqualified().clone())], layouts, records)
+    layout_matches_source_with_closures(layout, source, layouts, records, &BTreeMap::new())
+}
+
+fn layout_matches_source_with_closures(
+    layout: crate::layout::LayoutId,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+    records: &ScalarRecordFields,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
+) -> bool {
+    match_layout_graph(vec![(layout, source.unqualified().clone())], layouts, records, closure_layouts)
 }
 
 /// Check every node in the finite layout/source-type product. A revisited
@@ -968,6 +1000,7 @@ fn match_layout_graph(
     mut pending: Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
     let mut seen = std::collections::HashSet::new();
     while let Some((layout, source)) = pending.pop() {
@@ -980,7 +1013,7 @@ fn match_layout_graph(
             return false;
         }
         seen.insert((layout, source.clone()));
-        if !enqueue_layout_children(layout, &source, layouts, records, &mut pending) {
+        if !enqueue_layout_children(layout, &source, layouts, records, &mut pending, closure_layouts) {
             return false;
         }
     }
@@ -993,6 +1026,7 @@ fn enqueue_layout_children(
     layouts: &crate::layout::LayoutInterner,
     records: &ScalarRecordFields,
     pending: &mut Vec<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
+    closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
     use crate::layout::{LayoutKind, PointerSlot, ScalarKind};
     let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
@@ -1016,6 +1050,18 @@ fn enqueue_layout_children(
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
                 inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if { pending.push((*pointee, inner.unqualified().clone())); true }),
             }
+        }
+        witchy_syntax::ast::Type::Fn(..) => {
+            let LayoutKind::PackedRecord { fields } = descriptor.kind() else { return false };
+            if fields.len() != 2 || !closure_layouts.contains_key(&layout) {
+                return false;
+            }
+            let Some(code) = layouts.get(fields[0]) else { return false };
+            let Some(environment) = layouts.get(fields[1]) else { return false };
+            matches!(code.kind(), LayoutKind::Scalar(ScalarKind::Callable))
+                && matches!(environment.kind(), LayoutKind::RuntimePointerValueSlot {
+                    semantics: PointerSlot::Owned, ..
+                })
         }
         _ => false,
     }

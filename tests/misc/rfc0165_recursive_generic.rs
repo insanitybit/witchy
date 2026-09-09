@@ -63,6 +63,19 @@ fn main(console: Console):
 }
 
 #[test]
+fn recursive_closure_family_stores_typed_function_capture_and_reclaims() {
+    assert_three_legs(r#"
+fn compose(f: fn(Int) -> Int) -> fn(Int) -> Int:
+    fn(value: Int): f(value)
+
+fn main(console: Console):
+    let increment = fn(value: Int): value + 1
+    let composed = compose(increment)
+    console.print("${composed(4)}")
+"#, vec!["5".to_owned()]);
+}
+
+#[test]
 fn anonymous_record_reflect_field_uses_its_concrete_instantiation() {
     assert_three_legs(r#"
 import reflect

@@ -408,6 +408,30 @@ impl LayoutProjection {
         let recursive_types = recursive_heap_types(&self.roots, &self.definitions);
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
+        // Reserve every closure environment identity, and its two-field
+        // closure record, before constructing any body. A capture may itself
+        // be a function from the same family (or a mutually recursive
+        // family), so constructing one environment before reserving the
+        // others would recurse through physical bodies and lose the checked
+        // callable identity.
+        let closure_specs = self.closures.into_values().collect::<Vec<_>>();
+        let mut closure_environments = HashMap::new();
+        for (signature, _) in &closure_specs {
+            let key = format!("{:?}", closure_key(signature));
+            let mut digest = Sha256::new();
+            digest.update(b"witchy/canonical-layout/closure-environment-v1\0");
+            digest.update((key.len() as u64).to_le_bytes());
+            digest.update(key.as_bytes());
+            let environment = interner.intern_opaque_nominal(digest.finalize().into())
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            closure_environments.insert(signature.clone(), environment);
+        }
+        let mut closure_layouts = HashMap::new();
+        for (signature, _) in &closure_specs {
+            let environment = closure_environments[signature];
+            let closure = intern_closure_layout_with_environment(&mut interner, environment)?;
+            closure_layouts.insert(signature.clone(), closure);
+        }
         // Reserve all nominal cycle breakers before constructing any body.
         // A structural root such as List(Tree) may be visited before Tree;
         // following its pointee must not recursively rebuild that list while
@@ -421,36 +445,30 @@ impl LayoutProjection {
             let nominal = intern_recursive_nominal(&mut interner, ty)?;
             let body = intern_v1_layout_fields(
                 &mut interner, ty, &self.definitions, &recursive_types,
-                &mut HashSet::new(),
+                &mut HashSet::new(), &closure_layouts,
             )?;
             interner.bind_nominal(nominal, body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
         }
         for ty in self.roots {
-            let root = intern_v1_layout(&mut interner, &ty, &self.definitions, &recursive_types)?;
+            let root = intern_v1_layout(
+                &mut interner, &ty, &self.definitions, &recursive_types, &closure_layouts,
+            )?;
             roots.insert(root);
         }
         let mut families = HashMap::new();
-        for (_, (signature, variants)) in self.closures {
+        for (signature, variants) in closure_specs {
+            let environment = closure_environments[&signature];
             let (environment_body, variants) = intern_closure_environment(
                 &mut interner,
                 variants,
                 &self.definitions,
                 &recursive_types,
+                &closure_layouts,
             )?;
-            // Equal storage shapes do not make distinct callable ABIs
-            // interchangeable. Bind the physical environment to its checked
-            // signature identity, rather than distinguishing it with padding.
-            let key = format!("{:?}", closure_key(&signature));
-            let mut digest = Sha256::new();
-            digest.update(b"witchy/canonical-layout/closure-environment-v1\0");
-            digest.update((key.len() as u64).to_le_bytes());
-            digest.update(key.as_bytes());
-            let environment = interner.intern_opaque_nominal(digest.finalize().into())
-                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             interner.bind_nominal(environment, environment_body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-            let closure = intern_closure_layout_with_environment(&mut interner, environment)?;
+            let closure = closure_layouts[&signature];
             roots.insert(environment);
             roots.insert(closure);
             families.insert(signature, ClosureFamilyLayout { closure, environment, variants });
@@ -466,6 +484,7 @@ fn intern_closure_environment(
     witnesses: Vec<(u32, Vec<Type>)>,
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
+    closure_layouts: &HashMap<Type, LayoutId>,
 ) -> Result<(LayoutId, Vec<ClosureEnvironmentVariant>), CanonicalLayoutError> {
     let tag = interner
         .intern_scalar(ScalarKind::Int)
@@ -481,9 +500,7 @@ fn intern_closure_environment(
     for (witness, fields) in witnesses {
         let first_field = children.len();
         for field in &fields {
-            if witchy_types::canonical_capabilities::representation(field, definitions).is_some()
-                || matches!(field.unqualified(), Type::Fn(..))
-            {
+            if witchy_types::canonical_capabilities::representation(field, definitions).is_some() {
                 return Err(CanonicalLayoutError::UnsupportedType(format!(
                     "closure capture requires unavailable typed storage: {field:?}"
                 )));
@@ -493,7 +510,9 @@ fn intern_closure_environment(
                     .intern_scalar(scalar)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
             } else {
-                let pointee = intern_v1_layout(interner, field, definitions, recursive_types)?;
+                let pointee = intern_v1_layout(
+                    interner, field, definitions, recursive_types, closure_layouts,
+                )?;
                 interner
                     .intern_runtime_pointer_value_slot(pointee, PointerSlot::OwnedNullable)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
@@ -528,8 +547,11 @@ fn intern_v1_layout(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
+    closure_layouts: &HashMap<Type, LayoutId>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
-    intern_v1_layout_checked(interner, ty, definitions, recursive_types, &mut HashSet::new())
+    intern_v1_layout_checked(
+        interner, ty, definitions, recursive_types, &mut HashSet::new(), closure_layouts,
+    )
 }
 
 fn intern_v1_layout_checked(
@@ -538,8 +560,14 @@ fn intern_v1_layout_checked(
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     active: &mut HashSet<Type>,
+    closure_layouts: &HashMap<Type, LayoutId>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     let key = canonical_layout_type(ty, definitions);
+    if matches!(key.unqualified(), Type::Fn(..)) {
+        return closure_layouts.get(&closure_key(&key)).copied().ok_or_else(|| {
+            CanonicalLayoutError::UnsupportedType(format!("unregistered closure family {key:?}"))
+        });
+    }
     if recursive_types.contains(&key) {
         // Bodies are bound separately by finish. References use only the
         // reserved identity, regardless of whether its body is already bound.
@@ -550,7 +578,9 @@ fn intern_v1_layout_checked(
             "recursive nominal layout {key:?} requires nullable owned-slot lowering"
         )));
     }
-    let result = intern_v1_layout_fields(interner, &key, definitions, recursive_types, active);
+    let result = intern_v1_layout_fields(
+        interner, &key, definitions, recursive_types, active, closure_layouts,
+    );
     active.remove(&key);
     result
 }
@@ -561,6 +591,7 @@ fn intern_v1_layout_fields(
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     active: &mut HashSet<Type>,
+    closure_layouts: &HashMap<Type, LayoutId>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
         // String is `[u32 byte_length][UTF-8 bytes...]`. RawByte is
@@ -576,7 +607,9 @@ fn intern_v1_layout_fields(
         && name == "List"
         && arguments.len() == 1
     {
-        let element = intern_v1_layout_checked(interner, &arguments[0], definitions, recursive_types, active)?;
+        let element = intern_v1_layout_checked(
+            interner, &arguments[0], definitions, recursive_types, active, closure_layouts,
+        )?;
         let element = if !is_scalar_type(&arguments[0]) {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
@@ -589,7 +622,9 @@ fn intern_v1_layout_fields(
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));
     }
     if let Some(tuple) = witchy_types::canonical_aggregates::dictionary_as_tuple(ty) {
-        return intern_v1_layout_checked(interner, &tuple, definitions, recursive_types, active);
+        return intern_v1_layout_checked(
+            interner, &tuple, definitions, recursive_types, active, closure_layouts,
+        );
     }
     if let Some(shape) = scalar_aggregate_shape(ty, definitions)
         && !shape.packed
@@ -604,7 +639,9 @@ fn intern_v1_layout_fields(
                     .intern_scalar(scalar)
                     .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
             } else {
-                let pointee = intern_v1_layout_checked(interner, field, definitions, recursive_types, active)?;
+                let pointee = intern_v1_layout_checked(
+                    interner, field, definitions, recursive_types, active, closure_layouts,
+                )?;
                 interner
                     .intern_runtime_pointer_value_slot(
                         pointee,
@@ -771,7 +808,7 @@ fn intern_dictionary_slot(
     recursive_types: &HashSet<Type>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
     if is_byte_buffer_type(ty) {
-        let pointee = intern_v1_layout(interner, ty, definitions, recursive_types)?;
+        let pointee = intern_v1_layout(interner, ty, definitions, recursive_types, &HashMap::new())?;
         return interner
             .intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()));

@@ -5420,7 +5420,7 @@ impl FunctionLowerer<'_> {
             // value itself. A representation change is outside the subset.
             Expr::As { expr, ty } => {
                 let value = self.lower_expr(expr)?;
-                let target = source_value_type(ty, self.layout_bundle, self.layouts, &HashMap::new(), self.definitions)?;
+                let target = source_value_type(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
                 if self.values[&value] != target {
                     return Err(CanonicalLoweringError::UnsupportedExpression("as between different representations"));
                 }
@@ -5792,7 +5792,7 @@ impl FunctionLowerer<'_> {
     /// Allocate an immutable reference-counted record and store its fields.
     /// The SafeWIR value type of an aggregate field or payload.
     fn field_value_type(&self, ty: &Type) -> Result<ValueType, CanonicalLoweringError> {
-        source_value_type(ty, self.layout_bundle, self.layouts, &HashMap::new(), self.definitions)
+        source_value_type(ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)
     }
 
     /// A reference value as a fresh owned token for an aggregate slot: a
@@ -5806,6 +5806,11 @@ impl FunctionLowerer<'_> {
             }
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
                 self.clone_list_value_for_storage(value, ty)
+            }
+            Type::Fn(..) => {
+                let cloned = self.fresh(self.values[&value])?;
+                self.push_operation(Operation::CloneRef { destination: cloned, source: value });
+                Ok(cloned)
             }
             _ if scalar_aggregate_shape(ty, self.definitions).is_some() => self.clone_aggregate_for_storage(value, ty),
             _ => Err(CanonicalLoweringError::UnsupportedType(ty.clone())),
