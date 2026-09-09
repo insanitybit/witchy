@@ -851,6 +851,69 @@ fi
         )
     "#;
 
+    const FILE_READ_INTO_OOB_OUTPUT: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_file"
+            (func $dir_read_file (param externref i32 i32) (result externref)))
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "config.txt")
+          (func (export "run")
+            (local $file externref)
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            i32.const 10
+            call $dir_read_file
+            local.set $file
+            local.get $file
+            i32.const 65535
+            i32.const 2
+            call $file_read_into
+            drop)
+        )
+    "#;
+
+    const FILE_READ_INTO_NEGATIVE_OUTPUT: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_file"
+            (func $dir_read_file (param externref i32 i32) (result externref)))
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "config.txt")
+          (func (export "run")
+            (local $file externref)
+            i32.const 0
+            call $mint_dir
+            i32.const 0
+            i32.const 10
+            call $dir_read_file
+            local.set $file
+            local.get $file
+            i32.const -1
+            i32.const 0
+            call $file_read_into
+            drop)
+        )
+    "#;
+
+    const NULL_FILE_READ_INTO: &str = r#"
+        (module
+          (import "witchy" "file_read_into"
+            (func $file_read_into (param externref i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (drop (call $file_read_into
+              (ref.null extern)
+              (i32.const 128)
+              (i32.const 16))))
+        )
+    "#;
+
     const NULL_DIR_READ: &str = r#"
         (module
           (import "witchy" "dir_read_len" (func $dir_read_len (param externref i32) (result i32)))
@@ -1160,6 +1223,7 @@ fi
     #[test]
     fn file_read_into_rejects_invalid_path_file_utf8_and_unrelated_externrefs() {
         let root = tempfile::tempdir().expect("temporary capability root");
+        std::fs::write(root.path().join("config.txt"), "hello").expect("valid UTF-8 fixture");
         std::fs::write(root.path().join("bad.txt"), [0xff]).expect("invalid UTF-8 fixture");
         let caps = Capabilities {
             dir_root: Some(root.path().to_owned()),
@@ -1183,7 +1247,7 @@ fi
         assert!(file_detail.contains("UTF-8"), "{file_detail}");
 
         let mut wrong_ref = runtime
-            .spawn(FILE_READ_INTO_WRONG_EXTERNREF, caps, 4)
+            .spawn(FILE_READ_INTO_WRONG_EXTERNREF, caps.clone(), 4)
             .expect("wrong-reference fixture links");
         let ref_error = wrong_ref.run().expect_err("Dir is not a File");
         let ref_detail = format!("{ref_error:?}");
@@ -1191,6 +1255,37 @@ fi
             ref_detail.contains("File externref has wrong host data"),
             "{ref_detail}"
         );
+
+        let mut oob = runtime
+            .spawn(FILE_READ_INTO_OOB_OUTPUT, caps.clone(), 4)
+            .expect("out-of-bounds fixture links");
+        let oob_error = oob.run().expect_err("the complete short output range must be checked");
+        let oob_detail = format!("{oob_error:?}");
+        assert!(oob_detail.contains("exceeds guest memory"), "{oob_detail}");
+
+        let mut negative = runtime
+            .spawn(FILE_READ_INTO_NEGATIVE_OUTPUT, caps.clone(), 4)
+            .expect("unsigned-lane fixture links");
+        let negative_error = negative
+            .run()
+            .expect_err("negative i32 output pointers are unsigned wasm32 lanes");
+        let negative_detail = format!("{negative_error:?}");
+        assert!(negative_detail.contains("4294967295"), "{negative_detail}");
+
+        let mut null_file = runtime
+            .spawn(
+                NULL_FILE_READ_INTO,
+                Capabilities {
+                    dir_root: Some(root.path().to_owned()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("null File fixture links");
+        let null_error = null_file.run().expect_err("null File must trap");
+        let null_detail = format!("{null_error:?}");
+        assert!(null_detail.contains("File externref is null"), "{null_detail}");
     }
 
     #[test]
