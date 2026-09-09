@@ -713,6 +713,23 @@ fn attach_canonical_source(
 fn canonicalize_callable_instances(
     typed: typeck::TypedModule,
 ) -> Result<(typeck::TypedModule, CanonicalCallableWitness), PipelineError> {
+    // The linked semantic proof already prepares generators through
+    // witchy_syntax::generators::lower: owned tuple frames and iter.unfold,
+    // never replay. Consume that exact typed projection, not checked.module()
+    // (the legacy source view), and never accept a detached helper inventory.
+    // Preparation must precede specialization and the final recheck below so
+    // callable, closure, and tail witnesses all describe the prepared bodies.
+    if typed.module().items.iter().any(|item| match item {
+        witchy_syntax::ast::Item::Function(function) => function.is_gen,
+        witchy_syntax::ast::Item::Impl(definition) => {
+            definition.methods.iter().any(|method| method.is_gen)
+        }
+        _ => false,
+    }) {
+        return Err(PipelineError::Type(TypeError {
+            message: "canonical source projection contains an unprepared generator".into(),
+        }));
+    }
     let (module, generic_instances) =
         crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
     let typed = typeck::annotate_checked(module)?;
@@ -1384,6 +1401,96 @@ impl Reflect for Counter:
         assert_ne!(first.dynamic_runtime_plan(), other_owner.dynamic_runtime_plan());
         assert_ne!(first.source_witness().source_bundle_digest(), other_source.source_witness().source_bundle_digest());
         assert_ne!(first.dynamic_runtime_plan(), other_source.dynamic_runtime_plan());
+    }
+
+    #[test]
+    fn canonical_generator_preparation_binds_frames_helpers_and_source() {
+        use witchy_syntax::ast::{Convention, Expr, Item, Type};
+
+        let bytes = include_bytes!("../../../examples/generators/src/generators.witchy").to_vec();
+        let sources = vec![("main".to_string(), bytes.clone())];
+        let checked = link_checked_from_source_bundle(sources.clone(), "main", no_expand)
+            .expect("existing fib/collatz generator source prepares");
+        let canonical = checked.canonical_source().expect("sealed canonical product");
+        let typed = canonical.typed_module();
+        assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&sources));
+        let functions = typed.module().items.iter().filter_map(|item| match item {
+            Item::Function(function) => Some(function),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert!(functions.iter().all(|function| !function.is_gen));
+        for generator in ["fibs", "collatz"] {
+            let helper_name = format!("main.__gen_{generator}");
+            let helper = functions.iter().find(|function| function.name == helper_name)
+                .expect("prepared resume helper has a checked body");
+            assert_eq!(helper.params.len(), 1);
+            assert_eq!(helper.params[0].convention, Convention::Own);
+            let Some(Type::Tuple(fields)) = &helper.params[0].ty else {
+                panic!("resume helper must consume an owned tuple frame");
+            };
+            let int = Type::Named("Int".into(), vec![]);
+            let optional = |ty| Type::Named("Option".into(), vec![ty]);
+            // Locals are absent until the first pull initializes them. The
+            // Collatz seed yield also retains a one-shot Bool; neither may be
+            // flattened into an unconditional Int slot.
+            let expected = if generator == "fibs" {
+                vec![optional(int.clone()), optional(int.clone()), int]
+            } else {
+                vec![int.clone(), optional(int.clone()),
+                    optional(Type::Named("Bool".into(), vec![])), int]
+            };
+            assert_eq!(fields, &expected, "exact checked {generator} frame");
+            assert_eq!(canonical.callable_signature(&helper_name),
+                typed.table().function_type(&helper_name).as_ref());
+            assert!(canonical.callable_signature(&helper_name).is_some());
+            let wrapper = functions.iter().find(|function| function.name == format!("main.{generator}"))
+                .expect("source generator retains its wrapper identity");
+            let mut uses_helper = false;
+            let mut uses_unfold = false;
+            witchy_syntax::ast::visit::visit_block::<String>(&wrapper.body, &mut |expression| {
+                match expression {
+                    Expr::Var(name) => uses_helper |= name == &helper_name,
+                    Expr::Call { name, .. } => {
+                        uses_unfold |= name.starts_with("iter.unfold");
+                        assert!(!name.contains("from_gen"), "generator preparation must not replay");
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }).expect("visit prepared wrapper");
+            assert!(uses_helper && uses_unfold, "wrapper binds its actual helper through unfold");
+        }
+        let tails = typed.proper_tail_manifest().expect("prepared tail obligations")
+            .for_canonical_functions(typed.module(), &canonical.callable_witness.runtime_functions);
+        assert_eq!(&tails, canonical.proper_tail_manifest());
+        let closures = typed.canonical_closure_witness().expect("prepared closure obligations")
+            .bind_source_bundle_digest(checked_source_digest(&sources));
+        assert!(!closures.entries().is_empty(), "unfold's generated callable closures are included");
+        assert_eq!(&closures, canonical.closure_witness());
+        assert_eq!(bind_canonical_callable_witness(typed, canonical.callable_witness.generic_instances.clone())
+            .expect("rederive from the same prepared module"), canonical.callable_witness);
+
+        // Identical prepared shapes do not permit substituting another source.
+        let mut other_bytes = bytes;
+        other_bytes.extend_from_slice(b"\n// different exact source bundle\n");
+        let other = link_checked_from_source_bundle(vec![("main".into(), other_bytes)], "main", no_expand)
+            .expect("same generator semantics, different source bytes");
+        let other = other.canonical_source().unwrap();
+        assert_ne!(canonical.source_witness().source_bundle_digest(), other.source_witness().source_bundle_digest());
+        assert!(!canonical.source_witness().verifies_closure_witness(other.closure_witness()));
+    }
+
+    #[test]
+    fn canonical_generator_preparation_rejects_invalid_semantics_and_replay_shapes() {
+        for (source, diagnostic) in [
+            ("gen fn bad() -> Iter(Int):\n    yield \"wrong\"\n\nfn main() -> Int:\n    0\n", "Int"),
+            ("gen fn bad() -> Iter(Int):\n    while true:\n        while true:\n            yield 1\n\nfn main() -> Int:\n    0\n", "owned resumable frame"),
+        ] {
+            let error = link_checked_from_source_bundle(
+                vec![("main".into(), source.as_bytes().to_vec())], "main", no_expand,
+            ).expect_err("invalid generators cannot mint canonical source authority");
+            assert!(error.to_string().contains(diagnostic), "{error}");
+        }
     }
 
     #[test]
