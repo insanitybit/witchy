@@ -2,6 +2,28 @@ use wasmtime::{bail, Caller, Extern, Linker, Result};
 
 use super::super::{memory_of, read_wstr, slice, VmState};
 
+pub(super) fn require_console_token(
+    store: impl wasmtime::AsContext,
+    token: wasmtime::Rooted<wasmtime::ExternRef>,
+) -> Result<()> {
+    if !token.data(store.as_context())?.is_some_and(|data| data.is::<super::super::ConsoleCapability>()) {
+        bail!("expected actual Console capability token");
+    }
+    Ok(())
+}
+
+pub(super) fn host_print_captured(
+    caller: Caller<'_, VmState>,
+    token: Option<wasmtime::Rooted<wasmtime::ExternRef>>,
+    ptr: i32,
+    len: i32,
+) -> Result<()> {
+    let token = token.ok_or_else(|| wasmtime::Error::msg("missing Console token"))?;
+    require_console_token(&caller, token)?;
+    if !caller.data().caps.print { bail!("Console output was not granted"); }
+    host_print(caller, ptr, len)
+}
+
 /// Register the `__witchy_abort` diagnostic trap (RFC-0045). It is not a
 /// capability — it grants no authority (it reads only the `(str_ptr)` string
 /// the guest hands it, returns nothing, and its only effect is to terminate
@@ -17,7 +39,46 @@ pub(in crate::runtime) fn link_abort(linker: &mut Linker<VmState>) -> Result<()>
 /// Register the Console string print.
 pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "print", host_print)?;
+    linker.func_wrap("witchy", "console_print", host_print_captured)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod canonical_console_tests {
+    use super::*;
+    use wasmtime::{ExternRef, Rooted};
+
+    #[test]
+    fn canonical_console_rejects_null_forged_tokens_and_missing_grants() -> Result<()> {
+        let mut runtime = super::super::super::Runtime::new()?;
+        let engine = runtime.engine.clone();
+        let empty = wasmtime::Module::new(&engine, "(module)")?;
+        let vm = runtime.instantiate_module(empty, super::super::super::Capabilities {
+            print: true, quiet: true, ..super::super::super::Capabilities::none()
+        }, 1, None)?;
+        let mut store = vm.store;
+        let mut linker = Linker::new(&engine);
+        link_print(&mut linker)?;
+        let module = wasmtime::Module::new(&engine, r#"(module
+            (import "witchy" "console_print" (func $print (param externref i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "ok")
+            (func (export "call") (param externref)
+                local.get 0 i32.const 0 i32.const 2 call $print))"#)?;
+        let instance = linker.instantiate(&mut store, &module)?;
+        let call = instance.get_typed_func::<Option<Rooted<ExternRef>>, ()>(&mut store, "call")?;
+        assert!(call.call(&mut store, None).is_err());
+        let forged = ExternRef::new(&mut store, 0_i32)?;
+        assert!(call.call(&mut store, Some(forged)).is_err());
+        assert!(store.data().output.lock().unwrap().is_empty());
+        let token = ExternRef::new(&mut store, super::super::super::ConsoleCapability)?;
+        call.call(&mut store, Some(token))?;
+        assert_eq!(*store.data().output.lock().unwrap(), ["ok"]);
+        store.data_mut().caps.print = false;
+        assert!(call.call(&mut store, Some(token)).is_err());
+        assert_eq!(*store.data().output.lock().unwrap(), ["ok"]);
+        Ok(())
+    }
 }
 
 /// Register `Console[Read]` line input.

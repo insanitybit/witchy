@@ -607,6 +607,39 @@ fn authenticated_import(
 }
 
 impl CanonicalAbiCatalog {
+    /// Canonical output carries the actual Console value. Legacy buffer-only
+    /// print is deliberately absent from this catalog; its existing factory
+    /// remains available for frozen ABI fixtures. Output is non-privileged
+    /// infrastructure, but its receiver still has a checked capability type.
+    pub fn from_authenticated_console_prelude(
+        print_signature: FunctionSignatureId,
+        float_to_str_signature: FunctionSignatureId,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let mut imports = Self::from_authenticated_prelude(
+            print_signature, float_to_str_signature, string_layout,
+        )?.imports();
+        imports.retain(|import| import.name != "print");
+        imports.push(authenticated_prelude_import(
+            "console_print",
+            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
+            &[],
+            print_signature,
+            vec![
+                HostParameterRole::Capability(CapabilityKindId::new(0)),
+                HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(string_layout),
+                    access: AccessMode::Read,
+                    extent: HostBufferExtent::Slice,
+                },
+            ],
+            Vec::new(),
+            HostMutation::ReadOnly,
+        )?);
+        Ok(Self::from_imports(imports))
+    }
+
     /// Project the canonical host imports from the generated prelude and its
     /// authenticated ABI metadata: `print`, a read-only byte sink, and
     /// `float_to_str`, which renders a `Float` into a guest buffer of at

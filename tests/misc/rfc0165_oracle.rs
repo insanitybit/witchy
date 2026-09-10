@@ -167,6 +167,27 @@ fn generators_and_pascal_expected_output_three_legs() {
     }
 }
 
+#[test]
+fn canonical_console_receiver_precedes_message_three_legs() {
+    let source = r#"
+fn receiver(console: Console) -> Console:
+    console.print("receiver")
+    console
+
+fn message(console: Console) -> String:
+    console.print("message")
+    "payload"
+
+fn main(console: Console):
+    receiver(console).print(message(console))
+"#;
+    let expected = ["receiver", "message", "payload"].map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("Console expression checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter"), expected);
+    assert_eq!(oracle(source, "actual Console receiver and effect order"), expected);
+}
+
 fn oracle(source: &str, label: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let artifact = codegen::compile_checked_module_artifact(&checked)

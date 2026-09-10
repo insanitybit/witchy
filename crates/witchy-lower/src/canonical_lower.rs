@@ -474,17 +474,22 @@ pub fn lower_typed_module(
         );
         signatures.push(FunctionSignature {
             id: signature_id,
-            parameters: vec![ValueType::Ref(string_layout)],
+            parameters: vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)), ValueType::Ref(string_layout)],
             results: Vec::new(),
             contract: CallableContract {
-                parameters: vec![ParameterContract {
-                    value_type: ValueType::Ref(string_layout),
-                    // Host buffer roles, not callable ownership, authorize this
-                    // import's read-only string access.
-                    ownership: ParameterOwnership::Value,
-                }],
+                parameters: vec![
+                    ParameterContract {
+                        value_type: ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
+                        ownership: ParameterOwnership::Value,
+                    },
+                    ParameterContract {
+                        value_type: ValueType::Ref(string_layout),
+                        // Host buffer roles authorize read-only string access.
+                        ownership: ParameterOwnership::Value,
+                    },
+                ],
                 results: Vec::new(),
-                parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read])]),
+                parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read])]),
             },
         });
         let float_signature_id = FunctionSignatureId::new(
@@ -508,7 +513,7 @@ pub fn lower_typed_module(
                 parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
             },
         });
-        let mut catalog = CanonicalAbiCatalog::from_authenticated_prelude(signature_id, float_signature_id, string_layout)
+        let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
         if !capability_imports.is_empty() || !compiler_imports.is_empty() {
             let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
@@ -572,7 +577,7 @@ pub fn lower_typed_module(
             .imports()
             .into_iter()
             .filter(|import| {
-                (import.name == "print" && prints)
+                (import.name == "console_print" && prints)
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
@@ -582,7 +587,7 @@ pub fn lower_typed_module(
             compiler: compiler_imports.iter()
                 .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
                 .collect(),
-            print: projected.iter().find(|import| import.name == "print").map(|import| import.id),
+            print: projected.iter().find(|import| import.name == "console_print").map(|import| import.id),
             float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
             capabilities: CAPABILITY_IMPORTS
                 .iter()
@@ -6822,6 +6827,14 @@ impl FunctionLowerer<'_> {
         if !matches!(self.expression_type(receiver)?.unqualified(), Type::Named(name, args) if name == "Console" && args.is_empty()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("console.print receiver"));
         }
+        // The receiver can have effects. Evaluate it before the message, and
+        // pass the resulting token rather than retaining only its source type.
+        let receiver = self.lower_expr(receiver)?;
+        if self.values.get(&receiver).copied() != Some(ValueType::Capability(
+            witchy_wir::canonical_safewir::CapabilityKindId::new(0),
+        )) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("console.print receiver token"));
+        }
         let object = self.lower_expr(message)?;
         let layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
@@ -6844,7 +6857,7 @@ impl FunctionLowerer<'_> {
         self.push_operation(Operation::HostCall {
             destinations: Vec::new(),
             import,
-            arguments: vec![HostCallArgument::Buffer {
+            arguments: vec![HostCallArgument::Capability(receiver), HostCallArgument::Buffer {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     object,
                     Projection::Slice { start, length },

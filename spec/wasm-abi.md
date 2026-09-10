@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **11**. The JavaScript host pins it as
+The current ABI version is **12**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -40,6 +40,10 @@ pre-release import counts were not separately published ABI versions.
 Version 10 adds native regex match counting and literal global replacement so
 the common aggregate and rewrite operations avoid span serialization. Version
 11 adds the canonical confined `Dir.read_file` and bounded `File.read` imports.
+Version 12 adds native `console_print`, which receives the actual opaque Console
+receiver followed by a checked string slice. Legacy `print` remains unchanged.
+Console output remains non-privileged infrastructure; the new receiver role
+checks value identity rather than adding an authority family.
 
 ## Import inclusion is tree-shaken
 
@@ -167,6 +171,7 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
+
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -288,6 +293,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `file_read_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
 | `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
 | `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
+| `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
+
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

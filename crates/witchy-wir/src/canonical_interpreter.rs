@@ -765,11 +765,16 @@ impl<'a> Engine<'a> {
         if let Some(name) = CAPABILITY_IMPORTS.iter().find(|name| **name == contract.name) {
             return self.capability_host_call(name, destinations, arguments, values);
         }
-        if contract.name != "print" || !destinations.is_empty() {
+        if !matches!(contract.name.as_str(), "print" | "console_print") || !destinations.is_empty() {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
         }
-        let [HostCallArgument::Buffer { place, .. }] = arguments else {
-            return Err(InterpretError::UnsupportedOperation("HostCall print arguments"));
+        let place = match (contract.name.as_str(), arguments) {
+            ("console_print", [token, HostCallArgument::Buffer { place, .. }]) => {
+                self.capability_scope(token, 0, values)?;
+                place
+            }
+            ("print", [HostCallArgument::Buffer { place, .. }]) => place,
+            _ => return Err(InterpretError::UnsupportedOperation("HostCall print arguments")),
         };
         let (object, start, length) = self.slice_place(place, values)?;
         self.check_range(object, start, length, false)?;
