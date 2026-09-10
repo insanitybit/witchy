@@ -864,10 +864,19 @@ impl<'a> Engine<'a> {
                     }
                 }
                 let owner_number = self.next_owner.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
+                let (_, layouts) = LayoutBundle::decode_canonical(&self.module.layouts().canonical_bytes())
+                    .map_err(|_| InterpretError::TypeMismatch("owner environment layouts"))?;
+                let physical = layouts.resolve_nominal(environment_layout)
+                    .map_err(|_| InterpretError::TypeMismatch("owner environment layout"))?;
+                let descriptor = layouts.get(physical)
+                    .ok_or(InterpretError::TypeMismatch("owner environment layout"))?;
+                let crate::layout::LayoutSize::Fixed(bytes) = descriptor.size() else {
+                    return Err(InterpretError::TypeMismatch("owner environment extent"));
+                };
                 let environment = self.allocate(
                     environment_layout,
                     AllocationClass::ReferenceCounted,
-                    RuntimeExtent::FixedBytes(0),
+                    RuntimeExtent::FixedBytes(u64::from(bytes)),
                     false,
                 )?;
                 let mut staged = Vec::with_capacity(captures.len());

@@ -11,6 +11,28 @@ use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConf
 use witchy_wir::canonical_safewir::FunctionId;
 
 #[test]
+fn unit_capture_with_capability_three_legs() {
+    let source = r#"
+fn consume(value: Nil) -> Int:
+    7
+
+fn make(console: Console, value: Nil) -> fn() -> Int:
+    fn():
+        console.print("tick")
+        consume(value)
+
+fn main(console: Console):
+    let log = make(console, Nil)
+    console.print("${log()}")
+"#;
+    let expected = ["tick", "7"].map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("Unit capture checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("Unit capture source execution"), expected);
+    assert_eq!(oracle(source, "Unit and capability closure capture"), expected);
+}
+
+#[test]
 fn unit_payload_storage_calls_and_effects_three_legs() {
     let source = r#"
 type Payload(a):

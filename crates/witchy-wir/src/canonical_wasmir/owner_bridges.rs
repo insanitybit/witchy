@@ -98,7 +98,7 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                     source.owner_families().iter().find(|f| f.signature == *id),
             }.ok_or_else(|| error("unregistered owner bridge"))?;
             if family.constructors.iter().any(|c| c.captures.iter().any(|capture| !matches!(capture.value_type,
-                ValueType::Capability(_) | ValueType::Ref(_) | ValueType::Int | ValueType::Float | ValueType::Bool))) {
+                ValueType::Capability(_) | ValueType::Ref(_) | ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit))) {
                 return Err(error("opaque owner capture storage kernel"));
             }
             let mut parameters = operation.operands().iter().map(|value| function.value_types.get(value).copied()
