@@ -14348,7 +14348,10 @@ fn main() -> Int:
             "fn apply(f: fn(var Int) -> Int, var value: Int) -> Int:\n    f(value)\n",
         );
         let source = checked.canonical_source().expect("canonical source");
-        lower_typed_module(source, empty_layouts()).expect("scalar var indirect calls lower");
+        // Function values have a closure environment even when their explicit
+        // argument/result lanes are scalar. Supply the canonical layout bundle.
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("callable layouts");
+        lower_typed_module(source, layouts).expect("scalar var indirect calls lower");
     }
 
     #[test]
