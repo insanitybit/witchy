@@ -7137,12 +7137,19 @@ mod checked_codegen_boundary_tests {
     fn authenticated_checked_result(
         source: &str,
     ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
+        let module = witchy_syntax::parser::parse_module(source)
+            .expect("parse authenticated checked-codegen fixture");
+        authenticated_checked_module_result(module, "main")
+    }
+
+    fn authenticated_checked_module_result(
+        module: witchy_syntax::ast::Module,
+        entry: &str,
+    ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
         use witchy_types::runtime_type::{
             AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
         };
 
-        let module = witchy_syntax::parser::parse_module(source)
-            .expect("parse authenticated checked-codegen fixture");
         let workspace = PackageCoordinate::new(
             PackageSource::Workspace,
             "example/dynamic-test",
@@ -7168,16 +7175,38 @@ mod checked_codegen_boundary_tests {
         }));
         let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
             .expect("authenticated owners");
-        witchy_types::pipeline::link_checked_authenticated(
-            vec![("main".into(), module)],
-            "main",
+        let user_modules = std::collections::HashSet::from(["main".to_owned()]);
+        witchy_types::pipeline::link_checked_authenticated_with_user_modules(
+            vec![(entry.into(), module)],
+            entry,
             no_expand,
+            &user_modules,
             owners,
         )
     }
 
     fn authenticated_checked(source: &str) -> witchy_types::pipeline::CheckedModule {
         authenticated_checked_result(source).expect("authenticated checked link")
+    }
+
+    fn authenticated_select_frame_fixture(source: &str) -> witchy_types::pipeline::CheckedModule {
+        // These are internal frame-bridge shape tests: opt-mode preparation
+        // introduces private payload decoders. Keep that code in its real
+        // std/task owner rather than granting application code bridge access.
+        let mut module = witchy_syntax::parser::parse_module(source)
+            .expect("parse select frame fixture");
+        let task = witchy_syntax::parser::parse_module(
+            witchy_syntax::linker::std_source("task").expect("std/task source"),
+        ).expect("parse std/task fixture owner");
+        // Keep chan as an imported module so its qualified bridge identities
+        // remain the ones the frame-plan and WAT assertions authenticate.
+        module.imports.extend(task.imports);
+        module.from_imports.extend(task.from_imports);
+        module.import_lines.clear();
+        module.items.extend(task.items);
+        module.item_lines.extend(task.item_lines);
+        authenticated_checked_module_result(module, "task")
+            .expect("authenticated std/task frame fixture")
     }
 
     #[test]
@@ -7479,7 +7508,7 @@ mod checked_codegen_boundary_tests {
 
     #[test]
     fn proven_select_loop_emits_reusable_frame_loop_bridge() {
-        let checked = authenticated_checked(include_str!("../../../../benchmarks/select_fanin.witchy"));
+        let checked = authenticated_select_frame_fixture(include_str!("../../../../benchmarks/select_fanin.witchy"));
         let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
         ).expect("assemble select-loop fixture");
@@ -7554,7 +7583,7 @@ mod checked_codegen_boundary_tests {
 
     #[test]
     fn proven_three_way_select_loop_emits_reusable_frame_loop_bridge() {
-        let checked = authenticated_checked(
+        let checked = authenticated_select_frame_fixture(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) -> seen = seen + value - value + 1\n            Second3(value) -> seen = seen + value - value + 1\n            Third3(value) -> seen = seen + value - value + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
         );
         let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
@@ -7608,7 +7637,7 @@ mod checked_codegen_boundary_tests {
 
     #[test]
     fn proven_four_way_select_loop_preserves_source_order_in_the_frame_bridge() {
-        let checked = authenticated_checked(
+        let checked = authenticated_select_frame_fixture(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    let (d_tx, d_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    chan.send(d_tx, 4).await\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select4(a_rx, b_rx, c_rx, d_rx).await\n        match selected:\n            First4(value) -> seen = seen + value - value + 1\n            Second4(value) -> seen = seen + value - value + 1\n            Third4(value) -> seen = seen + value - value + 1\n            Fourth4(value) -> seen = seen + value - value + 1\n            Closed4 -> seen = 4\n    console.print(\"seen=${seen}\")\n",
         );
         let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
