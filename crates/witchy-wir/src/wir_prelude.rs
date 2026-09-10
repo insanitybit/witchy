@@ -340,15 +340,20 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "env_get_into" (func $env_get_into_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
   (import "witchy" "regex_match_spans_into" (func $regex_match_spans_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "witchy" "net_listen_at" (func $net_listen_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "net_send_slice" (func $net_send_slice_host (param externref i32 i32)))
+  (import "witchy" "net_recv_line_size" (func $net_recv_line_size_host (param externref) (result i32)))
+  (import "witchy" "net_recv_bytes_size" (func $net_recv_bytes_size_host (param externref i64) (result i32)))
+  (import "witchy" "net_take_received_into" (func $net_take_received_into_host (param externref i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 121;
+pub const IMPORT_COUNT: usize = 126;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
-pub const WITCHY_ABI_VERSION: u32 = 13;
+pub const WITCHY_ABI_VERSION: u32 = 14;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -552,6 +557,11 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_connect_pinned"
         | "net_try_connect_pinned"
         | "net_listen"
+        | "net_listen_at"
+        | "net_send_slice"
+        | "net_recv_line_size"
+        | "net_recv_bytes_size"
+        | "net_take_received_into"
         | "net_listen_tls"
         | "net_accept"
         | "net_restrict"
@@ -642,7 +652,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_recv_line_len"
         | "net_recv_all_len"
         | "net_recv_bytes_len" => AUTH_NET_CONNECT,
-        "net_listen" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
+        "net_send_slice" | "net_recv_line_size" | "net_recv_bytes_size" | "net_take_received_into" => AUTH_NET_CONNECT,
+        "net_listen" | "net_listen_at" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
         "now" | "now_monotonic" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,

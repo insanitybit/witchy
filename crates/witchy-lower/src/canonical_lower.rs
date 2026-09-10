@@ -14,6 +14,10 @@ mod owned;
 #[path = "canonical_regex.rs"]
 mod regex;
 
+// RFC-0165 Net registration (Net track).
+#[path = "canonical_net.rs"]
+mod net;
+
 #[path = "canonical_list_update.rs"]
 mod list_update;
 
@@ -535,7 +539,9 @@ pub fn lower_typed_module(
     let capability_imports = collect_capability_imports(typed.module(), typed.table());
     let compiler_imports = collect_compiler_imports(typed.module());
     let regex_spans = regex::is_needed(typed.module());
-    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
+    // RFC-0165 Net import registration (Net track).
+    let net_imports = net::collect_imports(typed.module());
+    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -648,6 +654,8 @@ pub fn lower_typed_module(
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
         }
+        // RFC-0165 Net catalog registration (Net track).
+        if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
         let projected = catalog
@@ -659,9 +667,12 @@ pub fn lower_typed_module(
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
                     || (regex_spans && import.name == "regex_match_spans_into")
+                    || net_imports.contains(import.name.as_str()) // Net track
             })
             .collect::<Vec<_>>();
         host_imports = HostImports {
+            // RFC-0165 Net import registration (Net track).
+            net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
             compiler: compiler_imports.iter()
                 .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
@@ -1987,6 +1998,8 @@ impl FunctionLowerer<'_> {
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
+            // RFC-0165 Net dispatch (Net track).
+            Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args).map(|_| ()),
             Expr::While { cond, body } => self.lower_while(cond, body),
             Expr::WhileLet { pattern, scrutinee, body } => self.lower_while_let(pattern, scrutinee, body),
             Expr::For { var, iter, body } => self.lower_for(var, iter, body),
@@ -5698,6 +5711,9 @@ impl FunctionLowerer<'_> {
 
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         match expression {
+            // RFC-0165 Net dispatch (Net track).
+            Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args)?
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("effect-only Net operation used as a value")),
             Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => self.push_zero(ValueType::Unit),
             Expr::Var(name) if name == "Nil" && !self.bindings.contains_key(name) => self.push_zero(ValueType::Unit),
             Expr::Int(value) => {
@@ -12846,6 +12862,8 @@ fn string_layout(
 /// by the role the lowering reaches them through.
 #[derive(Clone, Default)]
 struct HostImports {
+    // RFC-0165 Net import registration (Net track).
+    net: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
     compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,

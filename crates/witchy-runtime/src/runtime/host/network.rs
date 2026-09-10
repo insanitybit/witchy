@@ -9,6 +9,9 @@ use super::secret::secret_material_ref;
 use super::vm_worker::listener_resource_ref;
 use crate::net::Stream;
 
+#[path = "canonical_network.rs"]
+mod canonical;
+
 /// Register the root `Net` grant mint (RFC-0005 stage 3).
 pub(in crate::runtime) fn link_mint(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_net", host_mint_net)?;
@@ -55,6 +58,7 @@ fn host_net_fetch(
 /// wrong-host-data refs fail loudly at use. (`serve_pool` shares this gate but
 /// is worker-pool machinery and registers in the kernel, after these.)
 pub(in crate::runtime) fn link_listen(linker: &mut Linker<VmState>) -> Result<()> {
+    canonical::link_listen(linker)?;
     linker.func_wrap("witchy", "net_listen", host_net_listen)?;
     linker.func_wrap("witchy", "net_listen_tls", host_net_listen_tls)?;
     linker.func_wrap("witchy", "net_accept", host_net_accept)?;
@@ -65,6 +69,7 @@ pub(in crate::runtime) fn link_listen(linker: &mut Linker<VmState>) -> Result<()
 /// obtainable through a granted connect or accept), so the caller links it
 /// under either verb.
 pub(in crate::runtime) fn link_socket_io(linker: &mut Linker<VmState>) -> Result<()> {
+    canonical::link_socket_io(linker)?;
     linker.func_wrap("witchy", "net_send_line", host_net_send_line)?;
     linker.func_wrap("witchy", "net_send_bytes", host_net_send_bytes)?;
     linker.func_wrap("witchy", "net_recv_line_len", host_net_recv_line_len)?;
@@ -122,6 +127,7 @@ fn socket_ref(
 ) -> Result<Option<Rooted<ExternRef>>> {
     ExternRef::new(caller, SocketResource {
         stream: Arc::new(Mutex::new(std::io::BufReader::new(stream))),
+        canonical_pending: Arc::new(Mutex::new(None)),
     }).map(Some)
 }
 

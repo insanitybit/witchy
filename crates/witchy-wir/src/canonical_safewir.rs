@@ -439,6 +439,9 @@ pub const FLOAT_RENDER_BUFFER_BYTES: u64 = 32;
 /// externref, never in the kind, so every `Dir` spelling is this one kind.
 pub const DIR_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(1);
 
+mod net;
+pub use net::{NET_CAPABILITY_KIND, LISTENER_CAPABILITY_KIND, SOCKET_CAPABILITY_KIND, NET_IMPORT_NAMES};
+
 /// The fixed ABI kind of the `Env` token.
 pub const ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(2);
 

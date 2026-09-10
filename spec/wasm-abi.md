@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **13**. The JavaScript host pins it as
+The current ABI version is **14**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -48,6 +48,17 @@ Version 13 adds native-only `regex_match_spans_into`: two UTF-8 read slices,
 one capacity-bounded output slice, and a returned byte length. It writes the
 complete character-span encoding only when capacity suffices; otherwise it
 writes nothing. Invalid patterns or slices trap. No pending state is involved.
+
+Version 14 adds native canonical Net slice adapters. `net_listen_at` receives
+an authenticated Net and an address read slice; it uses the existing admitted
+bind policy and returns an authenticated Listener. `net_send_slice` receives a
+Socket and a UTF-8 read slice. `net_recv_line_size` and `net_recv_bytes_size`
+perform one receive, staging its result on that authenticated Socket; the latter
+takes an Int byte count. `net_take_received_into` consumes that Socket's staged
+result into a checked write slice, returning its byte length. Short or invalid
+output slices, a different socket, an unconsumed earlier receive, and repeated
+fills fail closed. An empty receive is still a result and is consumed by one
+zero-capacity fill. All five imports are omitted by the browser host.
 
 ## Import inclusion is tree-shaken
 
@@ -299,6 +310,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
 | `regex_match_spans_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `net_listen_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Listen | omitted |
+| `net_send_slice` | `(externref, i32, i32)` | capability authority | Net.Connect | omitted |
+| `net_recv_line_size` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_bytes_size` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
+| `net_take_received_into` | `(externref, i32, i32) -> i32` | capability authority | Net.Connect | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 

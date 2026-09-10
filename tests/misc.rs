@@ -10,6 +10,9 @@ mod temp_dir;
 #[path = "misc/rfc0165_messages.rs"]
 mod rfc0165_messages;
 
+#[path = "misc/rfc0165_net.rs"]
+mod rfc0165_net;
+
 #[path = "misc/rfc_status_hygiene.rs"]
 mod rfc_status_hygiene;
 #[path = "misc/example_source_paths.rs"]
