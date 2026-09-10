@@ -1060,9 +1060,9 @@ fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool
         // A capability token is a scalar-like value: copied on pass, never
         // released, so every convention carries it. `Dir` names its rights in
         // type arguments, which change no ABI fact about the token.
-        witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Dir" | "File") => true,
+        witchy_syntax::ast::Type::Named(name, _) if matches!(name.as_str(), "Dir" | "File" | "Net") => true,
         witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() => {
-            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes" | "Console" | "Env")
+            matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes" | "Console" | "Env" | "Listener" | "Socket")
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             ordinary_own_source_type_supported(&arguments[0])
@@ -1100,6 +1100,9 @@ pub(super) fn value_type_matches_source(
             CapabilityRepresentation::Direct(CapabilityKind::Dir) | CapabilityRepresentation::Nullable(CapabilityKind::Dir) => super::DIR_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::Env) | CapabilityRepresentation::Nullable(CapabilityKind::Env) => super::ENV_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::File) | CapabilityRepresentation::Nullable(CapabilityKind::File) => super::FILE_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::Net) | CapabilityRepresentation::Nullable(CapabilityKind::Net) => super::NET_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::Listener) | CapabilityRepresentation::Nullable(CapabilityKind::Listener) => super::LISTENER_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::Socket) | CapabilityRepresentation::Nullable(CapabilityKind::Socket) => super::SOCKET_CAPABILITY_KIND,
         };
         return matches!(
             (representation, actual),
@@ -2092,6 +2095,24 @@ mod tests {
         let witchy_syntax::ast::Type::Fn(parameters, _, _, _) = source.closed_callable_signature(0).unwrap().unqualified() else { panic!("function") };
         assert!(!value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(1)), &parameters[0], &LayoutInterner::new(), &[], &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new()));
         assert!(value_type_matches_source(ValueType::Capability(super::super::CapabilityKindId::new(0)), &parameters[0], &LayoutInterner::new(), &[], &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new()));
+    }
+
+    #[test]
+    fn canonical_net_source_kinds_reject_integer_and_cross_family_substitution() {
+        use witchy_syntax::ast::Type;
+        let matches = |actual, source: &Type| value_type_matches_source(actual, source,
+            &LayoutInterner::new(), &[], &mut CorrespondenceContext::default(), &BTreeMap::new(), &BTreeMap::new());
+        for (name, expected) in [("Net", 4), ("Listener", 5), ("Socket", 6)] {
+            let rights = if name == "Net" { vec![Type::Named("Listen".into(), vec![]), Type::Named("Tcp".into(), vec![])] } else { vec![] };
+            let source = Type::Named(name.into(), rights);
+            for candidate in 0..8 {
+                assert_eq!(matches(ValueType::Capability(super::super::CapabilityKindId::new(candidate)), &source), candidate == expected);
+            }
+            assert!(!matches(ValueType::Int, &source));
+            assert!(!matches(ValueType::Size, &source));
+            assert!(!matches(ValueType::NullableCapability(super::super::CapabilityKindId::new(expected)), &source));
+            assert!(ordinary_own_source_type_supported(&source));
+        }
     }
 
     /// A closure record of one code slot and no captures.

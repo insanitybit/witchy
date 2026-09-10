@@ -113,6 +113,7 @@ impl InterpreterValue {
             crate::CanonicalEntryCapability::Console => 0,
             crate::CanonicalEntryCapability::Dir => DIR_KIND,
             crate::CanonicalEntryCapability::Env => ENV_KIND,
+            crate::CanonicalEntryCapability::Net => crate::canonical_safewir::NET_CAPABILITY_KIND.get(),
         })
     }
 }
@@ -134,6 +135,9 @@ pub struct OracleFixture {
     /// fixtures that model no launcher); an entry with more `Dir` parameters
     /// is refused, as the runtime refuses to mint an ungranted one.
     pub dir_grants: Option<usize>,
+    /// Supplied Net root grants. A fixture grants none unless explicit.
+    /// Net I/O remains an unsupported host operation in this semantic oracle.
+    pub net_grants: usize,
 }
 
 impl OracleFixture {
@@ -322,6 +326,9 @@ pub fn interpret_program(
     arguments: Vec<InterpreterValue>,
     config: InterpreterConfig,
 ) -> Result<ProgramRun, InterpretError> {
+    let net_roots = arguments.iter().filter(|argument| matches!(argument,
+        InterpreterValue::Capability(token) if token.kind == crate::canonical_safewir::NET_CAPABILITY_KIND.get())).count();
+    if net_roots > config.fixture.net_grants { return Err(InterpretError::ExplicitTrap); }
     // The launcher mints one root `Dir` token per grant; an entry asking for
     // more than the fixture grants is refused before it runs.
     if let Some(grants) = config.fixture.dir_grants {

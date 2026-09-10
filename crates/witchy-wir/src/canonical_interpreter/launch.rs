@@ -11,6 +11,9 @@ pub fn interpret_entry_program(
     arguments: &[String],
     config: InterpreterConfig,
 ) -> Result<ProgramRun, InterpretError> {
+    let net_roots = capabilities.iter().filter(|value| matches!(value,
+        InterpreterValue::Capability(token) if token.kind == crate::canonical_safewir::NET_CAPABILITY_KIND.get())).count();
+    if net_roots > config.fixture.net_grants { return Err(InterpretError::ExplicitTrap); }
     if let Some(grants) = config.fixture.dir_grants {
         let roots = capabilities.iter().filter(|value| matches!(value,
             InterpreterValue::Capability(token) if token.kind == DIR_KIND && token.scope.is_empty())).count();

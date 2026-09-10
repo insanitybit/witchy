@@ -1806,6 +1806,13 @@ impl FunctionLowerer<'_> {
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
                             return Ok(());
                         }
+                        // RFC-0165 Net return-position dispatch (Net track).
+                        if net::is_operation(name) {
+                            let value = self.lower_net(name, args)?;
+                            let terminator = self.return_value(value, results)?;
+                            self.finish_current(terminator)?;
+                            return Ok(());
+                        }
                         if is_capability_op(name) {
                             let value = self.lower_capability_op(name, args)?;
                             let terminator = self.return_value(value, results)?;
@@ -1887,6 +1894,13 @@ impl FunctionLowerer<'_> {
                             }
                             self.lower_console_print(args)?;
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
+                        // RFC-0165 Net final-expression dispatch (Net track).
+                        if net::is_operation(name) {
+                            let value = self.lower_net(name, args)?;
+                            let terminator = self.return_value(value, results)?;
+                            self.finish_current(terminator)?;
                             return Ok(());
                         }
                         if is_capability_op(name) {
@@ -12571,6 +12585,10 @@ fn source_value_type(
             CapabilityKind::Dir => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
             CapabilityKind::Env => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
             CapabilityKind::File => witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND,
+            // RFC-0165 Net checked-source correspondence (Net track).
+            CapabilityKind::Net => witchy_wir::canonical_safewir::NET_CAPABILITY_KIND,
+            CapabilityKind::Listener => witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND,
+            CapabilityKind::Socket => witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND,
         };
         return Ok(match representation {
             CapabilityRepresentation::Direct(_) => ValueType::Capability(kind),

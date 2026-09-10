@@ -75,6 +75,9 @@ impl<'a> SourceConstructor<'a> {
                     CapabilityKind::Dir => super::DIR_CAPABILITY_KIND,
                     CapabilityKind::Env => super::ENV_CAPABILITY_KIND,
                     CapabilityKind::File => super::FILE_CAPABILITY_KIND,
+                    CapabilityKind::Net => super::NET_CAPABILITY_KIND,
+                    CapabilityKind::Listener => super::LISTENER_CAPABILITY_KIND,
+                    CapabilityKind::Socket => super::SOCKET_CAPABILITY_KIND,
                 }))
             }
         }).collect::<Result<Vec<_>, _>>()?;

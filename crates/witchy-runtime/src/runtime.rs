@@ -1432,6 +1432,7 @@ impl Vm {
         // parameters, exactly as the frozen wrapper's `mint_dir(i)` calls do, so
         // the i-th `Dir` in `main`'s signature is backed by the i-th grant.
         let mut dir_ordinal = 0usize;
+        let mut net_ordinal = 0usize;
         for capability in entry.capabilities() {
             let token = match capability {
                 CanonicalEntryCapability::Console => {
@@ -1453,6 +1454,13 @@ impl Vm {
                         bail!("the program's `main` requires an Env capability that was not granted");
                     }
                     let authority = host::clock_env_rand::env_authority(self.store.data());
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::Net => {
+                    let authority = self.store.data().nets.get(net_ordinal).cloned().ok_or_else(|| {
+                        Error::msg(format!("the program's `main` requires a Net capability for parameter {net_ordinal} that was not granted"))
+                    })?;
+                    net_ordinal += 1;
                     ExternRef::new(&mut self.store, authority)?
                 }
             };

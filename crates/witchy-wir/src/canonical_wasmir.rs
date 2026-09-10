@@ -1588,6 +1588,8 @@ pub enum CanonicalEntryCapability {
     Dir,
     /// The process environment grant (kind 2).
     Env,
+    /// A supplied Net grant, in Net-parameter ordinal order (kind 4).
+    Net,
 }
 
 /// What the program entry returns, for the frozen exit-code convention: an
@@ -1645,6 +1647,7 @@ impl CanonicalEntry {
                 CanonicalEntryCapability::Console => 0,
                 CanonicalEntryCapability::Dir => 1,
                 CanonicalEntryCapability::Env => 2,
+                CanonicalEntryCapability::Net => 4,
             });
         }
         bytes.push(match self.result {
@@ -1682,6 +1685,7 @@ impl CanonicalEntry {
                 0 => Ok(CanonicalEntryCapability::Console),
                 1 => Ok(CanonicalEntryCapability::Dir),
                 2 => Ok(CanonicalEntryCapability::Env),
+                4 => Ok(CanonicalEntryCapability::Net),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -6835,6 +6839,9 @@ fn derive_entry(
             ValueType::Capability(kind) if *kind == CapabilityKindId::new(2) => {
                 capabilities.push(CanonicalEntryCapability::Env);
             }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND => {
+                capabilities.push(CanonicalEntryCapability::Net);
+            }
             ValueType::Ref(layout) if *layout == argument_layout && matches!(
                 source_parameter.unqualified(),
                 witchy_syntax::ast::Type::Named(name, elements) if name == "List" && elements.len() == 1
@@ -6967,11 +6974,12 @@ mod tests {
                 super::CanonicalEntryCapability::Console,
                 super::CanonicalEntryCapability::Dir,
                 super::CanonicalEntryCapability::Env,
+                super::CanonicalEntryCapability::Net,
             ],
             result: super::CanonicalEntryResult::Int,
         };
         let encoded = entry.encode();
-        assert_eq!(encoded[encoded.len() - 4..encoded.len() - 1], [0, 1, 2]);
+        assert_eq!(encoded[encoded.len() - 5..encoded.len() - 1], [0, 1, 2, 4]);
         assert_eq!(super::CanonicalEntry::decode(&encoded), Ok(entry));
     }
 

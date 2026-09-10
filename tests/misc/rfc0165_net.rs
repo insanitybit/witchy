@@ -141,20 +141,24 @@ fn host_net_receive_rejects_short_invalid_stale_and_cross_socket_fills() {
     }
 }
 
-#[test]
-fn canonical_net_server_router_serves_one_real_request() {
-    let address = fixture_address();
+fn server_source(address: &str, parameters: &str) -> String {
     // The existing finite-request server API, with the same handler API as
     // serve_hello. No replacement parser, router, stdlib or scheduler.
-    let source = format!(r#"
+    format!(r#"
 from http import Request, Response
 from server import Router
 fn home(req: Request) -> Response:
     server.text(200, "hello, witchy")
-fn main(net: Net):
+fn main({parameters}):
     let app = server.router().get("/", home)
     server.serve_n(net, "{address}", app, 1)
-"#);
+"#)
+}
+
+#[test]
+fn canonical_net_server_router_serves_one_real_request() {
+    let address = fixture_address();
+    let source = server_source(&address, "net: Net");
     let checked = witchy::resolve_std_only_checked(&source).expect("checked existing server API");
     let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("Net server must cross canonical validation and encoding without fallback");
@@ -167,4 +171,75 @@ fn main(net: Net):
         Ok(())
     }).expect("admitted server executes one real request");
     assert_eq!(response, "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhello, witchy");
+}
+
+#[test]
+fn canonical_net_missing_root_grants_reject_even_without_imports() {
+    let checked = witchy::resolve_std_only_checked("fn main(first: Net, second: Net):\n    Nil\n").unwrap();
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked).expect_lowered("Net entry admits");
+    assert_eq!(artifact.entry().unwrap().capabilities(), &[witchy_wir::CanonicalEntryCapability::Net; 2]);
+    assert_eq!(witchy_wir::canonical_entry_from_wasm(artifact.wasm()).unwrap().as_ref(), artifact.entry());
+    for (grants, missing) in [(Capabilities::default(), 0), (caps("127.0.0.1:0"), 1)] {
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, grants, 16).unwrap();
+        let error = vm.run().unwrap_err().to_string();
+        assert!(error.contains(&format!("Net capability for parameter {missing} that was not granted")), "{error}");
+    }
+    let mut runtime = Runtime::batch().unwrap();
+    let mut grants = caps("127.0.0.1:0");
+    grants.net_grants.push(vec!["127.0.0.1:1".into()]);
+    runtime.spawn_admitted(&artifact, grants, 16).unwrap().run().unwrap();
+
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+    let entry = artifact.entry().unwrap();
+    let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    use witchy_wir::canonical_interpreter::{interpret_program, interpret_entry_program, InterpreterConfig, InterpreterValue};
+    let tokens = || entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    assert!(interpret_program(&validated, function, tokens(), InterpreterConfig::default()).is_err());
+    assert!(interpret_entry_program(&validated, function, tokens(), &[], InterpreterConfig::default()).is_err());
+    let mut config = InterpreterConfig::default();
+    config.fixture.net_grants = 2;
+    interpret_program(&validated, function, tokens(), config.clone()).unwrap();
+    interpret_entry_program(&validated, function, tokens(), &[], config).unwrap();
+}
+
+#[test]
+fn canonical_net_grants_bind_by_supplied_ordinal_and_wrong_grant_rejects() {
+    let address = fixture_address();
+    let source = socket_source(&address, "first: Net, net: Net[Listen, Tcp]");
+    let checked = witchy::resolve_std_only_checked(&source).unwrap();
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked).expect_lowered("ordinal Net server admits");
+    // A permitted address in the FIRST grant cannot authorize the second Net.
+    let mut wrong = caps(&address);
+    wrong.net_grants.push(vec!["192.0.2.1:1".into()]);
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, wrong, 256).unwrap();
+    let error = format!("{:#}", vm.run().unwrap_err());
+    assert!(error.contains("is not permitted by this Net capability"), "{error}");
+    let mut correct = caps("192.0.2.1:1");
+    correct.net_grants.push(vec![address.clone()]);
+    let response = exchange(address, b"probe\nhello", 1, move || {
+        let mut runtime = Runtime::batch().map_err(|error| error.to_string())?;
+        let mut vm = runtime.spawn_admitted(&artifact, correct, 256).map_err(|error| error.to_string())?;
+        vm.run().map_err(|error| format!("{error:#}"))?;
+        assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+        Ok(())
+    }).unwrap();
+    assert_eq!(response, "probehello");
+}
+
+fn socket_source(address: &str, parameters: &str) -> String {
+    format!(r#"
+fn listen(net: Net[Listen, Tcp], address: String) -> Listener:
+    net.listen(address)
+fn close(sock: Socket):
+    sock.close()
+fn main({parameters}):
+    let listener = listen(net, "{address}")
+    let sock = listener.accept()
+    let line = sock.recv_line()
+    let body = sock.recv_bytes(5)
+    sock.send_bytes(line + body)
+    close(sock)
+"#)
 }
