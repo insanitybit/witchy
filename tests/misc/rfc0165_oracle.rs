@@ -11,6 +11,49 @@ use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConf
 use witchy_wir::canonical_safewir::FunctionId;
 
 #[test]
+fn unit_payload_storage_calls_and_effects_three_legs() {
+    let source = r#"
+type Payload(a):
+    Payload(a, Int)
+
+fn unit(console: Console) -> Nil:
+    console.print("effect")
+    Nil
+
+fn forward(value: Payload(Nil)) -> Payload(Nil):
+    value
+
+fn consume(value: Nil, marker: Int) -> Int:
+    marker
+
+fn observe(value: Payload(Nil)) -> Int:
+    match value:
+        Payload(item, marker) -> consume(item, marker)
+
+fn optional(present: Bool) -> Option(Nil):
+    if present: Some(Nil) else: None
+
+fn inspect(value: Option(Nil)) -> Int:
+    match value:
+        Some(item) -> consume(item, 7)
+        None -> 3
+
+fn main(console: Console):
+    let wrapped = forward(Payload(unit(console), 41))
+    console.print("${observe(wrapped)}")
+    var values = [Nil, Nil]
+    values.push(Nil)
+    console.print("${consume(values[2], values.length())}")
+    console.print("${inspect(optional(true))} ${inspect(optional(false))}")
+"#;
+    let expected = ["effect", "41", "3", "7 3"].map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("unit payload source checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter"), expected);
+    assert_eq!(oracle(source, "unit payload storage, calls, and effects"), expected);
+}
+
+#[test]
 fn own_string_capture_by_value_three_legs() {
     let source = r#"
 fn make(own text: String, console: Console) -> fn() -> String:

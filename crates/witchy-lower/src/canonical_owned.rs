@@ -76,7 +76,7 @@ fn argument_value(argument: &CallArgument) -> ValueId {
 fn definitions(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.destinations(),
-        Operation::ConstInt { destination, .. } | Operation::ConstFloat { destination, .. }
+        Operation::ConstUnit { destination } | Operation::ConstInt { destination, .. } | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. } | Operation::ConstSize { destination, .. }
         | Operation::CapabilityNone { destination, .. } | Operation::CapabilitySome { destination, .. }
         | Operation::CapabilityIsPresent { destination, .. } | Operation::CapabilityUnwrap { destination, .. }
@@ -123,7 +123,7 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
             // buffer place. Scalar/capability lanes cannot own linear storage.
             match argument { HostCallArgument::Buffer { place, .. } => Some(place.object()), _ => None }
         }).collect(),
-        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. }
+        Operation::ConstUnit { .. } | Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. }
         | Operation::ConstSize { .. } | Operation::Alloc { .. } | Operation::StaticData { .. }
         | Operation::CapabilityNone { .. }
         | Operation::FunctionValue { .. } => Vec::new(),
@@ -323,6 +323,7 @@ fn operation_flow(
             }
         }
         Operation::ConstInt { .. }
+        | Operation::ConstUnit { .. }
         | Operation::ConstFloat { .. }
         | Operation::ConstBool { .. }
         | Operation::ConstSize { .. }

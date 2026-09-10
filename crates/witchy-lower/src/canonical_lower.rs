@@ -5680,6 +5680,8 @@ impl FunctionLowerer<'_> {
 
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         match expression {
+            Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => self.push_zero(ValueType::Unit),
+            Expr::Var(name) if name == "Nil" && !self.bindings.contains_key(name) => self.push_zero(ValueType::Unit),
             Expr::Int(value) => {
                 let destination = self.fresh(ValueType::Int)?;
                 self.push_operation(Operation::ConstInt { destination, value: *value });
@@ -5953,7 +5955,10 @@ impl FunctionLowerer<'_> {
                         self.ensure_list_extent(value)?;
                         Ok(value)
                     }
-                    [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
+                    [] if matches!(scalar_type(&self.expression_type(expression)?), Ok(ValueType::Unit)) => {
+                        self.push_zero(ValueType::Unit)
+                    }
+                    [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as non-unit value")),
                     _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
                 }
             }
@@ -5977,7 +5982,10 @@ impl FunctionLowerer<'_> {
                         self.ensure_list_extent(value)?;
                         Ok(value)
                     }
-                    [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as value")),
+                    [] if matches!(scalar_type(&self.expression_type(expression)?), Ok(ValueType::Unit)) => {
+                        self.push_zero(ValueType::Unit)
+                    }
+                    [] => Err(CanonicalLoweringError::UnsupportedExpression("void call used as non-unit value")),
                     _ => Err(CanonicalLoweringError::UnsupportedExpression("multi-result call")),
                 }
             }
@@ -6217,6 +6225,7 @@ impl FunctionLowerer<'_> {
             ValueType::Int => self.push_operation(Operation::ConstInt { destination, value: 0 }),
             ValueType::Float => self.push_operation(Operation::ConstFloat { destination, bits: 0 }),
             ValueType::Bool => self.push_operation(Operation::ConstBool { destination, value: false }),
+            ValueType::Unit => self.push_operation(Operation::ConstUnit { destination }),
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("aggregate slot type")),
         }
         Ok(destination)
@@ -12701,6 +12710,7 @@ fn aggregate_layout(
                 (Some(LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration)), Some(ValueType::Int), None) => true,
                 (Some(LayoutKind::Scalar(ScalarKind::Float)), Some(ValueType::Float), None) => true,
                 (Some(LayoutKind::Scalar(ScalarKind::Bool)), Some(ValueType::Bool), None) => true,
+                (Some(LayoutKind::Scalar(ScalarKind::Unit)), Some(ValueType::Unit), None) => true,
                 (
                     Some(LayoutKind::RuntimePointerValueSlot { pointee: actual, semantics }),
                     None,
@@ -12740,6 +12750,7 @@ fn packed_scalar_layout(
                 Some(LayoutKind::Scalar(ScalarKind::Int | ScalarKind::Duration)) => ValueType::Int,
                 Some(LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
                 Some(LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
+                Some(LayoutKind::Scalar(ScalarKind::Unit)) => ValueType::Unit,
                 _ => return false,
             };
             scalar_type(expected).is_ok_and(|expected| expected == actual)
@@ -12760,7 +12771,7 @@ fn is_v1_scalar_record(definition: &TypeDef) -> bool {
     definition.params.is_empty()
         && definition.variants.len() == 1
         && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
         ))
 }
 
@@ -12770,7 +12781,7 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
         && definition.params.is_empty()
         && definition.variants.len() == 1
         && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
         ))
 }
 
@@ -13147,6 +13158,7 @@ fn list_layout(
         Type::Named(element, args) if element == "Int" && args.is_empty() => ValueType::Int,
         Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
         Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
+        Type::Named(element, args) if matches!(element.as_str(), "Nil" | "Unit") && args.is_empty() => ValueType::Unit,
         Type::Named(element, args) if matches!(element.as_str(), "String" | "Bytes") && args.is_empty() => {
             ValueType::Ref(string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?)
         }
@@ -13185,6 +13197,7 @@ fn list_layout(
             (ValueType::Int, LayoutKind::Scalar(ScalarKind::Int)) => ValueType::Int,
             (ValueType::Float, LayoutKind::Scalar(ScalarKind::Float)) => ValueType::Float,
             (ValueType::Bool, LayoutKind::Scalar(ScalarKind::Bool)) => ValueType::Bool,
+            (ValueType::Unit, LayoutKind::Scalar(ScalarKind::Unit)) => ValueType::Unit,
             (
                 ValueType::Ref(expected),
                 LayoutKind::RuntimePointerValueSlot {
@@ -13262,6 +13275,7 @@ fn dictionary_slot_matches(
         (LayoutKind::Scalar(ScalarKind::Int), ValueType::Int)
         | (LayoutKind::Scalar(ScalarKind::Float), ValueType::Float)
         | (LayoutKind::Scalar(ScalarKind::Duration), ValueType::Int)
+        | (LayoutKind::Scalar(ScalarKind::Unit), ValueType::Unit)
         | (LayoutKind::Scalar(ScalarKind::BoolValueSlot), ValueType::Bool) => true,
         (
             LayoutKind::RuntimePointerValueSlot {

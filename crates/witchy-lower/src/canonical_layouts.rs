@@ -894,6 +894,7 @@ fn scalar_kind_of(ty: &Type) -> Option<ScalarKind> {
             "Float" => Some(ScalarKind::Float),
             "Duration" => Some(ScalarKind::Duration),
             "Bool" => Some(ScalarKind::Bool),
+            "Nil" | "Unit" => Some(ScalarKind::Unit),
             _ => None,
         },
         _ => None,
@@ -979,6 +980,7 @@ impl ClosedTypeResolver for V1Resolver<'_> {
             "Float" => Some(ResolvedNamed::Scalar(ScalarKind::Float)),
             "Duration" => Some(ResolvedNamed::Scalar(ScalarKind::Duration)),
             "Bool" => Some(ResolvedNamed::Scalar(ScalarKind::Bool)),
+            "Nil" | "Unit" => Some(ResolvedNamed::Scalar(ScalarKind::Unit)),
             "List" => Some(ResolvedNamed::PackedList { rc: RcHeader::Required }),
             name => {
                 // A keyed instantiation (`Option(Int)`) arrives as its own
@@ -1001,7 +1003,7 @@ pub(crate) fn is_v1_scalar_record(definition: &TypeDef) -> bool {
     definition.params.is_empty()
         && definition.variants.len() == 1
         && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
         ))
 }
 
@@ -1011,7 +1013,7 @@ fn is_v1_packed_scalar_record(definition: &TypeDef) -> bool {
         && definition.params.is_empty()
         && definition.variants.len() == 1
         && definition.variants[0].fields.iter().all(|field| matches!(field.unqualified(),
-            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool")
+            Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
         ))
 }
 
