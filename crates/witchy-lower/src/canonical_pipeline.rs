@@ -65,6 +65,26 @@ pub(crate) fn validate_checked_module(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixtureConsole;
+
+    fn fixture_console_print(
+        mut caller: wasmtime::Caller<'_, Vec<u8>>,
+        token: Option<wasmtime::Rooted<wasmtime::ExternRef>>,
+        pointer: i32,
+        length: i32,
+    ) {
+        let token = token.expect("actual fixture Console token");
+        assert!(token.data(&caller).expect("live token").expect("host token")
+            .is::<FixtureConsole>());
+        let memory = caller.get_export("memory")
+            .and_then(wasmtime::Extern::into_memory).expect("canonical memory export");
+        let start = usize::try_from(pointer).expect("non-negative print pointer");
+        let length = usize::try_from(length).expect("non-negative print length");
+        let bytes = memory.data(&caller)[start..start + length].to_vec();
+        caller.data_mut().extend_from_slice(&bytes);
+    }
+
     use witchy_syntax::parser::parse_module;
 
     #[test]
@@ -182,8 +202,11 @@ mod tests {
                 _ => None,
             })
             .expect("console.print HostCall");
-        assert_eq!(host_call.len(), 1);
-        let witchy_wir::canonical_safewir::HostCallArgument::Buffer { place, extent } = &host_call[0]
+        assert_eq!(host_call.len(), 2);
+        let witchy_wir::canonical_safewir::HostCallArgument::Capability(receiver) = &host_call[0]
+        else { panic!("console.print must pass its actual receiver"); };
+        assert_eq!(*receiver, candidate.functions()[0].blocks[0].parameters[0].value);
+        let witchy_wir::canonical_safewir::HostCallArgument::Buffer { place, extent } = &host_call[1]
         else {
             panic!("console.print must pass a checked buffer");
         };
@@ -207,22 +230,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted console.print artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -230,7 +238,8 @@ mod tests {
         let main = instance
             .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f0")
             .expect("canonical console main export");
-        main.call(&mut store, None).expect("run canonical console.print");
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console)).expect("run canonical console.print");
         assert_eq!(store.data(), b"ok");
     }
 
@@ -250,22 +259,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted RFC-0165 list-for artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -273,7 +267,8 @@ mod tests {
         let main = instance
             .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f0")
             .expect("canonical RFC-0165 list-for main export");
-        main.call(&mut store, None)
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console))
             .expect("run canonical RFC-0165 list-for artifact");
         assert_eq!(store.data(), b"xxx");
     }
@@ -1141,22 +1136,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted direct String-result artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -1164,7 +1144,8 @@ mod tests {
         let main = instance
             .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f1")
             .expect("canonical main export");
-        main.call(&mut store, None)
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console))
             .expect("run direct String-result artifact");
         assert_eq!(store.data(), b"hello");
     }
@@ -1291,22 +1272,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted indexed List(String) artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -1317,7 +1283,8 @@ mod tests {
                 "f0",
             )
             .expect("canonical indexed List(String) main export");
-        main.call(&mut store, None)
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console))
             .expect("run canonical indexed List(String)");
         assert_eq!(store.data(), b"second");
     }
@@ -1344,22 +1311,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted List(String) push artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -1370,7 +1322,8 @@ mod tests {
                 "f0",
             )
             .expect("canonical List(String) push main export");
-        main.call(&mut store, None)
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console))
             .expect("run canonical List(String) push");
         assert_eq!(store.data(), b"second");
     }
@@ -1391,22 +1344,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted pointer-list result artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -1417,7 +1355,8 @@ mod tests {
                 "f1",
             )
             .expect("canonical pointer-list result main export");
-        main.call(&mut store, None)
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console))
             .expect("run canonical pointer-list result program");
         assert_eq!(store.data(), b"second");
     }
@@ -1438,22 +1377,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted UTF-8 concat artifact");
         let mut linker = wasmtime::Linker::new(&engine);
-        linker
-            .func_wrap(
-                "witchy",
-                "print",
-                |mut caller: wasmtime::Caller<'_, Vec<u8>>, pointer: i32, length: i32| {
-                    let memory = caller
-                        .get_export("memory")
-                        .and_then(wasmtime::Extern::into_memory)
-                        .expect("canonical memory export");
-                    let start = usize::try_from(pointer).expect("non-negative print pointer");
-                    let length = usize::try_from(length).expect("non-negative print length");
-                    let bytes = memory.data(&caller)[start..start + length].to_vec();
-                    caller.data_mut().extend_from_slice(&bytes);
-                },
-            )
-            .expect("bind authenticated print ABI");
+        linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
             .instantiate(&mut store, &module)
@@ -1461,7 +1385,8 @@ mod tests {
         let main = instance
             .get_typed_func::<Option<wasmtime::Rooted<wasmtime::ExternRef>>, ()>(&mut store, "f0")
             .expect("canonical concat main export");
-        main.call(&mut store, None).expect("run canonical UTF-8 concat");
+        let console = wasmtime::ExternRef::new(&mut store, FixtureConsole).expect("fixture Console token");
+        main.call(&mut store, Some(console)).expect("run canonical UTF-8 concat");
         assert_eq!(store.data(), b"hi!");
     }
 }
