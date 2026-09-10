@@ -49,6 +49,45 @@ fn main(console: Console):
     assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
 }
 
+#[test]
+fn dynamic_reflection_example_expected_output_three_legs() {
+    let source = include_str!("../../examples/dynamic_reflection/src/dynamic_reflection.witchy");
+    // This harness links source bytes as module `main`; the CLI links the same
+    // file as `dynamic_reflection`. The remaining expectations follow directly
+    // from Counter(4), its Named impl, and the public add method called with 3.
+    let expected = vec![
+        "main.Counter".to_owned(),
+        "add".to_owned(),
+        "implements Named: true".to_owned(),
+        "field value: 4".to_owned(),
+        "result: 7".to_owned(),
+    ];
+    let checked = witchy::resolve_std_only_checked(source).expect("actual Dynamic example checks");
+    assert!(checked.canonical_source().unwrap().dynamic_runtime_plan().is_some());
+    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("authenticated source interpreter");
+    assert_eq!(source_output, expected);
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("closed Dynamic source admits through the canonical route");
+    let entry = artifact.entry().unwrap();
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("oracle validation");
+    let capabilities = entry.capabilities().iter().copied()
+        .map(InterpreterValue::entry_capability).collect();
+    let oracle = witchy_wir::canonical_interpreter::interpret_program(
+        &validated, function, capabilities, Default::default(),
+    ).expect("Dynamic oracle execution");
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        print: true, quiet: true, ..Default::default()
+    }, 256).expect("admitted Dynamic Wasm");
+    vm.run().expect("Dynamic Wasm execution");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+}
+
 fn oracle(source: &str, label: &str) {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let artifact = codegen::compile_checked_module_artifact(&checked)
