@@ -1038,6 +1038,8 @@ fn link_checked_source_bundle_with(
     // supplied at the plan's use site or a cache keyed by source shape.
     let dynamic_runtime_plan = if checked.module_owners.is_some() {
         let runtime_catalog = checked.runtime_declaration_catalog()?;
+        typed_source = crate::canonical_messages::prepare(typed_source, Some(&runtime_catalog))
+            .map_err(|message| PipelineError::Type(TypeError { message }))?;
         let plan = crate::existential::build_dynamic_runtime_plan(
             &typed_source,
             &witness_catalog,
@@ -1058,6 +1060,8 @@ fn link_checked_source_bundle_with(
         callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
         Some(plan)
     } else {
+        typed_source = crate::canonical_messages::prepare(typed_source, None)
+            .map_err(|message| PipelineError::Type(TypeError { message }))?;
         crate::existential::build_dynamic_runtime_plan_inner(
             &typed_source,
             &witness_catalog,
