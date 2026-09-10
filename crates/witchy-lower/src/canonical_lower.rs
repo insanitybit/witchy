@@ -1809,10 +1809,20 @@ impl FunctionLowerer<'_> {
                     }
                     if results.is_empty() {
                         self.lower_effect_expr(value)?;
-                        self.finish_current(Terminator::Return { values: Vec::new() })?;
+                        if self.blocks[self.current.get() as usize].terminator.is_none() {
+                            self.finish_current(Terminator::Return { values: Vec::new() })?;
+                        }
                         return Ok(());
                     }
-                    let value = self.lower_expr(value)?;
+                    let value = match value {
+                        Expr::If { .. } | Expr::Match { .. } | Expr::Block(_) => {
+                            let Some(value) = self.lower_flow_value_expr(value)? else {
+                                return Ok(());
+                            };
+                            value
+                        }
+                        _ => self.lower_expr(value)?,
+                    };
                     let terminator = self.return_value(Some(value), results)?;
                     self.finish_current(terminator)?;
                     return Ok(());
@@ -1997,6 +2007,25 @@ impl FunctionLowerer<'_> {
         )
     }
 
+    /// Lower a value expression that may terminate every control-flow arm.
+    /// `None` means the current block is already terminated and no join value
+    /// may be fabricated for a path that cannot continue.
+    fn lower_flow_value_expr(
+        &mut self,
+        expression: &Expr,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        match expression {
+            Expr::If {
+                cond,
+                then_block,
+                else_block: Some(else_block),
+            } => self.lower_if(cond, then_block, else_block, true),
+            Expr::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, true, None),
+            Expr::Block(block) => self.lower_block_flow_value(block),
+            _ => self.lower_expr(expression).map(Some),
+        }
+    }
+
     /// A terminating arm contributes no value or edge to a value join.
     /// Stop at its terminator instead of lowering an unreachable tail.
     fn lower_block_flow_value(
@@ -2057,7 +2086,7 @@ impl FunctionLowerer<'_> {
             }
         }
         let value = match tail {
-            Stmt::Expr(value) => self.lower_expr(value)?,
+            Stmt::Expr(value) => self.lower_flow_value_expr(value)?,
             Stmt::Return(value) => {
                 self.lower_explicit_return(value.as_ref())?;
                 self.drop_bindings_except(&outer);
@@ -2066,7 +2095,11 @@ impl FunctionLowerer<'_> {
             _ => return Err(CanonicalLoweringError::UnsupportedStatement("block tail")),
         };
         self.drop_bindings_except(&outer);
-        Ok(self.blocks[self.current.get() as usize].terminator.is_none().then_some(value))
+        if self.blocks[self.current.get() as usize].terminator.is_some() {
+            Ok(None)
+        } else {
+            Ok(value)
+        }
     }
 
     /// The value a `let`/`var` binds. A `var` that aliases a reference another
@@ -2548,7 +2581,9 @@ impl FunctionLowerer<'_> {
         // its own result when this is a valued expression.
         if then_terminated || else_terminated {
             if then_terminated && else_terminated {
-                return Err(CanonicalLoweringError::UnsupportedStatement("return in every if arm"));
+                self.restore_snapshot(facts);
+                self.bindings = outer;
+                return Ok(None);
             }
             // Only the continuing arm's facts remain valid: a terminated
             // arm's cached loads never dominate what follows.

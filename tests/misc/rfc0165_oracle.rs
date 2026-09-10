@@ -88,6 +88,26 @@ fn dynamic_reflection_example_expected_output_three_legs() {
     assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
 }
 
+#[test]
+fn all_terminal_if_flow_value_three_legs() {
+    let source = r#"
+fn choose(flag: Bool) -> Int:
+    if flag:
+        return 4
+    else:
+        return 9
+
+fn main(console: Console):
+    console.print("${choose(true)} ${choose(false)}")
+"#;
+    let expected = vec!["4 9".to_owned()];
+    let checked = witchy::resolve_std_only_checked(source).expect("source checks");
+    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter");
+    assert_eq!(source_output, expected);
+    oracle(source, "all-terminal if flow value");
+}
+
 fn oracle(source: &str, label: &str) {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let artifact = codegen::compile_checked_module_artifact(&checked)
