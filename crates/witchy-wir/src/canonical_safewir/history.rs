@@ -36,6 +36,7 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     writer.closure_bindings(module.closure_bindings());
     writer.adapter_bindings(module.adapter_bindings());
     writer.closure_layouts(module.closure_layouts());
+    writer.owner_families(module.owner_families());
     writer.tail_sites(module.proper_tail_sites());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
@@ -493,6 +494,10 @@ impl CanonicalWriter {
 
     fn operation(&mut self, operation: &Operation) {
         match operation {
+            Operation::ClosureOwner(operation) => {
+                self.u8(40);
+                self.owner_operation(operation);
+            }
             Operation::ConstInt { destination, value } => {
                 self.u8(0);
                 self.value_id(*destination);
@@ -676,6 +681,63 @@ impl CanonicalWriter {
         self.len(values.len());
         for value in values {
             self.value_id(*value);
+        }
+    }
+
+    fn owner_operation(&mut self, operation: &super::closure_owner_contract::OwnerOperation) {
+        use super::closure_owner_contract::OwnerOperation as O;
+        let (tag, constructor, capture, family) = match operation {
+            O::Construct { constructor, .. } => (0, Some(*constructor), None, None),
+            O::ReadCapability { constructor, capture, .. } => (1, Some(*constructor), Some(*capture), None),
+            O::ReadCallable { family, .. } => (2, None, None, Some(*family)),
+            O::Clone { family, .. } => (3, None, None, Some(*family)),
+            O::Drop { family, .. } => (4, None, None, Some(*family)),
+            O::CloneEnvironment { constructor, .. } => (5, Some(*constructor), None, None),
+            O::NewList { family, .. } => (6, None, None, Some(*family)),
+            O::ListGet { family, .. } => (7, None, None, Some(*family)),
+            O::ListLength { family, .. } => (8, None, None, Some(*family)),
+            O::CloneList { family, .. } => (9, None, None, Some(*family)),
+            O::ListPush { family, .. } => (10, None, None, Some(*family)),
+            O::DropList { family, .. } => (11, None, None, Some(*family)),
+        };
+        self.u8(tag);
+        self.value_ids(&operation.destinations());
+        self.value_ids(&operation.operands());
+        if let Some(constructor) = constructor { self.u32(constructor.0); }
+        if let Some(capture) = capture { self.u32(capture.0); }
+        if let Some(family) = family { self.u32(family.get()); }
+    }
+
+    fn owner_families(&mut self, families: &[super::closure_owner_contract::OwnerFamily]) {
+        use super::closure_owner_contract::{CaptureStorage, CaptureTransfer};
+        self.len(families.len());
+        for family in families {
+            self.u32(family.owner_type.get());
+            self.u32(family.list_type.get());
+            self.u32(family.signature.get());
+            self.u32(family.declaration_signature.get());
+            self.layout_id(family.environment);
+            self.len(family.constructors.len());
+            for constructor in &family.constructors {
+                self.u32(constructor.id.0);
+                self.u32(constructor.function.get());
+                self.bool(constructor.witness.is_some());
+                if let Some(witness) = constructor.witness { self.u32(witness); }
+                self.u64(constructor.environment_tag as u64);
+                self.len(constructor.captures.len());
+                for capture in &constructor.captures {
+                    self.value_type(capture.value_type);
+                    match capture.storage {
+                        CaptureStorage::EnvironmentField(field) => { self.u8(0); self.u32(field); }
+                        CaptureStorage::OwnerField(field) => { self.u8(1); self.u32(field); }
+                    }
+                    match capture.transfer {
+                        CaptureTransfer::CopyScalar => self.u8(0),
+                        CaptureTransfer::CopyCapability(kind) => { self.u8(1); self.u32(kind.get()); }
+                        CaptureTransfer::CloneManaged => self.u8(2),
+                    }
+                }
+            }
         }
     }
 

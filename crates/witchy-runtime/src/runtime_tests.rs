@@ -63,7 +63,7 @@
             .expect("the exact admitted-byte path performs structural validation");
         let mut runtime = runtime;
         let mut vm = runtime
-            .instantiate_module(module, Capabilities::none(), 4, None)
+            .instantiate_module(module, Capabilities::none(), 4, None, None)
             .expect("the exact admitted-byte path uses the normal capability instantiation");
         vm.run().expect("the exact admitted bytes execute without rewriting");
     }

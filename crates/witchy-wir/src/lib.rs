@@ -27,6 +27,7 @@ mod canonical_entry;
 pub mod canonical_launch;
 pub use canonical_entry::{CANONICAL_ENTRY_SECTION, canonical_entry_from_wasm};
 pub use canonical_wasmir::{
+    AdmittedOwnerBridge, OwnerBridgeRecipe,
     AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,
     CanonicalEntryResult, HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT, admit_canonical,
 };

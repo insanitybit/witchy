@@ -12,6 +12,7 @@ use witchy_types::canonical_aggregates::{aggregate_key, concrete_aggregate_ident
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
+use witchy_wir::canonical_safewir::{GcTypeId, closure_owner_contract::CaptureStorage};
 use witchy_wir::layout::{
     ClosedTypeResolver, LayoutBundle, LayoutId, LayoutInterner, PointerSlot, RcHeader,
     ResolvedNamed, ScalarKind,
@@ -27,6 +28,7 @@ pub(crate) struct ClosureFamilyLayout {
     pub closure: LayoutId,
     pub environment: LayoutId,
     pub variants: Vec<ClosureEnvironmentVariant>,
+    pub owner_type: Option<GcTypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,7 @@ pub(crate) struct ClosureEnvironmentVariant {
     pub witness: Option<u32>,
     pub fields: Vec<Type>,
     pub first_field: usize,
+    pub storage: Vec<CaptureStorage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,7 +407,8 @@ impl LayoutProjection {
                 Ok(())
             }
             Type::Named(name, arguments) if name == "List" => {
-                if arguments.len() != 1 || !is_v1_list_element_type(&arguments[0], &self.definitions) {
+                if arguments.len() != 1 || (!matches!(arguments[0].unqualified(), Type::Fn(..))
+                    && !is_v1_list_element_type(&arguments[0], &self.definitions)) {
                     return Err(CanonicalLayoutError::UnsupportedType(format!("{ty:?}")));
                 }
                 self.visit_type(&arguments[0])?;
@@ -443,6 +447,22 @@ impl LayoutProjection {
         // others would recurse through physical bodies and lose the checked
         // callable identity.
         let closure_specs = self.closures.into_values().collect::<Vec<_>>();
+        // A family has one value ABI, including its named adapters. Only
+        // families whose checked captures require opaque storage change ABI.
+        // These ids identify candidate types; the independent checker binds
+        // the complete family schema back to checked source before admission.
+        let mut owner_types = HashMap::new();
+        for (ordinal, (signature, variants)) in closure_specs.iter().enumerate() {
+            if variants.iter().flat_map(|(_, fields)| fields).any(|field|
+                witchy_types::canonical_capabilities::representation(field, &self.definitions).is_some())
+            {
+                let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
+                    .and_then(|n| n.checked_add(0xc100_0000))
+                    .filter(|n| *n < u32::MAX)
+                    .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque closure type overflow".into()))?;
+                owner_types.insert(signature.clone(), GcTypeId::new(id));
+            }
+        }
         let mut closure_environments = HashMap::new();
         for (signature, _) in &closure_specs {
             let key = format!("{:?}", canonical_closure_key(signature, &self.definitions));
@@ -479,6 +499,14 @@ impl LayoutProjection {
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
         }
         for ty in self.roots {
+            if let Type::Named(name, arguments) = ty.unqualified()
+                && name == "List" && arguments.len() == 1
+                && owner_types.contains_key(&canonical_closure_key(&arguments[0], &self.definitions))
+            {
+                // Opaque owner lists have typed reference storage, not a
+                // linear-memory layout with address-sized element slots.
+                continue;
+            }
             let root = intern_v1_layout(
                 &mut interner, &ty, &self.definitions, &recursive_types, &closure_layouts,
             )?;
@@ -493,13 +521,15 @@ impl LayoutProjection {
                 &self.definitions,
                 &recursive_types,
                 &closure_layouts,
+                &owner_types,
             )?;
             interner.bind_nominal(environment, environment_body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
             let closure = closure_layouts[&signature];
             roots.insert(environment);
             roots.insert(closure);
-            families.insert(signature, ClosureFamilyLayout { closure, environment, variants });
+            let owner_type = owner_types.get(&signature).copied();
+            families.insert(signature, ClosureFamilyLayout { closure, environment, variants, owner_type });
         }
         let bundle = LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
@@ -513,6 +543,7 @@ fn intern_closure_environment(
     definitions: &BTreeMap<String, TypeDef>,
     recursive_types: &HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
+    owner_types: &HashMap<Type, GcTypeId>,
 ) -> Result<(LayoutId, Vec<ClosureEnvironmentVariant>), CanonicalLayoutError> {
     let tag = interner
         .intern_scalar(ScalarKind::Int)
@@ -524,15 +555,25 @@ fn intern_closure_environment(
         witness: None,
         fields: Vec::new(),
         first_field: 1,
+        storage: Vec::new(),
     }];
     for (witness, fields) in witnesses {
         let first_field = children.len();
+        let mut storage = Vec::with_capacity(fields.len());
+        let mut owner_field = 2u32;
         for field in &fields {
             if witchy_types::canonical_capabilities::representation(field, definitions).is_some() {
-                return Err(CanonicalLayoutError::UnsupportedType(format!(
-                    "closure capture requires unavailable typed storage: {field:?}"
-                )));
+                storage.push(CaptureStorage::OwnerField(owner_field));
+                owner_field = owner_field.checked_add(1).ok_or_else(||
+                    CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
+                continue;
             }
+            if owner_types.contains_key(&canonical_closure_key(field, definitions)) {
+                return Err(CanonicalLayoutError::UnsupportedType(
+                    "nested opaque closure capture is not yet supported".into()));
+            }
+            storage.push(CaptureStorage::EnvironmentField(u32::try_from(children.len())
+                .map_err(|_| CanonicalLayoutError::InvalidLayout("closure field overflow".into()))?));
             let child = if let Some(scalar) = scalar_kind_of(field) {
                 interner
                     .intern_scalar(scalar)
@@ -547,7 +588,7 @@ fn intern_closure_environment(
             };
             children.push(child);
         }
-        variants.push(ClosureEnvironmentVariant { witness: Some(witness), fields, first_field });
+        variants.push(ClosureEnvironmentVariant { witness: Some(witness), fields, first_field, storage });
     }
     let layout = interner
         .intern_packed_record(children)

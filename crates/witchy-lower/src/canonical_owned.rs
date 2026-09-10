@@ -14,6 +14,7 @@ use witchy_wir::canonical_safewir::{
 };
 
 type Values = BTreeSet<ValueId>;
+use witchy_wir::canonical_safewir::closure_owner_contract::{OwnerFamily, OwnerOperation};
 
 #[derive(Debug)]
 pub(super) enum ReleasePlacementError {
@@ -74,6 +75,7 @@ fn argument_value(argument: &CallArgument) -> ValueId {
 
 fn definitions(operation: &Operation) -> Vec<ValueId> {
     match operation {
+        Operation::ClosureOwner(owner) => owner.destinations(),
         Operation::ConstInt { destination, .. } | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. } | Operation::ConstSize { destination, .. }
         | Operation::CapabilityNone { destination, .. } | Operation::CapabilitySome { destination, .. }
@@ -97,6 +99,7 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
 
 fn uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
+        Operation::ClosureOwner(owner) => owner.operands(),
         Operation::Arithmetic { left, right, .. } | Operation::Compare { left, right, .. } => vec![*left, *right],
         Operation::NarrowSize { value, .. } | Operation::WidenSize { value, .. } | Operation::FloatUnary { value, .. } => vec![*value],
         Operation::Guard { condition, .. } => vec![*condition],
@@ -148,7 +151,7 @@ fn terminal_uses(terminator: &Terminator) -> Vec<ValueId> {
 }
 
 fn is_reference(function: &Function, value: ValueId) -> bool {
-    matches!(function.value_types.get(&value), Some(ValueType::Ref(_)))
+    matches!(function.value_types.get(&value), Some(ValueType::Ref(_) | ValueType::Gc(_)))
 }
 
 fn edge_needs(target: BlockId, arguments: &[ValueId], live_in: &BTreeMap<BlockId, Values>) -> Values {
@@ -230,6 +233,7 @@ fn call_flow(
             continue;
         }
         match contract {
+            ResultContract::Value(ValueType::Gc(_)) => { owned.insert(*destination); }
             ResultContract::Shared { .. }
             | ResultContract::Fresh { class: AllocationClass::ReferenceCounted, .. } => { owned.insert(*destination); }
             ResultContract::BodyDerived(_) | ResultContract::CheckedValue { .. }
@@ -251,6 +255,36 @@ fn operation_flow(
     callees: &BTreeMap<FunctionId, FunctionSignatureId>,
 ) -> Result<(), ReleasePlacementError> {
     match operation {
+        Operation::ClosureOwner(owner) => {
+            for value in owner.operands() {
+                let immortal = function.blocks.iter().any(|block| block.operations.iter().any(|op| {
+                    matches!(op, Operation::StaticData { destination, .. } if *destination == value)
+                }));
+                if is_reference(function, value) && !owned.contains(&value) && !immortal {
+                    return Err(ReleasePlacementError::MissingToken(value));
+                }
+            }
+            match owner {
+                OwnerOperation::Drop { owner, .. } => consume(owned, *owner)?,
+                OwnerOperation::DropList { list, .. } => consume(owned, *list)?,
+                OwnerOperation::ListPush { list, value, .. } => {
+                    consume(owned, *list)?;
+                    consume(owned, *value)?;
+                }
+                OwnerOperation::Construct { .. }
+                | OwnerOperation::ReadCapability { .. }
+                | OwnerOperation::ReadCallable { .. }
+                | OwnerOperation::Clone { .. }
+                | OwnerOperation::CloneEnvironment { .. }
+                | OwnerOperation::NewList { .. }
+                | OwnerOperation::ListGet { .. }
+                | OwnerOperation::ListLength { .. }
+                | OwnerOperation::CloneList { .. } => {}
+            }
+            for value in owner.destinations() {
+                if is_reference(function, value) { owned.insert(value); }
+            }
+        }
         Operation::Alloc { destination, class: AllocationClass::ReferenceCounted, .. }
         | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique, .. } => {
             if is_reference(function, *destination) { owned.insert(*destination); }
@@ -288,7 +322,34 @@ fn operation_flow(
                 return Err(ReleasePlacementError::HostMemoryResult(*value));
             }
         }
-        _ => {}
+        Operation::ConstInt { .. }
+        | Operation::ConstFloat { .. }
+        | Operation::ConstBool { .. }
+        | Operation::ConstSize { .. }
+        | Operation::CapabilityNone { .. }
+        | Operation::CapabilitySome { .. }
+        | Operation::CapabilityIsPresent { .. }
+        | Operation::CapabilityUnwrap { .. }
+        | Operation::Arithmetic { .. }
+        | Operation::Compare { .. }
+        | Operation::NarrowSize { .. }
+        | Operation::WidenSize { .. }
+        | Operation::FloatUnary { .. }
+        | Operation::Guard { .. }
+        | Operation::Alloc { .. }
+        | Operation::StaticData { .. }
+        | Operation::Load { .. }
+        | Operation::InitNullableOwned { .. }
+        | Operation::Store { .. }
+        | Operation::CopyBytes { .. }
+        | Operation::MoveRange { .. }
+        | Operation::CloneRange { .. }
+        | Operation::UpdateCount { .. }
+        | Operation::MoveValue { .. }
+        | Operation::MakeInlineAggregate { .. }
+        | Operation::ExtractInlineField { .. }
+        | Operation::Retain { .. }
+        | Operation::FunctionValue { .. } => {}
     }
     Ok(())
 }
@@ -419,4 +480,83 @@ pub(super) fn insert_releases(
     function.blocks = function.blocks.iter().map(|block| rewritten.remove(&block.id).unwrap_or_else(|| block.clone())).collect();
     function.blocks.extend(edge_blocks);
     Ok(())
+}
+
+/// Use the same CFG/token placement as linear references, then select the
+/// destructor from the explicit candidate registry. This registry is not
+/// authority; the independent checker authenticates its source correspondence.
+pub(super) fn insert_releases_with_owner_families(
+    function: &mut Function,
+    signature: &FunctionSignature,
+    signatures: &[FunctionSignature],
+    source_functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    families: &[OwnerFamily],
+) -> Result<(), ReleasePlacementError> {
+    let mut drops = BTreeMap::new();
+    for family in families {
+        if drops.insert(family.owner_type, (family.signature, false)).is_some()
+            || drops.insert(family.list_type, (family.signature, true)).is_some()
+        {
+            return Err(ReleasePlacementError::MissingSignature(family.signature));
+        }
+    }
+    for (value, ty) in &function.value_types {
+        if let ValueType::Gc(id) = ty {
+            if !drops.contains_key(id) { return Err(ReleasePlacementError::UnresolvedResult(*value)); }
+        }
+    }
+    insert_releases(function, signature, signatures, source_functions)?;
+    for block in &mut function.blocks {
+        for operation in &mut block.operations {
+            let Operation::DropRef { object } = operation else { continue };
+            let Some(ValueType::Gc(id)) = function.value_types.get(object) else { continue };
+            let (family, list) = drops[id];
+            *operation = Operation::ClosureOwner(if list {
+                OwnerOperation::DropList { list: *object, family }
+            } else {
+                OwnerOperation::Drop { owner: *object, family }
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod opaque_tests {
+    use super::*;
+    use witchy_wir::canonical_safewir::{BlockParameter, CallableContract, GcTypeId, Ownership, ParameterContract};
+
+    #[test]
+    fn opaque_owner_release_placement_preserves_return_and_drops_original() {
+        let ty = GcTypeId::new(0xc1000000);
+        let family = OwnerFamily {
+            owner_type: ty, list_type: GcTypeId::new(0xc1000001),
+            signature: FunctionSignatureId::new(0), declaration_signature: FunctionSignatureId::new(1),
+            environment: witchy_wir::layout::LayoutId::from_bytes([0; 32]), constructors: vec![],
+        };
+        let original = ValueId::new(0);
+        let cloned = ValueId::new(1);
+        let signature = FunctionSignature {
+            id: family.signature, parameters: vec![ValueType::Gc(ty)], results: vec![ValueType::Gc(ty)],
+            contract: CallableContract {
+                parameters: vec![ParameterContract { value_type: ValueType::Gc(ty), ownership: ParameterOwnership::Shared }],
+                results: vec![ResultContract::Value(ValueType::Gc(ty))], parameter_effects: BTreeMap::new(),
+            },
+        };
+        let mut function = Function {
+            id: FunctionId::new(0), signature: signature.id, entry: BlockId::new(0),
+            value_types: BTreeMap::from([(original, ValueType::Gc(ty)), (cloned, ValueType::Gc(ty))]),
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0), parameters: vec![BlockParameter { value: original, value_type: ValueType::Gc(ty), ownership: Some(Ownership::Shared) }],
+                operations: vec![Operation::ClosureOwner(OwnerOperation::Clone { destination: cloned, owner: original, family: family.signature })],
+                terminator: Terminator::Return { values: vec![cloned] },
+            }],
+        };
+        insert_releases_with_owner_families(&mut function, &signature, &[signature.clone()], &HashMap::new(), &[family.clone()]).unwrap();
+        assert_eq!(function.blocks[0].operations, vec![
+            Operation::ClosureOwner(OwnerOperation::Clone { destination: cloned, owner: original, family: family.signature }),
+            Operation::ClosureOwner(OwnerOperation::Drop { owner: original, family: family.signature }),
+        ]);
+        assert_eq!(function.blocks[0].terminator, Terminator::Return { values: vec![cloned] });
+    }
 }

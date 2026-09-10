@@ -14,6 +14,7 @@ mod memory;
 use memory::MemoryChecker;
 mod contracts;
 mod host;
+mod owners;
 
 #[cfg(test)]
 #[path = "check/branch_width_tests.rs"]
@@ -255,6 +256,10 @@ fn check_candidate<S: ModuleStage>(
     let imports = index_imports(candidate.imports())?;
     let functions = index_functions(candidate.functions())?;
     contracts::check_all(&functions, &signatures)?;
+    let owners = owners::Registry::new(candidate)?;
+    for function in candidate.functions() {
+        owners::check(function, &owners)?;
+    }
     host::check_imports(&imports, &signatures, catalog)?;
     let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
     let mut observed_tail_sites = BTreeSet::new();
@@ -846,6 +851,7 @@ fn insert_definition(
 
 fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
     match operation {
+        Operation::ClosureOwner(owner) => owner.destinations(),
         Operation::ConstInt { destination, .. }
         | Operation::ConstFloat { destination, .. }
         | Operation::ConstBool { destination, .. }
@@ -886,6 +892,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
 
 pub(crate) fn operation_uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
+        Operation::ClosureOwner(owner) => owner.operands(),
         Operation::ConstInt { .. }
         | Operation::ConstFloat { .. }
         | Operation::ConstBool { .. }
@@ -1162,6 +1169,9 @@ fn check_operation(
         return Ok(());
     }
     match operation {
+        // Registry/type/token checks run independently over the complete CFG.
+        // Source correspondence remains a separate authority judgment.
+        Operation::ClosureOwner(_) => Ok(()),
         Operation::ConstInt { destination, .. } => {
             require_type(function, *destination, ValueType::Int)
         }
@@ -1449,6 +1459,7 @@ fn check_indirect_reference_arguments(
         memory_bearing && !matches!(
             (argument, value_type, parameter.value_type, parameter.ownership),
             (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+                | (CallArgument::Move(_), Ok(ValueType::Gc(_)), ValueType::Gc(_), ParameterOwnership::Shared)
         )
     }) {
         return Err(InitialCheckError::UnsupportedIndirectCall {

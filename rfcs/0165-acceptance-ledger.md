@@ -1,5 +1,48 @@
 # RFC-0165 acceptance ledger
 
+## Current closure integration: focused-green, ready for queue (2026-09-10)
+
+This entry supersedes the earlier pending-import notes. The lowerer test imports
+are fixed, and its fixture now takes the String through a function parameter so
+it genuinely captures both String and Console rather than folding a literal.
+All original capture-kind and no-linear-capability-storage assertions remain.
+
+Operation coverage is explicit: ownership and effect classifiers have exhaustive
+independent matches; shared machinery generates only owner-variant enumeration.
+The operand/destination table and the separate manifest census cover all twelve
+owner variants. Checker, oracle, and encoder semantics remain independently
+implemented. A pre-submit `hello` refusal exposed a nested string-join capacity
+reload bug; lowering now retains both checked result-join lanes. The validator
+was not relaxed. The finding is in `BUG-2026-09-10-opaque-owner-integration.md`.
+
+Focused evidence with the absolute warmed target
+`/private/tmp/witchy-rfc0165-reflect-specialization-target`:
+
+- Native WIR `owner_`: 11 passed, including positive and adversarial owner checks.
+- Native WIR `canonical_safewir::manifest::`: 9 passed.
+- Lowerer `opaque_`: 3 passed; `nested_shared_string_joins_preserve_capacity_lane`: 1 passed.
+- Fresh CLI `parity` agrees for unchanged `hello` (3 output lines), `wrap` (5),
+  `jq` (7), and `plugin_host` (4).
+- Earlier source/oracle/admitted-Wasm closure probes and runtime release/forgery
+  negatives remain recorded below. No deferred test has been removed.
+
+```sh
+export CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target
+# Build tests with CLI features unified; then reuse the resulting CLI.
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_BUILD_JOBS=2 \
+  taskpolicy -c utility cargo test -p witchy-lower -p witchy \
+  --features witchy-wir/native --lib nested_shared_string_joins_preserve_capacity_lane -- --nocapture
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_BUILD_JOBS=2 \
+  taskpolicy -c utility cargo build -p witchy --features witchy-wir/native --bin witchy
+for example in hello wrap jq plugin_host; do
+  "$CARGO_TARGET_DIR/debug/witchy" parity "examples/$example/src/$example.witchy" || break
+done
+```
+
+This is pre-submit evidence, not a terminal queue result or a new master census.
+Landing and the post-integration coverage measurement are the next requirements.
+Compiler-wide memory safety and optimizer correctness are not established.
+
 This ledger tracks the first production milestone in
 `0165-safewir-canonical-ir.md`. A focused probe on an implementation branch is
 development evidence, not acceptance. A row is complete only after all named
@@ -9,7 +52,35 @@ event for the cutover candidate.
 Status values are `missing`, `partial`, `candidate-green`, and `merged-green`.
 Only `merged-green` completes a row.
 
-## Current coverage (2026-09-09)
+## Earlier closure integration evidence
+
+`99e5f3675` on `impl/rfc0165-opaque-owner-integration` completes opaque
+capability/reference closure and owner-list execution. The unchanged
+`plugin_host` example, a Console closure, mixed String/Console captures, and
+mixed closure lists after original-binding cleanup pass all three execution
+legs with expected-output and leak assertions: **4 passed**. Runtime ownership
+and substitution tests: **3 passed**. Native WIR ownership, admission, oracle,
+and final-release tests: **9 passed**. Bounded review found no remaining blocker
+in the new list release or ordinary function-storage paths.
+
+Reproduce from `/private/tmp/witchy-rfc0165-opaque-owner-integration`, with
+`CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target`,
+`CARGO_BUILD_RUSTC_WRAPPER=` and `RUSTC_WRAPPER` unset:
+
+```sh
+cargo test -p witchy --test misc opaque_ -- --nocapture
+cargo test -p witchy-runtime --features native --lib opaque_owner_ -- --nocapture
+cargo test -p witchy-wir --features native --lib owner_ -- --nocapture
+```
+
+Not submitted. Before submission, repair the previously reported missing
+`CaptureStorage` and `OwnerOperation` imports in the lowerer's
+`opaque_console_and_string_captures_use_owned_typed_storage` test and run that
+focused test. The final master census and terminal queue evidence remain owed;
+no deferred tests were removed and no new corpus totals are inferred here.
+Compiler-wide memory safety and optimizer correctness remain unestablished.
+
+## Historical coverage snapshot (2026-09-09)
 
 Both `impl/rfc0165-coverage-next` and
 `impl/rfc0165-dynamic-plan-integration` have terminal merged events at
@@ -488,3 +559,36 @@ Artifacts under `/private/tmp/witchy-rfc0165-current-census-artifacts/` are
 one existing `scripts/rfc0165-dev/census.sh` run produced this evidence; the
 helper's exit 1 is its final grep finding no disagreements. This documentation
 handoff adds no rerun, source workaround, or queue evidence.
+
+## Closure-owner pre-submit invariant evidence (2026-09-10)
+
+Candidate `3f999fd93` plus the rule-manifest correction now records `ClosureOwner`
+explicitly, with owner-checker, oracle, backend, runtime, and executable evidence.
+The exhaustive rule check caught the missing row; the evidence-file check caught
+and rejected citations to the wrong checker module. Neither check was weakened.
+All eight manifest tests pass with the corrected row and generated document:
+
+```sh
+env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
+  CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target \
+  CARGO_BUILD_JOBS=2 taskpolicy -c utility \
+  cargo test -p witchy-wir --features native --lib canonical_safewir::manifest::tests:: -- --nocapture
+```
+
+Six additional exact probes passed using the existing integration binaries. Run
+these names with the indicated test target, `-- --exact <name> --nocapture`:
+
+| Test target | Exact test name |
+|---|---|
+| `-p witchy --test misc` | `rfc0165_admitted_launch::admitted_proper_tail_calls_inside_if_and_match_arms_run_in_constant_stack` |
+| `-p witchy --test misc` | `rfc0165_admitted_launch::drop_worklist::drop_worklist_preserves_nested_and_shared_owned_values` |
+| `-p witchy --test misc` | `rfc0165_recursive_generic::owned_function_argument_moves_through_calls_and_reclaims` |
+| `-p witchy --test misc` | `rfc0165_recursive_generic::recursive_closure_family_stores_typed_function_capture_and_reclaims` |
+| `-p witchy-wir --features native --lib` | `canonical_wasmir::drop_worklist::tests::drop_worklist_releases_25000_nodes_without_call_stack_growth` |
+| `-p witchy-wir --features native --lib` | `canonical_wasmir::tests::nullable_admission::nullable_admission_rejects_valid_but_mutated_bytes` |
+
+These are candidate evidence, not a master census or terminal queue result. The
+known lowerer-test import fix remains pending; this stack is not yet submitted.
+No deferred test was removed: the owner-adjacent deferred reference-list `pop`
+test exercises `unique`, not behavior established by this slice. Compiler-wide
+memory safety and optimizer correctness remain unestablished.

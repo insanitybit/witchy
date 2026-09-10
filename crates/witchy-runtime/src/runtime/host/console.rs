@@ -55,7 +55,7 @@ mod canonical_console_tests {
         let empty = wasmtime::Module::new(&engine, "(module)")?;
         let vm = runtime.instantiate_module(empty, super::super::super::Capabilities {
             print: true, quiet: true, ..super::super::super::Capabilities::none()
-        }, 1, None)?;
+        }, 1, None, None)?;
         let mut store = vm.store;
         let mut linker = Linker::new(&engine);
         link_print(&mut linker)?;

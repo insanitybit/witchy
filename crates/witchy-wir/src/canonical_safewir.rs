@@ -55,6 +55,10 @@ id_type!(StaticDataId, u32);
 id_type!(GcTypeId, u32);
 id_type!(CapabilityKindId, u32);
 
+/// Staged opaque-owner ABI contract. Not yet admitted as executable operations.
+pub mod closure_owner_contract;
+mod owner_authority;
+
 /// Stable identity supplied by canonical type checking. It identifies the
 /// checked source but grants no validation or encoding authority by itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -907,10 +911,12 @@ pub enum CanonicalRuleId {
     VarTailCall,
     Trap,
     Unreachable,
+    ClosureOwner,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
+    ClosureOwner(closure_owner_contract::OwnerOperation),
     ConstInt { destination: ValueId, value: i64 },
     ConstFloat { destination: ValueId, bits: u64 },
     ConstBool { destination: ValueId, value: bool },
@@ -1046,6 +1052,7 @@ pub enum Terminator {
 impl Operation {
     pub const fn rule_id(&self) -> CanonicalRuleId {
         match self {
+            Self::ClosureOwner(_) => CanonicalRuleId::ClosureOwner,
             Self::ConstInt { .. } => CanonicalRuleId::ConstInt,
             Self::ConstFloat { .. } => CanonicalRuleId::ConstFloat,
             Self::ConstBool { .. } => CanonicalRuleId::ConstBool,
@@ -1298,6 +1305,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     /// A `Load` or `Store` of that lane is typed from this registry alone; a
     /// layout absent from it has no readable callable slot.
     closure_layouts: BTreeMap<LayoutId, FunctionSignatureId>,
+    owner_families: Vec<closure_owner_contract::OwnerFamily>,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -1340,12 +1348,18 @@ impl CanonicalModule<LoweredCandidate> {
             closure_bindings: CandidateClosureBindings::default(),
             adapter_bindings: CandidateAdapterBindings::default(),
             closure_layouts: BTreeMap::new(),
+            owner_families: Vec::new(),
             stage: PhantomData,
         }
     }
 
     pub fn with_abi_catalog(mut self, catalog: CanonicalAbiCatalog) -> Self {
         self.abi_catalog = Some(catalog);
+        self
+    }
+
+    pub fn with_owner_families(mut self, families: Vec<closure_owner_contract::OwnerFamily>) -> Self {
+        self.owner_families = families;
         self
     }
 
@@ -1405,6 +1419,7 @@ impl CanonicalModule<LoweredCandidate> {
             closure_bindings: self.closure_bindings,
             adapter_bindings: self.adapter_bindings,
             closure_layouts: self.closure_layouts,
+            owner_families: self.owner_families,
             stage: PhantomData,
         }
     }
@@ -1465,6 +1480,10 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn closure_layouts(&self) -> &BTreeMap<LayoutId, FunctionSignatureId> {
         &self.closure_layouts
+    }
+
+    pub fn owner_families(&self) -> &[closure_owner_contract::OwnerFamily] {
+        &self.owner_families
     }
 }
 

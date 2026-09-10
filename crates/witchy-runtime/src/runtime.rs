@@ -2151,7 +2151,7 @@ impl Runtime {
             build_module(&self.engine, wasm, self.executable_cache)?
         };
 
-        self.instantiate_module(module, caps, memory_pages_max, entry)
+        self.instantiate_module(module, caps, memory_pages_max, entry, None)
     }
 
     /// Spawn a VM from an admitted canonical SafeWIR artifact.
@@ -2167,7 +2167,7 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let module = build_admitted_module(&self.engine, artifact.wasm())?;
-        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned())
+        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), Some(artifact))
     }
 
     fn instantiate_module(
@@ -2176,6 +2176,7 @@ impl Runtime {
         caps: Capabilities,
         memory_pages_max: usize,
         entry: Option<CanonicalEntry>,
+        artifact: Option<&AdmittedCanonicalArtifact>,
     ) -> Result<Vm> {
         let id = self.next_id;
 
@@ -2204,6 +2205,9 @@ impl Runtime {
 
         let mut linker: Linker<VmState> = Linker::new(&self.engine);
         link_capability_imports(&mut linker, &caps)?;
+        if let Some(artifact) = artifact {
+            host::closure_owner::register(&mut linker, artifact)?;
+        }
 
         // Ungranted capability imports are rejected here.
         let instance = linker.instantiate(&mut store, &module)?;

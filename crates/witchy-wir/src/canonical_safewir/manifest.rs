@@ -38,6 +38,14 @@ pub enum EvidenceFile {
     Launch,
     /// `crates/witchy-wir/src/canonical_safewir/authority.rs`
     Authority,
+    /// `crates/witchy-wir/src/canonical_safewir/check/owners.rs`
+    OwnerCheck,
+    /// `crates/witchy-wir/src/canonical_wasmir/closure_owner_kernel.rs`
+    OwnerBackend,
+    /// Opaque owner/list source, oracle, and admitted Wasm probes.
+    OwnerLaunch,
+    /// `crates/witchy-runtime/src/runtime/host/closure_owner.rs`
+    OwnerRuntime,
 }
 
 impl EvidenceFile {
@@ -50,6 +58,10 @@ impl EvidenceFile {
             Self::NullableBackend => "crates/witchy-wir/src/canonical_wasmir/tests/nullable_admission.rs",
             Self::Launch => "tests/misc/rfc0165_admitted_launch.rs",
             Self::Authority => "crates/witchy-wir/src/canonical_safewir/authority.rs",
+            Self::OwnerCheck => "crates/witchy-wir/src/canonical_safewir/check/owners.rs",
+            Self::OwnerBackend => "crates/witchy-wir/src/canonical_wasmir/closure_owner_kernel.rs",
+            Self::OwnerLaunch => "tests/misc/rfc0165_oracle.rs",
+            Self::OwnerRuntime => "crates/witchy-runtime/src/runtime/host/closure_owner.rs",
         }
     }
 
@@ -62,6 +74,10 @@ impl EvidenceFile {
             Self::NullableBackend => include_str!("../canonical_wasmir/tests/nullable_admission.rs"),
             Self::Launch => include_str!("../../../../tests/misc/rfc0165_admitted_launch.rs"),
             Self::Authority => include_str!("authority.rs"),
+            Self::OwnerCheck => include_str!("check/owners.rs"),
+            Self::OwnerBackend => include_str!("../canonical_wasmir/closure_owner_kernel.rs"),
+            Self::OwnerLaunch => include_str!("../../../../tests/misc/rfc0165_oracle.rs"),
+            Self::OwnerRuntime => include_str!("../../../witchy-runtime/src/runtime/host/closure_owner.rs"),
         }
     }
 }
@@ -77,7 +93,25 @@ const fn t(file: EvidenceFile, name: &'static str) -> TestRef {
     TestRef { file, name }
 }
 
-use EvidenceFile::{Authority, Backend, Check, Interpreter, Launch, Memory};
+use EvidenceFile::{Authority, Backend, Check, Interpreter, Launch, Memory, OwnerBackend, OwnerCheck, OwnerLaunch, OwnerRuntime};
+
+/// Reviewed nested operation census. The declaration generates the comparison
+/// list, not these entries, so a new variant requires a manifest decision.
+pub const OWNER_OPERATION_VARIANTS: &[&str] = &[
+    "Construct", "ReadCapability", "ReadCallable", "Clone", "Drop",
+    "CloneEnvironment", "NewList", "ListGet", "ListLength", "CloneList",
+    "ListPush", "DropList",
+];
+
+#[cfg(test)]
+#[test]
+fn owner_operation_manifest_lists_every_variant() {
+    assert_eq!(
+        OWNER_OPERATION_VARIANTS,
+        super::closure_owner_contract::OwnerOperation::VARIANTS,
+        "every owner operation must have an explicit manifest entry",
+    );
+}
 
 /// One canonical rule's row.
 #[derive(Clone, Copy, Debug)]
@@ -637,6 +671,25 @@ pub const RULES: &[RuleEntry] = &[
         admits: &[t(Check, "valid_unreachable_block_is_available_to_pruning")],
         refuses: &[t(Backend, "common_reachable_join_with_non_terminating_bypass_is_refused")],
     },
+    RuleEntry {
+        rule: CanonicalRuleId::ClosureOwner,
+        judgment: "check/owners.rs::Registry::new and check_owner_operation",
+        predicate: "an authenticated owner family binds every constructor to a function with the body signature (leading Shared Gc owner plus declaration lanes), validates capture kind/storage/transfer, and requires registered owner/list tokens for linear clone, call, list, and drop operations",
+        interpreter: "execute_owner_operation: constructs and authenticates opaque owners/lists, preserves actual capability and managed-reference captures, and releases final owner/list tokens",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ClosureOwner),
+        admits: &[
+            t(Interpreter, "owner_oracle_preserves_console_capture_and_list_rc_identity"),
+            t(OwnerBackend, "opaque_owner_kernel_final_release_reclaims_mixed_string_environment"),
+            t(OwnerLaunch, "opaque_closure_plugin_host_expected_three_legs"),
+            t(OwnerLaunch, "opaque_closure_mixed_string_console_list_after_original_cleanup_three_legs"),
+            t(OwnerRuntime, "opaque_owner_gc_payload_and_list_hold_actual_references"),
+        ],
+        refuses: &[
+            t(OwnerCheck, "opaque_owner_affine_dead_list_and_wrong_family_refuse"),
+            t(OwnerCheck, "opaque_owner_affine_call_requires_move_and_no_leak"),
+            t(OwnerRuntime, "opaque_owner_list_drops_all_variants_and_refuses_dead_list"),
+        ],
+    },
 ];
 
 /// One ownership transfer of a reference-counted storage class (B2).
@@ -874,6 +927,10 @@ fn cite(tests: &[TestRef]) -> String {
                 Launch => "launch",
                 Authority => "authority",
                 EvidenceFile::NullableBackend => "nullable backend",
+                OwnerCheck => "owner checker",
+                OwnerBackend => "owner backend",
+                OwnerLaunch => "owner launch",
+                OwnerRuntime => "owner runtime",
             };
             format!("`{}` ({file})", test.name)
         })
@@ -898,7 +955,18 @@ pub fn render_markdown() -> String {
     out.push_str(Launch.path());
     out.push_str("`, authority = `");
     out.push_str(Authority.path());
+    out.push_str("`, owner checker = `");
+    out.push_str(OwnerCheck.path());
+    out.push_str("`, owner backend = `");
+    out.push_str(OwnerBackend.path());
+    out.push_str("`, owner launch = `");
+    out.push_str(OwnerLaunch.path());
+    out.push_str("`, owner runtime = `");
+    out.push_str(OwnerRuntime.path());
     out.push_str("`.\n\n");
+    out.push_str("Opaque-owner operation variants: ");
+    out.push_str(&OWNER_OPERATION_VARIANTS.join(", "));
+    out.push_str(".\n\n");
     out.push_str("## B1/B7: canonical rules\n\n");
     out.push_str("| Rule | Checker judgment | Predicate | Interpreter | Backend | Admitting evidence | Refusing evidence |\n|---|---|---|---|---|---|---|\n");
     for entry in RULES {
@@ -953,7 +1021,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
         R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
         R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
         R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
-        R::TailCall, R::VarTailCall, R::Trap, R::Unreachable,
+        R::TailCall, R::VarTailCall, R::Trap, R::Unreachable, R::ClosureOwner,
     ];
     for rule in ordered {
         // Exhaustive by construction: adding a variant fails here.
@@ -963,7 +1031,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
             | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue
             | R::Call | R::VarCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
-            | R::Trap | R::Unreachable => {}
+            | R::Trap | R::Unreachable | R::ClosureOwner => {}
         }
     }
     ordered.to_vec()

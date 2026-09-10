@@ -310,6 +310,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<(), CandidateAbiBindingError> {
     use witchy_types::canonical_abi::CanonicalTargetPolicy;
+    super::owner_authority::validate(candidate, source)?;
 
     let source_entries = source.callable_abi_manifest().entries().iter().filter_map(|entry| {
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
@@ -387,6 +388,25 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         };
+        if let Some(super::ValueType::Gc(owner)) = signature.parameters.first() {
+            if !candidate.owner_families().iter().any(|family| family.owner_type == *owner && family.signature == signature.id
+                && family.constructors.iter().any(|constructor| constructor.function == function.id && constructor.witness == Some(binding.closure())))
+            {
+                return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
+            }
+            let mut declaration = signature.clone();
+            declaration.parameters.remove(0);
+            if declaration.contract.parameters.is_empty() {
+                return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
+            }
+            declaration.contract.parameters.remove(0);
+            declaration.contract.parameter_effects = declaration.contract.parameter_effects.into_iter()
+                .filter_map(|(index, effects)| index.checked_sub(1).map(|index| (index, effects))).collect();
+            if !candidate_signature_matches_source_with_records(&declaration, &source_signature, candidate, &records) {
+                return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
+            }
+            continue;
+        }
         let family_key = source_closure_family_key(&source_signature, &records);
         let family = closures.iter().filter(|entry| {
             witchy_types::typeck::ty_to_ast(entry.signature())
@@ -493,7 +513,24 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         {
             return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
         }
-        if !adapter_body_forwards(adapter, target.id, target_signature) {
+        let owner_family = candidate.owner_families().iter().find(|family| {
+            family.signature == adapter.signature
+                && adapter_signature.parameters.first() == Some(&super::ValueType::Gc(family.owner_type))
+        });
+        if let Some(family) = owner_family {
+            let Some(constructor) = family.constructors.iter().find(|constructor| {
+                constructor.function == adapter.id && constructor.witness.is_none()
+            }) else {
+                return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
+            };
+            if constructor.environment_tag != 0
+                || !constructor.captures.is_empty()
+                || target.signature != family.declaration_signature
+            {
+                return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
+            }
+        }
+        if !adapter_body_forwards(adapter, target.id, target_signature, owner_family.map(|family| family.signature)) {
             return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
         }
     }
@@ -516,7 +553,44 @@ fn strip_closure_environment<S: ModuleStage>(
     signature: &super::FunctionSignature,
     candidate: &CanonicalModule<S>,
 ) -> Option<super::FunctionSignature> {
-    strip_closure_environment_with(signature, candidate.closure_layouts())
+    match signature.parameters.first()? {
+        super::ValueType::Ref(layout) => {
+            if candidate.closure_layouts().get(layout) != Some(&signature.id) {
+                return None;
+            }
+        }
+        super::ValueType::Gc(owner) => {
+            if !candidate.owner_families().iter().any(|family| {
+                family.owner_type == *owner && family.signature == signature.id
+            }) {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+    let environment = signature.contract.parameters.first()?;
+    if environment.value_type != signature.parameters[0]
+        || environment.ownership != super::ParameterOwnership::Shared
+    {
+        return None;
+    }
+    Some(super::FunctionSignature {
+        id: signature.id,
+        parameters: signature.parameters[1..].to_vec(),
+        results: signature.results.clone(),
+        contract: super::CallableContract {
+            parameters: signature.contract.parameters[1..].to_vec(),
+            results: signature.contract.results.clone(),
+            parameter_effects: signature
+                .contract
+                .parameter_effects
+                .iter()
+                .filter_map(|(parameter, effects)| {
+                    parameter.checked_sub(1).map(|shifted| (shifted, effects.clone()))
+                })
+                .collect(),
+        },
+    })
 }
 
 fn strip_closure_environment_with(
@@ -574,6 +648,7 @@ fn adapter_body_forwards(
     adapter: &super::Function,
     target: super::FunctionId,
     target_signature: &super::FunctionSignature,
+    owner_family: Option<super::FunctionSignatureId>,
 ) -> bool {
     let [block] = adapter.blocks.as_slice() else { return false };
     if block.id != adapter.entry {
@@ -593,7 +668,7 @@ fn adapter_body_forwards(
     // passed by value. The convention is the target's, not the adapter's.
     if !arguments.iter().zip(forwarded).enumerate().all(|(index, (argument, parameter))| {
         match (argument, target_signature.parameters.get(index)) {
-            (super::CallArgument::Move(value), Some(super::ValueType::Ref(_))) => value == parameter,
+            (super::CallArgument::Move(value), Some(super::ValueType::Ref(_) | super::ValueType::Gc(_))) => value == parameter,
             (super::CallArgument::Value(value), Some(value_type)) => {
                 !matches!(value_type, super::ValueType::Ref(_)) && value == parameter
             }
@@ -607,7 +682,9 @@ fn adapter_body_forwards(
     // kept its token would leak one reference per call.
     match tail {
         [super::Operation::Release { object } | super::Operation::DropRef { object }]
-            if object == environment => {}
+            if owner_family.is_none() && object == environment => {}
+        [super::Operation::ClosureOwner(super::closure_owner_contract::OwnerOperation::Drop { owner, family })]
+            if owner_family == Some(*family) && owner == environment => {}
         _ => return false,
     }
     matches!(&block.terminator, super::Terminator::Return { values } if values == destinations)
@@ -730,7 +807,7 @@ type ScalarRecordFields = BTreeMap<String, witchy_syntax::ast::TypeDef>;
 /// A family selects environment variants, not callable authority. Resolve
 /// checked nominal aliases and spell out default conventions before grouping;
 /// full signature, capture, transfer, and tag checks remain independent above.
-fn source_closure_family_key(
+pub(super) fn source_closure_family_key(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> witchy_syntax::ast::Type {
@@ -756,7 +833,8 @@ fn source_closure_family_key(
 const MAX_SOURCE_CORRESPONDENCE_PAIRS: usize = 65_536;
 
 #[derive(Default)]
-struct CorrespondenceContext {
+pub(super) struct CorrespondenceContext {
+    owner_families: Vec<super::closure_owner_contract::OwnerFamily>,
     active_callable: HashSet<(super::FunctionSignatureId, witchy_syntax::ast::Type)>,
     completed_callable: HashSet<(super::FunctionSignatureId, witchy_syntax::ast::Type)>,
     active_layout: HashSet<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
@@ -772,6 +850,9 @@ enum CorrespondenceVisit {
 }
 
 impl CorrespondenceContext {
+    pub(super) fn with_owners<S: ModuleStage>(candidate: &CanonicalModule<S>) -> Self {
+        Self { owner_families: candidate.owner_families().to_vec(), ..Self::default() }
+    }
     fn enter_callable(
         &mut self,
         key: (super::FunctionSignatureId, witchy_syntax::ast::Type),
@@ -839,7 +920,7 @@ fn candidate_signature_matches_source<S: ModuleStage>(
     candidate_signature_matches_source_with_records(actual, source, candidate, &BTreeMap::new())
 }
 
-fn candidate_signature_matches_source_with_records<S: ModuleStage>(
+pub(super) fn candidate_signature_matches_source_with_records<S: ModuleStage>(
     actual: &super::FunctionSignature,
     source: &witchy_syntax::ast::Type,
     candidate: &CanonicalModule<S>,
@@ -847,7 +928,7 @@ fn candidate_signature_matches_source_with_records<S: ModuleStage>(
 ) -> bool {
     let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
-    candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, &layouts, candidate.signatures(), &mut CorrespondenceContext::default(), records, candidate.closure_layouts())
+    candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, &layouts, candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), records, candidate.closure_layouts())
 }
 
 /// Check the original source graph before any ABI comparison erases wrappers.
@@ -937,6 +1018,8 @@ fn candidate_signature_matches_source_inner(
                 && (ordinary_own_source_type_supported(source) || matches!(actual.value_type, super::ValueType::Ref(_))))
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, context, records, closure_layouts) { return false; }
         match (actual.value_type, convention) {
+            (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
+            (super::ValueType::Gc(_), _) => false,
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (_, witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
             (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Value),
@@ -959,7 +1042,7 @@ fn candidate_signature_matches_source_inner(
                 && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack)
         })
         && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
-            matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_)))
+            matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_) | super::ValueType::Gc(_)))
                 && (matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::ParameterOwnership::WriteBack))
                     || effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release)))
         });
@@ -987,7 +1070,7 @@ fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool
     }
 }
 
-fn value_type_matches_source(
+pub(super) fn value_type_matches_source(
     actual: super::ValueType,
     source: &witchy_syntax::ast::Type,
     layouts: &crate::layout::LayoutInterner,
@@ -996,6 +1079,19 @@ fn value_type_matches_source(
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
+    if let super::ValueType::Gc(id) = actual {
+        let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
+        let callable = if id == family.list_type {
+            match source.unqualified() {
+                witchy_syntax::ast::Type::Named(name, args) if name == "List" && args.len() == 1 => &args[0],
+                _ => return false,
+            }
+        } else { source };
+        let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = callable.unqualified() else { return false };
+        let Some(declaration) = signatures.iter().find(|s| s.id == family.declaration_signature) else { return false };
+        return candidate_signature_matches_source_inner(declaration, callable, parameters, result, conventions,
+            layouts, signatures, context, records, closure_layouts);
+    }
     if let Some(representation) = witchy_types::canonical_capabilities::representation(source, records) {
         use witchy_types::canonical_capabilities::{CapabilityKind, CapabilityRepresentation};
         let kind = match representation {
@@ -1539,10 +1635,64 @@ mod tests {
     fn adapter_shape_holds(module: &CanonicalModule<LoweredCandidate>, adapter: FunctionId, target: FunctionId) -> bool {
         let functions = module.functions().iter().map(|function| (function.id, function)).collect::<BTreeMap<_, _>>();
         let adapter_function = functions[&adapter];
+        let Some(binding) = module.adapter_bindings().entries().iter().find(|binding| binding.adapter() == adapter) else { return false };
+        if binding.target() != target { return false; }
         let signature = |id| module.signatures().iter().find(|signature| signature.id == id).expect("signature");
         let lanes = strip_closure_environment(signature(adapter_function.signature), module);
-        lanes.is_some_and(|lanes| signature_lanes_match(&lanes, signature(functions[&target].signature)))
-            && adapter_body_forwards(adapter_function, target, signature(functions[&target].signature))
+        let target_signature = signature(functions[&target].signature);
+        let owner_family = module.owner_families().iter().find(|family| {
+            family.signature == adapter_function.signature
+                && adapter_function.value_types.get(&ValueId::new(0)) == Some(&ValueType::Gc(family.owner_type))
+        });
+        lanes.is_some_and(|lanes| signature_lanes_match(&lanes, target_signature))
+            && owner_family.is_none_or(|family| {
+                family.declaration_signature == target_signature.id
+                    && family.constructors.iter().any(|constructor| {
+                        constructor.function == adapter && constructor.witness.is_none()
+                            && constructor.environment_tag == 0 && constructor.captures.is_empty()
+                    })
+            })
+            && adapter_body_forwards(adapter_function, target, target_signature, owner_family.map(|family| family.signature))
+    }
+
+    fn owner_adapter_candidate() -> (CanonicalModule<LoweredCandidate>, FunctionId, FunctionId) {
+        use crate::canonical_safewir::closure_owner_contract::{ConstructorId, OwnerConstructor, OwnerFamily, OwnerOperation};
+        use crate::canonical_safewir::{BlockParameter, Ownership};
+        use crate::layout::LayoutId;
+
+        let (mut module, adapter, target) = adapter_candidate(forwarding_body().0, forwarding_body().1);
+        let owner_type = crate::canonical_safewir::GcTypeId::new(0xc1000000);
+        let signature = &mut module.signatures[0];
+        signature.parameters[0] = ValueType::Gc(owner_type);
+        signature.contract.parameters[0].value_type = ValueType::Gc(owner_type);
+        module.functions[0].value_types.insert(ValueId::new(0), ValueType::Gc(owner_type));
+        module.functions[0].blocks[0].parameters[0] = BlockParameter {
+            value: ValueId::new(0), value_type: ValueType::Gc(owner_type), ownership: Some(Ownership::Shared),
+        };
+        module.functions[0].blocks[0].operations.push(Operation::ClosureOwner(OwnerOperation::Drop {
+            owner: ValueId::new(0), family: FunctionSignatureId::new(0),
+        }));
+        let family = OwnerFamily {
+            owner_type,
+            list_type: crate::canonical_safewir::GcTypeId::new(0xc1000001),
+            signature: FunctionSignatureId::new(0),
+            declaration_signature: FunctionSignatureId::new(1),
+            environment: LayoutId::from_bytes([0; 32]),
+            constructors: vec![OwnerConstructor {
+                id: ConstructorId(0), function: adapter, witness: None, environment_tag: 0, captures: Vec::new(),
+            }],
+        };
+        (module.with_owner_families(vec![family]), adapter, target)
+    }
+
+    #[test]
+    fn owner_family_named_adapter_admits_and_mismatched_target_refuses() {
+        let (module, adapter, target) = owner_adapter_candidate();
+        assert!(adapter_shape_holds(&module, adapter, target));
+        let wrong = module.with_adapter_bindings(crate::canonical_safewir::CandidateAdapterBindings::new(vec![
+            crate::canonical_safewir::CandidateAdapterBinding::new(adapter, adapter),
+        ]));
+        assert!(!adapter_shape_holds(&wrong, adapter, target));
     }
 
     #[test]

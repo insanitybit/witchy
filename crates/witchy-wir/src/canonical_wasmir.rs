@@ -43,6 +43,10 @@ use crate::layout::{
 // fixed linear-memory page and refuses an allocation before returning a
 // pointer when the checked extent does not fit.
 mod drop_worklist;
+mod closure_owner_kernel;
+mod owner_bridges;
+mod owner_operation_kernel;
+pub use owner_bridges::{AdmittedOwnerBridge, OwnerBridgeRecipe};
 
 const RC_PREFIX_BYTES: u32 = 8;
 const LINEAR_MEMORY_BYTES: u32 = 65_536;
@@ -61,6 +65,7 @@ enum TargetItemId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScalarInstruction {
+    ClosureOwner(crate::canonical_safewir::closure_owner_contract::OwnerOperation),
     IntConst { destination: ValueId, value: i64 },
     FloatConst { destination: ValueId, bits: u64 },
     BoolConst { destination: ValueId, value: bool },
@@ -198,6 +203,7 @@ struct WasmFunction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WasmIr {
+    owner_bridges: Vec<AdmittedOwnerBridge>,
     revision: crate::canonical_safewir::Revision,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     launch_contract_payload: Vec<u8>,
@@ -250,6 +256,7 @@ pub(crate) enum CorrespondenceRule {
     ScalarCall,
     HostCall,
     Control,
+    ClosureOwner,
 }
 
 /// The backend disposition of a canonical rule.  Most rules produce one
@@ -800,14 +807,14 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
 }
 
 fn is_indirect_result(value_type: ValueType) -> bool {
-    is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
+    is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_))
 }
 
 fn is_indirect_parameter(signature: &FunctionSignature, index: usize, value_type: ValueType) -> bool {
     if is_indirect_scalar(value_type) {
         return true;
     }
-    matches!(value_type, ValueType::Ref(_))
+    matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_))
         && matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::Shared | ParameterOwnership::WriteBack))
         && (matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::WriteBack))
             || signature.contract.parameter_effects.get(&(index as u32)).is_none_or(|effects| {
@@ -848,6 +855,7 @@ fn lower_operation(
 ) -> Result<WasmInstruction, LoweringError> {
     let source = SourceItemId::Operation { function, block, index };
     let operation = match operation {
+        Operation::ClosureOwner(operation) => ScalarInstruction::ClosureOwner(operation.clone()),
         Operation::ConstInt { destination, value } => ScalarInstruction::IntConst { destination: *destination, value: *value },
         Operation::ConstFloat { destination, bits } => ScalarInstruction::FloatConst { destination: *destination, bits: *bits },
         Operation::ConstBool { destination, value } => ScalarInstruction::BoolConst { destination: *destination, value: *value },
@@ -1089,6 +1097,7 @@ fn lower_operation(
 
 fn operation_name(operation: &Operation) -> &'static str {
     match operation {
+        Operation::ClosureOwner(_) => "ClosureOwner",
         Operation::ConstInt { .. } => "ConstInt",
         Operation::ConstFloat { .. } => "ConstFloat",
         Operation::ConstBool { .. } => "ConstBool",
@@ -1250,7 +1259,14 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
     let imports = module.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
     let signatures = module.signatures().iter().map(|signature| (signature.id, signature.clone())).collect::<BTreeMap<_, _>>();
     let has_function_table = module.functions().iter().flat_map(|function| function.blocks.iter()).any(|block| {
-        block.operations.iter().any(|operation| matches!(operation, Operation::VarCall { .. } | Operation::FunctionValue { .. }))
+        matches!(block.terminator, Terminator::VarTailCall { .. })
+            || block.operations.iter().any(|operation| matches!(operation,
+                Operation::VarCall { .. } | Operation::FunctionValue { .. }
+                | Operation::ClosureOwner(
+                    crate::canonical_safewir::closure_owner_contract::OwnerOperation::Construct { .. }
+                    | crate::canonical_safewir::closure_owner_contract::OwnerOperation::ReadCallable { .. }
+                )
+            ))
     });
     let table_indices = module
         .functions()
@@ -1266,6 +1282,7 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(WasmIr {
+        owner_bridges: owner_bridges::build(module)?,
         revision: module.revision(),
         checked_source: module.checked_source(),
         launch_contract_payload: module.launch_contract_payload().to_vec(),
@@ -1330,6 +1347,7 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> R
         Rule::HostCall => RuleBackend::Receipt(CorrespondenceRule::HostCall),
         // v1 has no standalone retain: a second owner comes from `CloneRef`.
         Rule::Retain => RuleBackend::Refused,
+        Rule::ClosureOwner => RuleBackend::Receipt(CorrespondenceRule::ClosureOwner),
         Rule::Branch | Rule::BranchIf | Rule::Return | Rule::TailCall | Rule::VarTailCall | Rule::Trap | Rule::Unreachable => {
             RuleBackend::Receipt(CorrespondenceRule::Control)
         }
@@ -1345,6 +1363,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
 
 fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool {
     match (operation, target) {
+        (Operation::ClosureOwner(source), ScalarInstruction::ClosureOwner(target)) => source == target,
         (Operation::ConstInt { destination, value }, ScalarInstruction::IntConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
         (Operation::ConstFloat { destination, bits }, ScalarInstruction::FloatConst { destination: actual, bits: actual_bits }) => destination == actual && bits == actual_bits,
         (Operation::ConstBool { destination, value }, ScalarInstruction::BoolConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
@@ -1423,6 +1442,9 @@ fn check_correspondence(
     source: &CanonicalModule<InitialValid>,
     target: &WasmIr,
 ) -> Result<CorrespondenceReceipt, CorrespondenceError> {
+    if owner_bridges::build(source).map_err(|_| CorrespondenceError::ModuleIdentityMismatch)? != target.owner_bridges {
+        return Err(CorrespondenceError::ModuleIdentityMismatch);
+    }
     if source.revision() != target.revision || source.checked_source() != target.checked_source {
         return Err(CorrespondenceError::ModuleIdentityMismatch);
     }
@@ -1538,6 +1560,7 @@ enum EncodeError {
 /// boundary.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AdmittedCanonicalArtifact {
+    owner_bridges: Vec<AdmittedOwnerBridge>,
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
     final_module_digest: crate::canonical_safewir::ModuleDigest,
@@ -1706,6 +1729,7 @@ impl CanonicalEntry {
 }
 
 impl AdmittedCanonicalArtifact {
+    pub fn owner_bridges(&self) -> &[AdmittedOwnerBridge] { &self.owner_bridges }
     /// Borrow the exact admitted Wasm bytes without transferring ownership.
     pub fn wasm(&self) -> &[u8] {
         &self.bytes
@@ -1765,6 +1789,7 @@ fn wasm_value_type(
         crate::canonical_safewir::ValueType::Bool => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Size => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Ref(_) => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::Gc(_) => Ok(ValType::EXTERNREF),
         crate::canonical_safewir::ValueType::Capability(_) => Ok(ValType::EXTERNREF),
         crate::canonical_safewir::ValueType::NullableCapability(_) => Ok(ValType::EXTERNREF),
         crate::canonical_safewir::ValueType::V128 => Ok(ValType::V128),
@@ -1778,7 +1803,10 @@ fn wasm_value_type(
     }
 }
 
+#[derive(Clone)]
 struct LocalLayout {
+    owner_scratch: Option<[u32; 3]>,
+    owner_bridges: Vec<AdmittedOwnerBridge>,
     indices: BTreeMap<ValueId, u32>,
     extra_types: Vec<ValType>,
     scratch: Vec<u32>,
@@ -1818,7 +1846,16 @@ fn local_layout(
         indices.insert(*value, index);
         extra_types.push(wasm_value_type(function.id, *value, *value_type)?);
     }
-    let mut scratch = vec![0; drop_worklist::SCRATCH];
+// Derive scratch space from the whole-function value table. The independent
+// operation planner retains that table when it plans one block at a time;
+// inspecting only that block's operations would shift every allocator local.
+let owner_scratch = if function.value_types.values().any(|value| matches!(value, ValueType::Gc(_))) {
+    let base = entry.parameters.len() as u32 + extra_types.len() as u32;
+    extra_types.extend([ValType::I32, ValType::I32, ValType::Ref(RefType::ANYREF)]);
+    Some([base, base + 1, base + 2])
+} else { None };
+let mut scratch = vec![0; drop_worklist::SCRATCH];
+
     for (slot, index) in scratch.iter_mut().enumerate() {
         *index = entry.parameters.len() as u32 + extra_types.len() as u32;
         extra_types.push(ValType::I32);
@@ -1828,6 +1865,7 @@ fn local_layout(
         }
     }
     Ok(LocalLayout {
+        owner_scratch, owner_bridges: Vec::new(),
         indices,
         extra_types,
         scratch,
@@ -2863,6 +2901,7 @@ fn emit_instruction(
     layouts: &LayoutInterner,
 ) -> Result<(), EncodeError> {
     match instruction {
+        ScalarInstruction::ClosureOwner(operation) => { owner_operation_kernel::emit(body, function, layout, layouts, operation, import_indices)?; }
         ScalarInstruction::IntConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I64Const(*value)); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::FloatConst { destination, bits } => { body.instruction(&wasm_encoder::Instruction::F64Const(Ieee64::new(*bits))); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::BoolConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I32Const(i32::from(*value))); emit_set(body, layout, function.id, *destination)?; }
@@ -3859,8 +3898,10 @@ fn encode_function(
     imports: &BTreeMap<ImportId, ImportContract>,
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
+    owner_bridges: &[AdmittedOwnerBridge],
 ) -> Result<WasmFunctionEncoder, EncodeError> {
-    let layout = local_layout(source_function, signature, layouts)?;
+    let mut layout = local_layout(source_function, signature, layouts)?;
+    layout.owner_bridges = owner_bridges.to_vec();
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
     if target_function.entry != source_function.entry {
@@ -3958,9 +3999,10 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     let target = &checked.target;
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
         .map_err(|_| EncodeError::Lowering(LoweringError::InvalidLayoutBundle))?;
-    let import_count = u32::try_from(source.imports().len()).map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import count" }))?;
+    let import_count = u32::try_from(source.imports().len() + target.owner_bridges.len()).map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import count" }))?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, import_count + index as u32)).collect();
-    let import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
+    let mut import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
+    for (index, bridge) in target.owner_bridges.iter().enumerate() { import_indices.insert(bridge.id(), source.imports().len() as u32 + index as u32); }
     let import_contracts: BTreeMap<_, _> = source.imports().iter().map(|import| (import.id, import.clone())).collect();
     let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate().map(|(index, signature)| (signature.id, index as u32)).collect();
     let mut types = TypeSection::new();
@@ -3980,6 +4022,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
         types.ty().function(parameters, results);
         import_type_indices.insert(import.id, type_index);
     }
+    owner_bridges::append_types(&mut types, &target.owner_bridges)?;
     let mut imports = ImportSection::new();
     for import in source.imports() {
         let type_index = import_type_indices.get(&import.id).copied().ok_or(
@@ -3987,6 +4030,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
         )?;
         imports.import(&import.module, &import.name, EntityType::Function(type_index));
     }
+    owner_bridges::append_imports(&mut imports, &target.owner_bridges, (source.signatures().len() + source.imports().len()) as u32);
     let mut functions = FunctionSection::new();
     let mut table_section = TableSection::new();
     let mut elements = ElementSection::new();
@@ -4051,7 +4095,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts)?);
+        code.function(&encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts, &target.owner_bridges)?);
     }
     let mut module = WasmModule::new();
     module
@@ -4097,6 +4141,10 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PlanToken {
+    RefCastNonNull(u32),
+    StructGet { struct_type_index: u32, field_index: u32 },
+    ArrayLen,
+    ArrayGet(u32),
     LocalGet(u32),
     LocalSet(u32),
     RefNull(String),
@@ -4189,6 +4237,7 @@ enum PlanToken {
     If(String),
     Else,
     Br(u32),
+    BrIf(u32),
     Unreachable,
     Return,
     Call(u32),
@@ -4203,7 +4252,12 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::LocalGet { local_index } => PlanToken::LocalGet(local_index),
         wasmparser::Operator::LocalSet { local_index } => PlanToken::LocalSet(local_index),
         wasmparser::Operator::RefNull { hty } => PlanToken::RefNull(format!("{hty:?}")),
-        wasmparser::Operator::RefIsNull => PlanToken::RefIsNull,
+wasmparser::Operator::RefCastNonNull { hty: wasmparser::HeapType::Concrete(index) } => PlanToken::RefCastNonNull(index.as_module_index().ok_or(CanonicalAdmissionError::UnsupportedPlan)?),
+wasmparser::Operator::StructGet { struct_type_index, field_index } => PlanToken::StructGet { struct_type_index, field_index },
+wasmparser::Operator::ArrayLen => PlanToken::ArrayLen,
+wasmparser::Operator::ArrayGet { array_type_index } => PlanToken::ArrayGet(array_type_index),
+wasmparser::Operator::RefIsNull => PlanToken::RefIsNull,
+
         wasmparser::Operator::RefAsNonNull => PlanToken::RefAsNonNull,
         wasmparser::Operator::I32Const { value } => PlanToken::I32Const(value),
         wasmparser::Operator::I64Const { value } => PlanToken::I64Const(value),
@@ -4299,6 +4353,7 @@ fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, Ca
         wasmparser::Operator::If { blockty } => PlanToken::If(format!("{blockty:?}")),
         wasmparser::Operator::Else => PlanToken::Else,
         wasmparser::Operator::Br { relative_depth } => PlanToken::Br(relative_depth),
+        wasmparser::Operator::BrIf { relative_depth } => PlanToken::BrIf(relative_depth),
         wasmparser::Operator::Unreachable => PlanToken::Unreachable,
         wasmparser::Operator::Return => PlanToken::Return,
         wasmparser::Operator::Call { function_index } => PlanToken::Call(function_index),
@@ -5112,15 +5167,18 @@ fn expected_linear_function_plan(
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
+    owner_bridges: &[AdmittedOwnerBridge],
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
-    let layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    layout.owner_bridges = owner_bridges.to_vec();
     let block = &function.blocks[0];
     let mut plan = Vec::new();
     for operation in &block.operations {
         match operation {
+            Operation::ClosureOwner(operation) => { owner_operation_kernel::plan(&mut plan, function, layouts, &layout, operation, import_indices)?; }
             Operation::ConstInt { destination, value } => {
                 plan.push(PlanToken::I64Const(*value));
                 push_set(&mut plan, &layout, *destination)?;
@@ -5431,6 +5489,7 @@ fn expected_block_operations_plan(
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
+    owner_bridges: &[AdmittedOwnerBridge],
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     // Reuse only the source-operation rules above.  The synthetic terminator
     // is never emitted; it exists solely to satisfy the operation-level
@@ -5463,7 +5522,7 @@ fn expected_block_operations_plan(
         import_indices,
         static_data_offsets,
         aggregates,
-    )?;
+     owner_bridges)?;
     if plan.pop() != Some(PlanToken::End) || plan.pop() != Some(PlanToken::Return) {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
@@ -6007,7 +6066,7 @@ impl PlanEmitter<'_> {
             self.import_indices,
             self.static_data_offsets,
             &mut self.aggregates,
-        )?);
+         &self.layout.owner_bridges)?);
         self.emit_block_terminator(start, block.terminator, stop)
     }
 
@@ -6069,7 +6128,7 @@ impl PlanEmitter<'_> {
         self.plan.push(PlanToken::Loop("Empty".to_owned()));
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
-        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates)?);
+        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates, &self.layout.owner_bridges)?);
         self.loops.push((header, loop_label));
         if let Some(exit) = exit {
             self.loop_exits.push((exit, block_label));
@@ -6215,6 +6274,7 @@ fn planned_local_kind(ty: ValType) -> String {
         ValType::V128 => "v128".to_owned(),
         ValType::Ref(reference) if reference == wasm_encoder::RefType::EXTERNREF => "externref".to_owned(),
         ValType::Ref(reference) if reference == wasm_encoder::RefType::FUNCREF => "funcref".to_owned(),
+        ValType::Ref(reference) if reference == wasm_encoder::RefType::ANYREF => "anyref".to_owned(),
         other => format!("{other:?}"),
     }
 }
@@ -6228,6 +6288,7 @@ fn decoded_local_kind(ty: wasmparser::ValType) -> String {
         wasmparser::ValType::V128 => "v128".to_owned(),
         wasmparser::ValType::Ref(reference) if reference.is_extern_ref() => "externref".to_owned(),
         wasmparser::ValType::Ref(reference) if reference.is_func_ref() => "funcref".to_owned(),
+        wasmparser::ValType::Ref(reference) if reference == wasmparser::RefType::ANYREF => "anyref".to_owned(),
         other => format!("{other:?}"),
     }
 }
@@ -6241,8 +6302,10 @@ fn expected_function_plan(
     imports: &BTreeMap<ImportId, ImportContract>,
     import_indices: &BTreeMap<ImportId, u32>,
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
+    owner_bridges: &[AdmittedOwnerBridge],
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
-    let layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    layout.owner_bridges = owner_bridges.to_vec();
     let mut emitter = PlanEmitter {
         source_function: function,
         signature,
@@ -6300,6 +6363,7 @@ fn expected_metadata_prefix(
         types.ty().function(parameters, results);
         import_type_indices.insert(import.id, type_index);
     }
+    owner_bridges::append_types(&mut types, &target.owner_bridges).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let mut imports = ImportSection::new();
     for import in &target.imports {
         let type_index = import_type_indices.get(&import.id).copied()
@@ -6308,6 +6372,7 @@ fn expected_metadata_prefix(
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
         imports.import(&contract.module, &contract.name, EntityType::Function(type_index));
     }
+    owner_bridges::append_imports(&mut imports, &target.owner_bridges, (source.signatures().len() + source.imports().len()) as u32);
     let mut functions = FunctionSection::new();
     let mut tables = TableSection::new();
     let mut exports = ExportSection::new();
@@ -6319,7 +6384,7 @@ fn expected_metadata_prefix(
     exports.export(HEAP_TOP_EXPORT, ExportKind::Global, 0);
     exports.export(HEAP_FREE_EXPORT, ExportKind::Global, 1);
     exports.export(HEAP_BASE_EXPORT, ExportKind::Global, 2);
-    let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let import_count = u32::try_from(target.imports.len() + target.owner_bridges.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     for (index, function) in target.functions.iter().enumerate() {
         let type_index = signature_indices.get(&function.signature).copied()
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
@@ -6371,16 +6436,16 @@ fn decode_and_match_plan(
     }
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&source.layouts().canonical_bytes())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    let import_count = u32::try_from(target.imports.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+    let import_count = u32::try_from(target.imports.len() + target.owner_bridges.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
         .map(|(index, function)| (function.id, import_count + index as u32))
         .collect();
     let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate()
         .map(|(index, signature)| (signature.id, index as u32))
         .collect();
-    let import_indices: BTreeMap<_, _> = target.imports.iter().enumerate()
-        .map(|(index, import)| (import.id, index as u32))
-        .collect();
+    let mut import_indices: BTreeMap<_, _> = target.imports.iter().enumerate()
+        .map(|(index, import)| (import.id, index as u32)).collect();
+    for (index, bridge) in target.owner_bridges.iter().enumerate() { import_indices.insert(bridge.id(), target.imports.len() as u32 + index as u32); }
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter()
         .map(|segment| (segment.id, segment.offset))
         .collect();
@@ -6392,7 +6457,7 @@ fn decode_and_match_plan(
             let local = local_layout(function, signature, &layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
             let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets)?))
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets, &target.owner_bridges)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut actual = Vec::new();
@@ -6670,6 +6735,7 @@ fn admit_parts(
     }
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
+        owner_bridges: _target.owner_bridges,
         bytes,
         checked_source,
         final_module_digest,
@@ -8705,6 +8771,8 @@ mod tests {
         // exactly the production destructor's scratch area.
         let local_count = scratch_count + 1;
         let layout = LocalLayout {
+            owner_scratch: None,
+            owner_bridges: Vec::new(),
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
             extra_types: vec![ValType::I32; usize::try_from(local_count).unwrap()],
             scratch: (2..2 + scratch_count).collect(),

@@ -366,3 +366,76 @@ fn oracle_agrees_on_the_admitted_examples() {
     }
     assert!(checked_any, "at least one example admits");
 }
+
+fn assert_opaque_closure_three_legs(source: &str, expected: &[&str]) {
+    let checked = witchy::resolve_std_only_checked(source).expect("opaque closure source checks");
+    let expected = expected.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new()).expect("source execution"), expected);
+    let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("opaque closure canonical kernel");
+    let entry = artifact.entry().expect("entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = codegen::validate_checked_module_for_oracle(&checked).expect("source-bound oracle validation");
+    let capabilities = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    let result = witchy_wir::canonical_interpreter::interpret_program(&validated, function, capabilities, Default::default()).expect("opaque closure oracle");
+    assert_eq!(result.output, expected);
+    assert_eq!(result.leaked_objects, 0);
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256).expect("opaque closure admitted Wasm");
+    vm.run().expect("opaque closure Wasm execution");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+}
+
+#[test]
+fn opaque_closure_plugin_host_expected_three_legs() {
+    assert_opaque_closure_three_legs(
+        include_str!("../../examples/plugin_host/src/plugin_host.witchy"),
+        &["1 -> 12", "5 -> 20", "10 -> 30", "[log] ran the pipeline"],
+    );
+}
+
+#[test]
+fn opaque_closure_mixed_string_console_list_after_original_cleanup_three_legs() {
+    assert_opaque_closure_three_legs(r#"
+fn prefix(n: Int) -> String:
+    "log: " + "${n}"
+
+fn make(own text: String, console: Console) -> fn(String) -> Nil:
+    let log = fn(message: String): console.print(text + message)
+    console.print(text)
+    log
+
+fn main(console: Console):
+    let logs = [make(prefix(7), console), make(prefix(8), console)]
+    for log in logs:
+        log(" A")
+    for log in logs:
+        log(" B")
+"#, &["log: 7", "log: 8", "log: 7 A", "log: 8 A", "log: 7 B", "log: 8 B"]);
+}
+
+#[test]
+fn opaque_console_lambda_three_legs() {
+    assert_opaque_closure_three_legs(
+        "fn main(console: Console):\n    let log = fn(message: String): console.print(message)\n    log(\"ok\")\n",
+        &["ok"],
+    );
+}
+
+#[test]
+fn opaque_closure_mixed_string_console_after_original_cleanup_three_legs() {
+    assert_opaque_closure_three_legs(r#"
+fn prefix(n: Int) -> String:
+    "log: " + "${n}"
+
+fn make(own text: String, console: Console) -> fn(String) -> Nil:
+    let log = fn(message: String): console.print(text + message)
+    console.print(text)
+    log
+
+fn main(console: Console):
+    let log = make(prefix(7), console)
+    log(" A")
+    log(" B")
+"#, &["log: 7", "log: 7 A", "log: 7 B"]);
+}

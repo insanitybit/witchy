@@ -370,7 +370,13 @@ mod tests {
         exports.export("memory", ExportKind::Memory, 0);
         exports.export("frontier", ExportKind::Global, 0);
         exports.export("free", ExportKind::Global, 1);
-        let local = LocalLayout { indices: BTreeMap::new(), extra_types: Vec::new(), scratch: (1..=SCRATCH as u32).collect() };
+        let local = LocalLayout {
+            owner_scratch: None,
+            owner_bridges: Vec::new(),
+            indices: BTreeMap::new(),
+            extra_types: Vec::new(),
+            scratch: (1..=SCRATCH as u32).collect(),
+        };
         let mut body = WasmFunctionEncoder::new([(SCRATCH as u32, ValType::I32)]);
         code(&mut body, [I::LocalGet(0), I::LocalSet(local.scratch[OBJECT])]);
         emit(&mut body, &local, FunctionId::new(0), &layouts, node).unwrap();

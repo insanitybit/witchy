@@ -235,7 +235,7 @@ impl<'a> MemoryChecker<'a> {
                 }
                 unique_phi_rebases.insert(*argument, parameter.value);
             }
-            if parameter.ownership == Some(Ownership::Shared) {
+            if parameter.ownership == Some(Ownership::Shared) && !matches!(parameter.value_type, ValueType::Gc(_)) {
                 let ValueType::Ref(parameter_layout) = parameter.value_type else {
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
@@ -784,6 +784,14 @@ impl<'a> MemoryChecker<'a> {
                 CallArgument::Value(value) | CallArgument::Move(value) => *value,
             };
             let actual = value_type(self.function, value)?;
+            if matches!(actual, ValueType::Gc(_)) {
+                // The separate opaque-token CFG judgment consumes this lane.
+                // It has no linear address, extent, or allocation class.
+                if !matches!(argument, CallArgument::Move(_)) || parameter.ownership != ParameterOwnership::Shared {
+                    return self.unsupported("Call(opaque ownership)");
+                }
+                continue;
+            }
             if !actual.is_linear_memory_ref() {
                 if !matches!(argument, CallArgument::Value(_)) {
                     return self.unsupported("Call(non-memory ownership)");
@@ -1769,6 +1777,43 @@ impl<'a> MemoryChecker<'a> {
     /// Returns true when this operation belongs to the memory judgment.
     pub(super) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
         match operation {
+            Operation::ClosureOwner(owner) => {
+                use crate::canonical_safewir::closure_owner_contract::OwnerOperation;
+                match owner {
+                    OwnerOperation::Construct { captures, .. } => {
+                        for capture in captures {
+                            if matches!(value_type(self.function, *capture)?, ValueType::Ref(_)) {
+                                self.require_owned_slots_initialized(*capture, "Construct(uninitialized managed capture)")?;
+                                self.live_object(*capture)?;
+                            }
+                        }
+                    }
+                    OwnerOperation::CloneEnvironment { destination, .. } => {
+                        let ValueType::Ref(layout) = value_type(self.function, *destination)? else {
+                            return self.unsupported("CloneEnvironment(non-reference)");
+                        };
+                        // The owner registry check establishes the exact
+                        // environment layout before this memory judgment.
+                        let extent = self.parameter_extent(layout)?;
+                        self.state.objects.insert(*destination, ObjectState {
+                            identity: *destination, layout, extent, ownership: Ownership::Shared,
+                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                            shared_immutable: true, initialized_owned_slots: true,
+                        });
+                    }
+                    OwnerOperation::ReadCapability { .. }
+                    | OwnerOperation::ReadCallable { .. }
+                    | OwnerOperation::Clone { .. }
+                    | OwnerOperation::Drop { .. }
+                    | OwnerOperation::NewList { .. }
+                    | OwnerOperation::ListGet { .. }
+                    | OwnerOperation::ListLength { .. }
+                    | OwnerOperation::CloneList { .. }
+                    | OwnerOperation::ListPush { .. }
+                    | OwnerOperation::DropList { .. } => {}
+                }
+                Ok(true)
+            }
             Operation::ConstInt { destination, value } => {
                 if let Ok(value) = u64::try_from(*value) {
                     self.state.constants.insert(*destination, value);

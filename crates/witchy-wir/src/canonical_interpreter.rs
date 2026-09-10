@@ -12,7 +12,10 @@ use crate::canonical_safewir::{
     AllocationClass, ArithmeticOperator, BasicBlock, BlockId, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, HeaderField, HostCallArgument, LoadTransfer,
     Operation, InitialValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
-    ValidatedSafeWir, ValueId,
+    ValidatedSafeWir, ValueId, ValueType, FunctionSignatureId,
+};
+use crate::canonical_safewir::closure_owner_contract::{
+    CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerOperation,
 };
 use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind};
 
@@ -57,7 +60,18 @@ pub enum InterpreterValue {
     /// the token's kind and scope carry.
     Capability(CapabilityToken),
     NullableCapability(Option<CapabilityToken>),
+    /// An opaque owner token. The numeric identity is private oracle state and
+    /// is never a guest value or an authority selector.
+    OpaqueOwner(OpaqueOwnerToken),
+    /// An opaque typed list of owner tokens.
+    OpaqueOwnerList(OpaqueOwnerListToken),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OpaqueOwnerToken(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OpaqueOwnerListToken(u64);
 
 /// A host-minted capability token. Kind 1 (`Dir`) carries the subtree it is
 /// confined to — the empty string for a root grant — and kind 2 (`Env`)
@@ -324,7 +338,9 @@ pub fn interpret_program(
         .objects
         .values()
         .filter(|object| matches!(object.storage, RuntimeStorage::Allocation(_)))
-        .count();
+        .count()
+        + engine.owners.len()
+        + engine.owner_lists.len();
     Ok(ProgramRun { results, output: engine.output, leaked_objects })
 }
 
@@ -358,6 +374,22 @@ struct Object {
     absent_owned_slots: BTreeSet<CellKey>,
 }
 
+#[derive(Debug)]
+struct OwnerState {
+    family: FunctionSignatureId,
+    constructor: ConstructorId,
+    environment: u64,
+    owner_fields: BTreeMap<u32, InterpreterValue>,
+    references: u64,
+}
+
+#[derive(Debug)]
+struct OwnerListState {
+    family: FunctionSignatureId,
+    elements: Vec<OpaqueOwnerToken>,
+    references: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RangeTransfer {
     Copy,
@@ -375,7 +407,11 @@ struct Engine<'a> {
     config: InterpreterConfig,
     steps: u64,
     next_object: u64,
+    next_owner: u64,
+    next_owner_list: u64,
     objects: BTreeMap<u64, Object>,
+    owners: BTreeMap<OpaqueOwnerToken, OwnerState>,
+    owner_lists: BTreeMap<OpaqueOwnerListToken, OwnerListState>,
     static_objects: BTreeMap<crate::canonical_safewir::StaticDataId, u64>,
     output: Vec<String>,
 }
@@ -392,7 +428,11 @@ impl<'a> Engine<'a> {
             config,
             steps: 0,
             next_object: 0,
+            next_owner: 0,
+            next_owner_list: 0,
             objects: BTreeMap::new(),
+            owners: BTreeMap::new(),
+            owner_lists: BTreeMap::new(),
             static_objects: BTreeMap::new(),
             output: Vec::new(),
         }
@@ -484,6 +524,7 @@ impl<'a> Engine<'a> {
         values: &mut BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<(), InterpretError> {
         match operation {
+            Operation::ClosureOwner(operation) => self.execute_owner_operation(operation, values)?,
             Operation::ConstInt { destination, value } => {
                 values.insert(*destination, InterpreterValue::Int(*value));
             }
@@ -715,6 +756,386 @@ impl<'a> Engine<'a> {
             }
         }
         Ok(())
+    }
+
+    fn owner_family(&self, signature: FunctionSignatureId) -> Result<&OwnerFamily, InterpretError> {
+        let mut found = None;
+        for family in self.module.owner_families() {
+            if family.signature == signature {
+                if found.is_some() {
+                    return Err(InterpretError::UnsupportedOperation("ambiguous owner family"));
+                }
+                found = Some(family);
+            }
+        }
+        found.ok_or(InterpretError::UnsupportedOperation("unregistered owner family"))
+    }
+
+    fn owner_constructor(&self, id: ConstructorId) -> Result<(&OwnerFamily, &crate::canonical_safewir::closure_owner_contract::OwnerConstructor), InterpretError> {
+        let mut found = None;
+        for family in self.module.owner_families() {
+            for constructor in &family.constructors {
+                if constructor.id == id {
+                    if found.is_some() {
+                        return Err(InterpretError::UnsupportedOperation("ambiguous owner constructor"));
+                    }
+                    found = Some((family, constructor));
+                }
+            }
+        }
+        found.ok_or(InterpretError::UnsupportedOperation("unregistered owner constructor"))
+    }
+
+    fn owner_value(&self, id: ValueId, values: &BTreeMap<ValueId, InterpreterValue>) -> Result<OpaqueOwnerToken, InterpretError> {
+        match self.value(id, values)? {
+            InterpreterValue::OpaqueOwner(owner) => Ok(*owner),
+            _ => Err(InterpretError::TypeMismatch("opaque owner")),
+        }
+    }
+
+    fn owner_list_value(&self, id: ValueId, values: &BTreeMap<ValueId, InterpreterValue>) -> Result<OpaqueOwnerListToken, InterpretError> {
+        match self.value(id, values)? {
+            InterpreterValue::OpaqueOwnerList(list) => Ok(*list),
+            _ => Err(InterpretError::TypeMismatch("opaque owner list")),
+        }
+    }
+
+    fn clone_owner_capture(&mut self, value: InterpreterValue, transfer: CaptureTransfer) -> Result<InterpreterValue, InterpretError> {
+        match (transfer, value) {
+            (CaptureTransfer::CopyScalar, value @ (InterpreterValue::Int(_)
+                | InterpreterValue::FloatBits(_)
+                | InterpreterValue::Bool(_)
+                | InterpreterValue::Size(_)
+                | InterpreterValue::Unit
+                | InterpreterValue::V128(_))) => Ok(value),
+            (CaptureTransfer::CopyCapability(kind), InterpreterValue::Capability(token)) if token.kind == kind.get() => {
+                Ok(InterpreterValue::Capability(token))
+            }
+            (CaptureTransfer::CloneManaged, InterpreterValue::ObjectRef(object)) => {
+                self.retain(object)?;
+                Ok(InterpreterValue::ObjectRef(object))
+            }
+            (CaptureTransfer::CloneManaged, InterpreterValue::OpaqueOwner(owner)) => {
+                self.retain_owner(owner)?;
+                Ok(InterpreterValue::OpaqueOwner(owner))
+            }
+            (CaptureTransfer::CloneManaged, InterpreterValue::OpaqueOwnerList(list)) => {
+                self.retain_owner_list(list)?;
+                Ok(InterpreterValue::OpaqueOwnerList(list))
+            }
+            _ => Err(InterpretError::TypeMismatch("owner capture transfer")),
+        }
+    }
+
+    fn execute_owner_operation(
+        &mut self,
+        operation: &OwnerOperation,
+        values: &mut BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(), InterpretError> {
+        match operation {
+            OwnerOperation::Construct { destination, constructor, captures } => {
+                let (family_signature, environment_layout, constructor_id, environment_tag, capture_info) = {
+                    let (family, constructor_info) = self.owner_constructor(*constructor)?;
+                    (
+                        family.signature,
+                        family.environment,
+                        constructor_info.id,
+                        constructor_info.environment_tag,
+                        constructor_info.captures.clone(),
+                    )
+                };
+                if captures.len() != capture_info.len() {
+                    return Err(InterpretError::ArityMismatch {
+                        expected: capture_info.len(),
+                        actual: captures.len(),
+                    });
+                }
+                let mut seen_fields = BTreeSet::new();
+                for capture in &capture_info {
+                    let key = match capture.storage {
+                        CaptureStorage::EnvironmentField(field) => (0_u8, field),
+                        CaptureStorage::OwnerField(field) => (1_u8, field),
+                    };
+                    if !seen_fields.insert(key) {
+                        return Err(InterpretError::UnsupportedOperation("duplicate owner capture field"));
+                    }
+                }
+                let owner_number = self.next_owner.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
+                let environment = self.allocate(
+                    environment_layout,
+                    AllocationClass::ReferenceCounted,
+                    RuntimeExtent::FixedBytes(0),
+                    false,
+                )?;
+                let mut staged = Vec::with_capacity(captures.len());
+                for (source, capture) in captures.iter().zip(&capture_info) {
+                    let source_value = match self.value(*source, values) {
+                        Ok(value) => value.clone(),
+                        Err(error) => {
+                            self.release(environment)?;
+                            return Err(error);
+                        }
+                    };
+                    match self.clone_owner_capture(source_value, capture.transfer) {
+                        Ok(value) => staged.push((capture.storage, value)),
+                        Err(error) => {
+                            for (_, value) in staged.drain(..) {
+                                self.release_interpreter_value(value)?;
+                            }
+                            self.release(environment)?;
+                            return Err(error);
+                        }
+                    }
+                }
+                let mut owner_fields = BTreeMap::new();
+                self.object_mut(environment)?.cells.insert(
+                    CellKey::Field(0),
+                    InterpreterValue::Int(environment_tag),
+                );
+                for (storage, value) in staged {
+                    match storage {
+                        CaptureStorage::EnvironmentField(field) => {
+                            self.object_mut(environment)?.cells.insert(CellKey::Field(field), value);
+                        }
+                        CaptureStorage::OwnerField(field) => {
+                            owner_fields.insert(field, value);
+                        }
+                    }
+                }
+                let token = OpaqueOwnerToken(self.next_owner);
+                self.next_owner = owner_number;
+                self.owners.insert(token, OwnerState {
+                    family: family_signature,
+                    constructor: constructor_id,
+                    environment,
+                    owner_fields,
+                    references: 1,
+                });
+                values.insert(*destination, InterpreterValue::OpaqueOwner(token));
+            }
+            OwnerOperation::ReadCapability { destination, owner, constructor, capture } => {
+                let (family, constructor_info) = self.owner_constructor(*constructor)?;
+                let owner = self.owner_value(*owner, values)?;
+                let state = self.owners.get(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+                if state.family != family.signature || state.constructor != constructor_info.id {
+                    return Err(InterpretError::TypeMismatch("owner constructor"));
+                }
+                let capture_info = constructor_info
+                    .captures
+                    .get(capture.0 as usize)
+                    .ok_or(InterpretError::UnsupportedOperation("owner capture ordinal"))?;
+                let value = self.owner_capture_value(state, capture_info.storage)?;
+                let CaptureTransfer::CopyCapability(kind) = capture_info.transfer else {
+                    return Err(InterpretError::TypeMismatch("owner capability capture"));
+                };
+                let InterpreterValue::Capability(token) = value else {
+                    return Err(InterpretError::TypeMismatch("owner capability value"));
+                };
+                if token.kind != kind.get() {
+                    return Err(InterpretError::TypeMismatch("owner capability kind"));
+                }
+                values.insert(*destination, InterpreterValue::Capability(token));
+            }
+            OwnerOperation::ReadCallable { destination, owner, family } => {
+                let target_signature = self.owner_family(*family)?.signature;
+                let owner = self.owner_value(*owner, values)?;
+                let state = self.owners.get(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+                if state.family != target_signature {
+                    return Err(InterpretError::TypeMismatch("owner family"));
+                }
+                let (constructor_family, constructor_info) = self.owner_constructor(state.constructor)?;
+                if constructor_family.signature != target_signature {
+                    return Err(InterpretError::TypeMismatch("owner constructor family"));
+                }
+                values.insert(*destination, InterpreterValue::Function(constructor_info.function));
+            }
+            OwnerOperation::Clone { destination, owner, family } => {
+                self.owner_family(*family)?;
+                let owner = self.owner_value(*owner, values)?;
+                if self.owners.get(&owner).is_some_and(|state| state.family != *family) {
+                    return Err(InterpretError::TypeMismatch("owner family"));
+                }
+                self.retain_owner(owner)?;
+                values.insert(*destination, InterpreterValue::OpaqueOwner(owner));
+            }
+            OwnerOperation::Drop { owner, family } => {
+                self.owner_family(*family)?;
+                let owner = self.owner_value(*owner, values)?;
+                if self.owners.get(&owner).is_some_and(|state| state.family != *family) {
+                    return Err(InterpretError::TypeMismatch("owner family"));
+                }
+                self.release_owner(owner)?;
+            }
+            OwnerOperation::CloneEnvironment { destination, owner, constructor } => {
+                let (family, constructor_info) = self.owner_constructor(*constructor)?;
+                let owner = self.owner_value(*owner, values)?;
+                let environment = {
+                    let state = self.owners.get(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+                    if state.family != family.signature || state.constructor != constructor_info.id {
+                        return Err(InterpretError::TypeMismatch("owner constructor"));
+                    }
+                    state.environment
+                };
+                self.retain(environment)?;
+                values.insert(*destination, InterpreterValue::ObjectRef(environment));
+            }
+            OwnerOperation::NewList { destination, family, elements } => {
+                self.owner_family(*family)?;
+                let list_number = self.next_owner_list.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
+                let mut retained = Vec::with_capacity(elements.len());
+                for element in elements {
+                    let owner = self.owner_value(*element, values)?;
+                    if self.owners.get(&owner).is_none_or(|state| state.family != *family) {
+                        for retained_owner in retained { self.release_owner(retained_owner)?; }
+                        return Err(InterpretError::TypeMismatch("owner list family"));
+                    }
+                    if let Err(error) = self.retain_owner(owner) {
+                        for retained_owner in retained { self.release_owner(retained_owner)?; }
+                        return Err(error);
+                    }
+                    retained.push(owner);
+                }
+                let token = OpaqueOwnerListToken(self.next_owner_list);
+                self.next_owner_list = list_number;
+                self.owner_lists.insert(token, OwnerListState { family: *family, elements: retained, references: 1 });
+                values.insert(*destination, InterpreterValue::OpaqueOwnerList(token));
+            }
+            OwnerOperation::ListGet { destination, list, index, family } => {
+                self.owner_family(*family)?;
+                let list = self.owner_list_value(*list, values)?;
+                let index = self.size_value(*index, values)?;
+                let owner = {
+                    let state = self.owner_lists.get(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+                    if state.family != *family { return Err(InterpretError::TypeMismatch("owner list family")); }
+                    *state.elements.get(usize::try_from(index).map_err(|_| InterpretError::ArithmeticTrap)?).ok_or(InterpretError::IndexOutOfBounds { index, length: state.elements.len() as u64 })?
+                };
+                self.retain_owner(owner)?;
+                values.insert(*destination, InterpreterValue::OpaqueOwner(owner));
+            }
+            OwnerOperation::ListLength { destination, list, family } => {
+                self.owner_family(*family)?;
+                let list = self.owner_list_value(*list, values)?;
+                let length = self.owner_lists.get(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+                if length.family != *family { return Err(InterpretError::TypeMismatch("owner list family")); }
+                values.insert(*destination, InterpreterValue::Size(length.elements.len() as u64));
+            }
+            OwnerOperation::CloneList { destination, list, family } => {
+                self.owner_family(*family)?;
+                let list = self.owner_list_value(*list, values)?;
+                let state = self.owner_lists.get(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+                if state.family != *family { return Err(InterpretError::TypeMismatch("owner list family")); }
+                self.retain_owner_list(list)?;
+                values.insert(*destination, InterpreterValue::OpaqueOwnerList(list));
+            }
+            OwnerOperation::ListPush { destination, list, value, family } => {
+                self.owner_family(*family)?;
+                let list_token = self.owner_list_value(*list, values)?;
+                let owner = self.owner_value(*value, values)?;
+                let mut elements = {
+                    let state = self.owner_lists.get(&list_token).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+                    if state.family != *family { return Err(InterpretError::TypeMismatch("owner list family")); }
+                    if self.owners.get(&owner).is_none_or(|state| state.family != *family) {
+                        return Err(InterpretError::TypeMismatch("owner list value family"));
+                    }
+                    state.elements.clone()
+                };
+                let mut retained = Vec::with_capacity(elements.len());
+                for element in &elements {
+                    if let Err(error) = self.retain_owner(*element) {
+                        for retained_owner in retained { self.release_owner(retained_owner)?; }
+                        return Err(error);
+                    }
+                    retained.push(*element);
+                }
+                elements.push(owner);
+                let list_number = self.next_owner_list.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
+                let new_list = OpaqueOwnerListToken(self.next_owner_list);
+                self.next_owner_list = list_number;
+                if let Err(error) = self.release_owner_list(list_token) {
+                    for retained_owner in retained { self.release_owner(retained_owner)?; }
+                    return Err(error);
+                }
+                self.owner_lists.insert(new_list, OwnerListState { family: *family, elements, references: 1 });
+                values.remove(list);
+                values.remove(value);
+                values.insert(*destination, InterpreterValue::OpaqueOwnerList(new_list));
+            }
+            OwnerOperation::DropList { list, family } => {
+                self.owner_family(*family)?;
+                let list = self.owner_list_value(*list, values)?;
+                let state = self.owner_lists.get(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+                if state.family != *family { return Err(InterpretError::TypeMismatch("owner list family")); }
+                self.release_owner_list(list)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn owner_capture_value(
+        &self,
+        state: &OwnerState,
+        storage: CaptureStorage,
+    ) -> Result<InterpreterValue, InterpretError> {
+        match storage {
+            CaptureStorage::EnvironmentField(field) => self
+                .object(state.environment)?
+                .cells
+                .get(&CellKey::Field(field))
+                .cloned()
+                .ok_or(InterpretError::UninitializedPlace),
+            CaptureStorage::OwnerField(field) => state
+                .owner_fields
+                .get(&field)
+                .cloned()
+                .ok_or(InterpretError::UninitializedPlace),
+        }
+    }
+
+    fn retain_owner(&mut self, owner: OpaqueOwnerToken) -> Result<(), InterpretError> {
+        let state = self.owners.get_mut(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+        state.references = state.references.checked_add(1).ok_or(InterpretError::ReferenceCountOverflow(owner.0))?;
+        Ok(())
+    }
+
+    fn release_owner(&mut self, owner: OpaqueOwnerToken) -> Result<(), InterpretError> {
+        let final_release = {
+            let state = self.owners.get_mut(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+            state.references = state.references.checked_sub(1).ok_or(InterpretError::ReferenceCountUnderflow(owner.0))?;
+            state.references == 0
+        };
+        if !final_release { return Ok(()); }
+        let state = self.owners.remove(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+        for value in state.owner_fields.into_values() {
+            self.release_interpreter_value(value)?;
+        }
+        self.release(state.environment)
+    }
+
+    fn retain_owner_list(&mut self, list: OpaqueOwnerListToken) -> Result<(), InterpretError> {
+        let state = self.owner_lists.get_mut(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+        state.references = state.references.checked_add(1).ok_or(InterpretError::ReferenceCountOverflow(list.0))?;
+        Ok(())
+    }
+
+    fn release_owner_list(&mut self, list: OpaqueOwnerListToken) -> Result<(), InterpretError> {
+        let final_release = {
+            let state = self.owner_lists.get_mut(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+            state.references = state.references.checked_sub(1).ok_or(InterpretError::ReferenceCountUnderflow(list.0))?;
+            state.references == 0
+        };
+        if !final_release { return Ok(()); }
+        let state = self.owner_lists.remove(&list).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+        for owner in state.elements { self.release_owner(owner)?; }
+        Ok(())
+    }
+
+    fn release_interpreter_value(&mut self, value: InterpreterValue) -> Result<(), InterpretError> {
+        match value {
+            InterpreterValue::ObjectRef(object) => self.release(object),
+            InterpreterValue::OpaqueOwner(owner) => self.release_owner(owner),
+            InterpreterValue::OpaqueOwnerList(list) => self.release_owner_list(list),
+            _ => Ok(()),
+        }
     }
 
     /// The two prelude imports are the host calls the oracle models: `print`
@@ -1660,8 +2081,11 @@ impl<'a> Engine<'a> {
                 // Each edge transfers one owned token, including repeated
                 // edges to a shared child; do not deduplicate the worklist.
                 for cell in cells.into_values().rev() {
-                    if let InterpreterValue::ObjectRef(child) = cell {
-                        pending.push(child);
+                    match cell {
+                        InterpreterValue::ObjectRef(child) => pending.push(child),
+                        InterpreterValue::OpaqueOwner(owner) => self.release_owner(owner)?,
+                        InterpreterValue::OpaqueOwnerList(list) => self.release_owner_list(list)?,
+                        _ => {}
                     }
                 }
             }
@@ -2005,6 +2429,213 @@ mod tests {
             ).collect(),
             absent_owned_slots: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn owner_oracle_preserves_console_capture_and_list_rc_identity() {
+        use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, OwnerCapture, OwnerConstructor};
+
+        let environment = LayoutId::from_bytes([9; 32]);
+        let captured_ref = LayoutId::from_bytes([8; 32]);
+        let console_kind = crate::canonical_safewir::CapabilityKindId::new(0);
+        let owner_type = crate::canonical_safewir::GcTypeId::new(10);
+        let declaration_signature = FunctionSignatureId::new(1);
+        let mut family = OwnerFamily {
+            owner_type,
+            list_type: crate::canonical_safewir::GcTypeId::new(11),
+            signature: SIGNATURE,
+            declaration_signature,
+            environment,
+            constructors: vec![OwnerConstructor {
+                id: ConstructorId(0),
+                function: FUNCTION,
+                witness: None,
+                environment_tag: 0,
+                captures: vec![
+                    OwnerCapture {
+                        value_type: ValueType::Capability(console_kind),
+                        storage: CaptureStorage::OwnerField(2),
+                        transfer: CaptureTransfer::CopyCapability(console_kind),
+                    },
+                    OwnerCapture {
+                        value_type: ValueType::Ref(captured_ref),
+                        storage: CaptureStorage::EnvironmentField(0),
+                        transfer: CaptureTransfer::CloneManaged,
+                    },
+                ],
+            }],
+        };
+        family.constructors.push(OwnerConstructor {
+            id: ConstructorId(1),
+            function: FunctionId::new(99),
+            witness: None,
+            environment_tag: 0,
+            captures: Vec::new(),
+        });
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([41; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: vec![ValueType::Gc(owner_type)],
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: vec![ParameterContract {
+                        value_type: ValueType::Gc(owner_type),
+                        ownership: ParameterOwnership::Shared,
+                    }],
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::from([(
+                        0,
+                        vec![crate::canonical_safewir::MemoryEffect::Release],
+                    )]),
+                },
+            }, FunctionSignature {
+                id: declaration_signature,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: CallableContract { parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new() },
+            }],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: FUNCTION,
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types: BTreeMap::from([(ValueId::new(0), ValueType::Gc(owner_type))]),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: vec![BlockParameter {
+                            value: ValueId::new(0),
+                            value_type: ValueType::Gc(owner_type),
+                            ownership: Some(crate::canonical_safewir::Ownership::Shared),
+                        }],
+                        operations: vec![Operation::ClosureOwner(OwnerOperation::Drop {
+                            owner: ValueId::new(0),
+                            family: SIGNATURE,
+                        })],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    }],
+                },
+                Function {
+                    id: FunctionId::new(99),
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types: BTreeMap::from([(ValueId::new(0), ValueType::Gc(owner_type))]),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: vec![BlockParameter {
+                            value: ValueId::new(0),
+                            value_type: ValueType::Gc(owner_type),
+                            ownership: Some(crate::canonical_safewir::Ownership::Shared),
+                        }],
+                        operations: vec![Operation::ClosureOwner(OwnerOperation::Drop {
+                            owner: ValueId::new(0),
+                            family: SIGNATURE,
+                        })],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    }],
+                },
+            ],
+            proper_tail_sites: Vec::new(),
+        })
+        .with_owner_families(vec![family]);
+        let checked = check_initial_with_test_witness(candidate).expect("owner metadata remains independently admissible");
+        let mut engine = Engine::new(checked.module(), InterpreterConfig::default());
+        engine.objects.insert(0, release_test_object(1, &[]));
+        engine.next_object = 1;
+        let cap = ValueId::new(0);
+        let child = ValueId::new(1);
+        let owner = ValueId::new(2);
+        let cloned = ValueId::new(3);
+        let list = ValueId::new(4);
+        let length = ValueId::new(5);
+        let index = ValueId::new(6);
+        let selected = ValueId::new(7);
+        let environment_value = ValueId::new(8);
+        let capability_value = ValueId::new(9);
+        let mut values = BTreeMap::from([
+            (cap, InterpreterValue::capability(console_kind.get())),
+            (child, InterpreterValue::ObjectRef(0)),
+            (index, InterpreterValue::Size(1)),
+        ]);
+
+        engine.execute_owner_operation(&OwnerOperation::Construct {
+            destination: owner,
+            constructor: ConstructorId(0),
+            captures: vec![cap, child],
+        }, &mut values).expect("construct owner");
+        engine.execute_owner_operation(&OwnerOperation::ReadCapability {
+            destination: capability_value,
+            owner,
+            constructor: ConstructorId(0),
+            capture: CaptureOrdinal(0),
+        }, &mut values).expect("read captured Console");
+        assert_eq!(values.get(&capability_value), values.get(&cap));
+        let callable = ValueId::new(10);
+        engine.execute_owner_operation(&OwnerOperation::ReadCallable {
+            destination: callable,
+            owner,
+            family: SIGNATURE,
+        }, &mut values).expect("read owner callable");
+        assert_eq!(values.get(&callable), Some(&InterpreterValue::Function(FUNCTION)));
+        let zero_capture_owner = ValueId::new(11);
+        engine.execute_owner_operation(&OwnerOperation::Construct {
+            destination: zero_capture_owner,
+            constructor: ConstructorId(1),
+            captures: vec![],
+        }, &mut values).expect("construct zero-capture owner");
+        let zero_capture_callable = ValueId::new(12);
+        engine.execute_owner_operation(&OwnerOperation::ReadCallable {
+            destination: zero_capture_callable,
+            owner: zero_capture_owner,
+            family: SIGNATURE,
+        }, &mut values).expect("read zero-capture owner callable");
+        assert_eq!(values.get(&zero_capture_callable), Some(&InterpreterValue::Function(FunctionId::new(99))));
+        assert!(engine.execute_owner_operation(&OwnerOperation::ReadCallable {
+            destination: ValueId::new(13),
+            owner,
+            family: FunctionSignatureId::new(SIGNATURE.get() + 1),
+        }, &mut values).is_err(), "wrong owner family must refuse");
+        engine.execute_owner_operation(&OwnerOperation::CloneEnvironment {
+            destination: environment_value,
+            owner,
+            constructor: ConstructorId(0),
+        }, &mut values).expect("clone environment");
+        engine.execute_owner_operation(&OwnerOperation::Clone {
+            destination: cloned,
+            owner,
+            family: SIGNATURE,
+        }, &mut values).expect("clone owner");
+        engine.execute_owner_operation(&OwnerOperation::NewList {
+            destination: list,
+            family: SIGNATURE,
+            elements: vec![owner, cloned],
+        }, &mut values).expect("clone owners into list");
+        engine.execute_owner_operation(&OwnerOperation::ListLength {
+            destination: length,
+            list,
+            family: SIGNATURE,
+        }, &mut values).expect("list length");
+        assert_eq!(values.get(&length), Some(&InterpreterValue::Size(2)));
+        engine.execute_owner_operation(&OwnerOperation::ListGet {
+            destination: selected,
+            list,
+            index,
+            family: SIGNATURE,
+        }, &mut values).expect("list get retains owner");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner, family: SIGNATURE }, &mut values).expect("drop source owner");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner: cloned, family: SIGNATURE }, &mut values).expect("drop cloned owner");
+        engine.execute_owner_operation(&OwnerOperation::DropList { list, family: SIGNATURE }, &mut values).expect("drop owner list");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner: selected, family: SIGNATURE }, &mut values).expect("drop selected owner");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner: zero_capture_owner, family: SIGNATURE }, &mut values).expect("drop zero-capture owner");
+        let environment_object = engine.object_value(environment_value, &values).expect("environment token");
+        engine.release(environment_object).expect("drop environment clone");
+        engine.release(0).expect("drop original captured object token");
+        assert!(engine.owners.is_empty());
+        assert!(engine.owner_lists.is_empty());
+        assert!(engine.objects.is_empty());
     }
 
     fn compiler_service(kind: CompilerServiceKind, inputs: &[String]) -> Result<String, String> {

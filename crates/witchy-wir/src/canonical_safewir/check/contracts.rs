@@ -75,6 +75,7 @@ enum Origin {
     Unseen,
     Unknown,
     Parameter { parameter: u32, layout: Option<crate::layout::LayoutId> },
+    OpaqueParameter { parameter: u32 },
     Fresh {
         layout: crate::layout::LayoutId,
         class: AllocationClass,
@@ -223,6 +224,9 @@ fn derive_summary(
     let entry_origins = parameter_values
         .iter()
         .map(|(value, parameter)| {
+            if matches!(function.value_types.get(value), Some(ValueType::Gc(_))) {
+                return (*value, Origin::OpaqueParameter { parameter: *parameter });
+            }
             let layout = match function.value_types.get(value).copied() {
                 Some(ValueType::Ref(layout)) => Some(layout),
                 _ => None,
@@ -385,6 +389,31 @@ fn propagate_operation_origins(
     origins: &mut BTreeMap<ValueId, Origin>,
 ) -> Result<(), InitialCheckError> {
     match operation {
+        Operation::ClosureOwner(owner) => {
+            use crate::canonical_safewir::closure_owner_contract::OwnerOperation as O;
+            for destination in owner.destinations() {
+                let origin = match owner {
+                    O::CloneEnvironment { .. } => {
+                        match function.value_types.get(&destination) {
+                            Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                            _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment contract" }),
+                        }
+                    }
+                    O::Construct { .. }
+                    | O::ReadCapability { .. }
+                    | O::ReadCallable { .. }
+                    | O::Clone { .. }
+                    | O::Drop { .. }
+                    | O::NewList { .. }
+                    | O::ListGet { .. }
+                    | O::ListLength { .. }
+                    | O::CloneList { .. }
+                    | O::ListPush { .. }
+                    | O::DropList { .. } => Origin::Unknown,
+                };
+                join_origin(origins, destination, origin);
+            }
+        }
         Operation::Alloc { destination, layout, class, extent } => {
             join_origin(origins, *destination, Origin::Fresh {
                 layout: *layout,
@@ -610,6 +639,57 @@ fn derive_operation(
                 );
             }
         }
+        Operation::ClosureOwner(owner) => {
+            use crate::canonical_safewir::closure_owner_contract::OwnerOperation as O;
+            for value in owner.operands() {
+                let effect = match owner {
+                    O::Drop { .. } | O::DropList { .. } => MemoryEffect::Release,
+                    O::Clone { .. } | O::CloneList { .. } | O::Construct { .. } | O::NewList { .. } => MemoryEffect::Retain,
+                    O::ReadCapability { .. }
+                    | O::ReadCallable { .. }
+                    | O::CloneEnvironment { .. }
+                    | O::ListGet { .. }
+                    | O::ListLength { .. }
+                    | O::ListPush { .. } => MemoryEffect::Read,
+                };
+                add_effect(summary, origin_of(origins, value), effect);
+                let escapes = match owner {
+                    O::Construct { .. } | O::NewList { .. } | O::ListPush { .. } => true,
+                    O::ReadCapability { .. }
+                    | O::ReadCallable { .. }
+                    | O::Clone { .. }
+                    | O::Drop { .. }
+                    | O::CloneEnvironment { .. }
+                    | O::ListGet { .. }
+                    | O::ListLength { .. }
+                    | O::CloneList { .. }
+                    | O::DropList { .. } => false,
+                };
+                if escapes {
+                    mark_escape(summary, origin_of(origins, value));
+                }
+            }
+            for destination in owner.destinations() {
+                let origin = match owner {
+                    O::CloneEnvironment { .. } => match function.value_types.get(&destination) {
+                        Some(ValueType::Ref(layout)) => Origin::Shared(*layout),
+                        _ => return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment contract" }),
+                    },
+                    O::Construct { .. }
+                    | O::ReadCapability { .. }
+                    | O::ReadCallable { .. }
+                    | O::Clone { .. }
+                    | O::Drop { .. }
+                    | O::NewList { .. }
+                    | O::ListGet { .. }
+                    | O::ListLength { .. }
+                    | O::CloneList { .. }
+                    | O::ListPush { .. }
+                    | O::DropList { .. } => Origin::Unknown,
+                };
+                origins.insert(destination, origin);
+            }
+        }
         Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::CapabilityNone { .. } | Operation::CapabilitySome { .. } | Operation::CapabilityIsPresent { .. } | Operation::CapabilityUnwrap { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
     }
     Ok(())
@@ -756,7 +836,7 @@ fn argument_value(argument: &CallArgument) -> ValueId {
 fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
     // Only a reference parameter has memory effects; a scalar parameter's
     // origin (`layout: None`) carries no memory.
-    let (Origin::Parameter { parameter, layout: Some(_) } | Origin::ReallocatesParameter { parameter, .. }) = origin else { return; };
+    let (Origin::Parameter { parameter, layout: Some(_) } | Origin::OpaqueParameter { parameter } | Origin::ReallocatesParameter { parameter, .. }) = origin else { return; };
     summary.effects.entry(parameter).or_default().insert(effect);
     if let Some(slot) = summary.needs.get_mut(parameter as usize) {
         slot.insert(effect);
@@ -766,7 +846,7 @@ fn add_effect(summary: &mut BodySummary, origin: Origin, effect: MemoryEffect) {
 fn mark_escape(summary: &mut BodySummary, origin: Origin) {
     // Returning or storing a scalar parameter is not an escape of memory: a
     // value with no layout has nothing to read, retain, or release.
-    if let Origin::Parameter { parameter, layout: Some(_) } | Origin::ReallocatesParameter { parameter, .. } = origin {
+    if let Origin::Parameter { parameter, layout: Some(_) } | Origin::OpaqueParameter { parameter } | Origin::ReallocatesParameter { parameter, .. } = origin {
         summary.escaped_parameters.insert(parameter);
         if let Some(need) = summary.needs.get_mut(parameter as usize) {
             need.insert(MemoryEffect::Read);
@@ -835,7 +915,7 @@ fn contract_mismatch(signature: FunctionSignatureId, site: &'static str) -> Init
 fn is_non_memory_result(value_type: ValueType) -> bool {
     matches!(value_type, ValueType::Int | ValueType::Float | ValueType::Bool
         | ValueType::Unit | ValueType::Size | ValueType::V128
-        | ValueType::Capability(_) | ValueType::NullableCapability(_))
+        | ValueType::Capability(_) | ValueType::NullableCapability(_) | ValueType::Gc(_))
 }
 
 fn is_indirect_result(result: &DerivedResult) -> bool {
