@@ -22,6 +22,7 @@ pub(in crate::runtime) fn link_staging(linker: &mut Linker<VmState>) -> Result<(
 /// native registry the interpreter uses (byte-for-byte parity, no byte-level
 /// work in WAT).
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
+    super::regex::link(linker)?;
     linker.func_wrap("witchy", "user_cap_field_len", host_user_cap_field_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     linker.func_wrap("witchy", "regex_count", host_regex_count)?;

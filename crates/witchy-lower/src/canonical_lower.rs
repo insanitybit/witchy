@@ -11,6 +11,9 @@ use std::fmt;
 #[path = "canonical_owned.rs"]
 mod owned;
 
+#[path = "canonical_regex.rs"]
+mod regex;
+
 #[cfg(test)]
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
@@ -528,7 +531,8 @@ pub fn lower_typed_module(
     let floats = renders_float(typed.module(), typed.table(), &definitions);
     let capability_imports = collect_capability_imports(typed.module(), typed.table());
     let compiler_imports = collect_compiler_imports(typed.module());
-    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() {
+    let regex_spans = regex::is_needed(typed.module());
+    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -580,7 +584,7 @@ pub fn lower_typed_module(
         });
         let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        if !capability_imports.is_empty() || !compiler_imports.is_empty() {
+        if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
             let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
             let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
             let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
@@ -635,6 +639,11 @@ pub fn lower_typed_module(
                 catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
+            if regex_spans {
+                let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
+                catalog = catalog.with_regex_spans_import(signature, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
         }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
@@ -646,9 +655,11 @@ pub fn lower_typed_module(
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
+                    || (regex_spans && import.name == "regex_match_spans_into")
             })
             .collect::<Vec<_>>();
         host_imports = HostImports {
+            regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
             compiler: compiler_imports.iter()
                 .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
                 .collect(),
@@ -1980,6 +1991,10 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
             Expr::Call { name, args } if compiler_service_import(name).is_some() => {
                 self.lower_compiler_service(name, args)?;
+                Ok(())
+            }
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => {
+                self.lower_regex_spans(args)?;
                 Ok(())
             }
             // A capability operation in statement position: `dir.write` has
@@ -5722,6 +5737,7 @@ impl FunctionLowerer<'_> {
                 Ok(value)
             }
             Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => self.lower_regex_spans(args),
             Expr::Call { name, args } if is_capability_op(name) => self
                 .lower_capability_op(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("capability operation without a value")),
@@ -12826,6 +12842,7 @@ fn string_layout(
 /// by the role the lowering reaches them through.
 #[derive(Clone, Default)]
 struct HostImports {
+    regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
     compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,
     float_to_str: Option<witchy_wir::canonical_safewir::ImportId>,

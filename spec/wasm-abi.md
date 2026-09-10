@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **12**. The JavaScript host pins it as
+The current ABI version is **13**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -44,6 +44,10 @@ Version 12 adds native `console_print`, which receives the actual opaque Console
 receiver followed by a checked string slice. Legacy `print` remains unchanged.
 Console output remains non-privileged infrastructure; the new receiver role
 checks value identity rather than adding an authority family.
+Version 13 adds native-only `regex_match_spans_into`: two UTF-8 read slices,
+one capacity-bounded output slice, and a returned byte length. It writes the
+complete character-span encoding only when capacity suffices; otherwise it
+writes nothing. Invalid patterns or slices trap. No pending state is involved.
 
 ## Import inclusion is tree-shaken
 
@@ -294,6 +298,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
 | `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
+| `regex_match_spans_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 

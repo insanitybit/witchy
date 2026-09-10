@@ -849,6 +849,33 @@ impl CanonicalAbiCatalog {
         self.imports.values().cloned().collect()
     }
 
+    /// Pure regex computation over two UTF-8 read slices and one bounded
+    /// output slice. The result is a byte count, never allocation authority.
+    /// Insufficient capacity leaves the entire output unchanged.
+    pub fn with_regex_spans_import(
+        mut self,
+        signature: FunctionSignatureId,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_prelude_import(
+            "regex_match_spans_into",
+            &[WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::I32], signature,
+            vec![read(), read(), HostParameterRole::Buffer {
+                value_type: ValueType::Ref(string_layout), access: AccessMode::Write,
+                extent: HostBufferExtent::Slice,
+            }],
+            vec![HostResultRole::Value(ValueType::Size)], HostMutation::WriteBuffers,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
+
     fn from_imports(imports: Vec<ImportContract>) -> Self {
         Self {
             imports: imports.into_iter().map(|import| (import.id, import)).collect(),

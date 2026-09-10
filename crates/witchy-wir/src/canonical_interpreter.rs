@@ -23,6 +23,7 @@ const SIZE_MAX: u64 = u32::MAX as u64;
 
 mod launch;
 mod nullable;
+mod regex;
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.
@@ -1194,6 +1195,9 @@ impl<'a> Engine<'a> {
         }
         if matches!(contract.name.as_str(), "compiler_footprint_into" | "compiler_diff_into") {
             return self.compiler_host_call(&contract.name, destinations, arguments, values);
+        }
+        if contract.name == "regex_match_spans_into" {
+            return self.regex_spans_host_call(destinations, arguments, values);
         }
         if let Some(name) = CAPABILITY_IMPORTS.iter().find(|name| **name == contract.name) {
             return self.capability_host_call(name, destinations, arguments, values);

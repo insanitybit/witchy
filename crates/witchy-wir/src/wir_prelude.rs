@@ -339,15 +339,16 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "env_has_var" (func $env_has_var_host (param externref i32 i32) (result i32)))
   (import "witchy" "env_get_into" (func $env_get_into_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
+  (import "witchy" "regex_match_spans_into" (func $regex_match_spans_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 120;
+pub const IMPORT_COUNT: usize = 121;
 
 /// Version of the public `"witchy"` host-import contract.
-/// v12: canonical Console output passes its actual opaque receiver token.
-pub const WITCHY_ABI_VERSION: u32 = 12;
+/// v13: stateless regex character spans use explicit, bounded byte slices.
+pub const WITCHY_ABI_VERSION: u32 = 13;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -489,6 +490,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "print_float"
         | "string_from_code"
         | "regex_match_spans_len"
+        | "regex_match_spans_into"
         | "regex_count"
         | "regex_replace_all_len"
         | "crypto.__ecdsa_p256_verify_status"

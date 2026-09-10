@@ -8,6 +8,7 @@ pub(super) mod fetch;
 #[cfg(feature = "test-fixtures")]
 pub(super) mod fixture;
 pub(super) mod network;
+pub(super) mod regex;
 pub(super) mod secret;
 pub(super) mod staging;
 pub(super) mod vm_worker;
