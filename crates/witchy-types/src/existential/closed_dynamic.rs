@@ -31,17 +31,27 @@ pub(crate) fn prepare(
     }
     let scope = crate::pipeline::canonical_scope(typed.module());
     let mut constructs_dynamic = false;
+    let mut packs_payload = false;
     for item in &typed.module().items {
-        if let Item::Function(function) = item && scope.contains(&function.name) {
+        // Generic library templates are not in the callable witness's runtime
+        // inventory. Only a concrete body can require a closed payload here;
+        // the complete supplied plan was independently authenticated above.
+        if let Item::Function(function) = item && scope.contains(&function.name)
+            && !crate::pipeline::function_has_free_signature_variables(function)
+        {
             visit_block::<String>(&function.body, &mut |expr| {
                 constructs_dynamic |= matches!(expr, Expr::Ctor { name, .. } if name == "dynamic.Dynamic");
+                packs_payload |= typed.table().existential_pack(expr).is_some();
                 Ok(())
             })?;
         }
     }
-    // Descriptor-only programs retain the metadata-only path. No arbitrary
-    // existential program acquires this representation merely by importing it.
-    if !constructs_dynamic { return Ok(typed); }
+    // Forwarding an already existential payload (the library's `field`
+    // helper) is not a concrete pack. Without a checked pack there is no
+    // closed payload universe to construct: preserve the typed source, not a
+    // fabricated variant. Its open existential layout remains unsupported by
+    // canonical admission. Plan authentication above is still mandatory.
+    if !constructs_dynamic || !packs_payload { return Ok(typed); }
     let mut payload_definition = typed.module().items.iter().find_map(|item| match item {
         Item::Type(definition) if definition.name == "dynamic.Dynamic" => Some(definition.clone()),
         _ => None,

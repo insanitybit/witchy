@@ -228,6 +228,17 @@ fn dynamic_reflection_example_expected_output_three_legs() {
 }
 
 #[test]
+fn dynamic_library_forwarding_does_not_mint_closed_payload_authority() {
+    let source = "import dynamic\nfn forward(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\n";
+    let checked = witchy::resolve_std_only_checked(source).expect("open library signature type-checks");
+    assert!(checked.canonical_source().unwrap().typed_module().module().items.iter().all(|item| {
+        !matches!(item, witchy::ast::Item::Type(definition) if definition.name == "$canonical.DynamicPayload")
+    }));
+    codegen::compile_checked_module_artifact(&checked)
+        .expect_unsupported("an open existential is not closed payload authority");
+}
+
+#[test]
 fn all_terminal_if_flow_value_three_legs() {
     let source = r#"
 fn choose(flag: Bool) -> Int:

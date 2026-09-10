@@ -22,17 +22,21 @@ pub(crate) fn prepare(
     catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<TypedModule, String> {
     let scope = crate::pipeline::canonical_scope(typed.module());
+    // Match the existing callable witness's runtime inventory exactly. Entry
+    // libraries retain generic templates in canonical_scope, but templates
+    // are not executable bodies and cannot define a concrete message tag.
+    // Every retained body still undergoes conversion and fallible rechecking;
+    // an unstamped erasure in one of those bodies continues to reject.
+    let runtime_functions = typed.module().items.iter().filter_map(|item| match item {
+        Item::Function(function) if scope.contains(&function.name)
+            && !crate::pipeline::function_has_free_signature_variables(function) => Some(function.name.clone()),
+        _ => None,
+    }).collect::<std::collections::BTreeSet<_>>();
     let mut payloads = BTreeMap::<RuntimeTypeIdentity, Type>::new();
     let mut sites = BTreeMap::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) { continue; }
-        let mut variables = Vec::new();
-        for parameter in &function.params {
-            if let Some(ty) = &parameter.ty { witchy_syntax::ast::collect_type_vars(ty, &mut variables); }
-        }
-        if let Some(ty) = &function.ret { witchy_syntax::ast::collect_type_vars(ty, &mut variables); }
-        if !variables.is_empty() { continue; }
+        if !runtime_functions.contains(&function.name) { continue; }
         visit_block(&function.body, &mut |expr| {
             let Expr::Call { name, args } = expr else { return Ok::<_, String>(()) };
             let Some(spec) = intrinsics::lookup(name) else { return Ok(()) };
@@ -111,7 +115,7 @@ pub(crate) fn prepare(
     result?;
     if stamps.len() != sites.len() { return Err("canonical message preparation lost a checked site".into()); }
     module.items.retain(|item| match item {
-        Item::Function(function) => scope.contains(&function.name),
+        Item::Function(function) => runtime_functions.contains(&function.name),
         Item::Comptime(_) => false,
         _ => true,
     });
@@ -256,6 +260,10 @@ mod tests {
     use witchy_syntax::origin::OriginTable;
 
     fn checked(body: &str) -> crate::pipeline::CheckedModule {
+        checked_entry(body, "main")
+    }
+
+    fn checked_entry(body: &str, entry: &str) -> crate::pipeline::CheckedModule {
         let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
         let application = PackageCoordinate::new(PackageSource::Workspace, "test/messages", "0.1.0").unwrap();
         let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
@@ -265,7 +273,7 @@ mod tests {
         crate::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
             vec![("main".into(), b"import task\nfn main() -> Int:\n    task.exercise()\n".to_vec()),
                  ("task".into(), body.as_bytes().to_vec())],
-            "main", |_, _, _| Ok(OriginTable::default()),
+            entry, |_, _, _| Ok(OriginTable::default()),
             &std::collections::HashSet::from(["main".into()]),
             AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
         ).expect("approved primitive-erasure source fixture checks")
@@ -313,6 +321,32 @@ pub fn exercise() -> Int:
         ).unwrap()).unwrap();
         let original = typed.module().clone();
         assert_eq!(prepare(typed, None).unwrap().module(), &original);
+    }
+
+    #[test]
+    fn library_templates_do_not_enter_the_concrete_message_universe() {
+        let checked = checked_entry(r#"
+pub fn exercise() -> Int:
+    let value = __erase(0)
+    let recovered: Int = __unerase(value)
+    recovered
+pub fn pack(value: a) -> __Msg:
+    __erase(value)
+"#, "task");
+        assert!(checked.module().items.iter().any(|item| matches!(item,
+            Item::Function(function) if crate::pipeline::function_has_free_signature_variables(function))));
+        let canonical = checked.canonical_source().unwrap().typed_module();
+        for item in &canonical.module().items {
+            if let Item::Function(function) = item {
+                assert!(!crate::pipeline::function_has_free_signature_variables(function));
+                visit_block::<()>(&function.body, &mut |expr| {
+                    if let Expr::Call { name, .. } = expr {
+                        assert!(!intrinsics::is_erasure_bridge(name));
+                    }
+                    Ok(())
+                }).unwrap();
+            }
+        }
     }
 
     #[test]

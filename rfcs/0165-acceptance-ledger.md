@@ -1,6 +1,44 @@
 # RFC-0165 acceptance ledger
 
-## Current landed state: ownership/closure integration, 2026-09-10
+## Current integration state, 2026-09-10
+
+The ownership/closure slice below is landed. Its Unit/layout and resolved-channel
+privacy follow-ups landed at `077df1d1a`; aggregate shape and checked local-callee
+capture fixes landed at `c33bde0b7` (`2026-09-10T14:02:19Z`, queue
+`mq-5dfc27541aa92696e102f2ff97eb98ce09a45e54`, 263-second green gate, no flakes).
+The existing exhaustive operation/ownership classifications and independent
+checker, oracle, backend, and manifest implementations remain in place.
+
+One post-integration census on executable snapshot `e44df0c08` reports
+**147/163 checks, 90 runnable three-legged agreements, zero disagreements**.
+The other 57 admitted programs are check-only. `patterns` is newly admitted;
+the 16 remaining check refusals are nine task/channel, six Net, and one opt
+`unique` case. Evidence: `/private/tmp/rfc0165-list-regex-census.log`, using
+`WITCHY_DEV_TARGET=/private/tmp/witchy-rfc0165-reflect-specialization-target`
+with `scripts/rfc0165-dev/census.sh`. This is candidate evidence, not a new
+master census; it predates the library-preparation repair below.
+
+`fix/rfc0165-message-library-preparation` combines the reviewed regex and
+indexed-list-update slices with a shared gate repair. The regex gate's only
+assertion failure was standalone stdlib checking; four other counted failures
+were fail-fast cancellations. No tests were excluded. Concrete runtime message
+inventory now matches the callable witness; Dynamic forwarding does not invent
+a closed payload universe, and open payload layouts still refuse admission.
+
+Focused evidence on the repaired integration: five message tests; the exact
+`example_tests::example_sweeps::all_std_modules_type_check` gate test; the real
+Dynamic source/oracle/Wasm positive; an open `dynamic.field` forwarding admission
+negative; and two indexed-update tests covering alias preservation, nullable
+payloads, and invalid indices. All pass. The same rebuilt CLI agrees for hello,
+wrap, jq, plugin_host, and patterns. The list-update slice adds no IR operation
+or validator exception. Its last forward task probe reaches the precise
+`UnsupportedExpression("explicit move")` refusal.
+
+Terminal queue validation of this combined candidate is pending. Compiler-wide
+memory safety, optimizer correctness, and full language coverage are not
+established. Older sections below retain their historical evidence.
+
+## Earlier landed state: ownership/closure integration, 2026-09-10
 
 Master `c66509a9a9832bfdfc143f2a4bb145d4b14f366d` landed at
 `2026-09-10T12:04:55Z`, queue change

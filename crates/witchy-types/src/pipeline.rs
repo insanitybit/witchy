@@ -962,7 +962,7 @@ fn bind_canonical_callable_witness(
 /// call targets. Concrete generated instances have no free variables and stay
 /// in the manifest, where the checks below require their exact checked body and
 /// signature.
-fn function_has_free_signature_variables(function: &witchy_syntax::ast::Function) -> bool {
+pub(crate) fn function_has_free_signature_variables(function: &witchy_syntax::ast::Function) -> bool {
     let mut variables = Vec::new();
     for parameter in &function.params {
         if let Some(ty) = &parameter.ty {
