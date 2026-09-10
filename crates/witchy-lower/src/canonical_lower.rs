@@ -4862,6 +4862,20 @@ impl FunctionLowerer<'_> {
         let prior_string_capacity = (string_layout == Some(layout) && !self.is_static_string(value))
             .then(|| self.string_capacities.get(&value).copied())
             .flatten();
+        // A tracked list's count/capacity lanes are already authenticated by
+        // its allocation or header guards.  Replacing those IDs with fresh
+        // header loads at a result join loses the allocation proof for a
+        // freshly grown list and can make the shared result uncheckable.
+        if let (Some(&count), Some(&capacity)) = (
+            self.list_counts.get(&value),
+            self.list_capacities.get(&value),
+        ) {
+            return Ok(Some(AuthenticatedExtentLane {
+                family: DynamicExtentFamily::List,
+                count,
+                capacity,
+            }));
+        }
         // StaticData already carries an explicit counted extent whose count
         // and capacity are authenticated ConstSize values. Preserve those
         // physical lanes: replacing them with a header load plus a synthetic
