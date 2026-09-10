@@ -7575,7 +7575,14 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         let count_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, capacity)?;
         self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)
+        self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)?;
+        // A header-only view may later be promoted with count as its safe
+        // capacity bound. Preserve that direct address-domain fact as well as
+        // count <= capacity; joins need not recover it by transitive analysis.
+        if count != capacity {
+            self.guard_allocation_capacity(count, header_bytes, stride_bytes)?;
+        }
+        Ok(())
     }
 
     fn guard_joined_dynamic_extent(

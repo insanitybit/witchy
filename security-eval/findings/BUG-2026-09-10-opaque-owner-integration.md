@@ -47,3 +47,26 @@ checker still independently validates every predecessor and all extent guards.
 No validator rule, source example, or runtime bound is weakened. The focused
 `nested_shared_string_joins_preserve_capacity_lane` test pins initial admission;
 `hello`, `wrap`, `jq`, and `plugin_host` are the required executable regression set.
+
+## Follow-up: direct count bounds after nested extent joins
+
+The first landing gate also found a stale scalar-var indirect-call fixture:
+function values now require the canonical closure layout bundle even when their
+explicit argument/result lanes are scalar. The fixture now derives that bundle;
+its write-back assertions are unchanged and the exact native test passes.
+
+The next gate exposed `typed_errors::url_typed_errors_are_matchable_and_bridge_to_string`:
+`MissingAllocationSizeGuard { function: FunctionId(8), capacity: ValueId(133), maximum: 4294967291 }`.
+Preserving separate string count/capacity lanes removed the incidental direct
+count bound previously emitted by reloading the length header. A later
+header-prefix promotion used count as a conservative capacity, but the checker
+had only `count <= capacity` and `capacity <= maximum`, not the direct bound it
+requires after the join. The shared dynamic-extent guard now emits the direct
+count bound too when the lanes differ. No checker rule was weakened and the
+actual capacity lane remains distinct.
+
+Evidence from the same rebuilt CLI: the exact URL test passes its eight expected
+output lines and parity check; `hello`, `wrap`, `jq`, and `plugin_host` pass
+three-legged parity with 3, 5, 7, and 4 output lines respectively. Logs:
+`/private/tmp/rfc0165-owner-url-regression.log` and
+`/private/tmp/rfc0165-owner-five-probe-parity.log`.
