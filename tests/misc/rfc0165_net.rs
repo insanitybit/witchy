@@ -204,6 +204,92 @@ fn canonical_net_missing_root_grants_reject_even_without_imports() {
 }
 
 #[test]
+fn canonical_net_oracle_entry_roles_require_validated_signature() {
+    assert_oracle_entry_roles(
+        "fn main(console: Console, net: Net):\n    console.print(\"ran\")\n",
+        &[0, 4],
+    );
+}
+
+#[test]
+fn canonical_net_oracle_entry_roles_preserve_interleaved_ordinals() {
+    assert_oracle_entry_roles(
+        "fn main(first: Net, console: Console, second: Net[Listen, Tcp]):\n    console.print(\"ran\")\n",
+        &[4, 0, 4],
+    );
+}
+
+fn assert_oracle_entry_roles(source: &str, expected_kinds: &[u32]) {
+    use witchy_wir::canonical_interpreter::{
+        interpret_entry_program, interpret_program, InterpretError, InterpreterConfig, InterpreterValue,
+    };
+    let checked = witchy::resolve_std_only_checked(source).unwrap();
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("oracle entry role fixture admits");
+    let entry = artifact.entry().unwrap();
+    let function = witchy_wir::canonical_safewir::FunctionId::new(
+        entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let tokens: Vec<_> = expected_kinds.iter().copied().map(InterpreterValue::capability).collect();
+    assert_eq!(entry.capabilities().iter().copied().map(InterpreterValue::entry_capability)
+        .collect::<Vec<_>>(), tokens);
+    let required_grants = expected_kinds.iter().filter(|kind| **kind == 4).count();
+    for launch in [false, true] {
+        let run = |values: Vec<InterpreterValue>, grants: usize| {
+            let mut config = InterpreterConfig::default();
+            config.fixture.net_grants = grants;
+            if launch {
+                interpret_entry_program(&validated, function, values, &[], config)
+            } else {
+                interpret_program(&validated, function, values, config)
+            }
+        };
+        // The original bypass: fake Console tokens must not erase the
+        // signature's Net requirement, even though the Net is unused.
+        for grants in 0..required_grants {
+            assert_eq!(run(vec![InterpreterValue::capability(0); tokens.len()], grants),
+                Err(InterpretError::ExplicitTrap), "launch={launch}, grants={grants}");
+            assert_eq!(run(tokens.clone(), grants), Err(InterpretError::ExplicitTrap));
+        }
+        // Supplying enough grants cannot make a token of the wrong kind bind
+        // to any parameter, including the non-Net role between Net ordinals.
+        for (ordinal, expected) in expected_kinds.iter().enumerate() {
+            for wrong_kind in (0..=7).filter(|kind| kind != expected) {
+                let mut wrong = tokens.clone();
+                wrong[ordinal] = InterpreterValue::capability(wrong_kind);
+                assert_eq!(run(wrong, required_grants),
+                    Err(InterpretError::TypeMismatch("capability parameter kind")),
+                    "launch={launch}, ordinal={ordinal}, kind={wrong_kind}");
+            }
+            for fake in [InterpreterValue::Int(i64::from(*expected)),
+                InterpreterValue::NullableCapability(None)] {
+                let mut wrong = tokens.clone();
+                wrong[ordinal] = fake;
+                assert_eq!(run(wrong, required_grants),
+                    Err(InterpretError::TypeMismatch("capability parameter kind")));
+            }
+            let mut missing = tokens.clone();
+            missing.remove(ordinal);
+            assert_eq!(run(missing, required_grants), Err(InterpretError::ArityMismatch {
+                expected: tokens.len(), actual: tokens.len() - 1,
+            }));
+        }
+        let mut extra = tokens.clone();
+        extra.push(InterpreterValue::capability(4));
+        assert_eq!(run(extra, required_grants), Err(InterpretError::ArityMismatch {
+            expected: tokens.len(), actual: tokens.len() + 1,
+        }));
+        let mut misordered = tokens.clone();
+        misordered.swap(0, 1);
+        assert_eq!(run(misordered, required_grants),
+            Err(InterpretError::TypeMismatch("capability parameter kind")));
+        let result = run(tokens.clone(), required_grants).unwrap();
+        assert_eq!(result.output, ["ran"]);
+        assert_eq!(result.leaked_objects, 0);
+    }
+}
+
+#[test]
 fn canonical_net_grants_bind_by_supplied_ordinal_and_wrong_grant_rejects() {
     let address = fixture_address();
     let source = socket_source(&address, "first: Net, net: Net[Listen, Tcp]");

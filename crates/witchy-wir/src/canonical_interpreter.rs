@@ -12,7 +12,7 @@ use crate::canonical_safewir::{
     AllocationClass, ArithmeticOperator, BasicBlock, BlockId, CallArgument, CanonicalModule,
     ComparisonOperator, Extent, Function, FunctionId, HeaderField, HostCallArgument, LoadTransfer,
     Operation, InitialValid, OverflowBehavior, Place, Projection, StoreTransfer, Terminator,
-    ValidatedSafeWir, ValueId, ValueType, FunctionSignatureId,
+    ValidatedSafeWir, ValueId, ValueType, FunctionSignature, FunctionSignatureId,
 };
 use crate::canonical_safewir::closure_owner_contract::{
     CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerOperation,
@@ -316,6 +316,50 @@ pub fn interpret_with_config(
     Engine::new(module.module(), config).execute(function, arguments)
 }
 
+fn program_entry_signature(
+    module: &ValidatedSafeWir,
+    function: FunctionId,
+) -> Result<&FunctionSignature, InterpretError> {
+    let program = module.module();
+    let body = program.functions().iter().find(|body| body.id == function)
+        .ok_or(InterpretError::FunctionNotFound(function))?;
+    program.signatures().iter().find(|signature| signature.id == body.signature)
+        .ok_or(InterpretError::TypeMismatch("entry signature"))
+}
+
+fn validate_entry_parameters(
+    parameters: &[ValueType],
+    arguments: &[InterpreterValue],
+    net_grants: usize,
+) -> Result<(), InterpretError> {
+    // Authority requirements come from the independently validated callee,
+    // never from caller-selected token kinds (including unused parameters).
+    let net_roots = parameters.iter().filter(|parameter| matches!(parameter,
+        ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND)).count();
+    if net_roots > net_grants { return Err(InterpretError::ExplicitTrap); }
+    if parameters.len() != arguments.len() {
+        return Err(InterpretError::ArityMismatch {
+            expected: parameters.len(),
+            actual: arguments.len(),
+        });
+    }
+    for (parameter, argument) in parameters.iter().zip(arguments) {
+        match (parameter, argument) {
+            (ValueType::Capability(kind), InterpreterValue::Capability(token))
+                if token.kind == kind.get() => {}
+            (ValueType::NullableCapability(kind), InterpreterValue::NullableCapability(Some(token)))
+                if token.kind == kind.get() => {}
+            (ValueType::NullableCapability(_), InterpreterValue::NullableCapability(None)) => {}
+            (ValueType::Capability(_) | ValueType::NullableCapability(_), _)
+            | (_, InterpreterValue::Capability(_) | InterpreterValue::NullableCapability(_)) => {
+                return Err(InterpretError::TypeMismatch("capability parameter kind"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Run a program entry as the launcher would: capability tokens in, console
 /// output captured, and the heap audited for objects the program never
 /// released. This is the execution oracle for admitted programs: its
@@ -326,9 +370,8 @@ pub fn interpret_program(
     arguments: Vec<InterpreterValue>,
     config: InterpreterConfig,
 ) -> Result<ProgramRun, InterpretError> {
-    let net_roots = arguments.iter().filter(|argument| matches!(argument,
-        InterpreterValue::Capability(token) if token.kind == crate::canonical_safewir::NET_CAPABILITY_KIND.get())).count();
-    if net_roots > config.fixture.net_grants { return Err(InterpretError::ExplicitTrap); }
+    let signature = program_entry_signature(module, function)?;
+    validate_entry_parameters(&signature.parameters, &arguments, config.fixture.net_grants)?;
     // The launcher mints one root `Dir` token per grant; an entry asking for
     // more than the fixture grants is refused before it runs.
     if let Some(grants) = config.fixture.dir_grants {

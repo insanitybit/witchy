@@ -11,9 +11,13 @@ pub fn interpret_entry_program(
     arguments: &[String],
     config: InterpreterConfig,
 ) -> Result<ProgramRun, InterpretError> {
-    let net_roots = capabilities.iter().filter(|value| matches!(value,
-        InterpreterValue::Capability(token) if token.kind == crate::canonical_safewir::NET_CAPABILITY_KIND.get())).count();
-    if net_roots > config.fixture.net_grants { return Err(InterpretError::ExplicitTrap); }
+    let signature = program_entry_signature(module, function)?;
+    // The launch API receives only capability values; argv is constructed
+    // separately. Preserve the validated signature's capability ordinals.
+    let capability_parameters: Vec<_> = signature.parameters.iter()
+        .filter(|parameter| matches!(parameter, ValueType::Capability(_)))
+        .cloned().collect();
+    validate_entry_parameters(&capability_parameters, &capabilities, config.fixture.net_grants)?;
     if let Some(grants) = config.fixture.dir_grants {
         let roots = capabilities.iter().filter(|value| matches!(value,
             InterpreterValue::Capability(token) if token.kind == DIR_KIND && token.scope.is_empty())).count();
@@ -22,10 +26,6 @@ pub fn interpret_entry_program(
     let (list_layout, string_layout) = crate::canonical_launch::argument_layouts()
         .map_err(|_| InterpretError::TypeMismatch("launch argument layouts"))?;
     let program = module.module();
-    let body = program.functions().iter().find(|body| body.id == function)
-        .ok_or(InterpretError::FunctionNotFound(function))?;
-    let signature = program.signatures().iter().find(|signature| signature.id == body.signature)
-        .ok_or(InterpretError::TypeMismatch("entry signature"))?;
     let mut engine = Engine::new(program, config);
     let mut capabilities = capabilities.into_iter();
     let mut values = Vec::new();
