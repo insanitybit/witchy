@@ -106,9 +106,14 @@ const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// bounds changing generic recursion before it clones its next expanded field.
 const MAX_AGGREGATE_SHAPE_NODES: usize = 4_096;
 
+// Per-query only: definitions are immutable for the whole traversal. Preserve
+// recursion assumptions and remaining depth in the key, so a successful check
+// under one active nominal stack cannot authorize a different cycle context.
+type ShapeMemo = BTreeSet<(String, usize, Vec<String>)>;
+
 fn field_type_ok(ty: &Type, definitions: &BTreeMap<String, TypeDef>, active: &mut BTreeSet<String>) -> bool {
     let mut budget = MAX_AGGREGATE_SHAPE_NODES;
-    field_type_ok_at(ty, definitions, active, 0, &mut budget)
+    field_type_ok_at(ty, definitions, active, 0, &mut budget, &mut ShapeMemo::new())
 }
 
 fn field_type_ok_at(
@@ -117,24 +122,25 @@ fn field_type_ok_at(
     active: &mut BTreeSet<String>,
     depth: usize,
     budget: &mut usize,
+    completed: &mut ShapeMemo,
 ) -> bool {
     if depth == MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return false;
     }
     if let Some(tuple) = dictionary_as_tuple(ty) {
-        return field_type_ok_at(&tuple, definitions, active, depth + 1, budget);
+        return field_type_ok_at(&tuple, definitions, active, depth + 1, budget, completed);
     }
     match ty.unqualified() {
         _ if is_scalar_type(ty) => true,
         Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => true,
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            field_type_ok_at(&arguments[0], definitions, active, depth + 1, budget)
+            field_type_ok_at(&arguments[0], definitions, active, depth + 1, budget, completed)
         }
         Type::Named(name, arguments) if matches!(name.as_str(), "Option" | "Result") => {
             arguments.len() == if name == "Option" { 1 } else { 2 }
-                && arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget))
+                && arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget, completed))
         }
-        Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok_at(item, definitions, active, depth + 1, budget)),
+        Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok_at(item, definitions, active, depth + 1, budget, completed)),
         Type::Fn(parameters, result, conventions, _) => {
             // The closure occupies an owned pointer slot. Its signature still
             // has to close over supported concrete types; a nominal back-edge
@@ -144,13 +150,13 @@ fn field_type_ok_at(
                     if is_callable_only_lane(lane, definitions) {
                         consume_shape_nodes(budget, 1)
                     } else {
-                        field_type_ok_at(lane, definitions, active, depth + 1, budget)
+                        field_type_ok_at(lane, definitions, active, depth + 1, budget, completed)
                     }
                 })
         }
         Type::Named(name, arguments) => {
             definitions.get(name).is_some_and(|definition| {
-                definition_fields_ok(definition, arguments, definitions, active, depth + 1, budget)
+                definition_fields_ok(definition, arguments, definitions, active, depth + 1, budget, completed)
             })
         }
         _ => false,
@@ -172,6 +178,7 @@ fn definition_fields_ok(
     active: &mut BTreeSet<String>,
     depth: usize,
     budget: &mut usize,
+    completed: &mut ShapeMemo,
 ) -> bool {
     let parameters = effective_type_def_params(definition);
     if parameters.len() != arguments.len()
@@ -181,18 +188,20 @@ fn definition_fields_ok(
     {
         return false;
     }
+    let instantiated = Type::Named(definition.name.clone(), arguments.to_vec());
+    let Some(key) = aggregate_key(&instantiated) else { return false };
+    let memo_key = (key.clone(), depth, active.iter().cloned().collect());
+    if completed.contains(&memo_key) { return true; }
     // Arguments are part of the concrete instantiation even when a phantom
     // parameter has no field occurrence. Do not let an unused `a` smuggle an
     // unresolved or unsupported type through shape recognition.
-    if !arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget)) {
+    if !arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget, completed)) {
         return false;
     }
-    let instantiated = Type::Named(definition.name.clone(), arguments.to_vec());
-    let Some(key) = aggregate_key(&instantiated) else { return false };
     // This recognizes a finite source shape graph, not allocation authority.
     // Recursive occurrences need an owned nominal binding in the layout layer;
     // an inline packed occurrence cannot close the graph this way.
-    if !active.insert(key) {
+    if !active.insert(key.clone()) {
         return !definition.packed;
     }
     let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect();
@@ -203,10 +212,11 @@ fn definition_fields_ok(
                 return false;
             }
             substitute_type(field, &substitutions)
-                .is_some_and(|field| field_type_ok_at(&field, definitions, active, depth + 1, budget))
+                .is_some_and(|field| field_type_ok_at(&field, definitions, active, depth + 1, budget, completed))
         })
     });
-    active.remove(&aggregate_key(&instantiated).expect("named aggregate has a key"));
+    active.remove(&key);
+    if valid { completed.insert(memo_key); }
     valid
 }
 
@@ -459,7 +469,7 @@ fn shape_from_instantiation(
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
     let mut budget = MAX_AGGREGATE_SHAPE_NODES;
-    if !definition_fields_ok(definition, arguments, definitions, &mut BTreeSet::new(), 0, &mut budget) {
+    if !definition_fields_ok(definition, arguments, definitions, &mut BTreeSet::new(), 0, &mut budget, &mut ShapeMemo::new()) {
         return None;
     }
     let substitutions = effective_type_def_params(definition).into_iter().zip(arguments.iter().cloned()).collect();
@@ -703,5 +713,40 @@ pub fn scalar_aggregate_shape(
             packed: false,
         }),
         _ => definitions.get(name).and_then(|definition| shape_from_instantiation(definition, arguments, definitions)),
+    }
+}
+
+#[cfg(test)]
+mod scheduler_shape_tests {
+    use super::*;
+    use crate::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+
+    #[test]
+    fn canonical_scheduler_slot_is_a_finite_owned_graph() {
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
+        let application = PackageCoordinate::new(PackageSource::Workspace, "test/scheduler-shape", "0.1.0").unwrap();
+        let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
+        owners.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
+        }));
+        let checked = crate::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".into(), b"import task\nfn main():\n    task.run(task.done(Nil))\n".to_vec()),
+                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+            &std::collections::HashSet::from(["main".into()]),
+            AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
+        ).expect("actual source scheduler checks and messages are prepared");
+        let definitions = type_definitions(checked.canonical_source().unwrap().typed_module().module());
+        let slot = Type::Named("task.Slot".into(), vec![]);
+        let definition = definitions.get("task.Slot").expect("actual scheduler slot declaration");
+        let first_bad_field = definition.variants.iter().flat_map(|variant| &variant.fields)
+            .find(|field| !is_v1_field_type(field, &definitions));
+        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
+        let valid = field_type_ok_at(&slot, &definitions, &mut BTreeSet::new(), 0, &mut budget, &mut ShapeMemo::new());
+        assert!(valid, "finite scheduler graph refused: remaining budget={budget}, independently unsupported field={first_bad_field:?}");
+
+        let mut invalid = definitions.clone();
+        invalid.get_mut("task.Slot").unwrap().variants[0].fields.push(Type::Named("Console".into(), vec![]));
+        assert!(!is_v1_field_type(&slot, &invalid), "a reachable capability field is not an owned linear slot");
     }
 }
