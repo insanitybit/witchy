@@ -105,10 +105,69 @@ fn main(console: Console):
     let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("source interpreter");
     assert_eq!(source_output, expected);
-    oracle(source, "all-terminal if flow value");
+    assert_eq!(oracle(source, "all-terminal if flow value"), expected);
 }
 
-fn oracle(source: &str, label: &str) {
+#[test]
+fn loop_terminators_preserve_owned_returns_three_legs() {
+    let source = r#"
+fn from_while(xs: List(String), flag: Bool) -> List(String):
+    while true:
+        if flag:
+            return xs
+        else:
+            return ["fresh"]
+    ["unreachable"]
+
+fn from_range(xs: List(String)) -> List(String):
+    for n in 0..2:
+        return xs
+    ["empty"]
+
+fn from_list(xs: List(String)) -> String:
+    for item in xs:
+        return item
+    "empty"
+
+fn main(console: Console):
+    let xs = ["held"]
+    console.print(from_while(xs, true)[0])
+    console.print(from_while(xs, false)[0])
+    console.print(from_range(xs)[0])
+    console.print(from_list(xs))
+    console.print(from_list([]))
+    console.print(xs[0])
+"#;
+    let expected = ["held", "fresh", "held", "held", "empty", "held"]
+        .map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("source checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter"), expected);
+    assert_eq!(oracle(source, "loop return preserves owned tokens"), expected);
+}
+
+#[test]
+fn generators_and_pascal_expected_output_three_legs() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        ("generators", include_str!("../../examples/generators/src/generators.witchy"), &[
+            "fib[0..10): 0, 1, 1, 2, 3, 5, 8, 13, 21, 34",
+            "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1",
+            "collatz(27) length: 112",
+        ]),
+        ("pascal", include_str!("../../examples/pascal/src/pascal.witchy"), &[
+            "1", "1 1", "1 2 1", "1 3 3 1", "1 4 6 4 1", "1 5 10 10 5 1",
+        ]),
+    ];
+    for (label, source, expected) in cases {
+        let expected = expected.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
+        let checked = witchy::resolve_std_only_checked(source).expect("example checks");
+        assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+            .expect("source interpreter"), expected, "{label}: specified output");
+        assert_eq!(oracle(source, label), expected, "{label}: admitted execution");
+    }
+}
+
+fn oracle(source: &str, label: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered(&format!("{label}: the foundation subset admits this program"));
@@ -165,6 +224,7 @@ fn oracle(source: &str, label: &str) {
     assert_eq!(run.leaked_objects, 0, "{label}: the oracle saw objects survive the entry");
     let leaks = vm.canonical_heap_leaks().expect("heap audit").expect("canonical module");
     assert_eq!(leaks, 0, "{label}: the wasm heap kept unreleased objects");
+    run.output
 }
 
 #[test]

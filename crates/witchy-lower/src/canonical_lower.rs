@@ -4082,23 +4082,13 @@ impl FunctionLowerer<'_> {
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
         lowered?;
-        let body_bindings = self.bindings.clone();
-        let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
-        for name in &list_names {
-            let object = body_bindings[name];
-            let (count, capacity) = self.tracked_lanes(object).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("while backedge list count state"),
-            )?;
-            let (count, capacity) = self.split_lanes(count, capacity)?;
-            carried.push(count);
-            carried.push(capacity);
+        // Return, tail call, break, and continue already own their edge. Do
+        // not append operations or replace that terminator with a backedge.
+        if self.blocks[self.current.get() as usize].terminator.is_none() {
+            let carried = self.loop_edge_arguments(&names, &list_names)?;
+            self.demote_unique_lanes_carrying_shared(header, exit, &carried);
+            self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
         }
-        let body_end = self.current;
-        self.demote_unique_lanes_carrying_shared(header, exit, &carried);
-        self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
-            target: header,
-            arguments: carried,
-        });
         self.restore_facts(facts, exit);
         self.current = exit;
         self.bindings = lane_bindings(&outer, &names, exit_parameters.iter().map(|parameter| parameter.value));
@@ -4217,31 +4207,22 @@ impl FunctionLowerer<'_> {
         self.loop_contexts.pop();
         lowered?;
         self.bindings.remove(variable);
-        let body_bindings = self.bindings.clone();
-        let mut carried = names.iter().map(|name| body_bindings[name]).collect::<Vec<_>>();
-        for name in &list_names {
-            let object = body_bindings[name];
-            let (count, capacity) = self.tracked_lanes(object).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("for backedge list count state"),
-            )?;
-            let (count, capacity) = self.split_lanes(count, capacity)?;
-            carried.push(count);
-            carried.push(capacity);
+        if self.blocks[self.current.get() as usize].terminator.is_none() {
+            let mut carried = self.loop_edge_arguments(&names, &list_names)?;
+            let one = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::ConstInt { destination: one, value: 1 });
+            let next = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::Arithmetic {
+                destination: next,
+                operator: ArithmeticOperator::Add,
+                left: body_counter,
+                right: one,
+                overflow: OverflowBehavior::Wrap,
+            });
+            carried.push(next);
+            self.demote_unique_lanes_carrying_shared(header, exit, &carried);
+            self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
         }
-        let one = self.fresh(ValueType::Int)?;
-        self.push_operation(Operation::ConstInt { destination: one, value: 1 });
-        let next = self.fresh(ValueType::Int)?;
-        self.push_operation(Operation::Arithmetic {
-            destination: next,
-            operator: ArithmeticOperator::Add,
-            left: body_counter,
-            right: one,
-            overflow: OverflowBehavior::Wrap,
-        });
-        carried.push(next);
-        let body_end = self.current;
-        self.demote_unique_lanes_carrying_shared(header, exit, &carried);
-        self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch { target: header, arguments: carried });
 
         let exit_values = self.blocks[exit.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         self.restore_facts(facts, exit);
@@ -4436,44 +4417,33 @@ impl FunctionLowerer<'_> {
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
         lowered?;
-        let body_bindings = self.bindings.clone();
-        let increment_fits = self.fresh(ValueType::Bool)?;
-        self.push_operation(Operation::Compare {
-            destination: increment_fits,
-            operator: ComparisonOperator::LessUnsigned,
-            left: body_index,
-            right: maximum_count,
-        });
-        self.push_operation(Operation::Guard {
-            condition: increment_fits,
-            kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
-        });
-        let one = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::ConstSize { destination: one, value: 1 });
-        let next_index = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::Arithmetic {
-            destination: next_index,
-            operator: ArithmeticOperator::Add,
-            left: body_index,
-            right: one,
-            overflow: OverflowBehavior::Wrap,
-        });
-        let mut back_state = names
-            .iter()
-            .map(|name| body_bindings[name])
-            .collect::<Vec<_>>();
-        for name in &list_names {
-            let object = body_bindings[name];
-            let (count, capacity) = self.tracked_lanes(object).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("for backedge list count state"),
-            )?;
-            let (count, capacity) = self.split_lanes(count, capacity)?;
-            back_state.push(count);
-            back_state.push(capacity);
+        if self.blocks[self.current.get() as usize].terminator.is_none() {
+            let increment_fits = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: increment_fits,
+                operator: ComparisonOperator::LessUnsigned,
+                left: body_index,
+                right: maximum_count,
+            });
+            self.push_operation(Operation::Guard {
+                condition: increment_fits,
+                kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
+            });
+            let one = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ConstSize { destination: one, value: 1 });
+            let next_index = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::Arithmetic {
+                destination: next_index,
+                operator: ArithmeticOperator::Add,
+                left: body_index,
+                right: one,
+                overflow: OverflowBehavior::Wrap,
+            });
+            let mut back_state = self.loop_edge_arguments(&names, &list_names)?;
+            back_state.push(next_index);
+            self.demote_unique_lanes_carrying_shared(header, exit, &back_state);
+            self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
         }
-        back_state.push(next_index);
-        self.demote_unique_lanes_carrying_shared(header, exit, &back_state);
-        self.finish_current(Terminator::Branch { target: header, arguments: back_state })?;
 
         let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
         self.restore_facts(facts, exit);
