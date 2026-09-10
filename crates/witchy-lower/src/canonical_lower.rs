@@ -12813,7 +12813,7 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
 }
 
 fn is_indirect_result(value_type: ValueType) -> bool {
-    if matches!(value_type, ValueType::Gc(_)) { return true; }
+    if matches!(value_type, ValueType::Unit | ValueType::Gc(_)) { return true; }
     is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
 }
 

@@ -11,6 +11,37 @@ use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConf
 use witchy_wir::canonical_safewir::FunctionId;
 
 #[test]
+fn indirect_unit_parameters_and_results_three_legs() {
+    let source = r#"
+fn number(value: Nil) -> Int:
+    7
+
+fn identity(value: Nil) -> Nil:
+    value
+
+fn tail_apply(f: fn(Nil) -> Int) -> Int:
+    f(Nil)
+
+fn call_apply(f: fn(Nil) -> Int) -> Int:
+    let result = f(Nil)
+    result + 1
+
+fn tail_unit(f: fn(Nil) -> Nil) -> Nil:
+    f(Nil)
+
+fn main(console: Console):
+    console.print("${tail_apply(number)} ${call_apply(number)}")
+    tail_unit(identity)
+    console.print("unit")
+"#;
+    let expected = ["7 8", "unit"].map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("Unit call source checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter"), expected);
+    assert_eq!(oracle(source, "Unit arguments and results through indirect calls"), expected);
+}
+
+#[test]
 fn unit_capture_with_capability_three_legs() {
     let source = r#"
 fn consume(value: Nil) -> Int:
