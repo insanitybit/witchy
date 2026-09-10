@@ -286,6 +286,17 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    fn observe_binding_type(&mut self, name: &str, checked_type: Type) {
+        if let Some(binding) = self.scopes.iter_mut().rev()
+            .flat_map(|scope| scope.iter_mut().rev())
+            .find(|binding| binding.id.name == name)
+            && binding.ty.is_none()
+        {
+            binding.borrowed |= explicit_borrow(&checked_type);
+            binding.ty = Some(checked_type);
+        }
+    }
+
     fn resolve(&self, name: &str) -> Option<&Binding> {
         self.scopes.iter().rev().flat_map(|scope| scope.iter().rev()).find(|binding| binding.id.name == name)
     }
@@ -375,6 +386,11 @@ impl<'a> Builder<'a> {
 
     fn walk_expr(&mut self, expr: &Expr, callable: ProperTailCallableId, path: &mut Vec<ProperTailPathStep>) -> Result<(), ClosureWitnessError> {
         path.push(ProperTailPathStep::Node(expr_kind(expr)));
+        if let Expr::Call { name, .. } | Expr::LabeledCall { name, .. } = expr
+            && let Some(checked_type) = self.typed.table().local_callee_type(expr).and_then(typeck::ty_to_ast)
+        {
+            self.observe_binding_type(name, checked_type);
+        }
         match expr {
             Expr::Lambda { params, body, .. } => {
                 let id = ProperTailCallableId { lambda_path: path.clone(), ..callable.clone() };
@@ -458,14 +474,8 @@ impl<'a> Builder<'a> {
             },
             Expr::Range { lo, hi, .. } | Expr::Index { base: lo, index: hi } => { self.child(lo, callable.clone(), path, 0)?; self.child(hi, callable, path, 1)?; },
             Expr::Var(name) => {
-                if let Some(checked_type) = type_from_expr(self.typed, expr)
-                    && let Some(binding) = self.scopes.iter_mut().rev()
-                        .flat_map(|scope| scope.iter_mut().rev())
-                        .find(|binding| binding.id.name == *name)
-                    && binding.ty.is_none()
-                {
-                    binding.borrowed |= explicit_borrow(&checked_type);
-                    binding.ty = Some(checked_type);
+                if let Some(checked_type) = type_from_expr(self.typed, expr) {
+                    self.observe_binding_type(name, checked_type);
                 }
             }
             Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
@@ -614,6 +624,24 @@ mod tests {
         assert_eq!(captures[0].binding().name(), "text");
         assert_eq!(captures[0].checked_type(), &Type::Named("String".into(), Vec::new()));
         assert_eq!(captures[0].transfer(), ClosureCaptureTransfer::ManagedReferenceByValue);
+    }
+
+    #[test]
+    fn pattern_callable_capture_uses_the_checked_local_call_not_a_global_name() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn cont(value: String) -> String:\n    value\n\ntype Handler:\n    Handler(fn(Int) -> Int)\n\nfn make(handler: Handler) -> fn(Int) -> Int:\n    match handler:\n        Handler(cont) -> fn(value: Int): cont(value)\n",
+        ).expect("parse callable pattern capture");
+        let typed = typeck::annotate_checked(module).expect("checked local call");
+        let witness = derive_closure_witness(&typed).expect("callee-only occurrence supplies the capture type");
+        let captures = witness.entries()[0].captures();
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].binding().name(), "cont");
+        let Type::Fn(parameters, result, ..) = captures[0].checked_type() else { panic!("callable capture") };
+        assert_eq!(parameters, &[Type::Named("Int".into(), Vec::new())]);
+        assert_eq!(result.as_ref(), &Type::Named("Int".into(), Vec::new()));
+        assert_eq!(captures[0].transfer(), ClosureCaptureTransfer::ManagedReferenceByValue);
+        let unrelated = Expr::Call { name: "cont".into(), args: vec![Expr::Int(1)] };
+        assert!(typed.table().local_callee_type(&unrelated).is_none(), "a matching spelling is not a checked node");
     }
 
     #[test]

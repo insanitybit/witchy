@@ -3798,7 +3798,7 @@ struct Checker {
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     // The boolean is checked non-completion, recorded in the same session so
     // infer_transient suppresses both facts for temporary AST allocations.
-    type_record: Option<HashMap<usize, (Ty, bool)>>,
+    type_record: Option<HashMap<usize, (Ty, bool, Option<Ty>)>>,
     /// Directed concrete-to-existential coercions discovered while checking.
     /// The types remain checker types until the ending substitution is known.
     /// [`TypeTable`] preserves unresolved requests so final existential
@@ -7659,8 +7659,15 @@ impl Checker {
             return terr(float_key_reject_message(kind));
         }
         self.reject_runtime_compiler_syntax_ty(&t, "expression")?;
+        // Named local calls have no Expr::Var child. Preserve the exact
+        // lexical callable type alongside the result, under the same
+        // persistent-node recording boundary as every other expression fact.
+        let local_callee = match expr {
+            Expr::Call { name, .. } | Expr::LabeledCall { name, .. } => self.lookup(name),
+            _ => None,
+        };
         if let Some(rec) = &mut self.type_record {
-            rec.insert(expr as *const Expr as usize, (t.clone(), !expr_can_complete(expr)));
+            rec.insert(expr as *const Expr as usize, (t.clone(), !expr_can_complete(expr), local_callee));
         }
         Ok(t)
     }
@@ -11669,6 +11676,9 @@ fn check_with_compiler_syntax(
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    /// Fully resolved lexical callee signatures at named call expressions.
+    /// A source spelling alone never supplies a callable type.
+    local_callees: HashMap<usize, Ty>,
     /// Checked expressions with no normal continuation. Unlike value types,
     /// this fact survives an unresolved result variable; it supplies no value
     /// representation and does not exempt descendants from type checking.
@@ -12208,6 +12218,10 @@ impl TypeTable {
 
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
+    }
+
+    pub fn local_callee_type(&self, e: &Expr) -> Option<&Ty> {
+        self.local_callees.get(&(e as *const Expr as usize))
     }
 
     /// Every concrete expression type in this table. Consumers use this only
@@ -13300,14 +13314,21 @@ fn run_check_selected(
     }
     if let Some(rec) = c.type_record.take() {
         let mut types = HashMap::new();
+        let mut local_callees = HashMap::new();
         let mut non_completing = HashSet::new();
-        for (k, (ty, cannot_complete)) in rec {
+        for (k, (ty, cannot_complete, local_callee)) in rec {
             if cannot_complete {
                 non_completing.insert(k);
             }
             let resolved = c.resolve(&ty);
             if !ty_has_var(&resolved) {
                 types.insert(k, resolved);
+            }
+            if let Some(callee) = local_callee {
+                let resolved = c.resolve(&callee);
+                if matches!(resolved, Ty::Fn(..)) && !ty_has_var(&resolved) {
+                    local_callees.insert(k, resolved);
+                }
             }
         }
         let functions = c
@@ -13341,6 +13362,7 @@ fn run_check_selected(
             .collect();
         return Ok(Some(TypeTable {
             types,
+            local_callees,
             non_completing,
             functions,
             existential_packs,

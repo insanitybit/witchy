@@ -115,6 +115,31 @@ fn main(console: Console):
 }
 
 #[test]
+fn pattern_callable_capture_three_legs() {
+    let source = r#"
+type Handler:
+    Handler(fn(Int) -> Int)
+
+fn make(handler: Handler) -> fn(Int) -> Int:
+    match handler:
+        Handler(cont) -> fn(value: Int): cont(value)
+
+fn increment(value: Int) -> Int:
+    value + 1
+
+fn main(console: Console):
+    let callback = make(Handler(increment))
+    console.print("${callback(41)}")
+    console.print("${callback(9)}")
+"#;
+    let expected = vec!["42".to_owned(), "10".to_owned()];
+    let checked = witchy::resolve_std_only_checked(source).expect("pattern callable source checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter"), expected);
+    assert_eq!(oracle(source, "pattern callable capture"), expected);
+}
+
+#[test]
 fn dynamic_reflection_example_expected_output_three_legs() {
     let source = include_str!("../../examples/dynamic_reflection/src/dynamic_reflection.witchy");
     // This harness links source bytes as module `main`; the CLI links the same
