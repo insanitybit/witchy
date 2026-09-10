@@ -14,6 +14,9 @@ mod owned;
 #[path = "canonical_regex.rs"]
 mod regex;
 
+#[path = "canonical_list_update.rs"]
+mod list_update;
+
 #[cfg(test)]
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
@@ -5737,6 +5740,7 @@ impl FunctionLowerer<'_> {
                 Ok(value)
             }
             Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(args),
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => self.lower_regex_spans(args),
             Expr::Call { name, args } if is_capability_op(name) => self
                 .lower_capability_op(name, args)?

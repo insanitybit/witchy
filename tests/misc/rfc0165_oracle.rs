@@ -140,6 +140,55 @@ fn main(console: Console):
 }
 
 #[test]
+fn list_indexed_update_preserves_aliases_and_nullable_payloads_three_legs() {
+    let source = r#"
+fn text(value: Option(String)) -> String:
+    match value:
+        Some(value) -> value
+        None -> "none"
+
+fn main(console: Console):
+    var numbers = [1, 2, 3]
+    let original = numbers
+    numbers[0] = 9
+    numbers.set_at(2, 8)
+    console.print("${numbers[0]} ${numbers[1]} ${numbers[2]} ${numbers.length()}")
+    console.print("${original[0]} ${original[1]} ${original[2]}")
+    var values: List(Option(String)) = [Some("held"), None, Some("tail")]
+    let previous = values
+    values[0] = None
+    values[1] = Some("new")
+    console.print("${text(values[0])} ${text(values[1])} ${text(values[2])} ${values.length()}")
+    console.print("${text(previous[0])} ${text(previous[1])} ${text(previous[2])}")
+"#;
+    let expected = ["9 2 8 3", "1 2 3", "none new tail 3", "held none tail"]
+        .map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("indexed update source checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter"), expected);
+    assert_eq!(oracle(source, "indexed replacement preserves owned values"), expected);
+}
+
+#[test]
+fn list_indexed_update_rejects_negative_length_and_empty_indices_three_legs() {
+    for (initial, index) in [("[1]", -1), ("[1]", 1), ("[]", 0)] {
+        let source = format!("fn main(console: Console):\n    var values: List(Int) = {initial}\n    values[{index}] = 7\n    console.print(\"unreachable\")\n");
+        let checked = witchy::resolve_std_only_checked(&source).expect("index is a runtime obligation");
+        assert!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new()).is_err());
+        let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("checked failing index admits");
+        let entry = artifact.entry().unwrap();
+        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let validated = codegen::validate_checked_module_for_oracle(&checked).expect("independent validation");
+        let capabilities = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+        assert!(witchy_wir::canonical_interpreter::interpret_program(&validated, function, capabilities, Default::default()).is_err());
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256).unwrap();
+        assert!(vm.run().is_err());
+        assert!(vm.output().is_empty());
+    }
+}
+
+#[test]
 fn dynamic_reflection_example_expected_output_three_legs() {
     let source = include_str!("../../examples/dynamic_reflection/src/dynamic_reflection.witchy");
     // This harness links source bytes as module `main`; the CLI links the same
