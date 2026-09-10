@@ -72,7 +72,7 @@ impl ScalarAggregateShape {
 
 pub fn is_scalar_type(ty: &Type) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments)
-        if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool"))
+        if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit"))
 }
 
 /// A v1 list element: a scalar (a `Bool` element is one byte), a string,
@@ -157,8 +157,8 @@ fn field_type_ok_at(
     }
 }
 
-// Unit and capability parameters/results have callable ABI lanes, but are not
-// thereby admissible as directly stored aggregate fields or closure captures.
+// Capability parameters/results have callable ABI lanes without granting a
+// linear-memory field representation. Unit also has its own scalar layout.
 fn is_callable_only_lane(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     matches!(ty.unqualified(), Type::Named(name, arguments)
         if arguments.is_empty() && matches!(name.as_str(), "Nil" | "Unit"))
@@ -503,6 +503,23 @@ mod recursive_shape_tests {
         let mut definition = definition(name, fields, packed);
         definition.params = parameters.iter().map(|parameter| (*parameter).to_owned()).collect();
         definition
+    }
+
+    #[test]
+    fn unit_payloads_preserve_generic_and_sum_shapes() {
+        let payload = generic_definition("Payload", &["a"], vec![named("a"), named("Int")], false);
+        let definitions = BTreeMap::from([("Payload".into(), payload)]);
+        for unit in [named("Nil"), named("Unit")] {
+            let applied = Type::Named("Payload".into(), vec![unit.clone()]);
+            assert_eq!(scalar_aggregate_shape(&applied, &definitions).unwrap().fields,
+                vec![unit.clone(), named("Int")]);
+            let option = Type::Named("Option".into(), vec![unit.clone()]);
+            assert_eq!(scalar_aggregate_shape(&option, &definitions).unwrap().fields,
+                vec![named("Int"), unit.clone()]);
+            assert!(is_v1_list_element_type(&unit, &definitions));
+        }
+        assert!(!is_v1_field_type(&named("Missing"), &definitions));
+        assert!(!is_v1_field_type(&named("Console"), &definitions));
     }
 
     #[test]
