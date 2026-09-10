@@ -515,6 +515,21 @@ impl IntrinsicSpec {
 const NO_HELPERS: &[&str] = &[];
 const NO_PRIVATE_CALLERS: &[&str] = &[];
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
+// These are ordinary std source functions, not new backend intrinsics. Their
+// checked source declarations remain the typing/lowering contract; only call
+// authority belongs here. Raw channel IDs and unbound message decoders must not
+// let external callers bypass the typed endpoint's payload agreement.
+const PRIVATE_MESSAGE_SOURCE_BRIDGES: &[&str] = &[
+    "__channel_send_i64",
+    "__channel_recv_i64",
+    "__channel_select2_map",
+    "select2_frame_payload",
+    "select2_frame_decode",
+    "select3_frame_payload",
+    "select3_frame_decode",
+    "select4_frame_payload",
+    "select4_frame_decode",
+];
 const DYNAMIC_BRIDGE_CALLERS: &[&str] = &["dynamic"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
 const META_BRIDGE_CALLERS: &[&str] = &["meta"];
@@ -3631,6 +3646,9 @@ pub fn is_meta_impl_block(name: &str) -> bool {
 }
 
 pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
+    if PRIVATE_MESSAGE_SOURCE_BRIDGES.contains(&bare_name) {
+        return Some(MESSAGE_BRIDGE_CALLERS);
+    }
     if canonical_operation_name(bare_name) != bare_name {
         return None;
     }

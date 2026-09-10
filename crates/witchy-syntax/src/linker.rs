@@ -5121,6 +5121,128 @@ mod tests {
         .expect("std/chan may use task's private channel bridge");
     }
 
+    fn assert_raw_channel_privacy(source: &str, bridge: &str, admitted: &mut Vec<String>) {
+        match link_main(source) {
+            Ok(()) => {
+                eprintln!("production link admitted external raw bridge: {bridge}");
+                admitted.push(bridge.to_string());
+            }
+            Err(error) => assert_eq!(
+                error,
+                format!("`{bridge}` is a compiler-private intrinsic for std/chan or std/task`; use the public stdlib surface instead"),
+                "the source must fail at the intended privacy boundary"
+            ),
+        }
+    }
+
+    #[test]
+    fn raw_channel_privacy_external_bridge_calls_rejected() {
+        let mut admitted = Vec::new();
+        for (bridge, result, call) in [
+            ("__channel_send_i64", "Nil", "task.__channel_send_i64(id, 7)"),
+            ("__channel_recv_i64", "Option(Int)", "task.__channel_recv_i64(id)"),
+            ("__channel_select2_map", "Option(String)",
+                "task.__channel_select2_map(id, id, fn(_tag, _raw): task.done(None))"),
+        ] {
+            let source = format!(
+                "import chan\nimport task\nfrom chan import Receiver\n\nfn raw(rx: Receiver(String)) -> task.Task({result}):\n    match rx:\n        Receiver(id) -> {call}\n\nfn main():\n    let _ = 0\n"
+            );
+            assert_raw_channel_privacy(&source, bridge, &mut admitted);
+        }
+        assert!(admitted.is_empty(), "external raw bridges admitted: {admitted:?}");
+    }
+
+    #[test]
+    fn raw_channel_privacy_external_function_values_rejected() {
+        let mut admitted = Vec::new();
+        for (module, bridge) in [
+            ("task", "__channel_send_i64"),
+            ("task", "__channel_recv_i64"),
+            ("task", "__channel_select2_map"),
+            ("chan", "select2_frame_payload"),
+            ("chan", "select2_frame_decode"),
+            ("chan", "select3_frame_payload"),
+            ("chan", "select3_frame_decode"),
+            ("chan", "select4_frame_payload"),
+            ("chan", "select4_frame_decode"),
+        ] {
+            let source = format!(
+                "import {module}\n\nfn main():\n    let raw = {module}.{bridge}\n    let _ = raw\n"
+            );
+            assert_raw_channel_privacy(&source, bridge, &mut admitted);
+        }
+        assert!(admitted.is_empty(), "external raw function values admitted: {admitted:?}");
+    }
+
+    #[test]
+    fn raw_channel_privacy_external_decoders_rejected() {
+        let mut admitted = Vec::new();
+        for arity in [2, 3, 4] {
+            for kind in ["payload", "decode"] {
+                let bridge = format!("select{arity}_frame_{kind}");
+                let selected = if arity == 2 { "Selected".to_string() } else { format!("Selected{arity}") };
+                let (result, arguments) = if kind == "payload" {
+                    ("Option(String)".to_string(), "None")
+                } else {
+                    (format!("chan.{selected}(String)"), "0, None")
+                };
+                // The caller chooses String without possessing a Receiver(String).
+                let source = format!(
+                    "import chan\n\nfn recover() -> {result}:\n    chan.{bridge}({arguments})\n\nfn main():\n    let _ = recover()\n"
+                );
+                assert_raw_channel_privacy(&source, &bridge, &mut admitted);
+            }
+        }
+        assert!(admitted.is_empty(), "external unbound message decoders admitted: {admitted:?}");
+    }
+
+    #[test]
+    fn raw_channel_privacy_wrong_payload_route_rejected() {
+        let source = "import chan\nimport task\nfrom chan import Receiver\n\nfn wrong(rx: Receiver(Int)) -> task.Task(Option(String)):\n    match rx:\n        Receiver(id) -> task.__channel_select2_map(id, id, fn(_tag, raw): task.done(chan.select2_frame_payload(raw)))\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    chan.send(tx, 7).await\n    let recovered = wrong(rx).await\n    console.print(\"${recovered}\")\n";
+        let mut admitted = Vec::new();
+        assert_raw_channel_privacy(source, "__channel_select2_map", &mut admitted);
+        assert!(admitted.is_empty(), "Int-to-String raw decoder route passed production linking");
+    }
+
+    #[test]
+    fn raw_channel_privacy_authenticated_std_routes_link() {
+        let task = crate::parser::parse_module(std_source("task").expect("bundled task")).unwrap();
+        let chan = crate::parser::parse_module(std_source("chan").expect("bundled chan")).unwrap();
+        link_with_mode(
+            vec![("task".into(), task), ("chan".into(), chan)],
+            "chan", noop_expand, LinkMode::Production,
+        ).expect("authenticated chan/task bodies retain private bridge access");
+        link_main("import chan\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    chan.send(tx, 7).await\n    let value = chan.recv(rx).await\n    console.print(\"${value}\")\n")
+            .expect("ordinary source scheduler and typed channel route still link");
+    }
+
+    #[test]
+    fn raw_channel_privacy_definition_site_decoders_link() {
+        let modules = ["task", "chan"].into_iter().map(|name| {
+            (name.to_string(), crate::parser::parse_module(std_source(name).unwrap()).unwrap())
+        }).collect::<Vec<_>>();
+        for arity in [2, 3, 4] {
+            for kind in ["payload", "decode"] {
+                let mut arguments = Vec::new();
+                if kind == "decode" { arguments.push(Expr::Int(0)); }
+                arguments.push(Expr::Ctor { name: "None".into(), args: Vec::new() });
+                let mut generated = Expr::Call {
+                    name: format!("select{arity}_frame_{kind}"), args: arguments,
+                };
+                mark_definition_site_expr(&mut generated, "chan", &modules)
+                    .expect("compiler-owned syntax resolves in its authenticated std definition");
+                let mut main = crate::parser::parse_module("fn main():\n    let result = 0\n").unwrap();
+                let Item::Function(function) = &mut main.items[0] else { panic!("main function") };
+                let Stmt::Let { value, .. } = &mut function.body.stmts[0] else { panic!("result binding") };
+                *value = generated;
+                let mut linked_modules = modules.clone();
+                linked_modules.push(("main".into(), main));
+                link_with_mode(linked_modules, "main", noop_expand, LinkMode::Production)
+                    .expect("authenticated generated decoder keeps definition-site authority");
+            }
+        }
+    }
+
     #[test]
     fn source_render_intrinsic_is_private() {
         let err = link_main("fn main(console: Console):\n    console.print(__render(1))\n")
