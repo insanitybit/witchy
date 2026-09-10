@@ -47,6 +47,7 @@ impl Codegen<'_> {
 
     fn region_copy_scalar_name(scalar: ScalarKind) -> &'static str {
         match scalar {
+            ScalarKind::Unit => "unit",
             ScalarKind::Bool => "bool",
             ScalarKind::Int => "int",
             ScalarKind::Float => "float",
@@ -381,7 +382,7 @@ impl Codegen<'_> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp, Kind, WirExpr as W};
         Some(match scalar {
-            ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
+            ScalarKind::Unit | ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
             // A raw representation byte loads exactly like any other 1-byte scalar.
             ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => {
                 W::Load8U { ptr: Box::new(base), offset: 0 }

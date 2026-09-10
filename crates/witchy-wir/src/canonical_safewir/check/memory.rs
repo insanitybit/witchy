@@ -91,11 +91,11 @@ pub(super) struct MemoryState {
     guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
     header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
     static_data_objects: BTreeSet<ValueId>,
-    /// The callable lanes a `Store` has initialized, by container value and
+    /// The callable and Unit lanes a `Store` has initialized, by container value and
     /// slot. A fresh closure record's code slot is unreadable until then;
     /// a record that arrived from outside (a parameter, a loaded child) is
     /// summarized complete by `initialized_owned_slots` like its owned slots.
-    callable_slots: BTreeSet<(ValueId, SlotIdentity)>,
+    initialized_scalar_slots: BTreeSet<(ValueId, SlotIdentity)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,7 +141,7 @@ impl<'a> MemoryChecker<'a> {
                 guards: BTreeSet::new(),
                 header_values: BTreeMap::new(),
                 static_data_objects: BTreeSet::new(),
-                callable_slots: BTreeSet::new(),
+                initialized_scalar_slots: BTreeSet::new(),
             },
         };
         checker.initialize_parameters(signature)?;
@@ -389,11 +389,11 @@ impl<'a> MemoryChecker<'a> {
         Ok(MemoryState {
             objects,
             shared_phi_origins,
-            callable_slots: self
+            initialized_scalar_slots: self
                 .state
-                .callable_slots
+                .initialized_scalar_slots
                 .iter()
-                .map(|(container, index)| (remap_value(&renames, *container), *index))
+                .map(|(container, index)| (remap_value(&renames, *container), match index { SlotIdentity::Constant(n) => SlotIdentity::Constant(*n), SlotIdentity::Dynamic(value) => SlotIdentity::Dynamic(remap_value(&renames, *value)) }))
                 .collect(),
             stored_objects: self
                 .state
@@ -676,7 +676,7 @@ impl<'a> MemoryChecker<'a> {
             shared_phi_origins: meet_shared_phi_origins(existing, incoming),
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
             nullable_absent_slots: existing.nullable_absent_slots.intersection(&incoming.nullable_absent_slots).copied().collect(),
-            callable_slots: existing.callable_slots.intersection(&incoming.callable_slots).copied().collect(),
+            initialized_scalar_slots: existing.initialized_scalar_slots.intersection(&incoming.initialized_scalar_slots).copied().collect(),
             range_states: meet_range_states(existing, incoming),
             constants: intersect_map(&existing.constants, &incoming.constants),
             exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
@@ -1277,24 +1277,24 @@ impl<'a> MemoryChecker<'a> {
             }
     }
 
-    /// Whether a callable lane of `object`'s allocation has been stored, under
+    /// Whether a checked scalar lane of `object`'s allocation has been stored, under
     /// any alias.
-    fn callable_slot_stored(&self, object: ValueId, slot: SlotIdentity) -> bool {
+    fn checked_scalar_slot_stored(&self, object: ValueId, slot: SlotIdentity) -> bool {
         self.state
-            .callable_slots
+            .initialized_scalar_slots
             .iter()
             .any(|(container, stored)| *stored == slot && self.same_allocation(object, *container))
     }
 
-    /// Whether the callable lane at `place` may be read: stored on every
+    /// Whether the checked scalar lane at `place` may be read: stored on every
     /// path into this block, or held by a record that arrived complete (a
     /// parameter, a loaded child).
-    fn callable_slot_initialized(&self, place: &Place) -> Result<bool, InitialCheckError> {
+    fn checked_scalar_slot_initialized(&self, place: &Place) -> Result<bool, InitialCheckError> {
         let (object, slot) = self.reference_slot(place)?;
         if self.live_object(object)?.initialized_owned_slots {
             return Ok(true);
         }
-        Ok(self.callable_slot_stored(object, slot))
+        Ok(self.checked_scalar_slot_stored(object, slot))
     }
 
     /// A stored slot fact of `object`'s allocation under any alias.
@@ -1312,7 +1312,47 @@ impl<'a> MemoryChecker<'a> {
         })
     }
 
+    /// Unit initialization is dataflow evidence, never implied by its width.
+    fn unit_prefix_initialized(&self, object: ValueId, mut count: ValueId) -> bool {
+        let Ok(state) = self.live_object(object) else { return false };
+        if state.initialized_owned_slots && (matches!(state.extent, Extent::Counted { count: current, .. } if self.same_scalar(current, count))
+            || matches!(state.extent, Extent::HeaderPrefix { .. }) && self.state.header_values.get(&(object, HeaderField::Length)).is_some_and(|current| self.same_scalar(*current, count))) {
+            return true;
+        }
+        for _ in 0..=self.state.exact_additions.len() {
+            if self.is_zero(count) { return true; }
+            if self.state.range_states.iter().any(|(identity, range)| {
+                self.same_allocation(object, identity.object) && range.initialized && range.zero_start
+                    && self.same_scalar(identity.length, count)
+                    && self.layouts.get(range.element).is_some_and(|d| d.kind() == &LayoutKind::Scalar(ScalarKind::Unit))
+            }) { return true; }
+            if let Some(length) = self.state.constants.get(&count) {
+                let initialized = self.state.initialized_scalar_slots.iter().filter_map(|(container, slot)| match slot {
+                    SlotIdentity::Constant(index) if index < length && self.same_allocation(object, *container) => Some(*index),
+                    _ => None,
+                }).collect::<BTreeSet<_>>();
+                if initialized.len() as u64 == *length { return true; }
+                let mut end = self.state.range_states.iter().filter_map(|(identity, range)| {
+                    (self.same_allocation(object, identity.object) && range.initialized && range.zero_start
+                        && self.layouts.get(range.element).is_some_and(|d| d.kind() == &LayoutKind::Scalar(ScalarKind::Unit)))
+                        .then(|| self.state.constants.get(&identity.length).copied()).flatten()
+                }).max().unwrap_or(0);
+                for index in initialized { if index == end { end += 1; } }
+                if end >= *length { return true; }
+
+            }
+            let Some(&(left, right)) = self.state.exact_additions.get(&count) else { return false };
+            let prefix = if self.state.constants.get(&right) == Some(&1) { left }
+                else if self.state.constants.get(&left) == Some(&1) { right } else { return false };
+            let slot = self.state.constants.get(&prefix).map_or(SlotIdentity::Dynamic(prefix), |n| SlotIdentity::Constant(*n));
+            if !self.checked_scalar_slot_stored(object, slot) { return false; }
+            count = prefix;
+        }
+        false
+    }
+
     fn require_owned_slots_initialized(
+
         &self,
         object: ValueId,
         operation: &'static str,
@@ -1329,7 +1369,7 @@ impl<'a> MemoryChecker<'a> {
         // argument, a return, a stored child, a drop) only with its code
         // slot stored.
         if self.closure_layouts.contains_key(&state.layout)
-            && !self.callable_slot_stored(object, SlotIdentity::Constant(0))
+            && !self.checked_scalar_slot_stored(object, SlotIdentity::Constant(0))
         {
             return Err(InitialCheckError::InvalidClosureSlot {
                 function: self.function.id,
@@ -1337,6 +1377,9 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         let descriptor = self.descriptor(state.layout)?;
+        if !self.unit_fields_initialized(object, state.layout)? {
+            return self.unsupported(operation);
+        }
         let Some(element) = descriptor.kind().packed_element_layout() else {
             // A fixed layout with owned pointer fields is initialized once
             // every field holds a stored reference (the summary flag above,
@@ -1354,6 +1397,10 @@ impl<'a> MemoryChecker<'a> {
         // Scalar storage has no child reference tokens to account for. In
         // particular RawByte and BoolValueSlot are storage layouts, not
         // first-class SafeWIR scalar values. Do not interpret them as values.
+        if self.descriptor(element)?.kind() == &LayoutKind::Scalar(ScalarKind::Unit) {
+            let Extent::Counted { count, .. } = state.extent else { return self.unsupported(operation) };
+            return if self.unit_prefix_initialized(object, count) { Ok(()) } else { self.unsupported(operation) };
+        }
         if matches!(self.descriptor(element)?.kind(), LayoutKind::Scalar(_)) {
             return Ok(());
         }
@@ -1503,7 +1550,23 @@ impl<'a> MemoryChecker<'a> {
             );
             return Ok(());
         }
+                if self.descriptor(destination.element)?.kind() == &LayoutKind::Scalar(ScalarKind::Unit) {
+            let state = self.live_object(source.object)?;
+            let complete = match state.extent {
+                Extent::Counted { count, .. } => self.unit_prefix_initialized(source.object, count),
+                _ => false,
+            };
+            if !complete && !(self.is_zero(source.start) && self.unit_prefix_initialized(source.object, count)) {
+                return self.unsupported("CloneRange(uninitialized Unit)");
+            }
+            self.state.range_states.insert(
+                RangeIdentity { object: destination.object, start: destination.start, length: count },
+                RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: None,
+                    initialized: true, zero_width: self.is_zero(count), zero_start: self.is_zero(destination.start) },
+            );
+        }
         // Scalar cloning is an ordinary value copy.
+
         self.require_scalar_range_element(destination.element, "CloneRange")?;
         Ok(())
     }
@@ -2108,6 +2171,10 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Load(access)");
         }
         let expected = self.check_place(place)?;
+        if expected == ValueType::Unit && !self.checked_scalar_slot_initialized(place)?
+            && self.require_owned_slots_initialized(place.object(), "Load(uninitialized Unit)").is_err() {
+            return self.unsupported("Load(uninitialized Unit)");
+        }
         // A callable lane is memory-bearing in the ABI sense (it is not an
         // ordinary scalar at a call boundary) but it holds a table index, so
         // its load is a plain scalar copy like any other four-byte lane.
@@ -2117,7 +2184,7 @@ impl<'a> MemoryChecker<'a> {
             }
             // The slot must have been stored on every path: a fresh record's
             // code slot holds nothing a call may dispatch through.
-            if !self.callable_slot_initialized(place)? {
+            if !self.checked_scalar_slot_initialized(place)? {
                 return Err(InitialCheckError::InvalidClosureSlot {
                     function: self.function.id,
                     object: place.object(),
@@ -2354,7 +2421,7 @@ impl<'a> MemoryChecker<'a> {
             }
             self.require_type(value, expected)?;
             let slot = self.reference_slot(place)?;
-            self.state.callable_slots.insert(slot);
+            self.state.initialized_scalar_slots.insert(slot);
             return Ok(());
         }
         if !expected.is_memory_bearing() {
@@ -2362,6 +2429,10 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Store(scalar transfer)");
             }
             self.require_type(value, expected)?;
+            if expected == ValueType::Unit {
+                let slot = self.reference_slot(place)?;
+                self.state.initialized_scalar_slots.insert(slot);
+            }
             // A byte slot takes the low byte of a `Size`; the path must
             // prove the value fits so no bits are silently dropped.
             if self.is_raw_byte_element_place(place)? && !self.proven_at_most(value, 255) {
@@ -2520,6 +2591,13 @@ impl<'a> MemoryChecker<'a> {
     /// stored reference, the object is complete: the summary flag replaces
     /// the per-slot facts (which a join could not reconcile across fresh
     /// identities), and loads and drops rely on the flag from then on.
+    fn unit_fields_initialized(&self, object: ValueId, layout: crate::layout::LayoutId) -> Result<bool, InitialCheckError> {
+        Ok(self.descriptor(layout)?.fields().iter().enumerate().all(|(index, field)| {
+            field.kind() != FieldKind::Scalar(ScalarKind::Unit)
+                || self.checked_scalar_slot_stored(object, SlotIdentity::Constant(index as u64))
+        }))
+    }
+
     fn consolidate_fixed_fields(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let layout = self.live_object(object)?.layout;
         let pointer_fields = self.fixed_pointer_fields(layout)?;
@@ -2533,7 +2611,7 @@ impl<'a> MemoryChecker<'a> {
                 self.stored_slot_by_identity(object, slot).is_some()
                     || self.nullable_slot_absent(object, slot)
             });
-        if !complete {
+        if !complete || !self.unit_fields_initialized(object, layout)? {
             return Ok(());
         }
         for (index, _) in &pointer_fields {
@@ -2792,7 +2870,7 @@ impl<'a> MemoryChecker<'a> {
             // that prefix before invalidating the summary; newly added slots
             // must be justified by the ordinary store/range rules below.
             if let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout()
-                && matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. })
+                && matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. } | LayoutKind::Scalar(ScalarKind::Unit))
             {
                 self.seed_managed_prefix(object, old_count, element)?;
             }
@@ -2862,7 +2940,13 @@ impl<'a> MemoryChecker<'a> {
         let Some(element) = self.descriptor(layout)?.kind().packed_element_layout() else {
             return Ok(());
         };
+        if self.descriptor(element)?.kind() == &LayoutKind::Scalar(ScalarKind::Unit) {
+            if !self.unit_prefix_initialized(object, count) { return self.unsupported("UpdateCount(uninitialized Unit)"); }
+            self.state.objects.get_mut(&object).expect("live object exists").initialized_owned_slots = true;
+            return Ok(());
+        }
         // Only the catalog's owned pointer slot is a v1 aggregate whose
+
         // initialized prefix carries object ownership. Raw bytes and boolean
         // value slots are pointer-free storage, not SafeWIR value types, and
         // therefore have no prefix ownership facts to consolidate.
@@ -3415,6 +3499,7 @@ impl<'a> MemoryChecker<'a> {
 
     fn value_type_for_scalar(&self, kind: ScalarKind) -> Result<ValueType, InitialCheckError> {
         match kind {
+            ScalarKind::Unit => Ok(ValueType::Unit),
             ScalarKind::Bool => Ok(ValueType::Bool),
             ScalarKind::Int | ScalarKind::Duration => Ok(ValueType::Int),
             ScalarKind::Float => Ok(ValueType::Float),

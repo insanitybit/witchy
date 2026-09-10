@@ -408,7 +408,7 @@ fn push_packed_list_scalar_store(
         FieldKind::Scalar(ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable) => {
             nodes.push(N::SafeStore { place, value, kind: WK::I32 });
         }
-        FieldKind::Scalar(ScalarKind::Tag16 | ScalarKind::BoolValueSlot | ScalarKind::V128)
+        FieldKind::Scalar(ScalarKind::Tag16 | ScalarKind::Unit | ScalarKind::BoolValueSlot | ScalarKind::V128)
         | FieldKind::Inline(_)
         | FieldKind::Pointer { .. } => return None,
     }
@@ -442,7 +442,7 @@ fn push_packed_list_scalar_element_store(
         ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => {
             nodes.push(N::SafeStore { place, value, kind: WK::I32 });
         }
-        ScalarKind::Tag16 | ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
+        ScalarKind::Tag16 | ScalarKind::Unit | ScalarKind::BoolValueSlot | ScalarKind::V128 => return None,
     }
     Some(())
 }
@@ -6131,7 +6131,7 @@ impl<'types> Codegen<'types> {
             ScalarKind::Float => Some(Kind::F64),
             ScalarKind::Bool | ScalarKind::U32 | ScalarKind::Tag8
             | ScalarKind::Tag16 | ScalarKind::Tag32 | ScalarKind::Callable => Some(Kind::I32),
-            ScalarKind::BoolValueSlot | ScalarKind::RawByte | ScalarKind::V128 => None,
+            ScalarKind::Unit | ScalarKind::BoolValueSlot | ScalarKind::RawByte | ScalarKind::V128 => None,
         }
     }
 
@@ -6278,7 +6278,7 @@ impl<'types> Codegen<'types> {
     ) -> Option<()> {
         use witchy_wir::wir::{Kind as WK, WirExpr as W, WirNode as N};
         match field.kind() {
-            FieldKind::Scalar(ScalarKind::BoolValueSlot | ScalarKind::V128) => return None,
+            FieldKind::Scalar(ScalarKind::Unit | ScalarKind::BoolValueSlot | ScalarKind::V128) => return None,
             FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte) => {
                 nodes.push(N::Store8 { ptr: base, value, offset: field.offset() });
             }
@@ -6309,7 +6309,7 @@ impl<'types> Codegen<'types> {
                         ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => WK::I32,
                         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16
                         | ScalarKind::RawByte | ScalarKind::BoolValueSlot
-                        | ScalarKind::V128 => unreachable!(),
+                        | ScalarKind::Unit | ScalarKind::V128 => unreachable!(),
                     },
                     offset: field.offset(),
                 });
@@ -7481,7 +7481,7 @@ impl<'types> Codegen<'types> {
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp as WB, Kind as WK, WirExpr as W};
         match field.kind() {
-            FieldKind::Scalar(ScalarKind::BoolValueSlot | ScalarKind::V128) => None,
+            FieldKind::Scalar(ScalarKind::Unit | ScalarKind::BoolValueSlot | ScalarKind::V128) => None,
             FieldKind::Scalar(ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte) => {
                 Some(W::Load8U { ptr: Box::new(base), offset: field.offset() })
             }
@@ -7510,7 +7510,7 @@ impl<'types> Codegen<'types> {
                     ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => WK::I32,
                     ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::Tag16
                     | ScalarKind::RawByte | ScalarKind::BoolValueSlot
-                    | ScalarKind::V128 => unreachable!(),
+                    | ScalarKind::Unit | ScalarKind::V128 => unreachable!(),
                 },
                 offset: field.offset(),
             }),

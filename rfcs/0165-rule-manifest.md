@@ -12,6 +12,7 @@ Opaque-owner operation variants: Construct, ReadCapability, ReadCallable, Clone,
 
 | Rule | Checker judgment | Predicate | Interpreter | Backend | Admitting evidence | Refusing evidence |
 |---|---|---|---|---|---|---|
+| `ConstUnit` | check.rs::check_operation | defines only Unit, the sole Nil value; no integer or Bool authority | execute_operation: binds InterpreterValue::Unit | ScalarConstant | `unit_storage_construct_call_native_oracle` (unit backend) | `unit_storage_rejects_type_layout_initialization_and_bounds` (unit backend) |
 | `ConstInt` | check.rs::check_operation | defines the destination as `Int`; a constant has no failing predicate | execute_operation: binds the literal | ScalarConstant | `encoded_scalar_module_executes` (backend), `validated_scalar_arithmetic_executes` (interpreter) | `block_arguments_are_typed_ssa_definitions` (check) |
 | `ConstFloat` | check.rs::check_operation | defines the destination as `Float` from raw bits | execute_operation: binds the bits | ScalarConstant | `admitted_float_conversions_bool_render_and_duration_identities_run` (launch) | `block_arguments_are_typed_ssa_definitions` (check) |
 | `ConstBool` | check.rs::check_operation | defines the destination as `Bool` | execute_operation: binds the literal | ScalarConstant | `encoded_structured_branch_executes_both_arms` (backend) | `block_arguments_are_typed_ssa_definitions` (check) |

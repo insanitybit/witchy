@@ -34,6 +34,7 @@ pub enum EvidenceFile {
     Backend,
     /// Nullable fixed-field admission probes, using internal source witnesses.
     NullableBackend,
+    UnitBackend,
     /// `tests/misc/rfc0165_admitted_launch.rs` (end to end through the runtime)
     Launch,
     /// `crates/witchy-wir/src/canonical_safewir/authority.rs`
@@ -55,6 +56,7 @@ impl EvidenceFile {
             Self::Memory => "crates/witchy-wir/src/canonical_safewir/check/memory.rs",
             Self::Interpreter => "crates/witchy-wir/src/canonical_interpreter.rs",
             Self::Backend => "crates/witchy-wir/src/canonical_wasmir.rs",
+            Self::UnitBackend => "crates/witchy-wir/src/canonical_wasmir/tests/unit_storage.rs",
             Self::NullableBackend => "crates/witchy-wir/src/canonical_wasmir/tests/nullable_admission.rs",
             Self::Launch => "tests/misc/rfc0165_admitted_launch.rs",
             Self::Authority => "crates/witchy-wir/src/canonical_safewir/authority.rs",
@@ -71,6 +73,7 @@ impl EvidenceFile {
             Self::Memory => include_str!("check/memory.rs"),
             Self::Interpreter => include_str!("../canonical_interpreter.rs"),
             Self::Backend => include_str!("../canonical_wasmir.rs"),
+            Self::UnitBackend => include_str!("../canonical_wasmir/tests/unit_storage.rs"),
             Self::NullableBackend => include_str!("../canonical_wasmir/tests/nullable_admission.rs"),
             Self::Launch => include_str!("../../../../tests/misc/rfc0165_admitted_launch.rs"),
             Self::Authority => include_str!("authority.rs"),
@@ -134,6 +137,16 @@ pub struct RuleEntry {
 
 /// The rule manifest, in `CanonicalRuleId` order.
 pub const RULES: &[RuleEntry] = &[
+    RuleEntry {
+        rule: CanonicalRuleId::ConstUnit,
+        judgment: "check.rs::check_operation",
+        predicate: "defines only Unit, the sole Nil value; no integer or Bool authority",
+        interpreter: "execute_operation: binds InterpreterValue::Unit",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
+        admits: &[t(EvidenceFile::UnitBackend, "unit_storage_construct_call_native_oracle")],
+        refuses: &[t(EvidenceFile::UnitBackend, "unit_storage_rejects_type_layout_initialization_and_bounds")],
+    },
+
     RuleEntry {
         rule: CanonicalRuleId::ConstInt,
         judgment: "check.rs::check_operation",
@@ -927,6 +940,7 @@ fn cite(tests: &[TestRef]) -> String {
                 Launch => "launch",
                 Authority => "authority",
                 EvidenceFile::NullableBackend => "nullable backend",
+                EvidenceFile::UnitBackend => "unit backend",
                 OwnerCheck => "owner checker",
                 OwnerBackend => "owner backend",
                 OwnerLaunch => "owner launch",
@@ -1017,7 +1031,7 @@ pub fn render_markdown() -> String {
 pub fn all_rules() -> Vec<CanonicalRuleId> {
     use CanonicalRuleId as R;
     let ordered = [
-        R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::CapabilityNone, R::CapabilitySome, R::CapabilityIsPresent, R::CapabilityUnwrap, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
+        R::ConstUnit, R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::CapabilityNone, R::CapabilitySome, R::CapabilityIsPresent, R::CapabilityUnwrap, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
         R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
         R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
         R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
@@ -1026,7 +1040,7 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
     for rule in ordered {
         // Exhaustive by construction: adding a variant fails here.
         match rule {
-            R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::CapabilityNone | R::CapabilitySome | R::CapabilityIsPresent | R::CapabilityUnwrap | R::Arithmetic | R::Compare | R::NarrowSize
+            R::ConstUnit | R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::CapabilityNone | R::CapabilitySome | R::CapabilityIsPresent | R::CapabilityUnwrap | R::Arithmetic | R::Compare | R::NarrowSize
             | R::WidenSize | R::FloatUnary | R::Guard | R::Alloc | R::StaticData | R::Load | R::InitNullableOwned | R::Store | R::CopyBytes
             | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue

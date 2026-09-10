@@ -492,6 +492,7 @@ fn propagate_operation_origins(
         }
         Operation::ConstInt { destination, .. }
         | Operation::ConstFloat { destination, .. }
+        | Operation::ConstUnit { destination }
         | Operation::ConstBool { destination, .. }
         | Operation::ConstSize { destination, .. }
         | Operation::Arithmetic { destination, .. }
@@ -690,7 +691,7 @@ fn derive_operation(
                 origins.insert(destination, origin);
             }
         }
-        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::CapabilityNone { .. } | Operation::CapabilitySome { .. } | Operation::CapabilityIsPresent { .. } | Operation::CapabilityUnwrap { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
+        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstUnit { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::CapabilityNone { .. } | Operation::CapabilitySome { .. } | Operation::CapabilityIsPresent { .. } | Operation::CapabilityUnwrap { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
     }
     Ok(())
 }

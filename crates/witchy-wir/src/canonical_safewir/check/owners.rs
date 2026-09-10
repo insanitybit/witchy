@@ -245,7 +245,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                 Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. } => transfer_arguments(function, &mut state, arguments)?,
                 Operation::ConstInt { .. }
                 | Operation::ConstFloat { .. }
-                | Operation::ConstBool { .. }
+                | Operation::ConstUnit { .. } | Operation::ConstBool { .. }
                 | Operation::ConstSize { .. }
                 | Operation::CapabilityNone { .. }
                 | Operation::CapabilitySome { .. }

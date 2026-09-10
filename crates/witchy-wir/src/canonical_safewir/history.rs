@@ -498,6 +498,10 @@ impl CanonicalWriter {
                 self.u8(40);
                 self.owner_operation(operation);
             }
+            Operation::ConstUnit { destination } => {
+                self.u8(41);
+                self.value_id(*destination);
+            }
             Operation::ConstInt { destination, value } => {
                 self.u8(0);
                 self.value_id(*destination);

@@ -864,6 +864,7 @@ impl CanonicalAbiCatalog {
 /// error until it is assigned a checker judgment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CanonicalRuleId {
+    ConstUnit,
     ConstInt,
     ConstFloat,
     ConstBool,
@@ -917,6 +918,8 @@ pub enum CanonicalRuleId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Operation {
     ClosureOwner(closure_owner_contract::OwnerOperation),
+    /// The sole Unit value, with no integer or Bool authority.
+    ConstUnit { destination: ValueId },
     ConstInt { destination: ValueId, value: i64 },
     ConstFloat { destination: ValueId, bits: u64 },
     ConstBool { destination: ValueId, value: bool },
@@ -1053,6 +1056,7 @@ impl Operation {
     pub const fn rule_id(&self) -> CanonicalRuleId {
         match self {
             Self::ClosureOwner(_) => CanonicalRuleId::ClosureOwner,
+            Self::ConstUnit { .. } => CanonicalRuleId::ConstUnit,
             Self::ConstInt { .. } => CanonicalRuleId::ConstInt,
             Self::ConstFloat { .. } => CanonicalRuleId::ConstFloat,
             Self::ConstBool { .. } => CanonicalRuleId::ConstBool,

@@ -68,6 +68,7 @@ enum ScalarInstruction {
     ClosureOwner(crate::canonical_safewir::closure_owner_contract::OwnerOperation),
     IntConst { destination: ValueId, value: i64 },
     FloatConst { destination: ValueId, bits: u64 },
+    UnitConst { destination: ValueId },
     BoolConst { destination: ValueId, value: bool },
     SizeConst { destination: ValueId, value: u64 },
     CapabilityNone { destination: ValueId },
@@ -571,7 +572,7 @@ fn collection_layout(
         .get(physical_element)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
     let (scalar, pointer_layout, pointer_slot) = match element_descriptor.kind() {
-        LayoutKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (*scalar, None, None),
+        LayoutKind::Scalar(scalar) if *scalar == ScalarKind::Unit || scalar.is_ordinary_lowering_target() => (*scalar, None, None),
         LayoutKind::Scalar(ScalarKind::RawByte) if raw_runtime_buffer => {
             (ScalarKind::RawByte, None, None)
         }
@@ -719,7 +720,7 @@ fn field_access(
     // value slot) is a 32-bit object address whose pointee the reference
     // transfer needs.
     let (scalar, pointer_layout, pointer_slot) = match field.kind() {
-        crate::layout::FieldKind::Scalar(scalar) if scalar.is_ordinary_lowering_target() => (scalar, None, None),
+        crate::layout::FieldKind::Scalar(scalar) if scalar == ScalarKind::Unit || scalar.is_ordinary_lowering_target() => (scalar, None, None),
         crate::layout::FieldKind::Pointer { pointee, slot } if matches!(slot, PointerSlot::Owned | PointerSlot::OwnedNullable) => {
             (ScalarKind::U32, Some(pointee), Some(slot))
         }
@@ -802,7 +803,7 @@ fn resolve_memory_place_for_values(
 fn is_indirect_scalar(value_type: ValueType) -> bool {
     matches!(
         value_type,
-        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Size | ValueType::V128
+        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128
     )
 }
 
@@ -856,6 +857,7 @@ fn lower_operation(
     let source = SourceItemId::Operation { function, block, index };
     let operation = match operation {
         Operation::ClosureOwner(operation) => ScalarInstruction::ClosureOwner(operation.clone()),
+        Operation::ConstUnit { destination } => ScalarInstruction::UnitConst { destination: *destination },
         Operation::ConstInt { destination, value } => ScalarInstruction::IntConst { destination: *destination, value: *value },
         Operation::ConstFloat { destination, bits } => ScalarInstruction::FloatConst { destination: *destination, bits: *bits },
         Operation::ConstBool { destination, value } => ScalarInstruction::BoolConst { destination: *destination, value: *value },
@@ -1098,6 +1100,7 @@ fn lower_operation(
 fn operation_name(operation: &Operation) -> &'static str {
     match operation {
         Operation::ClosureOwner(_) => "ClosureOwner",
+        Operation::ConstUnit { .. } => "ConstUnit",
         Operation::ConstInt { .. } => "ConstInt",
         Operation::ConstFloat { .. } => "ConstFloat",
         Operation::ConstBool { .. } => "ConstBool",
@@ -1327,7 +1330,7 @@ fn static_data_plan(
 pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> RuleBackend {
     use crate::canonical_safewir::CanonicalRuleId as Rule;
     match rule {
-        Rule::ConstInt | Rule::ConstFloat | Rule::ConstBool | Rule::ConstSize | Rule::FunctionValue => RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
+        Rule::ConstUnit | Rule::ConstInt | Rule::ConstFloat | Rule::ConstBool | Rule::ConstSize | Rule::FunctionValue => RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         Rule::CapabilityNone | Rule::CapabilitySome | Rule::CapabilityIsPresent | Rule::CapabilityUnwrap => RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
         Rule::Arithmetic => RuleBackend::Receipt(CorrespondenceRule::ScalarArithmetic),
         Rule::Compare => RuleBackend::Receipt(CorrespondenceRule::ScalarComparison),
@@ -1364,6 +1367,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
 fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool {
     match (operation, target) {
         (Operation::ClosureOwner(source), ScalarInstruction::ClosureOwner(target)) => source == target,
+        (Operation::ConstUnit { destination }, ScalarInstruction::UnitConst { destination: actual }) => destination == actual,
         (Operation::ConstInt { destination, value }, ScalarInstruction::IntConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
         (Operation::ConstFloat { destination, bits }, ScalarInstruction::FloatConst { destination: actual, bits: actual_bits }) => destination == actual && bits == actual_bits,
         (Operation::ConstBool { destination, value }, ScalarInstruction::BoolConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
@@ -1786,7 +1790,7 @@ fn wasm_value_type(
     match value_type {
         crate::canonical_safewir::ValueType::Int => Ok(ValType::I64),
         crate::canonical_safewir::ValueType::Float => Ok(ValType::F64),
-        crate::canonical_safewir::ValueType::Bool => Ok(ValType::I32),
+        crate::canonical_safewir::ValueType::Bool | crate::canonical_safewir::ValueType::Unit => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Size => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Ref(_) => Ok(ValType::I32),
         crate::canonical_safewir::ValueType::Gc(_) => Ok(ValType::EXTERNREF),
@@ -1799,7 +1803,6 @@ fn wasm_value_type(
         crate::canonical_safewir::ValueType::InlineAggregate(_) => {
             Err(EncodeError::UnsupportedValueType { function, value, value_type })
         }
-        unsupported => Err(EncodeError::UnsupportedValueType { function, value, value_type: unsupported }),
     }
 }
 
@@ -2185,6 +2188,11 @@ fn emit_typed_load(
     emit_projected_address(body, function, layout, access)?;
     let arg = memarg(access.width);
     match access.scalar {
+        ScalarKind::Unit => {
+            body.instruction(&wasm_encoder::Instruction::I32Load(arg));
+            body.instruction(&wasm_encoder::Instruction::Drop);
+            body.instruction(&wasm_encoder::Instruction::I32Const(0))
+        }
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Load8U(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Load16U(arg)),
         ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => body.instruction(&wasm_encoder::Instruction::I32Load(arg)),
@@ -2203,12 +2211,16 @@ fn emit_typed_store(
     value: ValueId,
 ) -> Result<(), EncodeError> {
     emit_projected_address(body, function, layout, access)?;
-    emit_get(body, layout, function.id, value)?;
+    if access.scalar == ScalarKind::Unit {
+        body.instruction(&wasm_encoder::Instruction::I32Const(0));
+    } else {
+        emit_get(body, layout, function.id, value)?;
+    }
     let arg = memarg(access.width);
     match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Store8(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Store16(arg)),
-        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => body.instruction(&wasm_encoder::Instruction::I32Store(arg)),
+        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => body.instruction(&wasm_encoder::Instruction::I32Store(arg)),
         ScalarKind::Int | ScalarKind::Duration => body.instruction(&wasm_encoder::Instruction::I64Store(arg)),
         ScalarKind::Float => body.instruction(&wasm_encoder::Instruction::F64Store(arg)),
         _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "scalar store" }),
@@ -2902,6 +2914,7 @@ fn emit_instruction(
 ) -> Result<(), EncodeError> {
     match instruction {
         ScalarInstruction::ClosureOwner(operation) => { owner_operation_kernel::emit(body, function, layout, layouts, operation, import_indices)?; }
+        ScalarInstruction::UnitConst { destination } => { body.instruction(&wasm_encoder::Instruction::I32Const(0)); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::IntConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I64Const(*value)); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::FloatConst { destination, bits } => { body.instruction(&wasm_encoder::Instruction::F64Const(Ieee64::new(*bits))); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::BoolConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I32Const(i32::from(*value))); emit_set(body, layout, function.id, *destination)?; }
@@ -4141,6 +4154,7 @@ fn encode_validated(validated: ValidatedSafeWir) -> Result<Vec<u8>, EncodeError>
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PlanToken {
+    Drop,
     RefCastNonNull(u32),
     StructGet { struct_type_index: u32, field_index: u32 },
     ArrayLen,
@@ -4249,6 +4263,7 @@ enum PlanToken {
 
 fn decode_plan_token(operator: wasmparser::Operator<'_>) -> Result<PlanToken, CanonicalAdmissionError> {
     Ok(match operator {
+        wasmparser::Operator::Drop => PlanToken::Drop,
         wasmparser::Operator::LocalGet { local_index } => PlanToken::LocalGet(local_index),
         wasmparser::Operator::LocalSet { local_index } => PlanToken::LocalSet(local_index),
         wasmparser::Operator::RefNull { hty } => PlanToken::RefNull(format!("{hty:?}")),
@@ -4485,11 +4500,14 @@ fn push_memory_load_plan(
     plan.push(match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
         ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
-        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => memarg(0, 2, 0),
+        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => memarg(0, 2, 0),
         ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
         ScalarKind::Float => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     });
+    if access.scalar == ScalarKind::Unit {
+        plan.extend([PlanToken::Drop, PlanToken::I32Const(0)]);
+    }
     push_set(plan, layout, destination)
 }
 
@@ -4536,11 +4554,15 @@ fn push_memory_store_plan(
     let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     push_projected_address_plan(plan, function, layout, access)?;
-    push_get(plan, layout, value)?;
+    if access.scalar == ScalarKind::Unit {
+        plan.push(PlanToken::I32Const(0));
+    } else {
+        push_get(plan, layout, value)?;
+    }
     plan.push(match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
         ScalarKind::Tag16 => PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
-        ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
         ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Store { offset: 0, align: 3, memory: 0 },
         ScalarKind::Float => PlanToken::F64Store { offset: 0, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
@@ -5224,6 +5246,10 @@ fn expected_linear_function_plan(
                     .copied()
                     .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
                 plan.push(planned_arithmetic_token(value_type, *operator)?);
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::ConstUnit { destination } => {
+                plan.push(PlanToken::I32Const(0));
                 push_set(&mut plan, &layout, *destination)?;
             }
             Operation::ConstBool { destination, value } => {
@@ -9065,6 +9091,10 @@ mod tests {
 
     #[path = "nullable_admission.rs"]
     mod nullable_admission;
+
+    #[cfg(feature = "native")]
+    #[path = "unit_storage.rs"]
+    mod unit_storage;
 
     #[test]
     fn foreign_entry_section_fails_admission() {

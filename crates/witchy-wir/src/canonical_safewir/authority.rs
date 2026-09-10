@@ -447,13 +447,14 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                     Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int | crate::layout::ScalarKind::Duration)) => super::ValueType::Int,
                     Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Float)) => super::ValueType::Float,
                     Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool)) => super::ValueType::Bool,
+                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Unit)) => super::ValueType::Unit,
                     Some(crate::layout::LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::OwnedNullable }) => super::ValueType::Ref(*pointee),
                     _ => return None,
                 };
                 let transfer_matches = matches!(
                     (actual, capture.transfer()),
                     (super::ValueType::Ref(_), witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue)
-                        | (super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool,
+                        | (super::ValueType::Int | super::ValueType::Float | super::ValueType::Bool | super::ValueType::Unit,
                            witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
                 );
                 (transfer_matches && value_type_matches_source(
@@ -1228,11 +1229,13 @@ fn enqueue_record_fields_with_closures(
         && actual.iter().zip(fields).all(|(actual, field)| {
             let Some(actual) = layouts.get(*actual) else { return false };
             match field.unqualified() {
-                witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Duration" | "Float" | "Bool") => match name.as_str() {
+                witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Duration" | "Float" | "Bool" | "Nil" | "Unit") => match name.as_str() {
                     "Int" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Int)),
                     "Duration" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Duration)),
                     "Float" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Float)),
-                    _ => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
+                    "Bool" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
+                    "Nil" | "Unit" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Unit)),
+                    _ => false,
                 },
                 // A string, list, tuple, or aggregate field lives behind an
                 // owned pointer slot whose pointee is that value's own layout.
@@ -1322,6 +1325,7 @@ fn enqueue_layout_children(
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Bool" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Bool)),
+                witchy_syntax::ast::Type::Named(name, arguments) if matches!(name.as_str(), "Nil" | "Unit") && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit)),
                 inner => matches!(element.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } if { pending.push((*pointee, inner.unqualified().clone())); true }),
             }
         }
@@ -2359,5 +2363,29 @@ mod tests {
         let checked = check_initial_with_expected_digest(candidate, expected).unwrap();
         let final_module = validate_final_for_test(checked).unwrap();
         assert_eq!(final_module.checked_lowering().proper_tail_manifest_digest.bytes(), expected);
+    }
+}
+
+#[cfg(test)]
+mod unit_storage_authority_tests {
+    use super::*;
+    use crate::layout::{LayoutInterner, RcHeader, ScalarKind};
+    use witchy_syntax::ast::Type;
+
+    #[test]
+    fn unit_storage_authority_distinguishes_nil_fields_and_lists() {
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        for name in ["Nil", "Unit"] {
+            let ty = Type::Named(name.into(), vec![]);
+            for scalar in [ScalarKind::Unit, ScalarKind::Bool, ScalarKind::Int, ScalarKind::U32, ScalarKind::Callable] {
+                let element = layouts.intern_scalar(scalar).unwrap();
+                let record = layouts.intern_packed_record(vec![element, int]).unwrap();
+                assert_eq!(enqueue_record_fields(record, &[ty.clone(), Type::Named("Int".into(), vec![])], false, &layouts, &mut vec![]), scalar == ScalarKind::Unit);
+                if scalar == ScalarKind::Callable { continue; }
+                let list = layouts.intern_packed_list(element, RcHeader::Required).unwrap();
+                assert_eq!(layout_matches_source(list, &Type::Named("List".into(), vec![ty.clone()]), &layouts, &BTreeMap::new()), scalar == ScalarKind::Unit);
+            }
+        }
     }
 }

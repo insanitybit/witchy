@@ -85,6 +85,9 @@ impl CallableLayoutSignature {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarKind {
+    /// Canonical Nil/Unit storage: four zero bytes, one semantic value.
+    /// It never confers Bool, integer, pointer, or callable authority.
+    Unit,
     Bool,
     Int,
     Float,
@@ -130,7 +133,7 @@ impl ScalarKind {
             | Self::Tag16
             | Self::Tag32
             | Self::Callable => true,
-            Self::RawByte | Self::BoolValueSlot | Self::V128 => false,
+            Self::Unit | Self::RawByte | Self::BoolValueSlot | Self::V128 => false,
         }
     }
 
@@ -138,7 +141,7 @@ impl ScalarKind {
         match self {
             Self::Bool | Self::Tag8 | Self::RawByte => 1,
             Self::Tag16 => 2,
-            Self::U32 | Self::Tag32 | Self::Callable => 4,
+            Self::Unit | Self::U32 | Self::Tag32 | Self::Callable => 4,
             Self::Int | Self::Float | Self::Duration | Self::BoolValueSlot => 8,
             Self::V128 => 16,
         }
@@ -149,7 +152,7 @@ impl ScalarKind {
     }
 
     const fn is_source_value(self) -> bool {
-        matches!(self, Self::Bool | Self::Int | Self::Float | Self::Duration)
+        matches!(self, Self::Unit | Self::Bool | Self::Int | Self::Float | Self::Duration)
     }
 }
 
@@ -2445,7 +2448,7 @@ fn validate_runtime_value(
     let exact_source_scalar = matches!(
         descriptor.kind,
         LayoutKind::Scalar(
-            ScalarKind::Bool
+            ScalarKind::Unit | ScalarKind::Bool
                 | ScalarKind::Int
                 | ScalarKind::Float
                 | ScalarKind::Duration
@@ -2710,6 +2713,7 @@ impl Encoder {
             ScalarKind::V128 => 9,
             ScalarKind::BoolValueSlot => 10,
             ScalarKind::Callable => 11,
+            ScalarKind::Unit => 12,
         });
     }
 
@@ -3037,6 +3041,7 @@ impl<'a> Decoder<'a> {
             9 => Ok(ScalarKind::V128),
             10 => Ok(ScalarKind::BoolValueSlot),
             11 => Ok(ScalarKind::Callable),
+            12 => Ok(ScalarKind::Unit),
             _ => Err(LayoutError::Decode {
                 offset,
                 reason: "unknown scalar kind",
@@ -4015,5 +4020,22 @@ mod tests {
                 "an exposed-root layout cannot be embedded inline"
             )),
         );
+    }
+}
+
+#[cfg(test)]
+mod unit_storage_tag_tests {
+    use super::*;
+
+    #[test]
+    fn unit_storage_adds_tag_twelve_without_changing_existing_tags() {
+        let scalars = [ScalarKind::Bool, ScalarKind::Int, ScalarKind::Float, ScalarKind::Duration, ScalarKind::U32,
+            ScalarKind::Tag8, ScalarKind::Tag16, ScalarKind::Tag32, ScalarKind::RawByte, ScalarKind::V128,
+            ScalarKind::BoolValueSlot, ScalarKind::Callable, ScalarKind::Unit];
+        for (tag, scalar) in scalars.into_iter().enumerate() {
+            let mut encoder = Encoder { output: vec![] };
+            encoder.scalar(scalar);
+            assert_eq!(encoder.output, vec![tag as u8]);
+        }
     }
 }

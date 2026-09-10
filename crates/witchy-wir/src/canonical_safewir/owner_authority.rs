@@ -92,7 +92,8 @@ pub(super) fn validate<S: ModuleStage>(
             let matches = match (ty, descriptor.kind()) {
                 (ValueType::Int, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int | crate::layout::ScalarKind::Duration))
                 | (ValueType::Float, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Float))
-                | (ValueType::Bool, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool)) => true,
+                | (ValueType::Bool, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool))
+                | (ValueType::Unit, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Unit)) => true,
                 (ValueType::Ref(layout), crate::layout::LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::OwnedNullable }) => layout == *pointee,
                 _ => false,
             };

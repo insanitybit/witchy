@@ -378,7 +378,7 @@ fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
         }
         let accepted = match layouts.get(id).map(|descriptor| descriptor.kind()) {
             Some(LayoutKind::Scalar(
-                ScalarKind::Bool
+                ScalarKind::Unit | ScalarKind::Bool
                 | ScalarKind::Int
                 | ScalarKind::Float
                 | ScalarKind::Duration

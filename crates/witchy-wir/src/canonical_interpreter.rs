@@ -525,6 +525,9 @@ impl<'a> Engine<'a> {
     ) -> Result<(), InterpretError> {
         match operation {
             Operation::ClosureOwner(operation) => self.execute_owner_operation(operation, values)?,
+            Operation::ConstUnit { destination } => {
+                values.insert(*destination, InterpreterValue::Unit);
+            }
             Operation::ConstInt { destination, value } => {
                 values.insert(*destination, InterpreterValue::Int(*value));
             }
@@ -1890,6 +1893,15 @@ impl<'a> Engine<'a> {
         values: &BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<InterpreterValue, InterpretError> {
         let object = self.object_value(place.object(), values)?;
+        if place.value_type() == ValueType::Unit {
+            if transfer != LoadTransfer::CopyScalar { return Err(InterpretError::TypeMismatch("Unit load")); }
+            let key = self.unit_cell(object, place, values, false)?;
+            return match self.object(object)?.cells.get(&key) {
+                Some(InterpreterValue::Unit) => Ok(InterpreterValue::Unit),
+                Some(_) => Err(InterpretError::TypeMismatch("Unit storage")),
+                None => Err(InterpretError::UninitializedPlace),
+            };
+        }
         if transfer != LoadTransfer::CopyScalar {
             // A reference cell: a shared clone retains the child, a unique
             // move takes the cell (its token leaves the container).
@@ -1977,6 +1989,14 @@ impl<'a> Engine<'a> {
         if self.object(object)?.immutable {
             return Err(InterpretError::ImmutableObject(object));
         }
+        if place.value_type() == ValueType::Unit {
+            if value != InterpreterValue::Unit || transfer != StoreTransfer::CopyScalar {
+                return Err(InterpretError::TypeMismatch("Unit store"));
+            }
+            let key = self.unit_cell(object, place, values, true)?;
+            self.object_mut(object)?.cells.insert(key, InterpreterValue::Unit);
+            return Ok(());
+        }
         // A unique move stores the token itself; a shared store adds one.
         if let (StoreTransfer::CloneShared, InterpreterValue::ObjectRef(child)) = (transfer, &value) {
             self.retain(*child)?;
@@ -2003,7 +2023,37 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    fn update_count(&mut self, object: u64, count: u64) -> Result<(), InterpretError> {
+    /// Oracle-owned projection checks; no checker or backend safety helpers.
+    fn unit_cell(&self, object: u64, place: &Place, values: &BTreeMap<ValueId, InterpreterValue>, write: bool) -> Result<CellKey, InterpretError> {
+        let root = self.object(object)?;
+        let (_, layouts) = LayoutBundle::decode_canonical(&self.module.layouts().canonical_bytes())
+            .map_err(|_| InterpretError::TypeMismatch("Unit layouts"))?;
+        let physical = layouts.resolve_nominal(root.layout).map_err(|_| InterpretError::TypeMismatch("Unit layout"))?;
+        let layout = layouts.get(physical).ok_or(InterpretError::TypeMismatch("Unit layout"))?;
+        match place.projection() {
+            Projection::Field { index } => {
+                let field = layout.fields().get(*index as usize).ok_or(InterpretError::TypeMismatch("Unit field bounds"))?;
+                let RuntimeExtent::FixedBytes(bytes) = root.extent else { return Err(InterpretError::TypeMismatch("Unit field extent")) };
+                if field.kind() != crate::layout::FieldKind::Scalar(ScalarKind::Unit) || u64::from(field.offset()) + 4 > bytes {
+                    return Err(InterpretError::TypeMismatch("Unit field layout"));
+                }
+                Ok(CellKey::Field(*index))
+            }
+            Projection::Element { index } => {
+                let element = layout.kind().packed_element_layout().and_then(|id| layouts.get(id));
+                if !element.is_some_and(|d| d.kind() == &LayoutKind::Scalar(ScalarKind::Unit)) {
+                    return Err(InterpretError::TypeMismatch("Unit element layout"));
+                }
+                let index = self.size_value(*index, values)?;
+                if write { self.check_range(object, index, 1, true)?; } else { self.check_element(object, index)?; }
+                Ok(CellKey::Element(index))
+            }
+            _ => Err(InterpretError::TypeMismatch("Unit projection")),
+        }
+    }
+
+    fn update_count(&mut self, object: u64, count: u64)
+ -> Result<(), InterpretError> {
         if self.object(object)?.immutable {
             return Err(InterpretError::ImmutableObject(object));
         }
@@ -2306,6 +2356,7 @@ fn static_scalar(
         .ok_or(InterpretError::UnsupportedOperation("StaticData scalar bounds"))?;
     let size = |width: usize| bytes.get(..width).ok_or(InterpretError::UnsupportedOperation("StaticData scalar width"));
     match kind {
+        ScalarKind::Unit => Ok(InterpreterValue::Unit),
         ScalarKind::Bool => match bytes {
             [0] => Ok(InterpreterValue::Bool(false)),
             [1] => Ok(InterpreterValue::Bool(true)),

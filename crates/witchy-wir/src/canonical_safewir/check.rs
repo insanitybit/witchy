@@ -854,6 +854,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         Operation::ClosureOwner(owner) => owner.destinations(),
         Operation::ConstInt { destination, .. }
         | Operation::ConstFloat { destination, .. }
+        | Operation::ConstUnit { destination }
         | Operation::ConstBool { destination, .. }
         | Operation::ConstSize { destination, .. }
         | Operation::CapabilityNone { destination, .. }
@@ -895,7 +896,7 @@ pub(crate) fn operation_uses(operation: &Operation) -> Vec<ValueId> {
         Operation::ClosureOwner(owner) => owner.operands(),
         Operation::ConstInt { .. }
         | Operation::ConstFloat { .. }
-        | Operation::ConstBool { .. }
+        | Operation::ConstUnit { .. } | Operation::ConstBool { .. }
         | Operation::ConstSize { .. }
         | Operation::CapabilityNone { .. }
         | Operation::Alloc { .. }
@@ -1178,6 +1179,7 @@ fn check_operation(
         Operation::ConstFloat { destination, .. } => {
             require_type(function, *destination, ValueType::Float)
         }
+        Operation::ConstUnit { destination } => require_type(function, *destination, ValueType::Unit),
         Operation::ConstBool { destination, .. } => {
             require_type(function, *destination, ValueType::Bool)
         }
@@ -1364,6 +1366,7 @@ fn inline_scalar_layout_type(
         crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int | crate::layout::ScalarKind::Duration) => Ok(ValueType::Int),
         crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Float) => Ok(ValueType::Float),
         crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool) => Ok(ValueType::Bool),
+        crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Unit) => Ok(ValueType::Unit),
         crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::V128) => Ok(ValueType::V128),
         _ => Err(InitialCheckError::InvalidInlineAggregateLayout { function, layout: parent }),
     }
