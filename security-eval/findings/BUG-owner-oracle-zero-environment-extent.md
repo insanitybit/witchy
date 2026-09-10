@@ -20,6 +20,13 @@ its descriptor to have a fixed size, and records that exact size. No projection
 check or memory-safety rule is weakened. This was a false oracle rejection,
 not evidence of an unsafe admitted Wasm access.
 
+The first queue attempt exposed an older owner-oracle fixture with invented
+layout IDs and an empty catalog. Its captured reference also occupied field
+zero, which is reserved for the environment tag. The fixture now supplies a
+real tagged environment with a nullable owned capture slot and a typed child
+record. It asserts the descriptor-derived extent and distinct tag/capture
+fields while retaining all clone, list, capability, and final-release checks.
+
 Focused regression command:
 
 ```sh

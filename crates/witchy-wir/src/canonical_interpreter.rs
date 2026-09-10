@@ -2495,8 +2495,20 @@ mod tests {
     fn owner_oracle_preserves_console_capture_and_list_rc_identity() {
         use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, OwnerCapture, OwnerConstructor};
 
-        let environment = LayoutId::from_bytes([9; 32]);
-        let captured_ref = LayoutId::from_bytes([8; 32]);
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).expect("Int layout");
+        let captured_ref = layouts.intern_packed_record(vec![int]).expect("captured record layout");
+        let capture_slot = layouts.intern_runtime_pointer_value_slot(
+            captured_ref, crate::layout::PointerSlot::OwnedNullable,
+        ).expect("optional owned capture slot");
+        let environment = layouts.intern_packed_record(vec![int, capture_slot])
+            .expect("tagged owner environment layout");
+        let environment_bytes = match layouts.get(environment).expect("environment descriptor").size() {
+            crate::layout::LayoutSize::Fixed(bytes) => u64::from(bytes),
+            _ => panic!("owner environment must have a fixed extent"),
+        };
+        let layouts = LayoutBundle::from_interner(&layouts, [environment, captured_ref])
+            .expect("owner layout bundle");
         let console_kind = crate::canonical_safewir::CapabilityKindId::new(0);
         let owner_type = crate::canonical_safewir::GcTypeId::new(10);
         let declaration_signature = FunctionSignatureId::new(1);
@@ -2519,7 +2531,7 @@ mod tests {
                     },
                     OwnerCapture {
                         value_type: ValueType::Ref(captured_ref),
-                        storage: CaptureStorage::EnvironmentField(0),
+                        storage: CaptureStorage::EnvironmentField(1),
                         transfer: CaptureTransfer::CloneManaged,
                     },
                 ],
@@ -2535,7 +2547,7 @@ mod tests {
         let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([41; 32]),
-            layouts: empty_layouts(),
+            layouts,
             signatures: vec![FunctionSignature {
                 id: SIGNATURE,
                 parameters: vec![ValueType::Gc(owner_type)],
@@ -2603,8 +2615,12 @@ mod tests {
         .with_owner_families(vec![family]);
         let checked = check_initial_with_test_witness(candidate).expect("owner metadata remains independently admissible");
         let mut engine = Engine::new(checked.module(), InterpreterConfig::default());
-        engine.objects.insert(0, release_test_object(1, &[]));
-        engine.next_object = 1;
+        let captured_object = engine.allocate(
+            captured_ref, AllocationClass::ReferenceCounted, RuntimeExtent::FixedBytes(8), false,
+        ).expect("captured object");
+        assert_eq!(captured_object, 0);
+        engine.object_mut(captured_object).expect("captured object").cells
+            .insert(CellKey::Field(0), InterpreterValue::Int(7));
         let cap = ValueId::new(0);
         let child = ValueId::new(1);
         let owner = ValueId::new(2);
@@ -2663,6 +2679,11 @@ mod tests {
             owner,
             constructor: ConstructorId(0),
         }, &mut values).expect("clone environment");
+        let environment_object = engine.object_value(environment_value, &values).expect("environment token");
+        let environment_state = engine.object(environment_object).expect("live environment");
+        assert!(matches!(environment_state.extent, RuntimeExtent::FixedBytes(bytes) if bytes == environment_bytes));
+        assert_eq!(environment_state.cells.get(&CellKey::Field(0)), Some(&InterpreterValue::Int(0)));
+        assert_eq!(environment_state.cells.get(&CellKey::Field(1)), Some(&InterpreterValue::ObjectRef(captured_object)));
         engine.execute_owner_operation(&OwnerOperation::Clone {
             destination: cloned,
             owner,
