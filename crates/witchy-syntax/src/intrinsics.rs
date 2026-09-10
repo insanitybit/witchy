@@ -520,15 +520,15 @@ const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
 // authority belongs here. Raw channel IDs and unbound message decoders must not
 // let external callers bypass the typed endpoint's payload agreement.
 const PRIVATE_MESSAGE_SOURCE_BRIDGES: &[&str] = &[
-    "__channel_send_i64",
-    "__channel_recv_i64",
-    "__channel_select2_map",
-    "select2_frame_payload",
-    "select2_frame_decode",
-    "select3_frame_payload",
-    "select3_frame_decode",
-    "select4_frame_payload",
-    "select4_frame_decode",
+    "task.__channel_send_i64",
+    "task.__channel_recv_i64",
+    "task.__channel_select2_map",
+    "chan.select2_frame_payload",
+    "chan.select2_frame_decode",
+    "chan.select3_frame_payload",
+    "chan.select3_frame_decode",
+    "chan.select4_frame_payload",
+    "chan.select4_frame_decode",
 ];
 const DYNAMIC_BRIDGE_CALLERS: &[&str] = &["dynamic"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
@@ -3646,14 +3646,17 @@ pub fn is_meta_impl_block(name: &str) -> bool {
 }
 
 pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
-    if PRIVATE_MESSAGE_SOURCE_BRIDGES.contains(&bare_name) {
-        return Some(MESSAGE_BRIDGE_CALLERS);
-    }
     if canonical_operation_name(bare_name) != bare_name {
         return None;
     }
     let callers = lookup(bare_name)?.private_callers;
     (!callers.is_empty()).then_some(callers)
+}
+
+/// Ordinary source functions have declaration identity, not a reserved global
+/// intrinsic spelling. Call this only after resolving the target's module.
+pub(crate) fn private_source_bridge_callers(resolved_name: &str) -> Option<&'static [&'static str]> {
+    PRIVATE_MESSAGE_SOURCE_BRIDGES.contains(&resolved_name).then_some(MESSAGE_BRIDGE_CALLERS)
 }
 
 #[cfg(test)]

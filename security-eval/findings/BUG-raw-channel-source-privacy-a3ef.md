@@ -66,11 +66,13 @@ Those stronger claims were not tested in this bounded syntax-only slice.
 
 ## Fix and preserved authority
 
-`PRIVATE_MESSAGE_SOURCE_BRIDGES` adds only these nine exact names to
-`private_intrinsic_callers`, using the existing `MESSAGE_BRIDGE_CALLERS` allowlist
-for authenticated `chan` and `task` modules. These remain ordinary source
-functions: no new intrinsic IDs, type recipes, lowering recipes, or casts.
-The existing linker gate handles both calls and function values.
+`PRIVATE_MESSAGE_SOURCE_BRIDGES` lists only these nine qualified std targets.
+The linker checks their resolved declarations, using the existing
+`MESSAGE_BRIDGE_CALLERS` allowlist for authenticated `chan` and `task` modules.
+User-provided std shadows are not mistaken for bundled std declarations.
+These remain ordinary source functions: no new intrinsic IDs, type recipes,
+lowering recipes, or casts. Direct calls and first-class function values,
+including bare imports, cross the same declaration privacy check.
 
 Positive production-link tests retain access for bundled authenticated std
 modules, ordinary typed channel send/receive source, and compiler-owned
@@ -81,6 +83,20 @@ pipeline, Unit storage, or runtime closure storage was changed.
 
 Privacy is not a canonical message type witness. Explicit checked-tag recovery
 is still required when lowering erased messages, independently of this fix.
+
+## Integration follow-up: declaration identity and bare imports
+
+The initial bare-name restriction also rejected an unrelated user function
+named `select2_frame_payload`. A focused positive case reproduced that false
+rejection. Moving the restriction to resolved std declarations revealed another
+missing path: `from chan import select2_frame_payload` followed by binding the
+function as a value was not resolved or checked like a direct call. The focused
+negative case reproduced that source-link admission; it does not establish an
+executed runtime exploit.
+
+Function-value resolution now uses the same checked target resolution as calls.
+The added cases require both direct and first-class user functions to remain
+usable, while direct and first-class bare imports of the std decoder refuse.
 
 ## Focused evidence
 

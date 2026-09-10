@@ -3177,9 +3177,12 @@ fn rewrite_expr(
             if let Some(resolved) = definition_site_target(name, fns, m, line)? {
                 *name = resolved;
             } else if !bound.contains(name.as_str())
-                && fns.get(m).is_some_and(|s| s.contains_key(name.as_str()))
+                && (fns.get(m).is_some_and(|s| s.contains_key(name.as_str()))
+                    || context.bare_imports.is_some_and(|imports| imports.contains_key(name.as_str())))
             {
-                let resolved = format!("{m}.{name}");
+                // Function values cross the same declaration/privacy boundary
+                // as direct calls, including unqualified `from` imports.
+                let resolved = resolve_call(name, context, line)?;
                 *name = if context.definition_site {
                     format!("{DEFINITION_SITE_PREFIX}{resolved}")
                 } else {
@@ -3742,7 +3745,19 @@ fn resolve_call(
     if let Some(resolved) = definition_site_target(name, fns, m, line)? {
         return Ok(resolved);
     }
-    let accept = |resolved: String| -> Result<String, LinkError> { Ok(resolved) };
+    let accept = |resolved: String| -> Result<String, LinkError> {
+        if let Some((provider, function)) = resolved.split_once('.')
+            && !user_std_shadows.contains(provider)
+            && let Some(owners) = crate::intrinsics::private_source_bridge_callers(&resolved)
+            && !owners.contains(&m)
+        {
+            return lerr_at(
+                format!("`{function}` is a compiler-private intrinsic for std/{}`; use the public stdlib surface instead", owners.join(" or std/")),
+                m, line,
+            );
+        }
+        Ok(resolved)
+    };
     check_private_intrinsic_call(name, m, line)?;
     if let Some((modname, fname)) = name.split_once('.') {
         // The prelude modules are importable-by-default everywhere (the link
@@ -5214,6 +5229,26 @@ mod tests {
         ).expect("authenticated chan/task bodies retain private bridge access");
         link_main("import chan\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    chan.send(tx, 7).await\n    let value = chan.recv(rx).await\n    console.print(\"${value}\")\n")
             .expect("ordinary source scheduler and typed channel route still link");
+    }
+
+    #[test]
+    fn raw_channel_privacy_unrelated_user_decoder_name_links() {
+        link_main("fn select2_frame_payload(value: Int) -> Int:\n    value\n\nfn main():\n    let result = select2_frame_payload(7)\n    let callback = select2_frame_payload\n    let again = callback(result)\n")
+            .expect("a user function does not acquire std channel identity from its bare name");
+    }
+
+    #[test]
+    fn raw_channel_privacy_bare_imports_still_rejected() {
+        let mut admitted = Vec::new();
+        assert_raw_channel_privacy(
+            "from chan import select2_frame_payload\n\nfn recover() -> Option(String):\n    select2_frame_payload(None)\n\nfn main():\n    let value = recover()\n",
+            "select2_frame_payload", &mut admitted,
+        );
+        assert_raw_channel_privacy(
+            "from chan import select2_frame_payload\n\nfn main():\n    let callback = select2_frame_payload\n",
+            "select2_frame_payload", &mut admitted,
+        );
+        assert!(admitted.is_empty(), "bare import bypassed declaration privacy: {admitted:?}");
     }
 
     #[test]
