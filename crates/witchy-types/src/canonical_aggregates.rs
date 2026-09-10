@@ -188,16 +188,18 @@ fn definition_fields_ok(
     {
         return false;
     }
-    let instantiated = Type::Named(definition.name.clone(), arguments.to_vec());
-    let Some(key) = aggregate_key(&instantiated) else { return false };
-    let memo_key = (key.clone(), depth, active.iter().cloned().collect());
-    if completed.contains(&memo_key) { return true; }
     // Arguments are part of the concrete instantiation even when a phantom
     // parameter has no field occurrence. Do not let an unused `a` smuggle an
     // unresolved or unsupported type through shape recognition.
     if !arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget, completed)) {
         return false;
     }
+    // Validate arguments before cloning/rendering a key: memo lookup must not
+    // bypass the depth and work limits for an oversized generic argument.
+    let instantiated = Type::Named(definition.name.clone(), arguments.to_vec());
+    let Some(key) = aggregate_key(&instantiated) else { return false };
+    let memo_key = (key.clone(), depth, active.iter().cloned().collect());
+    if completed.contains(&memo_key) { return true; }
     // This recognizes a finite source shape graph, not allocation authority.
     // Recursive occurrences need an owned nominal binding in the layout layer;
     // an inline packed occurrence cannot close the graph this way.
