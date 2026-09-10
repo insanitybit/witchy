@@ -2746,6 +2746,15 @@ impl FunctionLowerer<'_> {
                     join_parameters[parameter_index + 2].value,
                     family,
                 );
+                self.guard_joined_dynamic_extent(
+                    result,
+                    join_parameters[parameter_index + 1].value,
+                    join_parameters[parameter_index + 2].value,
+                    family,
+                )?;
+                if family == DynamicExtentFamily::String {
+                    self.reload_dynamic_extent(result)?;
+                }
             }
         }
         // CFG lanes preserve ownership/shape correspondence, but are not
@@ -3101,6 +3110,15 @@ impl FunctionLowerer<'_> {
                     join_parameters[result_parameter_index + 2].value,
                     *family,
                 );
+                self.guard_joined_dynamic_extent(
+                    result,
+                    join_parameters[result_parameter_index + 1].value,
+                    join_parameters[result_parameter_index + 2].value,
+                    *family,
+                )?;
+                if *family == DynamicExtentFamily::String {
+                    self.reload_dynamic_extent(result)?;
+                }
             }
         }
         Ok(result)
@@ -4870,6 +4888,7 @@ impl FunctionLowerer<'_> {
             self.list_counts.get(&value),
             self.list_capacities.get(&value),
         ) {
+            self.ensure_list_extent(value)?;
             return Ok(Some(AuthenticatedExtentLane {
                 family: DynamicExtentFamily::List,
                 count,
@@ -4885,6 +4904,7 @@ impl FunctionLowerer<'_> {
                 self.string_lengths.get(&value),
                 self.string_capacities.get(&value),
             ) {
+                self.ensure_string_extent(value)?;
                 return Ok(Some(AuthenticatedExtentLane {
                     family: DynamicExtentFamily::String,
                     count,
@@ -6658,7 +6678,14 @@ impl FunctionLowerer<'_> {
         else {
             return Ok(());
         };
-        if layout != string_layout || self.string_lengths.contains_key(&value) {
+        if layout != string_layout {
+            return Ok(());
+        }
+        if let (Some(&length), Some(&capacity)) = (
+            self.string_lengths.get(&value),
+            self.string_capacities.get(&value),
+        ) {
+            self.guard_dynamic_extent(length, capacity, 4, 1)?;
             return Ok(());
         }
         let length = self.fresh(ValueType::Size)?;
@@ -6708,9 +6735,6 @@ impl FunctionLowerer<'_> {
         let ValueType::Ref(layout) = self.values[&value] else {
             return Ok(());
         };
-        if self.list_counts.contains_key(&value) && self.list_capacities.contains_key(&value) {
-            return Ok(());
-        }
         let descriptor = self
             .layouts
             .get(layout)
@@ -6725,6 +6749,13 @@ impl FunctionLowerer<'_> {
             ) if stride != 0 => (data_offset, stride),
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("list extent layout")),
         };
+        if let (Some(&count), Some(&capacity)) = (
+            self.list_counts.get(&value),
+            self.list_capacities.get(&value),
+        ) {
+            self.guard_dynamic_extent(count, capacity, header_bytes, stride_bytes)?;
+            return Ok(());
+        }
         let count = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Load {
             destination: count,
@@ -7140,6 +7171,7 @@ impl FunctionLowerer<'_> {
             destination: capacity,
             value: u64::try_from(items.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         });
+        self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)?;
         let allocation_count = if matches!(element_type, ValueType::Ref(_)) {
             let zero = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
@@ -7241,6 +7273,7 @@ impl FunctionLowerer<'_> {
             destination: capacity,
             value: u64::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         });
+        self.guard_allocation_capacity(capacity, 4, 1)?;
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::StaticData {
             destination: object,
@@ -7256,6 +7289,64 @@ impl FunctionLowerer<'_> {
         self.string_lengths.insert(object, count);
         self.string_capacities.insert(object, capacity);
         Ok(object)
+    }
+
+    fn guard_allocation_capacity(
+        &mut self,
+        capacity: ValueId,
+        header_bytes: u32,
+        stride_bytes: u32,
+    ) -> Result<(), CanonicalLoweringError> {
+        if stride_bytes == 0 {
+            return Err(CanonicalLoweringError::UnsupportedExpression("allocation extent"));
+        }
+        let maximum = self.push_const_size(
+            (u64::from(u32::MAX) - u64::from(header_bytes)) / u64::from(stride_bytes),
+        )?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, capacity, maximum)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        Ok(())
+    }
+
+    fn guard_dynamic_extent(
+        &mut self,
+        count: ValueId,
+        capacity: ValueId,
+        header_bytes: u32,
+        stride_bytes: u32,
+    ) -> Result<(), CanonicalLoweringError> {
+        let count_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, capacity)?;
+        self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)
+    }
+
+    fn guard_joined_dynamic_extent(
+        &mut self,
+        value: ValueId,
+        count: ValueId,
+        capacity: ValueId,
+        family: DynamicExtentFamily,
+    ) -> Result<(), CanonicalLoweringError> {
+        match family {
+            DynamicExtentFamily::String => self.guard_dynamic_extent(count, capacity, 4, 1),
+            DynamicExtentFamily::List => {
+                let ValueType::Ref(layout) = self.values[&value] else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("list extent value"));
+                };
+                let descriptor = self
+                    .layouts
+                    .get(layout)
+                    .ok_or(CanonicalLoweringError::MissingLayout(Type::Named("List".into(), Vec::new())))?;
+                let (header_bytes, stride_bytes) = match (descriptor.header(), descriptor.size()) {
+                    (
+                        HeaderLayout::PackedList { data_offset, .. },
+                        LayoutSize::Dynamic { stride, .. },
+                    ) if stride != 0 => (data_offset, stride),
+                    _ => return Err(CanonicalLoweringError::UnsupportedExpression("list extent layout")),
+                };
+                self.guard_dynamic_extent(count, capacity, header_bytes, stride_bytes)
+            }
+        }
     }
 
     /// Materialize a string value into independently owned storage before it
