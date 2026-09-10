@@ -1,5 +1,64 @@
 # RFC-0165 acceptance ledger
 
+## Current landed state: ownership/closure integration, 2026-09-10
+
+Master `c66509a9a9832bfdfc143f2a4bb145d4b14f366d` landed at
+`2026-09-10T12:04:55Z`, queue change
+`mq-46c8bf0c8f10dce17287dcccbd0ed356c4cc3246`, attempt
+`mqa-ececdf8e797f392bec0525c971120f90f9186cef`, terminal `merged`.
+The gate ran 1,487 tests: all passed, 144 remained skipped under existing policy,
+and no flakes were recorded. Compile check, bug-lint clippy, prose style, and
+Wasm playground build passed. No deferred test was newly excluded.
+
+| Current evidence | Result |
+|---|---|
+| Fresh example check census on that master | 146 admitted / 163 total |
+| Runnable three-legged parity census | 89 agree, 0 disagree |
+| Admitted examples not run by this harness | 57 check-only, not execution evidence |
+| Remaining check refusals | 9 task/channel, 6 Net, 1 regex-span, 1 opt `unique` |
+| Compact production probes | hello (3 lines), wrap (5), jq (7), plugin_host (4), all agree |
+| URL typed-error integration regression | Exact eight-line expectation and parity pass |
+| Native focused operation/manifest evidence | 11 owner tests, 9 manifest tests pass |
+
+The ownership/closure slice includes String/Console captures and closure lists,
+affine transfer/drop handling, runtime owner lifetime checks, ordinary function
+value storage, and nested string joins preserving distinct count/capacity lanes.
+`OwnerOperation` enumeration is shared only for mechanical completeness; the
+ownership traversal, checker, oracle, backend, and manifest retain independent
+semantic handling. Tests enumerate all 12 owner variants, and explicit exhaustive
+matches make missing operation classifications a compilation error.
+
+The two gate refusals were repaired, not filtered: the scalar-var indirect-call
+fixture now supplies its canonical closure layout, and dynamic extent guards
+retain direct count bounds after joins without conflating count with capacity or
+weakening validation. Exact causes and evidence are in
+`security-eval/findings/BUG-2026-09-10-opaque-owner-integration.md`.
+
+The census was run after landing with the same rebuilt binary whose integration
+tree matched master. Reproduction uses the existing absolute warmed target:
+
+```sh
+WITCHY_DEV_TARGET=/private/tmp/witchy-rfc0165-reflect-specialization-target \
+  ./scripts/rfc0165-dev/census.sh
+/private/tmp/witchy-rfc0165-reflect-specialization-target/debug/witchy \
+  parity examples/plugin_host/src/plugin_host.witchy
+```
+
+Fresh census refusal and parity records are in
+`scripts/rfc0165-dev/status/census-fail.txt` and `census-parity.txt`.
+The command printed `check ok=146 fail=17` and `runnable agree: 89 disagree: 0`;
+its final empty disagreement search returns status 1, not a failed parity probe.
+The unrelated older `census.out` file is stale and is not evidence for this run.
+
+Remaining examples: task/channel (`async_tasks`, `channels`, `cooperative_map`,
+`conventions`, `for_await`, `request_reply`, `scope`, `select`, `worker_pool`);
+Net (`capability_rights`, `carried_state`, `redis_capability`, `serve_api`,
+`serve_hello`, `serve_static`); regex spans (`patterns`); `unique` (`opt_mode`).
+They remain precise fail-closed refusals, not covered programs. Next implementation
+work can target these runtime families without reopening the ownership interface.
+Compiler-wide memory safety, optimizer correctness, and full language coverage
+are not established by this landing. Older sections below are historical snapshots.
+
 ## Current closure integration: focused-green, ready for queue (2026-09-10)
 
 This entry supersedes the earlier pending-import notes. The lowerer test imports
