@@ -12,12 +12,12 @@ fn checked(source: &str) -> witchy::pipeline::CheckedModule {
 }
 
 fn compiled_result(module: &witchy::pipeline::CheckedModule) -> Result<Vec<String>, String> {
-    let wasm = codegen::compile_checked_module_binary(module)
+    let artifact = codegen::compile_checked_module_artifact(module)
         .expect_lowered("compile RFC-0087 program");
     let mut runtime = Runtime::batch().expect("create runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 print_int: true,

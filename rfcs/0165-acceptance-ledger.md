@@ -1,5 +1,38 @@
 # RFC-0165 acceptance ledger
 
+## Runtime integration checkpoint, 2026-09-11
+
+The integration branch `impl/rfc0165-task-capture-integration` now includes
+admitted server-worker startup and launch-argument preservation. The fixture
+and argument integration at `f794e1003` passes all four server-worker tests and
+the four previously failing oracle shards: **8 passed**, 16.908 seconds.
+Log: `/tmp/witchy-oracle-fixture-repair.log`. Each shard explicitly installs
+compiler services; uncalled public Net imports use a deny-all fixture, not an
+inferred network grant. The sweep retains independent oracle validation and
+reuses the exact checked module and admitted artifact rather than compiling
+the same source twice. Sixteen deterministic shards preserve the original
+directory-basename corpus and are limited to two concurrent heavy tests.
+
+The prior whole-shard run was **14 passed, 4 failed, 1 timeout**; the four
+functional failures above are repaired. `scope` still exceeded the unchanged
+270-second timeout. No new queue submission or whole-corpus count is claimed.
+The previous catalog candidate's queue event was red at
+`2026-09-11T18:28:32Z`, change `mq-b601813de0afdc34a47255280474fce1c6d8430c`.
+
+The existing RFC-0087 fixture now launches the admitted artifact, preserving
+its owner-bridge metadata. A focused seven-test run passed function-value
+writeback and generator-local synchronous writeback; the latter returns to
+the default gate without changing its expected output. Five tests remain
+deferred with concrete lowering refusals: Result coalescing, nominal dictionary
+keys, two projected writeback cases, and async comprehension `@list_push`.
+Log: `/tmp/witchy-writeback-reactivation.log`. These are coverage gaps, not
+successful parity or optimizer evidence.
+
+The ordinary `vm.serve` path needs separate isolation evidence: a sequential
+stdlib execution can agree on output without launching an isolated worker.
+That runtime family remains in progress. Compiler-wide memory safety and
+optimizer correctness are not established.
+
 ## Task/channel execution: candidate-green, 2026-09-11
 
 Code candidate `c7e9fca50` completes the unchanged `channels` example through
