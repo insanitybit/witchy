@@ -11,6 +11,8 @@ fn operation(name: &str) -> Option<(usize, witchy_wir::canonical_safewir::Capabi
         "__capop.recv_bytes" => (4, SOCKET_CAPABILITY_KIND, 2),
         "__capop.close" => (6, SOCKET_CAPABILITY_KIND, 1),
         "__capop.serve_pool" => (7, LISTENER_CAPABILITY_KIND, 1),
+        "__capop.recv_all" => (8, SOCKET_CAPABILITY_KIND, 1),
+        "__capop.connect" => (9, NET_CAPABILITY_KIND, 2),
         _ => return None,
     })
 }
@@ -26,7 +28,7 @@ pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&
         witchy_syntax::ast::visit::visit_block::<()>(&function.body, &mut |expression| {
             if let Expr::Call { name, .. } = expression && let Some((index, _, _)) = operation(name) {
                 needed.insert(NET_IMPORT_NAMES[index]);
-                if index == 3 || index == 4 { needed.insert(NET_IMPORT_NAMES[5]); }
+                if matches!(index, 3 | 4 | 8) { needed.insert(NET_IMPORT_NAMES[5]); }
             }
             Ok(())
         }).expect("Net import visitor cannot fail");
@@ -48,8 +50,10 @@ pub(super) fn catalog(catalog: CanonicalAbiCatalog, signatures: &mut Vec<Functio
         (vec![socket, text], vec![ValueType::Size], true),
         (vec![socket], vec![], false),
         (vec![listener], vec![], false),
+        (vec![socket], vec![ValueType::Size], false),
+        (vec![net, text], vec![socket], false),
     ];
-    let mut ids = [FunctionSignatureId::new(0); 8];
+    let mut ids = [FunctionSignatureId::new(0); 10];
     for (index, (parameters, results, writes)) in shapes.into_iter().enumerate() {
         let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
         let parameter_effects = parameters.iter().enumerate().filter_map(|(index, ty)| {
@@ -78,7 +82,7 @@ impl FunctionLowerer<'_> {
         let import = *self.host_imports.net.get(NET_IMPORT_NAMES[index])
             .ok_or(CanonicalLoweringError::UnsupportedExpression("missing authenticated Net import"))?;
         let mut arguments = vec![HostCallArgument::Capability(token)];
-        if index == 0 || index == 2 {
+        if matches!(index, 0 | 2 | 9) {
             let text = self.lower_string_argument(&args[1])?;
             let layout = self.string_layout_id()?;
             arguments.push(self.string_slice_argument(text, layout)?);
@@ -91,13 +95,13 @@ impl FunctionLowerer<'_> {
         }
         let result_type = match index {
             0 => Some(ValueType::Capability(LISTENER_CAPABILITY_KIND)),
-            1 => Some(ValueType::Capability(SOCKET_CAPABILITY_KIND)),
-            3 | 4 => Some(ValueType::Size),
+            1 | 9 => Some(ValueType::Capability(SOCKET_CAPABILITY_KIND)),
+            3 | 4 | 8 => Some(ValueType::Size),
             _ => None,
         };
         let result = result_type.map(|ty| self.fresh(ty)).transpose()?;
         self.push_operation(Operation::HostCall { destinations: result.into_iter().collect(), import, arguments });
-        if index != 3 && index != 4 { return Ok(result); }
+        if !matches!(index, 3 | 4 | 8) { return Ok(result); }
 
         // The size call reads ONCE and stages bytes on this authenticated
         // socket. The fill cannot consume another socket's pending receive.

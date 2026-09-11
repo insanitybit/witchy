@@ -24,6 +24,7 @@ pub(in crate::runtime) fn link_mint(linker: &mut Linker<VmState>) -> Result<()> 
 /// authority — `connect_pinned` re-checks the pinned IP against the same
 /// allowlist.
 pub(in crate::runtime) fn link_connect(linker: &mut Linker<VmState>) -> Result<()> {
+    canonical::link_connect(linker)?;
     linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
     linker.func_wrap("witchy", "net_deny", host_net_deny)?;
     linker.func_wrap("witchy", "net_fetch", host_net_fetch)?;
@@ -181,6 +182,11 @@ fn host_net_connect(
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let net = net_authority_ref(&caller, net_ref)?;
+    connect_address(caller, net, addr)
+}
+
+// Both string ABIs use the same policy admission and pinned target dial.
+fn connect_address(mut caller: Caller<'_, VmState>, net: NetAuthority, addr: String) -> Result<Option<Rooted<ExternRef>>> {
     let (tls, host_port) = crate::net::parse_scheme(&addr);
     let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, host_port)
         .map_err(|e| Error::msg(format!("connect: {e}")))?;

@@ -345,11 +345,13 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_recv_line_size" (func $net_recv_line_size_host (param externref) (result i32)))
   (import "witchy" "net_recv_bytes_size" (func $net_recv_bytes_size_host (param externref i64) (result i32)))
   (import "witchy" "net_take_received_into" (func $net_take_received_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "net_recv_all_size" (func $net_recv_all_size_host (param externref) (result i32)))
+  (import "witchy" "net_connect_at" (func $net_connect_at_host (param externref i32 i32) (result externref)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 126;
+pub const IMPORT_COUNT: usize = 128;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -561,6 +563,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_send_slice"
         | "net_recv_line_size"
         | "net_recv_bytes_size"
+        | "net_recv_all_size"
+        | "net_connect_at"
         | "net_take_received_into"
         | "net_listen_tls"
         | "net_accept"
@@ -639,7 +643,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "mint_fetch" => AUTH_FETCH_GRANT,
         "fetch_only" | "fetch_send_len" => AUTH_FETCH,
         "net_fetch" => AUTH_NET_CONNECT,
-        "net_connect"
+        "net_connect" | "net_connect_at"
         | "net_try_connect"
         | "net_resolve_size"
         | "net_connect_pinned"
@@ -652,7 +656,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_recv_line_len"
         | "net_recv_all_len"
         | "net_recv_bytes_len" => AUTH_NET_CONNECT,
-        "net_send_slice" | "net_recv_line_size" | "net_recv_bytes_size" | "net_take_received_into" => AUTH_NET_CONNECT,
+        "net_send_slice" | "net_recv_line_size" | "net_recv_bytes_size" | "net_recv_all_size" | "net_take_received_into" => AUTH_NET_CONNECT,
         "net_listen" | "net_listen_at" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
         "now" | "now_monotonic" => AUTH_CLOCK,

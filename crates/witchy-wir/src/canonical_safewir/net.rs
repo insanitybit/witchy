@@ -5,13 +5,14 @@ pub const NET_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(4);
 pub const LISTENER_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(5);
 pub const SOCKET_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(6);
 
-pub const NET_IMPORT_NAMES: [&str; 8] = [
+pub const NET_IMPORT_NAMES: [&str; 10] = [
     "net_listen_at", "net_accept", "net_send_slice", "net_recv_line_size",
-    "net_recv_bytes_size", "net_take_received_into", "net_close", "serve_pool",
+    "net_recv_bytes_size", "net_take_received_into", "net_close", "serve_pool", "net_recv_all_size",
+    "net_connect_at",
 ];
 
 impl CanonicalAbiCatalog {
-    pub fn with_net_imports(mut self, signatures: [FunctionSignatureId; 8], string_layout: LayoutId) -> Result<Self, String> {
+    pub fn with_net_imports(mut self, signatures: [FunctionSignatureId; 10], string_layout: LayoutId) -> Result<Self, String> {
         use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
         let cap = HostParameterRole::Capability;
         let read = || HostParameterRole::Buffer {
@@ -30,6 +31,8 @@ impl CanonicalAbiCatalog {
             (vec![ExternRef, I32, I32], vec![I32], vec![cap(SOCKET_CAPABILITY_KIND), write()], size(), HostMutation::WriteBuffers, AbiImportAuthority::NetConnect),
             (vec![ExternRef], vec![], vec![cap(SOCKET_CAPABILITY_KIND)], vec![], HostMutation::ReadOnly, AbiImportAuthority::NetConnect),
             (vec![ExternRef], vec![], vec![cap(LISTENER_CAPABILITY_KIND)], vec![], HostMutation::ReadOnly, AbiImportAuthority::NetListen),
+            (vec![ExternRef], vec![I32], vec![cap(SOCKET_CAPABILITY_KIND)], size(), HostMutation::ReadOnly, AbiImportAuthority::NetConnect),
+            (vec![ExternRef, I32, I32], vec![ExternRef], vec![cap(NET_CAPABILITY_KIND), read()], vec![HostResultRole::Capability(SOCKET_CAPABILITY_KIND)], HostMutation::ReadOnly, AbiImportAuthority::NetConnect),
         ];
         for ((name, signature), (params, results, roles, result_roles, mutation, authority)) in
             NET_IMPORT_NAMES.into_iter().zip(signatures).zip(declarations)
