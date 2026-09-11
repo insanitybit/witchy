@@ -316,7 +316,7 @@ fn a_token_of_another_kind_cannot_serve_a_dir_operation() {
             vec![InterpreterValue::capability(0)],
             fixture(&[("f", b"hello")], &[]),
         ),
-        Err(InterpretError::TypeMismatch("capability kind"))
+        Err(InterpretError::TypeMismatch("capability parameter kind"))
     );
 }
 
