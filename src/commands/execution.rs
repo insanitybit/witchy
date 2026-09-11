@@ -711,19 +711,67 @@ fn safewir_oracle_agrees(
             ..Default::default()
         },
     });
-    match (run, compiled) {
-        (Ok(run), Ok(lines)) => {
-            if run.output != *lines {
-                return Err(format!("output differs: oracle {:?}, compiled {:?}", run.output, lines));
-            }
-            if run.leaked_objects > 0 {
-                return Err(format!("{} reference-counted object(s) survived the entry", run.leaked_objects));
-            }
-            Ok(())
+    let output = run.map_err(|error| format!("{error:?}")).and_then(|run| {
+        if run.leaked_objects > 0 {
+            return Err(format!("{} reference-counted object(s) survived the entry", run.leaked_objects));
         }
-        (Err(_), Err(_)) => Ok(()),
-        (Err(error), Ok(_)) => Err(format!("oracle failed where the backend ran: {error:?}")),
-        (Ok(run), Err(error)) => Err(format!("oracle ran ({:?}) where the backend failed: {error}", run.output)),
+        Ok(run.output)
+    });
+    compare_safewir_oracle_outcomes(output, compiled)
+}
+
+fn compare_safewir_oracle_outcomes(
+    oracle: Result<Vec<String>, String>,
+    compiled: &Result<Vec<String>, String>,
+) -> Result<(), String> {
+    match (oracle, compiled) {
+        (Ok(output), Ok(lines)) if output == *lines => Ok(()),
+        (Ok(output), Ok(lines)) => Err(format!("output differs: oracle {output:?}, compiled {lines:?}")),
+        // The backend supplies a rendered error, not an authenticated failure
+        // trace. Even identical text cannot establish equivalent trap causes,
+        // preceding effects, or cleanup. Do not count this as three-leg parity.
+        (Err(oracle), Err(compiled)) => Err(format!(
+            "failure equivalence not established: oracle {oracle}; compiled {compiled}"
+        )),
+        (Err(error), Ok(_)) => Err(format!("oracle failed where the backend ran: {error}")),
+        (Ok(output), Err(error)) => Err(format!("oracle ran ({output:?}) where the backend failed: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod canonical_oracle_error_tests {
+    use super::compare_safewir_oracle_outcomes;
+
+    #[test]
+    fn only_matching_successful_outputs_establish_parity() {
+        let output = vec!["expected".to_owned()];
+        assert_eq!(compare_safewir_oracle_outcomes(Ok(output.clone()), &Ok(output)), Ok(()));
+        assert!(compare_safewir_oracle_outcomes(
+            Ok(vec!["expected".into()]), &Ok(vec!["different".into()])
+        ).is_err());
+    }
+
+    #[test]
+    fn matching_error_text_is_not_a_failure_trace() {
+        let refusal = compare_safewir_oracle_outcomes(
+            Err("ExplicitTrap".into()), &Err("ExplicitTrap".into())
+        ).unwrap_err();
+        assert!(refusal.contains("failure equivalence not established"));
+    }
+
+    #[test]
+    fn unrelated_errors_cannot_be_counted_as_agreement() {
+        let refusal = compare_safewir_oracle_outcomes(
+            Err("ReferenceCountUnderflow(1)".into()), &Err("connection refused".into())
+        ).unwrap_err();
+        assert!(refusal.contains("ReferenceCountUnderflow(1)"));
+        assert!(refusal.contains("connection refused"));
+    }
+
+    #[test]
+    fn one_failed_leg_refuses_parity() {
+        assert!(compare_safewir_oracle_outcomes(Err("ExplicitTrap".into()), &Ok(vec![])).is_err());
+        assert!(compare_safewir_oracle_outcomes(Ok(vec![]), &Err("ExplicitTrap".into())).is_err());
     }
 }
 
