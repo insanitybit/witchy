@@ -798,7 +798,16 @@ pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
         // A call named like a compiler intrinsic (`string.chars`, `list.push`)
         // resolves to the compiler, never to the standard-library wrapper of
         // the same name; that wrapper's body is not part of the program.
-        if !seeds.contains(&name) && witchy_syntax::intrinsics::lookup(&name).is_some() {
+        if !seeds.contains(&name)
+            && matches!(
+                witchy_syntax::intrinsics::lookup(&name),
+                Some(spec)
+                    if !matches!(
+                        spec.lowering,
+                        witchy_syntax::intrinsics::IntrinsicLowering::SourceFunction
+                    )
+            )
+        {
             continue;
         }
         if !scope.insert(name.clone()) {
@@ -1836,6 +1845,33 @@ impl Reflect for Counter:
         assert!(!is_canonical_entry_function(Some("app"), "List__any__task_2eSlot"));
         assert!(!is_canonical_entry_function(Some("app"), "app"), "the module is not a function");
         assert!(is_canonical_entry_function(None, "anything"));
+    }
+
+    #[test]
+    fn canonical_scope_keeps_reachable_source_backed_intrinsics() {
+        let mut module = parse("fn bridge():\n    Nil\n\nfn main():\n    bridge()\n");
+        module.linked_entry = Some("main".to_string());
+        for item in &mut module.items {
+            if let witchy_syntax::ast::Item::Function(function) = item {
+                if function.name == "bridge" {
+                    function.name = "task.__channel_send".to_string();
+                } else if function.name == "main" {
+                    witchy_syntax::ast::visit::visit_block_mut(
+                        &mut function.body,
+                        &mut |expression| {
+                            if let witchy_syntax::ast::Expr::Call { name, .. } = expression
+                                && name == "bridge"
+                            {
+                                *name = "task.__channel_send".to_string();
+                            }
+                            Ok::<_, ()>(())
+                        },
+                    )
+                    .expect("rename test call");
+                }
+            }
+        }
+        assert!(canonical_scope(&module).contains("task.__channel_send"));
     }
 
     /// A rights-qualified capability parameter is inside the canonical ABI
