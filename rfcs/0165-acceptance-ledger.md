@@ -822,3 +822,18 @@ budget test 1 passed. Logs are `/tmp/witchy-consolidated-net-tests.log`,
 `/tmp/witchy-consolidated-tail-tests.log`, and
 `/tmp/witchy-consolidated-driver-budget.log`. This is the resubmission repair,
 not a claim of a green full gate or master landing.
+
+### 2026-09-11 task capture integration: focused evidence, not landed
+
+Integration code `1f870b2c5` on `impl/rfc0165-task-capture-integration`:
+
+- `cargo test -q -p witchy --features witchy-wir/native --test misc rfc0165_oracle::canonical_layout_family_task_tuple_three_legs -- --exact --nocapture`: 1 passed, 181.96s; `/tmp/witchy-task-tuple-integrated-three-leg.log`.
+- Same command prefix with `canonical_net_read_profile:: -- --nocapture`: 3 passed, 1.27s; `/tmp/witchy-net-profile-integrated.log`.
+- Same command prefix with `architecture::root_integration_test_binaries_stay_within_budget -- --exact --nocapture`: 1 passed; `/tmp/witchy-task-integration-driver-budget.log`.
+- These use `RUSTC_WRAPPER= CC=cc CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target taskpolicy -c utility`. The rebuilt target's `debug/witchy parity` agrees for unchanged hello, wrap, and jq (3, 5, and 7 output lines respectively).
+- `carried_state` now checks, but execution diverges with `closure capture has wrong capability kind`; see `security-eval/findings/BUG-2026-09-11-carried-capability-capture-kind.md`. Do not count it as executable parity.
+- `serve_api` now reaches `InitialValidation(CandidateAbi(MissingClosureWitness { closure: 5 }))`. No fallback or witness bypass is permitted.
+- The runtime-parity submission `20ba18bd5ac6a310ae818310e6b537d99fab2fc8` was red at 18:06:08Z, attempt `mqa-a7215cee90d4d30288aa7cf2f9f2579eca63f250`, on `wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog`. Generated ABI documentation repair is separate from the task integration. No merged claim is made.
+
+The unchanged cooperative_map and scope execution probes are pending. No fresh
+whole-corpus count is claimed, and compiler-wide memory safety remains unproven.
