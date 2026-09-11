@@ -7,6 +7,7 @@ use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, Construct
 pub enum OwnerBridgeRecipe {
     Construct(ConstructorId),
     ReadCapability(ConstructorId, CaptureOrdinal),
+    ReadOwner(ConstructorId, CaptureOrdinal),
     ReadCallable(crate::canonical_safewir::FunctionSignatureId),
     Clone(crate::canonical_safewir::FunctionSignatureId),
     Drop(crate::canonical_safewir::FunctionSignatureId),
@@ -25,6 +26,7 @@ impl OwnerBridgeRecipe {
         match operation {
             O::Construct { constructor, .. } => Self::Construct(*constructor),
             O::ReadCapability { constructor, capture, .. } => Self::ReadCapability(*constructor, *capture),
+            O::ReadOwner { constructor, capture, .. } => Self::ReadOwner(*constructor, *capture),
             O::ReadCallable { family, .. } => Self::ReadCallable(*family),
             O::Clone { family, .. } => Self::Clone(*family),
             O::Drop { family, .. } => Self::Drop(*family),
@@ -42,6 +44,7 @@ impl OwnerBridgeRecipe {
         let (tag, first, second) = match self {
             Self::Construct(c) => (0, c.0, 0),
             Self::ReadCapability(c, capture) => (1, c.0, capture.0),
+            Self::ReadOwner(c, capture) => (12, c.0, capture.0),
             Self::ReadCallable(f) => (2, f.get(), 0),
             Self::Clone(f) => (3, f.get(), 0), Self::Drop(f) => (4, f.get(), 0),
             Self::CloneEnvironment(c) => (5, c.0, 0), Self::NewList(f, count) => (6, f.get(), *count),
@@ -64,8 +67,21 @@ pub struct AdmittedOwnerBridge {
     results: Vec<ValueType>,
     payload_result: bool,
     payload_type_index: u32,
+    cleanup_item_type_index: u32,
     cleanup_type_index: u32,
+    cleanup_families: Vec<CleanupFamilyRecipe>,
     callable_indices: Vec<(ConstructorId, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CleanupFamilyRecipe {
+    family: OwnerFamily,
+    payload_type_index: u32,
+}
+
+impl CleanupFamilyRecipe {
+    pub(super) fn family(&self) -> &OwnerFamily { &self.family }
+    pub(super) fn payload_type_index(&self) -> u32 { self.payload_type_index }
 }
 
 impl AdmittedOwnerBridge {
@@ -75,7 +91,9 @@ impl AdmittedOwnerBridge {
     pub fn results(&self) -> &[ValueType] { &self.results }
     pub fn payload_result(&self) -> bool { self.payload_result }
     pub(super) fn payload_type_index(&self) -> u32 { self.payload_type_index }
+    pub(super) fn cleanup_item_type_index(&self) -> u32 { self.cleanup_item_type_index }
     pub(super) fn cleanup_type_index(&self) -> u32 { self.cleanup_type_index }
+    pub(super) fn cleanup_families(&self) -> &[CleanupFamilyRecipe] { &self.cleanup_families }
     pub fn callable_indices(&self) -> &[(ConstructorId, u32)] { &self.callable_indices }
     pub fn name(&self) -> String { format!("b{}", self.recipe.id().get()) }
     pub fn module(&self) -> &'static str { "witchy.private.owner" }
@@ -90,32 +108,58 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
             let error = |operation| LoweringError::UnsupportedOperation { function: function.id, operation };
             let recipe = OwnerBridgeRecipe::of(operation);
             let family = match &recipe {
-                OwnerBridgeRecipe::Construct(id) | OwnerBridgeRecipe::ReadCapability(id, _) | OwnerBridgeRecipe::CloneEnvironment(id) =>
+                OwnerBridgeRecipe::Construct(id) | OwnerBridgeRecipe::ReadCapability(id, _)
+                | OwnerBridgeRecipe::ReadOwner(id, _) | OwnerBridgeRecipe::CloneEnvironment(id) =>
                     source.owner_families().iter().find(|f| f.constructors.iter().any(|c| c.id == *id)),
                 OwnerBridgeRecipe::ReadCallable(id) | OwnerBridgeRecipe::Clone(id) | OwnerBridgeRecipe::Drop(id)
                 | OwnerBridgeRecipe::NewList(id, _) | OwnerBridgeRecipe::ListGet(id) | OwnerBridgeRecipe::ListLength(id)
                 | OwnerBridgeRecipe::CloneList(id) | OwnerBridgeRecipe::ListPush(id) | OwnerBridgeRecipe::DropList(id) =>
                     source.owner_families().iter().find(|f| f.signature == *id),
             }.ok_or_else(|| error("unregistered owner bridge"))?;
-            if family.constructors.iter().any(|c| c.captures.iter().any(|capture| !matches!(capture.value_type,
-                ValueType::Capability(_) | ValueType::Ref(_) | ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit))) {
+            if family.constructors.iter().any(|c| c.captures.iter().any(|capture| !matches!(
+                (capture.value_type, capture.storage),
+                (ValueType::Capability(_) | ValueType::Gc(_), crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_))
+                | (ValueType::Ref(_) | ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit,
+                    crate::canonical_safewir::closure_owner_contract::CaptureStorage::EnvironmentField(_))
+            ))) {
                 return Err(error("opaque owner capture storage kernel"));
             }
             let mut parameters = operation.operands().iter().map(|value| function.value_types.get(value).copied()
                 .ok_or_else(|| error("owner operand type"))).collect::<Result<Vec<_>, _>>()?;
             if matches!(recipe, OwnerBridgeRecipe::Construct(_)) {
-                parameters.retain(|ty| matches!(ty, ValueType::Capability(_)));
+                parameters.retain(|ty| matches!(ty, ValueType::Capability(_) | ValueType::Gc(_)));
                 parameters.insert(0, ValueType::Ref(family.environment));
             }
             let mut results = operation.destinations().iter().map(|value| function.value_types.get(value).copied()
                 .ok_or_else(|| error("owner result type"))).collect::<Result<Vec<_>, _>>()?;
+            if let OwnerBridgeRecipe::ReadOwner(constructor, capture) = &recipe {
+                let captured_type = family.constructors.iter()
+                    .find(|candidate| candidate.id == *constructor)
+                    .and_then(|candidate| candidate.captures.get(capture.0 as usize))
+                    .filter(|capture| matches!(capture.storage, crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_)))
+                    .map(|capture| capture.value_type);
+                if !matches!(captured_type, Some(ValueType::Gc(_))) || results.as_slice() != captured_type.as_slice() {
+                    return Err(error("typed nested owner result"));
+                }
+            }
             let payload_result = matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::CloneEnvironment(_) | OwnerBridgeRecipe::DropList(_));
             if payload_result { results.clear(); }
             let callable_indices = family.constructors.iter().map(|constructor| {
                 source.functions().iter().position(|f| f.id == constructor.function)
                     .map(|index| (constructor.id, index as u32)).ok_or_else(|| error("owner callable body"))
             }).collect::<Result<Vec<_>, _>>()?;
-            let bridge = AdmittedOwnerBridge { recipe, family: family.clone(), parameters, results, callable_indices, payload_result, payload_type_index: 0, cleanup_type_index: 0 };
+            let bridge = AdmittedOwnerBridge {
+                recipe,
+                family: family.clone(),
+                parameters,
+                results,
+                callable_indices,
+                payload_result,
+                payload_type_index: 0,
+                cleanup_item_type_index: 0,
+                cleanup_type_index: 0,
+                cleanup_families: Vec::new(),
+            };
             if source.imports().iter().any(|import| import.id == bridge.id()) {
                 return Err(error("private owner import collision"));
             }
@@ -125,13 +169,30 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
         }
     }
     let first_payload = (source.signatures().len() + source.imports().len() + result.len()) as u32;
-    let mut families = Vec::new();
-    for bridge in &mut result {
-        let index = if let Some(index) = families.iter().position(|id| *id == bridge.family.signature) { index }
-            else { families.push(bridge.family.signature); families.len() - 1 };
-        bridge.payload_type_index = first_payload + index as u32;
+    let mut cleanup_families = Vec::new();
+    let mut cleanup_tags = BTreeSet::new();
+    for family in source.owner_families() {
+        if !cleanup_tags.insert(family.signature) {
+            return Err(LoweringError::UnsupportedOperation {
+                function: FunctionId::new(u32::MAX),
+                operation: "duplicate owner cleanup family",
+            });
+        }
+        cleanup_families.push(CleanupFamilyRecipe {
+            family: family.clone(),
+            payload_type_index: first_payload + cleanup_families.len() as u32,
+        });
     }
-    for bridge in &mut result { bridge.cleanup_type_index = first_payload + families.len() as u32; }
+    let cleanup_item_type_index = first_payload + cleanup_families.len() as u32;
+    for bridge in &mut result {
+        bridge.payload_type_index = cleanup_families.iter()
+            .find(|candidate| candidate.family.signature == bridge.family.signature)
+            .ok_or(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "owner cleanup family" })?
+            .payload_type_index;
+        bridge.cleanup_item_type_index = cleanup_item_type_index;
+        bridge.cleanup_type_index = cleanup_item_type_index + 1;
+        bridge.cleanup_families = cleanup_families.clone();
+    }
     Ok(result)
 }
 
@@ -143,17 +204,26 @@ pub(super) fn append_types(types: &mut TypeSection, bridges: &[AdmittedOwnerBrid
         };
         types.ty().function(parameters, results);
     }
-    let mut emitted = BTreeSet::new();
-    for bridge in bridges {
-        if !emitted.insert(bridge.payload_type_index) { continue; }
-        let slots = payload_slots(bridge.family());
+    if let Some(bridge) = bridges.first() {
+    for family in bridge.cleanup_families() {
+        let slots = payload_slots(family.family());
         let fields = (0..slots).map(|field| wasm_encoder::FieldType {
             element_type: wasm_encoder::StorageType::Val(if field < 2 { ValType::I32 } else { ValType::EXTERNREF }), mutable: false,
         });
     types.ty().struct_(fields);
 }
-if bridges.iter().any(|b| matches!(b.recipe, OwnerBridgeRecipe::DropList(_))) {
-    // Destruction work contains actual payload refs, never owner handles.
+}
+if bridges.iter().any(|b| matches!(b.recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::DropList(_))) {
+    types.ty().struct_([
+        wasm_encoder::FieldType {
+            element_type: wasm_encoder::StorageType::Val(ValType::I32),
+            mutable: false,
+        },
+        wasm_encoder::FieldType {
+            element_type: wasm_encoder::StorageType::Val(ValType::Ref(RefType::ANYREF)),
+            mutable: false,
+        },
+    ]);
     types.ty().array(&wasm_encoder::StorageType::Val(ValType::Ref(RefType::ANYREF)), false);
 }
 Ok(())

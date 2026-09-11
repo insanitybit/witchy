@@ -19,6 +19,23 @@ fn context(function: &Function, local: &LocalLayout, op: &O) -> Result<(Function
     Ok((function, local, bridge, scratch[2]))
 }
 
+fn release_binding(bridge: &AdmittedOwnerBridge, release_import: u32) -> closure_owner_kernel::ReleaseBinding {
+    let families = bridge.cleanup_families().iter().map(|candidate| {
+        closure_owner_kernel::CleanupFamilyBinding {
+            tag: candidate.family().signature.get(),
+            payload_type: candidate.payload_type_index(),
+            environment: candidate.family().environment,
+            environment_field: 0,
+        }
+    }).collect();
+    closure_owner_kernel::ReleaseBinding {
+        release_import,
+        worklist_type: bridge.cleanup_type_index(),
+        item_type: bridge.cleanup_item_type_index(),
+        families,
+    }
+}
+
 pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, layouts: &LayoutInterner, op: &O, imports: &BTreeMap<ImportId, u32>) -> Result<(), EncodeError> {
     use wasm_encoder::Instruction as I;
     let (mut function, local, bridge, payload) = context(function, local, op)?;
@@ -58,7 +75,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
         }
         O::Drop { owner, .. } => {
             closure_owner_kernel::emit_final_release(body, &local, &function, layouts, *owner, payload, ENV,
-                &closure_owner_kernel::ReleaseBinding { release_import: import, payload_type: bridge.payload_type_index(), environment_field: 0 })?;
+                TEMP, &release_binding(&bridge, import))?;
         }
         O::CloneEnvironment { owner, destination, .. } => {
             emit_get(body, &local, function.id, *owner)?;
@@ -68,7 +85,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             emit_set(body, &local, function.id, ENV)?;
             emit_clone_ref(body, &local, *destination, ENV, &function)?;
         }
-        O::ReadCapability { .. } | O::ReadCallable { .. } | O::Clone { .. }
+        O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadCallable { .. } | O::Clone { .. }
         | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. } | O::ListPush { .. } => {
             for value in op.operands() { emit_get(body, &local, function.id, value)?; }
             body.instruction(&I::Call(import));
@@ -76,7 +93,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
         }
 O::DropList { list, .. } => {
     closure_owner_kernel::emit_list_release(body, &local, &function, layouts, *list, payload, ENV, TEMP,
-        &closure_owner_kernel::ReleaseBinding { release_import: import, payload_type: bridge.payload_type_index(), environment_field: 0 }, bridge.cleanup_type_index())?;
+        &release_binding(&bridge, import))?;
 }
 
     }
@@ -115,18 +132,23 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             plan.push(PlanToken::Call(import));
             push_set(plan, &local, *destination)?;
         }
-        O::Drop { owner, .. } | O::CloneEnvironment { owner, .. } => {
+        O::CloneEnvironment { owner, destination, .. } => {
             push_get(plan, &local, *owner)?;
             plan.push(PlanToken::Call(import));
-            if matches!(op, O::Drop { .. }) {
-                plan.extend([PlanToken::LocalTee(payload), PlanToken::RefIsNull, PlanToken::If("Empty".into()), PlanToken::Else, PlanToken::LocalGet(payload)]);
-            }
-            plan.extend([PlanToken::RefCastNonNull(bridge.payload_type_index()), PlanToken::StructGet { struct_type_index: bridge.payload_type_index(), field_index: 0 }]);
+            plan.extend([
+                PlanToken::RefCastNonNull(bridge.payload_type_index()),
+                PlanToken::StructGet { struct_type_index: bridge.payload_type_index(), field_index: 0 },
+            ]);
             push_set(plan, &local, ENV)?;
-            if let O::CloneEnvironment { destination, .. } = op { push_share_plan(plan, &local, *destination, ENV)?; }
-            else { push_drop_ref_plan(plan, &function, layouts, &local, ENV)?; plan.push(PlanToken::End); }
+            push_share_plan(plan, &local, *destination, ENV)?;
         }
-        O::ReadCapability { .. } | O::ReadCallable { .. } | O::Clone { .. }
+        O::Drop { owner, .. } => {
+            closure_owner_kernel::plan_final_release(
+                plan, &local, &function, layouts, *owner, payload, ENV, TEMP,
+                &release_binding(&bridge, import),
+            )?;
+        }
+        O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadCallable { .. } | O::Clone { .. }
         | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. } | O::ListPush { .. } => {
             for value in op.operands() { push_get(plan, &local, value)?; }
             plan.push(PlanToken::Call(import));
@@ -134,7 +156,7 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
         }
 O::DropList { list, .. } => {
     closure_owner_kernel::plan_list_release(plan, &local, &function, layouts, *list, payload, ENV, TEMP,
-        &closure_owner_kernel::ReleaseBinding { release_import: import, payload_type: bridge.payload_type_index(), environment_field: 0 }, bridge.cleanup_type_index())?;
+        &release_binding(&bridge, import))?;
 }
 
     }
