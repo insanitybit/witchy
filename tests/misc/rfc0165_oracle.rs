@@ -597,7 +597,15 @@ fn oracle_agrees_on_the_admitted_examples() {
         // Only programs the foundation subset admits are the oracle's
         // business; refused programs are the census's.
         let Ok(checked) = witchy::resolve_std_only_checked(&source) else { continue };
-        if !matches!(codegen::compile_checked_module_artifact(&checked), codegen::LoweringOutcome::Lowered(_)) {
+        let codegen::LoweringOutcome::Lowered(artifact) =
+            codegen::compile_checked_module_artifact(&checked)
+        else { continue };
+        // The semantic oracle deliberately has no network-I/O world. Net
+        // admission and execution are covered by the bounded real-socket
+        // tests; long-running servers cannot participate in this sweep.
+        if artifact.entry().is_some_and(|entry| entry.capabilities().contains(
+            &witchy_wir::CanonicalEntryCapability::Net,
+        )) {
             continue;
         }
         oracle(&source, &format!("examples/{name}"));
