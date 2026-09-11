@@ -28,10 +28,25 @@ taskpolicy -c utility cargo test -p witchy --features witchy-wir/native \
   --test misc rfc0165_messages:: -- --nocapture
 ```
 
-Exact execution log: `/tmp/witchy-task-cleanup-three-leg-tests.log`. A single
-check-only corpus sweep is pending; no new corpus total is inferred from these
-probes. Merge-queue validation remains pending. Compiler-wide memory safety,
-optimizer correctness, and full language coverage are not established.
+Exact execution log: `/tmp/witchy-task-cleanup-three-leg-tests.log`. One check-only
+sweep using the rebuilt candidate reports **156/163 admitted, 7 refused**.
+This is admission coverage, not a new corpus execution/parity total. Results and
+exact errors are in `/tmp/witchy-task-coverage-checks.log` and
+`/tmp/witchy-task-coverage-refusals.log`.
+
+| Remaining program | First refusal |
+|---|---|
+| `channels/cooperative_map`, `scope` | Task payload tuple containing task/receiver lists has no canonical layout |
+| `conventions` | `list.length` closure capture is not resolved as an authenticated function reference |
+| `capability_rights` | Missing binding for `__capop.recv_all` |
+| `carried_state` | Unsupported `carried_state.Postgres` layout |
+| `serve_api` | Initial candidate ABI validation reports `MissingCanonicalLayouts` |
+| `opt_mode` | `Qualified(Unique, opt_mode.ScanState)` requires agreed-surface conformance |
+
+The slice is submitted as `mq-29858d1a5d4c86cc565f1b91d18c7a526f311b3c`, code
+`c7e9fca50`, submitted tip `880fa27b6`. Terminal merge-queue validation remains
+pending. Compiler-wide memory safety, optimizer correctness, and full language
+coverage are not established.
 
 ## Current integration state, 2026-09-10
 
@@ -722,3 +737,18 @@ known lowerer-test import fix remains pending; this stack is not yet submitted.
 No deferred test was removed: the owner-adjacent deferred reference-list `pop`
 test exercises `unique`, not behavior established by this slice. Compiler-wide
 memory safety and optimizer correctness remain unestablished.
+
+### Task follow-up: checked intrinsic captures (2026-09-11)
+
+Candidate code `2e4d86147` fixes intrinsic closure references by consulting the
+frontend intrinsic catalog after lexical binding resolution. No callable or
+memory authority is inferred by the closure witness.
+
+- Focused test: `cargo test -q -p witchy-types --lib canonical_closure::tests::intrinsic_calls_do_not_become_environment_captures -- --nocapture` passed (1/1).
+- Using `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target`, the rebuilt CLI accepted the unchanged `examples/conventions/src/conventions.witchy` with `witchy check`.
+- `witchy parity examples/conventions/src/conventions.witchy` passed, comparing eight output lines. The command also ran its SafeWIR oracle and required zero surviving oracle RC objects. Logs: `/tmp/witchy-closure-intrinsic-test.log`, `/tmp/witchy-conventions-check.log`, `/tmp/witchy-conventions-parity.log`.
+- This is one newly admitted and executing example, not a fresh corpus total.
+- The submitted task slice `880fa27b6` has a terminal red queue event at `2026-09-11T15:21:25Z`, attempt `mqa-787a7c15c26b98054209058ab035b8fe70507e03`. Its actual failing test is `canonical_layouts::tests::nested_and_capability_aggregate_fields_are_owner_fields` (`UnsupportedType("Outer")`); the other interrupted tests were cancelled by fail-fast. Repair `1013baaa4` is integrated as `04dfe6309`; native-feature and negative linear-capability storage evidence are required before resubmission.
+- Remaining evidence limitation found while checking the parity path: `src/commands/execution.rs::safewir_oracle_agrees` currently accepts any pair of oracle/backend errors. Positive output agreement above is unaffected, but arbitrary dual-error outcomes do not prove matching trap semantics. This must be tightened before claiming complete adversarial parity.
+
+Compiler-wide memory safety and full project completion remain unestablished.
