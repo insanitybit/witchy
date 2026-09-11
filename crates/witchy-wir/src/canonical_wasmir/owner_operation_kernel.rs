@@ -7,7 +7,7 @@ use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, OwnerOper
 const ENV: ValueId = ValueId::new(u32::MAX);
 const TEMP: ValueId = ValueId::new(u32::MAX - 1);
 
-fn context<'a>(function: &'a Function, local: &'a LocalLayout, op: &O) -> Result<(Cow<'a, Function>, Cow<'a, LocalLayout>, &'a AdmittedOwnerBridge, u32), EncodeError> {
+fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Result<(Cow<'a, Function>, Cow<'a, LocalLayout<'a>>, &'a AdmittedOwnerBridge, u32), EncodeError> {
     let error = || EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner kernel context" });
     let bridge = local.owner_bridges.iter().find(|b| b.recipe() == &OwnerBridgeRecipe::of(op)).ok_or_else(error)?;
     let scratch = local.owner_scratch.ok_or_else(error)?;

@@ -1811,19 +1811,22 @@ fn wasm_value_type(
 }
 
 #[derive(Clone)]
-struct LocalLayout {
+struct LocalLayout<'a> {
     owner_scratch: Option<[u32; 3]>,
-    owner_bridges: Vec<AdmittedOwnerBridge>,
+    // Immutable admitted recipes are module-wide, not per-function state.
+    // Copy only references: cleanup recipes contain the complete owner family
+    // graph and deep-cloning them here multiplies that graph by function count.
+    owner_bridges: Vec<&'a AdmittedOwnerBridge>,
     indices: BTreeMap<ValueId, u32>,
     extra_types: Vec<ValType>,
     scratch: Vec<u32>,
 }
 
-fn local_layout(
+fn local_layout<'a>(
     function: &Function,
     signature: &FunctionSignature,
     layouts: &LayoutInterner,
-) -> Result<LocalLayout, EncodeError> {
+) -> Result<LocalLayout<'a>, EncodeError> {
     let entry = function
         .blocks
         .iter()
@@ -3066,7 +3069,7 @@ struct StructuredEmitter<'a> {
     body: &'a mut WasmFunctionEncoder,
     source_function: &'a Function,
     target_function: &'a WasmFunction,
-    layout: &'a LocalLayout,
+    layout: &'a LocalLayout<'a>,
     function_indices: &'a BTreeMap<FunctionId, u32>,
     signature_indices: &'a BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
     import_indices: &'a BTreeMap<ImportId, u32>,
@@ -3950,7 +3953,7 @@ fn encode_function(
     owner_cleanup_function: Option<u32>,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
     let mut layout = local_layout(source_function, signature, layouts)?;
-    layout.owner_bridges = owner_bridges.to_vec();
+    layout.owner_bridges = owner_bridges.iter().collect();
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
     if target_function.entry != source_function.entry {
@@ -5571,7 +5574,7 @@ fn expected_block_operations_plan(
 
 struct PlanEmitter<'a> {
     source_function: &'a Function,
-    layout: &'a LocalLayout,
+    layout: &'a LocalLayout<'a>,
     layouts: &'a LayoutInterner,
     function_indices: &'a BTreeMap<FunctionId, u32>,
     signature_indices: &'a BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
@@ -6353,7 +6356,7 @@ fn expected_function_plan(
     owner_bridges: &[AdmittedOwnerBridge],
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    layout.owner_bridges = owner_bridges.to_vec();
+    layout.owner_bridges = owner_bridges.iter().collect();
     let successors_by_block: BTreeMap<_, _> = function
         .blocks
         .iter()
