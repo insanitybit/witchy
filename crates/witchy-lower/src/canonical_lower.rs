@@ -6698,12 +6698,13 @@ impl FunctionLowerer<'_> {
         Ok(destination)
     }
 
-    /// `option ?? default`: the payload when the tag is `Some`, otherwise
-    /// the default, evaluated only then.
+    /// `value ?? default`: the payload of `Some`/`Ok`, otherwise the
+    /// default, evaluated only on the `None`/`Err` edge. Both checked
+    /// aggregate layouts put the success variant first, with payload slot 1.
     fn lower_coalesce(&mut self, left: &Expr, right: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let left_type = self.expression_type(left)?;
         let shape = scalar_aggregate_shape(&left_type, self.definitions)
-            .filter(|shape| shape.name == "Option")
+            .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
         let object = self.lower_expr(left)?;
         let payload_type = self.field_value_type(&shape.fields[1])?;

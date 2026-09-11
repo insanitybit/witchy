@@ -28,6 +28,13 @@ keys, two projected writeback cases, and async comprehension `@list_push`.
 Log: `/tmp/witchy-writeback-reactivation.log`. These are coverage gaps, not
 successful parity or optimizer evidence.
 
+The subsequent Result-coalescing correction admits the existing multi-var
+return test unchanged: **1 passed**, 0.712 seconds, in
+`/tmp/witchy-result-coalesce-writeback.log`. Coalescing now accepts checked
+`Option` and `Result` layouts through the same guarded success-payload path;
+the default is still evaluated only on the failure edge. This test also
+returns to the default gate. The other four failures above remain deferred.
+
 The ordinary `vm.serve` path needs separate isolation evidence: a sequential
 stdlib execution can agree on output without launching an isolated worker.
 That runtime family remains in progress. Compiler-wide memory safety and
