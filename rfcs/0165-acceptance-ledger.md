@@ -752,3 +752,19 @@ memory authority is inferred by the closure witness.
 - Remaining evidence limitation found while checking the parity path: `src/commands/execution.rs::safewir_oracle_agrees` currently accepts any pair of oracle/backend errors. Positive output agreement above is unaffected, but arbitrary dual-error outcomes do not prove matching trap semantics. This must be tightened before claiming complete adversarial parity.
 
 Compiler-wide memory safety and full project completion remain unestablished.
+
+### Task/Net integration ready for queue (2026-09-11)
+
+Candidate `6e4249f8e` includes the `Outer` source-shape repair, intrinsic closure
+references, bounded Net connect/receive-all, and the capability-storage negative
+probes. It has not yet landed.
+
+- Exact integration command: `RUSTC_WRAPPER= CC=cc CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target taskpolicy -c utility cargo test -q -p witchy-lower --features witchy-wir/native,witchy-wir/raw-encoder-test-api --lib canonical_layouts::tests:: -- --nocapture`.
+- Result: 20 passed, 0 failed. This supersedes the worker-local layout evidence, which was taken with additional family work present. Log: `/tmp/witchy-layout-integrated-native-tests.log`.
+- Capability storage attacks still reject for direct values, nested records, tuples/lists, and packed records. The positive `Outer -> Inner -> Console` route uses opaque owner fields rather than linear slots. The source-projection fixture now uses valid `Nil` and actually reaches its aggregate constructor.
+- Rebuilt integrated CLI at code `44295bd78`: `witchy parity` passed unchanged `hello` (3 lines), `wrap` (5), `jq` (7), and `capability_rights` (2), including their independent SafeWIR oracle leg. Log: `/tmp/witchy-task-net-integrated-probes.log`. Subsequent commits add tests only.
+- Net source commit `875c7aa28`, integrated as `44295bd78`, reports 13 passing focused Net tests plus its receive-all semantic unit test. The executable TCP probe validates exact decoded output and zero heap leaks; boundary cases cover forged/wrong capability kinds, denied connects, bad slices, buffer capacity, duplicate fills, wrong-socket staging, EOF, timeout, UTF-8 chunk splits, and the raw receive cap.
+- Live-network operations still refuse explicitly in the canonical interpreter. A deterministic authenticated socket-fixture adapter is follow-up work; real-socket success is not reported as complete Net three-leg parity.
+
+A new check-only example census is running on this integrated production binary.
+No fresh global runnable/parity total is claimed.
