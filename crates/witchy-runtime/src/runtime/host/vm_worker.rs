@@ -10,6 +10,7 @@ use witchy_test_host::{FixtureHost, HostHandle};
 use super::super::{
     link_capability_imports, memory_of, read_wbytes, read_wbytes_list, slice,
     vmstate_from_caps, Capabilities, DirAuthority, DirBacking, ListenerResource, VmState,
+    AdmittedWorkerModule, WorkerModule, Vm,
 };
 
 /// Register the always-available `vm.*` worker imports (RFC-0032).
@@ -116,7 +117,7 @@ fn host_vm_par_map_run(
         v
     };
     let engine = caller.data().engine.clone();
-    let module = caller.data().module.clone();
+    let module = caller.data().module.module().clone();
     let preempt = caller.data().preempt;
     let results = par_fan_out(&engine, &module, preempt, code_idx, &inputs, run_par_chunk)?;
     let size = 4 + 8 * results.len();
@@ -160,7 +161,7 @@ fn run_par_chunk(
 /// worker.
 fn spawn_worker(
     engine: &Engine,
-    module: &Module,
+    program: &WorkerModule,
     preempt: bool,
     caps: &Capabilities,
     sandboxed: bool,
@@ -168,6 +169,7 @@ fn spawn_worker(
     worker_dirs: Option<Vec<DirAuthority>>,
     limits: StoreLimits,
 ) -> Result<(Store<VmState>, Instance)> {
+    let module = program.module();
     // Workers re-wire the default registry-backed services; threading the
     // parent's handle through the spawn signatures is the follow-up when the
     // implementation moves above the kernel.
@@ -181,6 +183,7 @@ fn spawn_worker(
         preempt,
         Arc::new(super::super::compiler::RegistryCompilerServices),
     )?;
+    state.module = program.clone();
     // Wasm start functions execute inside `instantiate`, so exact delegated
     // authorities must be present before the Store can run any guest code.
     if let Some(dirs) = worker_dirs {
@@ -195,6 +198,11 @@ fn spawn_worker(
     }
     let mut linker: Linker<VmState> = Linker::new(engine);
     link_capability_imports(&mut linker, caps)?;
+    if let WorkerModule::Admitted(program) = program {
+        // Registration mints a fresh instance identity and fresh host owners;
+        // the admission product contains no parent's live GC references.
+        super::closure_owner::register(&mut linker, &program.artifact)?;
+    }
     if sandboxed {
         linker.define_unknown_imports_as_traps(module)?;
     }
@@ -210,7 +218,7 @@ fn sandbox_worker(
 ) -> Result<(Store<VmState>, Instance)> {
     spawn_worker(
         engine,
-        module,
+        &WorkerModule::Unadmitted(module.clone()),
         preempt,
         &Capabilities::default(),
         true,
@@ -238,7 +246,7 @@ fn host_vm_with_dir_run(
         read_wbytes(data, input_ptr)?
     };
     let engine = caller.data().engine.clone();
-    let module = caller.data().module.clone();
+    let module = caller.data().module.module().clone();
     let preempt = caller.data().preempt;
     #[cfg(feature = "test-fixtures")]
     let result = if caller.data().fixture_host.is_some() {
@@ -295,7 +303,7 @@ fn run_with_dir_worker(
     };
     let (mut store, instance) = spawn_worker(
         engine,
-        module,
+        &WorkerModule::Unadmitted(module.clone()),
         preempt,
         &caps,
         true,
@@ -421,7 +429,7 @@ fn host_vm_serve_run(
         (init, requests)
     };
     let engine = caller.data().engine.clone();
-    let module = caller.data().module.clone();
+    let module = caller.data().module.module().clone();
     let preempt = caller.data().preempt;
     let responses = run_serve_worker(&engine, &module, preempt, code_idx, &init, &requests)?;
     let n = responses.len();
@@ -482,7 +490,7 @@ fn host_vm_par_map_bytes_run(
         read_wbytes_list(data, xs_ptr)?
     };
     let engine = caller.data().engine.clone();
-    let module = caller.data().module.clone();
+    let module = caller.data().module.module().clone();
     let preempt = caller.data().preempt;
     let results = par_fan_out(&engine, &module, preempt, code_idx, &inputs, run_par_chunk_bytes)?;
     let size = 4 + 8 * results.len() + results.iter().map(|b| 4 + b.len()).sum::<usize>();
@@ -586,45 +594,83 @@ pub(in crate::runtime) fn listener_resource_ref(
 /// listener. Every worker `accept`s from the one socket and the kernel load-balances
 /// connections, so the server uses all cores. A pool worker (its `worker_listener`
 /// already set) is a no-op here — only the primary spawns the pool.
-fn host_serve_pool(caller: Caller<'_, VmState>, listener_ref_: Option<Rooted<ExternRef>>) -> Result<()> {
-    if caller.data().worker_listener.is_some() {
-        return Ok(());
+pub(in crate::runtime) struct ServerWorkerStartup {
+    ready: std::sync::mpsc::Sender<std::result::Result<(), String>>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+type PendingServerWorker = (
+    std::sync::mpsc::Receiver<std::result::Result<(), String>>,
+    std::sync::mpsc::Sender<()>,
+);
+
+fn await_server_startup(pending: Vec<PendingServerWorker>) -> Result<()> {
+    // A worker announces readiness from its own canonical invocation of
+    // serve_pool, then waits here. Dropping release senders on any failure
+    // cancels startup before any ready worker can enter its accept loop.
+    for (ready, _) in &pending {
+        ready.recv().map_err(|_| Error::msg("server worker exited during startup"))?
+            .map_err(|error| Error::msg(format!("server worker startup failed: {error}")))?;
     }
-    let ListenerResource { listener, tls } = listener_resource_ref(&caller, listener_ref_)?;
-    let listener = (listener, tls);
-    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).max(1);
-    let engine = caller.data().engine.clone();
-    let module = caller.data().module.clone();
-    let caps = caller.data().caps.clone();
-    let preempt = caller.data().preempt;
-    for _ in 1..workers {
-        let (engine, module, caps, listener) =
-            (engine.clone(), module.clone(), caps.clone(), listener.clone());
-        std::thread::spawn(move || {
-            if let Err(e) = run_server_worker(&engine, &module, &caps, preempt, listener) {
-                eprintln!("[serve worker] exited: {e}");
-            }
-        });
+    for (_, release) in pending {
+        release.send(()).map_err(|_| Error::msg("server worker exited before startup release"))?;
     }
     Ok(())
 }
 
+fn host_serve_pool(mut caller: Caller<'_, VmState>, listener_ref_: Option<Rooted<ExternRef>>) -> Result<()> {
+    let ListenerResource { listener, tls } = listener_resource_ref(&caller, listener_ref_)?;
+    let program = caller.data().module.admitted()?.clone();
+    if caller.data().worker_listener.is_some() {
+        if let Some(startup) = caller.data_mut().server_startup.take() {
+            startup.ready.send(Ok(())).map_err(|_| Error::msg("server startup coordinator exited"))?;
+            startup.release.recv().map_err(|_| Error::msg("server worker startup cancelled"))?;
+        }
+        return Ok(());
+    }
+    let listener = (listener, tls);
+    let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).max(1);
+    let engine = caller.data().engine.clone();
+    let caps = caller.data().caps.clone();
+    let preempt = caller.data().preempt;
+    let mut pending = Vec::new();
+    for _ in 1..workers {
+        let (engine, program, caps, listener) =
+            (engine.clone(), program.clone(), caps.clone(), listener.clone());
+        let (ready, received) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        std::thread::Builder::new().spawn(move || {
+            if let Err(e) = run_server_worker(&engine, program, &caps, preempt, listener,
+                ServerWorkerStartup { ready, release: released }) {
+                eprintln!("[serve worker] exited: {e}");
+            }
+        })?;
+        pending.push((received, release));
+    }
+    await_server_startup(pending)
+}
+
 /// Run one `server.serve` pool worker: a fresh VM of the same program + capabilities,
-/// marked with the shared listener (and its TLS config, RFC-0060), re-running `run`
-/// (main) so it rebuilds the routes and enters the accept loop on the shared socket.
+/// marked with the shared listener (and its TLS config, RFC-0060), invoking the
+/// admitted entry so it rebuilds routes and enters the shared accept loop.
 /// Runs until the process exits.
 fn run_server_worker(
     engine: &Engine,
-    module: &Module,
+    program: Arc<AdmittedWorkerModule>,
     caps: &Capabilities,
     preempt: bool,
     listener: (std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>),
+    startup: ServerWorkerStartup,
 ) -> Result<()> {
     // Full capabilities (NOT sandboxed — a server worker is a full copy of the program,
     // like the primary), a generous memory budget, and the shared listener.
+    let ready = startup.ready.clone();
+    let result = (|| {
+    let entry = program.artifact.entry().cloned()
+        .ok_or_else(|| Error::msg("server worker lacks admitted canonical entry metadata"))?;
     let (mut store, instance) = spawn_worker(
         engine,
-        module,
+        &WorkerModule::Admitted(program),
         preempt,
         caps,
         false,
@@ -632,6 +678,50 @@ fn run_server_worker(
         None,
         StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
     )?;
-    let run = instance.get_typed_func::<(), ()>(&mut store, "run")?;
-    run.call(&mut store, ())
+    store.data_mut().server_startup = Some(startup);
+    let mut vm = Vm { store, instance, aborted: false, entry: Some(entry) };
+    vm.run()?;
+    if vm.store.data().server_startup.is_some() {
+        return Err(Error::msg("server worker entry returned before startup rendezvous"));
+    }
+    Ok(())
+    })();
+    if let Err(error) = &result {
+        let _ = ready.send(Err(format!("{error:#}")));
+    }
+    result
+}
+
+#[cfg(test)]
+mod server_startup_tests {
+    use super::*;
+
+    #[test]
+    fn server_workers_refuse_missing_or_export_derived_admission() -> Result<()> {
+        let engine = Engine::default();
+        for wasm in ["(module)", "(module (func (export \"run\")) (func (export \"f0\")))"] {
+            let program = WorkerModule::Unadmitted(Module::new(&engine, wasm)?);
+            let error = match program.admitted() { Ok(_) => panic!("raw module acquired admission"), Err(error) => error };
+            assert!(error.to_string().contains("requires an admitted program with canonical entry metadata"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn server_startup_failure_is_returned_and_cancels_ready_workers() {
+        let (ready, received) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        ready.send(Ok(())).unwrap();
+        let (failed, failure) = std::sync::mpsc::channel();
+        let (cancel, cancelled) = std::sync::mpsc::channel();
+        failed.send(Err("missing private owner recipe".into())).unwrap();
+        let error = await_server_startup(vec![(received, release), (failure, cancel)]).unwrap_err();
+        assert!(error.to_string().contains("missing private owner recipe"));
+        assert!(released.recv().is_err());
+        assert!(cancelled.recv().is_err());
+        let (died, death) = std::sync::mpsc::channel();
+        let (release, _) = std::sync::mpsc::channel();
+        drop(died);
+        assert!(await_server_startup(vec![(death, release)]).is_err());
+    }
 }

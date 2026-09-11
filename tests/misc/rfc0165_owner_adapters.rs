@@ -38,3 +38,47 @@ fn main(console: Console):
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
 }
+
+#[test]
+fn admitted_server_workers_reach_entry_with_fresh_opaque_captures() {
+    use witchy::{codegen, runtime::{Capabilities, Runtime}};
+    let checked = witchy::resolve_std_only_checked(r#"
+fn main(console: Console, net: Net):
+    let log = fn(): console.print("started")
+    let listener = net.listen("127.0.0.1:0")
+    listener.serve_pool()
+    log()
+"#).unwrap();
+    let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("admitted server pool");
+    assert!(!artifact.owner_bridges().is_empty());
+    assert!(artifact.entry().is_some());
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        print: true, quiet: true, net_allow: Some(vec!["127.0.0.1:0".into()]), net_listen: true,
+        ..Default::default()
+    }, 256).unwrap();
+    // serve_pool cannot return until every worker has instantiated its own
+    // opaque owners and invoked its admitted entry through the rendezvous.
+    vm.run().expect("all server workers entered the admitted program");
+    assert_eq!(vm.output(), ["started"]);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+}
+
+#[test]
+fn server_workers_reject_raw_wasm_even_with_genuine_entry_metadata() {
+    use witchy::{codegen, runtime::{Capabilities, Runtime}};
+    let checked = witchy::resolve_std_only_checked(r#"
+fn main(net: Net):
+    let listener = net.listen("127.0.0.1:0")
+    listener.serve_pool()
+"#).unwrap();
+    let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("entry metadata fixture");
+    assert!(artifact.owner_bridges().is_empty());
+    assert_eq!(witchy_wir::canonical_entry_from_wasm(artifact.wasm()).unwrap().as_ref(), artifact.entry());
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn(artifact.wasm(), Capabilities {
+        net_allow: Some(vec!["127.0.0.1:0".into()]), net_listen: true, ..Default::default()
+    }, 256).unwrap();
+    let error = vm.run().expect_err("entry bytes cannot replace sealed admitted worker metadata");
+    assert!(format!("{error:#}").contains("server worker requires an admitted program with canonical entry metadata"));
+}

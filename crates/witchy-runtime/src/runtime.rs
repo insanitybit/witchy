@@ -1275,6 +1275,39 @@ impl SecretMaterial {
 /// means one set of capability host functions.
 const HEAP_POISON: u8 = 0xDB;
 
+/// Keep executable bytes and their sealed admission product inseparable when
+/// cloning a program into a fresh worker. Raw Wasm metadata is not admission.
+#[derive(Clone)]
+enum WorkerModule {
+    Unadmitted(Module),
+    Admitted(Arc<AdmittedWorkerModule>),
+}
+
+struct AdmittedWorkerModule {
+    module: Module,
+    artifact: AdmittedCanonicalArtifact,
+}
+
+impl WorkerModule {
+    fn from_admitted(engine: &Engine, artifact: &AdmittedCanonicalArtifact) -> Result<Self> {
+        Ok(Self::Admitted(Arc::new(AdmittedWorkerModule {
+            module: build_admitted_module(engine, artifact.wasm())?,
+            artifact: artifact.clone(),
+        })))
+    }
+
+    fn module(&self) -> &Module {
+        match self { Self::Unadmitted(module) => module, Self::Admitted(program) => &program.module }
+    }
+
+    fn admitted(&self) -> Result<&Arc<AdmittedWorkerModule>> {
+        match self {
+            Self::Admitted(program) if program.artifact.entry().is_some() => Ok(program),
+            _ => bail!("server worker requires an admitted program with canonical entry metadata"),
+        }
+    }
+}
+
 pub struct VmState {
     id: VmId,
     caps: Capabilities,
@@ -1343,8 +1376,9 @@ pub struct VmState {
     /// op (`vm.par_map`) can instantiate fresh worker VMs on OS threads from inside a
     /// call. `Engine`/`Module` are `Arc`-backed (cheap clone, `Send`+`Sync`).
     engine: Engine,
-    module: Module,
+    module: WorkerModule,
     preempt: bool,
+    server_startup: Option<host::vm_worker::ServerWorkerStartup>,
     #[cfg(feature = "test-fixtures")]
     pub(crate) fixture_host: Option<witchy_test_host::FixtureHost>,
 }
@@ -2161,7 +2195,7 @@ impl Runtime {
             build_module(&self.engine, wasm, self.executable_cache)?
         };
 
-        self.instantiate_module(module, caps, memory_pages_max, entry, None)
+        self.instantiate_module(WorkerModule::Unadmitted(module), caps, memory_pages_max, entry)
     }
 
     /// Spawn a VM from an admitted canonical SafeWIR artifact.
@@ -2176,33 +2210,33 @@ impl Runtime {
         caps: Capabilities,
         memory_pages_max: usize,
     ) -> Result<Vm> {
-        let module = build_admitted_module(&self.engine, artifact.wasm())?;
-        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), Some(artifact))
+        let module = WorkerModule::from_admitted(&self.engine, artifact)?;
+        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned())
     }
 
     fn instantiate_module(
         &mut self,
-        module: Module,
+        module: WorkerModule,
         caps: Capabilities,
         memory_pages_max: usize,
         entry: Option<CanonicalEntry>,
-        artifact: Option<&AdmittedCanonicalArtifact>,
     ) -> Result<Vm> {
         let id = self.next_id;
 
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
-        let state = vmstate_from_caps(
+        let mut state = vmstate_from_caps(
             id,
             &caps,
             limits,
             None,
             &self.engine,
-            &module,
+            module.module(),
             self.preempt,
             self.compiler_services.clone(),
         )?;
+        state.module = module.clone();
 
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -2215,12 +2249,12 @@ impl Runtime {
 
         let mut linker: Linker<VmState> = Linker::new(&self.engine);
         link_capability_imports(&mut linker, &caps)?;
-        if let Some(artifact) = artifact {
-            host::closure_owner::register(&mut linker, artifact)?;
+        if let WorkerModule::Admitted(program) = &module {
+            host::closure_owner::register(&mut linker, &program.artifact)?;
         }
 
         // Ungranted capability imports are rejected here.
-        let instance = linker.instantiate(&mut store, &module)?;
+        let instance = linker.instantiate(&mut store, module.module())?;
 
         // Only commit the id once the VM actually came up.
         self.next_id += 1;
@@ -2619,8 +2653,9 @@ fn vmstate_from_caps(
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),
         engine: engine.clone(),
-        module: module.clone(),
+        module: WorkerModule::Unadmitted(module.clone()),
         preempt,
+        server_startup: None,
         #[cfg(feature = "test-fixtures")]
         fixture_host: None,
     })
