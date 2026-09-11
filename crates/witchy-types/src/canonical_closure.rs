@@ -302,7 +302,7 @@ impl<'a> Builder<'a> {
     }
 
     /// A name a closure body may mention without capturing anything: a checked
-    /// module function or constant, or a compiler-owned capability operation
+    /// module function or constant, or a compiler-owned intrinsic/capability operation
     /// (`__capop.print`, `__capop.listen_tls`, ...). Capability operations are
     /// intrinsics keyed by the frontend's fixed table, not values in scope; the
     /// authority they exercise arrives as the capability argument at the call,
@@ -310,6 +310,7 @@ impl<'a> Builder<'a> {
     /// frontend's, never a spelling the closure builder invents.
     fn is_authenticated_module_reference(&self, name: &str) -> bool {
         self.typed.table().function_type(name).is_some()
+            || witchy_syntax::intrinsics::lookup(name).is_some()
             || witchy_syntax::cap_ops::is_op_name(name)
             || witchy_syntax::ast::is_render_intrinsic(name)
             || self.module.items.iter().any(|item| match item {
@@ -557,6 +558,29 @@ impl TypedModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intrinsic_calls_do_not_become_environment_captures() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn make(xs: List(Int)) -> fn() -> Int:\n    fn(): list.length(xs)\n",
+        ).expect("parse closure calling an intrinsic");
+        let typed = typeck::annotate_checked(module).expect("check intrinsic signature");
+        let manifest = derive_closure_witness(&typed).expect("intrinsic is not a captured binding");
+        let captures = manifest.entries()[0].captures();
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].binding().name(), "xs");
+
+        let mut builder = walk_module(&typed).expect("checked closure");
+        assert!(builder.resolve_capture("list.length").expect("catalog intrinsic").is_none());
+        assert!(matches!(builder.resolve_capture("list.not_an_intrinsic"),
+            Err(ClosureWitnessError::UnresolvedCapture { .. })));
+        // Lexical identity wins even for a name registered by the intrinsic
+        // catalog. Catalog membership never grants a local value authority.
+        let mut binding = builder.entries[0].captures[0].binding.clone();
+        binding.name = "list.length".into();
+        builder.scopes.push(vec![Binding { id: binding, ty: None, borrowed: false }]);
+        assert!(builder.resolve_capture("list.length").expect("lexical shadow").is_some());
+    }
 
     #[test]
     fn own_parameter_capture_uses_checked_value_semantics() {
