@@ -85,22 +85,12 @@ fn run_benchmarks() -> wasmtime::Result<()> {
 
     fn compiled_ms(src: &str, runs: u32) -> f64 {
         let checked = witchy::resolve_std_only_checked(src).expect("resolve and check benchmark");
-        let bytes = codegen::compile_checked_module_binary(&checked)
+        let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("the binary path lowers this benchmark");
         let mut rt = Runtime::new().expect("runtime");
         let start = Instant::now();
         for _ in 0..runs {
-            let mut vm = rt
-                .spawn(
-                    &bytes,
-                    runtime::Capabilities {
-                        print: true,
-                        print_int: true,
-                        ..Default::default()
-                    },
-                    16,
-                )
-                .expect("spawn");
+            let mut vm = spawn_benchmark_iteration(&mut rt, &artifact).expect("spawn");
             vm.run().expect("run");
         }
         start.elapsed().as_secs_f64() * 1000.0 / runs as f64
@@ -143,6 +133,54 @@ fn main() -> Int:
     Ok(())
 }
 
+
+/// Preserve the sealed entry and owner bridges for each fresh benchmark VM.
+fn spawn_benchmark_iteration(
+    runtime: &mut Runtime,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+) -> wasmtime::Result<runtime::Vm> {
+    runtime.spawn_admitted(
+        artifact,
+        runtime::Capabilities {
+            print: true,
+            print_int: true,
+            ..Default::default()
+        },
+        16,
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn remaining_internal_admitted_benchmark_owner_execution() {
+    let source = r#"
+fn make(console: Console, text: String) -> fn() -> Nil:
+    fn(): console.print(text)
+
+fn main(console: Console):
+    let report = make(console, "benchmark capture")
+    report()
+    report()
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("checked benchmark fixture");
+    let expected = vec!["benchmark capture".to_owned(); 2];
+    assert_eq!(
+        interpreter::run_checked_module(&checked, ".", Vec::new())
+            .expect("independent source oracle"),
+        expected,
+    );
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admitted benchmark fixture");
+    assert!(!artifact.owner_bridges().is_empty());
+    let mut runtime = Runtime::new().expect("benchmark runtime");
+    for _ in 0..2 {
+        let mut vm = spawn_benchmark_iteration(&mut runtime, &artifact)
+            .expect("fresh benchmark VM retains owner bridges");
+        vm.run().expect("execute owner-bearing benchmark");
+        assert_eq!(vm.output(), expected);
+        assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+    }
+}
 
 /// Read a 32-byte Ed25519 signing seed from a file holding 64 hex characters.
 fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {

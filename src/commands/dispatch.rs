@@ -531,8 +531,9 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             ("coven_artifact", include_str!("../../projects/coven/src/coven_artifact.witchy")),
             ("coven_typo", include_str!("../../projects/coven/src/coven_typo.witchy")),
         ];
-        // Whole-pipeline cached like `witchy pm` above (see embedded_wasm_cached).
-        let wasm_result = commands::compile::embedded_wasm_cached("coven", || {
+        // Retain the admitted artifact, including its sealed entry and owner
+        // bridges, instead of projecting to unauthenticated launch bytes.
+        let artifact_result = (|| {
             let embedded: std::collections::HashMap<&str, &str> = coven_modules.iter().copied().collect();
             let mut modules: Vec<(String, ast::Module)> = Vec::new();
             let mut loaded: HashSet<String> = HashSet::new();
@@ -559,10 +560,11 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 }
                 modules.push((name, module));
             }
-            pipeline::link_checked(modules, "coven").map_err(|e| e.to_string())
-        });
-        let wasm = match wasm_result {
-            Ok(bytes) => bytes,
+            let checked = pipeline::link_checked(modules, "coven").map_err(|e| e.to_string())?;
+            compile_embedded_coven(&checked)
+        })();
+        let artifact = match artifact_result {
+            Ok(artifact) => artifact,
             Err(e) => { eprintln!("{e}"); std::process::exit(1); }
         };
         // coven runs on the COMPILED WASM tier — the production tier. It has no
@@ -607,7 +609,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 std::process::exit(1);
             }
         };
-        let mut vm = match rt.spawn(&wasm, caps, RUN_MEMORY_PAGES) {
+        let mut vm = match spawn_embedded_coven(&mut rt, &artifact, caps) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("{e}");
@@ -1181,6 +1183,62 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
     }
+}
+
+fn compile_embedded_coven(
+    checked: &pipeline::CheckedModule,
+) -> Result<witchy_wir::AdmittedCanonicalArtifact, String> {
+    match crate::codegen::compile_checked_module_artifact(checked) {
+        crate::codegen::LoweringOutcome::Lowered(artifact) => Ok(artifact),
+        crate::codegen::LoweringOutcome::Unsupported(reason) => {
+            Err(format!("the embedded coven {reason}"))
+        }
+        crate::codegen::LoweringOutcome::Rejected(error) => Err(error.to_string()),
+    }
+}
+
+/// Pass Coven's existing grant and live-output policy through unchanged.
+fn spawn_embedded_coven(
+    runtime: &mut runtime::Runtime,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    caps: runtime::Capabilities,
+) -> wasmtime::Result<runtime::Vm> {
+    runtime.spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
+}
+
+#[cfg(test)]
+#[test]
+fn remaining_internal_admitted_coven_owner_execution() {
+    let source = r#"
+fn make(console: Console, text: String) -> fn() -> Nil:
+    fn(): console.print(text)
+
+fn main(console: Console, args: List(String)):
+    let report = make(console, args[0])
+    report()
+    report()
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("checked Coven fixture");
+    let args = vec!["coven launch argument".to_owned()];
+    let expected = vec!["coven launch argument".to_owned(); 2];
+    let (source_output, source_exit) = crate::interpreter::run_module_exit(
+        checked.module().clone(), ".", Vec::new(), args.clone(), None,
+    ).expect("independent source oracle with argv, not Net grants");
+    assert_eq!(source_output, expected);
+    assert_eq!(source_exit, 0);
+    let artifact = compile_embedded_coven(&checked).expect("admitted Coven fixture");
+    assert!(!artifact.owner_bridges().is_empty());
+    let mut runtime = runtime::Runtime::batch().expect("Coven runtime");
+    let mut vm = spawn_embedded_coven(&mut runtime, &artifact, runtime::Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        args,
+        ..Default::default()
+    }).expect("Coven VM retains the sealed entry and owner bridges");
+    vm.run().expect("execute owner-bearing Coven fixture");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
 }
 
 /// The `host:port` Net-grant authority for a `--trust-issuer-oidc` issuer URL.
