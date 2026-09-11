@@ -1,5 +1,8 @@
 //! Instance-bound owner bridges registered only from an admitted structural recipe.
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use wasmtime::{bail, AsContextMut, ExternRef, OwnedRooted, Result, Rooted};
 
 /// This entry point takes the immutable admitted artifact, not raw Wasm bytes
@@ -12,7 +15,7 @@ pub(in crate::runtime) fn register(
     use wasmtime::{FieldType, FuncType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
     use witchy_wir::canonical_safewir::{ValueType, closure_owner_contract::CaptureStorage};
     use witchy_wir::OwnerBridgeRecipe as R;
-    let instance = Arc::new(());
+    let instance = Arc::new(InstanceIdentity::default());
     let mut families = BTreeMap::new();
     let mut constructors = BTreeMap::new();
     for bridge in artifact.owner_bridges() {
@@ -28,15 +31,21 @@ let mut captures = Vec::new();
 
             for (ordinal, capture) in constructor.captures.iter().enumerate() {
                 if matches!(capture.storage, CaptureStorage::EnvironmentField(_)) { continue; }
-                let (ValueType::Capability(kind), CaptureStorage::OwnerField(field)) = (capture.value_type, capture.storage) else {
+                let CaptureStorage::OwnerField(field) = capture.storage else {
                     bail!("invalid opaque owner capture field");
                 };
                 if field < 2 || field as usize >= slots { bail!("invalid owner capture field order"); }
+                let kind = match capture.value_type {
+                    ValueType::Capability(kind) => CaptureFieldKind::Capability(kind),
+                    ValueType::Gc(owner_type) => CaptureFieldKind::Owner(owner_type),
+                    _ => bail!("invalid opaque owner capture type"),
+                };
                 captures.push(CaptureField { capture: ordinal as u32, field: field as usize, kind });
             }
             constructors.insert(constructor.id.0, Arc::new(Binding {
                 instance: instance.clone(), constructor: Arc::new(()), family: family.clone(),
-                payload_type: StructType::new(linker.engine(), fields)?, capability_fields: captures.into_boxed_slice(),
+                owner_type: bridge.family().owner_type,
+                payload_type: StructType::new(linker.engine(), fields)?, capture_fields: captures.into_boxed_slice(),
             }));
         }
     }
@@ -74,8 +83,8 @@ let mut captures = Vec::new();
 let Some(Val::I32(environment)) = arguments.first() else { bail!("missing checked owner environment"); };
 let mut fields = vec![Val::I32(*environment), Val::I32(code as i32)];
 fields.extend(binding.payload_type.fields().skip(2).map(|_| Val::ExternRef(None)));
-if arguments.len() != binding.capability_fields.len() + 1 { bail!("owner capture arity"); }
-for (field, value) in binding.capability_fields.iter().zip(&arguments[1..]) {
+if arguments.len() != binding.capture_fields.len() + 1 { bail!("owner capture arity"); }
+for (field, value) in binding.capture_fields.iter().zip(&arguments[1..]) {
     fields[field.field] = *value;
 }
 
@@ -99,8 +108,7 @@ for (field, value) in binding.capability_fields.iter().zip(&arguments[1..]) {
                     results[0] = Val::ExternRef(Some(owner));
                 }
                 R::Drop(_) => {
-                    let payload = binding.family_release(&caller, owner(0)?)?;
-                    results[0] = Val::AnyRef(payload.map(|p| p.to_rooted(&mut caller).to_anyref()));
+                    results[0] = Val::AnyRef(binding.release_owner_cleanup_array(&mut caller, owner(0)?)?);
                 }
                 R::CloneEnvironment(_) => {
                     let payload = binding.access::<OwnedRooted<StructRef>, _>(&caller, owner(0)?, |live| Ok(live.payload.as_ref().expect("live payload").clone()))?;
@@ -145,17 +153,29 @@ use super::super::ConsoleCapability;
 // or guest-selected lookup operation. Creating registrations is intentionally
 // unavailable outside this module pending authority review.
 struct Binding {
-    instance: Arc<()>,
+    instance: Arc<InstanceIdentity>,
     constructor: Arc<()>,
     family: Arc<()>,
+    owner_type: witchy_wir::canonical_safewir::GcTypeId,
     payload_type: wasmtime::StructType,
-    capability_fields: Box<[CaptureField]>,
+    capture_fields: Box<[CaptureField]>,
+}
+
+#[derive(Default)]
+struct InstanceIdentity {
+    next_owner: AtomicU64,
 }
 
 struct CaptureField {
     capture: u32,
     field: usize,
-    kind: witchy_wir::canonical_safewir::CapabilityKindId,
+    kind: CaptureFieldKind,
+}
+
+#[derive(Clone, Copy)]
+enum CaptureFieldKind {
+    Capability(witchy_wir::canonical_safewir::CapabilityKindId),
+    Owner(witchy_wir::canonical_safewir::GcTypeId),
 }
 
 fn require_capability(store: impl wasmtime::AsContext, token: Rooted<ExternRef>, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<()> {
@@ -176,13 +196,21 @@ struct Live<P> {
     references: usize,
     payload: Option<P>,
     capabilities: Vec<OwnedRooted<ExternRef>>,
+    owners: Vec<OwnedRooted<ExternRef>>,
 }
 
 struct Owner<P> {
-    instance: Arc<()>,
+    instance: Arc<InstanceIdentity>,
     constructor: Arc<()>,
     family: Arc<()>,
+    owner_type: witchy_wir::canonical_safewir::GcTypeId,
+    creation: u64,
     live: Mutex<Live<P>>,
+}
+
+struct CleanupItem {
+    family_tag: u32,
+    payload: OwnedRooted<wasmtime::StructRef>,
 }
 
 impl Binding {
@@ -197,15 +225,25 @@ impl Binding {
             || self.payload_type.fields().any(|field| field.mutability() != wasmtime::Mutability::Const) {
             bail!("closure payload does not match immutable constructor layout");
         }
-        let mut capabilities = Vec::with_capacity(self.capability_fields.len());
-        for field in &self.capability_fields {
+        let mut capabilities = Vec::new();
+        let mut owners = Vec::new();
+        for field in &self.capture_fields {
             let wasmtime::Val::ExternRef(Some(token)) = payload.field(&mut store, field.field)? else {
-                bail!("closure payload lacks actual capability capture");
+                bail!("closure payload lacks actual opaque capture");
             };
-            capabilities.push(token);
+            match field.kind {
+                CaptureFieldKind::Capability(kind) => {
+                    require_capability(store.as_context(), token, kind)?;
+                    capabilities.push(token.to_owned_rooted(&mut store)?);
+                }
+                CaptureFieldKind::Owner(owner_type) => {
+                    Self::require_owner(store.as_context(), &self.instance, token, owner_type)?;
+                    owners.push(token.to_owned_rooted(&mut store)?);
+                }
+            }
         }
         let payload = payload.to_owned_rooted(&mut store)?;
-        self.seal(&mut store, payload, &capabilities)
+        self.seal_typed(&mut store, payload, capabilities, owners)
     }
 
     // P is the rooted typed GC payload in the eventual bridge. Keeping the
@@ -217,18 +255,65 @@ impl Binding {
         payload: P,
         capabilities: &[Rooted<ExternRef>],
     ) -> Result<Rooted<ExternRef>> {
-        if capabilities.len() != self.capability_fields.len() { bail!("closure capability arity mismatch"); }
+        let capability_fields = self.capture_fields.iter().filter_map(|field| match field.kind {
+            CaptureFieldKind::Capability(kind) => Some(kind),
+            CaptureFieldKind::Owner(_) => None,
+        }).collect::<Vec<_>>();
+        if capabilities.len() != capability_fields.len() { bail!("closure capability arity mismatch"); }
         let mut rooted = Vec::with_capacity(capabilities.len());
-        for (token, field) in capabilities.iter().zip(&self.capability_fields) {
-            require_capability(store.as_context(), *token, field.kind)?;
+        for (token, kind) in capabilities.iter().zip(capability_fields) {
+            require_capability(store.as_context(), *token, kind)?;
             rooted.push(token.to_owned_rooted(&mut store)?);
         }
+        let creation = self.instance.next_owner.fetch_add(1, Ordering::Relaxed);
         ExternRef::new(&mut store, Owner {
             instance: self.instance.clone(),
             constructor: self.constructor.clone(),
             family: self.family.clone(),
-            live: Mutex::new(Live { references: 1, payload: Some(payload), capabilities: rooted }),
+            owner_type: self.owner_type,
+            creation,
+            live: Mutex::new(Live { references: 1, payload: Some(payload), capabilities: rooted, owners: Vec::new() }),
         })
+    }
+
+    fn seal_typed(
+        &self,
+        mut store: impl AsContextMut,
+        payload: OwnedRooted<wasmtime::StructRef>,
+        capabilities: Vec<OwnedRooted<ExternRef>>,
+        owners: Vec<OwnedRooted<ExternRef>>,
+    ) -> Result<Rooted<ExternRef>> {
+        let creation = self.instance.next_owner.fetch_add(1, Ordering::Relaxed);
+        for owner in &owners {
+            let rooted = owner.to_rooted(&mut store);
+            let child_creation = Self::owner_creation(store.as_context(), &self.instance, rooted)?;
+            if child_creation >= creation { bail!("opaque owner graph is not newer-to-older"); }
+        }
+        let mut retained = Vec::with_capacity(owners.len());
+        for owner in &owners {
+            let rooted = owner.to_rooted(&mut store);
+            if let Err(error) = Self::retain_any(store.as_context(), &self.instance, rooted) {
+                for previous in retained.into_iter().rev() {
+                    Self::release_retained_any(store.as_context(), &self.instance, previous)?;
+                }
+                return Err(error);
+            }
+            retained.push(rooted);
+        }
+        let result = ExternRef::new(&mut store, Owner {
+            instance: self.instance.clone(),
+            constructor: self.constructor.clone(),
+            family: self.family.clone(),
+            owner_type: self.owner_type,
+            creation,
+            live: Mutex::new(Live { references: 1, payload: Some(payload), capabilities, owners }),
+        });
+        if result.is_err() {
+            for owner in retained.into_iter().rev() {
+                Self::release_retained_any(store.as_context(), &self.instance, owner)?;
+            }
+        }
+        result
     }
 
     fn access<P: Send + Sync + 'static, R>(
@@ -241,7 +326,8 @@ impl Binding {
         let owner = owner.data(context)?.and_then(|data| data.downcast_ref::<Owner<P>>())
             .ok_or_else(|| wasmtime::Error::msg("not a closure owner"))?;
         if !Arc::ptr_eq(&self.instance, &owner.instance)
-            || !Arc::ptr_eq(&self.constructor, &owner.constructor) {
+            || !Arc::ptr_eq(&self.constructor, &owner.constructor)
+            || self.owner_type != owner.owner_type {
             bail!("foreign closure owner binding");
         }
         let mut live = owner.live.lock().map_err(|_| wasmtime::Error::msg("poisoned closure owner"))?;
@@ -259,7 +345,8 @@ impl Binding {
 
     // capture is a fixed Rust bridge-registration operand, never a Wasm input.
     fn capability<P: Send + Sync + 'static>(&self, store: impl wasmtime::AsContext, owner: Rooted<ExternRef>, capture: u32) -> Result<OwnedRooted<ExternRef>> {
-        let index = self.capability_fields.iter().position(|field| field.capture == capture)
+        let index = self.capture_fields.iter().filter(|field| matches!(field.kind, CaptureFieldKind::Capability(_)))
+            .position(|field| field.capture == capture)
             .ok_or_else(|| wasmtime::Error::msg("not a capability capture"))?;
         self.access::<P, _>(store, owner, |live| {
             live.capabilities.get(index).cloned().ok_or_else(|| wasmtime::Error::msg("missing captured capability"))
@@ -278,13 +365,33 @@ impl Binding {
             live.references -= 1;
             if live.references != 0 { return Ok(None); }
             live.capabilities.clear();
+            live.owners.clear();
             Ok(live.payload.take())
+        })
+    }
+
+    fn owner_capture(
+        &self,
+        store: impl wasmtime::AsContext,
+        owner: Rooted<ExternRef>,
+        capture: u32,
+    ) -> Result<(witchy_wir::canonical_safewir::GcTypeId, OwnedRooted<ExternRef>)> {
+        let mut owner_index = 0;
+        let expected = self.capture_fields.iter().find_map(|field| match field.kind {
+            CaptureFieldKind::Owner(owner_type) if field.capture == capture => Some(owner_type),
+            CaptureFieldKind::Owner(_) => { owner_index += 1; None }
+            CaptureFieldKind::Capability(_) => None,
+        }).ok_or_else(|| wasmtime::Error::msg("not a nested owner capture"))?;
+        self.access::<OwnedRooted<wasmtime::StructRef>, _>(store, owner, |live| {
+            let nested = live.owners.get(owner_index).cloned()
+                .ok_or_else(|| wasmtime::Error::msg("missing nested owner capture"))?;
+            Ok((expected, nested))
         })
     }
 }
 
 struct OwnerList {
-    instance: Arc<()>,
+    instance: Arc<InstanceIdentity>,
     family: Arc<()>,
     live: Mutex<(usize, Option<OwnedRooted<wasmtime::ArrayRef>>)>,
 }
@@ -301,7 +408,8 @@ impl Binding {
         let context = store.as_context();
         let owner = owner.data(context)?.and_then(|data| data.downcast_ref::<Owner<OwnedRooted<wasmtime::StructRef>>>())
             .ok_or_else(|| wasmtime::Error::msg("not a typed closure owner"))?;
-        if !Arc::ptr_eq(&self.instance, &owner.instance) || !Arc::ptr_eq(&self.family, &owner.family) {
+        if !Arc::ptr_eq(&self.instance, &owner.instance) || !Arc::ptr_eq(&self.family, &owner.family)
+            || self.owner_type != owner.owner_type {
             bail!("foreign closure owner family");
         }
         let mut live = owner.live.lock().map_err(|_| wasmtime::Error::msg("poisoned closure owner"))?;
@@ -318,11 +426,143 @@ impl Binding {
 
     fn family_release(&self, store: impl wasmtime::AsContext, owner: Rooted<ExternRef>) -> Result<Option<OwnedRooted<wasmtime::StructRef>>> {
         self.family_access(store, owner, |live| {
+            if live.references == 1 && !live.owners.is_empty() {
+                bail!("nested owner final release requires cleanup worklist");
+            }
             live.references -= 1;
             if live.references != 0 { return Ok(None); }
             live.capabilities.clear();
+            live.owners.clear();
             Ok(live.payload.take())
         })
+    }
+
+    fn any_owner_access<R>(
+        store: impl wasmtime::AsContext,
+        instance: &Arc<InstanceIdentity>,
+        owner: Rooted<ExternRef>,
+        action: impl FnOnce(&mut Live<OwnedRooted<wasmtime::StructRef>>, &Owner<OwnedRooted<wasmtime::StructRef>>) -> Result<R>,
+    ) -> Result<R> {
+        let context = store.as_context();
+        let owner = owner.data(context)?.and_then(|data| data.downcast_ref::<Owner<OwnedRooted<wasmtime::StructRef>>>())
+            .ok_or_else(|| wasmtime::Error::msg("not a typed closure owner"))?;
+        if !Arc::ptr_eq(instance, &owner.instance) { bail!("foreign closure owner instance"); }
+        let mut live = owner.live.lock().map_err(|_| wasmtime::Error::msg("poisoned closure owner"))?;
+        if live.references == 0 { bail!("released closure owner"); }
+        action(&mut live, owner)
+    }
+
+    fn require_owner(
+        store: impl wasmtime::AsContext,
+        instance: &Arc<InstanceIdentity>,
+        owner: Rooted<ExternRef>,
+        expected: witchy_wir::canonical_safewir::GcTypeId,
+    ) -> Result<()> {
+        Self::any_owner_access(store, instance, owner, |_, owner| {
+            if owner.owner_type != expected { bail!("nested closure owner has wrong type"); }
+            Ok(())
+        })
+    }
+
+    fn owner_creation(
+        store: impl wasmtime::AsContext,
+        instance: &Arc<InstanceIdentity>,
+        owner: Rooted<ExternRef>,
+    ) -> Result<u64> {
+        Self::any_owner_access(store, instance, owner, |_, owner| Ok(owner.creation))
+    }
+
+    fn retain_any(
+        store: impl wasmtime::AsContext,
+        instance: &Arc<InstanceIdentity>,
+        owner: Rooted<ExternRef>,
+    ) -> Result<()> {
+        Self::any_owner_access(store, instance, owner, |live, _| {
+            live.references = live.references.checked_add(1)
+                .ok_or_else(|| wasmtime::Error::msg("closure owner reference overflow"))?;
+            Ok(())
+        })
+    }
+
+    fn release_retained_any(
+        store: impl wasmtime::AsContext,
+        instance: &Arc<InstanceIdentity>,
+        owner: Rooted<ExternRef>,
+    ) -> Result<()> {
+        Self::any_owner_access(store, instance, owner, |live, _| {
+            if live.references <= 1 { bail!("retained owner rollback would retire payload"); }
+            live.references -= 1;
+            Ok(())
+        })
+    }
+
+    fn collect_cleanup(
+        mut store: impl AsContextMut,
+        instance: &Arc<InstanceIdentity>,
+        roots: impl IntoIterator<Item = OwnedRooted<ExternRef>>,
+    ) -> Result<Vec<CleanupItem>> {
+        let mut pending = roots.into_iter().collect::<Vec<_>>();
+        pending.reverse();
+        let mut cleanup = Vec::new();
+        while let Some(owner) = pending.pop() {
+            let rooted = owner.to_rooted(&mut store);
+            let released = Self::any_owner_access(store.as_context(), instance, rooted, |live, owner| {
+                live.references -= 1;
+                if live.references != 0 { return Ok(None); }
+                live.capabilities.clear();
+                let payload = live.payload.take().expect("live owner payload");
+                let children = std::mem::take(&mut live.owners);
+                Ok(Some((CleanupItem { family_tag: owner.owner_type.get(), payload }, children)))
+            })?;
+            let Some((item, children)) = released else { continue };
+            cleanup.push(item);
+            for child in children.into_iter().rev() { pending.push(child); }
+        }
+        Ok(cleanup)
+    }
+
+    fn cleanup_array(
+        mut store: impl AsContextMut,
+        cleanup: &[CleanupItem],
+    ) -> Result<Option<Rooted<wasmtime::AnyRef>>> {
+        use wasmtime::{ArrayRef, ArrayRefPre, ArrayType, FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        if cleanup.is_empty() { return Ok(None); }
+        let item_type = StructType::new(store.as_context().engine(), [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::ANYREF.into()),
+        ])?;
+        let item_pre = StructRefPre::new(&mut store, item_type);
+        let mut values = Vec::with_capacity(cleanup.len());
+        for item in cleanup {
+            let payload = item.payload.to_rooted(&mut store).to_anyref();
+            let tagged = StructRef::new(&mut store, &item_pre, &[
+                Val::I32(item.family_tag as i32),
+                Val::AnyRef(Some(payload)),
+            ])?;
+            values.push(Val::AnyRef(Some(tagged.to_anyref())));
+        }
+        let array_type = ArrayType::new(store.as_context().engine(), FieldType::new(Mutability::Const, ValType::ANYREF.into()));
+        let array_pre = ArrayRefPre::new(&mut store, array_type);
+        Ok(Some(ArrayRef::new_fixed(&mut store, &array_pre, &values)?.to_anyref()))
+    }
+
+    fn release_owner_cleanup_items(
+        &self,
+        mut store: impl AsContextMut,
+        owner: Rooted<ExternRef>,
+    ) -> Result<Vec<CleanupItem>> {
+        self.family_access(store.as_context(), owner, |_| Ok(()))?;
+        let root = owner.to_owned_rooted(&mut store)?;
+        Self::collect_cleanup(&mut store, &self.instance, [root])
+    }
+
+    fn release_owner_cleanup_array(
+        &self,
+        mut store: impl AsContextMut,
+        owner: Rooted<ExternRef>,
+    ) -> Result<Option<Rooted<wasmtime::AnyRef>>> {
+        let cleanup = self.release_owner_cleanup_items(&mut store, owner)?;
+        Self::cleanup_array(&mut store, &cleanup)
     }
 
     fn list_access<R>(
@@ -396,7 +636,7 @@ fn push_list(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>, value
     }
     elements.push(value);
     let result = self.new_shared_list(&mut store, &elements)?;
-    if !self.release_list(&mut store, list)?.is_empty() {
+    if !self.release_list_cleanup_items(&mut store, list)?.is_empty() {
         bail!("owner list transfer retired a retained element");
     }
     if self.family_release(store.as_context(), value)?.is_some() {
@@ -409,13 +649,8 @@ fn push_list(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>, value
 // immutable GC array has actual anyrefs; no numeric authority lookup or
 // host-to-guest callback participates in list destruction.
 fn release_list_payload_array(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>) -> Result<Option<Rooted<wasmtime::AnyRef>>> {
-    use wasmtime::{ArrayRef, ArrayRefPre, ArrayType, FieldType, Mutability, Val, ValType};
-    let payloads = self.release_list(&mut store, list)?;
-    if payloads.is_empty() { return Ok(None); }
-    let ty = ArrayType::new(store.as_context().engine(), FieldType::new(Mutability::Const, ValType::ANYREF.into()));
-    let pre = ArrayRefPre::new(&mut store, ty);
-    let values = payloads.iter().map(|payload| Val::AnyRef(Some(payload.to_rooted(&mut store).to_anyref()))).collect::<Vec<_>>();
-    Ok(Some(ArrayRef::new_fixed(&mut store, &pre, &values)?.to_anyref()))
+    let cleanup = self.release_list_cleanup_items(&mut store, list)?;
+    Self::cleanup_array(&mut store, &cleanup)
 }
 
     fn clone_list(&self, store: impl wasmtime::AsContext, list: Rooted<ExternRef>) -> Result<()> {
@@ -428,18 +663,23 @@ fn release_list_payload_array(&self, mut store: impl AsContextMut, list: Rooted<
     // Retires the list first and consumes every element token on final release.
     // Returned payloads are destruction work, not values exposed to the guest;
     // the enclosing kernel must finish their explicit linear-RC teardown.
-    fn release_list(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>) -> Result<Vec<OwnedRooted<wasmtime::StructRef>>> {
+    fn release_list_roots(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>) -> Result<Vec<OwnedRooted<ExternRef>>> {
         let array = self.list_access(store.as_context(), list, |live| {
             live.0 -= 1;
             Ok(if live.0 == 0 { live.1.take() } else { None })
         })?;
         let Some(array) = array else { return Ok(Vec::new()) };
-        let mut final_payloads = Vec::new();
+        let mut roots = Vec::new();
         for index in 0..array.len(store.as_context())? {
             let wasmtime::Val::ExternRef(Some(owner)) = array.get(&mut store, index)? else { bail!("invalid owner list element") };
-            if let Some(payload) = self.family_release(store.as_context(), owner)? { final_payloads.push(payload); }
+            roots.push(owner.to_owned_rooted(&mut store)?);
         }
-        Ok(final_payloads)
+        Ok(roots)
+    }
+
+    fn release_list_cleanup_items(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>) -> Result<Vec<CleanupItem>> {
+        let roots = self.release_list_roots(&mut store, list)?;
+        Self::collect_cleanup(&mut store, &self.instance, roots)
     }
 }
 
@@ -481,7 +721,7 @@ mod tests {
             FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
             FieldType::new(Mutability::Const, ValType::I32.into()),
         ])?;
-        let binding = Binding { instance: Arc::new(()), constructor: Arc::new(()), family: Arc::new(()), payload_type: payload_type.clone(), capability_fields: vec![CaptureField { capture: 0, field: 0, kind: witchy_wir::canonical_safewir::CapabilityKindId::new(0) }].into_boxed_slice() };
+        let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
         let payload_pre = StructRefPre::new(&mut store, payload_type.clone());
         // The integer is ordinary environment data, never used to find a cap.
         let payload = StructRef::new(&mut store, &payload_pre, &[Val::ExternRef(Some(console)), Val::I32(64)])?;
@@ -527,9 +767,9 @@ mod tests {
     fn opaque_owner_lifecycle_and_substitution_negatives() -> Result<()> {
         let mut store = wasmtime::Store::new(&wasmtime::Engine::default(), ());
         let payload_type = wasmtime::StructType::new(store.engine(), [wasmtime::FieldType::new(wasmtime::Mutability::Const, wasmtime::ValType::EXTERNREF.into())])?;
-        let binding = Binding { instance: Arc::new(()), constructor: Arc::new(()), family: Arc::new(()), payload_type: payload_type.clone(), capability_fields: vec![CaptureField { capture: 0, field: 0, kind: witchy_wir::canonical_safewir::CapabilityKindId::new(0) }].into_boxed_slice() };
-        let wrong_constructor = Binding { instance: binding.instance.clone(), constructor: Arc::new(()), family: Arc::new(()), payload_type: payload_type.clone(), capability_fields: vec![CaptureField { capture: 0, field: 0, kind: witchy_wir::canonical_safewir::CapabilityKindId::new(0) }].into_boxed_slice() };
-        let foreign_instance = Binding { instance: Arc::new(()), constructor: binding.constructor.clone(), family: binding.family.clone(), payload_type, capability_fields: vec![CaptureField { capture: 0, field: 0, kind: witchy_wir::canonical_safewir::CapabilityKindId::new(0) }].into_boxed_slice() };
+        let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
+        let wrong_constructor = Binding { instance: binding.instance.clone(), constructor: Arc::new(()), family: Arc::new(()), owner_type: binding.owner_type, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
+        let foreign_instance = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: binding.constructor.clone(), family: binding.family.clone(), owner_type: binding.owner_type, payload_type, capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
         let console = ExternRef::new(&mut store, ConsoleCapability)?;
         let cleanup = Arc::new(AtomicUsize::new(0));
         let owner = binding.seal(&mut store, Payload(cleanup.clone()), &[console])?;
@@ -566,12 +806,13 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let mut store = wasmtime::Store::new(&engine, ());
         let payload_type = StructType::new(&engine, [FieldType::new(Mutability::Const, ValType::EXTERNREF.into())])?;
-        let instance = Arc::new(());
+        let instance = Arc::new(InstanceIdentity::default());
         let family = Arc::new(());
         let make_binding = || Binding {
             instance: instance.clone(), family: family.clone(), constructor: Arc::new(()),
-            payload_type: payload_type.clone(), capability_fields: vec![CaptureField {
-                capture: 0, field: 0, kind: witchy_wir::canonical_safewir::CapabilityKindId::new(0),
+            owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1),
+            payload_type: payload_type.clone(), capture_fields: vec![CaptureField {
+                capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
             }].into_boxed_slice(),
         };
         let first = make_binding();
@@ -594,14 +835,128 @@ mod tests {
         }
         assert!(first.list_get(&mut store, list, 2).is_err());
         first.clone_list(&store, list)?;
-        assert!(first.release_list(&mut store, list)?.is_empty());
-        let final_payloads = first.release_list(&mut store, list)?;
+        assert!(first.release_list_cleanup_items(&mut store, list)?.is_empty());
+        let final_payloads = first.release_list_cleanup_items(&mut store, list)?;
         assert_eq!(final_payloads.len(), 2, "both element tokens need kernel teardown");
         assert!(first.list_get(&mut store, list, 0).is_err());
         assert!(first.clone_list(&store, list).is_err());
-        assert!(first.release_list(&mut store, list).is_err());
+        assert!(first.release_list_cleanup_items(&mut store, list).is_err());
         assert!(first.family_retain(&store, a).is_err());
         assert!(second.family_retain(&store, b).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn nested_owner_fields_retain_read_and_cleanup_in_capture_order() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = Arc::new(InstanceIdentity::default());
+        let child_type = witchy_wir::canonical_safewir::GcTypeId::new(41);
+        let outer_type = witchy_wir::canonical_safewir::GcTypeId::new(42);
+        let child_payload_type = StructType::new(&engine, [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+        ])?;
+        let outer_payload_type = StructType::new(&engine, [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+            FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+        ])?;
+        let child = Binding {
+            instance: instance.clone(), constructor: Arc::new(()), family: Arc::new(()),
+            owner_type: child_type, payload_type: child_payload_type.clone(), capture_fields: Box::new([]),
+        };
+        let outer = Binding {
+            instance: instance.clone(), constructor: Arc::new(()), family: Arc::new(()),
+            owner_type: outer_type, payload_type: outer_payload_type.clone(),
+            capture_fields: vec![
+                CaptureField { capture: 0, field: 2, kind: CaptureFieldKind::Owner(child_type) },
+                CaptureField { capture: 1, field: 3, kind: CaptureFieldKind::Capability(
+                    witchy_wir::canonical_safewir::CapabilityKindId::new(0),
+                ) },
+            ].into_boxed_slice(),
+        };
+        let child_pre = StructRefPre::new(&mut store, child_payload_type);
+        let child_payload = StructRef::new(&mut store, &child_pre, &[Val::I32(7), Val::I32(11)])?;
+        let child_owner = child.seal_gc(&mut store, child_payload)?;
+        let console = ExternRef::new(&mut store, ConsoleCapability)?;
+        let outer_pre = StructRefPre::new(&mut store, outer_payload_type);
+        let outer_payload = StructRef::new(&mut store, &outer_pre, &[
+            Val::I32(13), Val::I32(17), Val::ExternRef(Some(child_owner)), Val::ExternRef(Some(console)),
+        ])?;
+        let outer_owner = outer.seal_gc(&mut store, outer_payload)?;
+
+        let (actual_type, captured) = outer.owner_capture(&store, outer_owner, 0)?;
+        assert_eq!(actual_type, child_type);
+        let captured = captured.to_rooted(&mut store);
+        child.family_retain(&store, captured)?;
+        assert!(child.release_owner_cleanup_items(&mut store, child_owner)?.is_empty());
+        assert!(child.release_owner_cleanup_items(&mut store, captured)?.is_empty());
+        let cleanup = outer.release_owner_cleanup_items(&mut store, outer_owner)?;
+        assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [outer_type.get(), child_type.get()]);
+
+        let child_payload = StructRef::new(&mut store, &child_pre, &[Val::I32(19), Val::I32(23)])?;
+        let child_owner = child.seal_gc(&mut store, child_payload)?;
+        let outer_payload = StructRef::new(&mut store, &outer_pre, &[
+            Val::I32(29), Val::I32(31), Val::ExternRef(Some(child_owner)), Val::ExternRef(Some(console)),
+        ])?;
+        let outer_owner = outer.seal_gc(&mut store, outer_payload)?;
+        let list = outer.new_shared_list(&mut store, &[outer_owner])?;
+        assert!(child.release_owner_cleanup_items(&mut store, child_owner)?.is_empty());
+        assert!(outer.release_owner_cleanup_items(&mut store, outer_owner)?.is_empty());
+        let cleanup = outer.release_list_cleanup_items(&mut store, list)?;
+        assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [outer_type.get(), child_type.get()]);
+        Ok(())
+    }
+
+    #[test]
+    fn nested_owner_construction_rejects_substitution_without_retaining() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = Arc::new(InstanceIdentity::default());
+        let child_type = witchy_wir::canonical_safewir::GcTypeId::new(51);
+        let payload_type = StructType::new(&engine, [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+        ])?;
+        let outer_payload_type = StructType::new(&engine, [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+        ])?;
+        let child = Binding {
+            instance: instance.clone(), constructor: Arc::new(()), family: Arc::new(()),
+            owner_type: child_type, payload_type: payload_type.clone(), capture_fields: Box::new([]),
+        };
+        let rejecting_outer = |instance: Arc<InstanceIdentity>, expected| Binding {
+            instance, constructor: Arc::new(()), family: Arc::new(()),
+            owner_type: witchy_wir::canonical_safewir::GcTypeId::new(52),
+            payload_type: outer_payload_type.clone(),
+            capture_fields: vec![CaptureField { capture: 0, field: 2, kind: CaptureFieldKind::Owner(expected) }].into_boxed_slice(),
+        };
+        let child_pre = StructRefPre::new(&mut store, payload_type);
+        let outer_pre = StructRefPre::new(&mut store, outer_payload_type.clone());
+
+        let child_payload = StructRef::new(&mut store, &child_pre, &[Val::I32(1), Val::I32(2)])?;
+        let owner = child.seal_gc(&mut store, child_payload)?;
+        let wrong_type = rejecting_outer(instance.clone(), witchy_wir::canonical_safewir::GcTypeId::new(999));
+        let payload = StructRef::new(&mut store, &outer_pre, &[Val::I32(3), Val::I32(4), Val::ExternRef(Some(owner))])?;
+        assert!(wrong_type.seal_gc(&mut store, payload).is_err());
+        assert_eq!(child.release_owner_cleanup_items(&mut store, owner)?.len(), 1, "failed type validation retained the child");
+
+        let foreign_child = Binding {
+            instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()),
+            owner_type: child_type, payload_type: child.payload_type.clone(), capture_fields: Box::new([]),
+        };
+        let child_payload = StructRef::new(&mut store, &child_pre, &[Val::I32(5), Val::I32(6)])?;
+        let owner = foreign_child.seal_gc(&mut store, child_payload)?;
+        let outer = rejecting_outer(instance, child_type);
+        let payload = StructRef::new(&mut store, &outer_pre, &[Val::I32(7), Val::I32(8), Val::ExternRef(Some(owner))])?;
+        assert!(outer.seal_gc(&mut store, payload).is_err());
+        assert_eq!(foreign_child.release_owner_cleanup_items(&mut store, owner)?.len(), 1, "failed instance validation retained the child");
         Ok(())
     }
 }
