@@ -34,3 +34,14 @@ host-minted capability field. Do not relax the host capability-kind check or
 authorize arbitrary externrefs. Require the unchanged example to agree on the
 source, admitted-Wasm, and independent-oracle legs, with ownership cleanup.
 Successful admission alone is not executable coverage or soundness evidence.
+
+## Correction and focused evidence
+
+Integration commit `bf8d399a3` adds the missing existing Net kind to runtime
+capture authentication, requiring a host `NetAuthority`. `Postgres` remains
+an owned aggregate, never a host capability token. Wrong kinds, forged integer
+externrefs, and substituting the wrapper for its field are rejected.
+`carried_state_unchanged_expected_three_legs` passes with an explicit reject-all
+Net grant, expected output, and zero oracle/Wasm leaks. The combined integration
+run recorded 19 passing tests in `/tmp/witchy-task-net-integrated-focus.log`.
+Landing remains pending.

@@ -837,3 +837,11 @@ Integration code `1f870b2c5` on `impl/rfc0165-task-capture-integration`:
 
 The unchanged cooperative_map and scope execution probes are pending. No fresh
 whole-corpus count is claimed, and compiler-wide memory safety remains unproven.
+
+### 2026-09-11 task/Net integration checkpoint
+
+- Unchanged `cooperative_map` and `scope` now agree through CLI parity, with 4 and 5 output lines respectively. The compact hello/wrap/jq set also agrees after the runtime integration.
+- Code `bf8d399a3` authenticates captured Net fields without treating their owned wrappers as host tokens. `7d5702619` fixes explicit close after peer EOF, with a source/Wasm/oracle completion barrier. `cdfc9351b` stops counting arbitrary paired oracle/backend failures as agreement; structured failure/effect equivalence remains unimplemented, not assumed.
+- The combined native-enabled nextest selection passed 19/19 tests in 7.182s after a 35.03s build. Evidence: `/tmp/witchy-task-net-integrated-focus.log`. It covers `canonical_oracle_error_tests::`, `canonical_net_fixture::`, `canonical_net_read_profile::`, `carried_state_unchanged_expected_three_legs`, the ABI catalog, and the root-driver budget, in the `witchy` bin and `misc` driver.
+- The catalog submission was red at 18:28:32Z, candidate `768fd4ffc9aeb81681d858f8fcd04d3a443c86ae`: 2184 passed, one aggregate oracle sweep timed out at 270s. Log: `state/merge-queue/logs/20260911-142149-impl~rfc0165-runtime-parity-catalog-38402-91.log`. No timeout increase, exclusion, or assertion weakening is being used as a repair.
+- Duplicate admission in that sweep is being removed; the independent planner's per-block layout/catalog copying is the next measured repeated-work candidate. The exact sweep probe is pending. `serve_api` still needs its closure witness repaired. No fresh whole-corpus count or merged completion is claimed.
