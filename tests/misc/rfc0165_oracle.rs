@@ -615,6 +615,11 @@ fn oracle_agrees_on_the_admitted_examples() {
 }
 
 fn assert_opaque_closure_three_legs(source: &str, expected: &[&str]) {
+    assert_opaque_closure_three_legs_with_caps(source, expected,
+        Capabilities { print: true, quiet: true, ..Default::default() });
+}
+
+fn assert_opaque_closure_three_legs_with_caps(source: &str, expected: &[&str], caps: Capabilities) {
     let checked = witchy::resolve_std_only_checked(source).expect("opaque closure source checks");
     let expected = expected.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
     assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new()).expect("source execution"), expected);
@@ -623,14 +628,26 @@ fn assert_opaque_closure_three_legs(source: &str, expected: &[&str]) {
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
     let validated = codegen::validate_checked_module_for_oracle(&checked).expect("source-bound oracle validation");
     let capabilities = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
-    let result = witchy_wir::canonical_interpreter::interpret_program(&validated, function, capabilities, Default::default()).expect("opaque closure oracle");
+    let mut config = InterpreterConfig::default();
+    config.fixture.net_grants = usize::from(caps.net_allow.is_some()) + caps.net_grants.len();
+    let result = witchy_wir::canonical_interpreter::interpret_program(&validated, function, capabilities, config).expect("opaque closure oracle");
     assert_eq!(result.output, expected);
     assert_eq!(result.leaked_objects, 0);
     let mut runtime = Runtime::batch().unwrap();
-    let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256).expect("opaque closure admitted Wasm");
+    let mut vm = runtime.spawn_admitted(&artifact, caps, 256).expect("opaque closure admitted Wasm");
     vm.run().expect("opaque closure Wasm execution");
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+}
+
+#[test]
+fn carried_state_unchanged_expected_three_legs() {
+    assert_opaque_closure_three_legs_with_caps(
+        include_str!("../../examples/carried_state/src/carried_state.witchy"),
+        &["ok: counted rows in users", "denied: secrets is outside this handle (scoped to users)"],
+        // Carry a real Net token, but authorize no network destination.
+        Capabilities { print: true, quiet: true, net_allow: Some(Vec::new()), ..Default::default() },
+    );
 }
 
 #[test]

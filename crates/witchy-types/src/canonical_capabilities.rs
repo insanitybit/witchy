@@ -107,4 +107,21 @@ mod tests {
         definition.variants[0].fields.push(named("Dir"));
         assert_eq!(representation(&named("ConfigDir"), &definitions), None);
     }
+
+    #[test]
+    fn carried_net_record_is_an_aggregate_not_a_host_capability_brand() {
+        let definitions = definitions("capability Postgres:\n    net: Net[Connect, Tcp]\n    table: String\ncapability BrandedNet from Net\n");
+        let postgres = named("Postgres");
+        assert!(definitions["Postgres"].sealed);
+        assert!(definitions["Postgres"].is_capability);
+        assert_eq!(brand_payload(&postgres, &definitions), None);
+        assert_eq!(representation(&postgres, &definitions), None);
+        assert_eq!(representation(&Type::Named("Option".into(), vec![postgres.clone()]), &definitions), None);
+        assert!(crate::canonical_aggregates::is_v1_field_type(&postgres, &definitions));
+        let fields = &definitions["Postgres"].variants[0].fields;
+        assert_eq!(fields.len(), 2);
+        assert_eq!(representation(&fields[0], &definitions), Some(CapabilityRepresentation::Direct(CapabilityKind::Net)));
+        assert_eq!(fields[1], named("String"));
+        assert_eq!(representation(&named("BrandedNet"), &definitions), Some(CapabilityRepresentation::Direct(CapabilityKind::Net)));
+    }
 }

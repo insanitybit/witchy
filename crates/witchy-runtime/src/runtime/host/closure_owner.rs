@@ -244,6 +244,8 @@ fn require_capability(store: impl wasmtime::AsContext, token: Rooted<ExternRef>,
         1 => data.is::<super::super::DirAuthority>(),
         2 => data.is::<super::super::EnvAuthority>(),
         3 => data.is::<super::super::FileAuthority>(),
+        id if id == witchy_wir::canonical_safewir::NET_CAPABILITY_KIND.get() =>
+            data.is::<super::super::NetAuthority>(),
         _ => false,
     };
     if !matches { bail!("closure capture has wrong capability kind"); }
@@ -959,6 +961,54 @@ mod tests {
         let pre = wasmtime::StructRefPre::new(&mut *store, binding.payload_type.clone());
         let payload = wasmtime::StructRef::new(&mut *store, &pre, fields)?;
         binding.seal_gc(store, payload)
+    }
+
+    #[test]
+    fn carried_net_capture_requires_host_kind_not_wrapper_authority() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructType, Val, ValType};
+        use witchy_wir::canonical_safewir::{CapabilityKindId, NET_CAPABILITY_KIND};
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let (mut wrapper, mut outer) = list_capture_bindings(&engine)?;
+        wrapper.payload_type = StructType::new(&engine, [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+        ])?;
+        wrapper.capture_fields = vec![CaptureField {
+            capture: 0, field: 2, kind: CaptureFieldKind::Capability(NET_CAPABILITY_KIND),
+        }].into_boxed_slice();
+        outer.capture_fields[0].kind = CaptureFieldKind::Owner(wrapper.owner_type);
+        let net = ExternRef::new(&mut store, super::super::super::NetAuthority { allow: Vec::new() })?;
+        let console = ExternRef::new(&mut store, ConsoleCapability)?;
+        let forged = ExternRef::new(&mut store, 4_i32)?;
+        require_capability(&store, net, NET_CAPABILITY_KIND)?;
+        assert!(require_capability(&store, net, CapabilityKindId::new(0)).is_err());
+        assert!(require_capability(&store, net, CapabilityKindId::new(u32::MAX)).is_err());
+        for invalid in [console, forged] {
+            let error = test_seal(&wrapper, &mut store,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(invalid))]).unwrap_err();
+            assert!(error.to_string().contains("closure capture has wrong capability kind"));
+        }
+        let owner = test_seal(&wrapper, &mut store,
+            &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(net))])?;
+        // Possessing an authenticated aggregate containing Net is not itself
+        // possession of a host Net token, nor can Net stand in for that owner.
+        assert!(require_capability(&store, owner, NET_CAPABILITY_KIND).is_err());
+        assert!(test_seal(&wrapper, &mut store,
+            &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(owner))]).is_err());
+        assert!(test_seal(&outer, &mut store,
+            &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(net))]).is_err());
+        let captured = test_seal(&outer, &mut store,
+            &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(owner))])?;
+        assert!(wrapper.release_owner_cleanup_items(&mut store, owner)?.is_empty());
+        let actual = wrapper.capability::<OwnedRooted<wasmtime::StructRef>>(&store, owner, 0)?;
+        assert!(Rooted::ref_eq(&store, &net, &actual)?);
+        let cleanup = outer.release_owner_cleanup_items(&mut store, captured)?;
+        assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [92, 91]);
+        assert!(wrapper.family_retain(&store, owner).is_err());
+        assert!(outer.family_retain(&store, captured).is_err());
+        Ok(())
     }
 
     #[test]
