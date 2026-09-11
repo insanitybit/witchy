@@ -49,7 +49,8 @@ fn net_fixture_transcript_is_ordered_exact_and_cannot_reuse_socket_ids() {
     state.close(&socket).unwrap();
     state.close(&socket).unwrap();
     assert_eq!(state.send(&socket, b"x"), Err(refused(OracleNetError::ClosedSocket)));
-    assert_eq!(state.receive(&socket, Receive::All, RECEIVE_LIMIT).unwrap(), 0);
+    assert_eq!(state.receive(&socket, Receive::All, RECEIVE_LIMIT), Err(InterpretError::UnsupportedOperation("Net fixture post-close receive")));
+    assert_eq!(state.receive(&socket, Receive::Bytes(0), RECEIVE_LIMIT).unwrap(), 0);
     assert_eq!(take(&mut state, &socket), b"");
     assert_eq!(state.open(&state.token(Resource::Grant(0)), "fixture:80", false), Err(refused(OracleNetError::DuplicateResource)));
 }
@@ -127,7 +128,7 @@ fn net_fixture_close_discards_only_own_ingress_and_records_each_event_once() {
         }
         state.close(&socket).unwrap();
         assert!(state.sockets[&7].closed);
-        assert!(state.sockets[&7].eof);
+        assert!(!state.sockets[&7].eof, "local shutdown is not observed peer EOF");
         assert_eq!(state.chunk_offset, 0);
         assert_eq!(state.finish().unwrap(), expected, "discarded wire events remain in the exact trace");
         if count != 0 {
@@ -136,11 +137,39 @@ fn net_fixture_close_discards_only_own_ingress_and_records_each_event_once() {
         } else {
             assert!(state.sockets[&7].pending.is_none());
         }
-        state.receive(&socket, Receive::All, RECEIVE_LIMIT).unwrap();
+        assert_eq!(state.receive(&socket, Receive::All, RECEIVE_LIMIT), Err(InterpretError::UnsupportedOperation("Net fixture post-close receive")));
+        state.receive(&socket, Receive::Bytes(0), RECEIVE_LIMIT).unwrap();
         assert_eq!(take(&mut state, &socket), b"");
         assert_eq!(state.finish().unwrap(), expected, "no duplicate receive/close accounting");
         assert_eq!(state.close(&socket), Err(refused(OracleNetError::TranscriptMismatch)), "an unscripted repeated close still refuses");
     }
+}
+
+#[test]
+fn net_fixture_post_close_reads_refuse_without_consuming_or_staging() {
+    let (mut state, socket) = connected(vec![
+        OracleNetEvent::Receive { socket: 7, bytes: b"ab".to_vec() },
+        OracleNetEvent::Close { socket: 7 },
+        OracleNetEvent::Receive { socket: 8, bytes: b"other socket".to_vec() },
+    ]);
+    state.receive(&socket, Receive::Bytes(1), RECEIVE_LIMIT).unwrap();
+    state.close(&socket).unwrap();
+    assert_eq!(take(&mut state, &socket), b"a", "the completed receive remains fillable");
+    let events = state.events.clone();
+    let observed = state.observed.clone();
+    for mode in [Receive::Line, Receive::Bytes(1), Receive::Bytes(usize::MAX), Receive::All] {
+        assert_eq!(state.receive(&socket, mode, RECEIVE_LIMIT),
+            Err(InterpretError::UnsupportedOperation("Net fixture post-close receive")));
+        assert_eq!(state.events, events);
+        assert_eq!(state.observed, observed);
+        assert_eq!(state.chunk_offset, 0);
+        assert!(state.sockets[&7].pending.is_none(), "unsupported must not stage fabricated EOF");
+        assert!(!state.sockets[&7].eof);
+    }
+    state.receive(&socket, Receive::Bytes(0), RECEIVE_LIMIT).unwrap();
+    assert_eq!(take(&mut state, &socket), b"");
+    assert_eq!(state.events, events);
+    assert_eq!(state.observed, observed);
 }
 
 #[test]

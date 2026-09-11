@@ -28,6 +28,9 @@ pub struct OracleNetFixture {
     /// or discarded by close. Close may discard only consecutive Receive
     /// events for its own socket immediately preceding its matching Close.
     /// No sends, other sockets, or terminal read events may be skipped.
+    /// Wire events do not specify native buffered read-ahead residency:
+    /// after local close, receives that would read explicitly refuse rather
+    /// than manufacture EOF. Staged fills and zero-byte receives remain valid.
     pub transcript: Vec<OracleNetEvent>,
 }
 
@@ -178,6 +181,13 @@ impl NetState {
     fn receive(&mut self, token: &CapabilityToken, mode: Receive, limit: usize) -> Result<u64, InterpretError> {
         let socket = self.socket(token)?;
         if self.sockets[&socket].pending.is_some() { return Err(refused(OracleNetError::PendingReceive)); }
+        // Shutdown is not observed peer EOF: native's buffered reader may
+        // still hold bytes. This wire-only fixture cannot infer that residency
+        // from event boundaries. Refuse before touching the transcript or
+        // staging; a zero-byte receive performs no read and remains defined.
+        if self.sockets[&socket].closed && !matches!(mode, Receive::Bytes(0)) {
+            return Err(InterpretError::UnsupportedOperation("Net fixture post-close receive"));
+        }
         let mut raw = Vec::new();
         let wanted = match mode { Receive::Bytes(count) => count, _ => usize::MAX };
         while !self.sockets[&socket].eof && raw.len() < wanted {
@@ -237,7 +247,6 @@ impl NetState {
         for _ in 0..unread { self.pop(); }
         let state = self.sockets.get_mut(&socket).unwrap();
         state.closed = true;
-        state.eof = true;
         // Staging is already the result of a completed receive, not unread
         // wire data. Like native shutdown, close does not invalidate its fill.
         self.pop();

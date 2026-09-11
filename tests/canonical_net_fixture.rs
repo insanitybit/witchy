@@ -215,6 +215,46 @@ fn main(console: Console, net: Net[Connect, Tcp]):
 }
 
 #[test]
+fn canonical_net_fixture_post_close_reads_refuse_native_buffered_remainder() {
+    for method in ["recv_bytes(1)", "recv_all()", "recv_line()"] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let source = format!(r#"
+fn main(console: Console, net: Net[Connect, Tcp]):
+    let socket = net.connect("{address}")
+    console.print(socket.recv_bytes(1))
+    socket.close()
+    console.print(socket.{method})
+"#);
+        let checked = witchy::resolve_std_only_checked(&source).unwrap();
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked).expect_lowered("native post-close buffered read admits");
+        let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+        let entry = artifact.entry().unwrap();
+        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let transcript = vec![Event::Connect { grant: 0, address: address.clone(), socket: 7 },
+            Event::Receive { socket: 7, bytes: b"ab".to_vec() }, Event::Close { socket: 7 }];
+        for launch in [false, true] {
+            let values = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+            let fixture = config(vec![grant(&address, true, false)], transcript.clone());
+            let result = if launch { interpret_entry_program(&validated, function, values, &[], fixture) }
+                else { interpret_program(&validated, function, values, fixture) };
+            assert_eq!(result, Err(InterpretError::UnsupportedOperation("Net fixture post-close receive")),
+                "{method}: explicit oracle limitation, never a successful empty result");
+        }
+        two_byte_peer(listener, || {
+            let mut runtime = Runtime::batch().map_err(|error| error.to_string())?;
+            let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true,
+                net_allow: Some(vec![address]), net_connect: true, ..Default::default() }, 256)
+                .map_err(|error| error.to_string())?;
+            vm.run().map_err(|error| format!("{error:#}"))?;
+            assert_eq!(vm.output(), ["a", "b"], "{method}: native read-ahead survives local shutdown");
+            assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+            Ok(())
+        });
+    }
+}
+
+#[test]
 fn canonical_net_fixture_native_close_preserves_pending_fill() {
     // Raw host-boundary probe only: source receives normally fill before
     // returning. The oracle counterpart exercises close-before-fill in its
