@@ -17,7 +17,7 @@ pub fn interpret_entry_program(
     let capability_parameters: Vec<_> = signature.parameters.iter()
         .filter(|parameter| matches!(parameter, ValueType::Capability(_)))
         .cloned().collect();
-    validate_entry_parameters(&capability_parameters, &capabilities, config.fixture.net_grants)?;
+    validate_entry_parameters(&capability_parameters, &capabilities, config.fixture.net_grant_count())?;
     if let Some(grants) = config.fixture.dir_grants {
         let roots = capabilities.iter().filter(|value| matches!(value,
             InterpreterValue::Capability(token) if token.kind == DIR_KIND && token.scope.is_empty())).count();
@@ -27,7 +27,7 @@ pub fn interpret_entry_program(
         .map_err(|_| InterpretError::TypeMismatch("launch argument layouts"))?;
     let program = module.module();
     let mut engine = Engine::new(program, config);
-    let mut capabilities = capabilities.into_iter();
+    let mut capabilities = engine.bind_net_entry(capabilities)?.into_iter();
     let mut values = Vec::new();
     for parameter in &signature.parameters {
         if *parameter == ValueType::Ref(list_layout) {
@@ -71,7 +71,8 @@ pub fn interpret_entry_program(
     }
     if capabilities.next().is_some() { return Err(InterpretError::TypeMismatch("extra launch capability")); }
     let results = engine.execute(function, values)?;
+    let net_trace = engine.finish_net()?;
     let leaked_objects = engine.objects.values().filter(|object|
         matches!(object.storage, RuntimeStorage::Allocation(_))).count();
-    Ok(ProgramRun { results, output: engine.output, leaked_objects })
+    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace })
 }

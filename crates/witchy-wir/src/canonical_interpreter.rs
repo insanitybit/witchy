@@ -24,6 +24,8 @@ const SIZE_MAX: u64 = u32::MAX as u64;
 mod launch;
 mod nullable;
 mod regex;
+mod net;
+pub use net::{OracleNetEvent, OracleNetFixture, OracleNetGrant, OracleNetError};
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.
@@ -78,16 +80,20 @@ pub struct OpaqueOwnerListToken(u64);
 /// confined to — the empty string for a root grant — and kind 2 (`Env`)
 /// carries none. A token is only ever minted here: by the launcher for an
 /// entry parameter, or by the host narrowing one it was handed.
+/// Net resource operations additionally require a private execution-bound
+/// handle. `root(NET_KIND)` is only a launch request; `root(SOCKET_KIND)`
+/// cannot authenticate socket I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityToken {
     kind: u32,
     scope: String,
+    net: Option<net::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new() }
+        Self { kind, scope: String::new(), net: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -135,12 +141,18 @@ pub struct OracleFixture {
     /// fixtures that model no launcher); an entry with more `Dir` parameters
     /// is refused, as the runtime refuses to mint an ungranted one.
     pub dir_grants: Option<usize>,
-    /// Supplied Net root grants. A fixture grants none unless explicit.
-    /// Net I/O remains an unsupported host operation in this semantic oracle.
+    /// Launch-only Net grants when no deterministic Net fixture is supplied.
+    /// This count alone never authorizes socket I/O.
     pub net_grants: usize,
+    /// Explicit rights, endpoints and an ordered deterministic socket script.
+    /// No host networking, DNS, or native receive implementation is consulted.
+    pub net: Option<OracleNetFixture>,
 }
 
 impl OracleFixture {
+    fn net_grant_count(&self) -> usize {
+        self.net.as_ref().map_or(self.net_grants, |fixture| fixture.grants.len())
+    }
     /// Resolve `path` under the fallback root without following a symbolic
     /// link anywhere along it: the runtime's confined directory refuses a
     /// link that leads out of the root, and the oracle must be no weaker.
@@ -231,6 +243,8 @@ pub struct ProgramRun {
     /// callee-drops every token is released by exit, so any survivor is a
     /// reclamation defect in the program's lowering.
     pub leaked_objects: usize,
+    /// Matched socket transcript, empty when no Net fixture was configured.
+    pub net_trace: Vec<OracleNetEvent>,
 }
 
 /// A precise failure of the executable SafeWIR semantics.
@@ -268,6 +282,7 @@ pub enum InterpretError {
     },
     UninitializedPlace,
     UnsupportedHostImport,
+    NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
 }
 
@@ -313,7 +328,10 @@ pub fn interpret_with_config(
     arguments: Vec<InterpreterValue>,
     config: InterpreterConfig,
 ) -> Result<Vec<InterpreterValue>, InterpretError> {
-    Engine::new(module.module(), config).execute(function, arguments)
+    let mut engine = Engine::new(module.module(), config);
+    let results = engine.execute(function, arguments)?;
+    engine.finish_net()?;
+    Ok(results)
 }
 
 fn program_entry_signature(
@@ -371,7 +389,7 @@ pub fn interpret_program(
     config: InterpreterConfig,
 ) -> Result<ProgramRun, InterpretError> {
     let signature = program_entry_signature(module, function)?;
-    validate_entry_parameters(&signature.parameters, &arguments, config.fixture.net_grants)?;
+    validate_entry_parameters(&signature.parameters, &arguments, config.fixture.net_grant_count())?;
     // The launcher mints one root `Dir` token per grant; an entry asking for
     // more than the fixture grants is refused before it runs.
     if let Some(grants) = config.fixture.dir_grants {
@@ -384,7 +402,9 @@ pub fn interpret_program(
         }
     }
     let mut engine = Engine::new(module.module(), config);
+    let arguments = engine.bind_net_entry(arguments)?;
     let results = engine.execute(function, arguments)?;
+    let net_trace = engine.finish_net()?;
     let leaked_objects = engine
         .objects
         .values()
@@ -392,7 +412,7 @@ pub fn interpret_program(
         .count()
         + engine.owners.len()
         + engine.owner_lists.len();
-    Ok(ProgramRun { results, output: engine.output, leaked_objects })
+    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -465,6 +485,7 @@ struct Engine<'a> {
     owner_lists: BTreeMap<OpaqueOwnerListToken, OwnerListState>,
     static_objects: BTreeMap<crate::canonical_safewir::StaticDataId, u64>,
     output: Vec<String>,
+    net: Option<net::NetState>,
 }
 
 enum FunctionExit {
@@ -473,7 +494,8 @@ enum FunctionExit {
 }
 
 impl<'a> Engine<'a> {
-    fn new(module: &'a CanonicalModule<InitialValid>, config: InterpreterConfig) -> Self {
+    fn new(module: &'a CanonicalModule<InitialValid>, mut config: InterpreterConfig) -> Self {
+        let net = config.fixture.net.take().map(net::NetState::new);
         Self {
             module,
             config,
@@ -486,6 +508,7 @@ impl<'a> Engine<'a> {
             owner_lists: BTreeMap::new(),
             static_objects: BTreeMap::new(),
             output: Vec::new(),
+            net,
         }
     }
 
@@ -1342,6 +1365,9 @@ impl<'a> Engine<'a> {
         if contract.name == "regex_match_spans_into" {
             return self.regex_spans_host_call(destinations, arguments, values);
         }
+        if net::is_import(&contract.name) {
+            return self.net_host_call(&contract.name, destinations, arguments, values);
+        }
         if let Some(name) = CAPABILITY_IMPORTS.iter().find(|name| **name == contract.name) {
             return self.capability_host_call(name, destinations, arguments, values);
         }
@@ -1467,7 +1493,7 @@ impl<'a> Engine<'a> {
                 if !self.config.fixture.is_directory(&scope) {
                     return Err(InterpretError::ExplicitTrap);
                 }
-                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { kind: DIR_KIND, scope }));
+                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { scope, ..CapabilityToken::root(DIR_KIND) }));
                 Ok(())
             }
             ("dir_read_file", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
@@ -1476,7 +1502,7 @@ impl<'a> Engine<'a> {
                 if self.config.fixture.file(&path).is_none() {
                     return Err(InterpretError::ExplicitTrap);
                 }
-                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { kind: FILE_KIND, scope: path }));
+                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { scope: path, ..CapabilityToken::root(FILE_KIND) }));
                 Ok(())
             }
             ("file_read_into", [token, HostCallArgument::Buffer { place: out, .. }], [destination]) => {
