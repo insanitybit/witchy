@@ -3044,6 +3044,24 @@ enum StructuredLabel {
     If,
 }
 
+fn reverse_loop_members(
+    header: crate::canonical_safewir::BlockId,
+    back_edge_sources: Vec<crate::canonical_safewir::BlockId>,
+    predecessors: &BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
+) -> BTreeSet<crate::canonical_safewir::BlockId> {
+    let mut members = BTreeSet::new();
+    let mut pending = VecDeque::from(back_edge_sources);
+    while let Some(block) = pending.pop_front() {
+        if block == header || !members.insert(block) {
+            continue;
+        }
+        if let Some(sources) = predecessors.get(&block) {
+            pending.extend(sources.iter().copied());
+        }
+    }
+    members
+}
+
 struct StructuredEmitter<'a> {
     body: &'a mut WasmFunctionEncoder,
     source_function: &'a Function,
@@ -3520,14 +3538,11 @@ impl StructuredEmitter<'_> {
         if let Some(known) = self.natural_loop_facts.borrow().get(&header) {
             return Ok(known.clone());
         }
-        let mut members = BTreeSet::from([header]);
-        let mut pending = VecDeque::from(self.back_edge_sources(header)?);
-        while let Some(block) = pending.pop_front() {
-            if block == header || !members.insert(block) {
-                continue;
-            }
-            pending.extend(self.predecessors(block)?);
-        }
+        let members = reverse_loop_members(
+            header,
+            self.back_edge_sources(header)?,
+            &self.predecessors_by_block,
+        );
         self.natural_loop_facts.borrow_mut().insert(header, members.clone());
         Ok(members)
     }
@@ -3539,7 +3554,7 @@ impl StructuredEmitter<'_> {
         header: crate::canonical_safewir::BlockId,
         block: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        Ok(self.natural_loop_members(header)?.contains(&block))
+        Ok(block != header && self.natural_loop_members(header)?.contains(&block))
     }
 
     fn find_join(
@@ -3970,13 +3985,15 @@ fn encode_function(
         .collect();
     for (source, successors) in &successors_by_block {
         for successor in successors {
-            predecessors_by_block
+            let predecessors = predecessors_by_block
                 .get_mut(successor)
                 .ok_or(EncodeError::MissingBlock {
                     function: source_function.id,
                     block: *successor,
-                })?
-                .push(*source);
+                })?;
+            if !predecessors.contains(source) {
+                predecessors.push(*source);
+            }
         }
     }
     let mut emitter = StructuredEmitter {
@@ -6028,20 +6045,17 @@ impl PlanEmitter<'_> {
         if let Some(known) = self.natural_loop_facts.borrow().get(&header) {
             return Ok(known.clone());
         }
-        let mut members = BTreeSet::from([header]);
-        let mut pending = VecDeque::from(self.back_edge_sources(header)?);
-        while let Some(block) = pending.pop_front() {
-            if block == header || !members.insert(block) {
-                continue;
-            }
-            pending.extend(self.predecessors(block)?);
-        }
+        let members = reverse_loop_members(
+            header,
+            self.back_edge_sources(header)?,
+            &self.predecessors_by_block,
+        );
         self.natural_loop_facts.borrow_mut().insert(header, members.clone());
         Ok(members)
     }
 
     fn in_natural_loop(&self, header: crate::canonical_safewir::BlockId, block: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
-        Ok(self.natural_loop_members(header)?.contains(&block))
+        Ok(block != header && self.natural_loop_members(header)?.contains(&block))
     }
 
     fn find_join(
@@ -6460,10 +6474,12 @@ fn expected_function_plan(
         .collect();
     for (source, successors) in &successors_by_block {
         for successor in successors {
-            predecessors_by_block
+            let predecessors = predecessors_by_block
                 .get_mut(successor)
-                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?
-                .push(*source);
+                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            if !predecessors.contains(source) {
+                predecessors.push(*source);
+            }
         }
     }
     let mut emitter = PlanEmitter {
@@ -7775,6 +7791,71 @@ mod tests {
             encode_validated(checked_diamond_chain(96, true)),
             Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
         ));
+    }
+
+    #[test]
+    fn cached_natural_loop_members_match_forward_predicate_for_multi_exit_loop() {
+        use crate::canonical_safewir::BlockId;
+
+        let header = BlockId::new(1);
+        let body = BlockId::new(2);
+        let back_edge = BlockId::new(3);
+        let first_exit = BlockId::new(4);
+        let second_exit = BlockId::new(5);
+        let join = BlockId::new(6);
+        let outside = BlockId::new(7);
+        let successors = BTreeMap::from([
+            (header, vec![body, first_exit]),
+            (body, vec![back_edge, second_exit]),
+            (back_edge, vec![header]),
+            (first_exit, vec![join]),
+            (second_exit, vec![join]),
+            (join, Vec::new()),
+            (outside, vec![join]),
+        ]);
+        let mut predecessors = successors
+            .keys()
+            .copied()
+            .map(|block| (block, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        for (source, targets) in &successors {
+            for target in targets {
+                let sources = predecessors.get_mut(target).unwrap();
+                if !sources.contains(source) {
+                    sources.push(*source);
+                }
+            }
+        }
+
+        let cached = reverse_loop_members(header, vec![back_edge], &predecessors);
+        let old_predicate = |start| {
+            let mut seen = BTreeSet::new();
+            let mut pending = VecDeque::from([start]);
+            while let Some(block) = pending.pop_front() {
+                if block == header || !seen.insert(block) {
+                    continue;
+                }
+                if block == back_edge {
+                    return true;
+                }
+                pending.extend(successors.get(&block).unwrap().iter().copied());
+            }
+            false
+        };
+
+        for block in [header, body, back_edge, first_exit, second_exit, join, outside] {
+            assert_eq!(
+                block != header && cached.contains(&block),
+                old_predicate(block),
+                "natural-loop membership changed for block {}",
+                block.get(),
+            );
+        }
+        assert!(!cached.contains(&header));
+        assert!(cached.contains(&back_edge));
+        assert!(!cached.contains(&outside));
+        assert!(!cached.contains(&first_exit));
+        assert!(!cached.contains(&second_exit));
     }
 
     #[test]
