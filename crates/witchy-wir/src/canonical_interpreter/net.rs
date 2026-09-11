@@ -23,6 +23,11 @@ pub struct OracleNetGrant {
 pub struct OracleNetFixture {
     /// Ordered Net root grants, independent of interleaved non-Net parameters.
     pub grants: Vec<OracleNetGrant>,
+    /// Ordered wire events, not one result per host call. A Receive may span
+    /// calls; its original event is recorded exactly once when fully consumed
+    /// or discarded by close. Close may discard only consecutive Receive
+    /// events for its own socket immediately preceding its matching Close.
+    /// No sends, other sockets, or terminal read events may be skipped.
     pub transcript: Vec<OracleNetEvent>,
 }
 
@@ -222,10 +227,19 @@ impl NetState {
 
     fn close(&mut self, token: &CapabilityToken) -> Result<(), InterpretError> {
         let socket = self.socket(token)?;
-        if self.events.front() != Some(&OracleNetEvent::Close { socket }) { return Err(refused(OracleNetError::TranscriptMismatch)); }
+        // Preflight without consuming even a partial chunk: a wrong/missing
+        // Close or an intervening obligation must leave a retryable transcript.
+        let unread = self.events.iter().take_while(|event|
+            matches!(event, OracleNetEvent::Receive { socket: expected, .. } if *expected == socket)).count();
+        if self.events.get(unread) != Some(&OracleNetEvent::Close { socket }) {
+            return Err(refused(OracleNetError::TranscriptMismatch));
+        }
+        for _ in 0..unread { self.pop(); }
         let state = self.sockets.get_mut(&socket).unwrap();
         state.closed = true;
         state.eof = true;
+        // Staging is already the result of a completed receive, not unread
+        // wire data. Like native shutdown, close does not invalidate its fill.
         self.pop();
         Ok(())
     }

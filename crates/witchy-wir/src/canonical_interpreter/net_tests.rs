@@ -112,6 +112,91 @@ fn net_fixture_limits_timeout_error_and_zero_count_are_not_canned_success() {
 }
 
 #[test]
+fn net_fixture_close_discards_only_own_ingress_and_records_each_event_once() {
+    for count in [0, 1, 2] {
+        let events = vec![
+            OracleNetEvent::Receive { socket: 7, bytes: b"ab".to_vec() },
+            OracleNetEvent::Receive { socket: 7, bytes: b"cd".to_vec() },
+            OracleNetEvent::Close { socket: 7 },
+        ];
+        let (mut state, socket) = connected(events.clone());
+        let mut expected = state.observed.clone();
+        expected.extend(events);
+        if count != 0 {
+            state.receive(&socket, Receive::Bytes(count), RECEIVE_LIMIT).unwrap();
+        }
+        state.close(&socket).unwrap();
+        assert!(state.sockets[&7].closed);
+        assert!(state.sockets[&7].eof);
+        assert_eq!(state.chunk_offset, 0);
+        assert_eq!(state.finish().unwrap(), expected, "discarded wire events remain in the exact trace");
+        if count != 0 {
+            assert_eq!(state.receive(&socket, Receive::All, RECEIVE_LIMIT), Err(refused(OracleNetError::PendingReceive)));
+            assert_eq!(take(&mut state, &socket), &b"ab"[..count], "close preserves staged output");
+        } else {
+            assert!(state.sockets[&7].pending.is_none());
+        }
+        state.receive(&socket, Receive::All, RECEIVE_LIMIT).unwrap();
+        assert_eq!(take(&mut state, &socket), b"");
+        assert_eq!(state.finish().unwrap(), expected, "no duplicate receive/close accounting");
+        assert_eq!(state.close(&socket), Err(refused(OracleNetError::TranscriptMismatch)), "an unscripted repeated close still refuses");
+    }
+}
+
+#[test]
+fn net_fixture_close_cannot_skip_obligations_or_mutate_a_refused_transcript() {
+    for barrier in [
+        Some(OracleNetEvent::Send { socket: 7, bytes: b"required".to_vec() }),
+        Some(OracleNetEvent::Send { socket: 8, bytes: b"other".to_vec() }),
+        Some(OracleNetEvent::Receive { socket: 8, bytes: b"other".to_vec() }),
+        Some(OracleNetEvent::Close { socket: 8 }),
+        Some(OracleNetEvent::Accept { listener: 3, socket: 8 }),
+        Some(OracleNetEvent::Eof { socket: 7 }),
+        Some(OracleNetEvent::Timeout { socket: 7 }),
+        Some(OracleNetEvent::ReadError { socket: 7, message: "reset".into() }),
+        None,
+    ] {
+        let mut events = vec![
+            OracleNetEvent::Receive { socket: 7, bytes: b"ab".to_vec() },
+            OracleNetEvent::Receive { socket: 7, bytes: b"cd".to_vec() },
+        ];
+        if let Some(barrier) = barrier {
+            events.push(barrier);
+            events.push(OracleNetEvent::Close { socket: 7 });
+        }
+        let (mut state, socket) = connected(events);
+        state.receive(&socket, Receive::Bytes(1), RECEIVE_LIMIT).unwrap();
+        let before_events = state.events.clone();
+        let before_observed = state.observed.clone();
+        assert_eq!(state.close(&socket), Err(refused(OracleNetError::TranscriptMismatch)));
+        assert_eq!(state.events, before_events);
+        assert_eq!(state.observed, before_observed);
+        assert_eq!(state.chunk_offset, 1);
+        assert!(!state.sockets[&7].closed);
+        assert!(!state.sockets[&7].eof);
+        assert_eq!(state.sockets[&7].pending.as_deref(), Some(b"a".as_slice()));
+        assert_eq!(state.finish(), Err(refused(OracleNetError::IncompleteTranscript)));
+        assert_eq!(take(&mut state, &socket), b"a");
+        state.receive(&socket, Receive::Bytes(1), RECEIVE_LIMIT).unwrap();
+        assert_eq!(take(&mut state, &socket), b"b", "refused close cannot discard unread bytes");
+    }
+    let (mut state, socket) = connected(vec![
+        OracleNetEvent::Receive { socket: 7, bytes: b"ab".to_vec() },
+        OracleNetEvent::Close { socket: 7 },
+        OracleNetEvent::Close { socket: 8 },
+    ]);
+    let before = state.events.clone();
+    assert_eq!(state.close(&CapabilityToken::root(SOCKET)), Err(refused(OracleNetError::Unauthenticated)));
+    assert_eq!(state.close(&CapabilityToken::root(NET)), Err(refused(OracleNetError::WrongKind)));
+    let (_, foreign) = connected(vec![]);
+    assert_eq!(state.close(&foreign), Err(refused(OracleNetError::Unauthenticated)));
+    assert_eq!(state.events, before);
+    state.close(&socket).unwrap();
+    assert_eq!(state.events, VecDeque::from([OracleNetEvent::Close { socket: 8 }]));
+    assert_eq!(state.finish(), Err(refused(OracleNetError::IncompleteTranscript)), "matching close cannot consume later events");
+}
+
+#[test]
 fn net_fixture_fill_checks_all_bounds_before_writing_or_consuming_staging() {
     use crate::canonical_safewir::{AccessMode, CheckedSourceIdentity, HostBufferExtent, LoweredModuleParts, Revision,
         check_initial_with_test_witness, validate_final_for_test};
@@ -127,8 +212,9 @@ fn net_fixture_fill_checks_all_bounds_before_writing_or_consuming_staging() {
     });
     let checked = validate_final_for_test(check_initial_with_test_witness(candidate).unwrap()).unwrap();
     let mut engine = Engine::new(checked.module(), InterpreterConfig::default());
-    let (mut state, socket) = connected(vec![OracleNetEvent::Receive { socket: 7, bytes: b"probe".to_vec() }, OracleNetEvent::Eof { socket: 7 }]);
-    state.receive(&socket, Receive::All, RECEIVE_LIMIT).unwrap();
+    let (mut state, socket) = connected(vec![OracleNetEvent::Receive { socket: 7, bytes: b"probe-unread".to_vec() }, OracleNetEvent::Close { socket: 7 }]);
+    state.receive(&socket, Receive::Bytes(5), RECEIVE_LIMIT).unwrap();
+    state.close(&socket).unwrap();
     assert_eq!(state.receive(&socket, Receive::Line, RECEIVE_LIMIT), Err(refused(OracleNetError::PendingReceive)));
     state.sockets.insert(8, Socket::default());
     let other = state.token(Resource::Socket(8));

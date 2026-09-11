@@ -151,3 +151,98 @@ fn canonical_net_fixture_refuses_unscripted_mismatched_or_unfinished_calls() {
     unfinished.push(Event::Close { socket: 7 });
     assert_eq!(run(config(vec![grant("fixture:80", true, false)], unfinished)), Err(InterpretError::NetFixture(OracleNetError::IncompleteTranscript)));
 }
+
+fn two_byte_peer(listener: TcpListener, run: impl FnOnce() -> Result<(), String>) {
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                    socket.write_all(b"ab").unwrap();
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                    std::thread::sleep(Duration::from_millis(5)),
+                Err(error) => panic!("two-byte peer accept failed: {error}"),
+            }
+        }
+    });
+    let result = run();
+    peer.join().unwrap();
+    result.unwrap();
+}
+
+#[test]
+fn canonical_net_fixture_partial_receive_close_matches_native() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let source = format!(r#"
+fn main(console: Console, net: Net[Connect, Tcp]):
+    let socket = net.connect("{address}")
+    let first = socket.recv_bytes(1)
+    socket.close()
+    console.print(first)
+"#);
+    let checked = witchy::resolve_std_only_checked(&source).unwrap();
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked).expect_lowered("partial receive then close admits");
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+    let entry = artifact.entry().unwrap();
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let transcript = vec![Event::Connect { grant: 0, address: address.clone(), socket: 7 },
+        Event::Receive { socket: 7, bytes: b"ab".to_vec() }, Event::Close { socket: 7 }];
+    for launch in [false, true] {
+        let values = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+        let fixture = config(vec![grant(&address, true, false)], transcript.clone());
+        let output = if launch { interpret_entry_program(&validated, function, values, &[], fixture) }
+            else { interpret_program(&validated, function, values, fixture) }.unwrap();
+        assert_eq!(output.output, ["a"]);
+        assert_eq!(output.net_trace, transcript, "discarded b is accounted once, not silently removed from the script");
+        assert_eq!(output.leaked_objects, 0);
+    }
+    // The deterministic oracle has finished before the real peer starts.
+    two_byte_peer(listener, || {
+        let mut runtime = Runtime::batch().map_err(|error| error.to_string())?;
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true,
+            net_allow: Some(vec![address]), net_connect: true, ..Default::default() }, 256)
+            .map_err(|error| error.to_string())?;
+        vm.run().map_err(|error| format!("{error:#}"))?;
+        assert_eq!(vm.output(), ["a"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+        Ok(())
+    });
+}
+
+#[test]
+fn canonical_net_fixture_native_close_preserves_pending_fill() {
+    // Raw host-boundary probe only: source receives normally fill before
+    // returning. The oracle counterpart exercises close-before-fill in its
+    // private bounded-buffer test, including retry and stale-fill refusals.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let wat = format!(r#"(module
+      (import "witchy" "mint_net" (func $mint (param i32) (result externref)))
+      (import "witchy" "net_connect_at" (func $connect (param externref i32 i32) (result externref)))
+      (import "witchy" "net_recv_bytes_size" (func $bytes (param externref i64) (result i32)))
+      (import "witchy" "net_take_received_into" (func $fill (param externref i32 i32) (result i32)))
+      (import "witchy" "net_close" (func $close (param externref)))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "{address}")
+      (func (export "run") (local $socket externref)
+        (local.set $socket (call $connect (call $mint (i32.const 0)) (i32.const 0) (i32.const {})))
+        (if (i32.ne (call $bytes (local.get $socket) (i64.const 1)) (i32.const 1)) (then unreachable))
+        (call $close (local.get $socket))
+        (i32.store8 (i32.const 63) (i32.const 33))
+        (i32.store8 (i32.const 65) (i32.const 33))
+        (if (i32.ne (call $fill (local.get $socket) (i32.const 64) (i32.const 1)) (i32.const 1)) (then unreachable))
+        (if (i32.ne (i32.load8_u (i32.const 63)) (i32.const 33)) (then unreachable))
+        (if (i32.ne (i32.load8_u (i32.const 64)) (i32.const 97)) (then unreachable))
+        (if (i32.ne (i32.load8_u (i32.const 65)) (i32.const 33)) (then unreachable))))"#, address.len());
+    two_byte_peer(listener, || {
+        let mut runtime = Runtime::batch().map_err(|error| error.to_string())?;
+        let mut vm = runtime.spawn(&wat, Capabilities { quiet: true, net_allow: Some(vec![address]),
+            net_connect: true, ..Default::default() }, 16).map_err(|error| error.to_string())?;
+        vm.run().map_err(|error| format!("{error:#}"))
+    });
+}
