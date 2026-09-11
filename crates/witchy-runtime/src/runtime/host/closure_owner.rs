@@ -80,7 +80,8 @@ let mut captures = Vec::new();
         };
         let allowed_codes = bridge.callable_indices().iter().map(|(_, code)| *code as i32).collect::<Vec<_>>();
         let parameters = bridge.parameters().iter().map(&wasm_type).collect::<Result<Vec<_>>>()?;
-        let results = if bridge.payload_result() { vec![ValType::ANYREF] } else { bridge.results().iter().map(&wasm_type).collect::<Result<Vec<_>>>()? };
+        let mut results = if bridge.payload_result() { vec![ValType::ANYREF] } else { bridge.results().iter().map(&wasm_type).collect::<Result<Vec<_>>>()? };
+        if bridge.cleanup_result() { results.push(ValType::ANYREF); }
         let signature = FuncType::new(linker.engine(), parameters, results);
         linker.func_new(bridge.module(), &bridge.name(), signature, move |mut caller, arguments, results| {
             let owner = |index: usize| -> Result<Rooted<ExternRef>> {
@@ -156,12 +157,16 @@ R::CloneList(_) => {
     binding.clone_list(&caller, list)?;
     results[0] = Val::ExternRef(Some(list));
 }
-R::ListPush(_) => {
-    results[0] = Val::ExternRef(Some(binding.push_list(&mut caller, owner(0)?, owner(1)?)?));
-}
-R::ListSet(_) => {
-    let Some(Val::I32(index)) = arguments.get(1) else { bail!("owner list index type"); };
-    results[0] = Val::ExternRef(Some(binding.set_list(&mut caller, owner(0)?, *index as u32, owner(2)?)?));
+	R::ListPush(_) => {
+	    let (list, cleanup) = binding.push_list(&mut caller, owner(0)?, owner(1)?)?;
+	    results[0] = Val::ExternRef(Some(list));
+	    results[1] = Val::AnyRef(Binding::cleanup_array(&mut caller, &cleanup)?);
+	}
+	R::ListSet(_) => {
+	    let Some(Val::I32(index)) = arguments.get(1) else { bail!("owner list index type"); };
+	    let (list, cleanup) = binding.set_list(&mut caller, owner(0)?, *index as u32, owner(2)?)?;
+	    results[0] = Val::ExternRef(Some(list));
+	    results[1] = Val::AnyRef(Binding::cleanup_array(&mut caller, &cleanup)?);
 }
 R::DropList(_) => {
     results[0] = Val::AnyRef(binding.release_list_payload_array(&mut caller, owner(0)?)?);
@@ -673,10 +678,28 @@ fn list_length(&self, store: impl wasmtime::AsContext, list: Rooted<ExternRef>) 
     array.len(store.as_context())
 }
 
+// A replacement list has already retained every current element. Releasing the
+// consumed source token must therefore retire none of those current elements.
+// Cleanup queued by an earlier in-place replacement is different: it belongs
+// to the logical list value and moves to the replacement list with that value.
+fn transfer_list_release(
+    &self,
+    mut store: impl AsContextMut,
+    source: Rooted<ExternRef>,
+    retired_element_error: &'static str,
+) -> Result<Vec<CleanupItem>> {
+    let (roots, inherited_cleanup) = self.release_list_roots(&mut store, source)?;
+    let retired_current = Self::collect_cleanup(&mut store, &self.instance, roots)?;
+    if !retired_current.is_empty() {
+        return Err(wasmtime::Error::msg(retired_element_error));
+    }
+    Ok(inherited_cleanup)
+}
+
 // ListPush consumes one list token and one element token, while preserving
 // other list aliases. Construction first retains every actual element, so
 // releasing the two input tokens cannot retire a payload during this step.
-fn push_list(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>, value: Rooted<ExternRef>) -> Result<Rooted<ExternRef>> {
+fn push_list(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>, value: Rooted<ExternRef>) -> Result<(Rooted<ExternRef>, Vec<CleanupItem>)> {
     self.family_access(store.as_context(), value, |_| Ok(()))?;
     let array = self.list_access(store.as_context(), list, |live| Ok(live.1.as_ref().expect("live list payload").clone()))?;
     let length = array.len(store.as_context())?;
@@ -689,13 +712,15 @@ fn push_list(&self, mut store: impl AsContextMut, list: Rooted<ExternRef>, value
     }
     elements.push(value);
     let result = self.new_shared_list(&mut store, &elements)?;
-    if !self.release_list_cleanup_items(&mut store, list)?.is_empty() {
-        bail!("owner list transfer retired a retained element");
-    }
+    let cleanup = self.transfer_list_release(
+        &mut store,
+        list,
+        "owner list transfer retired a retained element",
+    )?;
     if self.family_release(store.as_context(), value)?.is_some() {
         bail!("owner list transfer retired its retained input");
     }
-    Ok(result)
+    Ok((result, cleanup))
 }
 
 // ListSet consumes one list token and one element token. A unique list keeps
@@ -709,7 +734,7 @@ fn set_list(
     list: Rooted<ExternRef>,
     index: u32,
     value: Rooted<ExternRef>,
-) -> Result<Rooted<ExternRef>> {
+) -> Result<(Rooted<ExternRef>, Vec<CleanupItem>)> {
     self.family_access(store.as_context(), value, |_| Ok(()))?;
     let (references, array) = self.list_access(store.as_context(), list, |live| {
         Ok((live.0, live.1.as_ref().expect("live list payload").clone()))
@@ -724,11 +749,7 @@ fn set_list(
         array.set(&mut store, index, wasmtime::Val::ExternRef(Some(value)))?;
         let replaced = replaced.to_owned_rooted(&mut store)?;
         let cleanup = Self::collect_cleanup(&mut store, &self.instance, [replaced])?;
-        self.list_access(store.as_context(), list, |live| {
-            live.2.extend(cleanup);
-            Ok(())
-        })?;
-        return Ok(list);
+        return Ok((list, cleanup));
     }
 
     let mut elements = Vec::new();
@@ -745,13 +766,15 @@ fn set_list(
         elements.push(element);
     }
     let result = self.new_shared_list(&mut store, &elements)?;
-    if !self.release_list_cleanup_items(&mut store, list)?.is_empty() {
-        bail!("shared owner list transfer retired an aliased element");
-    }
+    let cleanup = self.transfer_list_release(
+        &mut store,
+        list,
+        "shared owner list transfer retired an aliased element",
+    )?;
     if self.family_release(store.as_context(), value)?.is_some() {
         bail!("owner list transfer retired its retained input");
     }
-    Ok(result)
+    Ok((result, cleanup))
 }
 
 // Only final payloads cross back to the private Wasm destructor. The
@@ -1192,7 +1215,9 @@ mod tests {
         assert!(binding.family_release(&store, a)?.is_none());
         assert!(binding.family_release(&store, b)?.is_none());
 
-        let updated = binding.set_list(&mut store, list, 0, c)?;
+        let (updated, cleanup) = binding.set_list(&mut store, list, 0, c)?;
+        assert_eq!(cleanup.len(), 1);
+        assert_eq!(payload_value(&mut store, cleanup.into_iter().next().expect("replacement cleanup"))?, 10);
         assert!(Rooted::ref_eq(&store, &list, &updated)?);
         assert!(binding.family_retain(&store, a).is_err(), "replaced token must be released");
         let actual = binding.list_get(&mut store, updated, 0)?;
@@ -1209,7 +1234,8 @@ mod tests {
 
         binding.clone_list(&store, updated)?;
         let e = make_owner(&mut store, &binding, 50)?;
-        let copied = binding.set_list(&mut store, updated, 1, e)?;
+        let (copied, cleanup) = binding.set_list(&mut store, updated, 1, e)?;
+        assert!(cleanup.is_empty());
         assert!(!Rooted::ref_eq(&store, &updated, &copied)?);
         let original_value = binding.list_get(&mut store, updated, 1)?;
         assert!(Rooted::ref_eq(&store, &b, &original_value)?);
@@ -1232,7 +1258,69 @@ mod tests {
             reclaimed.push(payload_value(&mut store, item)?);
         }
         reclaimed.sort_unstable();
-        assert_eq!(reclaimed, [10, 20, 30, 40, 50]);
+        assert_eq!(reclaimed, [20, 30, 40, 50]);
+        Ok(())
+    }
+
+    #[test]
+    fn owner_list_transfer_keeps_replacement_cleanup_and_duplicate_tokens() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let payload_type = StructType::new(
+            &engine,
+            [FieldType::new(Mutability::Const, ValType::I32.into())],
+        )?;
+        let binding = Binding {
+            instance: Arc::new(InstanceIdentity::default()),
+            constructor: Arc::new(()),
+            family: Arc::new(()),
+            owner_type: witchy_wir::canonical_safewir::GcTypeId::new(81),
+            cleanup_tag: 81,
+            environment_tag: 1,
+            payload_type: payload_type.clone(),
+            capture_fields: Box::new([]),
+        };
+        let payload_pre = StructRefPre::new(&mut store, payload_type);
+        let make_owner = |store: &mut wasmtime::Store<()>, value| {
+            let payload = StructRef::new(store.as_context_mut(), &payload_pre, &[Val::I32(value)])?;
+            binding.seal_gc(store, payload)
+        };
+
+        let replaced = make_owner(&mut store, 10)?;
+        let current = make_owner(&mut store, 20)?;
+        let list = binding.new_shared_list(&mut store, &[replaced])?;
+        assert!(binding.family_release(&store, replaced)?.is_none());
+        let (list, cleanup) = binding.set_list(&mut store, list, 0, current)?;
+        assert_eq!(cleanup.len(), 1, "replacement cleanup must drain with ListSet");
+        let Val::I32(replaced_value) = cleanup[0].payload.field(&mut store, 0)? else {
+            bail!("owner test payload type");
+        };
+        assert_eq!(replaced_value, 10);
+        assert!(binding.family_retain(&store, replaced).is_err());
+
+        let duplicate = binding.list_get(&mut store, list, 0)?;
+        let (list, cleanup) = binding.push_list(&mut store, list, duplicate)?;
+        assert!(cleanup.is_empty());
+        assert_eq!(binding.list_length(&store, list)?, 2);
+        for index in 0..2 {
+            let actual = binding.list_get(&mut store, list, index)?;
+            assert!(Rooted::ref_eq(&store, &current, &actual)?);
+            assert!(binding.family_release(&store, actual)?.is_none());
+        }
+
+        let mut reclaimed = binding.release_list_cleanup_items(&mut store, list)?
+            .into_iter()
+            .map(|item| {
+                let Val::I32(value) = item.payload.field(&mut store, 0)? else {
+                    bail!("owner test payload type");
+                };
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        reclaimed.sort_unstable();
+        assert_eq!(reclaimed, [20]);
+        assert!(binding.family_retain(&store, current).is_err());
         Ok(())
     }
 }

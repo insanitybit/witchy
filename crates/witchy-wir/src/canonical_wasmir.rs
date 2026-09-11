@@ -4086,12 +4086,7 @@ fn authorize_wasm_ir_inner(
 /// Encode only correspondence-checked private WasmIR authority. This function
 /// cannot lower SafeWIR or accept an unchecked backend value.
 fn owner_cleanup_bridge(bridges: &[AdmittedOwnerBridge]) -> Option<&AdmittedOwnerBridge> {
-    if bridges.iter().any(|bridge| {
-        matches!(
-            bridge.recipe(),
-            OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::DropList(_)
-        )
-    }) {
+    if bridges.iter().any(AdmittedOwnerBridge::requires_cleanup_helper) {
         bridges.first()
     } else {
         None

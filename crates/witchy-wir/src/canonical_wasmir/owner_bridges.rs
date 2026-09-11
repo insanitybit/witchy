@@ -72,6 +72,7 @@ pub struct AdmittedOwnerBridge {
     parameters: Vec<ValueType>,
     results: Vec<ValueType>,
     payload_result: bool,
+    cleanup_result: bool,
     payload_type_index: u32,
     cleanup_item_type_index: u32,
     cleanup_type_index: u32,
@@ -96,6 +97,10 @@ impl AdmittedOwnerBridge {
     pub fn parameters(&self) -> &[ValueType] { &self.parameters }
     pub fn results(&self) -> &[ValueType] { &self.results }
     pub fn payload_result(&self) -> bool { self.payload_result }
+    pub fn cleanup_result(&self) -> bool { self.cleanup_result }
+    pub(super) fn requires_cleanup_helper(&self) -> bool {
+        recipe_requires_cleanup_helper(&self.recipe)
+    }
     pub(super) fn payload_type_index(&self) -> u32 { self.payload_type_index }
     pub(super) fn cleanup_item_type_index(&self) -> u32 { self.cleanup_item_type_index }
     pub(super) fn cleanup_type_index(&self) -> u32 { self.cleanup_type_index }
@@ -151,6 +156,7 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
             }
             let payload_result = matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::CloneEnvironment(_) | OwnerBridgeRecipe::DropList(_));
             if payload_result { results.clear(); }
+            let cleanup_result = recipe_has_cleanup_result(&recipe);
             let callable_indices = if matches!(family.source,
                 crate::canonical_safewir::closure_owner_contract::OwnerFamilySource::Closure)
             {
@@ -168,6 +174,7 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 results,
                 callable_indices,
                 payload_result,
+                cleanup_result,
                 payload_type_index: 0,
                 cleanup_item_type_index: 0,
                 cleanup_type_index: 0,
@@ -212,9 +219,10 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
 pub(super) fn append_types(types: &mut TypeSection, bridges: &[AdmittedOwnerBridge]) -> Result<(), EncodeError> {
     for bridge in bridges {
         let parameters = bridge.parameters.iter().enumerate().map(|(i, ty)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(i as u32), *ty)).collect::<Result<Vec<_>, _>>()?;
-        let results = if bridge.payload_result { vec![ValType::Ref(RefType::ANYREF)] } else {
+        let mut results = if bridge.payload_result { vec![ValType::Ref(RefType::ANYREF)] } else {
             bridge.results.iter().enumerate().map(|(i, ty)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(i as u32), *ty)).collect::<Result<Vec<_>, _>>()?
         };
+        if bridge.cleanup_result { results.push(ValType::Ref(RefType::ANYREF)); }
         types.ty().function(parameters, results);
     }
     if let Some(bridge) = bridges.first() {
@@ -226,7 +234,7 @@ pub(super) fn append_types(types: &mut TypeSection, bridges: &[AdmittedOwnerBrid
     types.ty().struct_(fields);
 }
 }
-if bridges.iter().any(|b| matches!(b.recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::DropList(_))) {
+if bridges.iter().any(AdmittedOwnerBridge::requires_cleanup_helper) {
     types.ty().struct_([
         wasm_encoder::FieldType {
             element_type: wasm_encoder::StorageType::Val(ValType::I32),
@@ -239,8 +247,34 @@ if bridges.iter().any(|b| matches!(b.recipe, OwnerBridgeRecipe::Drop(_) | OwnerB
     ]);
     types.ty().array(&wasm_encoder::StorageType::Val(ValType::Ref(RefType::ANYREF)), false);
 }
+
 Ok(())
 
+}
+
+fn recipe_has_cleanup_result(recipe: &OwnerBridgeRecipe) -> bool {
+    matches!(recipe, OwnerBridgeRecipe::ListPush(_) | OwnerBridgeRecipe::ListSet(_))
+}
+
+fn recipe_requires_cleanup_helper(recipe: &OwnerBridgeRecipe) -> bool {
+    recipe_has_cleanup_result(recipe)
+        || matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::DropList(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canonical_safewir::FunctionSignatureId;
+
+    #[test]
+    fn list_mutation_recipes_append_cleanup_even_without_drop_recipe() {
+        let family = FunctionSignatureId::new(7);
+        assert!(recipe_has_cleanup_result(&OwnerBridgeRecipe::ListSet(family)));
+        assert!(recipe_has_cleanup_result(&OwnerBridgeRecipe::ListPush(family)));
+        assert!(recipe_requires_cleanup_helper(&OwnerBridgeRecipe::ListSet(family)));
+        assert!(recipe_requires_cleanup_helper(&OwnerBridgeRecipe::ListPush(family)));
+        assert!(!recipe_requires_cleanup_helper(&OwnerBridgeRecipe::CloneList(family)));
+    }
 }
 
 pub fn payload_slots(family: &OwnerFamily) -> usize {
