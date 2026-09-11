@@ -2492,13 +2492,19 @@ impl FunctionLowerer<'_> {
                 )?;
                 self.finish_current(terminator)
             }
-            _ if results.is_empty() => {
-                self.lower_effect_expr(expression)?;
-                self.finish_current(Terminator::Return { values: Vec::new() })
-            }
             _ => {
-                let value = self.lower_expr(expression)?;
-                let terminator = self.return_value(Some(value), &results)?;
+                let value = if results.is_empty() {
+                    self.lower_effect_expr(expression)?;
+                    None
+                } else {
+                    Some(self.lower_expr(expression)?)
+                };
+                // A divergent expression already owns this block's exit.
+                // Do not append a return or type a fictitious result after it.
+                if self.blocks[self.current.get() as usize].terminator.is_some() {
+                    return Ok(());
+                }
+                let terminator = self.return_value(value, &results)?;
                 self.finish_current(terminator)
             }
         }

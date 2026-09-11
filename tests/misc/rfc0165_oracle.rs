@@ -11,6 +11,64 @@ use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConf
 use witchy_wir::canonical_safewir::FunctionId;
 
 #[test]
+fn tail_fail_keeps_trap_semantics_three_legs() {
+    let template = r#"
+fn check_header(valid: Bool):
+    if !valid:
+        fail("rejected header")
+
+fn main(console: Console):
+    console.print("before")
+    check_header(FLAG)
+    console.print("after")
+"#;
+    for (flag, traps) in [("true", false), ("false", true)] {
+        let source = template.replace("FLAG", flag);
+        let checked = witchy::resolve_std_only_checked(&source).expect("tail fail source checks");
+        let source_run = witchy::interpreter::run_checked_module(&checked, ".", Vec::new());
+        let expected = ["before", "after"].map(str::to_owned).to_vec();
+        if traps {
+            assert!(source_run.is_err(), "source fail must abort");
+        } else {
+            assert_eq!(source_run.expect("source execution"), expected);
+        }
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("a tail trap is a complete block terminator");
+        let entry = artifact.entry().unwrap();
+        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let validated = codegen::validate_checked_module_for_oracle(&checked).expect("oracle validation");
+        let capabilities = entry.capabilities().iter().copied()
+            .map(InterpreterValue::entry_capability).collect();
+        let oracle_run = witchy_wir::canonical_interpreter::interpret_program(
+            &validated, function, capabilities, Default::default(),
+        );
+        if traps {
+            assert!(matches!(oracle_run, Err(
+                witchy_wir::canonical_interpreter::InterpretError::ExplicitTrap
+            )), "expected an explicit trap, got {oracle_run:?}");
+        } else {
+            let run = oracle_run.expect("oracle execution");
+            assert_eq!(run.output, expected);
+            assert_eq!(run.leaked_objects, 0);
+        }
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+            print: true, quiet: true, ..Default::default()
+        }, 256).expect("admitted Wasm");
+        let result = vm.run();
+        if traps {
+            let error = result.expect_err("compiled fail must abort");
+            assert!(format!("{error:#}").contains("unreachable"), "unexpected trap: {error:#}");
+            assert_eq!(vm.output(), ["before"]);
+        } else {
+            result.expect("Wasm execution");
+            assert_eq!(vm.output(), expected);
+            assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+        }
+    }
+}
+
+#[test]
 fn indirect_unit_parameters_and_results_three_legs() {
     let source = r#"
 fn number(value: Nil) -> Int:

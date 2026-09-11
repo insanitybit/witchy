@@ -12127,7 +12127,7 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         // the linker resolves by name) is computed in place and returned as a
         // value: there is no callee to transfer to.
         Expr::Call { name, .. }
-            if matches!(name.as_str(), "__capop.print" | "int_to_duration" | "duration_to_int")
+            if matches!(name.as_str(), "fail" | "__capop.print" | "int_to_duration" | "duration_to_int")
                 || (name.starts_with("__capop.") && witchy_syntax::cap_ops::is_op_name(name))
                 || witchy_syntax::intrinsics::lookup(name).is_some()
                 || witchy_syntax::intrinsics::lookup(name.strip_prefix("list.__").map_or(name.as_str(), |_| name.as_str())).is_some() => None,
