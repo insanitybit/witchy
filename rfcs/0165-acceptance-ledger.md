@@ -2,6 +2,23 @@
 
 ## Runtime integration checkpoint, 2026-09-11
 
+Code snapshot `f74544835` incorporates the remaining per-function ownership
+recipe borrowing (`9db4a4136`). The integrated bounded run completed in
+379.060 seconds: **all 16 oracle shards and four server-worker tests passed**,
+with no timeout. Its additional Result-laziness test initially failed source
+typing; the corrected test passes separately in 0.883 seconds with matching
+source/oracle/Wasm output and zero oracle/Wasm leaks. Logs:
+`/tmp/witchy-integrated-oracle-recipe-borrow.log` and
+`/tmp/witchy-result-coalesce-laziness-conditional.log`. This is combined focused
+evidence, not a claim that the original 21-test invocation exited green.
+
+The worker's single before/after scope run was 213.39 versus 99.05 seconds,
+with the same five output lines; the before run included sampling. The change
+borrows immutable admitted recipes rather than cloning the complete owner
+family graph per function. It changes neither checker rules nor expected-plan
+semantics. Five plan tests passed on the worker branch. Final merge-queue
+validation and a fresh complete example census remain required.
+
 The integration branch `impl/rfc0165-task-capture-integration` now includes
 admitted server-worker startup and launch-argument preservation. The fixture
 and argument integration at `f794e1003` passes all four server-worker tests and
