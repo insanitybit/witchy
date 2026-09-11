@@ -2351,6 +2351,7 @@ impl<'a> MemoryChecker<'a> {
             let range = self.state.range_states.iter().find_map(|(identity, state)| {
                 (identity.object == place.object()
                     && state.initialized
+                    && !state.zero_width
                     && state.zero_start
                     && self.strict_less(index, identity.length))
                     .then_some((*identity, *state))
@@ -2945,7 +2946,7 @@ impl<'a> MemoryChecker<'a> {
         if !state.initialized_owned_slots
             || !current_count.is_some_and(|current| self.same_scalar(current, count))
             || self.state.range_states.iter().any(|(identity, range)| {
-                identity.object == object && range.initialized && range.zero_start
+                identity.object == object && range.initialized && range.zero_start && !range.zero_width
             })
         {
             return Ok(false);
@@ -4120,6 +4121,33 @@ mod tests {
             checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = true;
             checker.state.range_states.retain(|identity, _| identity.object != SOURCE);
             assert!(checker.update_count(SOURCE, LONG_LENGTH).is_err(), "old prefix cannot initialize new slots");
+        });
+    }
+
+    #[test]
+    fn empty_range_cannot_replace_current_owned_prefix_evidence() {
+        with_checker_capacity(true, 4, |checker, list| {
+            let element = checker.layouts.get(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.retain(|identity, _| identity.object != SOURCE);
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: START },
+                RangeState {
+                    element, ownership: Ownership::Unique, allocation_class: None,
+                    initialized: true, zero_width: true, zero_start: true,
+                },
+            );
+            assert!(!checker.seed_managed_prefix(SOURCE, COUNT, element).unwrap(),
+                "an empty initialized range proves no nonempty slot");
+            checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = true;
+            assert!(!checker.seed_managed_prefix(SOURCE, LONG_LENGTH, element).unwrap(),
+                "whole-value evidence covers the current count only");
+            assert!(checker.seed_managed_prefix(SOURCE, COUNT, element).unwrap());
+            assert!(checker.state.range_states.iter().any(|(identity, range)|
+                identity.object == SOURCE && identity.length == COUNT
+                    && range.initialized && !range.zero_width
+                    && range.allocation_class == Some(AllocationClass::ReferenceCounted)));
+            assert!(checker.update_count(SOURCE, LONG_LENGTH).is_err(),
+                "reconstruction must not authorize growing the initialized prefix");
         });
     }
 

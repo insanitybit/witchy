@@ -77,3 +77,53 @@ fn canonical_message_wrong_payload_tag_traps_before_recovery() {
     let mut vm = runtime.spawn_admitted(&artifact, Capabilities::default(), 256).unwrap();
     assert!(vm.run().is_err(), "a String message must not be read as Int");
 }
+
+#[test]
+fn canonical_opaque_variant_list_replacement_preserves_old_closure_three_legs() {
+    let source = r#"
+type Action:
+    Empty
+    Emit(fn() -> Nil)
+
+fn make(console: Console, text: String) -> Action:
+    Emit(fn(): console.print(text))
+
+fn emit(console: Console, action: Action):
+    match action:
+        Empty -> console.print("empty")
+        Emit(run) -> run()
+
+fn main(console: Console):
+    var actions = [make(console, "one"), make(console, "two")]
+    let old = actions
+    actions.set_at(0, Empty)
+    emit(console, old[0])
+    emit(console, actions[0])
+    emit(console, actions[1])
+"#;
+    let checked = witchy::resolve_std_only_checked(source).unwrap();
+    let expected = vec!["one".to_owned(), "empty".to_owned(), "two".to_owned()];
+    assert_eq!(
+        witchy::interpreter::run_checked_module(&checked, ".", vec![]).unwrap(),
+        expected,
+    );
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("opaque variants and list replacement admit");
+    let entry = artifact.entry().unwrap();
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let arguments = entry.capabilities().iter().copied()
+        .map(InterpreterValue::entry_capability).collect();
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+    let oracle = interpret_program(&validated, function, arguments, Default::default()).unwrap();
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print: true, quiet: true, ..Default::default() },
+        256,
+    ).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+}

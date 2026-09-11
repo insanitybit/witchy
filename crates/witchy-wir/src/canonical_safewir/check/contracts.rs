@@ -289,7 +289,7 @@ fn derive_summary(
                     || target.results.iter().any(|result| !is_indirect_result(result))
                     || signature.contract.parameters.iter().enumerate().any(|(index, parameter)| {
                         matches!(parameter.value_type, ValueType::Ref(_))
-                            && (!matches!(parameter.ownership, ParameterOwnership::Shared)
+                            && (!matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
                                 || signature.contract.parameter_effects.get(&(index as u32))
                                     .is_some_and(|effects| effects.iter().any(|effect| !matches!(effect,
                                         MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release))))
@@ -816,8 +816,11 @@ fn declared_shared_summary(signature: &FunctionSignature) -> Option<BodySummary>
     {
         if parameter.value_type != *value_type
             || match value_type {
-                ValueType::Ref(_) => parameter.ownership != ParameterOwnership::Shared,
-                _ => parameter.ownership != ParameterOwnership::Value,
+                ValueType::Ref(_) => !matches!(parameter.ownership,
+                    ParameterOwnership::Shared | ParameterOwnership::WriteBack),
+                ValueType::Gc(_) => parameter.ownership != ParameterOwnership::Shared,
+                _ => !matches!(parameter.ownership,
+                    ParameterOwnership::Value | ParameterOwnership::WriteBack),
             }
         {
             return None;
@@ -1093,6 +1096,37 @@ mod tests {
     };
 
     const ENTRY: BlockId = BlockId::new(0);
+
+    #[test]
+    fn indirect_writeback_summary_requires_owned_results_without_provenance_claims() {
+        let reference = ValueType::Ref(layout());
+        let mut signature = FunctionSignature {
+            id: FunctionSignatureId::new(1),
+            parameters: vec![reference, reference],
+            results: vec![reference, reference],
+            contract: super::super::super::CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: reference,
+                    ownership: ParameterOwnership::WriteBack,
+                }; 2],
+                results: vec![ResultContract::Shared { layout: layout() }; 2],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let summary = declared_shared_summary(&signature).expect("owned replacement ABI");
+        assert_eq!(summary.results, vec![DerivedResult::Shared(layout()); 2]);
+        for unsupported in [
+            ResultContract::BodyDerived(reference),
+            ResultContract::AliasesParameter { parameter: 0, layout: layout() },
+            ResultContract::ReallocatesParameter { parameter: 0, layout: layout() },
+        ] {
+            signature.contract.results[0] = unsupported;
+            assert!(declared_shared_summary(&signature).is_none());
+        }
+        signature.contract.results[0] = ResultContract::Shared { layout: layout() };
+        signature.contract.parameter_effects.insert(0, vec![MemoryEffect::Reclaim]);
+        assert!(declared_shared_summary(&signature).is_none());
+    }
     fn layout() -> crate::layout::LayoutId { crate::layout::LayoutId::from_bytes([1; 32]) }
     fn maps(function: Function, signature: FunctionSignature) -> (BTreeMap<FunctionId, &'static Function>, BTreeMap<FunctionSignatureId, &'static FunctionSignature>) { let function: &'static Function = Box::leak(Box::new(function)); let signature: &'static FunctionSignature = Box::leak(Box::new(signature)); ([(function.id, function)].into_iter().collect(), [(signature.id, signature)].into_iter().collect()) }
 

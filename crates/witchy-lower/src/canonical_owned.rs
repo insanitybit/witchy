@@ -267,7 +267,8 @@ fn operation_flow(
             match owner {
                 OwnerOperation::Drop { owner, .. } => consume(owned, *owner)?,
                 OwnerOperation::DropList { list, .. } => consume(owned, *list)?,
-                OwnerOperation::ListPush { list, value, .. } => {
+                OwnerOperation::ListPush { list, value, .. }
+                | OwnerOperation::ListSet { list, value, .. } => {
                     consume(owned, *list)?;
                     consume(owned, *value)?;
                 }
@@ -275,6 +276,7 @@ fn operation_flow(
                 | OwnerOperation::ReadCapability { .. }
                 | OwnerOperation::ReadOwner { .. }
                 | OwnerOperation::ReadCallable { .. }
+                | OwnerOperation::ReadTag { .. }
                 | OwnerOperation::Clone { .. }
                 | OwnerOperation::CloneEnvironment { .. }
                 | OwnerOperation::NewList { .. }
@@ -532,6 +534,7 @@ mod opaque_tests {
     fn opaque_owner_release_placement_preserves_return_and_drops_original() {
         let ty = GcTypeId::new(0xc1000000);
         let family = OwnerFamily {
+            source: witchy_wir::canonical_safewir::closure_owner_contract::OwnerFamilySource::Closure,
             owner_type: ty, list_type: GcTypeId::new(0xc1000001),
             signature: FunctionSignatureId::new(0), declaration_signature: FunctionSignatureId::new(1),
             environment: witchy_wir::layout::LayoutId::from_bytes([0; 32]), constructors: vec![],

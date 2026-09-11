@@ -26,7 +26,7 @@ mod list_update;
 mod owned_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
-use witchy_types::canonical_aggregates::{dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
+use witchy_types::canonical_aggregates::{concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::canonical_closure::lambda_sites;
 use witchy_types::typeck::{
@@ -37,7 +37,7 @@ use witchy_wir::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter,
     CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, HostBufferExtent, HostCallArgument, LoweredCandidate,
+    FunctionSignatureId, HostBufferExtent, HostCallArgument, LoadTransfer, LoweredCandidate,
     LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, CandidateAdapterBinding, CandidateAdapterBindings, CandidateClosureBinding, CandidateClosureBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
     ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, Ownership, ValueId, ValueType,
@@ -47,13 +47,14 @@ use witchy_wir::layout::{
 };
 use witchy_wir::canonical_safewir::{GcTypeId, closure_owner_contract::{
     CaptureOrdinal, CaptureStorage, ConstructorId, OwnerCapture, OwnerConstructor,
-    OwnerFamily, OwnerOperation, SourceConstructor,
+    OwnerFamily, OwnerFamilySource, OwnerOperation, SourceConstructor,
 }};
 
 #[derive(Debug, Clone, Default)]
 struct ClosureValueLayouts {
     linear: HashMap<Type, witchy_wir::layout::LayoutId>,
     owners: HashMap<Type, GcTypeId>,
+    aggregate_owners: HashMap<Type, (GcTypeId, GcTypeId)>,
 }
 
 impl std::ops::Deref for ClosureValueLayouts {
@@ -63,14 +64,24 @@ impl std::ops::Deref for ClosureValueLayouts {
 
 impl ClosureValueLayouts {
     fn opaque_type(&self, source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<GcTypeId> {
-        let (element, is_list) = match source.unqualified() {
-            Type::Fn(..) => (source, false),
-            Type::Named(name, args) if name == "List" && args.len() == 1
-                && matches!(args[0].unqualified(), Type::Fn(..)) => (&args[0], true),
-            _ => return None,
-        };
-        let owner = self.owners.get(&crate::canonical_layouts::canonical_closure_key(element, definitions))?;
-        Some(GcTypeId::new(owner.get() + u32::from(is_list)))
+        match source.unqualified() {
+            Type::Fn(..) => self.owners
+                .get(&crate::canonical_layouts::canonical_closure_key(source, definitions))
+                .copied(),
+            Type::Named(name, args) if name == "List" && args.len() == 1 => {
+                if matches!(args[0].unqualified(), Type::Fn(..)) {
+                    return self.owners
+                        .get(&crate::canonical_layouts::canonical_closure_key(&args[0], definitions))
+                        .map(|owner| GcTypeId::new(owner.get() + 1));
+                }
+                let key = concrete_aggregate_identity(&args[0], definitions)?;
+                self.aggregate_owners.get(&key).map(|(_, list)| *list)
+            }
+            _ => {
+                let key = concrete_aggregate_identity(source, definitions)?;
+                self.aggregate_owners.get(&key).map(|(owner, _)| *owner)
+            }
+        }
     }
 }
 
@@ -177,10 +188,14 @@ pub fn lower_typed_module(
     let tail_manifest = source.proper_tail_manifest();
     let closure_families = crate::canonical_layouts::closure_families(source)
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let aggregate_families = crate::canonical_layouts::opaque_aggregate_families(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let closure_layouts = ClosureValueLayouts {
         linear: closure_families.iter().map(|(signature, family)| (signature.clone(), family.closure)).collect(),
         owners: closure_families.iter().filter_map(|(signature, family)|
             family.owner_type.map(|owner| (signature.clone(), owner))).collect(),
+        aggregate_owners: aggregate_families.iter().map(|(source, family)|
+            (source.clone(), (family.owner_type, family.list_type))).collect(),
     };
     let string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     let string_data_ids = string_payloads
@@ -226,6 +241,11 @@ pub fn lower_typed_module(
             },
         );
     }
+    // Layout projection also reaches callable fields nested inside concrete
+    // aggregate families. Those types may have no standalone expression node
+    // in the monomorphized module, but their projected closure layouts still
+    // require the same authenticated declaration and closure signatures.
+    callable_types.extend(closure_families.keys().cloned());
     callable_types.sort_by_key(|ty| format!("{ty:?}"));
     callable_types.dedup();
     let function_types = callable_types
@@ -259,6 +279,7 @@ pub fn lower_typed_module(
     let mut closure_context = ClosureContext {
         layouts: closure_layouts.clone(),
         families: closure_families,
+        aggregate_families,
         signature_by_layout: HashMap::new(),
         declaration_by_layout: HashMap::new(),
         lambda_captures: HashMap::new(),
@@ -487,8 +508,48 @@ pub fn lower_typed_module(
                 witness: None, environment_tag: 0, captures: Vec::new() });
         }
         constructors.sort_by_key(|constructor| constructor.id.0);
-        closure_context.owners.push(OwnerFamily { owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
+        closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure,
+            owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
             signature, declaration_signature, environment: family.environment, constructors });
+    }
+    let mut next_constructor = closure_context.owners.iter().flat_map(|family| &family.constructors)
+        .map(|constructor| constructor.id.0).max().unwrap_or(0).checked_add(1)
+        .ok_or(CanonicalLoweringError::IdOverflow)?;
+    let mut aggregate_families = closure_context.aggregate_families.values().cloned().collect::<Vec<_>>();
+    aggregate_families.sort_by_key(|family| family.owner_type);
+    for family in aggregate_families {
+        let family_token = FunctionSignatureId::new(family.owner_type.get());
+        let mut constructors = Vec::with_capacity(family.variants.len());
+        for variant in &family.variants {
+            let captures = variant.fields.iter().zip(&variant.storage).map(|(field, storage)| {
+                let value_type = source_value_type(field, &layouts, &layout_catalog, &closure_layouts, &definitions)?;
+                let transfer = match value_type {
+                    ValueType::Capability(kind) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyCapability(kind),
+                    ValueType::Ref(_) | ValueType::Gc(_) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CloneManaged,
+                    ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size =>
+                        witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar,
+                    _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+                };
+                Ok(OwnerCapture { value_type, storage: *storage, transfer })
+            }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+            constructors.push(OwnerConstructor {
+                id: ConstructorId(next_constructor),
+                function: FunctionId::new(u32::MAX),
+                witness: None,
+                environment_tag: variant.environment_tag,
+                captures,
+            });
+            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+        }
+        closure_context.owners.push(OwnerFamily {
+            source: OwnerFamilySource::Aggregate(family.source.clone()),
+            owner_type: family.owner_type,
+            list_type: family.list_type,
+            signature: family_token,
+            declaration_signature: family_token,
+            environment: family.environment,
+            constructors,
+        });
     }
     closure_context.owners.sort_by_key(|family| family.owner_type);
     let checked_parameter_conventions = callable_types
@@ -859,6 +920,7 @@ struct AdapterFunction {
 struct ClosureContext {
     layouts: ClosureValueLayouts,
     families: HashMap<Type, crate::canonical_layouts::ClosureFamilyLayout>,
+    aggregate_families: HashMap<Type, crate::canonical_layouts::OpaqueAggregateFamilyLayout>,
     signature_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
     declaration_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
     lambda_captures: HashMap<usize, ClosureEnvironment>,
@@ -1118,7 +1180,13 @@ fn signature_from_type(
     }).collect::<Vec<_>>();
     for parameter in contract_parameters.iter().filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack) {
         results.push(parameter.value_type);
-        result_contracts.push(ResultContract::BodyDerived(parameter.value_type));
+        // A write-back transfers the replacement value's owned token. It need
+        // not retain the input's storage identity (the body may replace it).
+        // The return checker establishes layout, initialization, and ownership.
+        result_contracts.push(match parameter.value_type {
+            ValueType::Ref(layout) => ResultContract::Shared { layout },
+            value_type => ResultContract::Value(value_type),
+        });
     }
     Ok(FunctionSignature {
         id,
@@ -1292,6 +1360,7 @@ fn lower_function(
         next_value: 0,
         values: BTreeMap::new(),
         bindings: HashMap::new(),
+        binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
         string_capacities: HashMap::new(),
         list_counts: HashMap::new(),
@@ -1347,7 +1416,9 @@ fn lower_function(
         .collect();
     for (source, parameter) in function.params.iter().zip(&parameters) {
         if lowerer.bindings.insert(source.name.clone(), parameter.value).is_some() {
-            return Err(CanonicalLoweringError::DuplicateBinding(source.name.clone()));
+            return Err(CanonicalLoweringError::DuplicateBinding(format!(
+                "parameter `{}` in `{}`", source.name, function.name,
+            )));
         }
         lowerer.parameter_names.insert(parameter.value, source.name.clone());
     }
@@ -1386,6 +1457,13 @@ fn lower_function(
                 Some(environment)
             } else { None };
             for (ordinal, (capture, contract)) in environment_schema.captures.iter().zip(&constructor.captures).enumerate() {
+                // A lambda parameter shadows an outer binding with the same
+                // spelling. The checked witness may retain that outer value
+                // for another nested closure, but this body must resolve the
+                // name to its parameter rather than install a second binding.
+                if lowerer.bindings.contains_key(&capture.name) {
+                    continue;
+                }
                 let value = match contract.storage {
                     CaptureStorage::EnvironmentField(field) => lowerer.load_record_field(environment.ok_or(
                         CanonicalLoweringError::UnsupportedExpression("opaque capture environment"))?, field, contract.value_type)?,
@@ -1408,7 +1486,9 @@ fn lower_function(
                     _ => return Err(CanonicalLoweringError::UnsupportedExpression("opaque managed capture read")),
                 };
                 if lowerer.bindings.insert(capture.name.clone(), value).is_some() {
-                    return Err(CanonicalLoweringError::DuplicateBinding(capture.name.clone()));
+                    return Err(CanonicalLoweringError::DuplicateBinding(format!(
+                        "capture `{}` in `{}`", capture.name, function.name,
+                    )));
                 }
             }
         } else {
@@ -1426,6 +1506,9 @@ fn lower_function(
             kind: witchy_wir::canonical_safewir::GuardKind::DynamicType,
         });
         for capture in &environment_schema.captures {
+            if lowerer.bindings.contains_key(&capture.name) {
+                continue;
+            }
             let value_type = source_value_type(
                 &capture.ty,
                 layout_bundle,
@@ -1435,7 +1518,9 @@ fn lower_function(
             )?;
             let value = lowerer.load_record_field(environment, capture.field, value_type)?;
             if lowerer.bindings.insert(capture.name.clone(), value).is_some() {
-                return Err(CanonicalLoweringError::DuplicateBinding(capture.name.clone()));
+                return Err(CanonicalLoweringError::DuplicateBinding(format!(
+                    "capture `{}` in `{}`", capture.name, function.name,
+                )));
             }
         }
         }
@@ -1464,6 +1549,7 @@ fn lower_function(
         value_types: lowerer.values,
         blocks,
     };
+    demote_shared_reference_phis(&mut lowered);
     let debug = std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some();
     if debug {
         eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
@@ -1474,6 +1560,68 @@ fn lower_function(
         eprintln!("canonical lowered `{}`:\n{lowered:#?}", function.name);
     }
     Ok(lowered)
+}
+
+/// Normalize join ownership after all incoming edges have been lowered.
+fn demote_shared_reference_phis(function: &mut Function) {
+    // A loop backedge can become shared after nested joins were constructed.
+    // Propagate that loss of uniqueness through the completed graph before
+    // requesting ownership judgments from the independent checker.
+    let mut shared = BTreeSet::new();
+    for block in &function.blocks {
+        shared.extend(block.parameters.iter().filter_map(|parameter|
+            (parameter.ownership == Some(Ownership::Shared)).then_some(parameter.value)));
+        for operation in &block.operations {
+            match operation {
+                Operation::CloneRef { destination, source } => { shared.extend([*destination, *source]); }
+                Operation::StaticData { destination, .. }
+                | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent, .. } => {
+                    shared.insert(*destination);
+                }
+                Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. }
+                | Operation::HostCall { destinations, .. } => { shared.extend(destinations.iter().copied()); }
+                _ => {}
+            }
+        }
+    }
+    let parameters = function.blocks.iter().map(|block| (block.id, &block.parameters))
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let before = shared.len();
+        for block in &function.blocks {
+            for operation in &block.operations {
+                if let Operation::MoveValue { destination, source } = operation
+                    && shared.contains(source)
+                {
+                    shared.insert(*destination);
+                }
+            }
+            let edges = match &block.terminator {
+                Terminator::Branch { target, arguments } => vec![(*target, arguments)],
+                Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. } =>
+                    vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+                _ => Vec::new(),
+            };
+            for (target, arguments) in edges {
+                if let Some(parameters) = parameters.get(&target) {
+                    for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
+                        if shared.contains(argument) { shared.insert(parameter.value); }
+                    }
+                }
+            }
+        }
+        if shared.len() == before { break; }
+    }
+    for block in &mut function.blocks {
+        for parameter in &mut block.parameters {
+            if parameter.ownership == Some(Ownership::Unique)
+                && matches!(parameter.value_type, ValueType::Ref(_))
+                && shared.contains(&parameter.value)
+            {
+                parameter.ownership = Some(Ownership::Shared);
+            }
+        }
+    }
 }
 
 /// The names a loop body rebinds: assigned (`x = e`) or pushed in place.
@@ -1667,6 +1815,10 @@ struct FunctionLowerer<'a> {
     next_value: u32,
     values: BTreeMap<ValueId, ValueType>,
     bindings: HashMap<String, ValueId>,
+    /// Declarations in each active lexical block. A declaration may shadow
+    /// an outer binding, while assignments to other outer names survive the
+    /// block.
+    binding_scopes: Vec<HashMap<String, (Option<ValueId>, bool)>>,
     /// Names bound by `var`: a later in-place mutation needs their token
     /// unique, so a call receives a copy of such a value, never a clone.
     mutable_bindings: HashSet<String>,
@@ -1762,12 +1914,7 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
-                    if self.bindings.insert(name.clone(), value).is_some() {
-                        return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
-                    }
-                    if *mutable {
-                        self.mutable_bindings.insert(name.clone());
-                    }
+                    self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
@@ -2101,6 +2248,13 @@ impl FunctionLowerer<'_> {
         &mut self,
         block: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
+        self.with_binding_scope(|lowerer| lowerer.lower_block_effect_scoped(block))
+    }
+
+    fn lower_block_effect_scoped(
+        &mut self,
+        block: &witchy_syntax::ast::Block,
+    ) -> Result<(), CanonicalLoweringError> {
         let outer = self.bindings.keys().cloned().collect::<Vec<_>>();
         for statement in &block.stmts {
             self.require_open_block()?;
@@ -2111,9 +2265,7 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
-                    if self.bindings.insert(name.clone(), value).is_some() {
-                        return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
-                    }
+                    self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
@@ -2201,6 +2353,13 @@ impl FunctionLowerer<'_> {
         &mut self,
         block: &witchy_syntax::ast::Block,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        self.with_binding_scope(|lowerer| lowerer.lower_block_flow_value_scoped(block))
+    }
+
+    fn lower_block_flow_value_scoped(
+        &mut self,
+        block: &witchy_syntax::ast::Block,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         let outer = self.bindings.keys().cloned().collect::<Vec<_>>();
         let (tail, statements) = block
             .stmts
@@ -2215,9 +2374,7 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
-                    if self.bindings.insert(name.clone(), value).is_some() {
-                        return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
-                    }
+                    self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
@@ -2282,9 +2439,52 @@ impl FunctionLowerer<'_> {
         let value_type = self.expression_type(value)?;
         let lowered = self.lower_expr(value)?;
         for (name, bound) in self.lower_match_pattern(lowered, pattern, &value_type)? {
-            if self.bindings.insert(name.clone(), bound).is_some() {
-                return Err(CanonicalLoweringError::DuplicateBinding(name));
+            self.bind_lexical(&name, bound, false)?;
+        }
+        Ok(())
+    }
+
+    fn with_binding_scope<T>(
+        &mut self,
+        lower: impl FnOnce(&mut Self) -> Result<T, CanonicalLoweringError>,
+    ) -> Result<T, CanonicalLoweringError> {
+        self.binding_scopes.push(HashMap::new());
+        let result = lower(self);
+        let scope = self.binding_scopes.pop().expect("a lexical scope was pushed");
+        for (name, (previous, was_mutable)) in scope {
+            if let Some(previous) = previous {
+                self.bindings.insert(name.clone(), previous);
+            } else {
+                self.bindings.remove(&name);
             }
+            if was_mutable {
+                self.mutable_bindings.insert(name);
+            } else {
+                self.mutable_bindings.remove(&name);
+            }
+        }
+        result
+    }
+
+    fn bind_lexical(
+        &mut self,
+        name: &str,
+        value: ValueId,
+        mutable: bool,
+    ) -> Result<(), CanonicalLoweringError> {
+        let scope = self.binding_scopes.last_mut().expect("every function has a lexical scope");
+        if scope.contains_key(name) {
+            return Err(CanonicalLoweringError::DuplicateBinding(name.to_owned()));
+        }
+        scope.insert(
+            name.to_owned(),
+            (self.bindings.get(name).copied(), self.mutable_bindings.contains(name)),
+        );
+        self.bindings.insert(name.to_owned(), value);
+        if mutable {
+            self.mutable_bindings.insert(name.to_owned());
+        } else {
+            self.mutable_bindings.remove(name);
         }
         Ok(())
     }
@@ -2523,6 +2723,14 @@ impl FunctionLowerer<'_> {
     fn lower_tail_block(
         &mut self,
         block: &witchy_syntax::ast::Block,
+        path: Vec<ProperTailPathStep>,
+    ) -> Result<(), CanonicalLoweringError> {
+        self.with_binding_scope(|lowerer| lowerer.lower_tail_block_scoped(block, path))
+    }
+
+    fn lower_tail_block_scoped(
+        &mut self,
+        block: &witchy_syntax::ast::Block,
         mut path: Vec<ProperTailPathStep>,
     ) -> Result<(), CanonicalLoweringError> {
         let Some((last, leading)) = block.stmts.split_last() else {
@@ -2540,9 +2748,7 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.lower_let_value(*mutable, value)?;
-                    if self.bindings.insert(name.clone(), value).is_some() {
-                        return Err(CanonicalLoweringError::DuplicateBinding(name.clone()));
-                    }
+                    self.bind_lexical(name, value, *mutable)?;
                 }
                 Stmt::Assign { name, value } => {
                     if !self.bindings.contains_key(name) {
@@ -2604,7 +2810,9 @@ impl FunctionLowerer<'_> {
         &mut self,
         arms: &[(BlockId, &HashMap<String, ValueId>)],
         changed_names: &[String],
+        arm_facts: &mut [FactSnapshot],
     ) -> Result<Vec<BindingLanePlan>, CanonicalLoweringError> {
+        let combined_facts = self.snapshot_facts();
         let mut plans = Vec::with_capacity(changed_names.len());
         for name in changed_names {
             let mut values = arms.iter().map(|(_, bindings)| bindings[name]).collect::<Vec<_>>();
@@ -2613,15 +2821,27 @@ impl FunctionLowerer<'_> {
                 continue;
             }
             for (index, (end, bindings)) in arms.iter().enumerate() {
+                self.restore_snapshot(arm_facts[index].clone());
+                self.current = *end;
                 let value = values[index];
                 if bindings.iter().any(|(other, bound)| other != name && *bound == value) {
-                    self.current = *end;
                     values[index] = self.clone_reference_token(value)?;
                 }
+                arm_facts[index] = self.snapshot_facts();
             }
-            let mut lanes = arms.iter().map(|(end, _)| *end).zip(values.iter().copied()).collect::<Vec<_>>();
-            let all_tokens = self.materialize_mixed_lanes(&mut lanes)?;
-            values = lanes.iter().map(|(_, value)| *value).collect();
+            let all_tokens = values.iter().any(|value| self.carries_token(*value));
+            for (index, (end, _)) in arms.iter().enumerate() {
+                self.restore_snapshot(arm_facts[index].clone());
+                self.current = *end;
+                if all_tokens && !self.carries_token(values[index]) {
+                    self.ensure_string_extent(values[index])?;
+                    if !self.string_lengths.contains_key(&values[index]) {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("mixed token and static join lanes"));
+                    }
+                    values[index] = self.clone_string_for_storage(values[index])?;
+                }
+                arm_facts[index] = self.snapshot_facts();
+            }
             let eligible = values.iter().all(|value| self.shared_phi_eligible(*value));
             // A fixed layout (a heap record) has no count or capacity: its phi
             // carries no lanes. A collection's phi carries both lanes from
@@ -2632,7 +2852,7 @@ impl FunctionLowerer<'_> {
             });
             let mut extents = Vec::with_capacity(values.len());
             let mut family = None;
-            for ((end, _), value) in arms.iter().zip(&values) {
+            for (index, ((end, _), value)) in arms.iter().zip(&values).enumerate() {
                 if fixed_layout {
                     break;
                 }
@@ -2641,30 +2861,12 @@ impl FunctionLowerer<'_> {
                 // both lanes. That load is the arm's own fact: it must not
                 // stay cached for code the arm does not dominate.
                 self.current = *end;
-                // The same string value can occur in both predecessors, but
-                // an absorbed branch-local header load belongs to only one.
-                // Build string lanes from reads in this predecessor instead
-                // of letting that cache select another arm's definition.
-                let saved_string_length = self.string_lengths.remove(value);
-                let saved_string_capacity = self.string_capacities.remove(value);
-                let authenticated = self.dynamic_extent_lanes(*value).is_some();
-                if !authenticated {
+                self.restore_snapshot(arm_facts[index].clone());
+                if self.dynamic_extent_lanes(*value).is_none() {
                     self.ensure_list_extent(*value)?;
                     self.ensure_string_extent(*value)?;
                 }
                 let lanes = self.dynamic_extent_lanes(*value);
-                if !authenticated {
-                    self.string_lengths.remove(value);
-                    self.string_capacities.remove(value);
-                    self.list_counts.remove(value);
-                    self.list_capacities.remove(value);
-                }
-                if let Some(length) = saved_string_length {
-                    self.string_lengths.insert(*value, length);
-                }
-                if let Some(capacity) = saved_string_capacity {
-                    self.string_capacities.insert(*value, capacity);
-                }
                 let Some((count, capacity)) = lanes else {
                     extents.clear();
                     break;
@@ -2687,6 +2889,7 @@ impl FunctionLowerer<'_> {
                 }
                 family = Some(lane_family);
                 extents.push(self.split_lanes(count, capacity)?);
+                arm_facts[index] = self.snapshot_facts();
             }
             let phi = if eligible && (fixed_layout || extents.len() == values.len()) {
                 if all_tokens && values.iter().all(|value| !self.known_shared_value(*value)) {
@@ -2699,6 +2902,10 @@ impl FunctionLowerer<'_> {
             };
             let extents = phi.is_some().then_some(extents);
             plans.push(BindingLanePlan { name: name.clone(), values, extents, family, phi, all_tokens });
+        }
+        self.restore_snapshot(combined_facts);
+        for facts in arm_facts.iter().cloned() {
+            self.absorb_facts(facts);
         }
         Ok(plans)
     }
@@ -2865,7 +3072,10 @@ impl FunctionLowerer<'_> {
             .filter(|name| then_bindings[*name] != else_bindings[*name])
             .cloned()
             .collect::<Vec<_>>();
-        let plans = self.plan_binding_lanes(&[(then_end, &then_bindings), (else_end, &else_bindings)], &changed_names)?;
+        let plans = self.plan_binding_lanes(
+            &[(then_end, &then_bindings), (else_end, &else_bindings)],
+            &changed_names, &mut [then_facts, else_facts],
+        )?;
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
@@ -3029,7 +3239,38 @@ impl FunctionLowerer<'_> {
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let mut result_type = None;
-        let mut arm_results = Vec::with_capacity(arms.len());
+        // A top-level or-pattern over distinct constructors is a set of
+        // mutually exclusive tag dispatches with one checked body. Expanding
+        // only this disjoint form preserves guard semantics: a failed guard
+        // cannot fall through to another alternative that also matched.
+        // Tail-position expansion would duplicate one proper-tail witness, so
+        // it remains fail-closed until the source witness represents each
+        // alternative explicitly.
+        let mut dispatch_arms = Vec::new();
+        for (arm_index, arm) in arms.iter().enumerate() {
+            if let Pattern::Or(alternatives) = &arm.pattern {
+                if tail.is_some() || alternatives.is_empty() {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("tail or-pattern"));
+                }
+                let mut constructors = HashSet::new();
+                for alternative in alternatives {
+                    let Pattern::Ctor { name, .. } = alternative else {
+                        return Err(CanonicalLoweringError::UnsupportedExpression(
+                            "overlapping or-pattern",
+                        ));
+                    };
+                    if !constructors.insert(name.as_str()) {
+                        return Err(CanonicalLoweringError::UnsupportedExpression(
+                            "overlapping or-pattern",
+                        ));
+                    }
+                    dispatch_arms.push((arm_index, arm, alternative));
+                }
+            } else {
+                dispatch_arms.push((arm_index, arm, &arm.pattern));
+            }
+        }
+        let mut arm_results = Vec::with_capacity(dispatch_arms.len());
         // The dispatch block the next arm tests in. It is `None` once an
         // irrefutable arm has ended dispatch: allocating a fallthrough block
         // for an arm that cannot fail would leave a block no edge reaches, and
@@ -3038,17 +3279,17 @@ impl FunctionLowerer<'_> {
         let mut next = Some(self.current);
 
         let mut continuing_facts = Vec::new();
-        for (arm_index, arm) in arms.iter().enumerate() {
+        for (dispatch_index, (arm_index, arm, pattern)) in dispatch_arms.into_iter().enumerate() {
             let Some(current) = next else { break };
             // Each arm starts from the facts before the `match`; every arm's
             // facts are merged back for the join's lane planning.
-            if arm_index > 0 {
+            if dispatch_index > 0 {
                 self.restore_snapshot(facts.clone());
             }
             self.current = current;
             self.bindings = outer.clone();
             let arm_block = self.new_block(&[])?;
-            let condition = self.match_pattern_condition(scrutinee, &arm.pattern, &scrutinee_type)?;
+            let condition = self.match_pattern_condition(scrutinee, pattern, &scrutinee_type)?;
             // Only an arm that can fail (a refutable pattern or a guard) has a
             // fallthrough successor.
             let next_block = if condition.is_some() || arm.guard.is_some() {
@@ -3075,7 +3316,7 @@ impl FunctionLowerer<'_> {
             self.bindings = outer.clone();
             // Pattern bindings are emitted in the arm block: a list pattern's
             // element loads are guarded by the length test that reached it.
-            let pattern_bindings = self.lower_match_pattern(scrutinee, &arm.pattern, &scrutinee_type)?;
+            let pattern_bindings = self.lower_match_pattern(scrutinee, pattern, &scrutinee_type)?;
             let shadowed_outer = pattern_bindings.iter()
                 .filter_map(|(name, _)| outer.get(name).map(|value| (name.clone(), *value)))
                 .collect::<Vec<_>>();
@@ -3188,7 +3429,7 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         changed_names.sort();
         let arms = arm_results.iter().map(|(body_end, bindings, _)| (*body_end, bindings)).collect::<Vec<_>>();
-        let plans = self.plan_binding_lanes(&arms, &changed_names)?;
+        let plans = self.plan_binding_lanes(&arms, &changed_names, &mut continuing_facts)?;
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
@@ -3221,14 +3462,16 @@ impl FunctionLowerer<'_> {
             let mut authenticated = Vec::with_capacity(result_values.len());
             for (arm_index, (body_end, _, value)) in arm_results.iter().enumerate() {
                 let Some(value) = value else { continue };
+                self.restore_snapshot(continuing_facts[arm_index].clone());
                 self.current = *body_end;
                 let lane = self.authenticate_dynamic_result(*value, string_layout)?;
+                continuing_facts[arm_index] = self.snapshot_facts();
                 authenticated.push(lane);
             }
-            // Binding-lane planning already authenticated and possibly
-            // cloned outer references. Do not restore arm snapshots here:
-            // that would erase those fresh lane facts. Result arguments use
-            // `authenticated` directly.
+            self.restore_snapshot(facts.clone());
+            for arm_facts in continuing_facts.iter().cloned() {
+                self.absorb_facts(arm_facts);
+            }
             let family = authenticated.first().and_then(|lane| lane.map(|lane| lane.family));
             let lanes = authenticated.into_iter().collect::<Option<Vec<_>>>();
             match (family, lanes) {
@@ -3385,15 +3628,17 @@ impl FunctionLowerer<'_> {
                     match argument {
                         Pattern::Var(bound) if bound != "_" => {
                             let value_type = self.field_value_type(&shape.fields[slot])?;
-                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                            bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
+                            bindings.push((bound.clone(), self.load_source_aggregate_field(
+                                scrutinee, scrutinee_type, 0, slot, slot, value_type,
+                            )?));
                         }
                         Pattern::Wildcard | Pattern::Var(_) => {}
                         Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } => {
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
-                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            let payload = self.load_source_aggregate_field(
+                                scrutinee, scrutinee_type, 0, slot, slot, value_type,
+                            )?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
                         Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
@@ -3409,7 +3654,7 @@ impl FunctionLowerer<'_> {
                 let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
                     CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"),
                 )?;
-                let (_, variant) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                let (variant_index, variant) = shape.variant(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                 if args.len() != variant.arity {
                     return Err(CanonicalLoweringError::UnsupportedExpression("constructor pattern arity"));
                 }
@@ -3420,8 +3665,9 @@ impl FunctionLowerer<'_> {
                         Pattern::Var(bound) if bound != "_" => {
                             let slot = variant.first_field + offset;
                             let value_type = self.field_value_type(&shape.fields[slot])?;
-                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                            bindings.push((bound.clone(), self.load_record_field(scrutinee, slot, value_type)?));
+                            bindings.push((bound.clone(), self.load_source_aggregate_field(
+                                scrutinee, scrutinee_type, variant_index, offset, slot, value_type,
+                            )?));
                         }
                         Pattern::Wildcard | Pattern::Var(_) => {}
                         // A tuple payload destructures through its own slot
@@ -3430,8 +3676,9 @@ impl FunctionLowerer<'_> {
                             let slot = variant.first_field + offset;
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
-                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            let payload = self.load_source_aggregate_field(
+                                scrutinee, scrutinee_type, variant_index, offset, slot, value_type,
+                            )?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
                         // A nested constructor payload binds through its own
@@ -3441,16 +3688,18 @@ impl FunctionLowerer<'_> {
                             let slot = variant.first_field + offset;
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
-                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            let payload = self.load_source_aggregate_field(
+                                scrutinee, scrutinee_type, variant_index, offset, slot, value_type,
+                            )?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
                         Pattern::List { .. } => {
                             let slot = variant.first_field + offset;
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
-                            let slot = u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                            let payload = self.load_record_field(scrutinee, slot, value_type)?;
+                            let payload = self.load_source_aggregate_field(
+                                scrutinee, scrutinee_type, variant_index, offset, slot, value_type,
+                            )?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
                         // A literal payload binds nothing; its test ran in the
@@ -3684,7 +3933,7 @@ impl FunctionLowerer<'_> {
                 let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
                     CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"),
                 )?;
-                if !matches!(self.values[&scrutinee], ValueType::Ref(_)) {
+                if !matches!(self.values[&scrutinee], ValueType::Ref(_) | ValueType::Gc(_)) {
                     return Err(CanonicalLoweringError::UnsupportedExpression("constructor pattern scrutinee"));
                 }
                 // Names, wildcards, and irrefutable tuple payloads leave the
@@ -3706,13 +3955,23 @@ impl FunctionLowerer<'_> {
                     .filter(|(_, argument)| !irrefutable(argument))
                     .collect();
                 if !shape.tagged {
+                    if matches!(self.values[&scrutinee], ValueType::Gc(_)) && !refutable.is_empty() {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate nested literal pattern"));
+                    }
                     return self.payload_pattern_conditions(scrutinee, first_field, &fields, &refutable);
                 }
-                let tag = self.load_record_field(scrutinee, 0, ValueType::Int)?;
+                let tag = if matches!(self.values[&scrutinee], ValueType::Gc(_)) {
+                    self.opaque_aggregate_tag(scrutinee, scrutinee_type)?
+                } else {
+                    self.load_record_field(scrutinee, 0, ValueType::Int)?
+                };
                 let expected = self.push_const_int(i64::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
                 let tag_test = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
                 if refutable.is_empty() {
                     return Ok(Some(tag_test));
+                }
+                if matches!(self.values[&scrutinee], ValueType::Gc(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate nested literal pattern"));
                 }
                 // A refutable payload pattern tests its slot only once the tag
                 // test has selected the variant: another variant's slot is
@@ -4917,10 +5176,16 @@ impl FunctionLowerer<'_> {
     fn loop_rebindings_with_write_backs(&self, body: &witchy_syntax::ast::Block) -> LoopRebindings {
         let mut rebound = loop_rebindings(body);
         let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut |expression| {
-            if let Expr::Call { name, args } = expression
-                && let Some((_, signature_id)) = self.functions.get(name.as_str())
-                && let Some(signature) = self.signatures.get(signature_id.get() as usize)
-            {
+            if let Expr::Call { name, args } = expression {
+                let signature_id = self.functions.get(name.as_str()).map(|(_, signature)| *signature)
+                    .or_else(|| {
+                        let value = self.bindings.get(name)?;
+                        let ValueType::Ref(layout) = self.values.get(value)? else { return None };
+                        self.closures.declaration_by_layout.get(layout).copied()
+                    });
+                let Some(signature) = signature_id
+                    .and_then(|signature| self.signatures.get(signature.get() as usize))
+                else { return Ok(()) };
                 for (argument, contract) in args.iter().zip(&signature.contract.parameters) {
                     if contract.ownership == ParameterOwnership::WriteBack
                         && let Expr::Var(name) = argument
@@ -5379,6 +5644,135 @@ impl FunctionLowerer<'_> {
         self.closures.owners.iter().find(|family| family.list_type == id)
     }
 
+    fn opaque_aggregate_family(
+        &self,
+        source: &Type,
+    ) -> Result<(crate::canonical_layouts::OpaqueAggregateFamilyLayout, OwnerFamily), CanonicalLoweringError> {
+        let key = concrete_aggregate_identity(source, self.definitions)
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+        let layout = self.closures.aggregate_families.get(&key).cloned()
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+        let owner = self.closures.owners.iter().find(|family| family.owner_type == layout.owner_type).cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate owner family"))?;
+        Ok((layout, owner))
+    }
+
+    fn lower_opaque_aggregate(
+        &mut self,
+        source: &Type,
+        variant_index: usize,
+        values: Vec<ValueId>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let (layout, owner) = self.opaque_aggregate_family(source)?;
+        let variant = layout.variants.get(variant_index)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate variant"))?;
+        let constructor = owner.constructors.iter().find(|constructor|
+            constructor.environment_tag == variant.environment_tag).cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate constructor"))?;
+        if constructor.captures.len() != values.len() || values.len() != variant.fields.len() {
+            return Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate constructor arity"));
+        }
+        let mut captures = Vec::with_capacity(values.len());
+        for ((value, field), contract) in values.into_iter().zip(&variant.fields).zip(&constructor.captures) {
+            if self.values[&value] != contract.value_type {
+                return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                    callee: variant.name.clone(),
+                    parameter: captures.len(),
+                    expected: contract.value_type,
+                    actual: self.values[&value],
+                });
+            }
+            captures.push(if matches!(contract.value_type, ValueType::Ref(_)) && self.is_static_string(value) {
+                self.clone_string_for_storage(value)?
+            } else {
+                let _ = field;
+                value
+            });
+        }
+        let destination = self.fresh(ValueType::Gc(layout.owner_type))?;
+        self.push_operation(Operation::ClosureOwner(OwnerOperation::Construct {
+            destination,
+            constructor: constructor.id,
+            captures,
+        }));
+        Ok(destination)
+    }
+
+    fn opaque_aggregate_tag(
+        &mut self,
+        object: ValueId,
+        source: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let (_, owner) = self.opaque_aggregate_family(source)?;
+        let destination = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadTag {
+            destination,
+            owner: object,
+            family: owner.signature,
+        }));
+        Ok(destination)
+    }
+
+    fn load_source_aggregate_field(
+        &mut self,
+        object: ValueId,
+        source: &Type,
+        variant_index: usize,
+        field_offset: usize,
+        linear_index: usize,
+        value_type: ValueType,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if !matches!(self.values[&object], ValueType::Gc(_)) {
+            return self.load_record_field(
+                object,
+                u32::try_from(linear_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                value_type,
+            );
+        }
+        let (layout, owner) = self.opaque_aggregate_family(source)?;
+        let variant = layout.variants.get(variant_index)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate variant field"))?;
+        let storage = *variant.storage.get(field_offset)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate field storage"))?;
+        let constructor = owner.constructors.iter().find(|constructor|
+            constructor.environment_tag == variant.environment_tag).cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate field constructor"))?;
+        match (storage, value_type) {
+            (CaptureStorage::OwnerField(_), ValueType::Gc(_)) => {
+                let destination = self.fresh(value_type)?;
+                self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadOwner {
+                    destination,
+                    owner: object,
+                    constructor: constructor.id,
+                    capture: CaptureOrdinal(u32::try_from(field_offset).map_err(|_| CanonicalLoweringError::IdOverflow)?),
+                }));
+                Ok(destination)
+            }
+            (CaptureStorage::OwnerField(_), ValueType::Capability(_)) => {
+                let destination = self.fresh(value_type)?;
+                self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadCapability {
+                    destination,
+                    owner: object,
+                    constructor: constructor.id,
+                    capture: CaptureOrdinal(u32::try_from(field_offset).map_err(|_| CanonicalLoweringError::IdOverflow)?),
+                }));
+                Ok(destination)
+            }
+            (CaptureStorage::EnvironmentField(index), _) => {
+                let environment = self.fresh(ValueType::Ref(layout.environment))?;
+                self.push_operation(Operation::ClosureOwner(OwnerOperation::CloneEnvironment {
+                    destination: environment,
+                    owner: object,
+                    constructor: constructor.id,
+                }));
+                let value = self.load_record_field(environment, index, value_type)?;
+                self.push_operation(Operation::DropRef { object: environment });
+                Ok(value)
+            }
+            _ => Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate field type")),
+        }
+    }
+
     fn owner_list_length(&mut self, list: ValueId, family: FunctionSignatureId) -> Result<ValueId, CanonicalLoweringError> {
         let destination = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::ClosureOwner(OwnerOperation::ListLength { destination, list, family }));
@@ -5822,6 +6216,9 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if name.starts_with("dict.") && !self.functions.contains_key(name.as_str()) => {
                 self.lower_dict_call(expression, name, args)
             }
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_WITH_CAPACITY => {
+                self.lower_list_with_capacity(expression, args)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "list.length" | "list.__length") => {
                 self.lower_list_length(args)
             }
@@ -6242,6 +6639,11 @@ impl FunctionLowerer<'_> {
         index: usize,
         payload: Vec<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if let Some(source_type) = source_type
+            && self.closures.layouts.opaque_type(source_type, self.definitions).is_some()
+        {
+            return self.lower_opaque_aggregate(source_type, index, payload);
+        }
         let variant = &shape.variants[index];
         let mut values = Vec::with_capacity(shape.fields.len());
         for (slot, field) in shape.fields.iter().enumerate() {
@@ -6473,7 +6875,9 @@ impl FunctionLowerer<'_> {
             } else if let Some(base) = base {
                 let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
                 let value_type = self.field_value_type(&field_types[index as usize])?;
-                values.push(self.load_record_field(base, index, value_type)?);
+                values.push(self.load_source_aggregate_field(
+                    base, &source_type, 0, index as usize, index as usize, value_type,
+                )?);
             } else {
                 return Err(CanonicalLoweringError::MissingBinding(field_name.clone()));
             }
@@ -6739,6 +7143,16 @@ impl FunctionLowerer<'_> {
         move_references: bool,
         nullable_references: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if let Some(source_type) = source_type
+            && self.closures.layouts.opaque_type(source_type, self.definitions).is_some()
+        {
+            if move_references || nullable_references {
+                return Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate storage mode"));
+            }
+            let values = values.into_iter().collect::<Option<Vec<_>>>()
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate inactive field"))?;
+            return self.lower_opaque_aggregate(source_type, 0, values);
+        }
         let layout = match source_type {
             Some(source_type) => aggregate_layout_for_source(
                 source_type,
@@ -6902,10 +7316,10 @@ impl FunctionLowerer<'_> {
         })?;
         let value_type = self.field_value_type(field_type)?;
         let object = self.lower_expr(base)?;
-        if !matches!(self.values[&object], ValueType::Ref(_)) {
+        if !matches!(self.values[&object], ValueType::Ref(_) | ValueType::Gc(_)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("heap record field base"));
         }
-        self.load_record_field(object, u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, value_type)
+        self.load_source_aggregate_field(object, &base_type, 0, index, index, value_type)
     }
 
     fn lower_packed_record_constructor(
@@ -7467,6 +7881,55 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+
+    fn lower_list_with_capacity(
+        &mut self,
+        expression: &Expr,
+        arguments: &[Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let [hint] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.with_capacity arity"));
+        };
+        let hint = self.lower_expr(hint)?;
+        if self.values[&hint] != ValueType::Int {
+            return Err(CanonicalLoweringError::UnsupportedExpression("list.with_capacity hint"));
+        }
+        let logical_type = self.expression_type(expression)?;
+        if let Some(list_type) = self.closures.layouts.opaque_type(&logical_type, self.definitions) {
+            let family = self.closures.owners.iter().find(|family| family.list_type == list_type)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque list capacity family"))?;
+            let destination = self.fresh(ValueType::Gc(list_type))?;
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::NewList {
+                destination,
+                family: family.signature,
+                elements: Vec::new(),
+            }));
+            return Ok(destination);
+        }
+        let (layout, _element_type, header_bytes, stride_bytes) =
+            list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        let hint = self.push_clamp_non_negative(hint)?;
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: capacity, value: hint });
+        self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)?;
+        let count = self.push_const_size(0)?;
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes,
+                count,
+                capacity,
+                stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.list_counts.insert(object, count);
+        self.list_capacities.insert(object, capacity);
+        self.known_list_lengths.insert(object, 0);
+        Ok(object)
+    }
 
     fn lower_list_literal(
         &mut self,

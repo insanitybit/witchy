@@ -9,6 +9,33 @@ impl FunctionLowerer<'_> {
             });
         };
         let list_type = self.expression_type(source_expr)?;
+        // Evaluate all source arguments before the bounds failure, in order.
+        let source = self.lower_expr(source_expr)?;
+        let index = self.lower_expr(index_expr)?;
+        let replacement = self.lower_expr(replacement_expr)?;
+        if let Some(family) = self.owner_list_family(source).cloned() {
+            if self.values[&index] != ValueType::Int
+                || self.values[&replacement] != ValueType::Gc(family.owner_type)
+            {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+            }
+            let index_size = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+            let length = self.owner_list_length(source, family.signature)?;
+            let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
+            self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            let list = self.clone_reference_token(source)?;
+            let value = self.clone_reference_token(replacement)?;
+            let destination = self.fresh(ValueType::Gc(family.list_type))?;
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::ListSet {
+                destination,
+                list,
+                index: index_size,
+                value,
+                family: family.signature,
+            }));
+            return Ok(destination);
+        }
         let (layout, element_type, header_bytes, stride_bytes) = list_layout(
             &list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
@@ -18,10 +45,6 @@ impl FunctionLowerer<'_> {
         let [element_source_type] = arguments.as_slice() else {
             return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
         };
-        // Evaluate all source arguments before the bounds failure, in order.
-        let source = self.lower_expr(source_expr)?;
-        let index = self.lower_expr(index_expr)?;
-        let replacement = self.lower_expr(replacement_expr)?;
         if self.values[&source] != ValueType::Ref(layout)
             || self.values[&index] != ValueType::Int
             || self.values[&replacement] != element_type

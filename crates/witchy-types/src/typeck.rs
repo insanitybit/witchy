@@ -11897,18 +11897,24 @@ impl TypedModule {
 
 fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest, ProperTailManifestError> {
     let mut keys = Vec::new();
+    let functions = module.items.iter().filter_map(|item| match item {
+        Item::Function(function) => Some((function.name.as_str(), function)),
+        _ => None,
+    }).collect::<HashMap<_, _>>();
     for (item, item_def) in module.items.iter().enumerate() {
         let item = u32::try_from(item).map_err(|_| ProperTailManifestError::PathOverflow)?;
         match item_def {
             Item::Function(function) => {
                 let callable = ProperTailCallableId { item, method: None, lambda_path: Vec::new() };
-                collect_callable(&function.body, &callable, &mut keys)?;
+                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions };
+                collect_callable(&function.body, &caller, &mut keys)?;
             }
             Item::Impl(definition) => {
                 for (method, function) in definition.methods.iter().enumerate() {
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    collect_callable(&function.body, &callable, &mut keys)?;
+                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions };
+                    collect_callable(&function.body, &caller, &mut keys)?;
                 }
             }
             Item::Trait(definition) => {
@@ -11916,7 +11922,8 @@ fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest
                     let Some(body) = &signature.default else { continue };
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    collect_callable(body, &callable, &mut keys)?;
+                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions };
+                    collect_callable(body, &caller, &mut keys)?;
                 }
             }
             Item::Type(_) | Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
@@ -11942,17 +11949,53 @@ fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest
     Ok(ProperTailSiteManifest { sites })
 }
 
+#[derive(Clone, Copy)]
+struct TailCaller<'a> {
+    callable: &'a ProperTailCallableId,
+    params: &'a [ast::Param],
+    ret: Option<&'a ast::Type>,
+    functions: &'a HashMap<&'a str, &'a Function>,
+}
+
+/// RFC-0090 proper tails forward the complete callable ABI envelope. A `var`
+/// parameter is a hidden result lane, so a textually final direct call is
+/// proper only when every such lane is forwarded unchanged. Unknown indirect
+/// ABI shapes remain candidates only when the caller itself has no pending
+/// write-back lane; the independent SafeWIR checker still requires exact
+/// result signatures before accepting the edge.
+fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> bool {
+    let caller_has_var = caller.params.iter().any(|param| param.convention == Convention::Var);
+    let Expr::Call { name, args } = expr else {
+        return !caller_has_var;
+    };
+    let Some(target) = caller.functions.get(name.as_str()).copied() else {
+        return !caller_has_var;
+    };
+    if !caller_has_var {
+        return target.params.iter().all(|param| param.convention != Convention::Var);
+    }
+    caller.ret == target.ret.as_ref()
+        && caller.params.len() == target.params.len()
+        && target.params.len() == args.len()
+        && caller.params.iter().zip(&target.params).zip(args).all(|((source, target), argument)| {
+            source.convention == target.convention
+                && source.ty == target.ty
+                && (source.convention != Convention::Var
+                    || matches!(argument, Expr::Var(name) if name == &source.name))
+        })
+}
+
 fn collect_callable(
     body: &Block,
-    callable: &ProperTailCallableId,
+    caller: &TailCaller<'_>,
     keys: &mut Vec<ProperTailSiteKey>,
 ) -> Result<(), ProperTailManifestError> {
-    collect_block(body, callable, true, &mut Vec::new(), keys)
+    collect_block(body, caller, true, &mut Vec::new(), keys)
 }
 
 fn collect_block(
     block: &Block,
-    callable: &ProperTailCallableId,
+    caller: &TailCaller<'_>,
     value_tail: bool,
     path: &mut Vec<ProperTailPathStep>,
     keys: &mut Vec<ProperTailSiteKey>,
@@ -11961,21 +12004,21 @@ fn collect_block(
         path.push(ProperTailPathStep::Statement(u32::try_from(index).map_err(|_| ProperTailManifestError::PathOverflow)?));
         match statement {
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
-                collect_child(value, false, callable, path, 0, keys)?;
+                collect_child(value, false, caller, path, 0, keys)?;
             }
             Stmt::Return(Some(value)) => {
                 path.push(ProperTailPathStep::ReturnValue);
-                collect_expr(value, true, callable, path, keys)?;
+                collect_expr(value, true, caller, path, keys)?;
                 path.pop();
             }
             Stmt::Expr(value) => {
                 path.push(ProperTailPathStep::Value);
-                collect_expr(value, value_tail && index + 1 == block.stmts.len(), callable, path, keys)?;
+                collect_expr(value, value_tail && index + 1 == block.stmts.len(), caller, path, keys)?;
                 path.pop();
             }
             Stmt::Yield(value) => {
                 path.push(ProperTailPathStep::YieldValue);
-                collect_expr(value, false, callable, path, keys)?;
+                collect_expr(value, false, caller, path, keys)?;
                 path.pop();
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
@@ -11988,13 +12031,13 @@ fn collect_block(
 fn collect_child(
     expr: &Expr,
     tail: bool,
-    callable: &ProperTailCallableId,
+    caller: &TailCaller<'_>,
     path: &mut Vec<ProperTailPathStep>,
     child: usize,
     keys: &mut Vec<ProperTailSiteKey>,
 ) -> Result<(), ProperTailManifestError> {
     path.push(ProperTailPathStep::Child(u32::try_from(child).map_err(|_| ProperTailManifestError::PathOverflow)?));
-    collect_expr(expr, tail, callable, path, keys)?;
+    collect_expr(expr, tail, caller, path, keys)?;
     path.pop();
     Ok(())
 }
@@ -12002,115 +12045,121 @@ fn collect_child(
 fn collect_expr(
     expr: &Expr,
     tail: bool,
-    callable: &ProperTailCallableId,
+    caller: &TailCaller<'_>,
     path: &mut Vec<ProperTailPathStep>,
     keys: &mut Vec<ProperTailSiteKey>,
 ) -> Result<(), ProperTailManifestError> {
     path.push(ProperTailPathStep::Node(expr_kind(expr)));
-    if tail {
+    if tail && direct_tail_envelope_is_forwarded(expr, *caller) {
         if let Some(dispatch) = proper_tail_dispatch(expr) {
-            keys.push(ProperTailSiteKey { callable: callable.clone(), path: path.clone(), dispatch });
+            keys.push(ProperTailSiteKey { callable: caller.callable.clone(), path: path.clone(), dispatch });
         }
     }
     match expr {
         Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
             for (index, arg) in args.iter().enumerate() {
-                collect_child(arg, false, callable, path, index, keys)?;
+                collect_child(arg, false, caller, path, index, keys)?;
             }
         }
         Expr::LabeledCall { args, .. } => {
             for (index, (_, arg)) in args.iter().enumerate() {
-                collect_child(arg, false, callable, path, index, keys)?;
+                collect_child(arg, false, caller, path, index, keys)?;
             }
         }
         Expr::LabeledMethodCall { receiver, args, .. } => {
-            collect_child(receiver, false, callable, path, 0, keys)?;
+            collect_child(receiver, false, caller, path, 0, keys)?;
             for (index, (_, arg)) in args.iter().enumerate() {
-                collect_child(arg, false, callable, path, index + 1, keys)?;
+                collect_child(arg, false, caller, path, index + 1, keys)?;
             }
         }
         Expr::MethodCall { receiver, args, .. } | Expr::ExistentialCall { receiver, args, .. } => {
-            collect_child(receiver, false, callable, path, 0, keys)?;
+            collect_child(receiver, false, caller, path, 0, keys)?;
             for (index, arg) in args.iter().enumerate() {
-                collect_child(arg, false, callable, path, index + 1, keys)?;
+                collect_child(arg, false, caller, path, index + 1, keys)?;
             }
         }
         Expr::Apply { func, args } => {
-            collect_child(func, false, callable, path, 0, keys)?;
+            collect_child(func, false, caller, path, 0, keys)?;
             for (index, arg) in args.iter().enumerate() {
-                collect_child(arg, false, callable, path, index + 1, keys)?;
+                collect_child(arg, false, caller, path, index + 1, keys)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. } | Expr::ExistentialUpcast { expr, .. } => {
-            collect_child(expr, false, callable, path, 0, keys)?;
+            collect_child(expr, false, caller, path, 0, keys)?;
         }
         Expr::RecordUpdate { base, fields, .. } => {
-            collect_child(base, false, callable, path, 0, keys)?;
+            collect_child(base, false, caller, path, 0, keys)?;
             for (index, (_, value)) in fields.iter().enumerate() {
-                collect_child(value, false, callable, path, index + 1, keys)?;
+                collect_child(value, false, caller, path, index + 1, keys)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (index, (_, value)) in fields.iter().enumerate() {
-                collect_child(value, false, callable, path, index, keys)?;
+                collect_child(value, false, caller, path, index, keys)?;
             }
             if let Some(spread) = spread {
-                collect_child(spread, false, callable, path, fields.len(), keys)?;
+                collect_child(spread, false, caller, path, fields.len(), keys)?;
             }
         }
         Expr::Binary { op, lhs, rhs } => {
-            collect_child(lhs, false, callable, path, 0, keys)?;
-            collect_child(rhs, *op == ast::BinOp::Coalesce && tail, callable, path, 1, keys)?;
+            collect_child(lhs, false, caller, path, 0, keys)?;
+            collect_child(rhs, *op == ast::BinOp::Coalesce && tail, caller, path, 1, keys)?;
         }
         Expr::If { cond, then_block, else_block } => {
-            collect_child(cond, false, callable, path, 0, keys)?;
+            collect_child(cond, false, caller, path, 0, keys)?;
             path.push(ProperTailPathStep::Child(1));
-            collect_block(then_block, callable, tail, path, keys)?;
+            collect_block(then_block, caller, tail, path, keys)?;
             path.pop();
             if let Some(else_block) = else_block {
                 path.push(ProperTailPathStep::Child(2));
-                collect_block(else_block, callable, tail, path, keys)?;
+                collect_block(else_block, caller, tail, path, keys)?;
                 path.pop();
             }
         }
         Expr::Match { scrutinee, arms } => {
-            collect_child(scrutinee, false, callable, path, 0, keys)?;
+            collect_child(scrutinee, false, caller, path, 0, keys)?;
             for (index, arm) in arms.iter().enumerate() {
                 path.push(ProperTailPathStep::Arm(u32::try_from(index).map_err(|_| ProperTailManifestError::PathOverflow)?));
                 if let Some(guard) = &arm.guard {
                     path.push(ProperTailPathStep::Guard);
-                    collect_expr(guard, false, callable, path, keys)?;
+                    collect_expr(guard, false, caller, path, keys)?;
                     path.pop();
                 }
                 path.push(ProperTailPathStep::Value);
-                collect_expr(&arm.body, tail, callable, path, keys)?;
+                collect_expr(&arm.body, tail, caller, path, keys)?;
                 path.pop();
                 path.pop();
             }
         }
-        Expr::Block(block) => collect_block(block, callable, tail, path, keys)?,
-        Expr::Lambda { body, .. } => {
-            let nested = ProperTailCallableId { lambda_path: path.clone(), ..callable.clone() };
+        Expr::Block(block) => collect_block(block, caller, tail, path, keys)?,
+        Expr::Lambda { params, ret, body, .. } => {
+            let nested = ProperTailCallableId { lambda_path: path.clone(), ..caller.callable.clone() };
+            let nested_caller = TailCaller {
+                callable: &nested,
+                params,
+                ret: ret.as_ref(),
+                functions: caller.functions,
+            };
             path.push(ProperTailPathStep::Child(0));
-            collect_block(body, &nested, true, path, keys)?;
+            collect_block(body, &nested_caller, true, path, keys)?;
             path.pop();
         }
         Expr::While { cond, body } | Expr::For { iter: cond, body, .. } => {
-            collect_child(cond, false, callable, path, 0, keys)?;
+            collect_child(cond, false, caller, path, 0, keys)?;
             path.push(ProperTailPathStep::Child(1));
-            collect_block(body, callable, false, path, keys)?;
+            collect_block(body, caller, false, path, keys)?;
             path.pop();
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            collect_child(scrutinee, false, callable, path, 0, keys)?;
+            collect_child(scrutinee, false, caller, path, 0, keys)?;
             path.push(ProperTailPathStep::Child(1));
-            collect_block(body, callable, false, path, keys)?;
+            collect_block(body, caller, false, path, keys)?;
             path.pop();
         }
         Expr::Range { lo, hi, .. } | Expr::Index { base: lo, index: hi } => {
-            collect_child(lo, false, callable, path, 0, keys)?;
-            collect_child(hi, false, callable, path, 1, keys)?;
+            collect_child(lo, false, caller, path, 0, keys)?;
+            collect_child(hi, false, caller, path, 1, keys)?;
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
     }
@@ -13477,6 +13526,19 @@ mod proper_tail_manifest_tests {
             "fn f(n: Int) -> Int:\n    let x = if n > 0:\n        f(n - 1)\n    else:\n        1\n    x\n",
         );
         assert!(manifest.sites().is_empty());
+    }
+
+    #[test]
+    fn var_tail_requires_the_complete_writeback_envelope() {
+        let compatible = manifest(
+            "fn recur(var left: Int, var right: Int):\n    recur(left, right)\n",
+        );
+        assert_eq!(compatible.sites().len(), 1);
+
+        let incompatible = manifest(
+            "fn update(var value: Int):\n    value = value + 1\n\nfn caller(var left: Int, var right: Int):\n    update(right)\n",
+        );
+        assert!(incompatible.sites().is_empty());
     }
 
     #[test]

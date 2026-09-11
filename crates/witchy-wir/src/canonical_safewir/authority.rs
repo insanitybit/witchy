@@ -442,6 +442,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             closure_layout_catalog.get(*field).map(|field| field.kind()),
             Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))
         ));
+        let mut correspondence = CorrespondenceContext::with_owners(candidate);
         let expected_field_types = expected.iter().enumerate().map(|(index, capture)| {
                 let field = *environment_fields.get(index + 1)?;
                 let actual = match closure_layout_catalog.get(field).map(|field| field.kind()) {
@@ -459,7 +460,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                            witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
                 );
                 (transfer_matches && value_type_matches_source(
-                    actual, capture.checked_type(), &closure_layout_catalog, candidate.signatures(), &mut CorrespondenceContext::default(),
+                    actual, capture.checked_type(), &closure_layout_catalog, candidate.signatures(), &mut correspondence,
                     &records, candidate.closure_layouts(),
                 )).then_some(actual)
             }).collect::<Vec<_>>();
@@ -1009,7 +1010,8 @@ fn candidate_signature_matches_source_inner(
         let convention = convention_at(index);
         (matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own)
-                && (ordinary_own_source_type_supported(source) || matches!(actual, super::ValueType::Ref(_))))
+                && (ordinary_own_source_type_supported(source)
+                    || matches!(actual, super::ValueType::Ref(_) | super::ValueType::Gc(_))))
         && value_type_matches_source(*actual, source, layouts, signatures, context, records, closure_layouts)
     }) {
         context.finish_callable(key, false);
@@ -1019,7 +1021,8 @@ fn candidate_signature_matches_source_inner(
         let convention = convention_at(index);
         if !(matches!(convention, witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Var)
             || matches!(convention, witchy_syntax::ast::Convention::Own)
-                && (ordinary_own_source_type_supported(source) || matches!(actual.value_type, super::ValueType::Ref(_))))
+                && (ordinary_own_source_type_supported(source)
+                    || matches!(actual.value_type, super::ValueType::Ref(_) | super::ValueType::Gc(_))))
             || !value_type_matches_source(actual.value_type, source, layouts, signatures, context, records, closure_layouts) { return false; }
         match (actual.value_type, convention) {
             (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),

@@ -533,6 +533,27 @@ mod tests {
     }
 
     #[test]
+    fn branch_local_list_headers_do_not_escape_to_other_writeback_edges() {
+        for body in [
+            "    match flag:\n        true ->\n            let first = xs[0]\n            xs = [first + 41]\n        false -> Nil\n",
+            "    if flag:\n        let first = xs[0]\n        xs = [first + 41]\n    else:\n        Nil\n",
+        ] {
+            let source = format!("fn update(flag: Bool, var xs: List(Int)):\n{body}\nfn main() -> Int:\n    var a = [1]\n    var b = [2]\n    update(true, a)\n    update(false, b)\n    a[0] + b[0]\n");
+            let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+                vec![("main".to_string(), source.into_bytes())],
+                "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            ).expect("checked branch-local headers");
+            let artifact = admit_checked_module(&checked).expect("admit branch-local headers");
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile branch-local headers");
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate branch-local headers");
+            let main = instance.get_typed_func::<(), i64>(&mut store, "f1").expect("branch-local headers main");
+            assert_eq!(main.call(&mut store, ()).expect("run branch-local headers"), 44);
+        }
+    }
+
+    #[test]
     fn own_list_identity_reaches_admitted_execution() {
         let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn main() -> Int:\n    let xs = identity([42])\n    xs[0]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
@@ -624,6 +645,22 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect let List artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect let List main export");
         assert_eq!(main.call(&mut store, ()).expect("run indirect let List main"), 42);
+    }
+
+    #[test]
+    fn indirect_var_list_replacements_preserve_caller_aliases() {
+        let source = "fn replace(var xs: List(Int), var ys: List(Int)) -> Bool:\n    xs = [42]\n    ys = [7]\n    true\nfn apply(f: fn(var List(Int), var List(Int)) -> Bool, var xs: List(Int), var ys: List(Int)) -> Bool:\n    let changed = f(xs, ys)\n    changed\nfn main() -> Int:\n    var xs = [1]\n    var ys = [2]\n    let old = xs\n    let changed = apply(replace, xs, ys)\n    if changed: old[0] * 100 + xs[0] + ys[0] else: 0\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked indirect var replacements");
+        let artifact = admit_checked_module(&checked).expect("admit indirect var replacements");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect var replacements");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect var replacements");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("var replacements main");
+        assert_eq!(main.call(&mut store, ()).expect("run var replacements"), 149);
     }
 
     #[test]

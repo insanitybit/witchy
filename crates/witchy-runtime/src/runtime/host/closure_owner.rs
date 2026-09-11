@@ -13,7 +13,7 @@ pub(in crate::runtime) fn register(
 ) -> Result<()> {
     use std::collections::BTreeMap;
     use wasmtime::{FieldType, FuncType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
-    use witchy_wir::canonical_safewir::{ValueType, closure_owner_contract::CaptureStorage};
+    use witchy_wir::canonical_safewir::{ValueType, closure_owner_contract::{CaptureStorage, OwnerFamilySource}};
     use witchy_wir::OwnerBridgeRecipe as R;
     let instance = Arc::new(InstanceIdentity::default());
     let mut families = BTreeMap::new();
@@ -45,6 +45,7 @@ let mut captures = Vec::new();
             constructors.insert(constructor.id.0, Arc::new(Binding {
                 instance: instance.clone(), constructor: Arc::new(()), family: family.clone(),
                 owner_type: bridge.family().owner_type,
+                cleanup_tag: bridge.family().signature.get(),
                 environment_tag: constructor.environment_tag,
                 payload_type: StructType::new(linker.engine(), fields)?, capture_fields: captures.into_boxed_slice(),
             }));
@@ -66,8 +67,17 @@ let mut captures = Vec::new();
         };
         let binding = constructors.get(&constructor.0).ok_or_else(|| wasmtime::Error::msg("missing owner binding"))?.clone();
         let recipe = bridge.recipe().clone();
-        let code = bridge.callable_indices().iter().find(|(id, _)| *id == constructor)
-            .ok_or_else(|| wasmtime::Error::msg("missing owner callable identity"))?.1;
+        let code = match &bridge.family().source {
+            OwnerFamilySource::Closure => Some(bridge.callable_indices().iter()
+                .find(|(id, _)| *id == constructor)
+                .ok_or_else(|| wasmtime::Error::msg("missing owner callable identity"))?.1),
+            OwnerFamilySource::Aggregate(_) => {
+                if !bridge.callable_indices().is_empty() || matches!(recipe, R::ReadCallable(_)) {
+                    bail!("aggregate owner has no callable identity");
+                }
+                None
+            }
+        };
         let allowed_codes = bridge.callable_indices().iter().map(|(_, code)| *code as i32).collect::<Vec<_>>();
         let parameters = bridge.parameters().iter().map(&wasm_type).collect::<Result<Vec<_>>>()?;
         let results = if bridge.payload_result() { vec![ValType::ANYREF] } else { bridge.results().iter().map(&wasm_type).collect::<Result<Vec<_>>>()? };
@@ -84,7 +94,9 @@ let mut captures = Vec::new();
                     // No callback, allocation-address lookup, ambient token,
                     // or guest-selected constructor participates in sealing.
 let Some(Val::I32(environment)) = arguments.first() else { bail!("missing checked owner environment"); };
-let mut fields = vec![Val::I32(*environment), Val::I32(code as i32)];
+// Aggregates retain the common payload shape, but this lane is inert.
+// Only closure families can register a ReadCallable bridge.
+let mut fields = vec![Val::I32(*environment), Val::I32(code.unwrap_or(0) as i32)];
 fields.extend(binding.payload_type.fields().skip(2).map(|_| Val::ExternRef(None)));
 if arguments.len() != binding.capture_fields.len() + 1 { bail!("owner capture arity"); }
 for (field, value) in binding.capture_fields.iter().zip(&arguments[1..]) {
@@ -174,6 +186,7 @@ struct Binding {
     constructor: Arc<()>,
     family: Arc<()>,
     owner_type: witchy_wir::canonical_safewir::GcTypeId,
+    cleanup_tag: u32,
     environment_tag: i64,
     payload_type: wasmtime::StructType,
     capture_fields: Box<[CaptureField]>,
@@ -222,6 +235,7 @@ struct Owner<P> {
     constructor: Arc<()>,
     family: Arc<()>,
     owner_type: witchy_wir::canonical_safewir::GcTypeId,
+    cleanup_tag: u32,
     environment_tag: i64,
     creation: u64,
     live: Mutex<Live<P>>,
@@ -290,6 +304,7 @@ impl Binding {
             constructor: self.constructor.clone(),
             family: self.family.clone(),
             owner_type: self.owner_type,
+            cleanup_tag: self.cleanup_tag,
             environment_tag: self.environment_tag,
             creation,
             live: Mutex::new(Live { references: 1, payload: Some(payload), capabilities: rooted, owners: Vec::new() }),
@@ -325,6 +340,7 @@ impl Binding {
             constructor: self.constructor.clone(),
             family: self.family.clone(),
             owner_type: self.owner_type,
+            cleanup_tag: self.cleanup_tag,
             environment_tag: self.environment_tag,
             creation,
             live: Mutex::new(Live { references: 1, payload: Some(payload), capabilities, owners }),
@@ -549,7 +565,7 @@ impl Binding {
                 live.capabilities.clear();
                 let payload = live.payload.take().expect("live owner payload");
                 let children = std::mem::take(&mut live.owners);
-                Ok(Some((CleanupItem { family_tag: owner.owner_type.get(), payload }, children)))
+                Ok(Some((CleanupItem { family_tag: owner.cleanup_tag, payload }, children)))
             })?;
             let Some((item, children)) = released else { continue };
             cleanup.push(item);
@@ -819,7 +835,7 @@ mod tests {
             FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
             FieldType::new(Mutability::Const, ValType::I32.into()),
         ])?;
-        let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
+        let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), cleanup_tag: 1, environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
         let payload_pre = StructRefPre::new(&mut store, payload_type.clone());
         // The integer is ordinary environment data, never used to find a cap.
         let payload = StructRef::new(&mut store, &payload_pre, &[Val::ExternRef(Some(console)), Val::I32(64)])?;
@@ -865,9 +881,9 @@ mod tests {
     fn opaque_owner_lifecycle_and_substitution_negatives() -> Result<()> {
         let mut store = wasmtime::Store::new(&wasmtime::Engine::default(), ());
         let payload_type = wasmtime::StructType::new(store.engine(), [wasmtime::FieldType::new(wasmtime::Mutability::Const, wasmtime::ValType::EXTERNREF.into())])?;
-        let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
-        let wrong_constructor = Binding { instance: binding.instance.clone(), constructor: Arc::new(()), family: Arc::new(()), owner_type: binding.owner_type, environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
-        let foreign_instance = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: binding.constructor.clone(), family: binding.family.clone(), owner_type: binding.owner_type, environment_tag: 1, payload_type, capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
+        let binding = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()), owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1), cleanup_tag: 1, environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
+        let wrong_constructor = Binding { instance: binding.instance.clone(), constructor: Arc::new(()), family: Arc::new(()), owner_type: binding.owner_type, cleanup_tag: binding.cleanup_tag, environment_tag: 1, payload_type: payload_type.clone(), capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
+        let foreign_instance = Binding { instance: Arc::new(InstanceIdentity::default()), constructor: binding.constructor.clone(), family: binding.family.clone(), owner_type: binding.owner_type, cleanup_tag: binding.cleanup_tag, environment_tag: 1, payload_type, capture_fields: vec![CaptureField { capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)) }].into_boxed_slice() };
         let console = ExternRef::new(&mut store, ConsoleCapability)?;
         let cleanup = Arc::new(AtomicUsize::new(0));
         let owner = binding.seal(&mut store, Payload(cleanup.clone()), &[console])?;
@@ -909,6 +925,7 @@ mod tests {
         let make_binding = || Binding {
             instance: instance.clone(), family: family.clone(), constructor: Arc::new(()),
             owner_type: witchy_wir::canonical_safewir::GcTypeId::new(1),
+            cleanup_tag: 1,
             environment_tag: 1,
             payload_type: payload_type.clone(), capture_fields: vec![CaptureField {
                 capture: 0, field: 0, kind: CaptureFieldKind::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
@@ -965,11 +982,11 @@ mod tests {
         ])?;
         let child = Binding {
             instance: instance.clone(), constructor: Arc::new(()), family: Arc::new(()),
-            owner_type: child_type, environment_tag: 1, payload_type: child_payload_type.clone(), capture_fields: Box::new([]),
+            owner_type: child_type, cleanup_tag: child_type.get(), environment_tag: 1, payload_type: child_payload_type.clone(), capture_fields: Box::new([]),
         };
         let outer = Binding {
             instance: instance.clone(), constructor: Arc::new(()), family: Arc::new(()),
-            owner_type: outer_type, environment_tag: 1, payload_type: outer_payload_type.clone(),
+            owner_type: outer_type, cleanup_tag: outer_type.get(), environment_tag: 1, payload_type: outer_payload_type.clone(),
             capture_fields: vec![
                 CaptureField { capture: 0, field: 2, kind: CaptureFieldKind::Owner(child_type) },
                 CaptureField { capture: 1, field: 3, kind: CaptureFieldKind::Capability(
@@ -1028,11 +1045,12 @@ mod tests {
         ])?;
         let child = Binding {
             instance: instance.clone(), constructor: Arc::new(()), family: Arc::new(()),
-            owner_type: child_type, environment_tag: 1, payload_type: payload_type.clone(), capture_fields: Box::new([]),
+            owner_type: child_type, cleanup_tag: child_type.get(), environment_tag: 1, payload_type: payload_type.clone(), capture_fields: Box::new([]),
         };
         let rejecting_outer = |instance: Arc<InstanceIdentity>, expected| Binding {
             instance, constructor: Arc::new(()), family: Arc::new(()),
             owner_type: witchy_wir::canonical_safewir::GcTypeId::new(52),
+            cleanup_tag: 52,
             environment_tag: 1,
             payload_type: outer_payload_type.clone(),
             capture_fields: vec![CaptureField { capture: 0, field: 2, kind: CaptureFieldKind::Owner(expected) }].into_boxed_slice(),
@@ -1049,7 +1067,7 @@ mod tests {
 
         let foreign_child = Binding {
             instance: Arc::new(InstanceIdentity::default()), constructor: Arc::new(()), family: Arc::new(()),
-            owner_type: child_type, environment_tag: 1, payload_type: child.payload_type.clone(), capture_fields: Box::new([]),
+            owner_type: child_type, cleanup_tag: child_type.get(), environment_tag: 1, payload_type: child.payload_type.clone(), capture_fields: Box::new([]),
         };
         let child_payload = StructRef::new(&mut store, &child_pre, &[Val::I32(5), Val::I32(6)])?;
         let owner = foreign_child.seal_gc(&mut store, child_payload)?;
@@ -1077,6 +1095,7 @@ mod tests {
             constructor,
             family,
             owner_type,
+            cleanup_tag: owner_type.get(),
             environment_tag,
             payload_type: payload_type.clone(),
             capture_fields: Box::new([]),
@@ -1095,6 +1114,7 @@ mod tests {
             constructor: Arc::new(()),
             family: family.clone(),
             owner_type,
+            cleanup_tag: owner_type.get(),
             environment_tag: 55,
             payload_type: payload_type.clone(),
             capture_fields: Box::new([]),
@@ -1137,6 +1157,7 @@ mod tests {
             constructor: Arc::new(()),
             family: family.clone(),
             owner_type,
+            cleanup_tag: owner_type.get(),
             environment_tag: 1,
             payload_type: payload_type.clone(),
             capture_fields: Box::new([]),
@@ -1146,6 +1167,7 @@ mod tests {
             constructor: Arc::new(()),
             family: Arc::new(()),
             owner_type,
+            cleanup_tag: owner_type.get(),
             environment_tag: 2,
             payload_type: payload_type.clone(),
             capture_fields: Box::new([]),

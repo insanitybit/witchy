@@ -93,9 +93,15 @@ pub(super) fn validate<S: ModuleStage>(
             witchy_types::typeck::ty_to_ast(witness.signature())
                 .filter(|s| source_closure_family_key(s, &records) == key).map(|_| index as u32)
         }).collect::<BTreeSet<_>>();
-        if expected != observed || !expected.iter().any(|index| witnesses[*index as usize].captures().iter().any(|c|
-            c.transfer() == witchy_types::canonical_closure::ClosureCaptureTransfer::CopyCapability))
-        { return Err(CandidateAbiBindingError::MissingCanonicalLayouts); }
+        // Opaque storage is required for managed owner captures as well as
+        // capabilities. The loop above has already authenticated every
+        // capture's source type, transfer, and storage class, so requiring an
+        // actual owner field admits only a source-derived opaque family.
+        let requires_owner_storage = family.constructors.iter().flat_map(|constructor| &constructor.captures)
+            .any(|capture| matches!(capture.storage, CaptureStorage::OwnerField(_)));
+        if expected != observed || !requires_owner_storage {
+            return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+        }
         let physical = layouts.resolve_nominal(family.environment).map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
         let fields = match layouts.get(physical).map(|d| d.kind()) {
             Some(crate::layout::LayoutKind::PackedRecord { fields }) => fields,
@@ -136,23 +142,57 @@ pub(super) fn validate<S: ModuleStage>(
                             .map_err(|_| CandidateAbiBindingError::MissingClosureWitness { closure: constructor.0 })?;
                         let refuse = || CandidateAbiBindingError::CapturingClosureBinding { closure: constructor.0 };
                         if captures.len() != checked.witness().captures().len() { return Err(refuse()); }
+                        let current = checked.witness().id();
+                        let enclosing = witnesses.iter().filter(|witness| {
+                            let id = witness.id();
+                            id.item == current.item
+                                && id.method == current.method
+                                && id.lambda_path.len() < current.lambda_path.len()
+                                && current.lambda_path.starts_with(&id.lambda_path)
+                        }).max_by_key(|witness| witness.id().lambda_path.len())
+                            .map(|witness| witness.id().clone())
+                            .unwrap_or_else(|| witchy_types::typeck::ProperTailCallableId {
+                                item: current.item,
+                                method: current.method,
+                                lambda_path: Vec::new(),
+                            });
+                        let (expected_function, offset) = if enclosing.lambda_path.is_empty() && enclosing.method.is_none() {
+                            let item = usize::try_from(enclosing.item).map_err(|_| refuse())?;
+                            let Some(witchy_syntax::ast::Item::Function(owner)) =
+                                source.typed_module().module().items.get(item)
+                            else { return Err(refuse()); };
+                            let source_abi = source.closed_callable_abi(&owner.name).ok_or_else(refuse)?;
+                            let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy
+                            else { return Err(refuse()); };
+                            (candidate.source_abi_bindings().entries().iter()
+                                .find(|binding| binding.source_declaration_ordinal() == target.function_ordinal)
+                                .map(|binding| binding.function()).ok_or_else(refuse)?, 0)
+                        } else {
+                            let ordinal = witnesses.iter().position(|witness| witness.id() == &enclosing).ok_or_else(refuse)?;
+                            (candidate.closure_bindings().entries().iter().find(|binding| binding.closure() == ordinal as u32)
+                                .map(|binding| binding.function()).ok_or_else(refuse)?, 1)
+                        };
+                        if function.id != expected_function { return Err(refuse()); }
                         for (value, capture) in captures.iter().zip(checked.witness().captures()) {
                             // Lexical identity is checked independently, not
                             // inferred from an SSA name or matching type.
                             let binding = capture.binding();
-                            let [ClosureBindingPathStep::Parameter(index)] = binding.path() else { return Err(refuse()); };
-                            let (expected_function, offset) = if binding.owner().lambda_path.is_empty() && binding.owner().method.is_none() {
-                                (candidate.source_abi_bindings().entries().iter().find(|b| b.source_declaration_ordinal() == binding.owner().item)
-                                    .map(|b| b.function()).ok_or_else(refuse)?, 0)
-                            } else {
-                                let ordinal = witnesses.iter().position(|w| w.id() == binding.owner()).ok_or_else(refuse)?;
-                                (candidate.closure_bindings().entries().iter().find(|b| b.closure() == ordinal as u32)
-                                    .map(|b| b.function()).ok_or_else(refuse)?, 1)
-                            };
-                            if function.id != expected_function { return Err(refuse()); }
-                            let parameter = function.blocks.iter().find(|b| b.id == function.entry)
-                                .and_then(|b| b.parameters.get(*index as usize + offset)).ok_or_else(refuse)?;
-                            if !same_parameter(function, *value, parameter.value, &mut BTreeSet::new()) { return Err(refuse()); }
+                            if binding.owner().item != current.item
+                                || binding.owner().method != current.method
+                                || !current.lambda_path.starts_with(&binding.owner().lambda_path)
+                                || binding.path().is_empty()
+                            {
+                                return Err(refuse());
+                            }
+                            if binding.owner() == &enclosing
+                                && let [ClosureBindingPathStep::Parameter(index)] = binding.path()
+                            {
+                                let parameter = function.blocks.iter().find(|b| b.id == function.entry)
+                                    .and_then(|b| b.parameters.get(*index as usize + offset)).ok_or_else(refuse)?;
+                                if !same_parameter(function, *value, parameter.value, &mut BTreeSet::new()) {
+                                    return Err(refuse());
+                                }
+                            }
                         }
                     }
                     Operation::ClosureOwner(OwnerOperation::ReadCapability { owner, constructor, .. }
@@ -237,6 +277,7 @@ fn validate_aggregate_family<S: ModuleStage>(
     }
     let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect::<BTreeMap<_, _>>();
     let mut environment_field = 1_u32;
+    let mut owner_field = 2_u32;
     let mut expected_environment = BTreeMap::new();
     for (variant_index, (variant, constructor)) in definition.variants.iter().zip(&family.constructors).enumerate() {
         if constructor.witness.is_some()
@@ -245,7 +286,6 @@ fn validate_aggregate_family<S: ModuleStage>(
         {
             return Err(refuse());
         }
-        let mut owner_field = 2_u32;
         for (declared, source_field) in constructor.captures.iter().zip(&variant.fields) {
             let source_field = substitute_source_type(source_field, &substitutions);
             if !value_type_matches_source(
