@@ -1,5 +1,41 @@
 # RFC-0165 acceptance ledger
 
+## Current landing checkpoint, 2026-09-11 22:02Z
+
+Master `b9b0a9e4966750c933a86e9e21399893d3df1946` includes these terminal
+green merge-queue landings:
+
+- Task/channel and Net runtime integration: `b7b9dd8c6`, change
+  `mq-96ba57756437c6b5a9c92ab0810abedf3eeef5df`, merged at 20:12:16Z.
+- Isolated canonical VM services and value-returning generated list append:
+  `d2240d206`, changes `mq-f046dc6e74bb9b4aa7dcf5094ca046c9bed52281` and
+  `mq-7c7be717fc3c5a507965e60f5225621d16ac8c28`, merged at 21:23:47Z and
+  21:23:59Z. The shared gate passed in 403 seconds, with no recorded flakes.
+- Retention of admitted artifacts by stats and embedded package-manager
+  launches: `b9b0a9e49`, change
+  `mq-f5ca2e4a6a19cf0c94105598820da7612fc14b87`, merged at 22:02:30Z.
+  Its individual gate passed in 393 seconds, with no recorded flakes.
+
+The queue journal under `state/merge-queue/` records these events. Earlier
+candidate and pending descriptions below are historical, not the current
+landing state. The most recent development census was 162/163 checks and
+91 runnable CLI parity agreements, with no disagreements. That CLI measurement
+is two-legged, not a fresh master three-legged corpus result.
+
+The owned-prefix accounting correction `adc5e71c0` has 680/680 native WIR
+library tests passing, with none skipped, in
+`/tmp/witchy-owned-prefix-native-wir.log`. Its source smoke and terminal queue
+landing remain pending. It rejects dropping or shrinking a pointer collection
+while initialized owned children remain outside the published logical prefix;
+it does not relax ownership or extent validation.
+
+Projected `var` writeback, custom equality for nominal dictionary keys, and
+remaining production-route sealing are still integration work. The native CI
+selection and benchmark/Coven admitted-launch slices are queued, not landed at
+this checkpoint. Hosted CI evidence, agreed opt-surface conformance, optimizer
+assurance, and final corpus evidence remain open. Compiler-wide memory safety
+and optimizer correctness are not established.
+
 ## Runtime integration checkpoint, 2026-09-11
 
 Code snapshot `f74544835` incorporates the remaining per-function ownership
