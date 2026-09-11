@@ -693,6 +693,9 @@ impl CanonicalWriter {
         let (tag, constructor, capture, family) = match operation {
             O::Construct { constructor, .. } => (0, Some(*constructor), None, None),
             O::ReadCapability { constructor, capture, .. } => (1, Some(*constructor), Some(*capture), None),
+            // Preserve established tags: ReadOwner was added after the original
+            // twelve operations and receives the next unused value.
+            O::ReadOwner { constructor, capture, .. } => (12, Some(*constructor), Some(*capture), None),
             O::ReadCallable { family, .. } => (2, None, None, Some(*family)),
             O::Clone { family, .. } => (3, None, None, Some(*family)),
             O::Drop { family, .. } => (4, None, None, Some(*family)),

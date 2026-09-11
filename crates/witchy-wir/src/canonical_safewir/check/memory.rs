@@ -1887,6 +1887,7 @@ impl<'a> MemoryChecker<'a> {
                         });
                     }
                     OwnerOperation::ReadCapability { .. }
+                    | OwnerOperation::ReadOwner { .. }
                     | OwnerOperation::ReadCallable { .. }
                     | OwnerOperation::Clone { .. }
                     | OwnerOperation::Drop { .. }

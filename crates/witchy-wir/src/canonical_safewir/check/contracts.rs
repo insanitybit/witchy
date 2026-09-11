@@ -419,6 +419,7 @@ fn propagate_operation_origins(
                     }
                     O::Construct { .. }
                     | O::ReadCapability { .. }
+                    | O::ReadOwner { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
                     | O::Drop { .. }
@@ -674,6 +675,7 @@ fn derive_operation(
                     O::Drop { .. } | O::DropList { .. } => MemoryEffect::Release,
                     O::Clone { .. } | O::CloneList { .. } | O::Construct { .. } | O::NewList { .. } => MemoryEffect::Retain,
                     O::ReadCapability { .. }
+                    | O::ReadOwner { .. }
                     | O::ReadCallable { .. }
                     | O::CloneEnvironment { .. }
                     | O::ListGet { .. }
@@ -684,6 +686,7 @@ fn derive_operation(
                 let escapes = match owner {
                     O::Construct { .. } | O::NewList { .. } | O::ListPush { .. } => true,
                     O::ReadCapability { .. }
+                    | O::ReadOwner { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
                     | O::Drop { .. }
@@ -705,6 +708,7 @@ fn derive_operation(
                     },
                     O::Construct { .. }
                     | O::ReadCapability { .. }
+                    | O::ReadOwner { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
                     | O::Drop { .. }

@@ -999,6 +999,43 @@ impl<'a> Engine<'a> {
                 }
                 values.insert(*destination, InterpreterValue::Capability(token));
             }
+            OwnerOperation::ReadOwner { destination, owner, constructor, capture } => {
+                let (family, constructor_info) = self.owner_constructor(*constructor)?;
+                let owner = self.owner_value(*owner, values)?;
+                let capture_info = {
+                    let state = self.owners.get(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+                    if state.family != family.signature || state.constructor != constructor_info.id {
+                        return Err(InterpretError::TypeMismatch("owner constructor"));
+                    }
+                    let capture_info = constructor_info.captures.get(capture.0 as usize)
+                        .ok_or(InterpretError::UnsupportedOperation("owner capture ordinal"))?;
+                    if !matches!((capture_info.value_type, capture_info.storage, capture_info.transfer),
+                        (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged))
+                    {
+                        return Err(InterpretError::TypeMismatch("nested owner capture"));
+                    }
+                    (capture_info.clone(), self.owner_capture_value(state, capture_info.storage)?)
+                };
+                let retained = self.clone_owner_capture(capture_info.1, capture_info.0.transfer)?;
+                let exact_type = match capture_info.0.value_type {
+                    ValueType::Gc(id) => id,
+                    _ => unreachable!("checked above"),
+                };
+                let exact = match retained {
+                    InterpreterValue::OpaqueOwner(token) => self.owners.get(&token).and_then(|state| {
+                        self.module.owner_families().iter().find(|candidate| candidate.signature == state.family)
+                    }).is_some_and(|candidate| candidate.owner_type == exact_type),
+                    InterpreterValue::OpaqueOwnerList(token) => self.owner_lists.get(&token).and_then(|state| {
+                        self.module.owner_families().iter().find(|candidate| candidate.signature == state.family)
+                    }).is_some_and(|candidate| candidate.list_type == exact_type),
+                    _ => false,
+                };
+                if !exact {
+                    self.release_interpreter_value(retained)?;
+                    return Err(InterpretError::TypeMismatch("nested owner family"));
+                }
+                values.insert(*destination, retained);
+            }
             OwnerOperation::ReadCallable { destination, owner, family } => {
                 let target_signature = self.owner_family(*family)?.signature;
                 let owner = self.owner_value(*owner, values)?;
@@ -2598,6 +2635,17 @@ mod tests {
             environment_tag: 0,
             captures: Vec::new(),
         });
+        family.constructors.push(OwnerConstructor {
+            id: ConstructorId(2),
+            function: FunctionId::new(98),
+            witness: None,
+            environment_tag: 0,
+            captures: vec![OwnerCapture {
+                value_type: ValueType::Gc(owner_type),
+                storage: CaptureStorage::OwnerField(2),
+                transfer: CaptureTransfer::CloneManaged,
+            }],
+        });
         let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([41; 32]),
@@ -2614,7 +2662,10 @@ mod tests {
                     results: Vec::new(),
                     parameter_effects: BTreeMap::from([(
                         0,
-                        vec![crate::canonical_safewir::MemoryEffect::Release],
+                        vec![
+                            crate::canonical_safewir::MemoryEffect::Read,
+                            crate::canonical_safewir::MemoryEffect::Release,
+                        ],
                     )]),
                 },
             }, FunctionSignature {
@@ -2660,6 +2711,40 @@ mod tests {
                             owner: ValueId::new(0),
                             family: SIGNATURE,
                         })],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    }],
+                },
+                Function {
+                    id: FunctionId::new(98),
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types: BTreeMap::from([
+                        (ValueId::new(0), ValueType::Gc(owner_type)),
+                        (ValueId::new(1), ValueType::Gc(owner_type)),
+                    ]),
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: vec![BlockParameter {
+                            value: ValueId::new(0),
+                            value_type: ValueType::Gc(owner_type),
+                            ownership: Some(crate::canonical_safewir::Ownership::Shared),
+                        }],
+                        operations: vec![
+                            Operation::ClosureOwner(OwnerOperation::ReadOwner {
+                                destination: ValueId::new(1),
+                                owner: ValueId::new(0),
+                                constructor: ConstructorId(2),
+                                capture: CaptureOrdinal(0),
+                            }),
+                            Operation::ClosureOwner(OwnerOperation::Drop {
+                                owner: ValueId::new(0),
+                                family: SIGNATURE,
+                            }),
+                            Operation::ClosureOwner(OwnerOperation::Drop {
+                                owner: ValueId::new(1),
+                                family: SIGNATURE,
+                            }),
+                        ],
                         terminator: Terminator::Return { values: Vec::new() },
                     }],
                 },
@@ -2760,10 +2845,26 @@ mod tests {
             index,
             family: SIGNATURE,
         }, &mut values).expect("list get retains owner");
+        let nested_owner = ValueId::new(14);
+        let nested_read = ValueId::new(15);
+        engine.execute_owner_operation(&OwnerOperation::Construct {
+            destination: nested_owner,
+            constructor: ConstructorId(2),
+            captures: vec![owner],
+        }, &mut values).expect("construct nested owner");
+        engine.execute_owner_operation(&OwnerOperation::ReadOwner {
+            destination: nested_read,
+            owner: nested_owner,
+            constructor: ConstructorId(2),
+            capture: CaptureOrdinal(0),
+        }, &mut values).expect("read retained nested owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner, family: SIGNATURE }, &mut values).expect("drop source owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: cloned, family: SIGNATURE }, &mut values).expect("drop cloned owner");
         engine.execute_owner_operation(&OwnerOperation::DropList { list, family: SIGNATURE }, &mut values).expect("drop owner list");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: selected, family: SIGNATURE }, &mut values).expect("drop selected owner");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner: nested_owner, family: SIGNATURE }, &mut values).expect("drop outer owner");
+        assert!(engine.owner_value(nested_read, &values).is_ok(), "retained nested token survives outer destruction");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner: nested_read, family: SIGNATURE }, &mut values).expect("drop retained nested owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: zero_capture_owner, family: SIGNATURE }, &mut values).expect("drop zero-capture owner");
         let environment_object = engine.object_value(environment_value, &values).expect("environment token");
         engine.release(environment_object).expect("drop environment clone");

@@ -169,6 +169,9 @@ owner_operations! {
     /// Clones managed captures; every input remains live.
     Construct { destination: ValueId, constructor: ConstructorId, captures: Vec<ValueId> },
     ReadCapability { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
+    /// Reads an immutable nested owner field and returns one retained token of
+    /// the field's exact registered GC type.
+    ReadOwner { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
     ReadCallable { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     Clone { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     Drop { owner: ValueId, family: FunctionSignatureId },
@@ -231,6 +234,7 @@ impl OwnerOperation {
     pub fn destinations(&self) -> Vec<ValueId> {
         match self {
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
+            | Self::ReadOwner { destination, .. }
             | Self::ReadCallable { destination, .. } | Self::Clone { destination, .. }
             | Self::CloneEnvironment { destination, .. } | Self::NewList { destination, .. }
             | Self::ListGet { destination, .. } | Self::ListLength { destination, .. }
@@ -243,7 +247,8 @@ impl OwnerOperation {
         match self {
             Self::Construct { captures, .. } => captures.clone(),
             Self::NewList { elements, .. } => elements.clone(),
-            Self::ReadCapability { owner, .. } | Self::ReadCallable { owner, .. }
+            Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
+            | Self::ReadCallable { owner, .. }
             | Self::Clone { owner, .. } | Self::CloneEnvironment { owner, .. } | Self::Drop { owner, .. } => vec![*owner],
             Self::ListGet { list, index, .. } => vec![*list, *index],
             Self::ListLength { list, .. } | Self::CloneList { list, .. } | Self::DropList { list, .. } => vec![*list],
@@ -268,6 +273,7 @@ mod tests {
         let cases = [
             (OwnerOperation::Construct { destination, constructor, captures: vec![owner, index] }, vec![owner, index], vec![destination]),
             (OwnerOperation::ReadCapability { destination, owner, constructor, capture }, vec![owner], vec![destination]),
+            (OwnerOperation::ReadOwner { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadCallable { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Clone { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Drop { owner, family }, vec![owner], vec![]),

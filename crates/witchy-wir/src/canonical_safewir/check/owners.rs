@@ -112,6 +112,18 @@ impl<'a> Registry<'a> {
                 };
                 require_type(function, *destination, ValueType::Capability(kind))?;
             }
+            O::ReadOwner { destination, owner, constructor, capture } => {
+                let (family, constructor) = self.constructor(function, *constructor)?;
+                require_type(function, *owner, ValueType::Gc(family.owner_type))?;
+                let field = constructor.captures.get(capture.0 as usize)
+                    .ok_or(InitialCheckError::InvalidOwnership { function: function.id, object: *owner })?;
+                let (ValueType::Gc(nested_type), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged) =
+                    (field.value_type, field.storage, field.transfer)
+                else {
+                    return Err(InitialCheckError::InvalidOwnership { function: function.id, object: *owner });
+                };
+                require_type(function, *destination, ValueType::Gc(nested_type))?;
+            }
             O::CloneEnvironment { destination, owner, constructor } => {
                 let (family, _) = self.constructor(function, *constructor)?;
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
@@ -233,6 +245,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                         }
                         OwnerOperation::Construct { .. }
                         | OwnerOperation::ReadCapability { .. }
+                        | OwnerOperation::ReadOwner { .. }
                         | OwnerOperation::ReadCallable { .. }
                         | OwnerOperation::Clone { .. }
                         | OwnerOperation::CloneEnvironment { .. }
@@ -406,5 +419,77 @@ mod tests {
         check(&function, &Registry { families: &[family.clone()] }).unwrap();
         function.blocks[0].operations.clear();
         assert!(matches!(check(&function, &Registry { families: &[family] }), Err(InitialCheckError::UnconsumedReference { .. })));
+    }
+
+    #[test]
+    fn nested_owner_read_requires_exact_family_and_owner_field_storage() {
+        use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, OwnerCapture, OwnerConstructor};
+
+        let child_type = GcTypeId::new(0xc2000000);
+        let child_signature = FunctionSignatureId::new(4);
+        let child = OwnerFamily {
+            owner_type: child_type,
+            list_type: GcTypeId::new(0xc2000001),
+            signature: child_signature,
+            declaration_signature: FunctionSignatureId::new(5),
+            environment: crate::layout::LayoutId::from_bytes([1; 32]),
+            constructors: vec![],
+        };
+        let parent_type = GcTypeId::new(0xc3000000);
+        let parent_signature = FunctionSignatureId::new(6);
+        let constructor = ConstructorId(9);
+        let parent = OwnerFamily {
+            owner_type: parent_type,
+            list_type: GcTypeId::new(0xc3000001),
+            signature: parent_signature,
+            declaration_signature: FunctionSignatureId::new(7),
+            environment: crate::layout::LayoutId::from_bytes([2; 32]),
+            constructors: vec![OwnerConstructor {
+                id: constructor,
+                function: FunctionId::new(8),
+                witness: Some(9),
+                environment_tag: 1,
+                captures: vec![OwnerCapture {
+                    value_type: ValueType::Gc(child_type),
+                    storage: CaptureStorage::OwnerField(2),
+                    transfer: CaptureTransfer::CloneManaged,
+                }],
+            }],
+        };
+        let owner = ValueId::new(0);
+        let destination = ValueId::new(1);
+        let mut function = Function {
+            id: FunctionId::new(8),
+            signature: parent_signature,
+            entry: BlockId::new(0),
+            value_types: BTreeMap::from([
+                (owner, ValueType::Gc(parent_type)),
+                (destination, ValueType::Gc(child_type)),
+            ]),
+            blocks: vec![],
+        };
+        let operation = OwnerOperation::ReadOwner {
+            destination,
+            owner,
+            constructor,
+            capture: CaptureOrdinal(0),
+        };
+        Registry { families: &[child.clone(), parent.clone()] }
+            .operation(&function, &operation)
+            .expect("exact nested owner field");
+
+        function.value_types.insert(destination, ValueType::Gc(parent_type));
+        assert!(matches!(
+            Registry { families: &[child.clone(), parent.clone()] }.operation(&function, &operation),
+            Err(InitialCheckError::TypeMismatch { .. })
+        ));
+
+        function.value_types.insert(destination, ValueType::Gc(child_type));
+        let mut wrong_storage = parent;
+        wrong_storage.constructors[0].captures[0].storage = CaptureStorage::EnvironmentField(1);
+        assert!(matches!(
+            Registry { families: &[child, wrong_storage] }.operation(&function, &operation),
+            Err(InitialCheckError::InvalidOwnership { .. })
+        ));
     }
 }

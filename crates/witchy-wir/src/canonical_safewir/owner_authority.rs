@@ -47,11 +47,20 @@ pub(super) fn validate<S: ModuleStage>(
             }).collect::<Vec<_>>();
             let position = related.iter().position(|(ordinal, _)| *ordinal == closure as usize).ok_or_else(refuse)?;
             if constructor.environment_tag != i64::try_from(position + 1).map_err(|_| refuse())? { return Err(refuse()); }
-            let mut environment_field = 1 + related[..position].iter().flat_map(|(_, w)| w.captures())
-                .filter(|c| c.transfer() != witchy_types::canonical_closure::ClosureCaptureTransfer::CopyCapability).count();
+            let mut environment_field = 1 + related[..position].iter().map(|(ordinal, _)| {
+                family.constructors.iter().find(|constructor| constructor.witness == Some(*ordinal as u32))
+                    .map(|constructor| constructor.captures.iter().filter(|capture| {
+                        matches!(capture.storage, CaptureStorage::EnvironmentField(_))
+                    }).count())
+                    .unwrap_or(0)
+            }).sum::<usize>();
             let mut owner_field = 2;
             for ((capture, original), transfer) in constructor.captures.iter().zip(witness.captures()).zip(checked.transfers()) {
-                let expected_storage = if matches!(transfer, CaptureTransfer::CopyCapability(_)) {
+                let type_matches = value_type_matches_source(capture.value_type, original.checked_type(), &layouts,
+                    candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), &records, candidate.closure_layouts());
+                let expected_storage = if matches!(transfer, CaptureTransfer::CopyCapability(_))
+                    || matches!((transfer, capture.value_type), (CaptureTransfer::CloneManaged, ValueType::Gc(_)))
+                {
                     let field = owner_field;
                     owner_field += 1;
                     CaptureStorage::OwnerField(field)
@@ -60,9 +69,7 @@ pub(super) fn validate<S: ModuleStage>(
                     environment_field += 1;
                     CaptureStorage::EnvironmentField(field)
                 };
-                if capture.transfer != *transfer || capture.storage != expected_storage
-                    || !value_type_matches_source(capture.value_type, original.checked_type(), &layouts,
-                        candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), &records, candidate.closure_layouts())
+                if capture.transfer != *transfer || capture.storage != expected_storage || !type_matches
                 { return Err(refuse()); }
             }
         }
@@ -135,6 +142,31 @@ pub(super) fn validate<S: ModuleStage>(
                         let parameter = function.blocks.iter().find(|b| b.id == function.entry).and_then(|b| b.parameters.first());
                         if function.id != declared.function || parameter.is_none_or(|p| p.value != *owner) {
                             return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: constructor.0 });
+                        }
+                    }
+                    Operation::ClosureOwner(OwnerOperation::ReadOwner { owner, constructor, capture, .. }) => {
+                        let refuse = || CandidateAbiBindingError::CapturingClosureBinding { closure: constructor.0 };
+                        let declared = candidate.owner_families().iter().flat_map(|f| &f.constructors)
+                            .find(|c| c.id == *constructor).ok_or_else(refuse)?;
+                        let parameter = function.blocks.iter().find(|b| b.id == function.entry)
+                            .and_then(|b| b.parameters.first());
+                        let source_constructor = SourceConstructor::from_checked(source, *constructor).map_err(|_| refuse())?;
+                        let Some(source_capture) = source_constructor.witness().captures().get(capture.0 as usize) else {
+                            return Err(refuse());
+                        };
+                        let Some(declared_capture) = declared.captures.get(capture.0 as usize) else {
+                            return Err(refuse());
+                        };
+                        if function.id != declared.function
+                            || parameter.is_none_or(|p| p.value != *owner)
+                            || source_capture.transfer() != witchy_types::canonical_closure::ClosureCaptureTransfer::ManagedReferenceByValue
+                            || !matches!((declared_capture.value_type, declared_capture.storage, declared_capture.transfer),
+                                (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged))
+                            || !value_type_matches_source(declared_capture.value_type, source_capture.checked_type(), &layouts,
+                                candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), &records,
+                                candidate.closure_layouts())
+                        {
+                            return Err(refuse());
                         }
                     }
                     _ => {}
