@@ -73,6 +73,12 @@ pub fn interpret_entry_program(
     let results = engine.execute(function, values)?;
     let net_trace = engine.finish_net()?;
     let leaked_objects = engine.objects.values().filter(|object|
-        matches!(object.storage, RuntimeStorage::Allocation(_))).count();
+        matches!(object.storage, RuntimeStorage::Allocation(_))).count()
+        + engine.owners.len()
+        + engine.owner_lists.len();
     Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace })
 }
+
+#[cfg(test)]
+#[path = "launch_tests.rs"]
+mod tests;
