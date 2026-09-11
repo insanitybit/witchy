@@ -3064,12 +3064,12 @@ struct StructuredEmitter<'a> {
     /// and the structuring queries ask about the same blocks repeatedly.
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
     loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
-    /// Proven path facts: `(start, merges)` for which every path reaches a
-    /// merge or terminates. A positive answer never depends on the walk's
-    /// active set (a cut cycle only ever yields a negative one), so it is
-    /// reusable anywhere; without it a function with many sequential loops
-    /// enumerates paths exponentially.
-    path_facts: RefCell<BTreeSet<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>)>>,
+    /// Memoized path judgments keyed by the exact normalized merge set.
+    /// Both answers are reusable: a cut cycle proves a path from `start`
+    /// avoids every merge and terminal, independent of which caller first
+    /// encountered it. Caching refusal is essential for diamond graphs with
+    /// a shared cyclic suffix.
+    path_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>), bool>>,
 }
 
 impl StructuredEmitter<'_> {
@@ -3255,8 +3255,8 @@ impl StructuredEmitter<'_> {
         }
         let mut merge_key = merges.to_vec();
         merge_key.sort();
-        if self.path_facts.borrow().contains(&(start, merge_key.clone())) {
-            return Ok(true);
+        if let Some(result) = self.path_facts.borrow().get(&(start, merge_key.clone())) {
+            return Ok(*result);
         }
         if !active.insert(start) {
             return Ok(false);
@@ -3292,9 +3292,7 @@ impl StructuredEmitter<'_> {
             result
         };
         active.remove(&start);
-        if result {
-            self.path_facts.borrow_mut().insert((start, merge_key));
-        }
+        self.path_facts.borrow_mut().insert((start, merge_key), result);
         Ok(result)
     }
 
@@ -3945,7 +3943,7 @@ fn encode_function(
         loop_exits: Vec::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
         loop_exit_targets: RefCell::new(BTreeMap::new()),
-        path_facts: RefCell::new(BTreeSet::new()),
+        path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(entry, None)?;
     if emitter.emitted.len() != target_function.blocks.len() {
@@ -5580,12 +5578,10 @@ struct PlanEmitter<'a> {
     loop_exits: Vec<(crate::canonical_safewir::BlockId, usize)>,
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
     loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
-    /// Proven path facts: `(start, merges)` for which every path reaches a
-    /// merge or terminates. A positive answer never depends on the walk's
-    /// active set (a cut cycle only ever yields a negative one), so it is
-    /// reusable anywhere; without it a function with many sequential loops
-    /// enumerates paths exponentially.
-    path_facts: RefCell<BTreeSet<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>)>>,
+    /// Memoized path judgments keyed by the exact normalized merge set. This
+    /// mirrors the encoder's bounded graph decision, including cached cyclic
+    /// refusals, without weakening the independent plan comparison.
+    path_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>), bool>>,
 }
 
 impl PlanEmitter<'_> {
@@ -5718,8 +5714,8 @@ impl PlanEmitter<'_> {
         }
         let mut merge_key = merges.to_vec();
         merge_key.sort();
-        if self.path_facts.borrow().contains(&(start, merge_key.clone())) {
-            return Ok(true);
+        if let Some(result) = self.path_facts.borrow().get(&(start, merge_key.clone())) {
+            return Ok(*result);
         }
         if !active.insert(start) {
             return Ok(false);
@@ -5755,9 +5751,7 @@ impl PlanEmitter<'_> {
             result
         };
         active.remove(&start);
-        if result {
-            self.path_facts.borrow_mut().insert((start, merge_key));
-        }
+        self.path_facts.borrow_mut().insert((start, merge_key), result);
         Ok(result)
     }
 
@@ -6354,7 +6348,7 @@ fn expected_function_plan(
         aggregates: BTreeMap::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
         loop_exit_targets: RefCell::new(BTreeMap::new()),
-        path_facts: RefCell::new(BTreeSet::new()),
+        path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(function.entry, None)?;
     if emitter.emitted.len() != function.blocks.len() {
@@ -7467,6 +7461,68 @@ mod tests {
         }))
     }
 
+    fn checked_diamond_chain(depth: u32, cyclic_suffix: bool) -> ValidatedSafeWir {
+        assert!(depth > 0);
+        let condition = ValueId::new(1);
+        let mut blocks = Vec::with_capacity((depth * 3 + 1) as usize);
+        for level in 0..depth {
+            let branch = crate::canonical_safewir::BlockId::new(level * 3);
+            let then_target = crate::canonical_safewir::BlockId::new(level * 3 + 1);
+            let else_target = crate::canonical_safewir::BlockId::new(level * 3 + 2);
+            let join = crate::canonical_safewir::BlockId::new(level * 3 + 3);
+            blocks.push(BasicBlock {
+                id: branch,
+                parameters: Vec::new(),
+                operations: if level == 0 {
+                    vec![Operation::ConstBool { destination: condition, value: true }]
+                } else {
+                    Vec::new()
+                },
+                terminator: Terminator::BranchIf {
+                    condition,
+                    then_target,
+                    then_arguments: Vec::new(),
+                    else_target,
+                    else_arguments: Vec::new(),
+                },
+            });
+            for id in [then_target, else_target] {
+                blocks.push(BasicBlock {
+                    id,
+                    parameters: Vec::new(),
+                    operations: Vec::new(),
+                    terminator: Terminator::Branch { target: join, arguments: Vec::new() },
+                });
+            }
+        }
+        let final_block = crate::canonical_safewir::BlockId::new(depth * 3);
+        blocks.push(BasicBlock {
+            id: final_block,
+            parameters: Vec::new(),
+            operations: Vec::new(),
+            terminator: if cyclic_suffix {
+                Terminator::Branch { target: final_block, arguments: Vec::new() }
+            } else {
+                Terminator::Return { values: Vec::new() }
+            },
+        });
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(if cyclic_suffix { 18 } else { 17 }),
+            checked_source: CheckedSourceIdentity::from_digest([if cyclic_suffix { 15 } else { 14 }; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(12), Vec::new(), Vec::new())],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(12),
+                signature: FunctionSignatureId::new(12),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [(condition, crate::canonical_safewir::ValueType::Bool)].into_iter().collect(),
+                blocks,
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
     #[cfg(feature = "native")]
     #[test]
     fn encoded_structured_branch_executes_both_arms() {
@@ -7547,6 +7603,19 @@ mod tests {
     fn common_reachable_join_with_non_terminating_bypass_is_refused() {
         assert!(matches!(
             encode_validated(checked_join_bypass()),
+            Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
+        ));
+    }
+
+    #[test]
+    fn structured_diamond_chain_admits_without_enumerating_paths() {
+        admit_canonical(checked_diamond_chain(96, false)).expect("bounded diamond graph admits");
+    }
+
+    #[test]
+    fn structured_diamond_chain_with_cyclic_suffix_refuses_fail_closed() {
+        assert!(matches!(
+            encode_validated(checked_diamond_chain(96, true)),
             Err(EncodeError::Lowering(LoweringError::UnsupportedControlFlow { .. }))
         ));
     }
