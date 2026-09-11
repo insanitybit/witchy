@@ -123,6 +123,21 @@ queue-concurrency-serial = { max-threads = 1 }
 filter = 'binary_id(witchy::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
 test-group = 'queue-concurrency-serial'
 
+# Corpus shards retain every admission and execution assertion. Each drives the
+# multi-core compiler; use the existing two-wide group rather than multiplying
+# compiler contention inside the broader misc group. Keep the existing timeout.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples(_shard_[0-9]+)?$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 90
+
+[[profile.ci.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples(_shard_[0-9]+)?$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 90
+
 # Bound cold, compiler-heavy test binaries without serializing unrelated tests.
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::glamour) | (binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0081_existential_frontend) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(witchy::test_for_paths) | binary_id(witchy::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'

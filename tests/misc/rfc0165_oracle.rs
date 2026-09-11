@@ -431,9 +431,20 @@ fn oracle(source: &str, label: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered(&format!("{label}: the foundation subset admits this program"));
+    oracle_checked(&checked, &artifact, label)
+}
+
+fn oracle_checked(
+    checked: &witchy_types::pipeline::CheckedModule,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    label: &str,
+) -> Vec<String> {
+    // Each nextest shard has its own process. Do not rely on an earlier
+    // source-interpreter run to install the compiled compiler-service vtable.
+    witchy_interp::compiler_natives::install();
     let entry = artifact.entry().unwrap_or_else(|| panic!("{label}: a program has an entry"));
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-    let validated = codegen::validate_checked_module_for_oracle(&checked).unwrap_or_else(|e| panic!("{label}: {e}"));
+    let validated = codegen::validate_checked_module_for_oracle(checked).unwrap_or_else(|e| panic!("{label}: {e}"));
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
     // The oracle and the runtime both see the working directory and the
     // process environment (the dev grants `witchy run` derives), so an
@@ -454,7 +465,7 @@ fn oracle(source: &str, label: &str) -> Vec<String> {
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime
         .spawn_admitted(
-            &artifact,
+            artifact,
             Capabilities {
                 print: true,
                 print_int: true,
@@ -462,12 +473,18 @@ fn oracle(source: &str, label: &str) -> Vec<String> {
                 env: true,
                 dir_root: Some(std::path::PathBuf::from(".")),
                 dir_read: true,
+                // Public but uncalled functions can retain Net imports even
+                // when main has no Net parameter. Link them with an explicit
+                // deny-all fixture: no destination or listener is authorized.
+                net_allow: Some(Vec::new()),
+                net_connect: true,
+                net_listen: true,
                 ..Default::default()
             },
             256,
         )
         .expect("spawn admitted artifact");
-    vm.run().unwrap_or_else(|e| panic!("{label}: wasm run failed: {e}"));
+    vm.run().unwrap_or_else(|e| panic!("{label}: wasm run failed: {e:#}"));
     let mut wasm_lines = vm.output();
     // The host prints an `Int`/`Float` result after the entry returns; the
     // oracle reports it as a result value instead.
@@ -582,18 +599,58 @@ fn oracle_agrees_on_the_foundation_programs() {
     }
 }
 
-#[test]
-fn oracle_agrees_on_the_admitted_examples() {
+macro_rules! oracle_example_shards {
+    ($($name:ident => $index:literal),+ $(,)?) => {
+        const ORACLE_SHARD_IDS: &[usize] = &[$($index),+];
+        $(
+            #[test]
+            fn $name() {
+                assert!(ORACLE_SHARD_IDS.iter().copied().eq(0..ORACLE_SHARD_IDS.len()),
+                    "every oracle shard must be registered exactly once");
+                oracle_examples_shard($index, ORACLE_SHARD_IDS.len());
+            }
+        )+
+    };
+}
+
+oracle_example_shards! {
+    oracle_agrees_on_the_admitted_examples => 0,
+    oracle_agrees_on_the_admitted_examples_shard_1 => 1,
+    oracle_agrees_on_the_admitted_examples_shard_2 => 2,
+    oracle_agrees_on_the_admitted_examples_shard_3 => 3,
+    oracle_agrees_on_the_admitted_examples_shard_4 => 4,
+    oracle_agrees_on_the_admitted_examples_shard_5 => 5,
+    oracle_agrees_on_the_admitted_examples_shard_6 => 6,
+    oracle_agrees_on_the_admitted_examples_shard_7 => 7,
+    oracle_agrees_on_the_admitted_examples_shard_8 => 8,
+    oracle_agrees_on_the_admitted_examples_shard_9 => 9,
+    oracle_agrees_on_the_admitted_examples_shard_10 => 10,
+    oracle_agrees_on_the_admitted_examples_shard_11 => 11,
+    oracle_agrees_on_the_admitted_examples_shard_12 => 12,
+    oracle_agrees_on_the_admitted_examples_shard_13 => 13,
+    oracle_agrees_on_the_admitted_examples_shard_14 => 14,
+    oracle_agrees_on_the_admitted_examples_shard_15 => 15,
+}
+
+fn oracle_examples_shard(shard: usize, shards: usize) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut checked_any = false;
     for entry in std::fs::read_dir(root.join("examples")).expect("examples directory") {
         let dir = entry.expect("example entry").path();
         let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else { continue };
+        // Stable assignment is independent of read_dir order and process hash
+        // seeds. The registered shards partition the original corpus exactly;
+        // no eligibility rule or execution assertion is relaxed.
+        let bucket = name.bytes().fold(0usize, |sum, byte| sum.wrapping_add(usize::from(byte))) % shards;
+        if bucket != shard {
+            continue;
+        }
         let file = dir.join("src").join(format!("{name}.witchy"));
         let Ok(source) = std::fs::read_to_string(&file) else { continue };
         if !source.contains("fn main") {
             continue;
         }
+        eprintln!("oracle sweep: {}", file.display());
         // Only programs the foundation subset admits are the oracle's
         // business; refused programs are the census's.
         let Ok(checked) = witchy::resolve_std_only_checked(&source) else { continue };
@@ -608,7 +665,7 @@ fn oracle_agrees_on_the_admitted_examples() {
         )) {
             continue;
         }
-        oracle(&source, &format!("examples/{name}"));
+        oracle_checked(&checked, &artifact, &format!("examples/{name}"));
         checked_any = true;
     }
     assert!(checked_any, "at least one example admits");
