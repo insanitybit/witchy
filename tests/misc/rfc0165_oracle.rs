@@ -11,6 +11,35 @@ use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConf
 use witchy_wir::canonical_safewir::FunctionId;
 
 #[test]
+fn result_coalescing_is_lazy_and_releases_both_variant_payloads() {
+    let source = r#"
+fn choose(success: Bool) -> Result(String, String):
+    if success:
+        Ok("value" + "!")
+    else:
+        Err("unused" + " error")
+
+fn default_value(console: Console) -> String:
+    console.print("default")
+    "fallback" + "!"
+
+fn forbidden_default(should_fail: Bool) -> String:
+    if should_fail:
+        fail("the success edge evaluated its default")
+    "unreachable"
+
+fn main(console: Console):
+    console.print(choose(true) ?? forbidden_default(true))
+    console.print(choose(false) ?? default_value(console))
+"#;
+    let expected = ["value!", "default", "fallback!"].map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).expect("Result coalescing source checks");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source Result coalescing"), expected);
+    assert_eq!(oracle(source, "lazy Result coalescing and payload cleanup"), expected);
+}
+
+#[test]
 fn tail_fail_keeps_trap_semantics_three_legs() {
     let template = r#"
 fn check_header(valid: Bool):
