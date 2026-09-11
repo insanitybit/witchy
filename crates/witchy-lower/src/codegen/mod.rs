@@ -62,7 +62,7 @@ pub use glamour_metadata::{
     GlamourWorkMetadata,
 };
 pub use assembly::{
-    assemble_checked_optimized_wir_module, compile_checked_build_module,
+    compile_checked_build_module,
     check_glamour_island_executable, compile_checked_development_module,
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
     compile_checked_module_artifact,
@@ -98,6 +98,7 @@ fn deterministic_sequence_counters_enabled() -> bool {
 }
 #[cfg(any(test, feature = "raw-module-test-api"))]
 pub use assembly::{
+    assemble_checked_optimized_wir_module,
     assemble_optimized_wir_module, assemble_wir_module, compile_build_module,
     compile_module_binary,
 };

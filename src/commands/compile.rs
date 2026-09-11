@@ -4,7 +4,6 @@ use witchy::{artifact, enforce_performance_modes, trusted_publisher};
 use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_interp::pipeline;
-use witchy_wir::wir;
 use crate::{link_file_checked, link_file_checked_with_deps};
 use crate::source::{
     link_file_checked_authenticated_with_deps, AuthenticatedDependency,
@@ -296,11 +295,16 @@ pub(crate) fn emit_wat_file(path: &str) -> Result<String, String> {
     // so a copy-cliff / missing-convention that `check`, `emit-wasm`, and `sandbox`
     // reject must not be quietly rendered here (exit 0 with a copy-cliff file).
     enforce_performance_modes(linked, &stem)?;
-    // The WIR-as-WAT: the actual module the backend encodes and runs
-    // (optimization passes included), rendered back to text for inspection —
-    // a display of the real WIR, not a separately generated WAT string.
-    let wir = match codegen::assemble_checked_optimized_wir_module(&checked) {
-        codegen::LoweringOutcome::Lowered(wir) => wir,
+    print_admitted_wat(codegen::compile_checked_module_artifact(&checked))
+}
+
+/// Render only bytes that crossed canonical admission. The returned WAT is a
+/// diagnostic, not an admission receipt for any subsequently assembled bytes.
+fn print_admitted_wat(
+    outcome: codegen::LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact>,
+) -> Result<String, String> {
+    let artifact = match outcome {
+        codegen::LoweringOutcome::Lowered(artifact) => artifact,
         codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("cannot compile to WASM: {reason}"));
         }
@@ -308,7 +312,29 @@ pub(crate) fn emit_wat_file(path: &str) -> Result<String, String> {
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
-    Ok(wir::to_wat(&wir))
+    wasmprinter::print_bytes(artifact.wasm())
+        .map_err(|error| format!("cannot print admitted WASM: {error}"))
+}
+
+#[cfg(test)]
+#[test]
+fn emit_wat_preserves_canonical_refusals() {
+    let unsupported = codegen::UnsupportedLowering {
+        message: "fixture outside canonical coverage".into(),
+    };
+    let expected = format!("cannot compile to WASM: {unsupported}");
+    assert_eq!(
+        print_admitted_wat(codegen::LoweringOutcome::Unsupported(unsupported)),
+        Err(expected),
+    );
+    let rejected = codegen::CodegenError {
+        message: "fixture canonical admission rejection".into(),
+    };
+    let expected = format!("cannot compile to WASM: {rejected}");
+    assert_eq!(
+        print_admitted_wat(codegen::LoweringOutcome::Rejected(rejected)),
+        Err(expected),
+    );
 }
 
 pub(super) fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Result<Vec<u8>, String> {

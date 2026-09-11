@@ -64,7 +64,7 @@ required-features = ["native"]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
-native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
 # Shared deterministic fixture sessions for the opaque-frame browser host.
 # Kept out of ordinary library builds; the playground/docs builder enables it.
 browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testkit"]
@@ -92,6 +92,8 @@ wasm-encoder = "0.251"
 wasmparser = "0.251"
 # Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
 wasmtime = { version = "45.0.0", optional = true }
+# Diagnostic disassembly of already-admitted bytes, matching the encoder/parser.
+wasmprinter = { version = "0.251", optional = true }
 # Global allocator for the native binary + every test binary that links this
 # lib (see the #[global_allocator] in lib.rs). NOT for the wasm32 playground
 # build -- it's native-only and gated by the same `native` feature that build

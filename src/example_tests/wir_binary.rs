@@ -11,11 +11,26 @@ use crate::{codegen, parser, typeck};
             "fn fib(n: Int) -> Int:\n    if n < 2:\n        n\n    else:\n        fib(n - 1) + fib(n - 2)\nfn main(console: Console):\n    console.print(\"${fib(10)}\")\n",
         )
         .expect("write temp source");
+        let (checked, _) = crate::link_file_checked(path.to_str().unwrap())
+            .expect("checked diagnostic source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("canonical diagnostic artifact");
+        let canonical_wat = wasmprinter::print_bytes(artifact.wasm())
+            .expect("render admitted bytes");
         let wat = crate::emit_wat_file(path.to_str().unwrap()).expect("emit-wat");
         let _ = std::fs::remove_file(&path);
         assert!(wat.starts_with("(module"), "expected a wasm module, got: {}", &wat[..wat.len().min(40)]);
-        // The fib function is emitted, module-qualified by the file stem.
-        assert!(wat.contains(".fib (param $n i64)"), "expected the fib function in the WAT");
+        // Pin canonical origin rather than legacy WIR function-name formatting.
+        assert_eq!(wat, canonical_wat);
+        let expected = vec!["55".to_owned()];
+        assert_eq!(
+            crate::interpreter::run_checked_module(&checked, ".", Vec::new())
+                .expect("source fib execution"),
+            expected,
+        );
+        // Execute the admitted artifact itself. Reassembling diagnostic WAT
+        // would not carry admission authority or promise byte-identical output.
+        assert_eq!(crate::run_admitted_artifact(&artifact).expect("admitted fib execution"), expected);
     }
 
     /// Criterion-2: the slot-elimination pass shows a MEASURABLE improvement on a

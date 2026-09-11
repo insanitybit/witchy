@@ -6,7 +6,7 @@
 
 use super::*;
 use super::glamour_metadata::{
-    checked_glamour_development_codec_module, GlamourDevelopmentCodecSpec,
+    GlamourDevelopmentCodecSpec,
     GlamourDevelopmentMigrationCodec,
 };
 use sha2::{Digest, Sha256};
@@ -3074,6 +3074,7 @@ fn public_outcome<T>(result: Result<T, LoweringFailure>) -> LoweringOutcome<T> {
     }
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn encode_validated(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3082,6 +3083,7 @@ fn encode_validated(
     encode_validated_with_source_map(module, gc_structs, gc_arrays).map(|encoded| encoded.wasm)
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn encode_validated_with_source_map(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3120,6 +3122,7 @@ fn encode_validated_with_source_map(
     Ok(encoded)
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn validated_module_outcome(
     module: witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3143,6 +3146,7 @@ fn encoded_binary_outcome(
     }
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBundle) -> Vec<u8> {
     const SECTION_NAME: &[u8] = b"witchy.layouts";
     fn push_u32_leb(bytes: &mut Vec<u8>, mut value: u32) {
@@ -3176,6 +3180,7 @@ fn append_layout_bundle(mut wasm: Vec<u8>, bundle: &witchy_wir::layout::LayoutBu
     wasm
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn append_suspension_carrier(
     mut wasm: Vec<u8>,
     carrier: &witchy_types::suspension_carrier::SuspensionCarrierCatalog,
@@ -3215,6 +3220,7 @@ fn append_suspension_carrier(
     wasm
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn encoded_module_outcome(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
@@ -3240,31 +3246,6 @@ fn assemble_optimized_wir_with_structs(
     LoweringFailure,
 > {
     assemble_optimized_wir_with_structs_mode(module, false, None, None, false)
-}
-
-/// A compiler-generated executable that has been checked after its final AST
-/// rewrite and before any backend pass can consume it. This stays private so a
-/// raw `Module` cannot impersonate the proof at a production codegen boundary.
-struct CheckedGeneratedModule {
-    module: Module,
-    runtime_catalog: Option<witchy_types::runtime_type::RuntimeDeclarationCatalog>,
-}
-
-impl CheckedGeneratedModule {
-    fn new(
-        authority: &witchy_types::pipeline::CheckedModule,
-        module: Module,
-    ) -> Result<Self, CodegenError> {
-        witchy_types::typeck::check(&module).map_err(|error| CodegenError {
-            message: format!(
-                "compiler-generated executable failed semantic checking before lowering: {error}"
-            ),
-        })?;
-        Ok(Self {
-            module,
-            runtime_catalog: authority.runtime_declaration_catalog().ok(),
-        })
-    }
 }
 
 fn assemble_optimized_wir_with_structs_mode(
@@ -3422,61 +3403,12 @@ pub fn compile_checked_glamour_island_execution_binary(
 pub fn compile_checked_development_module(
     _checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<CompiledDevelopmentModule> {
-    return public_outcome(unsupported(
+    public_outcome(unsupported(
         "Glamour development modules are not yet supported by canonical SafeWIR",
-    ));
-    #[allow(unreachable_code)]
-    let checked = _checked;
-    let metadata = match checked_glamour_development_metadata(checked) {
-        Ok(metadata) => metadata,
-        Err(error) => return LoweringOutcome::Rejected(error),
-    };
-    let generated_module = match metadata
-        .as_ref()
-        .and_then(|metadata| metadata.snapshot_codec.as_ref())
-    {
-        Some(codec) => match checked_glamour_development_codec_module(checked, codec) {
-            Ok(module) => Some(module),
-            Err(error) => return LoweringOutcome::Rejected(error),
-        },
-        None => None,
-    };
-    let checked_generated = match generated_module {
-        Some(module) => match CheckedGeneratedModule::new(checked, module) {
-            Ok(generated) => Some(generated),
-            Err(error) => return LoweringOutcome::Rejected(error),
-        },
-        None => None,
-    };
-    let module = checked_generated
-        .as_ref()
-        .map(|generated| &generated.module)
-        .unwrap_or_else(|| checked.module());
-    let checked_runtime_catalog = checked.runtime_declaration_catalog().ok();
-    let runtime_catalog = checked_generated
-        .as_ref()
-        .and_then(|generated| generated.runtime_catalog.as_ref())
-        .or(checked_runtime_catalog.as_ref());
-    match compile_module_binary_with_source_map_mode(
-        module,
-        false,
-        runtime_catalog,
-        metadata.as_ref(),
-        true,
-    ) {
-        LoweringOutcome::Lowered(encoded) => {
-            LoweringOutcome::Lowered(CompiledDevelopmentModule {
-                wasm: encoded.wasm,
-                glamour: metadata,
-                source_instructions: encoded.source_instructions,
-                source_expressions: encoded.source_expressions,
-            })
-        }
-        LoweringOutcome::Unsupported(reason) => LoweringOutcome::Unsupported(reason),
-        LoweringOutcome::Rejected(error) => LoweringOutcome::Rejected(error),
-    }
+    ))
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn compile_module_binary_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -3496,6 +3428,7 @@ fn compile_module_binary_mode(
     }
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn compile_module_binary_with_source_map_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -3544,9 +3477,9 @@ pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::
     }
 }
 
-/// Assemble and optimize the exact WIR module used by the binary backend, then
-/// validate the transformed result before exposing it to diagnostic consumers
-/// such as `emit-wat`.
+/// Assemble legacy WIR for synthetic compiler tests. Production diagnostics
+/// disassemble the canonical admitted artifact instead.
+#[cfg(any(test, feature = "raw-module-test-api"))]
 pub fn assemble_checked_optimized_wir_module(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
@@ -8605,6 +8538,7 @@ pub fn compile_checked_build_module(
     ))
 }
 
+#[cfg(any(test, feature = "raw-module-test-api"))]
 fn compile_build_module_mode(
     module: &Module,
     runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,

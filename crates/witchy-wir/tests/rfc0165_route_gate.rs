@@ -415,6 +415,103 @@ fn raw_wir_byte_entrypoints_are_sealed_or_are_the_documented_bridge() {
     }
 }
 
+// The synthetic feature is an explicit opt-in, never an edge from a normal
+// dependency/default feature. Fail closed on unrecognized activation sites.
+fn production_test_feature_violations(source: &str, lowerer: bool) -> Vec<usize> {
+    let mut section = "";
+    let mut violations = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line;
+            continue;
+        }
+        let features = line.split(['"', '\'']).skip(1).step_by(2)
+            .filter(|value| matches!(value.rsplit('/').next(),
+                Some("raw-encoder-test-api" | "raw-module-test-api" | "legacy-encoder-bridge")))
+            .collect::<Vec<_>>();
+        if features.is_empty() || section.contains("dev-dependencies") {
+            continue;
+        }
+        let test_forward = lowerer && section == "[features]"
+            && line.split_once('=').is_some_and(|(key, _)| key.trim() == "raw-module-test-api")
+            && features == ["witchy-wir/legacy-encoder-bridge"];
+        if !test_forward {
+            violations.push(index + 1);
+        }
+    }
+    violations
+}
+
+#[test]
+fn production_features_do_not_activate_legacy_encoding() {
+    let lowerer = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../witchy-lower/Cargo.toml").canonicalize().unwrap();
+    for manifest in workspace_manifests() {
+        let source = fs::read_to_string(&manifest).expect("read manifest");
+        let violations = production_test_feature_violations(
+            &source, manifest.canonicalize().unwrap() == lowerer,
+        );
+        assert!(violations.is_empty(),
+            "production test/bridge feature activation in {} at {violations:?}", manifest.display());
+    }
+}
+
+#[test]
+fn production_feature_pin_rejects_dependency_and_default_activation() {
+    for source in [
+        "[dependencies]\nwitchy-wir = { features = [\"legacy-encoder-bridge\"] }\n",
+        "[dependencies]\nwitchy-lower = { features = [\"raw-module-test-api\"] }\n",
+        "[features]\ndefault = [\"raw-module-test-api\"]\n",
+        "[features]\nnative = [\"witchy-wir/legacy-encoder-bridge\"]\n",
+        "[features]\ndefault = [\"alias\"]\nalias = [\"witchy-lower/raw-module-test-api\"]\n",
+    ] {
+        assert!(!production_test_feature_violations(source, true).is_empty(), "{source}");
+    }
+    assert!(production_test_feature_violations(
+        "[features]\nraw-module-test-api = [\"witchy-wir/legacy-encoder-bridge\"]\n",
+        true,
+    ).is_empty());
+    assert!(production_test_feature_violations(
+        "[dev-dependencies]\nwitchy-wir = { features = [\"legacy-encoder-bridge\"] }\n",
+        false,
+    ).is_empty());
+}
+
+#[test]
+fn legacy_lowerer_byte_helpers_are_test_only() {
+    let assembly = syn::parse_file(&read_source("../witchy-lower/src/codegen/assembly.rs"))
+        .expect("assembly parses");
+    for name in [
+        "encode_validated", "encode_validated_with_source_map", "validated_module_outcome",
+        "encoded_module_outcome", "append_layout_bundle", "append_suspension_carrier",
+        "compile_module_binary_mode", "compile_module_binary_with_source_map_mode",
+        "compile_build_module_mode", "assemble_checked_optimized_wir_module",
+    ] {
+        let function = named(&assembly, name);
+        assert!(has_cfg(function, "test") && has_cfg(function, "raw-module-test-api"), "{name}");
+    }
+    let mut calls = CalledFunctions::default();
+    calls.visit_block(&named(&assembly, "compile_checked_development_module").block);
+    assert_eq!(calls.0, BTreeSet::from(["public_outcome".into(), "unsupported".into()]));
+}
+
+#[test]
+fn emit_wat_uses_canonical_admission_before_diagnostic_printing() {
+    let compile = syn::parse_file(&read_source("../../src/commands/compile.rs"))
+        .expect("CLI compiler module parses");
+    let mut calls = CalledFunctions::default();
+    calls.visit_block(&named(&compile, "emit_wat_file").block);
+    assert_eq!(calls.0, BTreeSet::from([
+        "link_file_checked".into(), "enforce_performance_modes".into(),
+        "compile_checked_module_artifact".into(), "print_admitted_wat".into(),
+    ]));
+    let mut printer_calls = CalledFunctions::default();
+    printer_calls.visit_block(&named(&compile, "print_admitted_wat").block);
+    assert!(printer_calls.0.contains("print_bytes"));
+    assert!(!printer_calls.0.contains("to_wat"));
+}
+
 #[test]
 fn canonical_wasm_encoding_is_private_and_requires_final_authority() {
     let lib = syn::parse_file(&read_source("src/lib.rs")).expect("lib.rs parses");

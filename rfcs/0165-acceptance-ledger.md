@@ -960,3 +960,28 @@ signatures. The callback review found no blocking issue in the owned-byte
 predicate or its access-check connection. Remaining whole-project security,
 optimizer, withdrawn-syntax conformance, and final-master evidence obligations
 are not closed by this slice. Compiler-wide memory safety is not established.
+
+## Canonical WAT and production bridge sealing: focused-green
+
+`fix/rfc0165-canonical-wat-integration` routes `emit-wat` through
+`compile_checked_module_artifact` and disassembles only the admitted bytes.
+Diagnostic WAT is not an admission receipt for reassembled bytes. Legacy
+lowerer byte helpers and diagnostic assembly are test-only; ordinary lowerer
+ dependencies no longer activate `legacy-encoder-bridge`. The unreachable
+legacy Glamour development implementation is removed, leaving its existing
+explicit canonical-coverage refusal intact.
+
+Production-only `cargo check -p witchy --features native` passes. The normal
+and build feature graph contains none of `raw-module-test-api`,
+`raw-encoder-test-api`, or `legacy-encoder-bridge`. All 14 tests in
+`rfc0165_route_gate` pass, including the new activation and caller pins. Both
+`emit_wat_` CLI tests pass: the positive fixture executes source and admitted
+Wasm with independently expected output `55`; unsupported/rejected admission
+remains an error. Logs: `/tmp/witchy-canonical-wat-production-check.log`,
+`/tmp/witchy-canonical-wat-production-features.log`,
+`/tmp/witchy-canonical-wat-route-gate.log`, and
+`/tmp/witchy-canonical-wat-cli-tests.log`.
+
+Terminal merge-queue evidence remains pending. Generated test/build/Glamour
+coverage, package/reload artifact handling, hosted CI evidence and the wider
+security/optimizer obligations are not closed by this slice.
