@@ -670,6 +670,17 @@ fn opaque_console_lambda_three_legs() {
 }
 
 #[test]
+fn canonical_layout_family_task_tuple_three_legs() {
+    assert_opaque_closure_three_legs(r#"
+import chan
+async fn next(n: Int) -> Int:
+    n + 1
+async fn main(console: Console):
+    let values = chan.par_map([4], fn(n): next(n)).await
+    console.print("${values}")
+"#, &["[5]"]);
+}
+#[test]
 fn opaque_closure_mixed_string_console_after_original_cleanup_three_legs() {
     assert_opaque_closure_three_legs(r#"
 fn prefix(n: Int) -> String:
