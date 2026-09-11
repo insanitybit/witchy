@@ -152,6 +152,158 @@ fn canonical_net_fixture_refuses_unscripted_mismatched_or_unfinished_calls() {
     assert_eq!(run(config(vec![grant("fixture:80", true, false)], unfinished)), Err(InterpretError::NetFixture(OracleNetError::IncompleteTranscript)));
 }
 
+mod half_close {
+    use super::*;
+    use std::net::{Shutdown, TcpStream};
+    use witchy_runtime::net::Stream;
+
+    fn accept(listener: &TcpListener) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                    return socket;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                    && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+                Err(error) => panic!("bounded half-close peer accept: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn close_shuts_both_halves_with_retained_handles_after_peer_eof() {
+        for peer_eof in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = std::thread::spawn(move || {
+                let mut socket = accept(&listener);
+                socket.write_all(b"ab").unwrap();
+                if peer_eof { socket.shutdown(Shutdown::Write).unwrap(); }
+                let mut acknowledgement = [0; 3];
+                socket.read_exact(&mut acknowledgement).unwrap();
+                assert_eq!(&acknowledgement, b"ack");
+                assert_eq!(socket.read(&mut [0; 1]).unwrap(), 0,
+                    "explicit close must send FIN without dropping client handles");
+            });
+            let mut socket = TcpStream::connect(address).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut retained_alias = socket.try_clone().unwrap();
+            let mut received = Vec::new();
+            if peer_eof {
+                socket.read_to_end(&mut received).unwrap();
+            } else {
+                let mut bytes = [0; 2];
+                socket.read_exact(&mut bytes).unwrap();
+                received.extend(bytes);
+            }
+            assert_eq!(received, b"ab");
+            socket.write_all(b"ack").unwrap();
+            Stream::shutdown(&mut socket);
+            Stream::shutdown(&mut socket);
+            peer.join().unwrap();
+            assert!(retained_alias.write_all(b"extra").is_err(), "aliases cannot send after close");
+            assert_eq!(retained_alias.read(&mut [0; 1]).unwrap(), 0);
+            drop(retained_alias);
+            drop(socket);
+        }
+    }
+
+    #[test]
+    fn full_source_half_close_barrier_agrees_before_source_or_vm_teardown() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let source = format!(r#"
+fn exchange(net: Net[Connect, Tcp], address: String) -> String:
+    let socket = net.connect(address)
+    let barrier = net.connect(address)
+    socket.send_bytes("ping")
+    let body = socket.recv_all()
+    socket.send_bytes("ack")
+    socket.close()
+    let observed = barrier.recv_bytes(6)
+    barrier.close()
+    body + "|" + observed
+
+fn main(console: Console, net: Net[Connect, Tcp]):
+    console.print(exchange(net, "{address}"))
+    console.print("done")
+"#);
+        let expected = ["ab|closed", "done"];
+        let checked = witchy::resolve_std_only_checked(&source).unwrap();
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("half-close barrier source admits");
+        let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+        let entry = artifact.entry().unwrap();
+        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let transcript = vec![
+            Event::Connect { grant: 0, address: address.clone(), socket: 7 },
+            Event::Connect { grant: 0, address: address.clone(), socket: 8 },
+            Event::Send { socket: 7, bytes: b"ping".to_vec() },
+            Event::Receive { socket: 7, bytes: b"ab".to_vec() },
+            Event::Eof { socket: 7 },
+            Event::Send { socket: 7, bytes: b"ack".to_vec() },
+            Event::Close { socket: 7 },
+            Event::Receive { socket: 8, bytes: b"closed".to_vec() },
+            Event::Close { socket: 8 },
+        ];
+        for launch in [false, true] {
+            let values = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+            let fixture = config(vec![grant(&address, true, false)], transcript.clone());
+            let result = if launch { interpret_entry_program(&validated, function, values, &[], fixture) }
+                else { interpret_program(&validated, function, values, fixture) }.unwrap();
+            assert_eq!(result.output, expected);
+            assert_eq!(result.net_trace, transcript);
+            assert_eq!(result.leaked_objects, 0);
+        }
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        let peer = std::thread::spawn(move || {
+            let mut completed = Vec::new();
+            for leg in ["source", "Wasm"] {
+                let mut socket = accept(&listener);
+                let mut barrier = accept(&listener);
+                let mut request = [0; 4];
+                socket.read_exact(&mut request).unwrap();
+                assert_eq!(&request, b"ping");
+                socket.write_all(b"ab").unwrap();
+                socket.shutdown(Shutdown::Write).unwrap();
+                let mut acknowledgement = [0; 3];
+                socket.read_exact(&mut acknowledgement).unwrap();
+                assert_eq!(&acknowledgement, b"ack");
+                assert_eq!(socket.read(&mut [0; 1]).unwrap_or_else(|error|
+                    panic!("{leg} explicit close failed before completion barrier: {error}")), 0);
+                // The source remains inside exchange with both Socket values
+                // alive until this acknowledgement. Interpreter teardown cannot
+                // make a broken close appear to work; the VM also remains live.
+                barrier.write_all(b"closed").unwrap();
+                assert_eq!(barrier.read(&mut [0; 1]).unwrap(), 0);
+                completed.push(leg);
+            }
+            assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+            completed
+        });
+        let interpreted = witchy::interpreter::run_checked_module(&checked, ".", vec![address.clone()]);
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+            print: true, quiet: true, net_allow: Some(vec![address]), net_connect: true,
+            ..Default::default()
+        }, 256).unwrap();
+        let compiled = vm.run();
+        let completed = peer.join().unwrap();
+        assert_eq!(interpreted.unwrap(), expected);
+        compiled.unwrap();
+        assert_eq!(vm.output(), expected);
+        assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+        assert_eq!(completed, ["source", "Wasm"]);
+    }
+}
+
 fn two_byte_peer(listener: TcpListener, run: impl FnOnce() -> Result<(), String>) {
     listener.set_nonblocking(true).unwrap();
     let peer = std::thread::spawn(move || {

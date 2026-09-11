@@ -25,8 +25,16 @@ pub trait Stream: Read + Write + Send {
 
 impl Stream for TcpStream {
     fn shutdown(&mut self) {
-        let _ = TcpStream::shutdown(self, std::net::Shutdown::Both);
+        shutdown_tcp(self);
     }
+}
+
+fn shutdown_tcp(stream: &TcpStream) {
+    // On Darwin, shutdown(Both) after peer EOF can fail with ENOTCONN without
+    // closing the still-live write half. Attempt each direction independently,
+    // write first, retaining the infallible and idempotent close contract.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.shutdown(std::net::Shutdown::Read);
 }
 
 // TLS (the `tls:` scheme) is native-only — rustls/aws-lc build C and have no
@@ -39,7 +47,7 @@ impl Stream for TlsStream {
     fn shutdown(&mut self) {
         self.conn.send_close_notify();
         let _ = self.flush();
-        let _ = self.sock.shutdown(std::net::Shutdown::Both);
+        shutdown_tcp(&self.sock);
     }
 }
 
@@ -68,7 +76,7 @@ impl Stream for ServerTlsStream {
     fn shutdown(&mut self) {
         self.conn.send_close_notify();
         let _ = self.flush();
-        let _ = self.sock.shutdown(std::net::Shutdown::Both);
+        shutdown_tcp(&self.sock);
     }
 }
 
