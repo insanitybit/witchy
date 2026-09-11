@@ -5277,9 +5277,10 @@ fn expected_alloc_plan(
     Ok(())
 }
 
-fn expected_linear_function_plan(
+fn expected_block_operations_plan(
     function: &Function,
-    signature: &FunctionSignature,
+    block: &BasicBlock,
+    layout: &LocalLayout,
     layouts: &LayoutInterner,
     function_indices: &BTreeMap<FunctionId, u32>,
     signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
@@ -5288,14 +5289,11 @@ fn expected_linear_function_plan(
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
     owner_cleanup_function: Option<u32>,
-    owner_bridges: &[AdmittedOwnerBridge],
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
-    if function.blocks.len() != 1 || function.blocks[0].id != function.entry {
-        return Err(CanonicalAdmissionError::UnsupportedPlan);
-    }
-    let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    layout.owner_bridges = owner_bridges.to_vec();
-    let block = &function.blocks[0];
+    // The independent function planner has already derived and checked this
+    // whole-function layout. Borrow it and the original block: rebuilding a
+    // synthetic function here cloned every value type and owner recipe once
+    // per block. CFG terminators remain the independent PlanEmitter's job.
     let mut plan = Vec::new();
     for operation in &block.operations {
         match operation {
@@ -5568,98 +5566,11 @@ fn expected_linear_function_plan(
             _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
         }
     }
-    match &block.terminator {
-        Terminator::Return { values } => {
-            for value in values {
-                push_get(&mut plan, &layout, *value)?;
-            }
-            plan.push(PlanToken::Return);
-        }
-        Terminator::TailCall { callee, arguments, .. } => {
-            for argument in arguments {
-                push_get(&mut plan, &layout, plan_call_argument(argument)?)?;
-            }
-            let index = function_indices
-                .get(callee)
-                .copied()
-                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-            plan.push(PlanToken::ReturnCall(index));
-        }
-        Terminator::VarTailCall { callee, signature, arguments, .. } => {
-            for argument in arguments {
-                push_get(&mut plan, &layout, plan_call_argument(argument)?)?;
-            }
-            push_get(&mut plan, &layout, *callee)?;
-            plan.push(PlanToken::ReturnCallIndirect {
-                type_index: *signature_indices
-                    .get(signature)
-                    .ok_or(CanonicalAdmissionError::UnsupportedPlan)?,
-                table_index: 0,
-            });
-        }
-        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
-    }
-    plan.push(PlanToken::End);
-    Ok(plan)
-}
-
-fn expected_block_operations_plan(
-    function: &Function,
-    signature: &FunctionSignature,
-    block: &BasicBlock,
-    layouts: &LayoutInterner,
-    function_indices: &BTreeMap<FunctionId, u32>,
-    signature_indices: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
-    imports: &BTreeMap<ImportId, ImportContract>,
-    import_indices: &BTreeMap<ImportId, u32>,
-    static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
-    aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
-    owner_cleanup_function: Option<u32>,
-    owner_bridges: &[AdmittedOwnerBridge],
-) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
-    // Reuse only the source-operation rules above.  The synthetic terminator
-    // is never emitted; it exists solely to satisfy the operation-level
-    // planner's normal local-layout checks.  CFG structure is handled by the
-    // independent PlanEmitter below.
-    let entry = function
-        .blocks
-        .iter()
-        .find(|candidate| candidate.id == function.entry)
-        .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-    let synthetic = Function {
-        id: function.id,
-        signature: function.signature,
-        entry: function.entry,
-        value_types: function.value_types.clone(),
-        blocks: vec![BasicBlock {
-            id: function.entry,
-            parameters: entry.parameters.clone(),
-            operations: block.operations.clone(),
-            terminator: Terminator::Return { values: Vec::new() },
-        }],
-    };
-    let mut plan = expected_linear_function_plan(
-        &synthetic,
-        signature,
-        layouts,
-        function_indices,
-        signature_indices,
-        imports,
-        import_indices,
-        static_data_offsets,
-        aggregates,
-        owner_cleanup_function,
-        owner_bridges,
-    )?;
-    if plan.pop() != Some(PlanToken::End) || plan.pop() != Some(PlanToken::Return) {
-        return Err(CanonicalAdmissionError::UnsupportedPlan);
-    }
     Ok(plan)
 }
 
 struct PlanEmitter<'a> {
     source_function: &'a Function,
-    signature: &'a FunctionSignature,
     layout: &'a LocalLayout,
     layouts: &'a LayoutInterner,
     function_indices: &'a BTreeMap<FunctionId, u32>,
@@ -5690,8 +5601,8 @@ struct PlanEmitter<'a> {
     path_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>), bool>>,
 }
 
-impl PlanEmitter<'_> {
-    fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&BasicBlock, CanonicalAdmissionError> {
+impl<'a> PlanEmitter<'a> {
+    fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&'a BasicBlock, CanonicalAdmissionError> {
         self.source_function
             .blocks
             .iter()
@@ -6189,11 +6100,11 @@ impl PlanEmitter<'_> {
         if !self.emitted.insert(start) {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }
-        let block = self.block(start)?.clone();
+        let block = self.block(start)?;
         self.plan.extend(expected_block_operations_plan(
             self.source_function,
-            self.signature,
-            &block,
+            block,
+            self.layout,
             self.layouts,
         self.function_indices,
         self.signature_indices,
@@ -6202,21 +6113,20 @@ impl PlanEmitter<'_> {
             self.static_data_offsets,
             &mut self.aggregates,
             self.owner_cleanup_function,
-            &self.layout.owner_bridges,
         )?);
-        self.emit_block_terminator(start, block.terminator, stop)
+        self.emit_block_terminator(start, &block.terminator, stop)
     }
 
-    fn emit_block_terminator(&mut self, start: crate::canonical_safewir::BlockId, terminator: Terminator, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
+    fn emit_block_terminator(&mut self, start: crate::canonical_safewir::BlockId, terminator: &Terminator, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {
         match terminator {
             Terminator::Branch { target, arguments } => {
-                self.push_branch_arguments(target, &arguments)?;
-                self.emit_path(target, stop)
+                self.push_branch_arguments(*target, arguments)?;
+                self.emit_path(*target, stop)
             }
             Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
-                self.emit_if(start, condition, then_target, &then_arguments, else_target, &else_arguments, stop)
+                self.emit_if(start, *condition, *then_target, then_arguments, *else_target, else_arguments, stop)
             }
-            terminator => self.push_terminator(&terminator),
+            terminator => self.push_terminator(terminator),
         }
     }
 
@@ -6257,7 +6167,7 @@ impl PlanEmitter<'_> {
         if !self.is_loop_header(header)? {
             return Err(CanonicalAdmissionError::UnsupportedPlan);
         }
-        let block = self.block(header)?.clone();
+        let block = self.block(header)?;
         let exit = self.loop_exit(header)?;
         self.plan.push(PlanToken::Block("Empty".to_owned()));
         let block_label = self.labels.len();
@@ -6265,21 +6175,21 @@ impl PlanEmitter<'_> {
         self.plan.push(PlanToken::Loop("Empty".to_owned()));
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
-        self.plan.extend(expected_block_operations_plan(self.source_function, self.signature, &block, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates, self.owner_cleanup_function, &self.layout.owner_bridges)?);
+        self.plan.extend(expected_block_operations_plan(self.source_function, block, self.layout, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates, self.owner_cleanup_function)?);
         self.loops.push((header, loop_label));
         if let Some(exit) = exit {
             self.loop_exits.push((exit, block_label));
         }
-        match block.terminator {
+        match &block.terminator {
             // Mirror of the encoder's canonical `while` form.
-            Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } if Some(else_target) == exit => {
-                push_get(&mut self.plan, self.layout, condition)?;
+            Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } if Some(*else_target) == exit => {
+                push_get(&mut self.plan, self.layout, *condition)?;
                 self.plan.push(PlanToken::If("Empty".to_owned()));
                 self.labels.push(StructuredLabel::If);
-                self.push_branch_arguments(then_target, &then_arguments)?;
-                self.emit_path(then_target, Some(header))?;
+                self.push_branch_arguments(*then_target, then_arguments)?;
+                self.emit_path(*then_target, Some(header))?;
                 self.plan.push(PlanToken::Else);
-                self.push_branch_arguments(else_target, &else_arguments)?;
+                self.push_branch_arguments(*else_target, else_arguments)?;
                 self.plan.push(PlanToken::Br(self.label_depth(block_label)));
                 self.plan.push(PlanToken::End);
                 self.labels.pop();
@@ -6479,7 +6389,6 @@ fn expected_function_plan(
     }
     let mut emitter = PlanEmitter {
         source_function: function,
-        signature,
         layout: &layout,
         layouts,
         function_indices,
