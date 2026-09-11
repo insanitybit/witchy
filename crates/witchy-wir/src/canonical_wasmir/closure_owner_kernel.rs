@@ -94,6 +94,31 @@ fn emit_cleanup_worklist(
     Ok(())
 }
 
+pub(super) fn emit_cleanup_helper(
+    body: &mut WasmFunctionEncoder,
+    local: &LocalLayout,
+    function: &Function,
+    layouts: &LayoutInterner,
+    payload_parameter: u32,
+    environment: ValueId,
+    index: ValueId,
+    binding: &ReleaseBinding,
+) -> Result<(), EncodeError> {
+    body.instruction(&wasm_encoder::Instruction::LocalGet(payload_parameter));
+    emit_cleanup_worklist(
+        body,
+        local,
+        function,
+        layouts,
+        payload_parameter,
+        environment,
+        index,
+        binding,
+    )?;
+    body.instruction(&wasm_encoder::Instruction::End);
+    Ok(())
+}
+
 pub(super) fn emit_final_release(
     body: &mut WasmFunctionEncoder,
     local: &LocalLayout,
@@ -383,5 +408,30 @@ fn plan_cleanup_worklist(
     plan.extend([PlanToken::I32Const(1), PlanToken::I32Add]);
     push_set(plan, local, index)?;
     plan.extend([PlanToken::Br(0), PlanToken::End, PlanToken::End, PlanToken::End]);
+    Ok(())
+}
+
+pub(super) fn plan_cleanup_helper(
+    plan: &mut Vec<PlanToken>,
+    local: &LocalLayout,
+    function: &Function,
+    layouts: &LayoutInterner,
+    payload_parameter: u32,
+    environment: ValueId,
+    index: ValueId,
+    binding: &ReleaseBinding,
+) -> Result<(), CanonicalAdmissionError> {
+    plan.push(PlanToken::LocalGet(payload_parameter));
+    plan_cleanup_worklist(
+        plan,
+        local,
+        function,
+        layouts,
+        payload_parameter,
+        environment,
+        index,
+        binding,
+    )?;
+    plan.push(PlanToken::End);
     Ok(())
 }

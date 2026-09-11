@@ -36,9 +36,73 @@ fn release_binding(bridge: &AdmittedOwnerBridge, release_import: u32) -> closure
     }
 }
 
-pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, layouts: &LayoutInterner, op: &O, imports: &BTreeMap<ImportId, u32>) -> Result<(), EncodeError> {
+fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayout) {
+    let environment = ENV;
+    let index = TEMP;
+    let scratch_start = 3;
+    let function = Function {
+        id: FunctionId::new(u32::MAX),
+        signature: crate::canonical_safewir::FunctionSignatureId::new(u32::MAX),
+        entry: crate::canonical_safewir::BlockId::new(0),
+        value_types: [
+            (environment, ValueType::Ref(bridge.family().environment)),
+            (index, ValueType::Size),
+        ]
+        .into_iter()
+        .collect(),
+        blocks: Vec::new(),
+    };
+    let local = LocalLayout {
+        owner_scratch: None,
+        owner_bridges: Vec::new(),
+        indices: [(environment, 1), (index, 2)].into_iter().collect(),
+        extra_types: vec![ValType::I32; 2 + drop_worklist::SCRATCH],
+        scratch: (scratch_start..scratch_start + drop_worklist::SCRATCH as u32).collect(),
+    };
+    (function, local)
+}
+
+pub(super) fn emit_cleanup_helper(
+    layouts: &LayoutInterner,
+    bridge: &AdmittedOwnerBridge,
+) -> Result<WasmFunctionEncoder, EncodeError> {
+    let (function, local) = cleanup_helper_context(bridge);
+    let mut body = WasmFunctionEncoder::new([(2 + drop_worklist::SCRATCH as u32, ValType::I32)]);
+    closure_owner_kernel::emit_cleanup_helper(
+        &mut body,
+        &local,
+        &function,
+        layouts,
+        0,
+        ENV,
+        TEMP,
+        &release_binding(bridge, 0),
+    )?;
+    Ok(body)
+}
+
+pub(super) fn plan_cleanup_helper(
+    layouts: &LayoutInterner,
+    bridge: &AdmittedOwnerBridge,
+) -> Result<(Vec<(u32, String)>, Vec<PlanToken>), CanonicalAdmissionError> {
+    let (function, local) = cleanup_helper_context(bridge);
+    let mut plan = Vec::new();
+    closure_owner_kernel::plan_cleanup_helper(
+        &mut plan,
+        &local,
+        &function,
+        layouts,
+        0,
+        ENV,
+        TEMP,
+        &release_binding(bridge, 0),
+    )?;
+    Ok((vec![(2 + drop_worklist::SCRATCH as u32, "i32".to_owned())], plan))
+}
+
+pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, layouts: &LayoutInterner, op: &O, imports: &BTreeMap<ImportId, u32>, cleanup_function: Option<u32>) -> Result<(), EncodeError> {
     use wasm_encoder::Instruction as I;
-    let (mut function, local, bridge, payload) = context(function, local, op)?;
+    let (mut function, local, bridge, _payload) = context(function, local, op)?;
     let import = *imports.get(&bridge.id()).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner bridge import" }))?;
     match op {
         O::Construct { destination, constructor, captures } => {
@@ -74,8 +138,11 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             emit_set(body, &local, function.id, *destination)?;
         }
         O::Drop { owner, .. } => {
-            closure_owner_kernel::emit_final_release(body, &local, &function, layouts, *owner, payload, ENV,
-                TEMP, &release_binding(&bridge, import))?;
+            emit_get(body, &local, function.id, *owner)?;
+            body.instruction(&I::Call(import));
+            body.instruction(&I::Call(cleanup_function.ok_or(EncodeError::Lowering(
+                LoweringError::UnsupportedOperation { function: function.id, operation: "owner cleanup helper" },
+            ))?));
         }
         O::CloneEnvironment { owner, destination, .. } => {
             emit_get(body, &local, function.id, *owner)?;
@@ -93,16 +160,19 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             for value in op.destinations().into_iter().rev() { emit_set(body, &local, function.id, value)?; }
         }
 O::DropList { list, .. } => {
-    closure_owner_kernel::emit_list_release(body, &local, &function, layouts, *list, payload, ENV, TEMP,
-        &release_binding(&bridge, import))?;
+    emit_get(body, &local, function.id, *list)?;
+    body.instruction(&I::Call(import));
+    body.instruction(&I::Call(cleanup_function.ok_or(EncodeError::Lowering(
+        LoweringError::UnsupportedOperation { function: function.id, operation: "owner cleanup helper" },
+    ))?));
 }
 
     }
     Ok(())
 }
 
-pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &LayoutInterner, local: &LocalLayout, op: &O, imports: &BTreeMap<ImportId, u32>) -> Result<(), CanonicalAdmissionError> {
-    let (mut function, local, bridge, payload) = context(function, local, op).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &LayoutInterner, local: &LocalLayout, op: &O, imports: &BTreeMap<ImportId, u32>, cleanup_function: Option<u32>) -> Result<(), CanonicalAdmissionError> {
+    let (mut function, local, bridge, _payload) = context(function, local, op).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let import = *imports.get(&bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
     match op {
         O::Construct { destination, constructor, captures } => {
@@ -144,10 +214,9 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             push_share_plan(plan, &local, *destination, ENV)?;
         }
         O::Drop { owner, .. } => {
-            closure_owner_kernel::plan_final_release(
-                plan, &local, &function, layouts, *owner, payload, ENV, TEMP,
-                &release_binding(&bridge, import),
-            )?;
+            push_get(plan, &local, *owner)?;
+            plan.push(PlanToken::Call(import));
+            plan.push(PlanToken::Call(cleanup_function.ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
         }
         O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadTag { .. } | O::ReadCallable { .. } | O::Clone { .. }
         | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. }
@@ -157,8 +226,9 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             for value in op.destinations().into_iter().rev() { push_set(plan, &local, value)?; }
         }
 O::DropList { list, .. } => {
-    closure_owner_kernel::plan_list_release(plan, &local, &function, layouts, *list, payload, ENV, TEMP,
-        &release_binding(&bridge, import))?;
+    push_get(plan, &local, *list)?;
+    plan.push(PlanToken::Call(import));
+    plan.push(PlanToken::Call(cleanup_function.ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
 }
 
     }
