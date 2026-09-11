@@ -53,3 +53,31 @@ passes on this candidate (1 passed, 2.87 seconds), as do eight focused manifest
 tests. Those results do not cover this shadowing case and are insufficient to
 submit the patch. This is confirmed semantic miscompilation; this reproducer
 alone does not demonstrate a memory-safety violation.
+
+## Working-tree correction and focused evidence
+
+The checked tail manifest now tracks nearer lexical bindings across block
+statements, destructuring, match arms, for-loops, and while-let bodies. A
+binding initializer sees the preceding binding; a nested block restores its
+parent scope; a lambda starts a new parameter scope. Matching parameter names
+is accepted only while they still resolve to the original parameter binding.
+An unresolved local callable cannot use a same-spelled global signature.
+
+The lowerer and final checker are unchanged. The existing non-tail path handles
+calls that still owe local writeback; genuine checked indirect tail sites remain
+mandatory. Focused results on the correction:
+
+- `cargo test -q -p witchy-types --lib proper_tail_manifest_tests:: -- --nocapture`:
+  11 passed; `/tmp/witchy-tail-binding-manifest-tests.log`.
+- `cargo test -q -p witchy --features witchy-wir/native --test canonical_tail_binding -- --nocapture`:
+  1 passed covering three cases, with native/oracle expected outputs and zero
+  leaks; `/tmp/witchy-tail-binding-execution-tests.log`.
+- The original RFC-0087 test still passes (1 passed, 0.55 seconds);
+  `/tmp/witchy-tail-binding-rfc0087-tests.log`.
+- The original CLI reproducer now agrees with the source interpreter; compact
+  hello/wrap/jq/capability_rights parity also passes (3/5/7/2 output lines).
+
+All Cargo probes used the absolute warmed
+`/private/tmp/witchy-rfc0165-reflect-specialization-target` with `RUSTC_WRAPPER=`,
+`CC=cc`, and utility priority. These results establish the focused correction,
+not complete optimizer correctness or compiler-wide memory safety.

@@ -792,3 +792,19 @@ No fresh global runnable/parity total is claimed.
 - No new full gate or landing is claimed. Last complete check census remains
   156/163; the interrupted later census is partial evidence only. Task<Tuple>
   execution and the remaining security/optimizer obligations are still open.
+
+### 2026-09-11: lexical tail-writeback correction, focused-green
+
+The subsequent correction keeps source parameter binding identity across lexical
+scopes rather than accepting same-spelled shadowing locals. No lowerer or final
+checker relaxation was needed. Eleven manifest tests pass, the new
+`canonical_tail_binding` integration test passes three native/oracle cases with
+zero leaks, and the original RFC-0087 failing gate test passes. The original CLI
+shadowing reproducer now agrees with the source interpreter. Rebuilt-binary
+hello/wrap/jq/capability_rights parity passes with 3/5/7/2 output lines.
+Commands and logs are in
+`security-eval/findings/BUG-2026-09-11-proper-tail-shadowed-writeback.md`.
+Independent review and queue submission are still pending at this entry; no
+terminal landing or new corpus count is claimed. Task<Tuple> catalog units are
+worker-green, but its Wasm execution still refuses an owner-list capture and is
+not included as completed coverage.

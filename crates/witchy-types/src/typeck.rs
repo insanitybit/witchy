@@ -11891,12 +11891,13 @@ impl TypedModule {
     /// The result contains no AST pointers and remains valid after this owner is
     /// consumed by a later lowering stage.
     pub fn proper_tail_manifest(&self) -> Result<ProperTailSiteManifest, ProperTailManifestError> {
-        derive_proper_tail_manifest(&self.module)
+        derive_proper_tail_manifest(&self.module, self.table())
     }
 }
 
-fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest, ProperTailManifestError> {
+fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<ProperTailSiteManifest, ProperTailManifestError> {
     let mut keys = Vec::new();
+    let shadowed_parameters = HashSet::default();
     let functions = module.items.iter().filter_map(|item| match item {
         Item::Function(function) => Some((function.name.as_str(), function)),
         _ => None,
@@ -11906,14 +11907,14 @@ fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest
         match item_def {
             Item::Function(function) => {
                 let callable = ProperTailCallableId { item, method: None, lambda_path: Vec::new() };
-                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions };
+                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters };
                 collect_callable(&function.body, &caller, &mut keys)?;
             }
             Item::Impl(definition) => {
                 for (method, function) in definition.methods.iter().enumerate() {
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions };
+                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters };
                     collect_callable(&function.body, &caller, &mut keys)?;
                 }
             }
@@ -11922,7 +11923,7 @@ fn derive_proper_tail_manifest(module: &Module) -> Result<ProperTailSiteManifest
                     let Some(body) = &signature.default else { continue };
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions };
+                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions, table, checked_signature: None, shadowed_parameters: &shadowed_parameters };
                     collect_callable(body, &caller, &mut keys)?;
                 }
             }
@@ -11955,15 +11956,67 @@ struct TailCaller<'a> {
     params: &'a [ast::Param],
     ret: Option<&'a ast::Type>,
     functions: &'a HashMap<&'a str, &'a Function>,
+    table: &'a TypeTable,
+    checked_signature: Option<&'a Ty>,
+    /// Parameter spellings hidden by a nearer lexical binding at this site.
+    /// Assignment preserves a binding; declarations and patterns replace it.
+    shadowed_parameters: &'a HashSet<String>,
 }
 
 /// RFC-0090 proper tails forward the complete callable ABI envelope. A `var`
 /// parameter is a hidden result lane, so a textually final direct call is
-/// proper only when every such lane is forwarded unchanged. Unknown indirect
+/// proper only when every such lane is forwarded unchanged. Checked callable
+/// types resolve indirect targets; ordinary input parameters need not match
+/// because they are not returned write-back lanes. Unknown indirect
 /// ABI shapes remain candidates only when the caller itself has no pending
 /// write-back lane; the independent SafeWIR checker still requires exact
 /// result signatures before accepting the edge.
 fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> bool {
+    let checked_target = match expr {
+        Expr::Call { name, args } => {
+            // A local callable may shadow a declaration. Never replace its
+            // checked convention with that of a same-named global function.
+            let signature = match caller.table.local_callee_type(expr) {
+                Some(signature) => ty_to_ast(signature),
+                None => caller.table.function_type(name),
+            };
+            signature.map(|signature| (signature, args.as_slice()))
+        }
+        Expr::Apply { func, args } => caller.table.type_of(func).and_then(ty_to_ast)
+            .map(|signature| (signature, args.as_slice())),
+        _ => None,
+    };
+    if let (
+        Some(ast::Type::Fn(source_types, source_result, source_conventions, _)),
+        Some((ast::Type::Fn(target_types, target_result, target_conventions, _), arguments)),
+    ) = (caller.checked_signature.and_then(ty_to_ast), checked_target) {
+        if source_types.len() != caller.params.len() || target_types.len() != arguments.len()
+            || (!source_conventions.is_empty() && source_conventions.len() != source_types.len())
+            || (!target_conventions.is_empty() && target_conventions.len() != target_types.len())
+            || caller.params.iter().enumerate().any(|(index, parameter)|
+                (parameter.convention == Convention::Var)
+                    != (source_conventions.get(index) == Some(&Convention::Var)))
+        {
+            return false;
+        }
+        let source_vars = caller.params.iter().enumerate()
+            .filter_map(|(index, parameter)| (parameter.convention == Convention::Var).then_some(index))
+            .collect::<Vec<_>>();
+        let target_vars = target_conventions.iter().enumerate()
+            .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
+            .collect::<Vec<_>>();
+        return source_result == target_result && source_vars.len() == target_vars.len()
+            && source_vars.iter().zip(&target_vars).all(|(&source, &target)| {
+                source_types[source] == target_types[target]
+                    && !caller.shadowed_parameters.contains(&caller.params[source].name)
+                    && matches!(&arguments[target], Expr::Var(name) if name == &caller.params[source].name)
+            });
+    }
+    // An unresolved local signature cannot fall back to a same-spelled
+    // declaration. That declaration is not the callee at this lexical site.
+    if caller.table.local_callee_type(expr).is_some() {
+        return false;
+    }
     let caller_has_var = caller.params.iter().any(|param| param.convention == Convention::Var);
     let Expr::Call { name, args } = expr else {
         return !caller_has_var;
@@ -11981,8 +12034,23 @@ fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> boo
             source.convention == target.convention
                 && source.ty == target.ty
                 && (source.convention != Convention::Var
-                    || matches!(argument, Expr::Var(name) if name == &source.name))
+                    || (!caller.shadowed_parameters.contains(&source.name)
+                        && matches!(argument, Expr::Var(name) if name == &source.name)))
         })
+}
+
+fn shadow_tail_parameter(name: &str, params: &[ast::Param], shadowed: &mut HashSet<String>) {
+    if params.iter().any(|parameter| parameter.convention == Convention::Var && parameter.name == name) {
+        shadowed.insert(name.to_owned());
+    }
+}
+
+fn shadow_tail_pattern(pattern: &ast::Pattern, params: &[ast::Param], shadowed: &mut HashSet<String>) {
+    let mut names = Vec::new();
+    ast::pattern_binds(pattern, &mut names);
+    for name in names {
+        shadow_tail_parameter(&name, params, shadowed);
+    }
 }
 
 fn collect_callable(
@@ -12000,7 +12068,10 @@ fn collect_block(
     path: &mut Vec<ProperTailPathStep>,
     keys: &mut Vec<ProperTailSiteKey>,
 ) -> Result<(), ProperTailManifestError> {
+    let parent = caller;
+    let mut shadowed = parent.shadowed_parameters.clone();
     for (index, statement) in block.stmts.iter().enumerate() {
+        let caller = &TailCaller { shadowed_parameters: &shadowed, ..*parent };
         path.push(ProperTailPathStep::Statement(u32::try_from(index).map_err(|_| ProperTailManifestError::PathOverflow)?));
         match statement {
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
@@ -12024,6 +12095,13 @@ fn collect_block(
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
         path.pop();
+        // Initializers see the preceding binding. Only subsequent statements
+        // see the declaration, and leaving this block restores the parent.
+        match statement {
+            Stmt::Let { name, .. } => shadow_tail_parameter(name, parent.params, &mut shadowed),
+            Stmt::LetPattern { pattern, .. } => shadow_tail_pattern(pattern, parent.params, &mut shadowed),
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -12120,14 +12198,17 @@ fn collect_expr(
         Expr::Match { scrutinee, arms } => {
             collect_child(scrutinee, false, caller, path, 0, keys)?;
             for (index, arm) in arms.iter().enumerate() {
+                let mut shadowed = caller.shadowed_parameters.clone();
+                shadow_tail_pattern(&arm.pattern, caller.params, &mut shadowed);
+                let arm_caller = TailCaller { shadowed_parameters: &shadowed, ..*caller };
                 path.push(ProperTailPathStep::Arm(u32::try_from(index).map_err(|_| ProperTailManifestError::PathOverflow)?));
                 if let Some(guard) = &arm.guard {
                     path.push(ProperTailPathStep::Guard);
-                    collect_expr(guard, false, caller, path, keys)?;
+                    collect_expr(guard, false, &arm_caller, path, keys)?;
                     path.pop();
                 }
                 path.push(ProperTailPathStep::Value);
-                collect_expr(&arm.body, tail, caller, path, keys)?;
+                collect_expr(&arm.body, tail, &arm_caller, path, keys)?;
                 path.pop();
                 path.pop();
             }
@@ -12135,26 +12216,42 @@ fn collect_expr(
         Expr::Block(block) => collect_block(block, caller, tail, path, keys)?,
         Expr::Lambda { params, ret, body, .. } => {
             let nested = ProperTailCallableId { lambda_path: path.clone(), ..caller.callable.clone() };
+            let shadowed_parameters = HashSet::default();
             let nested_caller = TailCaller {
                 callable: &nested,
                 params,
                 ret: ret.as_ref(),
                 functions: caller.functions,
+                table: caller.table,
+                checked_signature: caller.table.type_of(expr),
+                shadowed_parameters: &shadowed_parameters,
             };
             path.push(ProperTailPathStep::Child(0));
             collect_block(body, &nested_caller, true, path, keys)?;
             path.pop();
         }
-        Expr::While { cond, body } | Expr::For { iter: cond, body, .. } => {
+        Expr::While { cond, body } => {
             collect_child(cond, false, caller, path, 0, keys)?;
             path.push(ProperTailPathStep::Child(1));
             collect_block(body, caller, false, path, keys)?;
             path.pop();
         }
-        Expr::WhileLet { scrutinee, body, .. } => {
-            collect_child(scrutinee, false, caller, path, 0, keys)?;
+        Expr::For { var, iter, body } => {
+            collect_child(iter, false, caller, path, 0, keys)?;
+            let mut shadowed = caller.shadowed_parameters.clone();
+            shadow_tail_parameter(var, caller.params, &mut shadowed);
+            let loop_caller = TailCaller { shadowed_parameters: &shadowed, ..*caller };
             path.push(ProperTailPathStep::Child(1));
-            collect_block(body, caller, false, path, keys)?;
+            collect_block(body, &loop_caller, false, path, keys)?;
+            path.pop();
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            collect_child(scrutinee, false, caller, path, 0, keys)?;
+            let mut shadowed = caller.shadowed_parameters.clone();
+            shadow_tail_pattern(pattern, caller.params, &mut shadowed);
+            let loop_caller = TailCaller { shadowed_parameters: &shadowed, ..*caller };
+            path.push(ProperTailPathStep::Child(1));
+            collect_block(body, &loop_caller, false, path, keys)?;
             path.pop();
         }
         Expr::Range { lo, hi, .. } | Expr::Index { base: lo, index: hi } => {
@@ -13539,6 +13636,82 @@ mod proper_tail_manifest_tests {
             "fn update(var value: Int):\n    value = value + 1\n\nfn caller(var left: Int, var right: Int):\n    update(right)\n",
         );
         assert!(incompatible.sites().is_empty());
+    }
+
+    #[test]
+    fn checked_indirect_var_tail_forwards_only_the_result_envelope() {
+        let indirect = manifest(
+            "fn apply(operation: fn(var Int) -> Int, var n: Int) -> Int:\n    operation(n)\n",
+        );
+        assert_eq!(indirect.sites().len(), 1);
+        let direct = manifest(
+            "fn update(var n: Int) -> Int:\n    n\n\nfn caller(unused: Bool, var n: Int) -> Int:\n    update(n)\n",
+        );
+        assert_eq!(direct.sites().len(), 1, "ordinary inputs are not hidden results");
+    }
+
+    #[test]
+    fn checked_var_tail_rejects_reordered_lanes_and_shadowed_conventions() {
+        let reordered = manifest(
+            "fn update(var a: Int, var b: Int) -> Int:\n    a + b\n\nfn caller(operation: fn(var Int, var Int) -> Int, var a: Int, var b: Int) -> Int:\n    operation(b, a)\n",
+        );
+        assert!(reordered.sites().is_empty());
+        let shadowed = manifest(
+            "fn operation(var n: Int) -> Int:\n    n\n\nfn caller(var n: Int) -> Int:\n    let operation = fn(value: Int): value\n    operation(n)\n",
+        );
+        assert!(shadowed.sites().is_empty(), "a local pure callable does not forward the caller's var result");
+    }
+
+    #[test]
+    fn checked_var_tail_tracks_original_parameter_bindings() {
+        let hidden = manifest(
+            "fn apply(operation: fn(var Int) -> Int, var n: Int) -> Int:\n    if true:\n        var n = 10\n        operation(n)\n    else:\n        0\n",
+        );
+        assert!(hidden.sites().is_empty(), "a shadowed local is not the caller's writeback lane");
+        let restored = manifest(
+            "fn apply(operation: fn(var Int) -> Int, var n: Int) -> Int:\n    let ignored = if true:\n        var n = 10\n        operation(n)\n    else:\n        0\n    operation(n)\n",
+        );
+        assert_eq!(restored.sites().len(), 1, "a nested scope cannot hide the parameter after it ends");
+        let initializer = manifest(
+            "fn apply(operation: fn(var Int) -> Int, var n: Int) -> Int:\n    var n = if true:\n        return operation(n)\n    else:\n        10\n    operation(n)\n",
+        );
+        assert_eq!(initializer.sites().len(), 1, "the initializer still sees the original parameter");
+    }
+
+    #[test]
+    fn tail_pattern_bindings_include_nested_and_alternative_names() {
+        let module = witchy_syntax::parser::parse_module("fn recur(var n: Int) -> Int:\n    n\n").unwrap();
+        let Item::Function(function) = &module.items[0] else { panic!("function") };
+        for pattern in [
+            ast::Pattern::Tuple(vec![ast::Pattern::Var("n".into())]),
+            ast::Pattern::Ctor { name: "Some".into(), args: vec![ast::Pattern::Var("n".into())] },
+            ast::Pattern::AnonCtor { tag: "Some".into(), args: vec![ast::Pattern::Var("n".into())] },
+            ast::Pattern::List { elems: Vec::new(), rest: Some(Some("n".into())) },
+            ast::Pattern::Or(vec![ast::Pattern::Var("n".into()), ast::Pattern::Var("n".into())]),
+        ] {
+            let mut hidden = HashSet::default();
+            shadow_tail_pattern(&pattern, &function.params, &mut hidden);
+            assert!(hidden.contains("n"));
+        }
+    }
+
+    #[test]
+    fn tail_loop_bindings_do_not_forward_shadowed_parameter_lanes() {
+        let mut module = witchy_syntax::parser::parse_module("fn recur(var n: Int) -> Int:\n    n\n").unwrap();
+        let call = Expr::Call { name: "recur".into(), args: vec![Expr::Var("n".into())] };
+        let Item::Function(function) = &module.items[0] else { panic!("function") };
+        let mut body = function.body.clone();
+        body.stmts = vec![Stmt::Return(Some(call.clone()))];
+        for expression in [
+            Expr::For { var: "n".into(), iter: Box::new(Expr::List(vec![Expr::Int(1)])), body: body.clone() },
+            Expr::WhileLet { pattern: ast::Pattern::Var("n".into()), scrutinee: Box::new(Expr::Int(1)), body },
+        ] {
+            let Item::Function(function) = &mut module.items[0] else { panic!("function") };
+            function.body.stmts = vec![Stmt::Expr(expression), Stmt::Expr(call.clone())];
+            // Exercise syntactic binder scope independently of source typing.
+            let sites = derive_proper_tail_manifest(&module, &TypeTable::default()).unwrap();
+            assert_eq!(sites.sites().len(), 1, "only the call after leaving the loop forwards the parameter");
+        }
     }
 
     #[test]
