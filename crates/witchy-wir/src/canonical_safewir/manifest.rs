@@ -692,7 +692,7 @@ pub const RULES: &[RuleEntry] = &[
         backend: RuleBackend::Receipt(CorrespondenceRule::ClosureOwner),
         admits: &[
             t(Interpreter, "owner_oracle_preserves_console_capture_and_list_rc_identity"),
-            t(OwnerBackend, "opaque_owner_kernel_final_release_reclaims_mixed_string_environment"),
+            t(OwnerBackend, "opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family"),
             t(OwnerLaunch, "opaque_closure_plugin_host_expected_three_legs"),
             t(OwnerLaunch, "opaque_closure_mixed_string_console_list_after_original_cleanup_three_legs"),
             t(OwnerRuntime, "opaque_owner_gc_payload_and_list_hold_actual_references"),
