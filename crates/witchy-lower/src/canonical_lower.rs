@@ -6195,6 +6195,9 @@ impl FunctionLowerer<'_> {
             }
             Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(args),
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::GENERATED_LIST_PUSH => {
+                self.lower_generated_list_push(args)
+            }
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => self.lower_regex_spans(args),
             Expr::Call { name, args } if is_capability_op(name) => self
                 .lower_capability_op(name, args)?
@@ -8349,6 +8352,50 @@ impl FunctionLowerer<'_> {
         let new_object = self.push_owned_element(old_object, value, &list_type)?;
         self.bindings.insert(name.clone(), new_object);
         Ok(())
+    }
+
+    /// The frontend's append intrinsic returns a new list. Unlike the source
+    /// `var` method, it must not rebind or consume its receiver: the enclosing
+    /// assignment owns that decision, and another binding may retain a snapshot.
+    fn lower_generated_list_push(
+        &mut self,
+        arguments: &[Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let [receiver, element] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("generated list push arity"));
+        };
+        let old_object = self.lower_expr(receiver)?;
+        let list_type = self.expression_type(receiver)?;
+        let mut value = self.lower_expr(element)?;
+        if let Some(family) = self.owner_list_family(old_object).cloned() {
+            if self.values[&value] != ValueType::Gc(family.owner_type) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("opaque list push element type"));
+            }
+            let list = self.clone_reference_token(old_object)?;
+            let value = self.clone_reference_token(value)?;
+            let destination = self.fresh(ValueType::Gc(family.list_type))?;
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::ListPush {
+                destination, list, value, family: family.signature,
+            }));
+            return Ok(destination);
+        }
+        let (_, element_type, _, _) =
+            list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        if self.values[&value] != element_type {
+            return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+        }
+        if matches!(element_type, ValueType::Ref(_)) {
+            if self.string_lengths.contains_key(&value) {
+                value = self.clone_string_for_storage(value)?;
+            } else {
+                let Type::Named(_, parameters) = list_type.unqualified() else {
+                    return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+                };
+                value = self.owned_for_storage(value, &parameters[0])?;
+            }
+        }
+        let list = self.clone_reference_token(old_object)?;
+        self.push_owned_element(list, value, &list_type)
     }
 
     /// Lower `list.concat(xs, ys)` with source value semantics.  Neither input
