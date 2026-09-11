@@ -39,6 +39,27 @@ pub(crate) struct ClosureEnvironmentVariant {
     pub storage: Vec<CaptureStorage>,
 }
 
+/// Source-derived storage for an aggregate whose value cannot live entirely
+/// in linear memory. The linear environment contains only the tag and
+/// ordinary scalar/reference lanes; opaque owners remain typed GC fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpaqueAggregateFamilyLayout {
+    pub source: Type,
+    pub environment: LayoutId,
+    pub variants: Vec<OpaqueAggregateVariant>,
+    pub owner_type: GcTypeId,
+    pub list_type: GcTypeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpaqueAggregateVariant {
+    pub name: String,
+    pub fields: Vec<Type>,
+    pub first_field: usize,
+    pub storage: Vec<CaptureStorage>,
+    pub environment_tag: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalLayoutError {
     MissingCheckedFunctionType(String),
@@ -79,7 +100,7 @@ impl std::error::Error for CanonicalLayoutError {}
 pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(bundle, _)| bundle)
+    project_layouts(source)?.finish_with_families().map(|(bundle, _, _)| bundle)
 }
 
 /// The closure layout of every `fn` type the canonical functions reach: a
@@ -102,7 +123,17 @@ pub(crate) fn closure_layouts(
 pub(crate) fn closure_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, ClosureFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, families)| families)
+    project_layouts(source)?.finish_with_families().map(|(_, families, _)| families)
+}
+
+/// Derive every aggregate that must use the opaque-owner representation.
+/// Classification and IDs come from normalized checked source identities and
+/// are shared with bundle construction, so a caller cannot cross-pair a
+/// family schema with a different layout catalog.
+pub(crate) fn opaque_aggregate_families(
+    source: &CanonicalCheckedSource,
+) -> Result<HashMap<Type, OpaqueAggregateFamilyLayout>, CanonicalLayoutError> {
+    project_layouts(source)?.finish_with_families().map(|(_, _, families)| families)
 }
 
 /// The identity of a `fn` type for closure purposes: the declared
@@ -433,11 +464,14 @@ impl LayoutProjection {
     }
 
     fn finish(self) -> Result<LayoutBundle, CanonicalLayoutError> {
-        self.finish_with_families().map(|(bundle, _)| bundle)
+        self.finish_with_families().map(|(bundle, _, _)| bundle)
     }
 
-    fn finish_with_families(self) -> Result<(LayoutBundle, HashMap<Type, ClosureFamilyLayout>), CanonicalLayoutError> {
-        let recursive_types = recursive_heap_types(&self.roots, &self.definitions);
+    fn finish_with_families(self) -> Result<(
+        LayoutBundle,
+        HashMap<Type, ClosureFamilyLayout>,
+        HashMap<Type, OpaqueAggregateFamilyLayout>,
+    ), CanonicalLayoutError> {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
         // Reserve every closure environment identity, and its two-field
@@ -452,6 +486,15 @@ impl LayoutProjection {
         // These ids identify candidate types; the independent checker binds
         // the complete family schema back to checked source before admission.
         let mut opaque_signatures = HashSet::new();
+        let mut aggregate_specs = self.visited.iter().filter_map(|ty| {
+            let source = canonical_layout_type(ty, &self.definitions);
+            let shape = scalar_aggregate_shape(&source, &self.definitions)?;
+            (!shape.packed && matches!(source.unqualified(), Type::Named(..) | Type::Tuple(..)))
+                .then_some((source, shape))
+        }).collect::<Vec<_>>();
+        aggregate_specs.sort_by_key(|(ty, _)| format!("{ty:?}"));
+        aggregate_specs.dedup_by(|(left, _), (right, _)| left == right);
+        let mut opaque_aggregates = HashSet::new();
         loop {
             let mut changed = false;
             for (signature, variants) in &closure_specs {
@@ -460,10 +503,25 @@ impl LayoutProjection {
                         field,
                         &self.definitions,
                         &opaque_signatures,
+                        &opaque_aggregates,
                         &mut HashSet::new(),
                     )
                 });
                 if requires_owner && opaque_signatures.insert(signature.clone()) {
+                    changed = true;
+                }
+            }
+            for (source, shape) in &aggregate_specs {
+                let requires_owner = shape.fields.iter().skip(usize::from(shape.tagged)).any(|field| {
+                    type_requires_opaque_owner(
+                        field,
+                        &self.definitions,
+                        &opaque_signatures,
+                        &opaque_aggregates,
+                        &mut HashSet::new(),
+                    )
+                });
+                if requires_owner && opaque_aggregates.insert(source.clone()) {
                     changed = true;
                 }
             }
@@ -480,6 +538,17 @@ impl LayoutProjection {
                     .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque closure type overflow".into()))?;
                 owner_types.insert(signature.clone(), GcTypeId::new(id));
             }
+        }
+        let opaque_aggregate_specs = aggregate_specs.into_iter()
+            .filter(|(source, _)| opaque_aggregates.contains(source))
+            .collect::<Vec<_>>();
+        let mut aggregate_owner_types = HashMap::new();
+        for (ordinal, (source, _)) in opaque_aggregate_specs.iter().enumerate() {
+            let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(0xc200_0000))
+                .filter(|n| *n < u32::MAX)
+                .ok_or_else(|| CanonicalLayoutError::InvalidLayout("opaque aggregate type overflow".into()))?;
+            aggregate_owner_types.insert(source.clone(), GcTypeId::new(id));
         }
         let mut closure_environments = HashMap::new();
         for (signature, _) in &closure_specs {
@@ -498,6 +567,19 @@ impl LayoutProjection {
             let closure = intern_closure_layout_with_environment(&mut interner, environment)?;
             closure_layouts.insert(signature.clone(), closure);
         }
+        let mut aggregate_environments = HashMap::new();
+        for (source, _) in &opaque_aggregate_specs {
+            let key = format!("{source:?}");
+            let mut digest = Sha256::new();
+            digest.update(b"witchy/canonical-layout/opaque-aggregate-environment-v1\0");
+            digest.update((key.len() as u64).to_le_bytes());
+            digest.update(key.as_bytes());
+            let environment = interner.intern_opaque_nominal(digest.finalize().into())
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            aggregate_environments.insert(source.clone(), environment);
+        }
+        let mut recursive_types = recursive_heap_types(&self.roots, &self.definitions);
+        recursive_types.retain(|ty| !opaque_aggregates.contains(ty));
         // Reserve all nominal cycle breakers before constructing any body.
         // A structural root such as List(Tree) may be visited before Tree;
         // following its pointee must not recursively rebuild that list while
@@ -517,10 +599,17 @@ impl LayoutProjection {
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
         }
         for ty in self.roots {
-            if let Type::Named(name, arguments) = ty.unqualified()
-                && name == "List" && arguments.len() == 1
-                && owner_types.contains_key(&canonical_closure_key(&arguments[0], &self.definitions))
-            {
+            let identity = canonical_layout_type(&ty, &self.definitions);
+            let opaque_aggregate = aggregate_owner_types.contains_key(&identity);
+            let opaque_list_element = match identity.unqualified() {
+                Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+                    opaque_owner_type_for(
+                        &arguments[0], &self.definitions, &owner_types, &aggregate_owner_types,
+                    ).is_some()
+                }
+                _ => false,
+            };
+            if opaque_aggregate || opaque_list_element {
                 // Opaque owner lists have typed reference storage, not a
                 // linear-memory layout with address-sized element slots.
                 continue;
@@ -540,6 +629,7 @@ impl LayoutProjection {
                 &recursive_types,
                 &closure_layouts,
                 &owner_types,
+                &aggregate_owner_types,
             )?;
             interner.bind_nominal(environment, environment_body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
@@ -549,9 +639,32 @@ impl LayoutProjection {
             let owner_type = owner_types.get(&signature).copied();
             families.insert(signature, ClosureFamilyLayout { closure, environment, variants, owner_type });
         }
+        let mut aggregate_families = HashMap::new();
+        for (source, shape) in opaque_aggregate_specs {
+            let environment = aggregate_environments[&source];
+            let (environment_body, variants) = intern_opaque_aggregate_environment(
+                &mut interner,
+                &shape,
+                &self.definitions,
+                &recursive_types,
+                &closure_layouts,
+                &owner_types,
+                &aggregate_owner_types,
+            )?;
+            interner.bind_nominal(environment, environment_body)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            roots.insert(environment);
+            let owner_type = aggregate_owner_types[&source];
+            let list_type = GcTypeId::new(owner_type.get().checked_add(1).ok_or_else(|| {
+                CanonicalLayoutError::InvalidLayout("opaque aggregate list type overflow".into())
+            })?);
+            aggregate_families.insert(source.clone(), OpaqueAggregateFamilyLayout {
+                source, environment, variants, owner_type, list_type,
+            });
+        }
         let bundle = LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-        Ok((bundle, families))
+        Ok((bundle, families, aggregate_families))
     }
 }
 
@@ -559,6 +672,7 @@ fn type_requires_opaque_owner(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
     opaque_signatures: &HashSet<Type>,
+    opaque_aggregates: &HashSet<Type>,
     visiting: &mut HashSet<Type>,
 ) -> bool {
     if witchy_types::canonical_capabilities::representation(ty, definitions).is_some() {
@@ -568,24 +682,35 @@ fn type_requires_opaque_owner(
         return opaque_signatures.contains(&canonical_closure_key(ty, definitions));
     }
     let identity = canonical_layout_type(ty, definitions);
+    if opaque_aggregates.contains(&identity) {
+        return true;
+    }
     if !visiting.insert(identity.clone()) {
         return false;
     }
     let requires_owner = if let Some(tuple) =
         witchy_types::canonical_aggregates::dictionary_as_tuple(identity.unqualified())
     {
-        type_requires_opaque_owner(&tuple, definitions, opaque_signatures, visiting)
+        type_requires_opaque_owner(
+            &tuple, definitions, opaque_signatures, opaque_aggregates, visiting,
+        )
     } else if let Some(shape) = scalar_aggregate_shape(&identity, definitions) {
         shape.fields.iter().any(|field| {
-            type_requires_opaque_owner(field, definitions, opaque_signatures, visiting)
+            type_requires_opaque_owner(
+                field, definitions, opaque_signatures, opaque_aggregates, visiting,
+            )
         })
     } else {
         match identity.unqualified() {
             Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-                type_requires_opaque_owner(&arguments[0], definitions, opaque_signatures, visiting)
+                type_requires_opaque_owner(
+                    &arguments[0], definitions, opaque_signatures, opaque_aggregates, visiting,
+                )
             }
             Type::Tuple(fields) => fields.iter().any(|field| {
-                type_requires_opaque_owner(field, definitions, opaque_signatures, visiting)
+                type_requires_opaque_owner(
+                    field, definitions, opaque_signatures, opaque_aggregates, visiting,
+                )
             }),
             _ => false,
         }
@@ -601,6 +726,7 @@ fn intern_closure_environment(
     recursive_types: &HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
     owner_types: &HashMap<Type, GcTypeId>,
+    aggregate_owner_types: &HashMap<Type, GcTypeId>,
 ) -> Result<(LayoutId, Vec<ClosureEnvironmentVariant>), CanonicalLayoutError> {
     let tag = interner
         .intern_scalar(ScalarKind::Int)
@@ -625,7 +751,7 @@ fn intern_closure_environment(
                     CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
                 continue;
             }
-            if owner_types.contains_key(&canonical_closure_key(field, definitions)) {
+            if opaque_owner_type_for(field, definitions, owner_types, aggregate_owner_types).is_some() {
                 storage.push(CaptureStorage::OwnerField(owner_field));
                 owner_field = owner_field.checked_add(1).ok_or_else(||
                     CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
@@ -651,6 +777,94 @@ fn intern_closure_environment(
     }
     let layout = interner
         .intern_packed_record(children)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    Ok((layout, variants))
+}
+
+fn opaque_owner_type_for(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    closure_owner_types: &HashMap<Type, GcTypeId>,
+    aggregate_owner_types: &HashMap<Type, GcTypeId>,
+) -> Option<GcTypeId> {
+    if matches!(ty.unqualified(), Type::Fn(..)) {
+        return closure_owner_types.get(&canonical_closure_key(ty, definitions)).copied();
+    }
+    let identity = canonical_layout_type(ty, definitions);
+    if let Some(owner) = aggregate_owner_types.get(&identity) {
+        return Some(*owner);
+    }
+    let Type::Named(name, arguments) = identity.unqualified() else { return None };
+    if name != "List" || arguments.len() != 1 {
+        return None;
+    }
+    let element = &arguments[0];
+    let owner = if matches!(element.unqualified(), Type::Fn(..)) {
+        closure_owner_types.get(&canonical_closure_key(element, definitions))
+    } else {
+        aggregate_owner_types.get(&canonical_layout_type(element, definitions))
+    }?;
+    owner.get().checked_add(1).map(GcTypeId::new)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn intern_opaque_aggregate_environment(
+    interner: &mut LayoutInterner,
+    shape: &witchy_types::canonical_aggregates::ScalarAggregateShape,
+    definitions: &BTreeMap<String, TypeDef>,
+    recursive_types: &HashSet<Type>,
+    closure_layouts: &HashMap<Type, LayoutId>,
+    closure_owner_types: &HashMap<Type, GcTypeId>,
+    aggregate_owner_types: &HashMap<Type, GcTypeId>,
+) -> Result<(LayoutId, Vec<OpaqueAggregateVariant>), CanonicalLayoutError> {
+    let tag = interner.intern_scalar(ScalarKind::Int)
+        .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+    let mut children = vec![tag];
+    let mut owner_field = 2u32;
+    let mut variants = Vec::with_capacity(shape.variants.len());
+    for (tag_value, variant) in shape.variants.iter().enumerate() {
+        let fields = shape.fields[variant.first_field..variant.first_field + variant.arity].to_vec();
+        let first_field = children.len();
+        let mut storage = Vec::with_capacity(fields.len());
+        for field in &fields {
+            if witchy_types::canonical_capabilities::representation(field, definitions).is_some()
+                || opaque_owner_type_for(
+                    field, definitions, closure_owner_types, aggregate_owner_types,
+                ).is_some()
+            {
+                storage.push(CaptureStorage::OwnerField(owner_field));
+                owner_field = owner_field.checked_add(1).ok_or_else(|| {
+                    CanonicalLayoutError::InvalidLayout("opaque aggregate owner field overflow".into())
+                })?;
+                continue;
+            }
+            storage.push(CaptureStorage::EnvironmentField(u32::try_from(children.len())
+                .map_err(|_| CanonicalLayoutError::InvalidLayout("opaque aggregate field overflow".into()))?));
+            let child = if let Some(scalar) = scalar_kind_of(field) {
+                interner.intern_scalar(scalar)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            } else {
+                let pointee = intern_v1_layout(
+                    interner, field, definitions, recursive_types, closure_layouts,
+                )?;
+                interner.intern_runtime_pointer_value_slot(
+                    pointee,
+                    if shape.tagged { PointerSlot::OwnedNullable } else { PointerSlot::Owned },
+                ).map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+            };
+            children.push(child);
+        }
+        variants.push(OpaqueAggregateVariant {
+            name: variant.name.clone(),
+            fields,
+            first_field,
+            storage,
+            environment_tag: i64::try_from(tag_value).map_err(|_| {
+                CanonicalLayoutError::InvalidLayout("opaque aggregate tag overflow".into())
+            })?,
+        });
+    }
+    let layout = interner.intern_packed_record(children)
         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
     Ok((layout, variants))
 }
@@ -1081,7 +1295,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{LayoutProjection, Type};
-    use witchy_syntax::ast::{CallableQualifiers, Convention};
+    use witchy_syntax::ast::{CallableQualifiers, Convention, TypeDef, Variant};
+    use witchy_wir::canonical_safewir::closure_owner_contract::CaptureStorage;
     use witchy_wir::layout::{HeaderLayout, LayoutKind, PointerSlot, RcHeader};
 
     fn named(name: &str) -> Type {
@@ -1150,6 +1365,146 @@ mod tests {
         let mut definition = heap_definition(name, fields);
         definition.params = parameters.iter().map(|parameter| (*parameter).to_owned()).collect();
         definition
+    }
+
+    fn sum_definition(name: &str, variants: Vec<(&str, Vec<Type>)>) -> TypeDef {
+        TypeDef {
+            name: name.into(),
+            must_consume: false,
+            params: Vec::new(),
+            variants: variants.into_iter().map(|(name, fields)| Variant {
+                name: name.into(),
+                line: 0,
+                field_names: (0..fields.len()).map(|index| format!("field{index}")).collect(),
+                field_lines: vec![0; fields.len()],
+                fields,
+            }).collect(),
+            derives: Vec::new(),
+            sealed: false,
+            is_capability: false,
+            grantable: false,
+            packed: false,
+            partial_eq_derived: false,
+            public_state_derived: false,
+        }
+    }
+
+    fn opaque_projection(
+        definitions: Vec<TypeDef>,
+        roots: &[Type],
+    ) -> (witchy_wir::layout::LayoutBundle, std::collections::HashMap<Type, super::OpaqueAggregateFamilyLayout>) {
+        let mut projection = LayoutProjection::default();
+        for definition in definitions {
+            projection.definitions.insert(definition.name.clone(), definition);
+        }
+        for root in roots {
+            projection.visit_type(root).expect("opaque aggregate source projects");
+        }
+        let (bundle, _, families) = projection.finish_with_families()
+            .expect("opaque aggregate layouts finish");
+        (bundle, families)
+    }
+
+    #[test]
+    fn task_like_aggregate_uses_existing_opaque_closure_owner() {
+        let callback = Type::Fn(
+            vec![named("Int")],
+            Box::new(named("Nil")),
+            vec![Convention::Let],
+            CallableQualifiers::default(),
+        );
+        let mut projection = LayoutProjection::default();
+        projection.definitions.insert(
+            "Task".into(),
+            sum_definition("Task", vec![("Ready", vec![callback.clone()]), ("Done", Vec::new())]),
+        );
+        let callback_key = super::canonical_closure_key(&callback, &projection.definitions);
+        projection.capture_variants.insert(callback_key, vec![(7, vec![named("Console")])]);
+        projection.visit_type(&named("Task")).expect("Task reaches its callback family");
+
+        let (_, closures, aggregates) = projection.finish_with_families()
+            .expect("Task-like family projects");
+        assert!(closures.values().any(|family| family.owner_type.is_some()));
+        let task = &aggregates[&named("Task")];
+        assert_eq!(task.variants[0].name, "Ready");
+        assert_eq!(task.variants[0].fields, vec![callback]);
+        assert_eq!(task.variants[0].storage, vec![CaptureStorage::OwnerField(2)]);
+        assert_eq!(task.variants[0].environment_tag, 0);
+        assert_eq!(task.variants[1].environment_tag, 1);
+    }
+
+    #[test]
+    fn nested_and_capability_aggregate_fields_are_owner_fields() {
+        let definitions = vec![
+            heap_definition("Inner", vec![named("Console")]),
+            heap_definition("Outer", vec![named("Inner"), named("String")]),
+        ];
+        let (bundle, families) = opaque_projection(definitions, &[named("Outer")]);
+        let inner = &families[&named("Inner")];
+        assert_eq!(inner.variants[0].storage, vec![CaptureStorage::OwnerField(2)]);
+        let outer = &families[&named("Outer")];
+        assert_eq!(outer.variants[0].storage, vec![
+            CaptureStorage::OwnerField(2),
+            CaptureStorage::EnvironmentField(1),
+        ]);
+        assert_eq!(outer.variants[0].first_field, 1);
+        assert!(bundle.roots().contains(&inner.environment));
+        assert!(bundle.roots().contains(&outer.environment));
+
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
+            .expect("opaque aggregate catalog decodes");
+        let body = layouts.nominal_target(outer.environment).expect("outer environment is bound");
+        let LayoutKind::PackedRecord { fields } = layouts.get(body).expect("outer body").kind() else {
+            panic!("opaque aggregate environment must be a packed record");
+        };
+        assert_eq!(fields.len(), 2, "owner field never occupies linear bytes");
+    }
+
+    #[test]
+    fn ordinary_string_aggregate_stays_linear() {
+        let (bundle, families) = opaque_projection(
+            vec![heap_definition("Message", vec![named("String")])],
+            &[named("Message")],
+        );
+        assert!(families.is_empty());
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
+            .expect("ordinary aggregate catalog decodes");
+        assert!(bundle.roots().iter().any(|root| {
+            matches!(layouts.get(*root).map(|layout| layout.kind()), Some(LayoutKind::PackedRecord { .. }))
+        }));
+    }
+
+    #[test]
+    fn opaque_aggregate_ids_are_deterministic_and_disjoint_from_closures() {
+        fn families(order: &[&str]) -> std::collections::HashMap<Type, super::OpaqueAggregateFamilyLayout> {
+            let definitions = vec![
+                heap_definition("Alpha", vec![named("Console")]),
+                heap_definition("Zulu", vec![named("Console")]),
+            ];
+            opaque_projection(definitions, &order.iter().map(|name| named(name)).collect::<Vec<_>>()).1
+        }
+        let first = families(&["Zulu", "Alpha"]);
+        let second = families(&["Alpha", "Zulu"]);
+        assert_eq!(first, second);
+        assert_eq!(first[&named("Alpha")].owner_type.get(), 0xc200_0000);
+        assert_eq!(first[&named("Alpha")].list_type.get(), 0xc200_0001);
+        assert_eq!(first[&named("Zulu")].owner_type.get(), 0xc200_0002);
+        assert!(first.values().all(|family| family.owner_type.get() >= 0xc200_0000));
+    }
+
+    #[test]
+    fn public_projection_is_derived_from_checked_source() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), b"type HeldConsole:\n    console: Console\n\nfn use(value: HeldConsole) -> Nil:\n    nil\n\nfn main(console: Console):\n    nil\n".to_vec())],
+            "main",
+            |_, _, _| Ok(Default::default()),
+        ).expect("source checks");
+        let source = checked.canonical_source().expect("canonical checked source");
+        let families = super::opaque_aggregate_families(source)
+            .expect("checked source determines opaque aggregate family");
+        assert!(families.keys().any(|source| {
+            matches!(source, Type::Named(name, _) if name.ends_with("HeldConsole"))
+        }));
     }
 
     #[test]
