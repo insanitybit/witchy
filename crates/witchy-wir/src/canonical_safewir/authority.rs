@@ -389,7 +389,8 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         };
         if let Some(super::ValueType::Gc(owner)) = signature.parameters.first() {
-            if !candidate.owner_families().iter().any(|family| family.owner_type == *owner && family.signature == signature.id
+            if !candidate.owner_families().iter().any(|family| matches!(family.source, super::closure_owner_contract::OwnerFamilySource::Closure)
+                && family.owner_type == *owner && family.signature == signature.id
                 && family.constructors.iter().any(|constructor| constructor.function == function.id && constructor.witness == Some(binding.closure())))
             {
                 return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: binding.closure() });
@@ -515,7 +516,8 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
         }
         let owner_family = candidate.owner_families().iter().find(|family| {
-            family.signature == adapter.signature
+            matches!(family.source, super::closure_owner_contract::OwnerFamilySource::Closure)
+                && family.signature == adapter.signature
                 && adapter_signature.parameters.first() == Some(&super::ValueType::Gc(family.owner_type))
         });
         if let Some(family) = owner_family {
@@ -562,7 +564,8 @@ fn strip_closure_environment<S: ModuleStage>(
         }
         super::ValueType::Gc(owner) => {
             if !candidate.owner_families().iter().any(|family| {
-                family.owner_type == *owner && family.signature == signature.id
+                matches!(family.source, super::closure_owner_contract::OwnerFamilySource::Closure)
+                    && family.owner_type == *owner && family.signature == signature.id
             }) {
                 return None;
             }
@@ -1082,6 +1085,18 @@ pub(super) fn value_type_matches_source(
 ) -> bool {
     if let super::ValueType::Gc(id) = actual {
         let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
+        if let super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
+            let aggregate = if id == family.list_type {
+                match source.unqualified() {
+                    witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => &arguments[0],
+                    _ => return false,
+                }
+            } else {
+                source
+            };
+            return witchy_types::canonical_aggregates::concrete_aggregate_identity(aggregate, records)
+                .is_some_and(|normalized| &normalized == expected);
+        }
         let callable = if id == family.list_type {
             match source.unqualified() {
                 witchy_syntax::ast::Type::Named(name, args) if name == "List" && args.len() == 1 => &args[0],
@@ -1680,6 +1695,7 @@ mod tests {
             owner: ValueId::new(0), family: FunctionSignatureId::new(0),
         }));
         let family = OwnerFamily {
+            source: super::super::closure_owner_contract::OwnerFamilySource::Closure,
             owner_type,
             list_type: crate::canonical_safewir::GcTypeId::new(0xc1000001),
             signature: FunctionSignatureId::new(0),

@@ -1,7 +1,7 @@
 //! Independent checked-source binding for opaque closure constructors.
 //! Candidate IDs and field maps are claims, never capability authority.
 use super::authority::*;
-use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerOperation, SourceConstructor};
+use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerFamily, OwnerFamilySource, OwnerOperation, SourceConstructor};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_types::canonical_closure::ClosureBindingPathStep;
@@ -16,7 +16,21 @@ pub(super) fn validate<S: ModuleStage>(
     let witnesses = source.closure_witness().entries();
     let mut seen = BTreeSet::new();
     let mut family_keys = std::collections::HashSet::new();
+    let mut aggregate_types = std::collections::HashSet::new();
+    let mut constructor_ids = BTreeSet::new();
+    for constructor in candidate.owner_families().iter().flat_map(|family| &family.constructors) {
+        if !constructor_ids.insert(constructor.id.0) {
+            return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+        }
+    }
     for family in candidate.owner_families() {
+        if let OwnerFamilySource::Aggregate(source_type) = &family.source {
+            if !aggregate_types.insert(source_type.clone()) {
+                return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+            }
+            validate_aggregate_family(candidate, family, source_type, &records, &layouts)?;
+            continue;
+        }
         let mut source_key = None;
         let mut observed = BTreeSet::new();
         for constructor in &family.constructors {
@@ -112,6 +126,12 @@ pub(super) fn validate<S: ModuleStage>(
             for operation in &block.operations {
                 match operation {
                     Operation::ClosureOwner(OwnerOperation::Construct { constructor, captures, .. }) => {
+                        let family = candidate.owner_families().iter().find(|family|
+                            family.constructors.iter().any(|entry| entry.id == *constructor))
+                            .ok_or(CandidateAbiBindingError::MissingClosureWitness { closure: constructor.0 })?;
+                        if matches!(family.source, OwnerFamilySource::Aggregate(_)) {
+                            continue;
+                        }
                         let checked = SourceConstructor::from_checked(source, *constructor)
                             .map_err(|_| CandidateAbiBindingError::MissingClosureWitness { closure: constructor.0 })?;
                         let refuse = || CandidateAbiBindingError::CapturingClosureBinding { closure: constructor.0 };
@@ -137,8 +157,14 @@ pub(super) fn validate<S: ModuleStage>(
                     }
                     Operation::ClosureOwner(OwnerOperation::ReadCapability { owner, constructor, .. }
                         | OwnerOperation::CloneEnvironment { owner, constructor, .. }) => {
-                        let declared = candidate.owner_families().iter().flat_map(|f| &f.constructors).find(|c| c.id == *constructor)
+                        let family = candidate.owner_families().iter().find(|family|
+                            family.constructors.iter().any(|entry| entry.id == *constructor))
                             .ok_or(CandidateAbiBindingError::MissingClosureWitness { closure: constructor.0 })?;
+                        if matches!(family.source, OwnerFamilySource::Aggregate(_)) {
+                            continue;
+                        }
+                        let declared = family.constructors.iter().find(|entry| entry.id == *constructor)
+                            .expect("family selected by constructor");
                         let parameter = function.blocks.iter().find(|b| b.id == function.entry).and_then(|b| b.parameters.first());
                         if function.id != declared.function || parameter.is_none_or(|p| p.value != *owner) {
                             return Err(CandidateAbiBindingError::CapturingClosureBinding { closure: constructor.0 });
@@ -146,8 +172,13 @@ pub(super) fn validate<S: ModuleStage>(
                     }
                     Operation::ClosureOwner(OwnerOperation::ReadOwner { owner, constructor, capture, .. }) => {
                         let refuse = || CandidateAbiBindingError::CapturingClosureBinding { closure: constructor.0 };
-                        let declared = candidate.owner_families().iter().flat_map(|f| &f.constructors)
-                            .find(|c| c.id == *constructor).ok_or_else(refuse)?;
+                        let family = candidate.owner_families().iter().find(|family|
+                            family.constructors.iter().any(|entry| entry.id == *constructor)).ok_or_else(refuse)?;
+                        if matches!(family.source, OwnerFamilySource::Aggregate(_)) {
+                            continue;
+                        }
+                        let declared = family.constructors.iter().find(|entry| entry.id == *constructor)
+                            .expect("family selected by constructor");
                         let parameter = function.blocks.iter().find(|b| b.id == function.entry)
                             .and_then(|b| b.parameters.first());
                         let source_constructor = SourceConstructor::from_checked(source, *constructor).map_err(|_| refuse())?;
@@ -169,10 +200,149 @@ pub(super) fn validate<S: ModuleStage>(
                             return Err(refuse());
                         }
                     }
+                    Operation::ClosureOwner(OwnerOperation::ReadCallable { family, .. }) => {
+                        if candidate.owner_families().iter().find(|entry| entry.signature == *family)
+                            .is_some_and(|entry| matches!(entry.source, OwnerFamilySource::Aggregate(_)))
+                        {
+                            return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_aggregate_family<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    family: &OwnerFamily,
+    claimed: &witchy_syntax::ast::Type,
+    records: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
+    layouts: &crate::layout::LayoutInterner,
+) -> Result<(), CandidateAbiBindingError> {
+    use witchy_syntax::ast::{effective_type_def_params, Type};
+    let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
+    let normalized = witchy_types::canonical_aggregates::concrete_aggregate_identity(claimed, records)
+        .ok_or_else(refuse)?;
+    if &normalized != claimed { return Err(refuse()); }
+    let Type::Named(name, arguments) = normalized.unqualified() else { return Err(refuse()); };
+    let definition = records.get(name).filter(|definition| !definition.is_capability).ok_or_else(refuse)?;
+    let parameters = effective_type_def_params(definition);
+    if parameters.len() != arguments.len() || definition.variants.len() != family.constructors.len()
+        || family.constructors.is_empty()
+    {
+        return Err(refuse());
+    }
+    let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect::<BTreeMap<_, _>>();
+    let mut environment_field = 1_u32;
+    let mut expected_environment = BTreeMap::new();
+    for (variant_index, (variant, constructor)) in definition.variants.iter().zip(&family.constructors).enumerate() {
+        if constructor.witness.is_some()
+            || constructor.environment_tag != i64::try_from(variant_index).map_err(|_| refuse())?
+            || constructor.captures.len() != variant.fields.len()
+        {
+            return Err(refuse());
+        }
+        let mut owner_field = 2_u32;
+        for (declared, source_field) in constructor.captures.iter().zip(&variant.fields) {
+            let source_field = substitute_source_type(source_field, &substitutions);
+            if !value_type_matches_source(
+                declared.value_type,
+                &source_field,
+                layouts,
+                candidate.signatures(),
+                &mut CorrespondenceContext::with_owners(candidate),
+                records,
+                candidate.closure_layouts(),
+            ) {
+                return Err(refuse());
+            }
+            let (storage, transfer) = match declared.value_type {
+                ValueType::Capability(kind) => {
+                    let field = owner_field;
+                    owner_field = owner_field.checked_add(1).ok_or_else(refuse)?;
+                    (CaptureStorage::OwnerField(field), CaptureTransfer::CopyCapability(kind))
+                }
+                ValueType::Gc(_) => {
+                    let field = owner_field;
+                    owner_field = owner_field.checked_add(1).ok_or_else(refuse)?;
+                    (CaptureStorage::OwnerField(field), CaptureTransfer::CloneManaged)
+                }
+                ValueType::Ref(_) => {
+                    let field = environment_field;
+                    environment_field = environment_field.checked_add(1).ok_or_else(refuse)?;
+                    expected_environment.insert(field, declared.value_type);
+                    (CaptureStorage::EnvironmentField(field), CaptureTransfer::CloneManaged)
+                }
+                ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size => {
+                    let field = environment_field;
+                    environment_field = environment_field.checked_add(1).ok_or_else(refuse)?;
+                    expected_environment.insert(field, declared.value_type);
+                    (CaptureStorage::EnvironmentField(field), CaptureTransfer::CopyScalar)
+                }
+                ValueType::V128 | ValueType::Callable(_) | ValueType::NullableCapability(_)
+                | ValueType::InlineAggregate(_) => return Err(refuse()),
+            };
+            if declared.storage != storage || declared.transfer != transfer { return Err(refuse()); }
+        }
+    }
+    validate_environment_layout(family.environment, &expected_environment, layouts)
+}
+
+fn substitute_source_type(
+    source: &witchy_syntax::ast::Type,
+    substitutions: &BTreeMap<String, witchy_syntax::ast::Type>,
+) -> witchy_syntax::ast::Type {
+    use witchy_syntax::ast::Type;
+    match source {
+        Type::Named(name, arguments) if arguments.is_empty() && substitutions.contains_key(name) => substitutions[name].clone(),
+        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(|argument| substitute_source_type(argument, substitutions)).collect()),
+        Type::Tuple(fields) => Type::Tuple(fields.iter().map(|field| substitute_source_type(field, substitutions)).collect()),
+        Type::Slice(element) => Type::Slice(Box::new(substitute_source_type(element, substitutions))),
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(substitute_source_type(base, substitutions)),
+            fields: fields.iter().map(|(name, field)| (name.clone(), substitute_source_type(field, substitutions))).collect(),
+        },
+        Type::Fn(parameters, result, conventions, qualifiers) => Type::Fn(
+            parameters.iter().map(|parameter| substitute_source_type(parameter, substitutions)).collect(),
+            Box::new(substitute_source_type(result, substitutions)), conventions.clone(), *qualifiers,
+        ),
+        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(substitute_source_type(inner, substitutions))),
+        Type::Dyn(name, arguments) => Type::Dyn(name.clone(), arguments.iter().map(|argument| substitute_source_type(argument, substitutions)).collect()),
+    }
+}
+
+fn validate_environment_layout(
+    environment: crate::layout::LayoutId,
+    expected: &BTreeMap<u32, ValueType>,
+    layouts: &crate::layout::LayoutInterner,
+) -> Result<(), CandidateAbiBindingError> {
+    let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
+    let physical = layouts.resolve_nominal(environment).map_err(|_| refuse())?;
+    let fields = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
+        Some(crate::layout::LayoutKind::PackedRecord { fields }) => fields,
+        _ => return Err(refuse()),
+    };
+    if fields.len() != expected.len() + 1
+        || !fields.first().is_some_and(|id| matches!(layouts.get(*id).map(|descriptor| descriptor.kind()),
+            Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))))
+    {
+        return Err(refuse());
+    }
+    for (index, value_type) in expected {
+        let kind = fields.get(*index as usize).and_then(|id| layouts.get(*id)).map(|descriptor| descriptor.kind()).ok_or_else(refuse)?;
+        let matched = match (value_type, kind) {
+            (ValueType::Int, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int | crate::layout::ScalarKind::Duration))
+            | (ValueType::Float, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Float))
+            | (ValueType::Bool, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool))
+            | (ValueType::Unit, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Unit))
+            | (ValueType::Size, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::U32)) => true,
+            (ValueType::Ref(layout), crate::layout::LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::OwnedNullable }) => layout == pointee,
+            _ => false,
+        };
+        if !matched { return Err(refuse()); }
     }
     Ok(())
 }
@@ -188,4 +358,115 @@ fn same_parameter(function: &super::Function, value: ValueId, parameter: ValueId
     }).unwrap_or(false);
     active.remove(&value);
     matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::closure_owner_contract::{ConstructorId, OwnerCapture, OwnerConstructor};
+    use super::super::{CheckedSourceIdentity, FunctionSignatureId, GcTypeId, LoweredModuleParts, Revision};
+    use crate::layout::{LayoutBundle, LayoutInterner, ScalarKind};
+    use witchy_syntax::ast::Type;
+
+    fn aggregate_fixture() -> (
+        CanonicalModule<super::super::LoweredCandidate>,
+        OwnerFamily,
+        BTreeMap<String, witchy_syntax::ast::TypeDef>,
+        crate::layout::LayoutInterner,
+    ) {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), b"type Envelope:\n    Value(Int)\n    Empty\n\nfn main():\n    let n = 0\n".to_vec())],
+            "main",
+            |_, _, _| Ok(Default::default()),
+        ).expect("checked aggregate source");
+        let source = checked.canonical_source().expect("canonical source");
+        let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+        let source_type = witchy_types::canonical_aggregates::concrete_aggregate_identity(
+            &Type::Named("Envelope".into(), Vec::new()), &records,
+        ).expect("normalized concrete aggregate");
+        let mut interner = LayoutInterner::new();
+        let int = interner.intern_scalar(ScalarKind::Int).expect("Int layout");
+        let environment = interner.intern_packed_record(vec![int, int]).expect("aggregate environment");
+        let bundle = LayoutBundle::from_interner(&interner, [environment]).expect("layout bundle");
+        let family = OwnerFamily {
+            source: OwnerFamilySource::Aggregate(source_type),
+            owner_type: GcTypeId::new(700),
+            list_type: GcTypeId::new(701),
+            signature: FunctionSignatureId::new(702),
+            declaration_signature: FunctionSignatureId::new(703),
+            environment,
+            constructors: vec![
+                OwnerConstructor {
+                    id: ConstructorId(9001),
+                    function: super::super::FunctionId::new(u32::MAX),
+                    witness: None,
+                    environment_tag: 0,
+                    captures: vec![OwnerCapture {
+                        value_type: ValueType::Int,
+                        storage: CaptureStorage::EnvironmentField(1),
+                        transfer: CaptureTransfer::CopyScalar,
+                    }],
+                },
+                OwnerConstructor {
+                    id: ConstructorId(17),
+                    function: super::super::FunctionId::new(0),
+                    witness: None,
+                    environment_tag: 1,
+                    captures: Vec::new(),
+                },
+            ],
+        };
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(1),
+            checked_source: CheckedSourceIdentity::from_digest([8; 32]),
+            layouts: bundle,
+            signatures: Vec::new(),
+            imports: Vec::new(),
+            functions: Vec::new(),
+            proper_tail_sites: Vec::new(),
+        }).with_owner_families(vec![family.clone()]);
+        (candidate, family, records, interner)
+    }
+
+    #[test]
+    fn aggregate_owner_source_schema_rejects_type_and_storage_forgery() {
+        let (candidate, family, records, layouts) = aggregate_fixture();
+        let OwnerFamilySource::Aggregate(source_type) = &family.source else { unreachable!() };
+        validate_aggregate_family(&candidate, &family, source_type, &records, &layouts)
+            .expect("exact checked aggregate schema");
+
+        let mut forged_type = family.clone();
+        forged_type.source = OwnerFamilySource::Aggregate(Type::Named("main.Forged".into(), Vec::new()));
+        let OwnerFamilySource::Aggregate(source_type) = &forged_type.source else { unreachable!() };
+        assert!(validate_aggregate_family(&candidate, &forged_type, source_type, &records, &layouts).is_err());
+
+        let mut wrong_storage = family.clone();
+        wrong_storage.constructors[0].captures[0].storage = CaptureStorage::OwnerField(2);
+        assert!(validate_aggregate_family(&candidate, &wrong_storage,
+            match &wrong_storage.source { OwnerFamilySource::Aggregate(ty) => ty, _ => unreachable!() },
+            &records, &layouts).is_err());
+
+        let mut wrong_type = family;
+        wrong_type.constructors[0].captures[0].value_type = ValueType::Bool;
+        assert!(validate_aggregate_family(&candidate, &wrong_type,
+            match &wrong_type.source { OwnerFamilySource::Aggregate(ty) => ty, _ => unreachable!() },
+            &records, &layouts).is_err());
+    }
+
+    #[test]
+    fn aggregate_gc_correspondence_requires_exact_normalized_source_type() {
+        let (candidate, family, records, layouts) = aggregate_fixture();
+        let expected = match &family.source { OwnerFamilySource::Aggregate(ty) => ty.clone(), _ => unreachable!() };
+        let mut context = CorrespondenceContext::with_owners(&candidate);
+        assert!(value_type_matches_source(ValueType::Gc(family.owner_type), &expected, &layouts,
+            candidate.signatures(), &mut context, &records, candidate.closure_layouts()));
+        let list = Type::Named("List".into(), vec![expected.clone()]);
+        let mut context = CorrespondenceContext::with_owners(&candidate);
+        assert!(value_type_matches_source(ValueType::Gc(family.list_type), &list, &layouts,
+            candidate.signatures(), &mut context, &records, candidate.closure_layouts()));
+        let mismatch = Type::Named("Int".into(), Vec::new());
+        let mut context = CorrespondenceContext::with_owners(&candidate);
+        assert!(!value_type_matches_source(ValueType::Gc(family.owner_type), &mismatch, &layouts,
+            candidate.signatures(), &mut context, &records, candidate.closure_layouts()));
+    }
 }

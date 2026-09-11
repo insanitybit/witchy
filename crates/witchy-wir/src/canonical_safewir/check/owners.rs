@@ -1,7 +1,7 @@
 //! Affine ownership of opaque GC values. These tokens have no linear-memory
 //! address, extent, allocation class, or pointer-slot authority.
 use super::*;
-use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerOperation};
+use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerFamilySource, OwnerOperation};
 use crate::canonical_safewir::{GcTypeId, Ownership, ResultContract};
 
 type Live = BTreeSet<ValueId>;
@@ -22,23 +22,28 @@ impl<'a> Registry<'a> {
             {
                 return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
             }
-            let body = module.signatures().iter().find(|s| s.id == family.signature)
-                .ok_or(InitialCheckError::MissingSignature(family.signature))?;
-            let declaration = module.signatures().iter().find(|s| s.id == family.declaration_signature)
-                .ok_or(InitialCheckError::MissingSignature(family.declaration_signature))?;
-            if body.parameters.first() != Some(&ValueType::Gc(family.owner_type))
-                || body.parameters.get(1..) != Some(declaration.parameters.as_slice())
-                || body.results != declaration.results
-                || body.contract.parameters.first().map(|p| p.ownership) != Some(ParameterOwnership::Shared)
-                || body.contract.parameters.get(1..) != Some(declaration.contract.parameters.as_slice())
-                || body.contract.results != declaration.contract.results
-                || family.constructors.is_empty()
-            {
+            if matches!(family.source, OwnerFamilySource::Closure) {
+                let body = module.signatures().iter().find(|s| s.id == family.signature)
+                    .ok_or(InitialCheckError::MissingSignature(family.signature))?;
+                let declaration = module.signatures().iter().find(|s| s.id == family.declaration_signature)
+                    .ok_or(InitialCheckError::MissingSignature(family.declaration_signature))?;
+                if body.parameters.first() != Some(&ValueType::Gc(family.owner_type))
+                    || body.parameters.get(1..) != Some(declaration.parameters.as_slice())
+                    || body.results != declaration.results
+                    || body.contract.parameters.first().map(|p| p.ownership) != Some(ParameterOwnership::Shared)
+                    || body.contract.parameters.get(1..) != Some(declaration.contract.parameters.as_slice())
+                    || body.contract.results != declaration.contract.results
+                {
+                    return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
+                }
+            }
+            if family.constructors.is_empty() {
                 return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
             }
             for constructor in &family.constructors {
                 if !constructors.insert(constructor.id.0)
-                    || !module.functions().iter().any(|f| f.id == constructor.function && f.signature == family.signature)
+                    || matches!(family.source, OwnerFamilySource::Closure)
+                        && !module.functions().iter().any(|f| f.id == constructor.function && f.signature == family.signature)
                 {
                     return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
                 }
@@ -124,6 +129,10 @@ impl<'a> Registry<'a> {
                 };
                 require_type(function, *destination, ValueType::Gc(nested_type))?;
             }
+            O::ReadTag { destination, owner, family } => {
+                require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?;
+                require_type(function, *destination, ValueType::Int)?;
+            }
             O::CloneEnvironment { destination, owner, constructor } => {
                 let (family, _) = self.constructor(function, *constructor)?;
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
@@ -131,6 +140,9 @@ impl<'a> Registry<'a> {
             }
             O::ReadCallable { destination, owner, family } => {
                 let family = self.family(*family)?;
+                if !matches!(family.source, OwnerFamilySource::Closure) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadCallable aggregate family" });
+                }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 require_type(function, *destination, ValueType::Callable(family.signature))?;
             }
@@ -164,6 +176,13 @@ impl<'a> Registry<'a> {
                 let family = self.family(*family)?;
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
+                require_type(function, *value, ValueType::Gc(family.owner_type))?;
+            }
+            O::ListSet { destination, list, index, value, family } => {
+                let family = self.family(*family)?;
+                require_type(function, *list, ValueType::Gc(family.list_type))?;
+                require_type(function, *destination, ValueType::Gc(family.list_type))?;
+                require_type(function, *index, ValueType::Size)?;
                 require_type(function, *value, ValueType::Gc(family.owner_type))?;
             }
             O::DropList { list, family } => require_type(function, *list, ValueType::Gc(self.family(*family)?.list_type))?,
@@ -243,9 +262,14 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                             consume(function, &mut state, *list)?;
                             consume(function, &mut state, *value)?;
                         }
+                        OwnerOperation::ListSet { list, value, .. } => {
+                            consume(function, &mut state, *list)?;
+                            consume(function, &mut state, *value)?;
+                        }
                         OwnerOperation::Construct { .. }
                         | OwnerOperation::ReadCapability { .. }
                         | OwnerOperation::ReadOwner { .. }
+                        | OwnerOperation::ReadTag { .. }
                         | OwnerOperation::ReadCallable { .. }
                         | OwnerOperation::Clone { .. }
                         | OwnerOperation::CloneEnvironment { .. }
@@ -348,6 +372,7 @@ mod tests {
     fn fixture(operations: Vec<OwnerOperation>, results: Vec<ValueId>) -> (Function, OwnerFamily) {
         let owner_type = GcTypeId::new(0xc1000000);
         let family = OwnerFamily {
+            source: OwnerFamilySource::Closure,
             owner_type, list_type: GcTypeId::new(0xc1000001),
             signature: FunctionSignatureId::new(0), declaration_signature: FunctionSignatureId::new(1),
             environment: crate::layout::LayoutId::from_bytes([0; 32]), constructors: vec![],
@@ -428,6 +453,7 @@ mod tests {
         let child_type = GcTypeId::new(0xc2000000);
         let child_signature = FunctionSignatureId::new(4);
         let child = OwnerFamily {
+            source: OwnerFamilySource::Closure,
             owner_type: child_type,
             list_type: GcTypeId::new(0xc2000001),
             signature: child_signature,
@@ -439,6 +465,7 @@ mod tests {
         let parent_signature = FunctionSignatureId::new(6);
         let constructor = ConstructorId(9);
         let parent = OwnerFamily {
+            source: OwnerFamilySource::Closure,
             owner_type: parent_type,
             list_type: GcTypeId::new(0xc3000001),
             signature: parent_signature,
@@ -490,6 +517,59 @@ mod tests {
         assert!(matches!(
             Registry { families: &[child, wrong_storage] }.operation(&function, &operation),
             Err(InitialCheckError::InvalidOwnership { .. })
+        ));
+    }
+
+    #[test]
+    fn aggregate_owner_tag_is_typed_affine_and_never_callable() {
+        let owner_type = GcTypeId::new(0xc4000000);
+        let family_token = FunctionSignatureId::new(40);
+        let family = OwnerFamily {
+            source: OwnerFamilySource::Aggregate(witchy_syntax::ast::Type::Named("main.Message".into(), Vec::new())),
+            owner_type,
+            list_type: GcTypeId::new(0xc4000001),
+            signature: family_token,
+            declaration_signature: FunctionSignatureId::new(41),
+            environment: crate::layout::LayoutId::from_bytes([4; 32]),
+            constructors: vec![crate::canonical_safewir::closure_owner_contract::OwnerConstructor {
+                id: ConstructorId(400),
+                function: FunctionId::new(u32::MAX),
+                witness: None,
+                environment_tag: 7,
+                captures: Vec::new(),
+            }],
+        };
+        let owner = ValueId::new(0);
+        let tag = ValueId::new(1);
+        let cloned = ValueId::new(2);
+        let mut function = Function {
+            id: FunctionId::new(42),
+            signature: FunctionSignatureId::new(999),
+            entry: BlockId::new(0),
+            value_types: BTreeMap::from([
+                (owner, ValueType::Gc(owner_type)),
+                (tag, ValueType::Int),
+                (cloned, ValueType::Gc(owner_type)),
+            ]),
+            blocks: vec![BasicBlock {
+                id: BlockId::new(0),
+                parameters: vec![BlockParameter { value: owner, value_type: ValueType::Gc(owner_type), ownership: Some(Ownership::Shared) }],
+                operations: vec![
+                    Operation::ClosureOwner(OwnerOperation::ReadTag { destination: tag, owner, family: family_token }),
+                    Operation::ClosureOwner(OwnerOperation::Clone { destination: cloned, owner, family: family_token }),
+                    Operation::ClosureOwner(OwnerOperation::Drop { owner, family: family_token }),
+                    Operation::ClosureOwner(OwnerOperation::Drop { owner: cloned, family: family_token }),
+                ],
+                terminator: Terminator::Return { values: Vec::new() },
+            }],
+        };
+        check(&function, &Registry { families: std::slice::from_ref(&family) }).expect("aggregate owner affine flow");
+
+        function.value_types.insert(tag, ValueType::Callable(family_token));
+        let callable = OwnerOperation::ReadCallable { destination: tag, owner, family: family_token };
+        assert!(matches!(
+            Registry { families: std::slice::from_ref(&family) }.operation(&function, &callable),
+            Err(InitialCheckError::UnsupportedMemoryOperation { operation: "ReadCallable aggregate family", .. })
         ));
     }
 }

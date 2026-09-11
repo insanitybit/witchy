@@ -8,6 +8,7 @@ pub enum OwnerBridgeRecipe {
     Construct(ConstructorId),
     ReadCapability(ConstructorId, CaptureOrdinal),
     ReadOwner(ConstructorId, CaptureOrdinal),
+    ReadTag(crate::canonical_safewir::FunctionSignatureId),
     ReadCallable(crate::canonical_safewir::FunctionSignatureId),
     Clone(crate::canonical_safewir::FunctionSignatureId),
     Drop(crate::canonical_safewir::FunctionSignatureId),
@@ -17,6 +18,7 @@ pub enum OwnerBridgeRecipe {
     ListLength(crate::canonical_safewir::FunctionSignatureId),
     CloneList(crate::canonical_safewir::FunctionSignatureId),
     ListPush(crate::canonical_safewir::FunctionSignatureId),
+    ListSet(crate::canonical_safewir::FunctionSignatureId),
     DropList(crate::canonical_safewir::FunctionSignatureId),
 }
 
@@ -27,6 +29,7 @@ impl OwnerBridgeRecipe {
             O::Construct { constructor, .. } => Self::Construct(*constructor),
             O::ReadCapability { constructor, capture, .. } => Self::ReadCapability(*constructor, *capture),
             O::ReadOwner { constructor, capture, .. } => Self::ReadOwner(*constructor, *capture),
+            O::ReadTag { family, .. } => Self::ReadTag(*family),
             O::ReadCallable { family, .. } => Self::ReadCallable(*family),
             O::Clone { family, .. } => Self::Clone(*family),
             O::Drop { family, .. } => Self::Drop(*family),
@@ -36,6 +39,7 @@ impl OwnerBridgeRecipe {
             O::ListLength { family, .. } => Self::ListLength(*family),
             O::CloneList { family, .. } => Self::CloneList(*family),
             O::ListPush { family, .. } => Self::ListPush(*family),
+            O::ListSet { family, .. } => Self::ListSet(*family),
             O::DropList { family, .. } => Self::DropList(*family),
         }
     }
@@ -45,12 +49,14 @@ impl OwnerBridgeRecipe {
             Self::Construct(c) => (0, c.0, 0),
             Self::ReadCapability(c, capture) => (1, c.0, capture.0),
             Self::ReadOwner(c, capture) => (12, c.0, capture.0),
+            Self::ReadTag(f) => (13, f.get(), 0),
             Self::ReadCallable(f) => (2, f.get(), 0),
             Self::Clone(f) => (3, f.get(), 0), Self::Drop(f) => (4, f.get(), 0),
             Self::CloneEnvironment(c) => (5, c.0, 0), Self::NewList(f, count) => (6, f.get(), *count),
             Self::ListGet(f) => (7, f.get(), 0), Self::ListLength(f) => (8, f.get(), 0),
             Self::CloneList(f) => (9, f.get(), 0), Self::ListPush(f) => (10, f.get(), 0),
             Self::DropList(f) => (11, f.get(), 0),
+            Self::ListSet(f) => (14, f.get(), 0),
         };
         let digest = digest_bytes(b"witchy/private-owner-import/v1", &[&[tag], &first.to_le_bytes(), &second.to_le_bytes()]);
         ImportId::new(u32::from_le_bytes(digest[..4].try_into().expect("digest prefix")) | 0x8000_0000)
@@ -111,15 +117,16 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 OwnerBridgeRecipe::Construct(id) | OwnerBridgeRecipe::ReadCapability(id, _)
                 | OwnerBridgeRecipe::ReadOwner(id, _) | OwnerBridgeRecipe::CloneEnvironment(id) =>
                     source.owner_families().iter().find(|f| f.constructors.iter().any(|c| c.id == *id)),
-                OwnerBridgeRecipe::ReadCallable(id) | OwnerBridgeRecipe::Clone(id) | OwnerBridgeRecipe::Drop(id)
+                OwnerBridgeRecipe::ReadTag(id) | OwnerBridgeRecipe::ReadCallable(id) | OwnerBridgeRecipe::Clone(id) | OwnerBridgeRecipe::Drop(id)
                 | OwnerBridgeRecipe::NewList(id, _) | OwnerBridgeRecipe::ListGet(id) | OwnerBridgeRecipe::ListLength(id)
-                | OwnerBridgeRecipe::CloneList(id) | OwnerBridgeRecipe::ListPush(id) | OwnerBridgeRecipe::DropList(id) =>
+                | OwnerBridgeRecipe::CloneList(id) | OwnerBridgeRecipe::ListPush(id) | OwnerBridgeRecipe::ListSet(id)
+                | OwnerBridgeRecipe::DropList(id) =>
                     source.owner_families().iter().find(|f| f.signature == *id),
             }.ok_or_else(|| error("unregistered owner bridge"))?;
             if family.constructors.iter().any(|c| c.captures.iter().any(|capture| !matches!(
                 (capture.value_type, capture.storage),
                 (ValueType::Capability(_) | ValueType::Gc(_), crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_))
-                | (ValueType::Ref(_) | ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit,
+                | (ValueType::Ref(_) | ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size,
                     crate::canonical_safewir::closure_owner_contract::CaptureStorage::EnvironmentField(_))
             ))) {
                 return Err(error("opaque owner capture storage kernel"));
@@ -144,10 +151,16 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
             }
             let payload_result = matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::CloneEnvironment(_) | OwnerBridgeRecipe::DropList(_));
             if payload_result { results.clear(); }
-            let callable_indices = family.constructors.iter().map(|constructor| {
-                source.functions().iter().position(|f| f.id == constructor.function)
-                    .map(|index| (constructor.id, index as u32)).ok_or_else(|| error("owner callable body"))
-            }).collect::<Result<Vec<_>, _>>()?;
+            let callable_indices = if matches!(family.source,
+                crate::canonical_safewir::closure_owner_contract::OwnerFamilySource::Closure)
+            {
+                family.constructors.iter().map(|constructor| {
+                    source.functions().iter().position(|f| f.id == constructor.function)
+                        .map(|index| (constructor.id, index as u32)).ok_or_else(|| error("owner callable body"))
+                }).collect::<Result<Vec<_>, _>>()?
+            } else {
+                Vec::new()
+            };
             let bridge = AdmittedOwnerBridge {
                 recipe,
                 family: family.clone(),

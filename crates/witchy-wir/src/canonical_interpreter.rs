@@ -1036,8 +1036,25 @@ impl<'a> Engine<'a> {
                 }
                 values.insert(*destination, retained);
             }
+            OwnerOperation::ReadTag { destination, owner, family } => {
+                self.owner_family(*family)?;
+                let owner = self.owner_value(*owner, values)?;
+                let state = self.owners.get(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+                if state.family != *family {
+                    return Err(InterpretError::TypeMismatch("owner family"));
+                }
+                let (constructor_family, constructor) = self.owner_constructor(state.constructor)?;
+                if constructor_family.signature != *family {
+                    return Err(InterpretError::TypeMismatch("owner constructor family"));
+                }
+                values.insert(*destination, InterpreterValue::Int(constructor.environment_tag));
+            }
             OwnerOperation::ReadCallable { destination, owner, family } => {
-                let target_signature = self.owner_family(*family)?.signature;
+                let owner_family = self.owner_family(*family)?;
+                if !matches!(owner_family.source, crate::canonical_safewir::closure_owner_contract::OwnerFamilySource::Closure) {
+                    return Err(InterpretError::UnsupportedOperation("aggregate owner is not callable"));
+                }
+                let target_signature = owner_family.signature;
                 let owner = self.owner_value(*owner, values)?;
                 let state = self.owners.get(&owner).ok_or(InterpretError::UnsupportedOperation("released owner"))?;
                 if state.family != target_signature {
@@ -1148,6 +1165,45 @@ impl<'a> Engine<'a> {
                     retained.push(*element);
                 }
                 elements.push(owner);
+                let list_number = self.next_owner_list.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
+                let new_list = OpaqueOwnerListToken(self.next_owner_list);
+                self.next_owner_list = list_number;
+                if let Err(error) = self.release_owner_list(list_token) {
+                    for retained_owner in retained { self.release_owner(retained_owner)?; }
+                    return Err(error);
+                }
+                self.owner_lists.insert(new_list, OwnerListState { family: *family, elements, references: 1 });
+                values.remove(list);
+                values.remove(value);
+                values.insert(*destination, InterpreterValue::OpaqueOwnerList(new_list));
+            }
+            OwnerOperation::ListSet { destination, list, index, value, family } => {
+                self.owner_family(*family)?;
+                let list_token = self.owner_list_value(*list, values)?;
+                let owner = self.owner_value(*value, values)?;
+                let index_value = self.size_value(*index, values)?;
+                let index = usize::try_from(index_value).map_err(|_| InterpretError::ArithmeticTrap)?;
+                let mut elements = {
+                    let state = self.owner_lists.get(&list_token).ok_or(InterpretError::UnsupportedOperation("released owner list"))?;
+                    if state.family != *family { return Err(InterpretError::TypeMismatch("owner list family")); }
+                    if self.owners.get(&owner).is_none_or(|state| state.family != *family) {
+                        return Err(InterpretError::TypeMismatch("owner list value family"));
+                    }
+                    if index >= state.elements.len() {
+                        return Err(InterpretError::IndexOutOfBounds { index: index_value, length: state.elements.len() as u64 });
+                    }
+                    state.elements.clone()
+                };
+                let mut retained = Vec::with_capacity(elements.len().saturating_sub(1));
+                for (position, element) in elements.iter().copied().enumerate() {
+                    if position == index { continue; }
+                    if let Err(error) = self.retain_owner(element) {
+                        for retained_owner in retained { self.release_owner(retained_owner)?; }
+                        return Err(error);
+                    }
+                    retained.push(element);
+                }
+                elements[index] = owner;
                 let list_number = self.next_owner_list.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
                 let new_list = OpaqueOwnerListToken(self.next_owner_list);
                 self.next_owner_list = list_number;
@@ -2604,6 +2660,7 @@ mod tests {
         let owner_type = crate::canonical_safewir::GcTypeId::new(10);
         let declaration_signature = FunctionSignatureId::new(1);
         let mut family = OwnerFamily {
+            source: crate::canonical_safewir::closure_owner_contract::OwnerFamilySource::Closure,
             owner_type,
             list_type: crate::canonical_safewir::GcTypeId::new(11),
             signature: SIGNATURE,
@@ -2795,6 +2852,13 @@ mod tests {
             family: SIGNATURE,
         }, &mut values).expect("read owner callable");
         assert_eq!(values.get(&callable), Some(&InterpreterValue::Function(FUNCTION)));
+        let tag = ValueId::new(16);
+        engine.execute_owner_operation(&OwnerOperation::ReadTag {
+            destination: tag,
+            owner,
+            family: SIGNATURE,
+        }, &mut values).expect("read authenticated owner tag");
+        assert_eq!(values.get(&tag), Some(&InterpreterValue::Int(0)));
         let zero_capture_owner = ValueId::new(11);
         engine.execute_owner_operation(&OwnerOperation::Construct {
             destination: zero_capture_owner,
@@ -2833,15 +2897,54 @@ mod tests {
             family: SIGNATURE,
             elements: vec![owner, cloned],
         }, &mut values).expect("clone owners into list");
+        let replacement = ValueId::new(17);
+        let replaced_list = ValueId::new(18);
+        engine.execute_owner_operation(&OwnerOperation::Clone {
+            destination: replacement,
+            owner,
+            family: SIGNATURE,
+        }, &mut values).expect("clone replacement owner");
+        engine.execute_owner_operation(&OwnerOperation::ListSet {
+            destination: replaced_list,
+            list,
+            index,
+            value: replacement,
+            family: SIGNATURE,
+        }, &mut values).expect("bounds-checked owner list replacement");
+        let bad_index = ValueId::new(19);
+        let bad_value = ValueId::new(20);
+        let bad_list = ValueId::new(21);
+        values.insert(bad_index, InterpreterValue::Size(2));
+        engine.execute_owner_operation(&OwnerOperation::Clone {
+            destination: bad_value,
+            owner,
+            family: SIGNATURE,
+        }, &mut values).expect("clone refused replacement owner");
+        engine.execute_owner_operation(&OwnerOperation::CloneList {
+            destination: bad_list,
+            list: replaced_list,
+            family: SIGNATURE,
+        }, &mut values).expect("clone refused replacement list");
+        assert!(matches!(engine.execute_owner_operation(&OwnerOperation::ListSet {
+            destination: ValueId::new(22),
+            list: bad_list,
+            index: bad_index,
+            value: bad_value,
+            family: SIGNATURE,
+        }, &mut values), Err(InterpretError::IndexOutOfBounds { index: 2, length: 2 })));
+        engine.execute_owner_operation(&OwnerOperation::DropList { list: bad_list, family: SIGNATURE }, &mut values)
+            .expect("drop list retained across refused replacement");
+        engine.execute_owner_operation(&OwnerOperation::Drop { owner: bad_value, family: SIGNATURE }, &mut values)
+            .expect("drop value retained across refused replacement");
         engine.execute_owner_operation(&OwnerOperation::ListLength {
             destination: length,
-            list,
+            list: replaced_list,
             family: SIGNATURE,
         }, &mut values).expect("list length");
         assert_eq!(values.get(&length), Some(&InterpreterValue::Size(2)));
         engine.execute_owner_operation(&OwnerOperation::ListGet {
             destination: selected,
-            list,
+            list: replaced_list,
             index,
             family: SIGNATURE,
         }, &mut values).expect("list get retains owner");
@@ -2860,7 +2963,7 @@ mod tests {
         }, &mut values).expect("read retained nested owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner, family: SIGNATURE }, &mut values).expect("drop source owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: cloned, family: SIGNATURE }, &mut values).expect("drop cloned owner");
-        engine.execute_owner_operation(&OwnerOperation::DropList { list, family: SIGNATURE }, &mut values).expect("drop owner list");
+        engine.execute_owner_operation(&OwnerOperation::DropList { list: replaced_list, family: SIGNATURE }, &mut values).expect("drop owner list");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: selected, family: SIGNATURE }, &mut values).expect("drop selected owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: nested_owner, family: SIGNATURE }, &mut values).expect("drop outer owner");
         assert!(engine.owner_value(nested_read, &values).is_ok(), "retained nested token survives outer destruction");

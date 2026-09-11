@@ -85,8 +85,9 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             emit_set(body, &local, function.id, ENV)?;
             emit_clone_ref(body, &local, *destination, ENV, &function)?;
         }
-        O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadCallable { .. } | O::Clone { .. }
-        | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. } | O::ListPush { .. } => {
+        O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadTag { .. } | O::ReadCallable { .. } | O::Clone { .. }
+        | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. }
+        | O::ListPush { .. } | O::ListSet { .. } => {
             for value in op.operands() { emit_get(body, &local, function.id, value)?; }
             body.instruction(&I::Call(import));
             for value in op.destinations().into_iter().rev() { emit_set(body, &local, function.id, value)?; }
@@ -148,8 +149,9 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
                 &release_binding(&bridge, import),
             )?;
         }
-        O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadCallable { .. } | O::Clone { .. }
-        | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. } | O::ListPush { .. } => {
+        O::ReadCapability { .. } | O::ReadOwner { .. } | O::ReadTag { .. } | O::ReadCallable { .. } | O::Clone { .. }
+        | O::NewList { .. } | O::ListGet { .. } | O::ListLength { .. } | O::CloneList { .. }
+        | O::ListPush { .. } | O::ListSet { .. } => {
             for value in op.operands() { push_get(plan, &local, value)?; }
             plan.push(PlanToken::Call(import));
             for value in op.destinations().into_iter().rev() { push_set(plan, &local, value)?; }

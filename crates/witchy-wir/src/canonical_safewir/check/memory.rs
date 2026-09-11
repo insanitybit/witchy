@@ -1888,6 +1888,7 @@ impl<'a> MemoryChecker<'a> {
                     }
                     OwnerOperation::ReadCapability { .. }
                     | OwnerOperation::ReadOwner { .. }
+                    | OwnerOperation::ReadTag { .. }
                     | OwnerOperation::ReadCallable { .. }
                     | OwnerOperation::Clone { .. }
                     | OwnerOperation::Drop { .. }
@@ -1896,6 +1897,7 @@ impl<'a> MemoryChecker<'a> {
                     | OwnerOperation::ListLength { .. }
                     | OwnerOperation::CloneList { .. }
                     | OwnerOperation::ListPush { .. }
+                    | OwnerOperation::ListSet { .. }
                     | OwnerOperation::DropList { .. } => {}
                 }
                 Ok(true)

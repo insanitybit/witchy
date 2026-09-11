@@ -172,6 +172,9 @@ owner_operations! {
     /// Reads an immutable nested owner field and returns one retained token of
     /// the field's exact registered GC type.
     ReadOwner { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
+    /// Reads the authenticated constructor/environment tag without selecting
+    /// or granting access to constructor-specific payload fields.
+    ReadTag { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     ReadCallable { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     Clone { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     Drop { owner: ValueId, family: FunctionSignatureId },
@@ -187,8 +190,20 @@ owner_operations! {
     CloneList { destination: ValueId, list: ValueId, family: FunctionSignatureId },
     /// Consumes list/value tokens; copy-on-write preserves retained aliases.
     ListPush { destination: ValueId, list: ValueId, value: ValueId, family: FunctionSignatureId },
+    /// Bounds checked replacement. Consumes list/value tokens and returns one
+    /// owned copy-on-write list token.
+    ListSet { destination: ValueId, list: ValueId, index: ValueId, value: ValueId, family: FunctionSignatureId },
     /// Final list release explicitly drops each element's owner token.
     DropList { list: ValueId, family: FunctionSignatureId },
+}
+
+/// The checked-source authority an opaque owner family is required to match.
+/// Aggregate types are normalized concrete checked source identities, not
+/// names, candidate constructor IDs, or callable declarations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerFamilySource {
+    Closure,
+    Aggregate(witchy_syntax::ast::Type),
 }
 
 /// Candidate schema, not authority. Admission independently binds the source
@@ -196,6 +211,7 @@ owner_operations! {
 /// layout. IDs are static IR metadata, never guest authority selectors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerFamily {
+    pub source: OwnerFamilySource,
     pub owner_type: GcTypeId,
     pub list_type: GcTypeId,
     /// Body ABI: leading owner parameter followed by declaration parameters.
@@ -234,11 +250,12 @@ impl OwnerOperation {
     pub fn destinations(&self) -> Vec<ValueId> {
         match self {
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
-            | Self::ReadOwner { destination, .. }
+            | Self::ReadOwner { destination, .. } | Self::ReadTag { destination, .. }
             | Self::ReadCallable { destination, .. } | Self::Clone { destination, .. }
             | Self::CloneEnvironment { destination, .. } | Self::NewList { destination, .. }
             | Self::ListGet { destination, .. } | Self::ListLength { destination, .. }
-            | Self::CloneList { destination, .. } | Self::ListPush { destination, .. } => vec![*destination],
+            | Self::CloneList { destination, .. } | Self::ListPush { destination, .. }
+            | Self::ListSet { destination, .. } => vec![*destination],
             Self::Drop { .. } | Self::DropList { .. } => Vec::new(),
         }
     }
@@ -248,11 +265,13 @@ impl OwnerOperation {
             Self::Construct { captures, .. } => captures.clone(),
             Self::NewList { elements, .. } => elements.clone(),
             Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
+            | Self::ReadTag { owner, .. }
             | Self::ReadCallable { owner, .. }
             | Self::Clone { owner, .. } | Self::CloneEnvironment { owner, .. } | Self::Drop { owner, .. } => vec![*owner],
             Self::ListGet { list, index, .. } => vec![*list, *index],
             Self::ListLength { list, .. } | Self::CloneList { list, .. } | Self::DropList { list, .. } => vec![*list],
             Self::ListPush { list, value, .. } => vec![*list, *value],
+            Self::ListSet { list, index, value, .. } => vec![*list, *index, *value],
         }
     }
 }
@@ -274,6 +293,7 @@ mod tests {
             (OwnerOperation::Construct { destination, constructor, captures: vec![owner, index] }, vec![owner, index], vec![destination]),
             (OwnerOperation::ReadCapability { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadOwner { destination, owner, constructor, capture }, vec![owner], vec![destination]),
+            (OwnerOperation::ReadTag { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::ReadCallable { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Clone { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Drop { owner, family }, vec![owner], vec![]),
@@ -283,6 +303,7 @@ mod tests {
             (OwnerOperation::ListLength { destination, list, family }, vec![list], vec![destination]),
             (OwnerOperation::CloneList { destination, list, family }, vec![list], vec![destination]),
             (OwnerOperation::ListPush { destination, list, value: owner, family }, vec![list, owner], vec![destination]),
+            (OwnerOperation::ListSet { destination, list, index, value: owner, family }, vec![list, index, owner], vec![destination]),
             (OwnerOperation::DropList { list, family }, vec![list], vec![]),
         ];
         assert_eq!(cases.len(), OwnerOperation::VARIANTS.len());

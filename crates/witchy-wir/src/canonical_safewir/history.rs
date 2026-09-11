@@ -62,9 +62,9 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
     ModuleDigest(hasher.finalize().into())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 4;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v4";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v4";
+const MODULE_SERIALIZATION_VERSION: u32 = 5;
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v5";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v5";
 
 /// Deterministic, tagged serialization for the fields that define a
 /// CanonicalModule's identity. This deliberately does not use `Debug`: a
@@ -696,6 +696,7 @@ impl CanonicalWriter {
             // Preserve established tags: ReadOwner was added after the original
             // twelve operations and receives the next unused value.
             O::ReadOwner { constructor, capture, .. } => (12, Some(*constructor), Some(*capture), None),
+            O::ReadTag { family, .. } => (13, None, None, Some(*family)),
             O::ReadCallable { family, .. } => (2, None, None, Some(*family)),
             O::Clone { family, .. } => (3, None, None, Some(*family)),
             O::Drop { family, .. } => (4, None, None, Some(*family)),
@@ -706,6 +707,7 @@ impl CanonicalWriter {
             O::CloneList { family, .. } => (9, None, None, Some(*family)),
             O::ListPush { family, .. } => (10, None, None, Some(*family)),
             O::DropList { family, .. } => (11, None, None, Some(*family)),
+            O::ListSet { family, .. } => (14, None, None, Some(*family)),
         };
         self.u8(tag);
         self.value_ids(&operation.destinations());
@@ -716,9 +718,16 @@ impl CanonicalWriter {
     }
 
     fn owner_families(&mut self, families: &[super::closure_owner_contract::OwnerFamily]) {
-        use super::closure_owner_contract::{CaptureStorage, CaptureTransfer};
+        use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerFamilySource};
         self.len(families.len());
         for family in families {
+            match &family.source {
+                OwnerFamilySource::Closure => self.u8(0),
+                OwnerFamilySource::Aggregate(source) => {
+                    self.u8(1);
+                    self.source_type(source);
+                }
+            }
             self.u32(family.owner_type.get());
             self.u32(family.list_type.get());
             self.u32(family.signature.get());
@@ -744,6 +753,50 @@ impl CanonicalWriter {
                         CaptureTransfer::CloneManaged => self.u8(2),
                     }
                 }
+            }
+        }
+    }
+
+    fn source_type(&mut self, source: &witchy_syntax::ast::Type) {
+        use witchy_syntax::ast::{Convention, Type, TypeQual};
+        match source {
+            Type::Named(name, arguments) => {
+                self.u8(0); self.bytes(name.as_bytes()); self.len(arguments.len());
+                for argument in arguments { self.source_type(argument); }
+            }
+            Type::Tuple(fields) => {
+                self.u8(1); self.len(fields.len());
+                for field in fields { self.source_type(field); }
+            }
+            Type::Slice(element) => { self.u8(2); self.source_type(element); }
+            Type::RecordCompose { base, fields } => {
+                self.u8(3); self.source_type(base); self.len(fields.len());
+                for (name, field) in fields { self.bytes(name.as_bytes()); self.source_type(field); }
+            }
+            Type::Fn(parameters, result, conventions, qualifiers) => {
+                self.u8(4); self.len(parameters.len());
+                for parameter in parameters { self.source_type(parameter); }
+                self.source_type(result); self.len(conventions.len());
+                for convention in conventions {
+                    self.u8(match convention { Convention::Let => 0, Convention::Borrow => 1, Convention::Var => 2, Convention::Own => 3 });
+                }
+                self.bool(qualifiers.pure); self.bool(qualifiers.once);
+            }
+            Type::Qualified(qualifier, inner) => {
+                self.u8(5);
+                match qualifier {
+                    TypeQual::Frozen => self.u8(0),
+                    TypeQual::Unique => self.u8(1),
+                    TypeQual::LocalUnique => self.u8(2),
+                    TypeQual::Borrow(lifetime) => { self.u8(3); self.bytes(lifetime.as_bytes()); }
+                    TypeQual::LegacyBorrow(lifetime) => { self.u8(4); self.bytes(lifetime.as_bytes()); }
+                    TypeQual::BorrowMut(lifetime) => { self.u8(5); self.bytes(lifetime.as_bytes()); }
+                }
+                self.source_type(inner);
+            }
+            Type::Dyn(name, arguments) => {
+                self.u8(6); self.bytes(name.as_bytes()); self.len(arguments.len());
+                for argument in arguments { self.source_type(argument); }
             }
         }
     }

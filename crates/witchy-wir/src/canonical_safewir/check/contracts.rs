@@ -420,6 +420,7 @@ fn propagate_operation_origins(
                     O::Construct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
                     | O::Drop { .. }
@@ -428,6 +429,7 @@ fn propagate_operation_origins(
                     | O::ListLength { .. }
                     | O::CloneList { .. }
                     | O::ListPush { .. }
+                    | O::ListSet { .. }
                     | O::DropList { .. } => Origin::Unknown,
                 };
                 join_origin(origins, destination, origin);
@@ -676,17 +678,20 @@ fn derive_operation(
                     O::Clone { .. } | O::CloneList { .. } | O::Construct { .. } | O::NewList { .. } => MemoryEffect::Retain,
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::CloneEnvironment { .. }
                     | O::ListGet { .. }
                     | O::ListLength { .. }
                     | O::ListPush { .. } => MemoryEffect::Read,
+                    O::ListSet { .. } => MemoryEffect::Read,
                 };
                 add_effect(summary, origin_of(origins, value), effect);
                 let escapes = match owner {
-                    O::Construct { .. } | O::NewList { .. } | O::ListPush { .. } => true,
+                    O::Construct { .. } | O::NewList { .. } | O::ListPush { .. } | O::ListSet { .. } => true,
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
                     | O::Drop { .. }
@@ -709,6 +714,7 @@ fn derive_operation(
                     O::Construct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
                     | O::Drop { .. }
@@ -717,6 +723,7 @@ fn derive_operation(
                     | O::ListLength { .. }
                     | O::CloneList { .. }
                     | O::ListPush { .. }
+                    | O::ListSet { .. }
                     | O::DropList { .. } => Origin::Unknown,
                 };
                 origins.insert(destination, origin);
