@@ -63,10 +63,9 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     if let Some(grant) = std::env::var("COVEN_URL").ok().as_deref().and_then(coven_url_net_grant) {
         net_allow.push(grant);
     }
-    // The embedded front-end's wasm: whole-pipeline cached (parse+link+check+
-    // codegen all skipped on a warm hit — the sources are include_str! constants,
-    // so the binary fingerprint keys them exactly; see embedded_wasm_cached).
-    let wasm = commands::compile::embedded_wasm_cached("grimoire", || {
+    // Keep the checked source until the admitted launcher compiles it. A byte
+    // projection loses the sealed owner bridges needed by captured values.
+    let checked = (|| {
         let mut modules: Vec<(String, ast::Module)> = Vec::new();
         let mut loaded: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
@@ -87,9 +86,9 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             modules.push((name, module));
         }
         pipeline::link_checked(modules, "grimoire").map_err(|e| e.to_string())
-    });
-    let wasm = match wasm {
-        Ok(bytes) => bytes,
+    })();
+    let checked = match checked {
+        Ok(checked) => checked,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
@@ -111,7 +110,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // tree-walker made every command pay it (e.g. `pm add` of a glamour dep took
     // ~170s). All of pm's deps — `compiler.footprint`/`diff`/`doc`, `Exec`,
     // `Dir`/`Net`/`Env`/`Clock` — have host functions, so it lowers cleanly.
-    // `run_wasm_module` grants exactly the same authority (Dir grant ordinal 0 =
+    // The checked launcher preserves the Dir grant order (ordinal 0 =
     // cwd, ordinal 1 = bin so `Exec` finds the compiler) and surfaces `main`'s
     // `Int` exit code.
     // (RFC-0095 Cut 4) The witchy-home provider: a third `Dir` granted for
@@ -120,7 +119,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // ~/.witchy) and create it so the grant is valid; other commands ignore it.
     let home = witchy_home_dir();
     let _ = std::fs::create_dir_all(&home);
-    match commands::wasm_exec::run_wasm_module(&wasm, vec![cwd, bin, home], Vec::new(), net_allow, Vec::new(), pm_args, None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled) {
+    match run_embedded_program(&checked, vec![cwd, bin, home], net_allow, pm_args) {
         Ok((lines, code)) => {
             for l in &lines {
                 println!("{l}");
@@ -132,6 +131,21 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             std::process::exit(1);
         }
     }
+}
+
+/// Use the ordinary source-run grant policy and retain admission authority all
+/// the way to `Runtime::spawn_admitted`. External Wasm keeps its separate path.
+fn run_embedded_program(
+    checked: &pipeline::CheckedModule,
+    dir_roots: Vec<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    commands::execution::run_checked_compiled(
+        checked, dir_roots, Vec::new(), net_allow, Vec::new(),
+        None, None, Vec::new(), args, None, Vec::new(), Vec::new(),
+        false, witchy_confinement::EnforcementMode::Disabled,
+    )
 }
 
 /// (RFC-0095 Cut 4) The $WITCHY_HOME directory the `witchy-home` provider grants:
@@ -174,6 +188,39 @@ fn coven_url_net_grant(u: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::coven_url_net_grant;
+
+    #[test]
+    fn internal_admitted_launch_preserves_embedded_owner_capture_and_args() {
+        let source = r#"
+fn greeter(prefix: String, console: Console) -> fn(String) -> String:
+    fn(name: String):
+        console.print(prefix)
+        prefix + name
+
+fn main(console: Console, args: List(String)) -> Int:
+    let greet = greeter(args[0], console)
+    console.print(greet("one"))
+    console.print(greet("two"))
+    7
+"#;
+        let checked = witchy::resolve_std_only_checked(source).expect("checked embedded fixture");
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admitted embedded owner capture");
+        assert!(!artifact.owner_bridges().is_empty());
+        let args = vec!["launch:".to_owned()];
+        let expected = ["launch:", "launch:one", "launch:", "launch:two"]
+            .map(str::to_owned).to_vec();
+        let (oracle_output, oracle_exit) = witchy::interpreter::run_module_exit(
+            checked.module().clone(), ".", Vec::new(), args.clone(), None,
+        ).expect("independent source execution with launch arguments");
+        assert_eq!(oracle_output, expected);
+        assert_eq!(oracle_exit, 7);
+        let (output, exit_code) = super::run_embedded_program(
+            &checked, Vec::new(), Vec::new(), args,
+        ).expect("embedded launcher retains admitted owner capture");
+        assert_eq!(output, expected);
+        assert_eq!(exit_code, Some(7));
+    }
 
     #[test]
     fn coven_url_grant_defaults_the_port_from_the_scheme() {

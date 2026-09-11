@@ -187,7 +187,7 @@ pub fn compute(src: &str) -> Result<Stats, String> {
 /// `vm.run()` alone -- and it dominated the cost of the RFC-0129 acceptance
 /// tests, which recompiled two whole programs on every repetition.
 pub struct PreparedProgram {
-    bytes: Vec<u8>,
+    artifact: witchy_wir::AdmittedCanonicalArtifact,
     checker_time_us: u128,
     loan_telemetry: witchy_types::loans::LoanFactTelemetry,
 }
@@ -201,12 +201,14 @@ pub fn prepare(src: &str) -> Result<PreparedProgram, String> {
         .map_err(|error| error.message)?
         .telemetry();
     let checker_time_us = checker_started.elapsed().as_micros();
-    let bytes = match codegen::compile_checked_module_binary_with_deterministic_counters(&checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+    // Canonical lowering does not use the legacy sequence-counter switch.
+    // Retain its sealed entry and owner bridges, not just its byte projection.
+    let artifact = match codegen::compile_checked_module_artifact(&checked) {
+        codegen::LoweringOutcome::Lowered(artifact) => artifact,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
     };
-    Ok(PreparedProgram { bytes, checker_time_us, loan_telemetry })
+    Ok(PreparedProgram { artifact, checker_time_us, loan_telemetry })
 }
 
 /// Run an already-compiled program and collect its deterministic counters.
@@ -224,7 +226,7 @@ pub fn run_prepared(prepared: &PreparedProgram) -> Result<TimedStats, String> {
     };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn(&prepared.bytes, caps, STATS_MEMORY_PAGES)
+        .spawn_admitted(&prepared.artifact, caps, STATS_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     let execution_started = Instant::now();
     vm.run().map_err(|e| e.root_cause().to_string())?;
@@ -318,6 +320,37 @@ pub fn compute_timed(src: &str) -> Result<TimedStats, String> {
 mod tests {
     use super::*;
     use witchy_syntax::opt::{self, Opt, OptSet};
+
+    #[test]
+    fn internal_admitted_launch_preserves_stats_owner_bridges() {
+        let source = r#"
+fn make(own text: String, console: Console) -> fn() -> Nil:
+    let captured = fn(): console.print(text)
+    console.print(text)
+    captured
+
+fn main(console: Console):
+    let captured = make("held", console)
+    captured()
+    captured()
+"#;
+        let checked = crate::resolve_std_only_checked(source).expect("checked owner capture");
+        let expected = vec!["held".to_owned(); 3];
+        assert_eq!(
+            crate::interpreter::run_checked_module(&checked, ".", Vec::new())
+                .expect("independent source execution"),
+            expected,
+        );
+        let prepared = prepare(source).expect("prepare admitted owner capture");
+        assert!(!prepared.artifact.owner_bridges().is_empty());
+        let counted = codegen::compile_checked_module_binary_with_deterministic_counters(&checked)
+            .expect_lowered("previous stats counter entrypoint");
+        prepared.artifact.verify_exact_bytes(&counted)
+            .expect("canonical counter entrypoint emits identical bytes");
+        for _ in 0..2 {
+            assert_eq!(run_prepared(&prepared).expect("fresh admitted stats instance").stats.output, expected);
+        }
+    }
 
     // RFC-0144 reserves this arena once per compiled module. `heap_bytes` is a
     // high-water frontier, so comparisons about workload growth must remove the
@@ -1515,7 +1548,7 @@ fn main(console: Console):
         let second = prepare(SOURCE).expect("second lowering");
         opt::set_for_tests(None);
         assert_eq!(
-            first.bytes, second.bytes,
+            first.artifact.wasm(), second.artifact.wasm(),
             "lowering the same source twice must emit identical module bytes"
         );
     }
