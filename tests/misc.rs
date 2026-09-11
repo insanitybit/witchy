@@ -90,6 +90,8 @@ mod rfc0152_async_region_formation;
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]
 mod vm_worker_isolation;
+#[path = "misc/vm_service_runtime.rs"]
+mod vm_service_runtime;
 #[path = "misc/wasm_abi_catalog.rs"]
 mod wasm_abi_catalog;
 #[path = "misc/rfc0102_console.rs"]
