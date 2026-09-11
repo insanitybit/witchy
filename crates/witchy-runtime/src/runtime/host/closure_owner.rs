@@ -58,7 +58,8 @@ let mut captures = Vec::new();
     };
     for bridge in artifact.owner_bridges() {
         let constructor = match bridge.recipe() {
-            R::Construct(c) | R::ReadCapability(c, _) | R::CloneEnvironment(c) => *c,
+            R::Construct(c) | R::ReadCapability(c, _) | R::ReadOwner(c, _)
+            | R::CloneEnvironment(c) => *c,
             _ => bridge.family().constructors.first().ok_or_else(|| wasmtime::Error::msg("empty owner family"))?.id,
         };
         let binding = constructors.get(&constructor.0).ok_or_else(|| wasmtime::Error::msg("missing owner binding"))?.clone();
@@ -95,6 +96,13 @@ for (field, value) in binding.capture_fields.iter().zip(&arguments[1..]) {
                 R::ReadCapability(_, capture) => {
                     let token = binding.capability::<OwnedRooted<StructRef>>(&caller, owner(0)?, capture.0)?;
                     results[0] = Val::ExternRef(Some(token.to_rooted(&mut caller)));
+                }
+                R::ReadOwner(_, capture) => {
+                    let (expected, nested) = binding.owner_capture(&caller, owner(0)?, capture.0)?;
+                    let nested = nested.to_rooted(&mut caller);
+                    Binding::require_owner(&caller, &binding.instance, nested, expected)?;
+                    Binding::retain_any(&caller, &binding.instance, nested)?;
+                    results[0] = Val::ExternRef(Some(nested));
                 }
                 R::ReadCallable(_) => {
                     let payload = binding.family_access(&caller, owner(0)?, |live| Ok(live.payload.as_ref().expect("live payload").clone()))?;

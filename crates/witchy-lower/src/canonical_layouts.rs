@@ -451,11 +451,29 @@ impl LayoutProjection {
         // families whose checked captures require opaque storage change ABI.
         // These ids identify candidate types; the independent checker binds
         // the complete family schema back to checked source before admission.
+        let mut opaque_signatures = HashSet::new();
+        loop {
+            let mut changed = false;
+            for (signature, variants) in &closure_specs {
+                let requires_owner = variants.iter().flat_map(|(_, fields)| fields).any(|field| {
+                    type_requires_opaque_owner(
+                        field,
+                        &self.definitions,
+                        &opaque_signatures,
+                        &mut HashSet::new(),
+                    )
+                });
+                if requires_owner && opaque_signatures.insert(signature.clone()) {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
         let mut owner_types = HashMap::new();
-        for (ordinal, (signature, variants)) in closure_specs.iter().enumerate() {
-            if variants.iter().flat_map(|(_, fields)| fields).any(|field|
-                witchy_types::canonical_capabilities::representation(field, &self.definitions).is_some())
-            {
+        for (ordinal, (signature, _)) in closure_specs.iter().enumerate() {
+            if opaque_signatures.contains(signature) {
                 let id = u32::try_from(ordinal).ok().and_then(|n| n.checked_mul(2))
                     .and_then(|n| n.checked_add(0xc100_0000))
                     .filter(|n| *n < u32::MAX)
@@ -537,6 +555,45 @@ impl LayoutProjection {
     }
 }
 
+fn type_requires_opaque_owner(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    opaque_signatures: &HashSet<Type>,
+    visiting: &mut HashSet<Type>,
+) -> bool {
+    if witchy_types::canonical_capabilities::representation(ty, definitions).is_some() {
+        return true;
+    }
+    if matches!(ty.unqualified(), Type::Fn(..)) {
+        return opaque_signatures.contains(&canonical_closure_key(ty, definitions));
+    }
+    let identity = canonical_layout_type(ty, definitions);
+    if !visiting.insert(identity.clone()) {
+        return false;
+    }
+    let requires_owner = if let Some(tuple) =
+        witchy_types::canonical_aggregates::dictionary_as_tuple(identity.unqualified())
+    {
+        type_requires_opaque_owner(&tuple, definitions, opaque_signatures, visiting)
+    } else if let Some(shape) = scalar_aggregate_shape(&identity, definitions) {
+        shape.fields.iter().any(|field| {
+            type_requires_opaque_owner(field, definitions, opaque_signatures, visiting)
+        })
+    } else {
+        match identity.unqualified() {
+            Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+                type_requires_opaque_owner(&arguments[0], definitions, opaque_signatures, visiting)
+            }
+            Type::Tuple(fields) => fields.iter().any(|field| {
+                type_requires_opaque_owner(field, definitions, opaque_signatures, visiting)
+            }),
+            _ => false,
+        }
+    };
+    visiting.remove(&identity);
+    requires_owner
+}
+
 fn intern_closure_environment(
     interner: &mut LayoutInterner,
     witnesses: Vec<(u32, Vec<Type>)>,
@@ -569,8 +626,10 @@ fn intern_closure_environment(
                 continue;
             }
             if owner_types.contains_key(&canonical_closure_key(field, definitions)) {
-                return Err(CanonicalLayoutError::UnsupportedType(
-                    "nested opaque closure capture is not yet supported".into()));
+                storage.push(CaptureStorage::OwnerField(owner_field));
+                owner_field = owner_field.checked_add(1).ok_or_else(||
+                    CanonicalLayoutError::InvalidLayout("opaque capture field overflow".into()))?;
+                continue;
             }
             storage.push(CaptureStorage::EnvironmentField(u32::try_from(children.len())
                 .map_err(|_| CanonicalLayoutError::InvalidLayout("closure field overflow".into()))?));

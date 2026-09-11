@@ -225,9 +225,10 @@ mod tests {
                 wasmtime::FieldType::new(wasmtime::Mutability::Const, wasmtime::ValType::ANYREF.into()),
             ])?;
             let item_pre = wasmtime::StructRefPre::new(&mut caller, item_type);
+            let payload = payload.to_rooted(&mut caller);
             let item = wasmtime::StructRef::new(&mut caller, &item_pre, &[
                 wasmtime::Val::I32(tag),
-                wasmtime::Val::AnyRef(Some(payload.to_rooted(&mut caller))),
+                wasmtime::Val::AnyRef(Some(payload)),
             ])?;
             let array_type = wasmtime::ArrayType::new(
                 caller.engine(),
@@ -239,7 +240,7 @@ mod tests {
                 &array_pre,
                 &[wasmtime::Val::AnyRef(Some(item.to_anyref()))],
             )?;
-            Ok(Some(array.to_anyref().to_owned_rooted(&mut caller)?))
+            Ok(Some(array.to_anyref()))
         })?;
         let instance = linker.instantiate(&mut store, &module)?;
         let payload_type = wasmtime::StructType::new(&engine, [

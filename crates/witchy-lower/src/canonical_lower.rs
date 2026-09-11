@@ -1019,11 +1019,11 @@ fn checked_signature(
     {
         if matches!(convention, Convention::Own)
             && !ordinary_own_type_supported(parameter)
-            && !matches!(value_parameters[parameter_index], ValueType::Ref(_))
+            && !matches!(value_parameters[parameter_index], ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Capability(_))
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
-                parameter: source.name.clone(),
+                parameter: format!("{} ({parameter:?} as {:?})", source.name, value_parameters[parameter_index]),
                 convention,
             });
         }
@@ -1075,11 +1075,11 @@ fn signature_from_type(
         let value_type = source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?;
         if matches!(convention, Convention::Own)
             && !ordinary_own_type_supported(parameter)
-            && !matches!(value_type, ValueType::Ref(_))
+            && !matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Capability(_))
         {
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: format!("signature {:?}", id),
-                parameter: index.to_string(),
+                parameter: format!("{index} ({parameter:?} as {value_type:?})"),
                 convention,
             });
         }
@@ -1392,6 +1392,14 @@ fn lower_function(
                     CaptureStorage::OwnerField(_) if matches!(contract.value_type, ValueType::Capability(_)) => {
                         let destination = lowerer.fresh(contract.value_type)?;
                         lowerer.push_operation(Operation::ClosureOwner(OwnerOperation::ReadCapability {
+                            destination, owner: closure, constructor: constructor.id,
+                            capture: CaptureOrdinal(u32::try_from(ordinal).map_err(|_| CanonicalLoweringError::IdOverflow)?),
+                        }));
+                        destination
+                    }
+                    CaptureStorage::OwnerField(_) if matches!(contract.value_type, ValueType::Gc(_)) => {
+                        let destination = lowerer.fresh(contract.value_type)?;
+                        lowerer.push_operation(Operation::ClosureOwner(OwnerOperation::ReadOwner {
                             destination, owner: closure, constructor: constructor.id,
                             capture: CaptureOrdinal(u32::try_from(ordinal).map_err(|_| CanonicalLoweringError::IdOverflow)?),
                         }));
@@ -5781,9 +5789,10 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if is_capability_op(name) => self
                 .lower_capability_op(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("capability operation without a value")),
-            Expr::Call { name, args } if is_console_print(name) => Err(
-                CanonicalLoweringError::UnsupportedExpression("console.print used as a value"),
-            ),
+            Expr::Call { name, args } if is_console_print(name) => {
+                self.lower_console_print(args)?;
+                self.push_zero(ValueType::Unit)
+            }
             // The `Bytes` intrinsics behind `std/bytes`.
             Expr::Call { name, args }
                 if (name.starts_with("__bytes_") || name == "bytes.at") && !self.functions.contains_key(name.as_str()) =>
@@ -8746,9 +8755,9 @@ impl FunctionLowerer<'_> {
                 Err(CanonicalLoweringError::UnsupportedExpression("mutable borrow"))
             }
             (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference")),
-            (UnOp::Move, _) => {
-                Err(CanonicalLoweringError::UnsupportedExpression("explicit move"))
-            }
+            // Checked source establishes consumption; SafeWIR forwards the same token,
+            // and the affine checker rejects any duplicate use.
+            (UnOp::Move, _) => Ok(operand),
             (UnOp::Await, _) => Err(CanonicalLoweringError::UnsupportedExpression("await")),
         }
     }

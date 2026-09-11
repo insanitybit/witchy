@@ -273,6 +273,7 @@ fn operation_flow(
                 }
                 OwnerOperation::Construct { .. }
                 | OwnerOperation::ReadCapability { .. }
+                | OwnerOperation::ReadOwner { .. }
                 | OwnerOperation::ReadCallable { .. }
                 | OwnerOperation::Clone { .. }
                 | OwnerOperation::CloneEnvironment { .. }
