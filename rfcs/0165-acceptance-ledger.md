@@ -1,5 +1,38 @@
 # RFC-0165 acceptance ledger
 
+## Task/channel execution: candidate-green, 2026-09-11
+
+Code candidate `c7e9fca50` completes the unchanged `channels` example through
+checked source, canonical SafeWIR admission, the independent oracle, and admitted
+Wasm. All four `rfc0165_messages` tests pass (160.49 seconds). Channels prints
+`got 1`, `got 2`, `got 3`, `got 4`, and `channel drained`; both oracle and Wasm
+report zero leaked objects. The aggregate regression also preserves an old list
+alias while replacing and executing captured closures.
+
+The slice fixes owned writeback results, predecessor-local extent facts, opaque
+aggregate dispatch, and loop ownership annotations. Backend graph queries are
+cached without changing their predicates, and one private cleanup helper replaces
+repeated inline dispatch. List mutation returns retired payloads to that helper
+immediately; it neither loses cleanup nor retains garbage until final list drop.
+The guard against retiring currently retained elements remains enforced.
+
+Focused evidence includes 15 owner tests, 9 manifest tests, 3 runtime ownership
+tests, immediate-retirement/duplicate-token accounting, and mutation-only cleanup
+helper selection. Bounded review found no blocking issue. The rebuilt CLI passes
+unchanged `hello`, `wrap`, and `jq`. Reproduction:
+
+```sh
+RUSTC_WRAPPER= CC=cc \
+CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target \
+taskpolicy -c utility cargo test -p witchy --features witchy-wir/native \
+  --test misc rfc0165_messages:: -- --nocapture
+```
+
+Exact execution log: `/tmp/witchy-task-cleanup-three-leg-tests.log`. A single
+check-only corpus sweep is pending; no new corpus total is inferred from these
+probes. Merge-queue validation remains pending. Compiler-wide memory safety,
+optimizer correctness, and full language coverage are not established.
+
 ## Current integration state, 2026-09-10
 
 The ownership/closure slice below is landed. Its Unit/layout and resolved-channel

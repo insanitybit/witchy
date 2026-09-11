@@ -34,7 +34,7 @@ The rebuilt production CLI also executes `hello`, `wrap`, and `jq` with their
 expected output after the loop-annotation repair. This is execution evidence,
 not a new corpus census.
 
-## Remaining failures at this checkpoint
+## Failures observed during integration
 
 The unchanged channels example passes SafeWIR validation but fails encoding:
 
@@ -69,3 +69,16 @@ SSA-value correspondence across shadowed bindings. Existing type, liveness,
 family, and affine checks remain necessary but do not prove that lowering chose
 the source-intended value. This is a source-semantic correspondence obligation;
 no capability forgery or false memory authority has been demonstrated here.
+
+## Current result
+
+Candidate `c7e9fca50` passes the four-test message shard, including the unchanged
+channels program on source, oracle, and admitted Wasm (160.49 seconds; zero
+leaked objects). After the encoder repairs, execution exposed
+`owner list transfer retired a retained element`: cleanup from an earlier
+replacement was being confused with retirement of a current element. Mutation
+now returns cleanup through the private bridge ABI and the existing backend
+helper drains it immediately. Current-element retirement checks remain intact;
+retired payloads do not accumulate until final list destruction. Native accounting
+tests cover duplicate tokens, shared aliases, and immediate replacement cleanup.
+Landing and the full-project acceptance obligations remain pending.
