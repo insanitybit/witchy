@@ -1229,6 +1229,28 @@ impl<'a> MemoryChecker<'a> {
         }) {
             return Ok(state);
         }
+        // A checked ABI parameter or result denotes a complete logical value.
+        // Its child slots were initialized by the caller, so the full counted
+        // prefix can be cloned or moved without reconstructing per-slot facts
+        // in this function. Partial ranges still require local evidence.
+        let object = self.live_object(range.object)?.clone();
+        if object.initialized_owned_slots
+            && self.is_zero(range.start)
+            && matches!(object.extent, Extent::Counted { count, .. }
+                if self.same_scalar(count, range.length))
+            && self.descriptor(object.layout)?.kind().packed_element_layout() == Some(element)
+        {
+            return Ok(RangeState {
+                element,
+                // Container completeness proves the children exist, not that
+                // they are unique or belong to one allocation class.
+                ownership: Ownership::Shared,
+                allocation_class: None,
+                initialized: true,
+                zero_width: self.is_zero(range.length),
+                zero_start: true,
+            });
+        }
         if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
             let ranges = self.state.range_states.iter().filter(|(identity, _)| identity.object == range.object).collect::<Vec<_>>();
             let stored = self.state.stored_objects.keys().filter(|(object, _)| *object == range.object).collect::<Vec<_>>();
@@ -2082,6 +2104,14 @@ impl<'a> MemoryChecker<'a> {
         extent: &Extent,
     ) -> Result<(), InitialCheckError> {
         self.require_ref_type(destination, layout)?;
+        // Static bytes cannot authenticate a closure table index. Closure
+        // records must initialize their code lane through the checked path.
+        if self.closure_layouts.contains_key(&layout) {
+            return Err(InitialCheckError::InvalidClosureSlot {
+                function: self.function.id,
+                object: destination,
+            });
+        }
         let descriptor = self.descriptor(layout)?;
         self.check_extent(destination, extent, descriptor, true)?;
         self.state.objects.insert(
@@ -4930,6 +4960,80 @@ mod tests {
                 Err(InitialCheckError::UnsupportedMemoryOperation { .. })
             ));
         });
+    }
+
+    #[test]
+    fn complete_managed_abi_range_can_be_cloned_without_local_slot_facts() {
+        with_pointer_slot_checker(|checker, list, _pointee| {
+            let pointer_element = checker
+                .descriptor(list)
+                .unwrap()
+                .kind()
+                .packed_element_layout()
+                .unwrap();
+            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
+            source.ownership = Ownership::Shared;
+            source.allocation_class = None;
+            source.shared_immutable = true;
+            source.initialized_owned_slots = true;
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
+                RangeState {
+                    element: pointer_element,
+                    ownership: Ownership::Unique,
+                    allocation_class: None,
+                    initialized: true,
+                    zero_width: true,
+                    zero_start: true,
+                },
+            );
+            assert_eq!(
+                checker.check(&Operation::CloneRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Ok(true)
+            );
+        });
+    }
+
+    #[test]
+    fn static_data_cannot_authenticate_registered_closure_layout() {
+        let closure = crate::layout::LayoutId::from_bytes([0x63; 32]);
+        let layouts = LayoutInterner::new();
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: [(SOURCE, ValueType::Ref(closure))].into_iter().collect(),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let closure_layouts = [(closure, signature.id)].into_iter().collect();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
+            .expect("checker construction");
+        assert_eq!(
+            checker.static_data(SOURCE, closure, &Extent::FixedBytes(8)),
+            Err(InitialCheckError::InvalidClosureSlot {
+                function: function.id,
+                object: SOURCE,
+            })
+        );
     }
 
     #[test]

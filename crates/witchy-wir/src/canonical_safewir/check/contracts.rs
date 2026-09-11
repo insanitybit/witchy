@@ -234,12 +234,20 @@ fn derive_summary(
             (*value, Origin::Parameter { parameter: *parameter, layout })
         })
         .collect::<BTreeMap<_, _>>();
-    let mut origins = derive_origins(function, functions, summaries, &entry_origins)?;
+    let mut origins = derive_origins(function, functions, signatures, summaries, &entry_origins)?;
     let mut summary = initial_summary(function, signatures)?;
 
     for block in &function.blocks {
         for operation in &block.operations {
-            derive_operation(function, operation, functions, summaries, &mut origins, &mut summary)?;
+            derive_operation(
+                function,
+                operation,
+                functions,
+                signatures,
+                summaries,
+                &mut origins,
+                &mut summary,
+            )?;
         }
         match &block.terminator {
             Terminator::Return { values } => {
@@ -266,15 +274,16 @@ fn derive_summary(
                 derive_call_needs(*callee, arguments, functions, summaries, &origins, &mut summary)?;
             }
             Terminator::VarTailCall {
+                callee,
                 signature,
                 arguments,
                 ..
             } => {
-                let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
                 let signature = signatures
                     .get(signature)
                     .copied()
                     .ok_or(InitialCheckError::MissingSignature(*signature))?;
+                let target = indirect_target_summary(function, *callee, signature, functions, summaries)?;
                 if target.results.len() != summary.results.len()
                     || signature.results.len() != summary.results.len()
                     || target.results.iter().any(|result| !is_indirect_result(result))
@@ -331,6 +340,7 @@ fn derive_summary(
 fn derive_origins(
     function: &Function,
     functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     entry_origins: &BTreeMap<ValueId, Origin>,
 ) -> Result<BTreeMap<ValueId, Origin>, InitialCheckError> {
@@ -351,7 +361,14 @@ fn derive_origins(
         let before = origins.clone();
         for block in &function.blocks {
             for operation in &block.operations {
-                propagate_operation_origins(function, operation, functions, summaries, &mut origins)?;
+                propagate_operation_origins(
+                    function,
+                    operation,
+                    functions,
+                    signatures,
+                    summaries,
+                    &mut origins,
+                )?;
             }
             match &block.terminator {
                 Terminator::Branch { target, arguments } => {
@@ -385,6 +402,7 @@ fn propagate_operation_origins(
     function: &Function,
     operation: &Operation,
     functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
 ) -> Result<(), InitialCheckError> {
@@ -474,8 +492,12 @@ fn propagate_operation_origins(
                 join_origin(origins, *destination, origin);
             }
         }
-        Operation::VarCall { destinations, signature, arguments, .. } => {
-            let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
+        Operation::VarCall { destinations, callee, signature, arguments } => {
+            let signature = signatures
+                .get(signature)
+                .copied()
+                .ok_or(InitialCheckError::MissingSignature(*signature))?;
+            let target = indirect_target_summary(function, *callee, signature, functions, summaries)?;
             if target.results.len() != destinations.len()
                 || target.results.iter().any(|result| !is_indirect_result(result))
             {
@@ -556,6 +578,7 @@ fn derive_operation(
     function: &Function,
     operation: &Operation,
     functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
@@ -625,8 +648,12 @@ fn derive_operation(
             }
             derive_call_needs(*callee, arguments, functions, summaries, origins, summary)?;
         }
-        Operation::VarCall { destinations, signature, arguments, .. } => {
-            let target = indirect_target_summary(function.id, *signature, functions, summaries)?;
+        Operation::VarCall { destinations, callee, signature, arguments } => {
+            let signature = signatures
+                .get(signature)
+                .copied()
+                .ok_or(InitialCheckError::MissingSignature(*signature))?;
+            let target = indirect_target_summary(function, *callee, signature, functions, summaries)?;
             if target.results.len() != destinations.len()
                 || target.results.iter().any(|result| !is_indirect_result(result))
             {
@@ -698,16 +725,18 @@ fn derive_operation(
 
 /// Resolve an indirect callable only through the canonical target set for its
 /// checked signature. A callable signature with no lowered body is not an
-/// authenticated target. Every target must derive the same result contract;
-/// unknown, parameter-aliasing, and reallocating results remain fail-closed.
+/// authenticated target. When no body is present, only a callable loaded from
+/// an exact checked closure lane may use the signature's ownership-neutral ABI.
+/// Unknown, parameter-aliasing, and reallocating results remain fail-closed.
 fn indirect_target_summary(
-    function: FunctionId,
-    signature: FunctionSignatureId,
+    function: &Function,
+    callee: ValueId,
+    signature: &FunctionSignature,
     functions: &BTreeMap<FunctionId, &Function>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
 ) -> Result<BodySummary, InitialCheckError> {
     let mut target = None;
-    for candidate in functions.values().filter(|candidate| candidate.signature == signature) {
+    for candidate in functions.values().filter(|candidate| candidate.signature == signature.id) {
         let summary = summaries
             .get(&candidate.id)
             .ok_or(InitialCheckError::MissingFunction(candidate.id))?;
@@ -717,7 +746,110 @@ fn indirect_target_summary(
             target = Some(summary.clone());
         }
     }
-    target.ok_or(InitialCheckError::UnsupportedIndirectCall { function })
+    if let Some(target) = target {
+        return Ok(target);
+    }
+    if authenticated_indirect_callee(function, callee, signature.id, &mut BTreeSet::new()) {
+        return declared_shared_summary(signature)
+            .ok_or(InitialCheckError::UnsupportedIndirectCall { function: function.id });
+    }
+    Err(InitialCheckError::UnsupportedIndirectCall { function: function.id })
+}
+
+/// A targetless indirect call receives ABI authority only when its callable
+/// came from a checked closure lane. A raw Callable parameter remains
+/// unsupported because its table index has no authenticated signature.
+fn authenticated_indirect_callee(
+    function: &Function,
+    callee: ValueId,
+    signature: FunctionSignatureId,
+    visited: &mut BTreeSet<ValueId>,
+) -> bool {
+    if !visited.insert(callee) {
+        return false;
+    }
+    function.blocks.iter().flat_map(|block| &block.operations).any(|operation| match operation {
+        Operation::Load { destination, place, transfer }
+            if *destination == callee
+                && *transfer == LoadTransfer::CopyScalar
+                && place.value_type() == ValueType::Callable(signature) => true,
+        Operation::ClosureOwner(
+            crate::canonical_safewir::closure_owner_contract::OwnerOperation::ReadCallable {
+                destination,
+                family,
+                ..
+            },
+        ) if *destination == callee && *family == signature => true,
+        Operation::MoveValue { destination, source } if *destination == callee => {
+            authenticated_indirect_callee(function, *source, signature, visited)
+        }
+        _ => false,
+    })
+}
+
+/// Convert only the ownership-neutral portion of a checked signature into a
+/// summary. This cannot mint fresh/static/alias/reallocation authority.
+fn declared_shared_summary(signature: &FunctionSignature) -> Option<BodySummary> {
+    if signature.contract.parameters.len() != signature.parameters.len()
+        || signature.contract.results.len() != signature.results.len()
+    {
+        return None;
+    }
+    let mut needs = Vec::with_capacity(signature.parameters.len());
+    for (index, (parameter, value_type)) in signature
+        .contract
+        .parameters
+        .iter()
+        .zip(&signature.parameters)
+        .enumerate()
+    {
+        if parameter.value_type != *value_type
+            || match value_type {
+                ValueType::Ref(_) => parameter.ownership != ParameterOwnership::Shared,
+                _ => parameter.ownership != ParameterOwnership::Value,
+            }
+        {
+            return None;
+        }
+        let effects = signature
+            .contract
+            .parameter_effects
+            .get(&(index as u32))
+            .cloned()
+            .unwrap_or_default();
+        if effects.iter().any(|effect| {
+            !matches!(effect, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release)
+        }) {
+            return None;
+        }
+        needs.push(effects.into_iter().collect());
+    }
+    let results = signature
+        .contract
+        .results
+        .iter()
+        .zip(&signature.results)
+        .map(|(result, value_type)| match result {
+            ResultContract::Value(actual) if actual == value_type && !matches!(actual, ValueType::Ref(_)) => {
+                Some(DerivedResult::Value(*actual))
+            }
+            ResultContract::Shared { layout } if *value_type == ValueType::Ref(*layout) => {
+                Some(DerivedResult::Shared(*layout))
+            }
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(BodySummary {
+        needs,
+        results,
+        effects: signature
+            .contract
+            .parameter_effects
+            .iter()
+            .map(|(parameter, effects)| (*parameter, effects.iter().copied().collect()))
+            .collect(),
+        escaped_parameters: BTreeSet::new(),
+    })
 }
 
 fn join_body_summary(left: &mut BodySummary, right: &BodySummary) {
