@@ -1539,7 +1539,7 @@ mod tests {
     #[test]
     fn public_projection_is_derived_from_checked_source() {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".into(), b"type HeldConsole:\n    console: Console\n\nfn use(value: HeldConsole) -> Nil:\n    nil\n\nfn main(console: Console):\n    nil\n".to_vec())],
+            vec![("main".into(), b"type HeldConsole:\n    console: Console\n\nfn use(value: HeldConsole) -> Nil:\n    Nil\n\nfn main(console: Console):\n    use(HeldConsole(console))\n".to_vec())],
             "main",
             |_, _, _| Ok(Default::default()),
         ).expect("source checks");
