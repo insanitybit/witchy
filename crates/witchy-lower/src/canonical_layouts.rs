@@ -1469,6 +1469,42 @@ mod tests {
     }
 
     #[test]
+    fn direct_and_nested_capabilities_never_acquire_linear_slots() {
+        let definitions = std::collections::BTreeMap::from([
+            ("Inner".into(), heap_definition("Inner", vec![named("Console")])),
+            ("Outer".into(), heap_definition("Outer", vec![named("Inner"), named("String")])),
+        ]);
+        for source in [
+            named("Console"),
+            named("Inner"),
+            named("Outer"),
+            Type::Tuple(vec![named("Console"), named("String")]),
+            Type::Named("List".into(), vec![named("Console")]),
+            Type::Named("List".into(), vec![named("Inner")]),
+        ] {
+            let error = super::intern_v1_layout(
+                &mut witchy_wir::layout::LayoutInterner::new(), &source, &definitions,
+                &std::collections::HashSet::new(), &std::collections::HashMap::new(),
+            ).expect_err("a capability cannot be interned as a linear value or pointer pointee");
+            assert!(matches!(error, super::CanonicalLayoutError::UnsupportedType(ref message)
+                if message.contains("opaque capability has no linear layout")), "{source:?}: {error:?}");
+        }
+
+        let mut projection = LayoutProjection::default();
+        projection.visit_type(&named("Console")).unwrap();
+        let (bundle, closures, aggregates) = projection.finish_with_families().unwrap();
+        assert!(bundle.roots().is_empty(), "a direct capability projects no linear root");
+        assert!(closures.is_empty() && aggregates.is_empty());
+
+        let mut packed = heap_definition("Packed", vec![named("Console")]);
+        packed.packed = true;
+        let mut projection = LayoutProjection::default();
+        projection.definitions.insert("Packed".into(), packed);
+        assert!(projection.visit_type(&named("Packed")).and_then(|_| projection.finish()).is_err(),
+            "an inline packed record cannot hide a capability field");
+    }
+
+    #[test]
     fn ordinary_string_aggregate_stays_linear() {
         let (bundle, families) = opaque_projection(
             vec![heap_definition("Message", vec![named("String")])],
