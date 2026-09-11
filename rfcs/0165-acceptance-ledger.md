@@ -1,5 +1,25 @@
 # RFC-0165 acceptance ledger
 
+## Owned-prefix and projected-writeback integration, focused-green
+
+`fix/rfc0165-owned-prefix-accounting` combines the owned-prefix containment
+correction with separate retained tokens for immutable reference bindings and
+allocation-identity-based shared slot reads. Projected `var` calls capture
+coordinates once and reconstruct the current caller root on writeback. Calls
+requiring caller-side writeback are not mistaken for manifest-declared proper
+tail calls; actual proper-tail obligations remain mandatory.
+
+Evidence: 683/683 native WIR tests, no skips, in
+`/tmp/witchy-owned-alias-native-wir.log`; four snapshot/projected-writeback tests
+in `/tmp/witchy-owned-alias-source.log`; CLI agreement for hello, wrap, jq and
+the nested string-list snapshot probe. Independent bounded review found no
+authority blocker in the shared-read change; broader join/remapping correctness
+is not established by that review. The source-order/coordinate test returns
+to the ordinary gate unchanged. An earlier 12-test run had eight passes and
+four failures: snapshot initialization is now fixed, two tests still require
+`list.__pop_extract`, and trap diagnostics still differ. No remaining failure
+is reclassified as successful parity. Terminal landing remains pending.
+
 ## Current landing checkpoint, 2026-09-11 22:02Z
 
 Master `b9b0a9e4966750c933a86e9e21399893d3df1946` includes these terminal

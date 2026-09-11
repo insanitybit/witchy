@@ -2350,7 +2350,15 @@ impl<'a> MemoryChecker<'a> {
             self.state.objects.insert(destination, result);
             return Ok(());
         }
-        let mut stored = if let Some(stored) = self.state.stored_objects.get(&key).cloned() {
+        let recorded = self.state.stored_objects.get(&key).cloned().or_else(|| {
+            // CloneRef preserves allocation identity. A shared read may use
+            // the initialized slot recorded under its original owning token,
+            // even after that token was dropped. Do not extend move authority.
+            (transfer == LoadTransfer::CloneShared)
+                .then(|| self.stored_slot_by_identity(key.0, key.1).cloned())
+                .flatten()
+        });
+        let mut stored = if let Some(stored) = recorded {
             stored
         } else {
             if transfer != LoadTransfer::CloneShared {
@@ -2408,7 +2416,7 @@ impl<'a> MemoryChecker<'a> {
                 let _ = self.seed_managed_prefix(place.object(), count, element)?;
             }
             let range = self.state.range_states.iter().find_map(|(identity, state)| {
-                (identity.object == place.object()
+                (self.same_allocation(identity.object, place.object())
                     && state.initialized
                     && !state.zero_width
                     && state.zero_start
@@ -2460,7 +2468,16 @@ impl<'a> MemoryChecker<'a> {
                     });
                 }
                 stored.ownership = Ownership::Shared;
-                self.state.stored_objects.insert(key, stored.clone());
+                // Every recorded name for this physical slot must lose its
+                // unique-child claim when the load retains the child.
+                let aliases = self.state.stored_objects.keys().copied()
+                    .filter(|(container, slot)| {
+                        *slot == key.1 && self.same_allocation(key.0, *container)
+                    }).collect::<Vec<_>>();
+                for alias in aliases {
+                    self.state.stored_objects.get_mut(&alias)
+                        .expect("recorded slot").ownership = Ownership::Shared;
+                }
                 self.state.objects.insert(destination, stored);
                 Ok(())
             }
@@ -4416,6 +4433,82 @@ mod tests {
                 checker.clone_ref(DESTINATION, SOURCE),
                 Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
             ));
+        });
+    }
+
+    #[test]
+    fn cloned_pointer_list_reads_initialized_slot_after_original_token_drop() {
+        with_pointer_slot_checker(|checker, _list, pointee| {
+            checker.check(&Operation::Store {
+                place: Place::projected(SOURCE, Projection::Element { index: START },
+                    ValueType::Ref(pointee), AccessMode::Write),
+                value: CHILD,
+                transfer: StoreTransfer::MoveUnique,
+            }).expect("initialize owned child");
+            checker.clone_ref(DESTINATION, SOURCE).expect("retain list");
+            checker.drop_ref(SOURCE).expect("retire original token");
+            checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(DESTINATION, Projection::Element { index: START },
+                    ValueType::Ref(pointee), AccessMode::Read),
+                transfer: LoadTransfer::CloneShared,
+            }).expect("read through live retained token");
+            assert_eq!(checker.state.objects[&LOADED].ownership, Ownership::Shared);
+            assert_eq!(checker.stored_slot_by_identity(SOURCE, SlotIdentity::Constant(0))
+                .expect("same physical slot").ownership, Ownership::Shared);
+            assert!(checker.check(&Operation::Load {
+                destination: CHILD,
+                place: Place::projected(DESTINATION, Projection::Element { index: START },
+                    ValueType::Ref(pointee), AccessMode::Read),
+                transfer: LoadTransfer::MoveUnique,
+            }).is_err(), "retaining the list never grants a unique move");
+        });
+    }
+
+    #[test]
+    fn cloned_pointer_list_reads_only_live_initialized_prefixes() {
+        for initialized in [false, true] {
+            with_pointer_slot_checker(|checker, list, pointee| {
+                let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+                checker.state.range_states.insert(
+                    RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                    RangeState { element, ownership: if initialized { Ownership::Unique } else { Ownership::Consumed },
+                        allocation_class: Some(AllocationClass::ReferenceCounted), initialized,
+                        zero_width: false, zero_start: true },
+                );
+                checker.clone_ref(DESTINATION, SOURCE).expect("retain list token");
+                let result = checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(DESTINATION, Projection::Element { index: START },
+                        ValueType::Ref(pointee), AccessMode::Read),
+                    transfer: LoadTransfer::CloneShared,
+                });
+                assert_eq!(result.is_ok(), initialized,
+                    "a consumed or uninitialized prefix supplies no read authority: {result:?}");
+            });
+        }
+    }
+
+    #[test]
+    fn pointer_slot_initialization_does_not_follow_layout_equality() {
+        with_pointer_slot_checker(|checker, list, pointee| {
+            checker.check(&Operation::Store {
+                place: Place::projected(SOURCE, Projection::Element { index: START },
+                    ValueType::Ref(pointee), AccessMode::Write),
+                value: CHILD,
+                transfer: StoreTransfer::MoveUnique,
+            }).expect("initialize source child");
+            let extent = checker.state.objects[&SOURCE].extent.clone();
+            checker.check(&Operation::Alloc { destination: DESTINATION, layout: list, extent,
+                class: AllocationClass::ReferenceCounted }).expect("independent allocation");
+            assert!(matches!(checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(DESTINATION, Projection::Element { index: START },
+                    ValueType::Ref(pointee), AccessMode::Read),
+                transfer: LoadTransfer::CloneShared,
+            }), Err(InitialCheckError::UnsupportedMemoryOperation {
+                operation: "Load(uninitialized reference)", ..
+            })));
         });
     }
 

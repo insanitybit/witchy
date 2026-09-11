@@ -23,6 +23,10 @@ mod net;
 #[path = "canonical_list_update.rs"]
 mod list_update;
 
+#[path = "canonical_write_back.rs"]
+mod write_back;
+use write_back::{PreparedWriteBack, source_place_root};
+
 #[cfg(test)]
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
@@ -1953,6 +1957,12 @@ impl FunctionLowerer<'_> {
                         return Err(CanonicalLoweringError::UnsupportedStatement("early return"));
                     }
                     if let Some(call @ Expr::Call { name, args }) = value {
+                        let path = self.tail_path(index, ProperTailPathStep::ReturnValue)?;
+                        if !self.has_tail_site(&path, ProperTailExprKind::Call) {
+                            // No forwarding obligation: commit projected var
+                            // results locally, then return this caller's lanes.
+                            return self.lower_tail_expr(call, path);
+                        }
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
                             let terminator = self.return_value(Some(value), results)?;
@@ -2018,7 +2028,11 @@ impl FunctionLowerer<'_> {
                         }
                         return Ok(());
                     }
-                    if let Some(Expr::Apply { func, args }) = value {
+                    if let Some(expression @ Expr::Apply { func, args }) = value {
+                        let path = self.tail_path(index, ProperTailPathStep::ReturnValue)?;
+                        if !self.has_tail_site(&path, ProperTailExprKind::Apply) {
+                            return self.lower_tail_expr(expression, path);
+                        }
                         let callee = self.lower_expr(func)?;
                         let terminator = self.lower_indirect_tail_call(
                             callee,
@@ -2043,6 +2057,10 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Expr(value) if final_statement => {
                     if let call @ Expr::Call { name, args } = value {
+                        let path = self.tail_path(index, ProperTailPathStep::Value)?;
+                        if !self.has_tail_site(&path, ProperTailExprKind::Call) {
+                            return self.lower_tail_expr(call, path);
+                        }
                         if matches!(name.as_str(), "list.length" | "list.__length") {
                             let value = self.lower_list_length(args)?;
                             let terminator = self.return_value(Some(value), results)?;
@@ -2109,6 +2127,10 @@ impl FunctionLowerer<'_> {
                         return Ok(());
                     }
                     if let Expr::Apply { func, args } = value {
+                        let path = self.tail_path(index, ProperTailPathStep::Value)?;
+                        if !self.has_tail_site(&path, ProperTailExprKind::Apply) {
+                            return self.lower_tail_expr(value, path);
+                        }
                         let callee = self.lower_expr(func)?;
                         let terminator = self.lower_indirect_tail_call(
                             callee,
@@ -2511,19 +2533,23 @@ impl FunctionLowerer<'_> {
                 self.clone_reference_token(value)
             } else { Ok(value) };
         }
-        if !mutable || !matches!(self.values[&value], ValueType::Ref(_)) {
+        if !matches!(self.values[&value], ValueType::Ref(_)) {
             return Ok(value);
         }
         // A `var` initialised from a static string (`var out = ""`) owns a
         // copy from the start: it will be rebound to owned values (a loop
         // accumulator), and every edge into a loop header must carry the
         // same token shape.
-        if self.is_static_string(value) {
+        if mutable && self.is_static_string(value) {
             return self.clone_string_for_storage(value);
         }
         if !self.bindings.values().any(|bound| *bound == value) {
             return Ok(value);
         }
+        // Immutable bindings also outlive rebinding or consumption of the
+        // source. Each lexical binding therefore holds its own owned token;
+        // sharing an SSA token would leave `let snapshot = xs` dangling when
+        // a later mutation retires xs's previous storage.
         self.clone_reference_token(value)
     }
 
@@ -5203,9 +5229,15 @@ impl FunctionLowerer<'_> {
                 else { return Ok(()) };
                 for (argument, contract) in args.iter().zip(&signature.contract.parameters) {
                     if contract.ownership == ParameterOwnership::WriteBack
-                        && let Expr::Var(name) = argument
+                        && let Some(name) = source_place_root(argument)
                     {
-                        rebound.pushed.insert(name.clone());
+                        if matches!(argument, Expr::Var(_)) {
+                            rebound.pushed.insert(name.to_owned());
+                        } else {
+                            // Projected write-back rebuilds the current root;
+                            // it does not mutate an old collection token.
+                            rebound.assigned.insert(name.to_owned());
+                        }
                     }
                 }
             }
@@ -5520,7 +5552,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let arguments = self.lower_call_arguments(name, arguments, signature_id, &signature, true)?;
+        let (arguments, _) = self.lower_call_arguments(name, arguments, signature_id, &signature, true)?;
         Ok(Terminator::TailCall {
             site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
             callee,
@@ -5543,7 +5575,7 @@ impl FunctionLowerer<'_> {
             .get(signature_id.get() as usize)
             .cloned()
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
-        let call_arguments = self.lower_call_arguments(name, arguments, signature_id, &signature, false)?;
+        let (call_arguments, write_backs) = self.lower_call_arguments(name, arguments, signature_id, &signature, false)?;
         let destinations = signature
             .results
             .iter()
@@ -5555,7 +5587,7 @@ impl FunctionLowerer<'_> {
             callee,
             arguments: call_arguments,
         });
-        self.rebind_write_backs(arguments, &signature, &destinations)?;
+        self.rebind_write_backs(&write_backs, &signature, &destinations)?;
         Ok(destinations[..destinations.len() - write_back_count(&signature)].to_vec())
     }
 
@@ -5619,7 +5651,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let mut arguments = self.lower_call_arguments("<indirect tail>", arguments, declaration_id, &declaration, true)?;
+        let (mut arguments, _) = self.lower_call_arguments("<indirect tail>", arguments, declaration_id, &declaration, true)?;
         let code = self.closure_callable(callee, signature_id)?;
         let environment = self.clone_reference_token(callee)?;
         arguments.insert(0, CallArgument::Move(environment));
@@ -5944,7 +5976,7 @@ impl FunctionLowerer<'_> {
         if let Some(result) = declaration.results.iter().copied().find(|value_type| !is_indirect_result(*value_type)) {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
-        let mut call_arguments = self.lower_call_arguments("<closure>", arguments, declaration_id, &declaration, false)?;
+        let (mut call_arguments, write_backs) = self.lower_call_arguments("<closure>", arguments, declaration_id, &declaration, false)?;
         let code = self.closure_callable(closure, signature_id)?;
         let environment = self.clone_reference_token(closure)?;
         call_arguments.insert(0, CallArgument::Move(environment));
@@ -5960,33 +5992,22 @@ impl FunctionLowerer<'_> {
             signature: signature_id,
             arguments: call_arguments,
         });
-        self.rebind_write_backs(arguments, &declaration, &destinations)?;
+        self.rebind_write_backs(&write_backs, &declaration, &destinations)?;
         Ok(destinations[..destinations.len() - write_back_count(&declaration)].to_vec())
     }
 
     fn rebind_write_backs(
         &mut self,
-        source_arguments: &[Expr],
+        places: &[PreparedWriteBack],
         signature: &FunctionSignature,
         destinations: &[ValueId],
     ) -> Result<(), CanonicalLoweringError> {
         let ordinary_results = destinations.len() - write_back_count(signature);
-        let mut destination = ordinary_results;
-        for (parameter, contract) in signature.contract.parameters.iter().enumerate() {
-            if contract.ownership != ParameterOwnership::WriteBack {
-                continue;
-            }
-            let Expr::Var(name) = source_arguments.get(parameter).ok_or_else(|| {
-                CanonicalLoweringError::CallArityMismatch {
-                    callee: "write-back".to_owned(),
-                    expected: signature.contract.parameters.len(),
-                    actual: source_arguments.len(),
-                }
-            })? else {
-                return Err(CanonicalLoweringError::UnsupportedExpression(
-                    "var write-back argument must be a bound variable",
-                ));
-            };
+        if places.len() != write_back_count(signature) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("missing prepared write-back place"));
+        }
+        for (offset, place) in places.iter().enumerate() {
+            let destination = ordinary_results + offset;
             let replacement = *destinations.get(destination).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("missing var write-back destination"),
             )?;
@@ -5994,8 +6015,7 @@ impl FunctionLowerer<'_> {
             // loop header can carry it as a tracked lane.
             self.ensure_string_extent(replacement)?;
             self.ensure_list_extent(replacement)?;
-            self.bindings.insert(name.clone(), replacement);
-            destination += 1;
+            self.commit_prepared_write_back(place, replacement)?;
         }
         Ok(())
     }
@@ -6007,7 +6027,7 @@ impl FunctionLowerer<'_> {
         signature_id: FunctionSignatureId,
         signature: &FunctionSignature,
         tail: bool,
-    ) -> Result<Vec<CallArgument>, CanonicalLoweringError> {
+    ) -> Result<(Vec<CallArgument>, Vec<PreparedWriteBack>), CanonicalLoweringError> {
         let parameters = &signature.contract.parameters;
         let conventions = self.checked_parameter_conventions.get(&signature_id)
             .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(signature_id))?;
@@ -6021,12 +6041,22 @@ impl FunctionLowerer<'_> {
         if conventions.len() != parameters.len() {
             return Err(CanonicalLoweringError::MissingCheckedCallConventions(signature_id));
         }
-        arguments
+        // This vector belongs to this invocation. Nested calls while capturing
+        // an index cannot replace the outer call's prepared coordinates.
+        let mut write_backs = Vec::new();
+        let lowered = arguments
             .iter()
             .zip(parameters)
             .enumerate()
             .map(|(parameter, (argument, contract))| {
-                let value = self.lower_expr(argument)?;
+                let value = if conventions[parameter] == Convention::Var {
+                    let place = self.prepare_write_back(argument)?;
+                    let value = self.read_prepared_write_back(&place)?;
+                    write_backs.push(place);
+                    value
+                } else {
+                    self.lower_expr(argument)?
+                };
                 let actual = self.values[&value];
                 if actual != contract.value_type {
                     return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
@@ -6073,7 +6103,7 @@ impl FunctionLowerer<'_> {
                         // call; a clone would leave its token shared, so the
                         // callee receives an owned copy (value semantics).
                         ParameterOwnership::Shared
-                            if matches!(argument, Expr::Var(name) if self.mutable_bindings.contains(name)) =>
+                            if source_place_root(argument).is_some_and(|name| self.mutable_bindings.contains(name)) =>
                         {
                             let source_type = self.expression_type(argument)?;
                             let owned = self.owned_for_storage(value, &source_type)?;
@@ -6093,11 +6123,7 @@ impl FunctionLowerer<'_> {
                                 callee: callee.to_owned(), parameter, ownership: contract.ownership,
                             });
                         }
-                        let Expr::Var(name) = argument else {
-                            return Err(CanonicalLoweringError::UnsupportedExpression(
-                                "var write-back argument must be a bound variable",
-                            ));
-                        };
+                        let name = &write_backs.last().expect("prepared var argument").root;
                         if !self.bindings.contains_key(name) {
                             return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                         }
@@ -6111,7 +6137,9 @@ impl FunctionLowerer<'_> {
                         // after it); the caller's binding is rebound to the
                         // write-back result.
                         let ty = self.expression_type(argument)?;
-                        let value = if self.known_shared_value(value) || self.aliased_binding(name, value) {
+                        let value = if !matches!(argument, Expr::Var(_))
+                            || self.known_shared_value(value) || self.aliased_binding(name, value)
+                        {
                             self.owned_for_storage(value, &ty)?
                         } else {
                             self.owned_parameters.retain(|owned| *owned != value);
@@ -6121,7 +6149,8 @@ impl FunctionLowerer<'_> {
                     }
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((lowered, write_backs))
     }
 
     fn return_value(

@@ -13,6 +13,17 @@ impl FunctionLowerer<'_> {
         let source = self.lower_expr(source_expr)?;
         let index = self.lower_expr(index_expr)?;
         let replacement = self.lower_expr(replacement_expr)?;
+        self.replace_list_value(source, index, replacement, list_type)
+    }
+
+    /// The same checked replacement for already evaluated place coordinates.
+    pub(super) fn replace_list_value(
+        &mut self,
+        source: ValueId,
+        index: ValueId,
+        replacement: ValueId,
+        list_type: Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         if let Some(family) = self.owner_list_family(source).cloned() {
             if self.values[&index] != ValueType::Int
                 || self.values[&replacement] != ValueType::Gc(family.owner_type)

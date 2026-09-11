@@ -86,6 +86,61 @@ fn runtime_errors(source: &str) -> (String, String) {
 }
 
 #[test]
+fn projected_var_final_calls_preserve_the_callers_writeback_lane() {
+    let source = r#"
+fn bump(var n: Int) -> Int:
+    n = n + 10
+    n * 2
+
+fn implicit(var n: Int) -> Int:
+    var rows = [n]
+    bump(rows[0])
+
+fn explicit(var n: Int) -> Int:
+    var rows = [n]
+    return bump(rows[0])
+
+fn indirect(operation: fn(var Int) -> Int, var n: Int) -> Int:
+    var rows = [n]
+    operation(rows[0])
+
+fn indirect_return(operation: fn(var Int) -> Int, var n: Int) -> Int:
+    var rows = [n]
+    return operation(rows[0])
+
+fn forwarded(var n: Int) -> Int:
+    bump(n)
+
+fn main(console: Console):
+    var n = 1
+    let a = implicit(n)
+    let b = explicit(n)
+    let operation: fn(var Int) -> Int = bump
+    let c = indirect(operation, n)
+    let d = indirect_return(operation, n)
+    let e = forwarded(n)
+    console.print("${a} ${b} ${c} ${d} ${e} ${n}")
+"#;
+    assert_both_backends(source, &["22 22 22 22 22 11"]);
+}
+
+#[test]
+fn owned_binding_snapshots_survive_source_list_growth() {
+    let source = r#"
+fn main(console: Console):
+    var numbers = [1]
+    let before = numbers
+    numbers.push(2)
+    var words = ["root"]
+    let old_words = words
+    words.push("tail")
+    console.print("${before.length()} ${before[0]} ${numbers.length()} ${numbers[1]}")
+    console.print("${old_words.length()} ${old_words[0]} ${words.length()} ${words[1]}")
+"#;
+    assert_both_backends(source, &["1 1 2 2", "1 root 2 tail"]);
+}
+
+#[test]
 fn simple_nested_method_and_free_calls_write_back_on_both_backends() {
     let source = r#"
 import list
@@ -273,6 +328,51 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
         "in impl declaration `impl Advance for Counter`, method `advance` parameter 1 `self` is plain, but trait declaration `Advance.advance` parameter 1 `self` is `var`; Variable write-back parameter conventions must match exactly",
     );
     assert_source_facing(&convention_mismatch);
+}
+
+#[test]
+fn projected_var_siblings_snapshots_and_nested_argument_calls_are_preserved() {
+    let source = r#"
+type State:
+    left: List(Int)
+    right: List(Int)
+
+fn change(var left: Int, var right: Int) -> Nil:
+    left = left + 10
+    right = right + 100
+    return
+
+fn bump(var value: Int) -> Int:
+    value = value + 1
+    value
+
+fn coordinate(var calls: Int) -> Int:
+    let _ = bump(calls)
+    0
+
+fn append(var values: List(Int), snapshot: List(Int)) -> Nil:
+    values.push(snapshot.length())
+    return
+
+fn apply(operation: fn(var Int) -> Int, var value: Int) -> Int:
+    operation(value)
+
+fn main(console: Console):
+    var state = State([1], [2])
+    let snapshot = state
+    change(state.left[0], state.right[0])
+    var calls = 0
+    change(state.left[coordinate(calls)], state.right[coordinate(calls)])
+    append(state.left, state.left)
+    let operation: fn(var Int) -> Int = bump
+    let result = operation(state.right[0])
+    let forwarded = apply(operation, state.left[0])
+    for i in [0, 1]:
+        let _ = bump(state.left[i])
+    console.print("${state.left} ${state.right} ${calls} ${result} ${forwarded}")
+    console.print("${snapshot.left} ${snapshot.right}")
+"#;
+    assert_both_backends(source, &["[23, 2] [203] 2 203 22", "[1] [2]"]);
 }
 
 #[test]
