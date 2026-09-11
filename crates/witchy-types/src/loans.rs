@@ -45,6 +45,39 @@ fn terr(message: String) -> TypeError {
     TypeError { message }
 }
 
+/// Invocation compatibility for the isolated service's two freshly copied
+/// byte buffers, not function-value substitutability. Callers must authenticate
+/// the direct `vm.serve` site and its bare declaration before using this rule.
+/// Neither signature is rewritten: consuming an owned copy needs no parent
+/// writeback, whereas a borrowed input/result cannot cross the VM boundary.
+pub(crate) fn vm_service_copy_callback_matches(
+    expected: &AccessSignature,
+    actual: &AccessSignature,
+) -> bool {
+    let bytes = |ty: &Type| matches!(ty, Type::Named(name, args)
+        if name == "Bytes" && args.is_empty());
+    let owned_bytes = |signature: &AccessSignature| {
+        signature.params().len() == 2
+            && signature.params().iter().all(|parameter| {
+                bytes(parameter.ty())
+                    && parameter.qualifiers().is_empty()
+                    && parameter.borrow_lifetimes().is_empty()
+                    && parameter.ownership().writeback().is_none()
+                    && matches!(parameter.kind(), AccessKind::OwnedImmutable | AccessKind::Consuming)
+            })
+            && bytes(signature.result().ty())
+            && signature.result().qualifiers().is_empty()
+            && signature.result().borrow_lifetimes().is_empty()
+            && signature.borrow_relations().is_empty()
+            && signature.callable_qualifiers().is_empty()
+            && !signature.callable_contract().once
+    };
+    owned_bytes(expected)
+        && expected.params().iter().all(|parameter| parameter.kind() == AccessKind::OwnedImmutable)
+        && expected.callable_contract() == witchy_syntax::ast::CallableQualifiers::ORDINARY
+        && owned_bytes(actual)
+}
+
 /// Explicit reference carriers remain executable values when stored in a
 /// mutable aggregate. Legacy `View` shells still require an immutable binding
 /// or explicit materialization; only the first-class `&`/`&mut` relation opts
@@ -4281,6 +4314,21 @@ impl LoanCtx<'_> {
         }
         for (index, (arg, expected)) in args.iter().zip(&signature.callable_params).enumerate() {
             let Some(expected) = expected else { continue };
+            // Reserved linked identity, never a short-name or indirect-call
+            // fallback. The source checker separately rejects lexical aliases.
+            if callee == "vm.serve" && args.len() == 3 && index == 2 {
+                let source = match arg {
+                    Expr::Var(name) if !callables.contains_key(name) => self.sigs.get(name),
+                    _ => None,
+                };
+                if source.and_then(|source| source.access.as_ref())
+                    .zip(expected.access.as_ref())
+                    .is_some_and(|(actual, expected)| vm_service_copy_callback_matches(expected, actual))
+                {
+                    continue;
+                }
+                return Err(terr("`vm.serve` requires a bare callback with two default or own Bytes inputs and an owned Bytes result; borrow/writeback relations cannot cross the copied-byte boundary".into()));
+            }
             if let Some((_, source)) = self.callable_expr_sig(arg, callables) {
                 self.require_same_callable(
                     &format!("argument {} passed to `{}`", index + 1, short_name(callee)),

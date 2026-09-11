@@ -58,6 +58,8 @@ id_type!(CapabilityKindId, u32);
 /// Staged opaque-owner ABI contract. Not yet admitted as executable operations.
 pub mod closure_owner_contract;
 mod owner_authority;
+mod vm_service;
+pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIND, VM_SERVICE_RESPONSE_KIND};
 
 /// Stable identity supplied by canonical type checking. It identifies the
 /// checked source but grants no validation or encoding authority by itself.
@@ -1340,6 +1342,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     /// layout absent from it has no readable callable slot.
     closure_layouts: BTreeMap<LayoutId, FunctionSignatureId>,
     owner_families: Vec<closure_owner_contract::OwnerFamily>,
+    vm_services: Vec<CandidateVmService>,
     stage: PhantomData<fn() -> S>,
 }
 
@@ -1383,8 +1386,14 @@ impl CanonicalModule<LoweredCandidate> {
             adapter_bindings: CandidateAdapterBindings::default(),
             closure_layouts: BTreeMap::new(),
             owner_families: Vec::new(),
+            vm_services: Vec::new(),
             stage: PhantomData,
         }
+    }
+
+    pub fn with_vm_services(mut self, services: Vec<CandidateVmService>) -> Self {
+        self.vm_services = services;
+        self
     }
 
     pub fn with_abi_catalog(mut self, catalog: CanonicalAbiCatalog) -> Self {
@@ -1454,6 +1463,7 @@ impl CanonicalModule<LoweredCandidate> {
             adapter_bindings: self.adapter_bindings,
             closure_layouts: self.closure_layouts,
             owner_families: self.owner_families,
+            vm_services: self.vm_services,
             stage: PhantomData,
         }
     }
@@ -1515,6 +1525,8 @@ impl<S: ModuleStage> CanonicalModule<S> {
     pub fn closure_layouts(&self) -> &BTreeMap<LayoutId, FunctionSignatureId> {
         &self.closure_layouts
     }
+
+    pub fn vm_services(&self) -> &[CandidateVmService] { &self.vm_services }
 
     pub fn owner_families(&self) -> &[closure_owner_contract::OwnerFamily] {
         &self.owner_families

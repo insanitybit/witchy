@@ -49,6 +49,67 @@
         check(&linked)
     }
 
+    fn service_source(params: &str, callback: &str, setup: &str) -> String {
+        format!("import vm\nfn handler({params}) -> Bytes:\n    request\nfn run(init: Bytes, requests: List(Bytes)) -> List(Bytes):\n{setup}    vm.serve(init, requests, {callback})\nfn main() -> Int:\n    0\n")
+    }
+
+    #[test]
+    fn vm_service_copy_callback_preserves_default_and_own_relations() {
+        for (left, right) in [("", ""), ("own ", ""), ("", "own "), ("own ", "own ")] {
+            let source = service_source(&format!("{left}state: Bytes, {right}request: Bytes"), "handler", "");
+            let main = witchy_syntax::parser::parse_module(&source).unwrap();
+            let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime).unwrap();
+            let typed = crate::typeck::annotate_checked_source(linked).expect("service invocation type relation");
+            super::facts_with_types(typed.module(), typed.table()).expect("service copied-byte loan relation");
+            let handler = typed.module().items.iter().find_map(|item| match item {
+                Item::Function(function) if matches!(function.name.as_str(), "handler" | "main.handler") => Some(function),
+                _ => None,
+            }).unwrap();
+            let actual = AccessSignature::from_function(handler).unwrap();
+            let expected = AccessSignature::from_parts(
+                vec![Type::Named("Bytes".into(), vec![]); 2], Type::Named("Bytes".into(), vec![]), vec![Convention::Let; 2],
+            ).unwrap();
+            assert_eq!(handler.params[0].convention, if left.is_empty() { Convention::Let } else { Convention::Own });
+            assert_eq!(handler.params[1].convention, if right.is_empty() { Convention::Let } else { Convention::Own });
+            assert!(super::vm_service_copy_callback_matches(&expected, &actual));
+            assert_eq!(actual.verify_exact(&expected).is_ok(), left.is_empty() && right.is_empty(), "ordinary callable equality stays exact");
+        }
+    }
+
+    #[test]
+    fn vm_service_copy_callback_rejects_writeback_borrow_and_local_values() {
+        for params in ["var state: Bytes, request: Bytes", "let state: Bytes, request: Bytes"] {
+            let error = linked_main(&service_source(params, "handler", "")).expect_err("not owned copied inputs");
+            assert!(error.message.contains("default or own Bytes"), "{error:?}");
+        }
+        for (callback, setup) in [
+            ("local", "    let local = handler\n"),
+            ("handler", "    let handler = fn(state: Bytes, request: Bytes): request\n"),
+            ("fn(state: Bytes, request: Bytes): request", ""),
+        ] {
+            let error = linked_main(&service_source("state: Bytes, request: Bytes", callback, setup)).expect_err("must remain bare declaration");
+            assert!(error.message.contains("bare top-level function callback"), "{error:?}");
+        }
+        let source = "fn handler(own state: Bytes, own request: Bytes) -> Bytes:\n    request\nfn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes):\n    requests\nfn run(init: Bytes, requests: List(Bytes)) -> List(Bytes):\n    serve(init, requests, handler)\n";
+        check_str(source).expect_err("an ordinary same-short-name function gets no service relation");
+    }
+
+    #[test]
+    fn vm_service_copy_callback_access_rejects_borrowed_result_and_nested_contracts() {
+        let bytes = Type::Named("Bytes".into(), vec![]);
+        let expected = AccessSignature::from_parts(vec![bytes.clone(); 2], bytes.clone(), vec![Convention::Let; 2]).unwrap();
+        let borrowed = Type::Qualified(witchy_syntax::ast::TypeQual::Borrow("a".into()), Box::new(bytes.clone()));
+        for (params, result, conventions) in [
+            (vec![borrowed.clone(), bytes.clone()], borrowed, vec![Convention::Let; 2]),
+            (vec![bytes.clone(); 2], bytes.clone(), vec![Convention::Var, Convention::Let]),
+            (vec![bytes.clone(); 2], bytes.clone(), vec![Convention::Borrow, Convention::Let]),
+            (vec![Type::Fn(vec![bytes.clone()], Box::new(bytes.clone()), vec![Convention::Let], Default::default()), bytes.clone()], bytes, vec![Convention::Let; 2]),
+        ] {
+            let actual = AccessSignature::from_parts(params, result, conventions).unwrap();
+            assert!(!super::vm_service_copy_callback_matches(&expected, &actual));
+        }
+    }
+
     /// A borrowed-view helper plus a `main` body, as a `mode opt` module. Includes
     /// LOCAL `owned`/`send` helpers so these checker tests need no std linking
     /// (`check_str` does not resolve `import`s). A local `send` is intentionally

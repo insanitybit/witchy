@@ -1379,6 +1379,7 @@ pub struct VmState {
     module: WorkerModule,
     preempt: bool,
     server_startup: Option<host::vm_worker::ServerWorkerStartup>,
+    vm_services: Arc<Mutex<VmServiceMetrics>>,
     #[cfg(feature = "test-fixtures")]
     pub(crate) fixture_host: Option<witchy_test_host::FixtureHost>,
 }
@@ -1409,6 +1410,20 @@ pub struct Vm {
     entry: Option<CanonicalEntry>,
 }
 
+/// Host-observed isolated service lifecycle. Retiring the last state root by
+/// destroying a child Store is not a claim that its guest heap had zero leaks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VmServiceMetrics {
+    pub started: u64,
+    pub successful_steps: u64,
+    pub closed: u64,
+    pub failed: u64,
+    pub live_workers: u64,
+    pub live_state_roots: u64,
+    pub retired_state_roots: u64,
+    pub isolated_memories: u64,
+}
+
 /// The opaque host value behind a `Console` capability token minted at launch
 /// for a canonical entry. The `witchy.print` import is itself gated by the
 /// `print` grant, so the token carries identity, not extra authority; it
@@ -1417,6 +1432,12 @@ pub struct Vm {
 struct ConsoleCapability;
 
 impl Vm {
+    /// Read-only evidence from actual host service invocations, not source
+    /// output or a guest-selected counter.
+    pub fn vm_service_metrics(&self) -> VmServiceMetrics {
+        self.store.data().vm_services.lock().expect("service metrics lock").clone()
+    }
+
     /// Run the program to completion.
     ///
     /// A frozen-compiler module is entered through its parameterless `run`
@@ -2656,6 +2677,7 @@ fn vmstate_from_caps(
         module: WorkerModule::Unadmitted(module.clone()),
         preempt,
         server_startup: None,
+        vm_services: Arc::new(Mutex::new(VmServiceMetrics::default())),
         #[cfg(feature = "test-fixtures")]
         fixture_host: None,
     })

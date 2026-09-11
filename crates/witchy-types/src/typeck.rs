@@ -8210,7 +8210,8 @@ impl Checker {
             || call_name == "list.pop";
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
-            let typed_vm_callback = call_name == "vm.with_dir" && index == 1;
+            let typed_vm_callback = (call_name == "vm.with_dir" && index == 1)
+                || (call_name == "vm.serve" && index == 2);
             let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
             let inferred = if typed_vm_callback {
                 let Expr::Var(function) = arg else {
@@ -8318,7 +8319,22 @@ impl Checker {
                     &format!("argument to `{display}`"),
                 )?;
             }
-            let result = if exact_generic {
+            let result = if name == "vm.serve" && index == 2 {
+                // Check a copied-byte invocation, not a conversion to the std
+                // implementation's function-value parameter type. Preserve the
+                // declaration's actual conventions in `at` and the type table.
+                let access = |ty: &Ty| ty_to_ast(ty).and_then(|ty|
+                    crate::access::AccessSignature::from_function_type(&ty).ok());
+                let compatible = access(&self.resolve(param_ty))
+                    .zip(access(&self.resolve(&at)))
+                    .is_some_and(|(expected, actual)|
+                        crate::loans::vm_service_copy_callback_matches(&expected, &actual));
+                if compatible {
+                    Ok(())
+                } else {
+                    terr("`vm.serve` callback requires two default or own Bytes inputs and an owned Bytes result")
+                }
+            } else if exact_generic {
                 self.unify(param_ty, &at)
             } else {
                 self.coerce_arg(param_ty, &at)
@@ -12273,7 +12289,7 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         // the linker resolves by name) is computed in place and returned as a
         // value: there is no callee to transfer to.
         Expr::Call { name, .. }
-            if matches!(name.as_str(), "fail" | "__capop.print" | "int_to_duration" | "duration_to_int")
+            if matches!(name.as_str(), "fail" | "vm.serve" | "__capop.print" | "int_to_duration" | "duration_to_int")
                 || (name.starts_with("__capop.") && witchy_syntax::cap_ops::is_op_name(name))
                 || witchy_syntax::intrinsics::lookup(name).is_some()
                 || witchy_syntax::intrinsics::lookup(name.strip_prefix("list.__").map_or(name.as_str(), |_| name.as_str())).is_some() => None,

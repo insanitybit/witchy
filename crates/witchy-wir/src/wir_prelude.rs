@@ -256,6 +256,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "vm_par_map_bytes_write" (func $vm_par_map_bytes_write_host (param i32)))
   (import "witchy" "vm_with_dir_run" (func $vm_with_dir_run_host (param externref i32 i32) (result i32)))
   (import "witchy" "vm_serve_run" (func $vm_serve_run_host (param i32 i32 i32) (result i32)))
+  (import "witchy" "vm_service_start" (func $vm_service_start_host (param i64 i32 i32) (result externref)))
+  (import "witchy" "vm_service_step" (func $vm_service_step_host (param externref i32 i32) (result externref)))
+  (import "witchy" "vm_service_response_size" (func $vm_service_response_size_host (param externref) (result i32)))
+  (import "witchy" "vm_service_response_into" (func $vm_service_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "vm_service_close" (func $vm_service_close_host (param externref)))
   (import "witchy" "build_read_len" (func $build_read_len_host (param i32) (result i32)))
   (import "witchy" "build_out_write" (func $build_out_write_host (param i32 i32)))
   (import "witchy" "build_env_len" (func $build_env_len_host (param i32) (result i32)))
@@ -609,6 +614,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_par_map_bytes_write"
         | "vm_with_dir_run"
         | "vm_serve_run"
+        | "vm_service_start" | "vm_service_step" | "vm_service_response_size"
+        | "vm_service_response_into" | "vm_service_close"
         => C::InternalService,
 
         "heap_register" | "heap_unregister" | "heap_frontier" | "__witchy_abort" => {

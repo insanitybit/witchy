@@ -1427,3 +1427,7 @@ mod tests {
         assert_eq!(store.data(), b"hi!");
     }
 }
+
+#[cfg(test)]
+#[path = "canonical_vm_service_tests.rs"]
+mod vm_service_tests;

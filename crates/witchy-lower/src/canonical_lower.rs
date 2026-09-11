@@ -13,6 +13,8 @@ mod owned;
 
 #[path = "canonical_regex.rs"]
 mod regex;
+#[path = "canonical_vm_service.rs"]
+mod vm_service;
 
 // RFC-0165 Net registration (Net track).
 #[path = "canonical_net.rs"]
@@ -141,6 +143,8 @@ pub fn lower_typed_module(
     source: &CanonicalCheckedSource,
     layouts: LayoutBundle,
 ) -> Result<CanonicalModule<LoweredCandidate>, CanonicalLoweringError> {
+    let service_sites = witchy_types::canonical_worker::service_sites(source)
+        .map_err(CanonicalLoweringError::UnsupportedCanonicalObligation)?;
     let typed = source.typed_module();
     let scope = witchy_types::pipeline::canonical_scope(typed.module());
     // Checked source records what it could not bind as canonical authority
@@ -602,7 +606,7 @@ pub fn lower_typed_module(
     let regex_spans = regex::is_needed(typed.module());
     // RFC-0165 Net import registration (Net track).
     let net_imports = net::collect_imports(typed.module());
-    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() {
+    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -717,6 +721,7 @@ pub fn lower_typed_module(
         }
         // RFC-0165 Net catalog registration (Net track).
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
+        if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
         let projected = catalog
@@ -729,9 +734,12 @@ pub fn lower_typed_module(
                     || compiler_imports.contains(import.name.as_str())
                     || (regex_spans && import.name == "regex_match_spans_into")
                     || net_imports.contains(import.name.as_str()) // Net track
+                    || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
             })
             .collect::<Vec<_>>();
         host_imports = HostImports {
+            vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
+            vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             // RFC-0165 Net import registration (Net track).
             net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
@@ -861,6 +869,11 @@ pub fn lower_typed_module(
         .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     abi_bindings.sort_by_key(|binding| binding.source_declaration_ordinal());
 
+    let vm_services = service_sites.iter().map(|site| {
+        let binding = |ordinal| abi_bindings.iter().find(|binding| binding.source_declaration_ordinal() == ordinal)
+            .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing service declaration binding"));
+        Ok(witchy_wir::canonical_safewir::CandidateVmService::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
+    }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
     let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
         revision: Revision::new(0),
         checked_source: CheckedSourceIdentity::from_digest(
@@ -872,6 +885,7 @@ pub fn lower_typed_module(
         functions,
         proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module(), &functions_by_name, &lambda_callables)?,
     }, static_data_segments)
+        .with_vm_services(vm_services)
         .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
         .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
         .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
@@ -2167,6 +2181,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args).map(|_| ()),
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args).map(|_| ()),
             Expr::While { cond, body } => self.lower_while(cond, body),
@@ -6133,6 +6148,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args),
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("effect-only Net operation used as a value")),
@@ -13359,6 +13375,8 @@ fn string_layout(
 /// by the role the lowering reaches them through.
 #[derive(Clone, Default)]
 struct HostImports {
+    vm_service: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
+    vm_sites: HashMap<usize, u32>,
     // RFC-0165 Net import registration (Net track).
     net: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,

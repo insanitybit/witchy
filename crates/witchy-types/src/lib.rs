@@ -14,6 +14,7 @@ pub mod canonical_abi;
 pub mod canonical_aggregates;
 pub mod canonical_capabilities;
 pub mod canonical_closure;
+pub mod canonical_worker;
 mod canonical_messages;
 pub mod async_program;
 pub mod async_migration;

@@ -119,7 +119,7 @@ impl NetState {
 
     fn token(&self, resource: Resource) -> CapabilityToken {
         let kind = match resource { Resource::Grant(_) => NET, Resource::Listener(_) => LISTENER, Resource::Socket(_) => SOCKET };
-        CapabilityToken { kind, scope: String::new(), net: Some(Token { issuer: self.issuer.clone(), resource }) }
+        CapabilityToken { net: Some(Token { issuer: self.issuer.clone(), resource }), ..CapabilityToken::root(kind) }
     }
 
     fn authenticate(&self, token: &CapabilityToken, kind: u32) -> Result<Resource, InterpretError> {

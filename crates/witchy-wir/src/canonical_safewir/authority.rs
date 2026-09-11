@@ -218,6 +218,7 @@ pub enum CandidateAbiBindingError {
     ClosureSignatureMismatch { closure: u32 },
     MissingClosureEnvironmentParameter { function: super::FunctionId },
     AdapterShapeMismatch { adapter: super::FunctionId },
+    VmService(String),
 }
 
 impl fmt::Display for CandidateAbiBindingError {
@@ -310,6 +311,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<(), CandidateAbiBindingError> {
     use witchy_types::canonical_abi::CanonicalTargetPolicy;
+    super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
     super::owner_authority::validate(candidate, source)?;
 
     let source_entries = source.callable_abi_manifest().entries().iter().filter_map(|entry| {

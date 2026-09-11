@@ -25,6 +25,7 @@ mod launch;
 mod nullable;
 mod regex;
 mod net;
+mod vm_service;
 pub use net::{OracleNetEvent, OracleNetFixture, OracleNetGrant, OracleNetError, OracleNetRead, ORACLE_NET_BUFFER_CAPACITY};
 pub use launch::interpret_entry_program;
 
@@ -88,12 +89,13 @@ pub struct CapabilityToken {
     kind: u32,
     scope: String,
     net: Option<net::Token>,
+    service: Option<vm_service::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new(), net: None }
+        Self { kind, scope: String::new(), net: None, service: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -474,6 +476,8 @@ enum RuntimeStorage {
 }
 
 struct Engine<'a> {
+    services: vm_service::ServiceState<'a>,
+    isolated: bool,
     module: &'a CanonicalModule<InitialValid>,
     config: InterpreterConfig,
     steps: u64,
@@ -497,6 +501,8 @@ impl<'a> Engine<'a> {
     fn new(module: &'a CanonicalModule<InitialValid>, mut config: InterpreterConfig) -> Self {
         let net = config.fixture.net.take().map(net::NetState::new);
         Self {
+            services: vm_service::ServiceState::new(),
+            isolated: false,
             module,
             config,
             steps: 0,
@@ -1364,6 +1370,12 @@ impl<'a> Engine<'a> {
         }
         if contract.name == "regex_match_spans_into" {
             return self.regex_spans_host_call(destinations, arguments, values);
+        }
+        if self.isolated && !vm_service::isolated_import_allowed(contract) {
+            return Err(InterpretError::UnsupportedHostImport);
+        }
+        if vm_service::is_import(&contract.name) {
+            return self.vm_service_host_call(&contract.name, destinations, arguments, values);
         }
         if net::is_import(&contract.name) {
             return self.net_host_call(&contract.name, destinations, arguments, values);

@@ -37,6 +37,12 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
     writer.adapter_bindings(module.adapter_bindings());
     writer.closure_layouts(module.closure_layouts());
     writer.owner_families(module.owner_families());
+    writer.u64(module.vm_services().len() as u64);
+    for service in module.vm_services() {
+        writer.u32(service.id());
+        writer.u32(service.caller().get());
+        writer.u32(service.callback().get());
+    }
     writer.tail_sites(module.proper_tail_sites());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
@@ -62,9 +68,9 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
     ModuleDigest(hasher.finalize().into())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 5;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v5";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v5";
+const MODULE_SERIALIZATION_VERSION: u32 = 6;
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v6";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v6";
 
 /// Deterministic, tagged serialization for the fields that define a
 /// CanonicalModule's identity. This deliberately does not use `Debug`: a

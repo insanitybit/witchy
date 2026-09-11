@@ -226,6 +226,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | none | omitted |
 | `vm_with_dir_run` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_serve_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_service_start` | `(i64, i32, i32) -> externref` | internal/toolchain service | none | omitted |
+| `vm_service_step` | `(externref, i32, i32) -> externref` | internal/toolchain service | none | omitted |
+| `vm_service_response_size` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `vm_service_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_service_close` | `(externref)` | internal/toolchain service | none | omitted |
 | `build_read_len` | `(i32) -> i32` | capability authority | Build.Read | omitted |
 | `build_out_write` | `(i32, i32)` | capability authority | Build.Out | omitted |
 | `build_env_len` | `(i32) -> i32` | capability authority | Build.Env | omitted |

@@ -3311,6 +3311,16 @@ impl<'a> AccessVerifier<'a> {
             arguments.iter().zip(signature.params()).enumerate()
         {
             let expected = self.flow_from_type(parameter.ty()).map_err(Self::signature_error)?;
+            // This reserved service site invokes its checked declaration with
+            // copied owned Bytes; it does not coerce a function value or erase
+            // the declaration's conventions. All other boundaries stay exact.
+            if name == "vm.serve" && arguments.len() == 3 && index == 2 {
+                if let (AccessFlow::Callable(actual), AccessFlow::Callable(expected)) = (argument, &expected) {
+                    if crate::loans::vm_service_copy_callback_matches(expected, actual) {
+                        continue;
+                    }
+                }
+            }
             argument.verify_directed(
                 &expected,
                 &format!("argument {} passed to `{name}`", index + 1),

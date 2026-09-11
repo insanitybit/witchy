@@ -119,3 +119,6 @@ fn main(console: Console, args: List(String), net: Net):
     assert!(invalid.run().is_err());
     assert!(invalid.output().is_empty());
 }
+
+#[path = "rfc0165_vm_service.rs"]
+mod vm_service;

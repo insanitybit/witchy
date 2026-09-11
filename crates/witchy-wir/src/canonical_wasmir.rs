@@ -1562,8 +1562,16 @@ enum EncodeError {
 /// `wasm` is a read-only byte view for existing consumers. This artifact does
 /// not itself seal or authorize launch; receipt-bound launch remains a later
 /// boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedVmService { id: u32, callback_export: String }
+impl AdmittedVmService {
+    pub fn id(&self) -> u32 { self.id }
+    pub fn callback_export(&self) -> &str { &self.callback_export }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct AdmittedCanonicalArtifact {
+    vm_services: Vec<AdmittedVmService>,
     owner_bridges: Vec<AdmittedOwnerBridge>,
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
@@ -1737,6 +1745,7 @@ impl CanonicalEntry {
 }
 
 impl AdmittedCanonicalArtifact {
+    pub fn vm_services(&self) -> &[AdmittedVmService] { &self.vm_services }
     pub fn owner_bridges(&self) -> &[AdmittedOwnerBridge] { &self.owner_bridges }
     /// Borrow the exact admitted Wasm bytes without transferring ownership.
     pub fn wasm(&self) -> &[u8] {
@@ -6839,6 +6848,9 @@ fn admit_parts(
     }
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
+        vm_services: _source.vm_services().iter().map(|site| AdmittedVmService {
+            id: site.id(), callback_export: format!("f{}", site.callback().get()),
+        }).collect(),
         owner_bridges: _target.owner_bridges,
         bytes,
         checked_source,

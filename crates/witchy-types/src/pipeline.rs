@@ -798,6 +798,7 @@ pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
         // A call named like a compiler intrinsic (`string.chars`, `list.push`)
         // resolves to the compiler, never to the standard-library wrapper of
         // the same name; that wrapper's body is not part of the program.
+        if !seeds.contains(&name) && name == "vm.serve" { continue; }
         if !seeds.contains(&name)
             && matches!(
                 witchy_syntax::intrinsics::lookup(&name),

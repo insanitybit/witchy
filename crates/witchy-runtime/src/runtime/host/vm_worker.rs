@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+#[path = "vm_service.rs"]
+mod vm_service;
+
 use wasmtime::{
     Caller, Engine, Error, ExternRef, Instance, Linker, Module, Result, Rooted, Store,
     StoreLimits, StoreLimitsBuilder,
@@ -20,6 +23,7 @@ use super::super::{
 /// passing spawns grant the worker only the `Dir` the caller already holds and
 /// explicitly passes: a re-grant, not new authority.
 pub(in crate::runtime) fn link_vm(linker: &mut Linker<VmState>) -> Result<()> {
+    vm_service::link(linker)?;
     linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
     linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
     linker.func_wrap("witchy", "vm_par_map_bytes_run", host_vm_par_map_bytes_run)?;

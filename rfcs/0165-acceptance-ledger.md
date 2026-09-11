@@ -902,3 +902,61 @@ whole-corpus count is claimed, and compiler-wide memory safety remains unproven.
 - The combined native-enabled nextest selection passed 19/19 tests in 7.182s after a 35.03s build. Evidence: `/tmp/witchy-task-net-integrated-focus.log`. It covers `canonical_oracle_error_tests::`, `canonical_net_fixture::`, `canonical_net_read_profile::`, `carried_state_unchanged_expected_three_legs`, the ABI catalog, and the root-driver budget, in the `witchy` bin and `misc` driver.
 - The catalog submission was red at 18:28:32Z, candidate `768fd4ffc9aeb81681d858f8fcd04d3a443c86ae`: 2184 passed, one aggregate oracle sweep timed out at 270s. Log: `state/merge-queue/logs/20260911-142149-impl~rfc0165-runtime-parity-catalog-38402-91.log`. No timeout increase, exclusion, or assertion weakening is being used as a repair.
 - Duplicate admission in that sweep is being removed; the independent planner's per-block layout/catalog copying is the next measured repeated-work candidate. The exact sweep probe is pending. `serve_api` still needs its closure witness repaired. No fresh whole-corpus count or merged completion is claimed.
+
+### 2026-09-11: isolated persistent `vm.serve` integration
+
+The preceding task/Net integration landed through queue change
+`mq-96ba57756437c6b5a9c92ab0810abedf3eeef5df`, attempt
+`mqa-6094b4536b2fd123d356f6147b4e44d7c4480d41`, at
+`b7b9dd8c6b8eb303ac912bb63f6443e0ab94346f` on 2026-09-11T20:12:16Z.
+The complete coordinator gate passed. The service changes below are a new
+focused-green candidate and still require their own terminal queue event.
+
+`vm.serve` now lowers to five authenticated host operations, an exact checked
+source-site/callback binding, and a persistent isolated admitted worker. No
+parent pointer or capability is transferred: initial state and requests are
+copied as bytes; subsequent state is an owned child reference transferred into
+the next invocation. That reference need not be fresh or unique. Responses are
+immutable host copies. Short output buffers receive no partial write; a failed
+service rejects more requests and permits one cleanup close. Default and `own`
+callback conventions remain distinct in source and use the explicit owned-byte
+invocation rule; ordinary callable equality is unchanged.
+
+Focused evidence on the integration worktree:
+
+- `cargo test -p witchy --test vm_service_runtime`: one test, four two-request
+  cases (accumulation, literal result, input alias, `own` input alias), passed
+  in 1.21s. Source interpreter, independent canonical oracle, and admitted Wasm
+  agree with expected output. Runtime counters establish actual worker/memory
+  isolation and cleanup. Parent Wasm and parent/child oracle heap checks pass.
+  Child Store destruction is not asserted to prove a zero-leak guest heap.
+- Native library selectors `test(vm_service) or test(service_byte_image)`:
+  eight tests passed in 0.208s across `witchy-wir`, `witchy-runtime`, and
+  `witchy-lower`. These cover source descriptors, private resource identity,
+  bounds/short writes, failure/close state, and static versus RC byte storage.
+- Root selectors `test(rfc0165_owner_adapters::vm_service)`,
+  `test(vm_worker_isolation::isolated_worker_apis)`, and
+  `test(example_tests::sandbox_vm::vm_serve_stateful_service_agrees)`:
+  six tests passed in 0.691s. Existing service tests were already enabled;
+  no deferred-test exclusion was added or removed.
+- `hello`, `wrap`, and `jq` CLI parity passed with 3, 5, and 7 output lines.
+- The development census measured 162/163 example checks and 91 CLI parity
+  agreements, zero disagreements. Its only check refusal was
+  `examples/opt_mode/src/opt_mode.witchy`:
+  `UnsupportedType(Qualified(Unique, Named("opt_mode.ScanState", [])))`.
+  This is CLI coverage evidence, not a three-leg census or final-master audit.
+  The census predates the final explicit-`own` callback correction above.
+
+Commands used `RUSTC_WRAPPER=`, `CC=cc`, utility scheduling, and the absolute
+warmed `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target`.
+Logs: `/tmp/witchy-vm-service-owned-execution.log`,
+`/tmp/witchy-vm-service-focused-native.log`,
+`/tmp/witchy-vm-service-source-regressions.log`, and
+`/tmp/witchy-vm-service-census.log`.
+
+Cross-review found and the integration corrected oracle failure-state
+mismatches; actual execution found and corrected nullable-externref host ABI
+signatures. The callback review found no blocking issue in the owned-byte
+predicate or its access-check connection. Remaining whole-project security,
+optimizer, withdrawn-syntax conformance, and final-master evidence obligations
+are not closed by this slice. Compiler-wide memory safety is not established.
