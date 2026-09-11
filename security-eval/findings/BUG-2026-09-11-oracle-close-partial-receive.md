@@ -33,4 +33,22 @@ bounded-fill retries; both canonical launch APIs versus a two-byte
 loopback peer; native close-before-fill with exact byte/sentinel checks.
 Post-close byte/all/line probes require native output `["a", "b"]` and
 explicit refusal through both oracle launch APIs.
+
+## Explicit buffered profile
+
+Opt-in `Buffered` immediately follows authenticated Connect/Accept. `Arrive`
+only appends transport-ready bytes; `StreamRead(Data(n))` moves an explicit
+prefix into read-ahead, with `0 < n <= 8192` and no more than the requested
+count or available bytes. Native conformance additionally enforces the actual
+underlying `Read` destination size. No event chunk implies a kernel read.
+`BufferedClose(keep_transport_prefix)` preserves all read-ahead and staging,
+retains only the specified transport prefix, and discards its tail. Reads
+after close consume read-ahead or explicit stream completions, never guessed
+EOF. Old wire-only fixtures keep the c89 refusal.
+
+Protocol mismatches roll back the entire oracle receive. Real IO errors and
+raw-byte-cap failures consume completed reads but stage no fabricated output.
+The independent native test transport is also supplied to a feature-gated
+driver of the existing source-interpreter Net builtins. No production dial
+hook, import, checker operation, or shared oracle/native receive engine exists.
 No checker, lowering, native runtime, or source language semantics changed.

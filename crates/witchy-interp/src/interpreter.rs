@@ -86,6 +86,8 @@ pub use runners::{
     run_module_user_caps, run_program,
 };
 mod builtins;
+#[cfg(feature = "test-fixtures")]
+pub mod net_fixture;
 mod calls;
 mod places;
 mod capability_values;

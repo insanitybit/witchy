@@ -25,7 +25,7 @@ mod launch;
 mod nullable;
 mod regex;
 mod net;
-pub use net::{OracleNetEvent, OracleNetFixture, OracleNetGrant, OracleNetError};
+pub use net::{OracleNetEvent, OracleNetFixture, OracleNetGrant, OracleNetError, OracleNetRead, ORACLE_NET_BUFFER_CAPACITY};
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.

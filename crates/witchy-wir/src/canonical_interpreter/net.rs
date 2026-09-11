@@ -11,6 +11,10 @@ const SOCKET: u32 = crate::canonical_safewir::SOCKET_CAPABILITY_KIND.get();
 // Independent specification of the existing bounded receive semantics.
 const RECEIVE_LIMIT: usize = 64 << 20;
 
+#[path = "net_buffered.rs"]
+mod buffered;
+pub use buffered::{OracleNetRead, ORACLE_NET_BUFFER_CAPACITY};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OracleNetGrant {
     pub connect: bool,
@@ -45,6 +49,14 @@ pub enum OracleNetEvent {
     Timeout { socket: u64 },
     ReadError { socket: u64, message: String },
     Close { socket: u64 },
+    /// Opt-in v1 profile, immediately after this socket's Connect/Accept.
+    Buffered { socket: u64 },
+    /// Byte availability, independent of transport read-completion boundaries.
+    Arrive { socket: u64, bytes: Vec<u8> },
+    StreamRead { socket: u64, outcome: OracleNetRead },
+    /// Retain this prefix of unread transport bytes; preserve ALL read-ahead
+    /// and completed receive staging. Discard only the remaining transport tail.
+    BufferedClose { socket: u64, keep_transport_prefix: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,8 +92,11 @@ impl PartialEq for Token {
 }
 impl Eq for Token {}
 
-#[derive(Default)]
-struct Socket { pending: Option<Vec<u8>>, eof: bool, closed: bool }
+#[derive(Clone, Default)]
+struct Socket {
+    pending: Option<Vec<u8>>, eof: bool, closed: bool,
+    buffered: Option<buffered::BufferedSocket>,
+}
 
 pub(super) struct NetState {
     issuer: Arc<()>,
@@ -146,6 +161,7 @@ impl NetState {
             Resource::Socket(id)
         };
         self.pop();
+        if let Resource::Socket(socket) = resource { self.enable_buffered(socket); }
         Ok(self.token(resource))
     }
 
@@ -158,6 +174,7 @@ impl NetState {
         if self.sockets.contains_key(&socket) { return Err(refused(OracleNetError::DuplicateResource)); }
         self.sockets.insert(socket, Socket::default());
         self.pop();
+        self.enable_buffered(socket);
         Ok(self.token(Resource::Socket(socket)))
     }
 
@@ -181,6 +198,9 @@ impl NetState {
     fn receive(&mut self, token: &CapabilityToken, mode: Receive, limit: usize) -> Result<u64, InterpretError> {
         let socket = self.socket(token)?;
         if self.sockets[&socket].pending.is_some() { return Err(refused(OracleNetError::PendingReceive)); }
+        if self.sockets[&socket].buffered.is_some() {
+            return self.receive_buffered(socket, mode, limit);
+        }
         // Shutdown is not observed peer EOF: native's buffered reader may
         // still hold bytes. This wire-only fixture cannot infer that residency
         // from event boundaries. Refuse before touching the transcript or
@@ -237,6 +257,7 @@ impl NetState {
 
     fn close(&mut self, token: &CapabilityToken) -> Result<(), InterpretError> {
         let socket = self.socket(token)?;
+        if self.sockets[&socket].buffered.is_some() { return self.close_buffered(socket); }
         // Preflight without consuming even a partial chunk: a wrong/missing
         // Close or an intervening obligation must leave a retryable transcript.
         let unread = self.events.iter().take_while(|event|
