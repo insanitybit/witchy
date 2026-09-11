@@ -1,22 +1,35 @@
 //! Mechanical owner recipes. Opaque references never travel through linear
 //! storage; linear environments use the ordinary allocator and RC destructor.
 use super::*;
+use std::borrow::Cow;
 use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, OwnerOperation as O};
 
 const ENV: ValueId = ValueId::new(u32::MAX);
 const TEMP: ValueId = ValueId::new(u32::MAX - 1);
 
-fn context(function: &Function, local: &LocalLayout, op: &O) -> Result<(Function, LocalLayout, AdmittedOwnerBridge, u32), EncodeError> {
+fn context<'a>(function: &'a Function, local: &'a LocalLayout, op: &O) -> Result<(Cow<'a, Function>, Cow<'a, LocalLayout>, &'a AdmittedOwnerBridge, u32), EncodeError> {
     let error = || EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner kernel context" });
-    let bridge = local.owner_bridges.iter().find(|b| b.recipe() == &OwnerBridgeRecipe::of(op)).ok_or_else(error)?.clone();
+    let bridge = local.owner_bridges.iter().find(|b| b.recipe() == &OwnerBridgeRecipe::of(op)).ok_or_else(error)?;
     let scratch = local.owner_scratch.ok_or_else(error)?;
     if function.value_types.contains_key(&ENV) || function.value_types.contains_key(&TEMP) { return Err(error()); }
+    // Only environment construction/extraction uses the synthetic locals.
+    // Ordinary owner calls must not copy the source CFG and the complete
+    // module-wide cleanup catalog once per instruction.
+    if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. }) {
+        return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
+    }
     let mut function = function.clone();
-    let mut local = local.clone();
+    let mut local = LocalLayout {
+        owner_scratch: local.owner_scratch,
+        owner_bridges: Vec::new(),
+        indices: local.indices.clone(),
+        extra_types: local.extra_types.clone(),
+        scratch: local.scratch.clone(),
+    };
     function.value_types.insert(ENV, ValueType::Ref(bridge.family().environment));
     local.indices.insert(ENV, scratch[0]);
     local.indices.insert(TEMP, scratch[1]);
-    Ok((function, local, bridge, scratch[2]))
+    Ok((Cow::Owned(function), Cow::Owned(local), bridge, scratch[2]))
 }
 
 fn release_binding(bridge: &AdmittedOwnerBridge, release_import: u32) -> closure_owner_kernel::ReleaseBinding {
@@ -123,7 +136,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             for (capture, value) in constructor.captures.iter().zip(captures) {
                 let CaptureStorage::EnvironmentField(field) = capture.storage else { continue; };
                 let value = if matches!(capture.value_type, ValueType::Ref(_)) {
-                    function.value_types.insert(TEMP, capture.value_type);
+                    function.to_mut().value_types.insert(TEMP, capture.value_type);
                     emit_clone_ref(body, &local, TEMP, *value, &function)?;
                     TEMP
                 } else { *value };
@@ -197,7 +210,7 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             for (capture, value) in constructor.captures.iter().zip(captures) {
                 let CaptureStorage::EnvironmentField(field) = capture.storage else { continue; };
                 let value = if matches!(capture.value_type, ValueType::Ref(_)) {
-                    function.value_types.insert(TEMP, capture.value_type);
+                    function.to_mut().value_types.insert(TEMP, capture.value_type);
                     push_share_plan(plan, &local, TEMP, *value)?;
                     TEMP
                 } else { *value };
