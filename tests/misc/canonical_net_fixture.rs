@@ -286,3 +286,164 @@ fn canonical_net_fixture_native_close_preserves_pending_fill() {
         vm.run().map_err(|error| format!("{error:#}"))
     });
 }
+
+mod source_program {
+//! One whole source program, explicit grants, two real peers, and an independent
+//! oracle transcript. Wire chunks make no claims about kernel read boundaries.
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::time::{Duration, Instant};
+use witchy::runtime::{Capabilities, Runtime};
+use witchy_wir::canonical_interpreter::{
+    interpret_entry_program, interpret_program, InterpretError, InterpreterConfig,
+    InterpreterValue, OracleNetError, OracleNetEvent as Event, OracleNetFixture, OracleNetGrant,
+};
+use witchy_wir::canonical_safewir::FunctionId;
+
+#[test]
+fn full_source_net_program_agrees_with_admitted_wasm_and_independent_oracle() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("controlled loopback endpoint");
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let source = format!(r#"
+fn exchange(net: Net[Connect, Tcp], address: String) -> String:
+    let socket = net.connect(address)
+    socket.send_bytes("ping")
+    let head = socket.recv_bytes(4)
+    let line = socket.recv_line()
+    let tail = socket.recv_bytes(4)
+    socket.send_bytes("ack")
+    socket.close()
+    head + "|" + line + "|" + tail
+
+fn main(console: Console, net: Net[Connect, Tcp]):
+    console.print(exchange(net, "{address}"))
+    console.print("closed")
+"#);
+    let expected = ["pong|line\r|tail", "closed"];
+    let checked = witchy::resolve_std_only_checked(&source).expect("checked full source");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("full Net program admits without fixture-specific source changes");
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+    let entry = artifact.entry().unwrap();
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let transcript = vec![
+        Event::Connect { grant: 0, address: address.clone(), socket: 7 },
+        Event::Send { socket: 7, bytes: b"ping".to_vec() },
+        Event::Receive { socket: 7, bytes: b"pongline\r\ntail".to_vec() },
+        Event::Send { socket: 7, bytes: b"ack".to_vec() },
+        Event::Close { socket: 7 },
+    ];
+    let grant = OracleNetGrant {
+        connect: true, listen: false,
+        addresses: [address.clone()].into_iter().collect(),
+    };
+    let config = |grants| {
+        let mut config = InterpreterConfig::default();
+        config.fixture.net = Some(OracleNetFixture { grants, transcript: transcript.clone() });
+        config
+    };
+    // Both canonical launch APIs authenticate the normal entry signature, not
+    // capability names supplied by this test. Neither oracle run opens sockets.
+    for launch in [false, true] {
+        let tokens = || entry.capabilities().iter().copied()
+            .map(InterpreterValue::entry_capability).collect::<Vec<_>>();
+        let run = |values, fixture| if launch {
+            interpret_entry_program(&validated, function, values, &[], fixture)
+        } else {
+            interpret_program(&validated, function, values, fixture)
+        };
+        let result = run(tokens(), config(vec![grant.clone()])).unwrap();
+        assert_eq!(result.output, expected);
+        assert_eq!(result.net_trace, transcript, "consume every event exactly once");
+        assert_eq!(result.leaked_objects, 0);
+        assert_eq!(run(tokens(), config(vec![])), Err(InterpretError::ExplicitTrap));
+        let mut denied = grant.clone();
+        denied.connect = false;
+        assert_eq!(run(tokens(), config(vec![denied])),
+            Err(InterpretError::NetFixture(OracleNetError::RightsDenied)));
+        let mut wrong = tokens();
+        wrong[1] = wrong[0].clone();
+        assert_eq!(run(wrong, config(vec![grant.clone()])),
+            Err(InterpretError::TypeMismatch("capability parameter kind")));
+        let mut denied = grant.clone();
+        denied.addresses.clear();
+        assert!(run(tokens(), config(vec![denied])).is_err());
+    }
+
+    let mut runtime = Runtime::batch().unwrap();
+    // Real launchers must refuse absent authority and an explicit allowlist
+    // that excludes this endpoint, before producing output or connecting.
+    for allowed in [Vec::new(), vec!["127.0.0.1:1".to_owned()]] {
+        assert!(witchy::interpreter::run_checked_module(&checked, ".", allowed.clone()).is_err());
+        let missing = allowed.is_empty();
+        let spawned = runtime.spawn_admitted(&artifact, Capabilities {
+            print: true, quiet: true, net_connect: true,
+            net_allow: (!allowed.is_empty()).then_some(allowed), ..Default::default()
+        }, 256);
+        if missing {
+            let error = spawned.err().expect("ungranted Net imports must not link").to_string();
+            assert!(error.contains("witchy::net_"), "{error}");
+        } else {
+            let mut vm = spawned.unwrap();
+            assert!(vm.run().is_err());
+            assert!(vm.output().is_empty());
+        }
+    }
+    assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock,
+        "refused source/Wasm and all oracle launches must leave the peer untouched");
+
+    let peer = std::thread::spawn(move || {
+        let mut effects = Vec::new();
+        // The listener stays bound: source and Wasm use the identical source
+        // and endpoint sequentially, not independently guessed free ports.
+        for leg in ["source", "Wasm"] {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+                    Err(error) => panic!("bounded peer accept: {error}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            socket.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut request = [0; 4];
+            socket.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"ping");
+            for chunk in [&b"po"[..], &b"ngli"[..], &b"ne\r\n"[..], &b"tail"[..]] {
+                socket.write_all(chunk).unwrap();
+            }
+            // Keep the peer write half open: the fixed-length protocol needs
+            // no peer EOF, and the client's explicit close must cause EOF here.
+            let mut acknowledgement = [0; 3];
+            socket.read_exact(&mut acknowledgement).unwrap();
+            assert_eq!(&acknowledgement, b"ack");
+            let mut extra = [0; 1];
+            assert_eq!(socket.read(&mut extra).unwrap_or_else(|error|
+                panic!("{leg} peer did not observe close: {error}")), 0, "close, with no extra sends");
+            effects.push((request, acknowledgement));
+        }
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        effects
+    });
+    // This is the production checked-module source launcher, not the builtin
+    // test driver or a fixture-injected interpreter transport.
+    let interpreted = witchy::interpreter::run_checked_module(&checked, ".", vec![address.clone()]);
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        print: true, quiet: true, net_allow: Some(vec![address]), net_connect: true,
+        ..Default::default()
+    }, 256).unwrap();
+    let compiled = vm.run();
+    eprintln!("full source result: {interpreted:?}; admitted Wasm result: {compiled:?}; output: {:?}", vm.output());
+    let effects = peer.join().expect("source and Wasm peer completed");
+    assert_eq!(interpreted.expect("full source execution"), expected);
+    compiled.expect("admitted Wasm execution");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+    assert_eq!(effects, vec![(*b"ping", *b"ack"); 2]);
+}
+
+}
