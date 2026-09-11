@@ -15,6 +15,8 @@ mod rfc0165_net;
 
 #[path = "misc/canonical_net_fixture.rs"]
 mod canonical_net_fixture;
+#[path = "misc/canonical_net_read_profile.rs"]
+mod canonical_net_read_profile;
 #[path = "misc/canonical_tail_binding.rs"]
 mod canonical_tail_binding;
 
