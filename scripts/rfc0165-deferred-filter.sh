@@ -5,6 +5,9 @@
 # `binary-id test-name` per line, `#` comments. Output is `all()` when the
 # list is empty, otherwise `not ((binary_id(=B) and test(=T)) or ...)`, so
 # the caller can always pass it as `-E`.
+# An optional second argument selects one package's binaries. Validate the
+# entire list before omitting other packages: scoping never hides a forbidden
+# security-suite exclusion.
 #
 # Two invariants are enforced here rather than trusted: every entry names a
 # tracked binary (nextest refuses a filterset whose binary_id matches
@@ -15,6 +18,7 @@
 # are a deferred family, not a security suite.)
 set -euo pipefail
 list="${1:-$(dirname "$0")/rfc0165-deferred-tests.txt}"
+package="${2:-}"
 if [ ! -r "$list" ]; then
     echo "rfc0165-deferred-filter: unreadable list '$list'" >&2
     exit 2
@@ -42,6 +46,12 @@ while read -r binary test _; do
             echo "rfc0165-deferred-filter: '$binary $test' would defer a foundation test" >&2
             exit 2 ;;
     esac
+    if [ -n "$package" ]; then
+        case "$binary" in
+            "$package"|"$package"::*) ;;
+            *) continue ;;
+        esac
+    fi
     terms="${terms:+$terms or }(binary_id(=$binary) and test(=$test))"
 done < "$list"
 if [ -n "$terms" ]; then

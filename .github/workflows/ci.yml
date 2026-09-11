@@ -72,7 +72,9 @@ jobs:
       # the focused suites reuse its artifacts; shard 1 is the required owner.
       - name: RFC-0165 native SafeWIR security suites
         if: matrix.shard == 1
-        run: bash ./scripts/rfc0165-native-gate.sh
+        run: |
+          bash ./scripts/rfc0165-native-gate-policy-test.sh
+          bash ./scripts/rfc0165-native-gate.sh
       # Deny only the genuine-bug tiers (see scripts/check.sh CLIPPY_GATE_LINTS):
       # correctness + suspicious + dropped-must-use. Style/complexity/perf lints
       # still print but do not fail CI — a needless borrow is not a merge blocker.

@@ -9,4 +9,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 cargo test -p witchy-wir --features native --tests
-cargo test -p witchy-lower --features witchy-wir/native --tests
+# The lowerer also contains legacy codegen fixtures in the shared deferred
+# list. Scope that same policy to this package, not to a handwritten subset.
+# Cargo still builds every test; canonical security tests cannot be deferred.
+filter="$(./scripts/rfc0165-deferred-filter.sh scripts/rfc0165-deferred-tests.txt witchy-lower)"
+cargo nextest run -p witchy-lower --features witchy-wir/native --tests -E "$filter"
