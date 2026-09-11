@@ -808,3 +808,17 @@ Independent review and queue submission are still pending at this entry; no
 terminal landing or new corpus count is claimed. Task<Tuple> catalog units are
 worker-green, but its Wasm execution still refuses an owner-list capture and is
 not included as completed coverage.
+
+### 2026-09-11: integration-driver budget repaired without exclusions
+
+Queue candidate `7fd626fcef447933ff3f272f466438ec8e74d1f2` reached a terminal
+red event at 17:55:58Z: `architecture::root_integration_test_binaries_stay_within_budget`
+found 27 root test binaries against the unchanged budget of 25. The new Net
+fixture and tail-binding tests now live under `tests/misc/` and remain registered
+in the existing driver; no assertions or deferred-test filters were changed.
+Focused native `--test misc` results: `canonical_net_` 13 passed,
+`canonical_tail_binding::` 1 passed (three cases), and the exact architecture
+budget test 1 passed. Logs are `/tmp/witchy-consolidated-net-tests.log`,
+`/tmp/witchy-consolidated-tail-tests.log`, and
+`/tmp/witchy-consolidated-driver-budget.log`. This is the resubmission repair,
+not a claim of a green full gate or master landing.

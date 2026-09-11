@@ -13,6 +13,11 @@ mod rfc0165_messages;
 #[path = "misc/rfc0165_net.rs"]
 mod rfc0165_net;
 
+#[path = "misc/canonical_net_fixture.rs"]
+mod canonical_net_fixture;
+#[path = "misc/canonical_tail_binding.rs"]
+mod canonical_tail_binding;
+
 #[path = "misc/rfc_status_hygiene.rs"]
 mod rfc_status_hygiene;
 #[path = "misc/example_source_paths.rs"]
