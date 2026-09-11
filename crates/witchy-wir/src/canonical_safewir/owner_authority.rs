@@ -1,7 +1,7 @@
 //! Independent checked-source binding for opaque closure constructors.
 //! Candidate IDs and field maps are claims, never capability authority.
 use super::authority::*;
-use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerFamily, OwnerFamilySource, OwnerOperation, SourceConstructor};
+use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SourceConstructor};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_types::canonical_closure::ClosureBindingPathStep;
@@ -35,9 +35,7 @@ pub(super) fn validate<S: ModuleStage>(
         let mut observed = BTreeSet::new();
         for constructor in &family.constructors {
             let Some(closure) = constructor.witness else {
-                if constructor.environment_tag != 0 || !constructor.captures.is_empty() {
-                    return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: constructor.function });
-                }
+                validate_adapter_constructor(candidate, family, constructor)?;
                 continue;
             };
             let refuse = || CandidateAbiBindingError::CapturingClosureBinding { closure };
@@ -136,6 +134,17 @@ pub(super) fn validate<S: ModuleStage>(
                             family.constructors.iter().any(|entry| entry.id == *constructor))
                             .ok_or(CandidateAbiBindingError::MissingClosureWitness { closure: constructor.0 })?;
                         if matches!(family.source, OwnerFamilySource::Aggregate(_)) {
+                            continue;
+                        }
+                        let declared = family.constructors.iter().find(|entry| entry.id == *constructor)
+                            .expect("family selected by constructor");
+                        if declared.witness.is_none() {
+                            // The family pass binds this constructor to a
+                            // source-declaration adapter, not a lambda ordinal.
+                            // Its call has no lexical captures to authenticate.
+                            if !captures.is_empty() {
+                                return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: declared.function });
+                            }
                             continue;
                         }
                         let checked = SourceConstructor::from_checked(source, *constructor)
@@ -251,6 +260,28 @@ pub(super) fn validate<S: ModuleStage>(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_adapter_constructor<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    family: &OwnerFamily,
+    constructor: &OwnerConstructor,
+) -> Result<(), CandidateAbiBindingError> {
+    let refuse = || CandidateAbiBindingError::AdapterShapeMismatch { adapter: constructor.function };
+    let binding = candidate.adapter_bindings().entries().iter()
+        .find(|binding| binding.adapter() == constructor.function).ok_or_else(refuse)?;
+    let adapter = candidate.functions().iter().find(|function| function.id == binding.adapter()).ok_or_else(refuse)?;
+    let target = candidate.functions().iter().find(|function| function.id == binding.target()).ok_or_else(refuse)?;
+    // The enclosing authority validation independently binds this target to
+    // checked source and checks the adapter's forwarding body. Candidate names
+    // and constructor ordinals cannot substitute for either binding.
+    if constructor.witness.is_some() || constructor.environment_tag != 0 || !constructor.captures.is_empty()
+        || adapter.signature != family.signature || target.signature != family.declaration_signature
+        || !candidate.source_abi_bindings().entries().iter().any(|entry| entry.function() == target.id)
+    {
+        return Err(refuse());
     }
     Ok(())
 }

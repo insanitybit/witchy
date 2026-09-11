@@ -14070,6 +14070,60 @@ fn main(console: Console):
     }
 
     #[test]
+    fn nested_logging_adapter_requires_source_binding_not_lambda_witness() {
+        use witchy_wir::canonical_safewir::{CandidateAdapterBindings, CandidateAdapterBinding};
+        let checked = checked(r#"
+fn logging(console: Console) -> fn(fn(Int) -> Int) -> fn(Int) -> Int:
+    fn(next: fn(Int) -> Int):
+        fn(n: Int):
+            console.print("request")
+            next(n)
+fn next(n: Int) -> Int:
+    n + 1
+fn exercise(console: Console) -> Int:
+    let layer = logging(console)
+    let handler = layer(next)
+    handler(4)
+"#);
+        let source = checked.canonical_source().expect("checked nested closure witnesses");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("layouts");
+        let candidate = lower_typed_module(source, layouts).expect("nested logging candidate")
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let (family_index, constructor_index) = candidate.owner_families().iter().enumerate()
+            .find_map(|(family, entry)| entry.constructors.iter().position(|c| c.witness.is_none())
+                .map(|constructor| (family, constructor))).expect("named adapter in opaque family");
+        let adapter = candidate.owner_families()[family_index].constructors[constructor_index].function;
+        check_initial_with_witness(candidate.clone(), source).expect("source-bound adapter does not need a lambda witness");
+
+        let missing = candidate.clone().with_adapter_bindings(CandidateAdapterBindings::new(
+            candidate.adapter_bindings().entries().iter().filter(|binding| binding.adapter() != adapter).cloned().collect()));
+        assert!(check_initial_with_witness(missing, source).is_err());
+        let redirected = candidate.clone().with_adapter_bindings(CandidateAdapterBindings::new(
+            candidate.adapter_bindings().entries().iter().map(|binding| {
+                if binding.adapter() == adapter { CandidateAdapterBinding::new(adapter, adapter) } else { binding.clone() }
+            }).collect()));
+        assert!(check_initial_with_witness(redirected, source).is_err());
+
+        let families = candidate.owner_families().to_vec();
+        let mut tagged = families.clone();
+        tagged[family_index].constructors[constructor_index].environment_tag = 1;
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(tagged), source).is_err());
+        let mut capturing = families.clone();
+        let capture = families.iter().flat_map(|family| &family.constructors)
+            .flat_map(|constructor| &constructor.captures).next().expect("logging captures authority").clone();
+        capturing[family_index].constructors[constructor_index].captures.push(capture);
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(capturing), source).is_err());
+
+        let mut missing_lambda = families;
+        let lambda = missing_lambda.iter_mut().flat_map(|family| &mut family.constructors)
+            .find(|constructor| constructor.witness.is_some()).expect("actual lambda witness");
+        lambda.witness = None;
+        lambda.environment_tag = 0;
+        lambda.captures.clear();
+        assert!(check_initial_with_witness(candidate.with_owner_families(missing_lambda), source).is_err());
+    }
+
+    #[test]
     fn mismatched_typed_closure_environment_tag_is_refused_before_capture_load() {
         let source_text = r#"
 fn main() -> Int:
