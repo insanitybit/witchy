@@ -262,35 +262,32 @@ fn validate_aggregate_family<S: ModuleStage>(
     records: &BTreeMap<String, witchy_syntax::ast::TypeDef>,
     layouts: &crate::layout::LayoutInterner,
 ) -> Result<(), CandidateAbiBindingError> {
-    use witchy_syntax::ast::{effective_type_def_params, Type};
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
     let normalized = witchy_types::canonical_aggregates::concrete_aggregate_identity(claimed, records)
         .ok_or_else(refuse)?;
     if &normalized != claimed { return Err(refuse()); }
-    let Type::Named(name, arguments) = normalized.unqualified() else { return Err(refuse()); };
-    let definition = records.get(name).filter(|definition| !definition.is_capability).ok_or_else(refuse)?;
-    let parameters = effective_type_def_params(definition);
-    if parameters.len() != arguments.len() || definition.variants.len() != family.constructors.len()
+    let shape = witchy_types::canonical_aggregates::scalar_aggregate_shape(&normalized, records)
+        .filter(|shape| !shape.packed).ok_or_else(refuse)?;
+    if shape.variants.len() != family.constructors.len()
         || family.constructors.is_empty()
     {
         return Err(refuse());
     }
-    let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect::<BTreeMap<_, _>>();
     let mut environment_field = 1_u32;
     let mut owner_field = 2_u32;
     let mut expected_environment = BTreeMap::new();
-    for (variant_index, (variant, constructor)) in definition.variants.iter().zip(&family.constructors).enumerate() {
+    for (variant_index, (variant, constructor)) in shape.variants.iter().zip(&family.constructors).enumerate() {
         if constructor.witness.is_some()
             || constructor.environment_tag != i64::try_from(variant_index).map_err(|_| refuse())?
-            || constructor.captures.len() != variant.fields.len()
+            || constructor.captures.len() != variant.arity
         {
             return Err(refuse());
         }
-        for (declared, source_field) in constructor.captures.iter().zip(&variant.fields) {
-            let source_field = substitute_source_type(source_field, &substitutions);
+        for (declared, source_field) in constructor.captures.iter().zip(
+            &shape.fields[variant.first_field..variant.first_field + variant.arity]) {
             if !value_type_matches_source(
                 declared.value_type,
-                &source_field,
+                source_field,
                 layouts,
                 candidate.signatures(),
                 &mut CorrespondenceContext::with_owners(candidate),
@@ -328,36 +325,14 @@ fn validate_aggregate_family<S: ModuleStage>(
             if declared.storage != storage || declared.transfer != transfer { return Err(refuse()); }
         }
     }
-    validate_environment_layout(family.environment, &expected_environment, layouts)
-}
-
-fn substitute_source_type(
-    source: &witchy_syntax::ast::Type,
-    substitutions: &BTreeMap<String, witchy_syntax::ast::Type>,
-) -> witchy_syntax::ast::Type {
-    use witchy_syntax::ast::Type;
-    match source {
-        Type::Named(name, arguments) if arguments.is_empty() && substitutions.contains_key(name) => substitutions[name].clone(),
-        Type::Named(name, arguments) => Type::Named(name.clone(), arguments.iter().map(|argument| substitute_source_type(argument, substitutions)).collect()),
-        Type::Tuple(fields) => Type::Tuple(fields.iter().map(|field| substitute_source_type(field, substitutions)).collect()),
-        Type::Slice(element) => Type::Slice(Box::new(substitute_source_type(element, substitutions))),
-        Type::RecordCompose { base, fields } => Type::RecordCompose {
-            base: Box::new(substitute_source_type(base, substitutions)),
-            fields: fields.iter().map(|(name, field)| (name.clone(), substitute_source_type(field, substitutions))).collect(),
-        },
-        Type::Fn(parameters, result, conventions, qualifiers) => Type::Fn(
-            parameters.iter().map(|parameter| substitute_source_type(parameter, substitutions)).collect(),
-            Box::new(substitute_source_type(result, substitutions)), conventions.clone(), *qualifiers,
-        ),
-        Type::Qualified(qualifier, inner) => Type::Qualified(qualifier.clone(), Box::new(substitute_source_type(inner, substitutions))),
-        Type::Dyn(name, arguments) => Type::Dyn(name.clone(), arguments.iter().map(|argument| substitute_source_type(argument, substitutions)).collect()),
-    }
+    validate_environment_layout(family.environment, &expected_environment, layouts, shape.tagged)
 }
 
 fn validate_environment_layout(
     environment: crate::layout::LayoutId,
     expected: &BTreeMap<u32, ValueType>,
     layouts: &crate::layout::LayoutInterner,
+    tagged: bool,
 ) -> Result<(), CandidateAbiBindingError> {
     let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
     let physical = layouts.resolve_nominal(environment).map_err(|_| refuse())?;
@@ -379,7 +354,11 @@ fn validate_environment_layout(
             | (ValueType::Bool, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Bool))
             | (ValueType::Unit, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Unit))
             | (ValueType::Size, crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::U32)) => true,
-            (ValueType::Ref(layout), crate::layout::LayoutKind::RuntimePointerValueSlot { pointee, semantics: crate::layout::PointerSlot::OwnedNullable }) => layout == pointee,
+            (ValueType::Ref(layout), crate::layout::LayoutKind::RuntimePointerValueSlot { pointee, semantics }) => {
+                layout == pointee && *semantics == if tagged {
+                    crate::layout::PointerSlot::OwnedNullable
+                } else { crate::layout::PointerSlot::Owned }
+            }
             _ => false,
         };
         if !matched { return Err(refuse()); }
@@ -491,6 +470,37 @@ mod tests {
         assert!(validate_aggregate_family(&candidate, &wrong_type,
             match &wrong_type.source { OwnerFamilySource::Aggregate(ty) => ty, _ => unreachable!() },
             &records, &layouts).is_err());
+    }
+
+    #[test]
+    fn aggregate_tuple_owner_binds_exact_fields_and_storage() {
+        let (candidate, mut family, records, layouts) = aggregate_fixture();
+        let tuple = Type::Tuple(vec![Type::Named("Int".into(), Vec::new())]);
+        family.source = OwnerFamilySource::Aggregate(tuple.clone());
+        family.constructors.truncate(1);
+        validate_aggregate_family(&candidate, &family, &tuple, &records, &layouts)
+            .expect("structural tuple fields authorize the exact constructor");
+        family.constructors[0].captures[0].storage = CaptureStorage::OwnerField(2);
+        assert!(validate_aggregate_family(&candidate, &family, &tuple, &records, &layouts).is_err());
+        family.constructors[0].captures[0].storage = CaptureStorage::EnvironmentField(1);
+        let wrong = Type::Tuple(vec![Type::Named("Bool".into(), Vec::new())]);
+        assert!(validate_aggregate_family(&candidate, &family, &wrong, &records, &layouts).is_err());
+    }
+
+    #[test]
+    fn aggregate_environment_nullability_is_bound_to_checked_variant_shape() {
+        use crate::layout::{LayoutInterner, ScalarKind, PointerSlot};
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
+        let string = layouts.intern_runtime_buffer(byte).unwrap();
+        let expected = BTreeMap::from([(1, ValueType::Ref(string))]);
+        for (semantics, tagged) in [(PointerSlot::Owned, false), (PointerSlot::OwnedNullable, true)] {
+            let pointer = layouts.intern_runtime_pointer_value_slot(string, semantics).unwrap();
+            let environment = layouts.intern_packed_record(vec![int, pointer]).unwrap();
+            validate_environment_layout(environment, &expected, &layouts, tagged).unwrap();
+            assert!(validate_environment_layout(environment, &expected, &layouts, !tagged).is_err());
+        }
     }
 
     #[test]

@@ -1414,6 +1414,67 @@ mod tests {
     }
 
     #[test]
+    fn checked_task_tuple_catalog_preserves_owner_fields_and_nonnullable_storage() {
+        use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
+        let application = PackageCoordinate::new(PackageSource::Workspace, "test/task-tuple-catalog", "0.1.0").unwrap();
+        let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
+        owners.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
+        }));
+        let source = b"import chan\nasync fn next(n: Int) -> Int:\n    n + 1\nasync fn main(console: Console):\n    let values = chan.par_map([4], fn(n): next(n)).await\n    console.print(\"${values}\")\n";
+        let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".into(), source.to_vec()),
+                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec()),
+                ("chan".into(), include_bytes!("../../../std/chan.witchy").to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+            &std::collections::HashSet::from(["main".into()]),
+            AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
+        ).expect("the actual Task<Tuple> source checks");
+        let tuple = Type::Tuple(vec![
+            Type::Named("List".into(), vec![Type::Named("task.Task".into(), vec![named("Nil")])]),
+            Type::Named("List".into(), vec![Type::Named("chan.Receiver".into(), vec![named("Int")])]),
+        ]);
+        let task = Type::Named("task.Task".into(), vec![tuple.clone()]);
+        let (bundle, _, families) = super::project_layouts(checked.canonical_source().unwrap())
+            .expect("exact checked Task<Tuple> layouts project")
+            .finish_with_families().expect("exact checked catalog finishes");
+        let tuple_family = families.get(&tuple).expect("exact concrete tuple owner identity");
+        let task_family = families.get(&task).expect("exact concrete Task<Tuple> owner identity");
+        assert_eq!(tuple_family.source, tuple);
+        assert_eq!(task_family.source, task);
+        assert_ne!(tuple_family.owner_type, task_family.owner_type);
+        assert_eq!(task_family.variants.len(), 1);
+        assert_eq!(task_family.variants[0].storage, vec![CaptureStorage::OwnerField(2)]);
+        assert_eq!(tuple_family.variants.len(), 1);
+        assert_eq!(tuple_family.variants[0].fields, match &tuple {
+            Type::Tuple(fields) => fields.clone(),
+            _ => unreachable!(),
+        });
+        assert_eq!(tuple_family.variants[0].storage, vec![
+            CaptureStorage::OwnerField(2), CaptureStorage::EnvironmentField(1),
+        ]);
+        assert!(bundle.roots().contains(&task_family.environment));
+        assert!(bundle.roots().contains(&tuple_family.environment));
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
+            .expect("exact Task<Tuple> catalog roundtrips");
+        let task_body = layouts.nominal_target(task_family.environment).expect("Task environment binding");
+        let LayoutKind::PackedRecord { fields } = layouts.get(task_body).unwrap().kind() else {
+            panic!("Task environment is a packed record");
+        };
+        assert_eq!(fields.len(), 1, "the GC callback never occupies a linear slot");
+        let tuple_body = layouts.nominal_target(tuple_family.environment).expect("tuple environment binding");
+        let LayoutKind::PackedRecord { fields } = layouts.get(tuple_body).unwrap().kind() else {
+            panic!("tuple environment is a packed record");
+        };
+        assert_eq!(fields.len(), 2, "the GC task list never occupies a linear slot");
+        assert!(matches!(layouts.get(fields[1]).unwrap().kind(),
+            LayoutKind::RuntimePointerValueSlot { semantics: PointerSlot::Owned, .. }),
+            "the untagged tuple receiver-list field is owned, not nullable");
+    }
+
+    #[test]
     fn task_like_aggregate_uses_existing_opaque_closure_owner() {
         let callback = Type::Fn(
             vec![named("Int")],

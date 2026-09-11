@@ -109,10 +109,21 @@ const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// bounds changing generic recursion before it clones its next expanded field.
 const MAX_AGGREGATE_SHAPE_NODES: usize = 4_096;
 
-// Per-query only: definitions are immutable for the whole traversal. Preserve
-// recursion assumptions and remaining depth in the key, so a successful check
-// under one active nominal stack cannot authorize a different cycle context.
-type ShapeMemo = BTreeSet<(String, usize, Vec<String>)>;
+// Per-query proofs over immutable definitions. A proof can be reused only at
+// equal or shallower depth, with every recursion assumption still active.
+// Extra active owners can shorten a traversal, but cannot grant an assumption
+// the original proof required. Packed back-edges are rejected before lookup.
+#[derive(Default)]
+struct ShapeMemo {
+    completed: BTreeMap<String, Vec<(usize, BTreeSet<String>)>>,
+    packed_keys: BTreeSet<String>,
+}
+
+impl ShapeMemo {
+    fn new() -> Self {
+        Self::default()
+    }
+}
 
 fn field_type_ok(ty: &Type, definitions: &BTreeMap<String, TypeDef>, active: &mut BTreeSet<String>) -> bool {
     let mut budget = MAX_AGGREGATE_SHAPE_NODES;
@@ -208,14 +219,26 @@ fn definition_fields_ok(
     // bypass the depth and work limits for an oversized generic argument.
     let instantiated = Type::Named(definition.name.clone(), arguments.to_vec());
     let Some(key) = aggregate_key(&instantiated) else { return false };
-    let memo_key = (key.clone(), depth, active.iter().cloned().collect());
-    if completed.contains(&memo_key) { return true; }
     // This recognizes a finite source shape graph, not allocation authority.
     // Recursive occurrences need an owned nominal binding in the layout layer;
     // an inline packed occurrence cannot close the graph this way.
-    if !active.insert(key.clone()) {
+    if definition.packed {
+        completed.packed_keys.insert(key.clone());
+    }
+    if active.contains(&key) {
         return !definition.packed;
     }
+    // Additional active owners can close more finite graph edges, but an
+    // additional packed ancestor can invalidate a descendant hidden by reuse.
+    // Every packed key encountered while deriving a proof is retained here.
+    if completed.completed.get(&key).is_some_and(|proofs| proofs.iter().any(|(proven_depth, assumptions)| {
+        *proven_depth >= depth && assumptions.is_subset(active)
+            && active.difference(assumptions).all(|key| !completed.packed_keys.contains(key))
+    })) {
+        return true;
+    }
+    let assumptions = active.clone();
+    active.insert(key.clone());
     let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect();
     let valid = definition.variants.iter().all(|variant| {
         variant.fields.iter().all(|field| {
@@ -228,7 +251,7 @@ fn definition_fields_ok(
         })
     });
     active.remove(&key);
-    if valid { completed.insert(memo_key); }
+    if valid { completed.completed.entry(key).or_default().push((depth, assumptions)); }
     valid
 }
 
@@ -583,6 +606,70 @@ mod recursive_shape_tests {
     }
 
     #[test]
+    fn shape_memo_reuse_requires_all_recursion_assumptions() {
+        let definitions = BTreeMap::from([
+            ("A".into(), definition("A", vec![named("B"), named("Missing")], false)),
+            ("B".into(), definition("B", vec![named("A")], false)),
+        ]);
+        let mut completed = ShapeMemo::new();
+        assert!(field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::from(["A".into()]), 0,
+            &mut MAX_AGGREGATE_SHAPE_NODES, &mut completed));
+        // One node pays for the lookup, so success requires proof reuse. The
+        // additional active owner does not remove the original A assumption.
+        assert!(field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::from(["A".into(), "Extra".into()]), 0,
+            &mut 1, &mut completed));
+        assert!(!field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::new(), 0,
+            &mut MAX_AGGREGATE_SHAPE_NODES, &mut completed),
+            "the cached B proof cannot hide A's unsupported field without its assumption");
+    }
+
+    #[test]
+    fn shape_memo_never_waives_depth_or_packed_backedge_rejection() {
+        let definitions = BTreeMap::from([
+            ("Leaf".into(), definition("Leaf", vec![named("Int")], false)),
+            ("Packed".into(), definition("Packed", vec![named("Owner")], true)),
+            ("Owner".into(), definition("Owner", vec![named("Packed")], false)),
+        ]);
+        let mut completed = ShapeMemo::new();
+        assert!(field_type_ok_at(&named("Leaf"), &definitions, &mut BTreeSet::new(),
+            MAX_AGGREGATE_SHAPE_EXPANSION - 3, &mut MAX_AGGREGATE_SHAPE_NODES, &mut completed));
+        assert!(!field_type_ok_at(&named("Leaf"), &definitions, &mut BTreeSet::new(),
+            MAX_AGGREGATE_SHAPE_EXPANSION - 2, &mut MAX_AGGREGATE_SHAPE_NODES, &mut completed));
+        assert!(field_type_ok_at(&named("Packed"), &definitions,
+            &mut BTreeSet::from(["Owner".into()]), 0,
+            &mut MAX_AGGREGATE_SHAPE_NODES, &mut completed));
+        assert!(!field_type_ok_at(&named("Packed"), &definitions,
+            &mut BTreeSet::from(["Owner".into(), "Packed".into()]), 0,
+            &mut MAX_AGGREGATE_SHAPE_NODES, &mut completed));
+    }
+
+    #[test]
+    fn shape_memo_rejects_newly_active_packed_descendants() {
+        let definitions = BTreeMap::from([
+            ("B".into(), definition("B", vec![named("P")], false)),
+            ("P".into(), definition("P", vec![named("B")], true)),
+        ]);
+        let mut completed = ShapeMemo::new();
+        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
+        assert!(field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::new(), 0, &mut budget, &mut completed));
+        // Reuse with no new assumptions is still a one-node lookup.
+        assert!(field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::new(), 0, &mut 1, &mut completed));
+        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
+        assert!(!field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::from(["P".into()]), 0, &mut budget, &mut ShapeMemo::new()),
+            "uncached B -> P must reject the packed backedge");
+        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
+        assert!(!field_type_ok_at(&named("B"), &definitions,
+            &mut BTreeSet::from(["P".into()]), 0, &mut budget, &mut completed),
+            "cached B must not hide its newly active packed descendant P");
+    }
+
+    #[test]
     fn recursive_shapes_handle_mutual_cycles_and_exact_builtin_arity() {
         let definitions = BTreeMap::from([
             ("A".into(), definition("A", vec![named("B")], false)),
@@ -745,6 +832,38 @@ pub fn scalar_aggregate_shape(
 mod scheduler_shape_tests {
     use super::*;
     use crate::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+
+    #[test]
+    fn canonical_task_tuple_has_a_bounded_concrete_shape() {
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0").unwrap();
+        let application = PackageCoordinate::new(PackageSource::Workspace, "test/task-tuple-shape", "0.1.0").unwrap();
+        let mut owners = vec![("main".into(), ModuleLoadIdentity::new(application, ["main"]).unwrap())];
+        owners.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
+        }));
+        let source = b"import chan\nasync fn next(n: Int) -> Int:\n    n + 1\nasync fn main(console: Console):\n    let values = chan.par_map([4], fn(n): next(n)).await\n    console.print(\"${values}\")\n";
+        let checked = crate::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".into(), source.to_vec()),
+                ("task".into(), include_bytes!("../../../std/task.witchy").to_vec()),
+                ("chan".into(), include_bytes!("../../../std/chan.witchy").to_vec())],
+            "main", |_, _, _| Ok(Default::default()),
+            &std::collections::HashSet::from(["main".into()]),
+            AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
+        ).expect("the actual task-tuple source checks");
+        let definitions = type_definitions(checked.canonical_source().unwrap().typed_module().module());
+        let nil = Type::Named("Nil".into(), vec![]);
+        let int = Type::Named("Int".into(), vec![]);
+        let tuple = Type::Tuple(vec![
+            Type::Named("List".into(), vec![Type::Named("task.Task".into(), vec![nil])]),
+            Type::Named("List".into(), vec![Type::Named("chan.Receiver".into(), vec![int])]),
+        ]);
+        let task = Type::Named("task.Task".into(), vec![tuple.clone()]);
+        assert!(is_v1_field_type(&tuple, &definitions), "the concrete tuple argument is supported");
+        let mut budget = MAX_AGGREGATE_SHAPE_NODES;
+        let valid = field_type_ok_at(&task, &definitions, &mut BTreeSet::new(), 0, &mut budget, &mut ShapeMemo::new());
+        assert!(valid, "finite Task<Tuple> refused with {budget} shape nodes remaining");
+        assert!(scalar_aggregate_shape(&task, &definitions).is_some());
+    }
 
     #[test]
     fn canonical_scheduler_slot_is_a_finite_owned_graph() {
