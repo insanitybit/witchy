@@ -768,3 +768,27 @@ probes. It has not yet landed.
 
 A new check-only example census is running on this integrated production binary.
 No fresh global runnable/parity total is claimed.
+
+### 2026-09-11: Net semantic fixtures integrated; tail-shadowing blocker withheld
+
+- Integration code `73f4a8ba9` (finding placement `cec735032`) adds explicit
+  Net grants, execution-bound socket tokens, ordered wire transcripts, bounded
+  receive staging, and complete opaque-owner/list leak accounting in both
+  canonical oracle launch APIs. No production checker or native-runtime rule
+  was weakened.
+- Integrated focused command: `RUSTC_WRAPPER= CC=cc CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target taskpolicy -c utility cargo test -q -p witchy --features witchy-wir/native --test canonical_net_fixture -- --nocapture`.
+  Result: **6 passed**, 0 failed, 0 filtered, 0.88 seconds execution;
+  `/tmp/witchy-net-oracle-integrated-tests.log`.
+- This is native/oracle fixture evidence, not a completed three-legged Net
+  census. Source-interpreter fixture integration and independently specified
+  buffered reads after local socket close remain open. Nonzero post-close
+  oracle reads explicitly refuse instead of manufacturing EOF; native behavior
+  is unchanged. See `security-eval/findings/BUG-2026-09-11-oracle-close-partial-receive.md`.
+- The uncommitted `typeck.rs` proper-tail change fixes the original RFC-0087
+  regression (1 executable test passed, 2.87 seconds), but a shadowed binding
+  produces interpreter `["1 120"]` versus compiled `["12 120"]`. It remains
+  withheld and unsubmitted. Reproducer and cause are recorded in
+  `security-eval/findings/BUG-2026-09-11-proper-tail-shadowed-writeback.md`.
+- No new full gate or landing is claimed. Last complete check census remains
+  156/163; the interrupted later census is partial evidence only. Task<Tuple>
+  execution and the remaining security/optimizer obligations are still open.
