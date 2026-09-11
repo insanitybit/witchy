@@ -1373,6 +1373,64 @@ impl<'a> MemoryChecker<'a> {
         false
     }
 
+    /// Completeness describes the logical prefix, not arbitrary capacity-tail
+    /// writes. Keep that evidence, but account for every separately held edge
+    /// before accepting it. Facts follow allocation identity across SSA moves.
+    fn require_owned_edges_within_prefix(
+        &self,
+        object: ValueId,
+        state: &ObjectState,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout() else {
+            return Ok(());
+        };
+        if !matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. }) {
+            return Ok(());
+        }
+        let count = match state.extent {
+            Extent::Counted { count, .. } => Some(count),
+            Extent::HeaderPrefix { .. } => self.state.header_values.get(&(object, HeaderField::Length)).copied(),
+            _ => None,
+        };
+        for ((container, slot), stored) in &self.state.stored_objects {
+            if !self.same_allocation(object, *container) || stored.ownership == Ownership::Consumed {
+                continue;
+            }
+            // Unknown count or slot bounds grant no containment proof. For a
+            // constant-keyed slot, reuse an existing scalar/bounds fact rather
+            // than inventing a new scalar or treating capacity as length.
+            let inside = count.is_some_and(|count| match slot {
+                SlotIdentity::Dynamic(index) => self.strict_less(*index, count),
+                SlotIdentity::Constant(index) => {
+                    self.state.constants.get(&count).is_some_and(|count| index < count)
+                        || self.state.constants.iter().any(|(value, constant)|
+                            constant == index && self.strict_less(*value, count))
+                }
+            });
+            if !inside { return self.unsupported(operation); }
+        }
+        for (identity, range) in &self.state.range_states {
+            if !self.same_allocation(object, identity.object)
+                || !range.initialized || range.ownership == Ownership::Consumed
+            {
+                // A moved-out range retains its extent as history, not as
+                // live child ownership. It must not prevent source cleanup.
+                continue;
+            }
+            if range.zero_width || self.is_zero(identity.length) { continue; }
+            // A checked zero-start prefix may have lost its original zero SSA
+            // value at a join. Non-prefix ranges need the ordinary exact-end
+            // judgment. Unknown bounds fail closed; no extent is guessed.
+            let inside = count.is_some_and(|count| {
+                if range.zero_start { self.less_equal(identity.length, count) }
+                else { self.range_within(identity.start, identity.length, count) }
+            });
+            if !inside { return self.unsupported(operation); }
+        }
+        Ok(())
+    }
+
     fn require_owned_slots_initialized(
 
         &self,
@@ -1384,6 +1442,7 @@ impl<'a> MemoryChecker<'a> {
         }
         let state = self.live_object(object)?;
         let allocation_identity = state.identity;
+        self.require_owned_edges_within_prefix(object, state, operation)?;
         if state.initialized_owned_slots {
             return Ok(());
         }
@@ -2989,9 +3048,15 @@ impl<'a> MemoryChecker<'a> {
         }
         let pointee = self.owned_pointer_slot_pointee(element)?;
         if self.is_zero(count) {
-            if self.state.stored_objects.keys().any(|(stored_object, _)| *stored_object == object)
+            // The zero-prefix replacement below erases facts by allocation
+            // identity, so its precondition must cover exactly that identity.
+            // A moved root cannot hide live edges under its old SSA key.
+            if self.state.stored_objects.iter().any(|((stored_object, _), stored)|
+                self.same_allocation(object, *stored_object) && stored.ownership != Ownership::Consumed)
                 || self.state.range_states.iter().any(|(identity, state)| {
-                    identity.object == object && state.initialized && !self.is_zero(identity.length)
+                    self.same_allocation(object, identity.object)
+                        && state.initialized && state.ownership != Ownership::Consumed
+                        && !state.zero_width && !self.is_zero(identity.length)
                 })
             {
                 return self.unsupported("UpdateCount(pointer shrink with live elements)");
@@ -5201,6 +5266,210 @@ mod tests {
                     ..
                 })
             ));
+        });
+    }
+
+    // The Fresh-result case models a previously checked producer's ABI, using
+    // the real call-result transition rather than assigning completeness bits.
+    fn with_unpublished_owned_tail(
+        prior_completeness: bool,
+        test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let child_layout = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let slot = layouts.intern_runtime_pointer_value_slot(child_layout, PointerSlot::Owned).unwrap();
+        let list = layouts.intern_packed_list(slot, RcHeader::Required).unwrap();
+        let LayoutSize::Dynamic { base, stride } = layouts.get(list).unwrap().size() else {
+            panic!("counted list layout");
+        };
+        let LayoutSize::Fixed(child_bytes) = layouts.get(child_layout).unwrap().size() else {
+            panic!("fixed child layout");
+        };
+        let maximum = ValueId::new(100);
+        let conditions = [ValueId::new(101), ValueId::new(102), ValueId::new(103), ValueId::new(104)];
+        let mut value_types = BTreeMap::from([
+            (SOURCE, ValueType::Ref(list)), (DESTINATION, ValueType::Ref(list)), (CHILD, ValueType::Ref(child_layout)),
+            (COUNT, ValueType::Size), (CAPACITY, ValueType::Size),
+            (ZERO, ValueType::Size), (LENGTH, ValueType::Size), (maximum, ValueType::Size),
+        ]);
+        value_types.extend(conditions.into_iter().map(|value| (value, ValueType::Bool)));
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types,
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(), operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature, parameters: Vec::new(), results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new(),
+            },
+        };
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts).unwrap();
+        checker.check(&Operation::ConstSize { destination: ZERO, value: 0 }).unwrap();
+        checker.check(&Operation::ConstSize { destination: LENGTH, value: 1 }).unwrap();
+        if prior_completeness {
+            checker.check_call(&[], &[], &[SOURCE], &[ResultContract::Fresh {
+                layout: list, class: AllocationClass::ReferenceCounted,
+                extent: ReturnedExtent::Counted { header_bytes: base, stride_bytes: stride },
+            }]).unwrap();
+            for (destination, field) in [(COUNT, HeaderField::Length), (CAPACITY, HeaderField::Capacity)] {
+                checker.check(&Operation::Load {
+                    destination,
+                    place: Place::projected(SOURCE, Projection::Header(field), ValueType::Size, AccessMode::Read),
+                    transfer: LoadTransfer::CopyScalar,
+                }).unwrap();
+            }
+            checker.check(&Operation::ConstSize {
+                destination: maximum, value: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
+            }).unwrap();
+            for (destination, (operator, left, right)) in conditions.into_iter().zip([
+                (ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY),
+                (ComparisonOperator::LessEqualUnsigned, CAPACITY, maximum),
+                (ComparisonOperator::LessUnsigned, ZERO, COUNT),
+                (ComparisonOperator::LessUnsigned, COUNT, CAPACITY),
+            ]) {
+                checker.check(&Operation::Compare { destination, operator, left, right }).unwrap();
+                checker.check(&Operation::Guard { condition: destination, kind: GuardKind::Bounds }).unwrap();
+            }
+            checker.promote_header_extent(SOURCE).unwrap();
+            assert!(checker.state.objects[&SOURCE].initialized_owned_slots);
+        } else {
+            checker.check(&Operation::ConstSize { destination: COUNT, value: 0 }).unwrap();
+            checker.check(&Operation::ConstSize { destination: CAPACITY, value: 1 }).unwrap();
+            checker.check(&Operation::Compare {
+                destination: conditions[0], operator: ComparisonOperator::LessUnsigned,
+                left: COUNT, right: CAPACITY,
+            }).unwrap();
+            checker.check(&Operation::Guard { condition: conditions[0], kind: GuardKind::Bounds }).unwrap();
+            checker.check(&Operation::Alloc {
+                destination: SOURCE, layout: list,
+                extent: Extent::Counted { header_bytes: base, count: COUNT, capacity: CAPACITY, stride_bytes: stride },
+                class: AllocationClass::ReferenceCounted,
+            }).unwrap();
+        }
+        checker.check(&Operation::Alloc {
+            destination: CHILD, layout: child_layout, extent: Extent::FixedBytes(u64::from(child_bytes)),
+            class: AllocationClass::ReferenceCounted,
+        }).unwrap();
+        test(&mut checker, child_layout);
+    }
+
+    #[test]
+    fn zero_count_drop_ref_refuses_initialized_unpublished_child() {
+        with_unpublished_owned_tail(false, |checker, child_layout| {
+            checker.check(&Operation::Store {
+                place: Place::projected(SOURCE, Projection::Element { index: COUNT }, ValueType::Ref(child_layout), AccessMode::Write),
+                value: CHILD, transfer: StoreTransfer::MoveUnique,
+            }).expect("initialization within capacity is legal before publication");
+            let pending = checker.snapshot();
+            assert!(matches!(checker.check(&Operation::DropRef { object: SOURCE }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "DropRef(uninitialized owned slot)", .. })),
+                "length zero must not hide a stored owned edge");
+            checker.restore(pending);
+            checker.check(&Operation::UpdateCount { object: SOURCE, count: LENGTH })
+                .expect("publishing the initialized slot repairs the obligation");
+            checker.check(&Operation::DropRef { object: SOURCE }).unwrap();
+            checker.check_exit(&[]).unwrap();
+        });
+    }
+
+    #[test]
+    fn prior_completeness_drop_ref_refuses_new_unpublished_child() {
+        with_unpublished_owned_tail(true, |checker, child_layout| {
+            checker.check(&Operation::Store {
+                place: Place::projected(SOURCE, Projection::Element { index: COUNT }, ValueType::Ref(child_layout), AccessMode::Write),
+                value: CHILD, transfer: StoreTransfer::MoveUnique,
+            }).expect("append slot is outside the old prefix but inside capacity");
+            assert!(matches!(checker.check(&Operation::DropRef { object: SOURCE }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "DropRef(uninitialized owned slot)", .. })),
+                "prior completeness covers only the published prefix");
+        });
+    }
+
+    #[test]
+    fn prior_completeness_count_decrease_refuses_live_owned_prefix() {
+        with_unpublished_owned_tail(true, |checker, _| {
+            assert!(matches!(checker.check(&Operation::UpdateCount { object: SOURCE, count: ZERO }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "UpdateCount(pointer shrink with live elements)", .. })),
+                "changing a header is not a release of the old prefix");
+        });
+    }
+
+    #[test]
+    fn owned_tail_obligation_follows_allocation_across_root_move() {
+        for prior in [false, true] {
+            with_unpublished_owned_tail(prior, |checker, child_layout| {
+                checker.check(&Operation::Store {
+                    place: Place::projected(SOURCE, Projection::Element { index: COUNT }, ValueType::Ref(child_layout), AccessMode::Write),
+                    value: CHILD, transfer: StoreTransfer::MoveUnique,
+                }).unwrap();
+                checker.check(&Operation::MoveValue { destination: DESTINATION, source: SOURCE }).unwrap();
+                assert!(checker.check(&Operation::DropRef { object: DESTINATION }).is_err(),
+                    "an old SSA key must not hide the moved root's pending child");
+            });
+        }
+    }
+
+    #[test]
+    fn owned_tail_zero_shrink_cannot_erase_a_moved_roots_live_prefix() {
+        with_unpublished_owned_tail(false, |checker, child_layout| {
+            checker.check(&Operation::Store {
+                place: Place::projected(SOURCE, Projection::Element { index: COUNT }, ValueType::Ref(child_layout), AccessMode::Write),
+                value: CHILD, transfer: StoreTransfer::MoveUnique,
+            }).unwrap();
+            checker.check(&Operation::UpdateCount { object: SOURCE, count: LENGTH }).unwrap();
+            checker.check(&Operation::MoveValue { destination: DESTINATION, source: SOURCE }).unwrap();
+            assert!(matches!(checker.check(&Operation::UpdateCount { object: DESTINATION, count: ZERO }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "UpdateCount(pointer shrink with live elements)", .. })),
+                "the old root's published range still owns its child");
+        });
+    }
+
+    #[test]
+    fn owned_tail_range_preflight_distinguishes_live_and_moved_out_edges() {
+        for moved_out in [false, true] {
+            with_unpublished_owned_tail(false, |checker, _| {
+                let element = checker.descriptor(checker.state.objects[&SOURCE].layout).unwrap()
+                    .kind().packed_element_layout().unwrap();
+                // Boundary-state fixture: the same nonempty range either
+                // still owns its edges or records a completed move-out.
+                checker.state.range_states.insert(
+                    RangeIdentity { object: SOURCE, start: ZERO, length: LENGTH },
+                    RangeState { element, ownership: if moved_out { Ownership::Consumed } else { Ownership::Unique },
+                        allocation_class: Some(AllocationClass::ReferenceCounted), initialized: !moved_out,
+                        zero_width: false, zero_start: true },
+                );
+                assert_eq!(checker.check(&Operation::DropRef { object: SOURCE }).is_ok(), moved_out);
+            });
+        }
+    }
+
+    #[test]
+    fn owned_tail_nonprefix_range_requires_a_checked_end_bound() {
+        with_unpublished_owned_tail(true, |checker, _| {
+            let element = checker.descriptor(checker.state.objects[&SOURCE].layout).unwrap()
+                .kind().packed_element_layout().unwrap();
+            let identity = RangeIdentity { object: SOURCE, start: ZERO, length: COUNT };
+            checker.state.range_states.insert(identity, RangeState {
+                element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted),
+                initialized: true, zero_width: false, zero_start: false,
+            });
+            checker.require_owned_slots_initialized(SOURCE, "bounded range").unwrap();
+            checker.state.range_states.remove(&identity);
+            // Model a join that retained a range but lost its start constant.
+            checker.state.constants.remove(&LENGTH);
+            checker.state.range_states.insert(RangeIdentity { object: SOURCE, start: LENGTH, length: COUNT }, RangeState {
+                element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted),
+                initialized: true, zero_width: false, zero_start: false,
+            });
+            assert!(checker.require_owned_slots_initialized(SOURCE, "unknown range end").is_err());
         });
     }
 
