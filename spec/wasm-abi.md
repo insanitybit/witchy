@@ -315,6 +315,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_recv_line_size` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_bytes_size` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
 | `net_take_received_into` | `(externref, i32, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_all_size` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
+| `net_connect_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 
