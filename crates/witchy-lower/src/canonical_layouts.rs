@@ -488,6 +488,11 @@ impl LayoutProjection {
         let mut opaque_signatures = HashSet::new();
         let mut aggregate_specs = self.visited.iter().filter_map(|ty| {
             let source = canonical_layout_type(ty, &self.definitions);
+            // Direct and optional host tokens already have a checked externref
+            // ABI. Their source shape must not also mint an aggregate family.
+            if witchy_types::canonical_capabilities::representation(&source, &self.definitions).is_some() {
+                return None;
+            }
             let shape = scalar_aggregate_shape(&source, &self.definitions)?;
             (!shape.packed && matches!(source.unqualified(), Type::Named(..) | Type::Tuple(..)))
                 .then_some((source, shape))
@@ -904,6 +909,9 @@ fn intern_v1_layout_checked(
     active: &mut HashSet<Type>,
     closure_layouts: &HashMap<Type, LayoutId>,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLayoutError> {
+    if witchy_types::canonical_capabilities::representation(ty, definitions).is_some() {
+        return Err(CanonicalLayoutError::UnsupportedType(format!("opaque capability has no linear layout: {ty:?}")));
+    }
     let key = canonical_layout_type(ty, definitions);
     if matches!(key.unqualified(), Type::Fn(..)) {
         return closure_layouts.get(&canonical_closure_key(&key, definitions)).copied().ok_or_else(|| {

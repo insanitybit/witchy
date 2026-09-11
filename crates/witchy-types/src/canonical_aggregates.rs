@@ -1,8 +1,10 @@
 //! Scalar aggregate shapes shared by the canonical layout catalog, the
 //! canonical lowering, and the ABI authority.
 //!
-//! A scalar aggregate is a record or sum type whose payloads are all scalars
-//! (`Int`, `Float`, `Duration`, `Bool`). It lives behind one reference to a
+//! Shapes describe checked source fields, including opaque capabilities and
+//! managed owners. They do not authorize linear-memory pointer slots: the
+//! catalog must select typed owner storage for opaque fields. A linear
+//! aggregate lives behind one reference to a
 //! fixed layout with one slot per field. A sum type (`type Shape: Circle(Int)
 //! | Square(Int)`, `Option(Int)`, `Result(Int, Bool)`) carries an `Int` tag
 //! in slot 0 followed by every variant's fields in declaration order, so each
@@ -82,7 +84,8 @@ pub fn is_v1_list_element_type(ty: &Type, definitions: &BTreeMap<String, TypeDef
 }
 
 /// A field an aggregate may carry: a scalar in its slot, or a string,
-/// list, tuple, aggregate, or checked function behind an owned pointer slot.
+/// list, tuple, aggregate, or checked function. The catalog chooses linear
+/// pointer slots or typed opaque-owner fields; this predicate grants neither.
 pub fn is_v1_field_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
     field_type_ok(ty, definitions, &mut BTreeSet::new())
 }
@@ -126,6 +129,13 @@ fn field_type_ok_at(
 ) -> bool {
     if depth == MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return false;
+    }
+    // This recognizes source fields, not linear-memory slots. Capability
+    // fields require the catalog's checked opaque-owner representation.
+    match crate::canonical_capabilities::representation(ty, definitions) {
+        Some(crate::canonical_capabilities::CapabilityRepresentation::Direct(_)) => return true,
+        Some(crate::canonical_capabilities::CapabilityRepresentation::Nullable(_)) => return false,
+        None => {}
     }
     if let Some(tuple) = dictionary_as_tuple(ty) {
         return field_type_ok_at(&tuple, definitions, active, depth + 1, budget, completed);
@@ -182,7 +192,7 @@ fn definition_fields_ok(
 ) -> bool {
     let parameters = effective_type_def_params(definition);
     if parameters.len() != arguments.len()
-        || definition.is_capability
+        || !is_aggregate_definition(definition)
         || definition.variants.is_empty()
         || depth == MAX_AGGREGATE_SHAPE_EXPANSION
     {
@@ -382,6 +392,10 @@ fn concrete_identity_at(
     if depth >= MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return None;
     }
+    if matches!(crate::canonical_capabilities::representation(ty, definitions),
+        Some(crate::canonical_capabilities::CapabilityRepresentation::Direct(_))) {
+        return Some(ty.unqualified().clone());
+    }
     match ty.unqualified() {
         ty if is_scalar_type(ty) => Some(ty.clone()),
         Type::Tuple(items) => Some(Type::Tuple(items.iter()
@@ -407,7 +421,7 @@ fn concrete_identity_at(
                 "Result" | "Dict" => (name.as_str(), 2),
                 _ => {
                     let (key, definition) = aggregate_declaration(name, definitions)?;
-                    if definition.is_capability {
+                    if !is_aggregate_definition(definition) {
                         return None;
                     }
                     (key, effective_type_def_params(definition).len())
@@ -457,6 +471,15 @@ pub fn type_definitions(module: &Module) -> BTreeMap<String, TypeDef> {
         definitions.insert(definition.name.clone(), definition.clone());
     }
     definitions
+}
+
+/// Carried-state capabilities retain their sealed nominal declaration. They
+/// are aggregate owners, never newly invented host capability kinds.
+fn is_aggregate_definition(definition: &TypeDef) -> bool {
+    !definition.is_capability || (definition.sealed && !definition.packed
+        && definition.variants.len() == 1
+        && !definition.variants[0].fields.is_empty()
+        && definition.variants[0].field_names.len() == definition.variants[0].fields.len())
 }
 
 /// The shape of a user-declared type whose every variant carries only
@@ -531,7 +554,7 @@ mod recursive_shape_tests {
             assert!(is_v1_list_element_type(&unit, &definitions));
         }
         assert!(!is_v1_field_type(&named("Missing"), &definitions));
-        assert!(!is_v1_field_type(&named("Console"), &definitions));
+        assert!(is_v1_field_type(&named("Console"), &definitions));
     }
 
     #[test]
@@ -748,7 +771,7 @@ mod scheduler_shape_tests {
         assert!(valid, "finite scheduler graph refused: remaining budget={budget}, independently unsupported field={first_bad_field:?}");
 
         let mut invalid = definitions.clone();
-        invalid.get_mut("task.Slot").unwrap().variants[0].fields.push(Type::Named("Console".into(), vec![]));
-        assert!(!is_v1_field_type(&slot, &invalid), "a reachable capability field is not an owned linear slot");
+        invalid.get_mut("task.Slot").unwrap().variants[0].fields.push(Type::Named("Missing".into(), vec![]));
+        assert!(!is_v1_field_type(&slot, &invalid), "an unknown field cannot acquire storage authority");
     }
 }
