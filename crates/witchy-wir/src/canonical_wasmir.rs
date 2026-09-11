@@ -3056,6 +3056,8 @@ struct StructuredEmitter<'a> {
     static_data: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &'a LayoutInterner,
     owner_cleanup_function: Option<u32>,
+    successors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
+    predecessors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
     loops: Vec<(crate::canonical_safewir::BlockId, usize)>,
@@ -3066,6 +3068,9 @@ struct StructuredEmitter<'a> {
     /// and the structuring queries ask about the same blocks repeatedly.
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
     loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
+    back_edge_source_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>>,
+    natural_loop_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, BTreeSet<crate::canonical_safewir::BlockId>>>,
+    reaches_avoiding_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId), bool>>,
     /// Memoized path judgments keyed by the exact normalized merge set.
     /// Both answers are reusable: a cut cycle proves a path from `start`
     /// avoids every merge and terminal, independent of which caller first
@@ -3090,19 +3095,9 @@ impl StructuredEmitter<'_> {
         &self,
         id: crate::canonical_safewir::BlockId,
     ) -> Result<Vec<crate::canonical_safewir::BlockId>, EncodeError> {
-        let block = self.block(id)?;
-        Ok(match &block.terminator.operation {
-            ScalarTerminator::Branch { target, .. } => vec![*target],
-            ScalarTerminator::BranchIf {
-                then_target,
-                else_target,
-                ..
-            } => vec![*then_target, *else_target],
-            ScalarTerminator::Return { .. }
-            | ScalarTerminator::TailCall { .. }
-            | ScalarTerminator::VarTailCall { .. }
-            | ScalarTerminator::Trap
-            | ScalarTerminator::Unreachable => Vec::new(),
+        self.successors_by_block.get(&id).cloned().ok_or(EncodeError::MissingBlock {
+            function: self.source_function.id,
+            block: id,
         })
     }
 
@@ -3409,13 +3404,10 @@ impl StructuredEmitter<'_> {
     }
 
     fn predecessors(&self, block: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, EncodeError> {
-        let mut sources = Vec::new();
-        for candidate in &self.target_function.blocks {
-            if self.successors(candidate.id)?.contains(&block) {
-                sources.push(candidate.id);
-            }
-        }
-        Ok(sources)
+        self.predecessors_by_block.get(&block).cloned().ok_or(EncodeError::MissingBlock {
+            function: self.source_function.id,
+            block,
+        })
     }
 
     fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, EncodeError> {
@@ -3473,18 +3465,25 @@ impl StructuredEmitter<'_> {
         goal: crate::canonical_safewir::BlockId,
         avoid: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
+        let key = (start, goal, avoid);
+        if let Some(known) = self.reaches_avoiding_facts.borrow().get(&key) {
+            return Ok(*known);
+        }
         let mut seen = BTreeSet::new();
         let mut pending = VecDeque::from([start]);
+        let mut result = false;
         while let Some(id) = pending.pop_front() {
             if id == avoid || !seen.insert(id) {
                 continue;
             }
             if id == goal {
-                return Ok(true);
+                result = true;
+                break;
             }
             pending.extend(self.successors(id)?);
         }
-        Ok(false)
+        self.reaches_avoiding_facts.borrow_mut().insert(key, result);
+        Ok(result)
     }
 
     /// `dominator` lies on every path from the entry block to `node`.
@@ -3501,16 +3500,36 @@ impl StructuredEmitter<'_> {
         &self,
         header: crate::canonical_safewir::BlockId,
     ) -> Result<Vec<crate::canonical_safewir::BlockId>, EncodeError> {
+        if let Some(known) = self.back_edge_source_facts.borrow().get(&header) {
+            return Ok(known.clone());
+        }
         let mut sources = Vec::new();
-        for block in &self.target_function.blocks {
-            if block.id != header
-                && self.successors(block.id)?.contains(&header)
-                && self.dominates(header, block.id)?
-            {
-                sources.push(block.id);
+        for predecessor in self.predecessors(header)? {
+            if predecessor != header && self.dominates(header, predecessor)? {
+                sources.push(predecessor);
             }
         }
+        self.back_edge_source_facts.borrow_mut().insert(header, sources.clone());
         Ok(sources)
+    }
+
+    fn natural_loop_members(
+        &self,
+        header: crate::canonical_safewir::BlockId,
+    ) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, EncodeError> {
+        if let Some(known) = self.natural_loop_facts.borrow().get(&header) {
+            return Ok(known.clone());
+        }
+        let mut members = BTreeSet::from([header]);
+        let mut pending = VecDeque::from(self.back_edge_sources(header)?);
+        while let Some(block) = pending.pop_front() {
+            if block == header || !members.insert(block) {
+                continue;
+            }
+            pending.extend(self.predecessors(block)?);
+        }
+        self.natural_loop_facts.borrow_mut().insert(header, members.clone());
+        Ok(members)
     }
 
     /// `block` belongs to the natural loop of `header`: it reaches one of the
@@ -3520,12 +3539,7 @@ impl StructuredEmitter<'_> {
         header: crate::canonical_safewir::BlockId,
         block: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        for source in self.back_edge_sources(header)? {
-            if block == source || self.reaches_avoiding(block, source, header)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(self.natural_loop_members(header)?.contains(&block))
     }
 
     fn find_join(
@@ -3931,6 +3945,40 @@ fn encode_function(
         }));
     }
     let entry = target_function.entry;
+    let successors_by_block: BTreeMap<_, _> = target_function
+        .blocks
+        .iter()
+        .map(|block| {
+            let successors = match &block.terminator.operation {
+                ScalarTerminator::Branch { target, .. } => vec![*target],
+                ScalarTerminator::BranchIf { then_target, else_target, .. } => {
+                    vec![*then_target, *else_target]
+                }
+                ScalarTerminator::Return { .. }
+                | ScalarTerminator::TailCall { .. }
+                | ScalarTerminator::VarTailCall { .. }
+                | ScalarTerminator::Trap
+                | ScalarTerminator::Unreachable => Vec::new(),
+            };
+            (block.id, successors)
+        })
+        .collect();
+    let mut predecessors_by_block: BTreeMap<_, Vec<_>> = target_function
+        .blocks
+        .iter()
+        .map(|block| (block.id, Vec::new()))
+        .collect();
+    for (source, successors) in &successors_by_block {
+        for successor in successors {
+            predecessors_by_block
+                .get_mut(successor)
+                .ok_or(EncodeError::MissingBlock {
+                    function: source_function.id,
+                    block: *successor,
+                })?
+                .push(*source);
+        }
+    }
     let mut emitter = StructuredEmitter {
         body: &mut body,
         source_function,
@@ -3943,12 +3991,17 @@ fn encode_function(
         static_data,
         layouts,
         owner_cleanup_function,
+        successors_by_block,
+        predecessors_by_block,
         emitted: BTreeSet::new(),
         labels: Vec::new(),
         loops: Vec::new(),
         loop_exits: Vec::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
         loop_exit_targets: RefCell::new(BTreeMap::new()),
+        back_edge_source_facts: RefCell::new(BTreeMap::new()),
+        natural_loop_facts: RefCell::new(BTreeMap::new()),
+        reaches_avoiding_facts: RefCell::new(BTreeMap::new()),
         path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(entry, None)?;
@@ -5603,6 +5656,8 @@ struct PlanEmitter<'a> {
     import_indices: &'a BTreeMap<ImportId, u32>,
     static_data_offsets: &'a BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     owner_cleanup_function: Option<u32>,
+    successors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
+    predecessors_by_block: BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
     plan: Vec<PlanToken>,
     emitted: BTreeSet<crate::canonical_safewir::BlockId>,
     labels: Vec<StructuredLabel>,
@@ -5614,6 +5669,9 @@ struct PlanEmitter<'a> {
     loop_exits: Vec<(crate::canonical_safewir::BlockId, usize)>,
     loop_headers: RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
     loop_exit_targets: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Option<crate::canonical_safewir::BlockId>>>,
+    back_edge_source_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>>,
+    natural_loop_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, BTreeSet<crate::canonical_safewir::BlockId>>>,
+    reaches_avoiding_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId), bool>>,
     /// Memoized path judgments keyed by the exact normalized merge set. This
     /// mirrors the encoder's bounded graph decision, including cached cyclic
     /// refusals, without weakening the independent plan comparison.
@@ -5630,15 +5688,7 @@ impl PlanEmitter<'_> {
     }
 
     fn successors(&self, id: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
-        Ok(match &self.block(id)?.terminator {
-            Terminator::Branch { target, .. } => vec![*target],
-            Terminator::BranchIf { then_target, else_target, .. } => vec![*then_target, *else_target],
-            Terminator::Return { .. }
-            | Terminator::TailCall { .. }
-            | Terminator::VarTailCall { .. }
-            | Terminator::Trap
-            | Terminator::Unreachable => Vec::new(),
-        })
+        self.successors_by_block.get(&id).cloned().ok_or(CanonicalAdmissionError::UnsupportedPlan)
     }
 
     /// `distances_from` stopping at `stops` (which are never entered).
@@ -5882,13 +5932,7 @@ impl PlanEmitter<'_> {
     }
 
     fn predecessors(&self, block: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
-        let mut sources = Vec::new();
-        for candidate in &self.source_function.blocks {
-            if self.successors(candidate.id)?.contains(&block) {
-                sources.push(candidate.id);
-            }
-        }
-        Ok(sources)
+        self.predecessors_by_block.get(&block).cloned().ok_or(CanonicalAdmissionError::UnsupportedPlan)
     }
 
     fn reachable_until(&self, start: crate::canonical_safewir::BlockId, stops: &[crate::canonical_safewir::BlockId]) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
@@ -5941,18 +5985,25 @@ impl PlanEmitter<'_> {
     }
 
     fn reaches_avoiding(&self, start: crate::canonical_safewir::BlockId, goal: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        let key = (start, goal, avoid);
+        if let Some(known) = self.reaches_avoiding_facts.borrow().get(&key) {
+            return Ok(*known);
+        }
         let mut seen = BTreeSet::new();
         let mut pending = VecDeque::from([start]);
+        let mut result = false;
         while let Some(id) = pending.pop_front() {
             if id == avoid || !seen.insert(id) {
                 continue;
             }
             if id == goal {
-                return Ok(true);
+                result = true;
+                break;
             }
             pending.extend(self.successors(id)?);
         }
-        Ok(false)
+        self.reaches_avoiding_facts.borrow_mut().insert(key, result);
+        Ok(result)
     }
 
     fn dominates(&self, dominator: crate::canonical_safewir::BlockId, node: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
@@ -5960,22 +6011,37 @@ impl PlanEmitter<'_> {
     }
 
     fn back_edge_sources(&self, header: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        if let Some(known) = self.back_edge_source_facts.borrow().get(&header) {
+            return Ok(known.clone());
+        }
         let mut sources = Vec::new();
-        for block in &self.source_function.blocks {
-            if block.id != header && self.successors(block.id)?.contains(&header) && self.dominates(header, block.id)? {
-                sources.push(block.id);
+        for predecessor in self.predecessors(header)? {
+            if predecessor != header && self.dominates(header, predecessor)? {
+                sources.push(predecessor);
             }
         }
+        self.back_edge_source_facts.borrow_mut().insert(header, sources.clone());
         Ok(sources)
     }
 
-    fn in_natural_loop(&self, header: crate::canonical_safewir::BlockId, block: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
-        for source in self.back_edge_sources(header)? {
-            if block == source || self.reaches_avoiding(block, source, header)? {
-                return Ok(true);
-            }
+    fn natural_loop_members(&self, header: crate::canonical_safewir::BlockId) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
+        if let Some(known) = self.natural_loop_facts.borrow().get(&header) {
+            return Ok(known.clone());
         }
-        Ok(false)
+        let mut members = BTreeSet::from([header]);
+        let mut pending = VecDeque::from(self.back_edge_sources(header)?);
+        while let Some(block) = pending.pop_front() {
+            if block == header || !members.insert(block) {
+                continue;
+            }
+            pending.extend(self.predecessors(block)?);
+        }
+        self.natural_loop_facts.borrow_mut().insert(header, members.clone());
+        Ok(members)
+    }
+
+    fn in_natural_loop(&self, header: crate::canonical_safewir::BlockId, block: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
+        Ok(self.natural_loop_members(header)?.contains(&block))
     }
 
     fn find_join(
@@ -6369,6 +6435,37 @@ fn expected_function_plan(
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     layout.owner_bridges = owner_bridges.to_vec();
+    let successors_by_block: BTreeMap<_, _> = function
+        .blocks
+        .iter()
+        .map(|block| {
+            let successors = match &block.terminator {
+                Terminator::Branch { target, .. } => vec![*target],
+                Terminator::BranchIf { then_target, else_target, .. } => {
+                    vec![*then_target, *else_target]
+                }
+                Terminator::Return { .. }
+                | Terminator::TailCall { .. }
+                | Terminator::VarTailCall { .. }
+                | Terminator::Trap
+                | Terminator::Unreachable => Vec::new(),
+            };
+            (block.id, successors)
+        })
+        .collect();
+    let mut predecessors_by_block: BTreeMap<_, Vec<_>> = function
+        .blocks
+        .iter()
+        .map(|block| (block.id, Vec::new()))
+        .collect();
+    for (source, successors) in &successors_by_block {
+        for successor in successors {
+            predecessors_by_block
+                .get_mut(successor)
+                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?
+                .push(*source);
+        }
+    }
     let mut emitter = PlanEmitter {
         source_function: function,
         signature,
@@ -6380,6 +6477,8 @@ fn expected_function_plan(
         import_indices,
         static_data_offsets,
         owner_cleanup_function,
+        successors_by_block,
+        predecessors_by_block,
         plan: Vec::new(),
         emitted: BTreeSet::new(),
         labels: Vec::new(),
@@ -6388,6 +6487,9 @@ fn expected_function_plan(
         aggregates: BTreeMap::new(),
         loop_headers: RefCell::new(BTreeMap::new()),
         loop_exit_targets: RefCell::new(BTreeMap::new()),
+        back_edge_source_facts: RefCell::new(BTreeMap::new()),
+        natural_loop_facts: RefCell::new(BTreeMap::new()),
+        reaches_avoiding_facts: RefCell::new(BTreeMap::new()),
         path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(function.entry, None)?;
