@@ -1111,3 +1111,25 @@ remains an error. Logs: `/tmp/witchy-canonical-wat-production-check.log`,
 Terminal merge-queue evidence remains pending. Generated test/build/Glamour
 coverage, package/reload artifact handling, hosted CI evidence and the wider
 security/optimizer obligations are not closed by this slice.
+
+### 2026-09-12: dictionary equality and terminal diagnostics landed
+
+Master `1af66db3f9c55f6335e0cf938cb490bfbe16dcc2` contains the dictionary
+slice (`b644241fd`) and admitted abort diagnostics. Queue changes
+`mq-aeff7f4b7f53b447be5e84d471c9eb2bbf0ee31e` and
+`mq-b64cd57684505863217d0d56ad54ec78bf42ea5f` recorded terminal merged events
+at `15:34:47Z` and `15:34:52Z`, respectively, after one 464-second green gate,
+zero flakes. The integration passed 701 native-WIR/source tests and
+hello/wrap/jq parity. Evidence: `/tmp/witchy-dictionary-pop-abort-integrated.log`;
+queue log `state/merge-queue/logs/20260912-112649-fix~rfc0165-checked-dictionary-equality-38402-105.log`.
+The terminal-abort RFC-0087 test is no longer deferred. List-pop/current-root
+assignment remains unsubmitted pending explicit assignment provenance and
+exact bounds diagnostics; no passing claim is made for those open cases.
+
+A minimal `witchy test` module with `testing.assert(true, "expected true")`
+still refuses with `generated test drivers are not yet supported by canonical
+SafeWIR`. Its current test linker does not retain canonical source evidence,
+and its runner still expects generated-driver bytes. Restoration must bind
+compiler-generated entry selection to exact source and carry admitted artifacts
+through launch, not activate that raw-byte route. This is a remaining workflow
+obligation, not an admission exception.
