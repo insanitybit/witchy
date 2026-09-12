@@ -13,9 +13,10 @@ cd "$ROOT"
 run() { echo "### \$1" >> "$STATUS/shards.log"; shift; timeout 2400 "\$@" >> "$STATUS/shards.log" 2>&1; echo "exit=\$?" >> "$STATUS/shards.log"; }
 case "$mode" in
 edit)
-    run wir-contracts cargo nextest run -p witchy-wir --features native --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children)'
+    run wir-prelude cargo nextest run -p witchy-wir --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete)'
+    run prefix-ownership cargo nextest run -p witchy-wir --features native --lib -E 'test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children)'
     run lower-publication cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'
-    run admitted-abi cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'
+    run admitted-abi cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'
     ;;
 corpus)
     run launch cargo test --test misc rfc0165_
