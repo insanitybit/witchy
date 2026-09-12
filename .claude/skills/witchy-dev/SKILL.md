@@ -343,10 +343,13 @@ a shared dir — cargo's build lock would serialize concurrent agents.
 **never merge to master while a full gate is running** — it invalidates that
 gate. The coordinator (`scripts/merge-queue.sh`) enforces both. Protocol:
 
-1. **In your worktree, run focused checks**, not the full gate:
-   `./scripts/test-for-paths.sh --run` prints and runs the focused checks for
-   your diff (pass `--focused` to restrict strictly to touched crates/tests and
-   avoid full workspace builds during inner-loop iteration). Shard building blocks:
+1. **In your worktree, run focused checks**, not the full gate. After committing
+   the exact tip you intend to submit, run `./scripts/agent-check.sh edit`; it
+   selects the edit-loop checks from the complete committed diff and records the
+   commit-keyed presubmit receipt. `./scripts/test-for-paths.sh --run` remains
+   available for unusual explicit path sets (pass `--focused` to restrict
+   strictly to touched crates/tests and avoid full workspace builds during
+   inner-loop iteration). Shard building blocks:
    `./scripts/check.sh --fast` (tests minus e2e, clippy overlapped in the
    background), or `--e2e` / `--examples` / `--wasm` for the section your change
    touches. A green shard **qualifies** you for the queue; it doesn't replace

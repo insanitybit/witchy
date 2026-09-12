@@ -46,8 +46,11 @@ repeat the rules; consult it when you're working inside one of these areas.
 `./scripts/check.sh` = build + clippy + `nextest --workspace` + the wasm build.
 Clippy runs **bug-lint tiers only** — `correctness` + `suspicious` +
 `unused_must_use`, **not** `-D warnings`; style/perf/pedantic lints print but
-never block (see `CLIPPY_GATE_LINTS` in the script). Run it before every commit
-and `--full` before a push. CI (`.github/workflows/ci.yml`) runs
+never block (see `CLIPPY_GATE_LINTS` in the script). Do not run the full gate
+yourself. After committing the exact tip you intend to submit, run
+`./scripts/agent-check.sh edit`; it selects focused checks from the committed
+diff and records the commit-keyed receipt consumed by the merge queue. The
+coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
 build/clippy/nextest, heap-check fuzz, parity sweep, e2e, docs, and fmt. For
 anything user-visible, add a runnable `book/` example alongside the differential
 test.
