@@ -24,6 +24,7 @@
 #   ./scripts/check.sh --e2e       just the e2e nextest binary (coven/pm/glamour)
 #   ./scripts/check.sh --examples  just the example differential matrix (example_tests::*)
 #   ./scripts/check.sh --wasm      just the wasm playground build
+#   ./scripts/check.sh --queue-infra-edit  representative queue edit probes
 #   ./scripts/check.sh --queue-infra  merge-queue fixtures, isolated and serial
 #   ./scripts/check.sh --glamour   glamour + coven-web tests
 #   ./scripts/check.sh --grimoire  grimoire + coven tests
@@ -103,9 +104,9 @@ for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
         --fast) fast=1 ;;
-        --e2e | --examples | --wasm | --queue-infra | --glamour | --grimoire) shard="${arg#--}" ;;
+        --e2e | --examples | --wasm | --queue-infra-edit | --queue-infra | --glamour | --grimoire) shard="${arg#--}" ;;
         -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra, --glamour, --grimoire, or --help)" >&2; exit 2 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra-edit, --queue-infra, --glamour, --grimoire, or --help)" >&2; exit 2 ;;
     esac
 done
 if [ -n "$shard" ] && { [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; }; then
@@ -629,6 +630,8 @@ if cargo nextest --version >/dev/null 2>&1; then
     # retaining an operator override for repeated reliability measurements.
     queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
+    queue_infra_edit_cmd=("${queue_infra_cmd[@]}" -E \
+        'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|coordinator_reexecs_committed_script_between_attempts_without_losing_singleton|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|sweep_caches_merged_history_but_keeps_queue_admission_live)|gate_behavior::state_and_gate::(fast_gate_emits_structured_foreground_and_background_timings|gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover)|submit_warns_when_the_commit_has_no_green_shard_receipt)$/)')
 else
     preflight_cmd=()
     # Plain cargo test runs integration binaries sequentially, so the queue
@@ -639,6 +642,10 @@ else
     # compiled out while cargo still reports a green workspace test run.
     test_cmd=(cargo test --workspace --features witchy-wir/native)
     queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue -- --test-threads=1)
+    # Plain Cargo accepts only one substring filter, which cannot express the
+    # representative cross-module selection without dropping coverage. Keep
+    # the complete shard in this uncommon fallback.
+    queue_infra_edit_cmd=("${queue_infra_cmd[@]}")
 fi
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends
@@ -813,6 +820,10 @@ if [ -n "$shard" ]; then
         queue-infra)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --queue-infra requires cargo-nextest" >&2; exit 2; }
             "${queue_infra_cmd[@]}"
+            ;;
+        queue-infra-edit)
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --queue-infra-edit requires cargo-nextest" >&2; exit 2; }
+            "${queue_infra_edit_cmd[@]}"
             ;;
         glamour)
             # The tests the merge gate no longer runs by default. Run this while

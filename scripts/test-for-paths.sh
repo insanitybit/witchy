@@ -558,6 +558,18 @@ if [ "$gate_nextest" -eq 1 ]; then
     exit 0
 fi
 
+# Queue infrastructure keeps its complete 69-test process/locking corpus in the
+# landing shard. The edit loop runs a representative cross-section that covers
+# admission, singleton coordination, dependency cycles, reload, sweep ordering,
+# receipts, reporting, state paths, and check.sh command construction.
+if [ "$edit_loop" -eq 1 ]; then
+    for i in "${!cmds[@]}"; do
+        if [ "${cmds[$i]}" = "./scripts/check.sh --queue-infra" ]; then
+            cmds[$i]="./scripts/check.sh --queue-infra-edit"
+        fi
+    done
+fi
+
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.

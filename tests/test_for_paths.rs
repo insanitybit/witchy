@@ -599,6 +599,10 @@ fn standalone_queue_fixture_uses_only_the_hermetic_shard() {
         selected(&["tools/merge-queue-tests/tests/merge_queue/gate_behavior/prewarm.rs"]),
         ["./scripts/check.sh --queue-infra"]
     );
+    assert_eq!(
+        selected(&["--edit-loop", "tools/merge-queue-tests/tests/merge_queue.rs"]),
+        ["./scripts/check.sh --queue-infra-edit"]
+    );
 }
 
 #[test]
