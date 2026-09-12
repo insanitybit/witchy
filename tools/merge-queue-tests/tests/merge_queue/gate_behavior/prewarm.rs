@@ -138,7 +138,7 @@ while :; do /bin/sleep 1; done
     fs::set_permissions(&cache_warmer, fs::Permissions::from_mode(0o755))
         .expect("chmod blocking cache warmer");
 
-    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -297,7 +297,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
         .expect("chmod fake rustup");
 
-    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -429,7 +429,7 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
         .expect("chmod fake prewarm rustup");
 
-    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -633,7 +633,7 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
         .expect("chmod fake promoting rustup");
 
-    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let queue_script = workspace_root().join("scripts/merge-queue.sh");
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -758,7 +758,7 @@ fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
 
 #[test]
 fn doctor_treats_denied_process_inspection_as_advisory() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let state = temp.path().join("state");
     let bin = temp.path().join("bin");

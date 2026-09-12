@@ -590,14 +590,24 @@ fn queue_substrate_changes_use_the_hermetic_queue_shard() {
 }
 
 #[test]
-fn queue_fixture_keeps_fast_product_checks_and_the_hermetic_shard() {
+fn standalone_queue_fixture_uses_only_the_hermetic_shard() {
     assert_eq!(
-        selected(&["tests/merge_queue.rs"]),
-        ["./scripts/check.sh --fast", "./scripts/check.sh --queue-infra"]
+        selected(&["tools/merge-queue-tests/tests/merge_queue.rs"]),
+        ["./scripts/check.sh --queue-infra"]
     );
     assert_eq!(
-        selected(&["tests/merge_queue/gate_behavior/prewarm.rs"]),
-        ["./scripts/check.sh --fast", "./scripts/check.sh --queue-infra"]
+        selected(&["tools/merge-queue-tests/tests/merge_queue/gate_behavior/prewarm.rs"]),
+        ["./scripts/check.sh --queue-infra"]
+    );
+}
+
+#[test]
+fn workspace_manifest_runs_the_stage_crate_dag_probe_early() {
+    assert_eq!(
+        selected(&["Cargo.toml"]),
+        [
+            "cargo nextest run --test misc -E 'test(=architecture::stage_crates_follow_the_declared_dependency_dag)'",
+        ]
     );
 }
 

@@ -1254,6 +1254,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "merge-queue-tests"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "mimalloc"
 version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"

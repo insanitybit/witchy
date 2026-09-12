@@ -418,8 +418,10 @@ for p in "${paths[@]}"; do
             # focused browser binary rather than fail-safe --workspace.
             add_gate_test browser
             add "cargo nextest run --test browser" ;;
-        tests/merge_queue.rs | tests/merge_queue/*.rs)
-            any_rust=1
+        tools/merge-queue-tests/Cargo.toml | \
+        tools/merge-queue-tests/tests/merge_queue.rs | \
+        tools/merge-queue-tests/tests/merge_queue/*.rs | \
+        tools/merge-queue-tests/tests/merge_queue/**/*.rs)
             add_gate_test merge_queue
             add "./scripts/check.sh --queue-infra" ;;
         tests/test_for_paths.rs)
@@ -449,7 +451,9 @@ for p in "${paths[@]}"; do
             printf -v test_name_q '%q' "$test_name"
             add "cargo nextest run --test $test_name_q" ;;
         Cargo.toml | Cargo.lock | build.rs | .cargo/* | rust-toolchain | rust-toolchain.toml)
-            gate_workspace=1 ;;
+            gate_workspace=1
+            add_early "cargo nextest run --test misc -E 'test(=architecture::stage_crates_follow_the_declared_dependency_dag)'"
+            path_has_early=1 ;;
         .github/workflows/* | .github/actions/* | .github/zizmor.yml)
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows"
             add "./scripts/workflow-isolation-check.py .github/workflows" ;;

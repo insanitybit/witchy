@@ -8,6 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 struct ProcessGroupGuard(i32);
 
 struct TempDir(PathBuf);
@@ -143,7 +147,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
 
 #[test]
 fn coordinator_skips_only_fully_patch_equivalent_submissions() {
-    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source_root = workspace_root();
     let temp = TempDir::new();
     let repo = temp.path().join("repo");
     let state = temp.path().join("state");
@@ -557,7 +561,7 @@ impl QueueFixture {
     }
 
     fn mq_command(&self, args: &[&str], gate: &str) -> Command {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = workspace_root();
         let mut command = Command::new("bash");
         command
             .arg(repo.join("scripts/merge-queue.sh"))

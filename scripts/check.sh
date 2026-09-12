@@ -559,8 +559,8 @@ if cargo nextest --version >/dev/null 2>&1; then
     esac
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
     # above) because those fixtures run in their own isolated shard. So a diff
-    # whose entire selection IS merge_queue -- any change to
-    # tests/merge_queue/** -- leaves this stage with nothing, and nextest's
+    # whose entire selection IS merge_queue -- any change to the standalone
+    # queue test package -- leaves this stage with nothing, and nextest's
     # default is to FAIL on an empty selection. Observed 2026-08-27 on
     # fix/prewarm-preemption-flake: "Starting 0 tests across 0 binaries
     # (1 binary skipped)" -> "error: no tests to run" -> branch RED, even
@@ -627,7 +627,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
     # retaining an operator override for repeated reliability measurements.
-    queue_infra_cmd=(cargo nextest run --test merge_queue -j "$queue_infra_jobs" \
+    queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
 else
     preflight_cmd=()
@@ -638,7 +638,7 @@ else
     # Without this explicit feature, witchy-wir's native security tests are
     # compiled out while cargo still reports a green workspace test run.
     test_cmd=(cargo test --workspace --features witchy-wir/native)
-    queue_infra_cmd=(cargo test --test merge_queue -- --test-threads=1)
+    queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue -- --test-threads=1)
 fi
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends

@@ -71,7 +71,7 @@ fn option_value<'a>(args: &'a [String], option: &str) -> &'a str {
 
 #[test]
 fn workspace_preflight_and_main_partition_one_identical_context() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let (bin, argv) = fake_gate_tools(&temp);
     let count = temp.path().join("run-count");
@@ -122,7 +122,7 @@ fn workspace_preflight_and_main_partition_one_identical_context() {
 
 #[test]
 fn scoped_preflight_keeps_the_complete_main_selection() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let (bin, argv) = fake_gate_tools(&temp);
     let count = temp.path().join("run-count");
@@ -177,7 +177,7 @@ fn scoped_preflight_keeps_the_complete_main_selection() {
 
 #[test]
 fn red_preflight_stops_before_the_main_run() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let (bin, argv) = fake_gate_tools(&temp);
     let count = temp.path().join("run-count");

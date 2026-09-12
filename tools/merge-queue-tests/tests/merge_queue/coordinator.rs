@@ -1345,7 +1345,7 @@ fn red_dependency_stack_bisects_and_lands_only_the_green_prefix() {
 
 #[test]
 fn daemon_enters_an_independent_process_group() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let isolated_root = temp.path().join("isolated-root");
     let isolated_scripts = isolated_root.join("scripts");
@@ -1427,7 +1427,7 @@ fn daemon_enters_an_independent_process_group() {
 
 #[test]
 fn coordinator_reexecs_committed_script_between_attempts_without_losing_singleton() {
-    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source_root = workspace_root();
     let temp = TempDir::new();
     let root = temp.path().join("repo");
     let state = temp.path().join("state");
@@ -1552,7 +1552,7 @@ fn coordinator_reexecs_committed_script_between_attempts_without_losing_singleto
 
 #[test]
 fn concurrent_daemon_starts_create_exactly_one_coordinator() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let state = temp.path().join("state");
     let gate_worktree = temp.path().join("unused-gate-worktree");

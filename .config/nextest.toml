@@ -120,7 +120,7 @@ queue-concurrency-serial = { max-threads = 1 }
 # serialize only the two nested-concurrency fixtures while the rest of the
 # queue-infrastructure shard retains width two.
 [[profile.default.overrides]]
-filter = 'binary_id(witchy::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
+filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
 test-group = 'queue-concurrency-serial'
 
 # Corpus shards retain every admission and execution assertion. Each drives the

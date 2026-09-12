@@ -1,7 +1,7 @@
 use super::*;
 
 fn resolve_merge_queue_state(root: &Path, envs: &[(&str, &Path)]) -> PathBuf {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = workspace_root();
     let mut command = Command::new("bash");
     command
         .args([
@@ -49,7 +49,7 @@ fn state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover(
     fs::remove_file(root.join("scratch/merge-queue")).expect("remove compatibility link");
     std::os::unix::fs::symlink("../wrong-queue", root.join("scratch/merge-queue"))
         .expect("create invalid legacy link");
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = workspace_root();
     let invalid = Command::new("bash")
         .args([
             "-c",
@@ -77,7 +77,7 @@ fn state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover(
 
 #[test]
 fn migrate_state_requires_a_drained_queue_and_leaves_legacy_compatibility() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = workspace_root();
     let temp = TempDir::new();
     let root = temp.path().join("root");
     let legacy = root.join("scratch/merge-queue");
@@ -148,7 +148,7 @@ fn migrate_state_requires_a_drained_queue_and_leaves_legacy_compatibility() {
 
 #[test]
 fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let state = temp.path().join("state");
     let logs = state.join("logs");
@@ -325,7 +325,7 @@ fn fixture_gate_invocations_scrub_every_ambient_gate_knob() {
 
 #[test]
 fn fast_gate_emits_structured_foreground_and_background_timings() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let bin = temp.path().join("bin");
     fs::create_dir(&bin).expect("create fake tool directory");
@@ -506,7 +506,11 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         isolated_args
             .lines()
-            .any(|line| line.starts_with("nextest run --test merge_queue -j 2")),
+            .any(|line| {
+                line.starts_with(
+                    "nextest run -p merge-queue-tests --test merge_queue -j 2",
+                )
+            }),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",
     );
     let invalid_width = check_sh(&root, &["--queue-infra"])
@@ -774,7 +778,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 /// (gate-report.sh, the journal stage summaries) keep parsing.
 #[test]
 fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let temp = TempDir::new();
     let bin = temp.path().join("bin");
     fs::create_dir(&bin).expect("create fake tool directory");

@@ -260,7 +260,7 @@ Each successful slot acquire/release also touches a
 coordinator-owned progress sidecar, so healthy waves reset the idle watchdog
 without treating synthetic log heartbeats as liveness.
 
-**Diff-scoped queue infrastructure.** `tests/merge_queue.rs` launches detached
+**Diff-scoped queue infrastructure.** `tools/merge-queue-tests` launches detached
 coordinators, process groups, lock holders, and nested Git repositories. It is
 excluded from the concurrent workspace test stage and runs first as an isolated,
 one-thread shard when the batch changes the queue substrate. The coordinator
