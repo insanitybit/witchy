@@ -23,21 +23,22 @@ impl SourceFiles for AmbientFiles {
 
 fn absolute(path: &Path) -> Result<PathBuf, String> {
     let path = std::path::absolute(path).map_err(|error| error.to_string())?;
-    if path.components().any(|part| matches!(part, Component::ParentDir | Component::Prefix(_))) {
-        return Err("packaged source paths must not contain parent or platform-prefix components".into());
+    if path.components().any(|part| matches!(part, Component::Prefix(_))) {
+        return Err("packaged source paths must not contain platform-prefix components".into());
     }
     Ok(path)
 }
 
-/// Coordinates inside the package's virtual filesystem. They are never joined
-/// to a host directory or extracted. Keeping ancestry preserves nearest-manifest
-/// absence and sibling lookup even when dependencies have different roots.
+/// Coordinates only, NEVER paths for host filesystem access. Capture uses the
+/// original spelling (including symlink/parent traversal). Colliding observations
+/// refuse, and a replay must reproduce the original graph and ownership exactly.
 fn key(path: &Path) -> Result<String, String> {
     let mut parts = Vec::new();
     for part in path.components() {
         match part {
             Component::RootDir | Component::CurDir => {},
             Component::Normal(part) => parts.push(part.to_str().ok_or("non-UTF-8 package path")?),
+            Component::ParentDir => { parts.pop().ok_or("package path traverses above its virtual root")?; },
             _ => return Err("unsafe package path component".into()),
         }
     }
@@ -47,13 +48,14 @@ fn key(path: &Path) -> Result<String, String> {
 }
 
 #[derive(Default)]
-struct CaptureFiles(RefCell<BTreeMap<String, Option<String>>>);
+struct CaptureFiles(RefCell<BTreeMap<PathBuf, Option<String>>>);
 impl SourceFiles for CaptureFiles {
     fn read(&self, path: &Path) -> Result<Option<String>, String> {
-        let name = key(path)?;
-        if let Some(contents) = self.0.borrow().get(&name) { return Ok(contents.clone()); }
+        // Cache by the actual spelling, not the virtual coordinate: `link/../x`
+        // and `x` can name different files. Never substitute one read for another.
+        if let Some(contents) = self.0.borrow().get(path) { return Ok(contents.clone()); }
         let contents = AmbientFiles.read(path)?;
-        self.0.borrow_mut().insert(name, contents.clone());
+        self.0.borrow_mut().insert(path.to_path_buf(), contents.clone());
         Ok(contents)
     }
     fn closed_package(&self) -> bool { true }
@@ -91,27 +93,50 @@ pub(crate) fn capture_packaged_source(
     let files = CaptureFiles::default();
     // This is the ordinary first-loaded resolution algorithm. No source is read
     // a second time after checking; repeated reads use the captured first value.
-    let _ = load(&entry, &dependencies, &files)?;
+    let original = load(&entry, &dependencies, &files)?;
     files.read(&manifest)?.ok_or("packaging manifest is missing")?;
     let mut dependencies = dependencies.into_iter().map(|(alias, path)| {
         Ok(SourceDependency { alias, path: key(&path)? })
     }).collect::<Result<Vec<_>, String>>()?;
     dependencies.sort_by(|a, b| a.alias.cmp(&b.alias));
-    let files = files.0.into_inner().into_iter().map(|(path, contents)| SourceFile { path, contents }).collect();
+    let mut virtual_files = BTreeMap::new();
+    for (path, contents) in files.0.into_inner() {
+        let name = key(&path)?;
+        if let Some(previous) = virtual_files.get(&name) {
+            if previous != &contents {
+                return Err(format!("closed package path alias has conflicting observations at `{name}`; cannot preserve parent/symlink resolution"));
+            }
+        } else {
+            virtual_files.insert(name, contents);
+        }
+    }
+    let files = virtual_files.into_iter().map(|(path, contents)| SourceFile { path, contents }).collect();
     let inputs = SourceInputs::captured(key(&entry)?, dependencies, files, key(&manifest)?);
+    let replay = replay_loaded_inputs(&inputs).map_err(|error| {
+        format!("closed package cannot preserve source/manifest resolution: {error}")
+    })?;
+    if original != replay {
+        return Err("closed package cannot preserve the selected source graph and loader ownership after path normalization".into());
+    }
     let (checked, entry) = recheck_packaged_source(&inputs)?;
     Ok((checked, entry, inputs))
 }
 
 pub(crate) fn recheck_packaged_source(inputs: &SourceInputs) -> Result<(pipeline::CheckedModule, String), String> {
+    let (sources, entry, users, owners) = replay_loaded_inputs(inputs)?;
+    let checked = pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(sources, &entry, &users, owners)
+        .map_err(|error| error.to_string())?;
+    Ok((checked, entry))
+}
+
+fn replay_loaded_inputs(inputs: &SourceInputs)
+    -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String>
+{
     let files = ReplayFiles(inputs);
     let dependencies = inputs.dependencies.iter().map(|dependency| {
         (dependency.alias.clone(), PathBuf::from(&dependency.path))
     }).collect();
-    let (sources, entry, users, owners) = load(Path::new(&inputs.entry), &dependencies, &files)?;
-    let checked = pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(sources, &entry, &users, owners)
-        .map_err(|error| error.to_string())?;
-    Ok((checked, entry))
+    load(Path::new(&inputs.entry), &dependencies, &files)
 }
 
 pub(crate) fn restore_packaged_artifact(
@@ -139,6 +164,73 @@ pub(crate) fn restore_packaged_artifact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_relative_package_matches_source_through_symlinks_and_refuses_alias_conflicts() {
+        use witchy::trusted_publisher::{self, OwnedEmbeddedApplication};
+        for symlink in [false, true] {
+            struct Folder(PathBuf);
+            impl Drop for Folder { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+            let folder = Folder(std::env::temp_dir().join(format!("witchy-parent-package-{}-{}", std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())));
+            let app = folder.0.join("app");
+            let helper = folder.0.join(if symlink { "elsewhere/helper" } else { "helper" });
+            for path in [app.join("src"), helper.join("src"), folder.0.join("elsewhere/anchor")] {
+                std::fs::create_dir_all(path).unwrap();
+            }
+            let entry = app.join("src/main.witchy");
+            let manifest = app.join("witchy.toml");
+            let manifest_text = "[rune]\nname = \"parent-app\"\nversion = \"1\"\n[dependencies]\n[targets.trusted-publisher]\n";
+            std::fs::write(&manifest, manifest_text).unwrap();
+            std::fs::write(helper.join("witchy.toml"), "[rune]\nname = \"selected-helper\"\nversion = \"1\"\n").unwrap();
+            std::fs::write(helper.join("src/helper.witchy"), "pub fn message() -> String:\n    \"selected through parent\"\n").unwrap();
+            std::fs::write(&entry, "import helper\nfn main(console: Console):\n    let text = helper.message()\n    let report = fn(): console.print(text)\n    report()\n").unwrap();
+            let dependency = if symlink {
+                std::os::unix::fs::symlink(folder.0.join("elsewhere/anchor"), app.join("hop")).unwrap();
+                // Lexical collapse would select this DIFFERENT source/manifest.
+                std::fs::create_dir_all(app.join("helper/src")).unwrap();
+                std::fs::write(app.join("helper/src/helper.witchy"), "pub fn message() -> String:\n    \"wrong lexical source\"\n").unwrap();
+                std::fs::write(app.join("helper/witchy.toml"), "[rune]\nname = \"wrong-helper\"\nversion = \"9\"\n").unwrap();
+                app.join("hop/../helper/src/helper.witchy")
+            } else { app.join("../helper/src/helper.witchy") };
+            let dependencies = HashMap::from([("helper".to_owned(), dependency.clone())]);
+            let (ordinary, _) = super::super::link_file_checked_with_deps(entry.to_str().unwrap(), &dependencies).unwrap();
+            let expected = vec!["selected through parent".to_owned()];
+            assert_eq!(witchy_interp::interpreter::run_checked_module(&ordinary, ".", Vec::new()).unwrap(), expected);
+            let (checked, _, inputs) = capture_packaged_source(entry.to_str().unwrap(), &dependencies, manifest.to_str().unwrap()).unwrap();
+            for file in &inputs.files { validate_path(&file.path).unwrap(); }
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked).expect_lowered("parent-relative artifact");
+            assert!(!artifact.owner_bridges().is_empty());
+            let bindings = trusted_publisher::build_binding_plan(checked.module(), manifest_text).unwrap();
+            let image = trusted_publisher::package(b"parent-package-unit-launcher", artifact.wasm(), &bindings, &inputs).unwrap();
+            if symlink {
+                // Both spellings are valid source inputs but collide in the
+                // virtual namespace with different bytes/owners. Refuse rather
+                // than letting the first cached observation impersonate either.
+                let conflicting = HashMap::from([
+                    ("helper".to_owned(), dependency),
+                    ("other".to_owned(), app.join("helper/src/helper.witchy")),
+                ]);
+                let error = capture_packaged_source(entry.to_str().unwrap(), &conflicting, manifest.to_str().unwrap()).unwrap_err();
+                assert!(error.contains("conflicting observations"), "{error}");
+            }
+            std::fs::remove_dir_all(&folder.0).unwrap();
+            let embedded = trusted_publisher::probe(&image).unwrap().unwrap();
+            let application = OwnedEmbeddedApplication {
+                wasm: embedded.wasm.to_vec(), bindings: embedded.bindings.to_vec(),
+                source_inputs: serde_json::from_slice(embedded.source_inputs).unwrap(),
+            };
+            let restored = restore_packaged_artifact(&application).unwrap();
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let caps = witchy_runtime::runtime::Capabilities { print: true, print_int: true, quiet: true,
+                ..witchy_runtime::runtime::Capabilities::none() };
+            let mut vm = runtime.spawn_admitted(&restored, caps, 1024).unwrap();
+            vm.run().unwrap();
+            assert_eq!(vm.output(), expected);
+            assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        }
+    }
 
     #[test]
     fn closed_loader_replays_first_loaded_explicit_dependencies_and_manifest_absence() {
