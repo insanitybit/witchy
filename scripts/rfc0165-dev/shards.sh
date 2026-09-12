@@ -1,19 +1,36 @@
 #!/usr/bin/env bash
-# The slice shards, in sequence, in the background; poll status/shards.status.
+# RFC-0165 edit probes or broader checkpoints, in the background.
 source "$(dirname "$0")/common.sh"
+mode="${1:-edit}"
+case "$mode" in
+    edit | corpus | landing) ;;
+    *) echo "usage: $0 [edit|corpus|landing]" >&2; exit 2 ;;
+esac
 rm -f "$STATUS/shards.status"
 cat > "$STATUS/shards-run.sh" <<INNER
 cd "$ROOT"
 : > "$STATUS/shards.log"
 run() { echo "### \$1" >> "$STATUS/shards.log"; shift; timeout 2400 "\$@" >> "$STATUS/shards.log" 2>&1; echo "exit=\$?" >> "$STATUS/shards.log"; }
-run launch cargo test --test misc rfc0165_
-run abi cargo test --test misc wasm_abi_catalog
-run lower cargo test -p witchy-lower --lib canonical
-run wir cargo test -p witchy-wir --lib --features native
-run types cargo test -p witchy-types --lib
-run runtime cargo test -p witchy-runtime --features native
+case "$mode" in
+edit)
+    run wir-contracts cargo nextest run -p witchy-wir --features native --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children)'
+    run lower-publication cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'
+    run admitted-abi cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'
+    ;;
+corpus)
+    run launch cargo test --test misc rfc0165_
+    ;;
+landing)
+    run launch cargo test --test misc rfc0165_
+    run abi cargo test --test misc wasm_abi_catalog
+    run lower cargo test -p witchy-lower --lib canonical
+    run wir cargo test -p witchy-wir --lib --features native
+    run types cargo test -p witchy-types --lib
+    run runtime cargo test -p witchy-runtime --features native
+    ;;
+esac
 echo done > "$STATUS/shards.status"
 INNER
 nohup bash "$STATUS/shards-run.sh" >/dev/null 2>&1 &
 disown
-echo "shards running; poll $STATUS/shards.status, then grep -E '^###|test result|exit=' $STATUS/shards.log"
+echo "$mode checks running; poll $STATUS/shards.status, then grep -E '^###|test result|exit=' $STATUS/shards.log"
