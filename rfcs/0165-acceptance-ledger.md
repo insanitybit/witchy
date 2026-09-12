@@ -1180,3 +1180,11 @@ and hello/wrap/jq retain parity. See
 reproducer and limits. Canonical no-copy preparation, withdrawn-surface
 conformance, optimizer assurance, and overall completion remain open. This
 source-diagnostic repair is not proof of runtime allocation placement.
+
+One candidate census on `ab8eb27b8417e265c9550a30d6f7fdbb60649c41` retained
+162/163 checks and 91 CLI parity agreements with zero disagreements. There
+were no new imported-body enforcement refusals. The sole refusal remains
+the withdrawn `Unique` qualifier on `opt_mode.ScanState`. This is candidate
+CLI coverage, not fresh-master or full three-legged soundness evidence. The
+census script's exit 1 was its final zero-match `DISAGREE` grep, not a failed
+program; log: `scripts/rfc0165-dev/status/census-ab8eb27b8-20260912.log`.
