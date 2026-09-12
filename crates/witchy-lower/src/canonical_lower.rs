@@ -16,6 +16,9 @@ mod regex;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
 
+#[path = "canonical_abort.rs"]
+mod abort;
+
 // RFC-0165 Net registration (Net track).
 #[path = "canonical_net.rs"]
 mod net;
@@ -205,7 +208,11 @@ pub fn lower_typed_module(
         aggregate_owners: aggregate_families.iter().map(|(source, family)|
             (source.clone(), (family.owner_type, family.list_type))).collect(),
     };
-    let string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
+    let abort_sites = abort::sites(typed.module())?;
+    let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
+    string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
+    string_payloads.sort();
+    string_payloads.dedup();
     let string_data_ids = string_payloads
         .iter()
         .enumerate()
@@ -610,7 +617,7 @@ pub fn lower_typed_module(
     let regex_spans = regex::is_needed(typed.module());
     // RFC-0165 Net import registration (Net track).
     let net_imports = net::collect_imports(typed.module());
-    if prints || floats || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
+    if prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -726,6 +733,7 @@ pub fn lower_typed_module(
         // RFC-0165 Net catalog registration (Net track).
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
+        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
         // The module declares only the imports its functions reach; the
         // catalog still authenticates each one it declares.
         let projected = catalog
@@ -733,6 +741,7 @@ pub fn lower_typed_module(
             .into_iter()
             .filter(|import| {
                 (import.name == "console_print" && prints)
+                    || (import.name == abort::IMPORT && !abort_sites.is_empty())
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
@@ -742,6 +751,8 @@ pub fn lower_typed_module(
             })
             .collect::<Vec<_>>();
         host_imports = HostImports {
+            abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
+            abort_sites,
             vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             // RFC-0165 Net import registration (Net track).
@@ -1931,6 +1942,11 @@ impl FunctionLowerer<'_> {
             self.require_open_block()?;
             let final_statement = index + 1 == statements.len();
             match statement {
+                Stmt::Expr(call @ Expr::Call { name, args })
+                | Stmt::Return(Some(call @ Expr::Call { name, args })) if name == "fail" => {
+                    self.lower_abort(call, args)?;
+                    return Ok(());
+                }
                 Stmt::Let { name, value, .. } if name == "_" => {
                     // `let _ = e` keeps `e`'s effects and discards its value.
                     self.lower_effect_expr(value)?;
@@ -2231,14 +2247,7 @@ impl FunctionLowerer<'_> {
                 self.lower_capability_op(name, args)?;
                 Ok(())
             }
-            // `fail(msg)` aborts on every backend: the message is evaluated
-            // and the block traps. It must be the block's last statement.
-            Expr::Call { name, args } if name == "fail" => {
-                for argument in args {
-                    let _ = self.lower_expr(argument)?;
-                }
-                self.finish_current(Terminator::Trap)
-            }
+            Expr::Call { name, args } if name == "fail" => self.lower_abort(expression, args),
             Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
                 self.lower_list_push(args)
             }
@@ -2378,6 +2387,10 @@ impl FunctionLowerer<'_> {
         expression: &Expr,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if name == "fail" => {
+                self.lower_abort(expression, args)?;
+                Ok(None)
+            }
             Expr::If {
                 cond,
                 then_block,
@@ -13498,6 +13511,8 @@ fn string_layout(
 /// by the role the lowering reaches them through.
 #[derive(Clone, Default)]
 struct HostImports {
+    abort: Option<witchy_wir::canonical_safewir::ImportId>,
+    abort_sites: HashMap<usize, abort::Site>,
     vm_service: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     vm_sites: HashMap<usize, u32>,
     // RFC-0165 Net import registration (Net track).

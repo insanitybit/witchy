@@ -72,9 +72,11 @@ fn main(console: Console):
             &validated, function, capabilities, Default::default(),
         );
         if traps {
-            assert!(matches!(oracle_run, Err(
-                witchy_wir::canonical_interpreter::InterpretError::ExplicitTrap
-            )), "expected an explicit trap, got {oracle_run:?}");
+            assert_eq!(oracle_run.unwrap_err(),
+                witchy_wir::canonical_interpreter::InterpretError::DiagnosticAbort {
+                    message: "runtime error: `main.check_header`, line 4: rejected header".into(),
+                    output: vec!["before".into()],
+                });
         } else {
             let run = oracle_run.expect("oracle execution");
             assert_eq!(run.output, expected);
@@ -87,7 +89,7 @@ fn main(console: Console):
         let result = vm.run();
         if traps {
             let error = result.expect_err("compiled fail must abort");
-            assert!(format!("{error:#}").contains("unreachable"), "unexpected trap: {error:#}");
+            assert_eq!(error.root_cause().to_string(), "runtime error: `main.check_header`, line 4: rejected header");
             assert_eq!(vm.output(), ["before"]);
         } else {
             result.expect("Wasm execution");

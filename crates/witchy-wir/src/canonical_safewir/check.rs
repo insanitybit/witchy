@@ -2475,6 +2475,55 @@ mod tests {
         (module, catalog)
     }
 
+    #[test]
+    fn canonical_abort_requires_both_bounded_read_slices_not_integer_pointers() {
+        for case in 0..5 {
+            let (mut module, _) = allocated_host_buffer_module(
+                true, 0, 2, 1, HostBufferExtent::Slice, HostBufferExtent::Slice,
+            );
+            let text = module.functions[0].value_types[&ValueId::new(5)];
+            let ValueType::Ref(layout) = text else { unreachable!() };
+            let id = FunctionSignatureId::new(1);
+            let parameters = vec![text, text, ValueType::Size];
+            module.signatures[1] = FunctionSignature {
+                id, parameters: parameters.clone(), results: Vec::new(),
+                contract: CallableContract {
+                    parameters: parameters.into_iter().map(|value_type| ParameterContract {
+                        value_type, ownership: ParameterOwnership::Value,
+                    }).collect(),
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read]), (1, vec![MemoryEffect::Read])]),
+                },
+            };
+            let catalog = CanonicalAbiCatalog::from_imports(Vec::new()).with_abort_import(id, layout).unwrap();
+            let import = catalog.imports().pop().unwrap();
+            module.imports = vec![import.clone()];
+            let buffer = |length| HostCallArgument::Buffer {
+                place: Place::projected(ValueId::new(5), Projection::Slice {
+                    start: ValueId::new(0), length: ValueId::new(length),
+                }, text, AccessMode::Read), extent: HostBufferExtent::Slice,
+            };
+            // Count=1 is the valid extent; length=2 exceeds the same allocation.
+            let mut arguments = vec![buffer(2), buffer(2), HostCallArgument::Value(ValueId::new(2))];
+            if case == 1 || case == 2 { arguments[case - 1] = buffer(1); }
+            if case == 3 || case == 4 {
+                arguments[case - 3] = HostCallArgument::Value(ValueId::new(5));
+            }
+            let function = &mut module.functions[0];
+            function.value_types.remove(&ValueId::new(6));
+            let block = &mut function.blocks[0];
+            block.operations.retain(|operation| !matches!(operation, Operation::HostCall { .. } | Operation::DropRef { .. }));
+            block.operations.push(Operation::HostCall { destinations: Vec::new(), import: import.id, arguments });
+            block.terminator = Terminator::Trap;
+            let result = check_initial(module.with_abi_catalog(catalog));
+            if case == 0 {
+                result.expect("both authenticated read slices are bounded");
+            } else {
+                assert!(result.is_err(), "case {case}: reject an unbounded slice or a raw reference carrier");
+            }
+        }
+    }
+
     /// A `float_to_str`-shaped host call: the guest hands the host a unique
     /// raw-byte buffer to fill, then publishes the returned byte count under
     /// its own capacity guard.

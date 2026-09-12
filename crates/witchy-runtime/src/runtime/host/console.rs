@@ -33,6 +33,7 @@ pub(super) fn host_print_captured(
 /// exact message.
 pub(in crate::runtime) fn link_abort(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "__witchy_abort", host_witchy_abort)?;
+    linker.func_wrap("witchy", "__witchy_abort_at", host_witchy_abort_at)?;
     Ok(())
 }
 
@@ -47,6 +48,39 @@ pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()>
 mod canonical_console_tests {
     use super::*;
     use wasmtime::{ExternRef, Rooted};
+
+    #[test]
+    fn canonical_abort_checks_both_unsigned_slices_without_output() -> Result<()> {
+        let mut runtime = super::super::super::Runtime::new()?;
+        let engine = runtime.engine.clone();
+        let empty = wasmtime::Module::new(&engine, "(module)")?;
+        let vm = runtime.instantiate_module(crate::runtime::WorkerModule::Unadmitted(empty),
+            super::super::super::Capabilities::none(), 1, None)?;
+        let mut store = vm.store;
+        let mut linker = Linker::new(&engine);
+        link_abort(&mut linker)?;
+        let module = wasmtime::Module::new(&engine, r#"(module
+            (import "witchy" "__witchy_abort_at" (func $abort (param i32 i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "boommain.explode\ff")
+            (func (export "call") (param i32 i32 i32 i32)
+                local.get 0 local.get 1 local.get 2 local.get 3 i32.const 4 call $abort))"#)?;
+        let instance = linker.instantiate(&mut store, &module)?;
+        let call = instance.get_typed_func::<(i32, i32, i32, i32), ()>(&mut store, "call")?;
+        for arguments in [(65535, 2, 4, 12), (0, 4, 65535, 2), (-1, 1, 4, 12),
+            (0, -1, 4, 12), (0, 4, -1, 1), (0, 4, 4, -1)] {
+            let error = call.call(&mut store, arguments).expect_err("malformed abort slice");
+            assert_eq!(error.root_cause().to_string(), "abort slice out of bounds");
+        }
+        for arguments in [(16, 1, 4, 12), (0, 4, 16, 1)] {
+            let error = call.call(&mut store, arguments).expect_err("invalid UTF-8");
+            assert_eq!(error.root_cause().to_string(), "abort slice is not UTF-8");
+        }
+        let error = call.call(&mut store, (0, 4, 4, 12)).expect_err("valid diagnostic is terminal");
+        assert_eq!(error.root_cause().to_string(), "runtime error: `main.explode`, line 4: boom");
+        assert!(store.data().output.lock().unwrap().is_empty());
+        Ok(())
+    }
 
     #[test]
     fn canonical_console_rejects_null_forged_tokens_and_missing_grants() -> Result<()> {
@@ -139,6 +173,27 @@ fn guest_i64_global(caller: &mut Caller<'_, VmState>, name: &str) -> Option<i64>
         return None;
     };
     global.get(&mut *caller).i64()
+}
+
+/// Canonical diagnostic ABI: raw byte slices, never implicit String headers or
+/// a stale site global. All reads finish before rendering the terminal error.
+fn host_witchy_abort_at(
+    mut caller: Caller<'_, VmState>, message_ptr: i32, message_len: i32,
+    function_ptr: i32, function_len: i32, line: i32,
+) -> Result<()> {
+    fn text(data: &[u8], ptr: i32, len: i32) -> Result<&str> {
+        let start = ptr as u32 as usize;
+        let end = start.checked_add(len as u32 as usize)
+            .ok_or_else(|| wasmtime::Error::msg("abort slice overflow"))?;
+        let bytes = data.get(start..end).ok_or_else(|| wasmtime::Error::msg("abort slice out of bounds"))?;
+        std::str::from_utf8(bytes).map_err(|_| wasmtime::Error::msg("abort slice is not UTF-8"))
+    }
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let message = text(data, message_ptr, message_len)?;
+    let function = text(data, function_ptr, function_len)?;
+    let core = witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, message);
+    bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 
 fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()> {

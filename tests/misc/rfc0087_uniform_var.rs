@@ -445,6 +445,61 @@ fn main(console: Console):
 }
 
 #[test]
+fn canonical_abort_evaluates_nested_message_once_and_keeps_source_site() {
+    use witchy_wir::canonical_interpreter::{interpret_program, InterpretError, InterpreterValue};
+    use witchy_wir::canonical_safewir::FunctionId;
+    let sources = [
+        (r#"fn message(console: Console, var calls: Int) -> String:
+    calls = calls + 1
+    console.print("message")
+    "boom ${calls}"
+
+fn explode(console: Console, var n: Int):
+    n = 99
+    fail(message(console, n))
+
+fn main(console: Console):
+    var n = 1
+    console.print("before")
+    explode(console, n)
+    console.print("unreachable ${n}")
+"#, "runtime error: `main.explode`, line 8: boom 100"),
+        (r#"fn message(console: Console, stop: Bool) -> String:
+    console.print("message")
+    if stop:
+        fail("inner")
+    "unused"
+
+fn main(console: Console):
+    console.print("before")
+    fail(message(console, true))
+"#, "runtime error: `main.message`, line 4: inner"),
+    ];
+    for (source, expected) in sources {
+        let module = checked(source);
+        let source_error = interpreter::run_checked_module(&module, ".", Vec::new()).expect_err("source abort");
+        assert_eq!(format!("runtime error: {}", source_error.message), expected);
+        let artifact = codegen::compile_checked_module_artifact(&module).expect_lowered("canonical diagnostic admission");
+        let validated = codegen::validate_checked_module_for_oracle(&module).expect("independent oracle validation");
+        let entry = artifact.entry().expect("sealed entry");
+        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+        let oracle = interpret_program(&validated, function, arguments, Default::default()).expect_err("oracle abort");
+        assert_eq!(oracle, InterpretError::DiagnosticAbort {
+            message: expected.to_owned(), output: vec!["before".into(), "message".into()],
+        });
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+            print: true, quiet: true, ..Default::default()
+        }, 256).expect("admitted diagnostic launch");
+        assert_eq!(vm.run().expect_err("compiled abort").root_cause().to_string(), expected);
+        assert_eq!(vm.output(), ["before", "message"]);
+        assert_eq!(vm.run().expect_err("trap is terminal").root_cause().to_string(), "an aborted Witchy VM cannot be run again");
+        assert_eq!(vm.output(), ["before", "message"]);
+    }
+}
+
+#[test]
 fn stale_assignment_projection_uses_ordinary_bounds_behavior() {
     let source = r#"
 fn shrink(var values: List(Int)) -> Int:

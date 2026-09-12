@@ -525,6 +525,7 @@ fn authenticated_capability_import(
 enum ImportAuthentication<'a> {
     PureInfrastructure,
     InternalService,
+    RuntimeDiagnostic,
     Capability(&'a [crate::wir_prelude::AbiImportAuthority]),
 }
 
@@ -564,6 +565,11 @@ fn authenticated_import(
         ImportAuthentication::InternalService => {
             if info.class != AbiImportClass::InternalService || !info.authorities.is_empty() {
                 return Err(format!("generated witchy.{name} ABI is not an authority-free internal service"));
+            }
+        }
+        ImportAuthentication::RuntimeDiagnostic => {
+            if info.class != AbiImportClass::RuntimeDiagnostic || !info.authorities.is_empty() {
+                return Err(format!("generated witchy.{name} ABI is not an authority-free runtime diagnostic"));
             }
         }
         ImportAuthentication::Capability(expected) => {
@@ -616,6 +622,23 @@ fn authenticated_import(
 }
 
 impl CanonicalAbiCatalog {
+    /// Terminal source diagnostics borrow two bounded UTF-8 slices. They carry
+    /// no capability, no write authority, no result, and cannot reenter Wasm.
+    pub fn with_abort_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_import(
+            "__witchy_abort_at", &[WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[], signature, vec![read(), read(), HostParameterRole::Value(ValueType::Size)],
+            Vec::new(), HostMutation::ReadOnly, ImportAuthentication::RuntimeDiagnostic,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
+
     /// Canonical output carries the actual Console value. Legacy buffer-only
     /// print is deliberately absent from this catalog; its existing factory
     /// remains available for frozen ABI fixtures. Output is non-privileged

@@ -263,6 +263,9 @@ pub enum InterpretError {
     ArithmeticTrap,
     GuardTrap,
     ExplicitTrap,
+    /// Terminal diagnostic plus the already-observed output prefix. This is
+    /// not a successful return or a claim that abandoned trap roots were freed.
+    DiagnosticAbort { message: String, output: Vec<String> },
     UnreachableExecuted,
     StepLimitExceeded,
     ObjectNotFound(u64),
@@ -290,6 +293,7 @@ pub enum InterpretError {
 
 impl fmt::Display for InterpretError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::DiagnosticAbort { message, .. } = self { return formatter.write_str(message); }
         write!(formatter, "{self:?}")
     }
 }
@@ -1343,6 +1347,32 @@ impl<'a> Engine<'a> {
             .ok_or(InterpretError::UnsupportedOperation("HostCall unknown import"))?;
         if contract.module != "witchy" {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
+        }
+        if contract.name == "__witchy_abort_at" {
+            let ([HostCallArgument::Buffer { place: message, .. }, HostCallArgument::Buffer { place: function, .. }, HostCallArgument::Value(line)], []) = (arguments, destinations) else {
+                return Err(InterpretError::TypeMismatch("abort arguments"));
+            };
+            let read = |place| -> Result<String, InterpretError> {
+                let (object, start, length) = self.slice_place(place, values)?;
+                self.check_range(object, start, length, false)?;
+                let cells = &self.object(object)?.cells;
+                let mut bytes = Vec::new();
+                for index in start..start.checked_add(length).ok_or(InterpretError::ArithmeticTrap)? {
+                    match cells.get(&CellKey::Element(index)) {
+                        Some(InterpreterValue::Size(byte)) => bytes.push(u8::try_from(*byte).map_err(|_| InterpretError::TypeMismatch("abort byte"))?),
+                        _ => return Err(InterpretError::UninitializedPlace),
+                    }
+                }
+                String::from_utf8(bytes).map_err(|_| InterpretError::TypeMismatch("abort UTF-8"))
+            };
+            let message = read(message)?;
+            let function = read(function)?;
+            let InterpreterValue::Size(line) = self.value(*line, values)? else { return Err(InterpretError::TypeMismatch("abort line")); };
+            let line = u32::try_from(*line).map_err(|_| InterpretError::ArithmeticTrap)?;
+            return Err(InterpretError::DiagnosticAbort {
+                message: witchy_syntax::diag::runtime_error(&function, line, &witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, &message)),
+                output: self.output.clone(),
+            });
         }
         if contract.name == "float_to_str" {
             let ([HostCallArgument::Value(value), HostCallArgument::Buffer { place, .. }], [destination]) = (arguments, destinations) else {
