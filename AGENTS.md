@@ -93,6 +93,11 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   prints the ones matching your diff (`--run` executes them; `--focused` runs
   crate-scoped checks without full workspace builds); the building blocks are
   `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
+- After committing the exact tip you plan to submit, run
+  `./scripts/agent-check.sh edit` with no path arguments. It selects the
+  cheapest probes for the complete branch diff and records a commit-keyed
+  presubmit receipt. Running it before the commit still validates the edit,
+  but deliberately records no receipt for a dirty tree.
 - When your branch is green on its shard: `./scripts/merge-queue.sh submit <branch>`,
   then **KEEP WORKING — do not idle on the gate.** Start the next queue item on
   a fresh branch off master immediately. The gate lock serializes full gates

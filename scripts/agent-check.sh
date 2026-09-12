@@ -33,8 +33,15 @@ run_paths_checks() {
 }
 
 run_edit_checks() {
+    local explicit_paths="$#"
     ensure_agent_target
     run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
+    # With no explicit paths, test-for-paths derived its selection from the
+    # entire branch diff. Record that exact clean commit even when the cheapest
+    # route used named probes and never entered check.sh.
+    if [ "$explicit_paths" -eq 0 ]; then
+        ./scripts/record-shard-receipt.sh edit || true
+    fi
 }
 
 ensure_agent_target() {

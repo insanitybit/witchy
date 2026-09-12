@@ -121,6 +121,7 @@ debt.
 
 Use `./scripts/agent-check.sh` for local checks:
 
+- `./scripts/agent-check.sh edit` after committing the exact tip to submit
 - `./scripts/agent-check.sh target --package witchy-syntax`
 - `./scripts/agent-check.sh target --package witchy-types`
 - `./scripts/agent-check.sh paths <path...>`
@@ -133,6 +134,9 @@ Defaults:
 
 - No command here runs the full gate.
 - A focused check is mandatory before queue submission.
+- A clean-tree `agent-check.sh edit` records the commit-keyed presubmit receipt.
+  Explicit path arguments remain useful while editing but do not certify the
+  complete branch diff.
 - Full checks remain for `merge-queue` gate and coordinator pre-merge reviews.
 
 ## 4) Target command behavior
