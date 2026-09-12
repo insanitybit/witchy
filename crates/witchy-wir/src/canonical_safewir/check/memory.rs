@@ -6,6 +6,11 @@ use crate::layout::{
 };
 
 use super::{InitialCheckError, value_type};
+
+#[cfg(test)]
+#[path = "move_range_identity_tests.rs"]
+mod move_range_identity_tests;
+
 use crate::canonical_safewir::{
     AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, CallArgument,
     CallableContract, ComparisonOperator, Extent, Function, FunctionSignature, GuardKind,
@@ -1177,18 +1182,27 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn require_source_range_complete(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
-        if self.state.stored_objects.iter().any(|((object, slot), _)| {
-            *object == range.object && !self.slot_in_range(*slot, range)
+        // MoveRange removes source facts across the allocation, not merely
+        // the current SSA token. Its completeness obligation must use the
+        // same scope, including facts retained under a consumed MoveValue
+        // source and complete-value summaries with no materialized slots.
+        let object = self.live_object(range.object)?;
+        let summarized_partial = object.initialized_owned_slots
+            && !(self.is_zero(range.start)
+                && matches!(object.extent, Extent::Counted { count, .. }
+                    if self.same_scalar(count, range.length)));
+        if summarized_partial || self.state.stored_objects.iter().any(|((object, slot), _)| {
+            self.same_allocation(range.object, *object) && !self.slot_in_range(*slot, range)
         }) || self.state.range_states.iter().any(|(identity, state)| {
-            identity.object == range.object
+            self.same_allocation(range.object, identity.object)
                 && state.initialized
                 && !self.is_zero(identity.length)
                 && !(self.range_start_matches(identity, state, range.start)
                     && self.same_scalar(identity.length, range.length))
         }) {
             if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
-                let ranges = self.state.range_states.iter().filter(|(identity, _)| identity.object == range.object).collect::<Vec<_>>();
-                let stored = self.state.stored_objects.keys().filter(|(object, _)| *object == range.object).collect::<Vec<_>>();
+                let ranges = self.state.range_states.iter().filter(|(identity, _)| self.same_allocation(range.object, identity.object)).collect::<Vec<_>>();
+                let stored = self.state.stored_objects.keys().filter(|(object, _)| self.same_allocation(range.object, *object)).collect::<Vec<_>>();
                 eprintln!("MoveRange(source-partial) object={:?} start={:?} length={:?} ranges={ranges:#?} stored={stored:?}", range.object, range.start, range.length);
             }
             return self.unsupported("MoveRange(source-partial)");
