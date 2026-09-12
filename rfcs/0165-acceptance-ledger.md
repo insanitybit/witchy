@@ -1153,9 +1153,16 @@ and `stale_assignment_projection_uses_ordinary_bounds_behavior` deferrals.
 Static independent review found no concrete blocker; it did not establish
 soundness.
 
-The broader selected native run was 809/831, not green: 22 lowerer fixtures
-still assume import-free indexed programs or the pre-diagnostic layout set.
-They require reconciliation with the checked bounds-diagnostic ABI before
-queue submission. Logs: `/tmp/witchy-assignment-compact-20260912.log` and
-`/tmp/witchy-assignment-dictionary-integrated-20260912.log`.
+The initial broader selected native run was 809/831: 22 lowerer fixtures
+assumed import-free indexed programs or the pre-diagnostic layout set.
+Test-only reconciliation now binds exactly the terminal diagnostic ABIs,
+rejects unknown imports and signature substitutions, pins actual OOB messages,
+and checks the diagnostic source-label layout without weakening element-load
+assertions. Integration `7697af802` passed 832/832 selected native tests
+(28.920s execution), including every prior failure and the new negative
+fixture-linker test. Logs: `/tmp/witchy-assignment-compact-20260912.log`,
+`/tmp/witchy-assignment-dictionary-integrated-20260912.log` (initial red), and
+`/tmp/witchy-assignment-fixtures-integrated-20260912.log` (green).
+The linear landing branch preserves newer master changes; terminal queue
+evidence is still pending.
 No full-corpus or compiler-wide memory-safety completion is claimed.
