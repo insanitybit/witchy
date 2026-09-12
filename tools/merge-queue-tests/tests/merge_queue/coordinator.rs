@@ -1709,6 +1709,12 @@ fn a_code_submission_without_a_receipt_still_warns() {
         stderr.contains("no green shard recorded"),
         "code submission lost its missing-shard warning:\n{stderr}"
     );
+    assert!(
+        stderr.contains("./scripts/agent-check.sh edit")
+            && stderr.contains("resubmit the same tip")
+            && stderr.contains("queue position is preserved"),
+        "warning did not give the exact-tip recovery workflow:\n{stderr}"
+    );
 }
 
 /// `status` has always carried per-change `readiness`, but `doctor` -- the view
