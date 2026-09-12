@@ -66,10 +66,10 @@ the command, source, feature set, target warmth, and environment match.
 | 2. Minimal edit-loop selection | One executable contributor command selects named low-cost checks by changed surface and is documented separately from the unchanged landing set | LANDED (`00b909301`) |
 | 3. Early recurring-failure probes | Root driver budget, WIR prelude/ABI census, and ownership/admission composition failures are selected before submission on their relevant paths | LANDED (`eb190d687`) |
 | 4. Unchanged-input repetition | Repeated validation is keyed to source tree, feature selection, and environment; reuse never crosses an invalidating input change | LANDED, PROCESS LOCAL (`07c3611c5`) |
-| 5. Cargo build consolidation | Exact old/new selected-test sets and production feature graphs are equivalent before matched timing; production-only activation checks remain separate | PENDING |
+| 5. Cargo build consolidation | Exact old/new selected-test sets and production feature graphs are equivalent before matched timing; production-only activation checks remain separate | LANDED, BOUNDED (`4bec6d70c`) |
 | 6. Dominated coverage | Each rerouted or reduced-frequency test names the retained stronger oracle and measured blocking cost; security and independent semantics remain represented | FIRST SLICE LANDED (`07c3611c5`) |
 | 7. Measured feedback improvement | At least three matched warm edit-loop samples show a material median reduction with identical protected checks | CURRENT AFTER 2.85s; PRIOR ROUTE ESTIMATED |
-| 8. Measured landing improvement | Current journal window shows improved first-pass-clean rate or reduced failed gate minutes without a weaker landing set | PROVISIONAL: 80.0% FIRST PASS; SHORT WINDOW |
+| 8. Measured landing improvement | Current journal window shows improved first-pass-clean rate or reduced blocking gate time without a weaker landing set | CURRENT: QUEUE SHARD 137s VS 156s RECENT MEDIAN; ONE AFTER SAMPLE |
 | 9. Operational safety | No compiler/refactor overlap, interrupted foreign process, shared cache use, direct master merge, or lost concurrent work | CONTINUOUS |
 
 ## Protected assertions
@@ -103,6 +103,16 @@ Structural Wasm validation cannot replace source provenance or admission.
 6. Recompute the report after landed changes. Completion requires current
    first-pass and latency evidence, not projected savings.
 
+## Rejected experiments
+
+Sharing one target between sequential `cargo check` and clippy was rejected.
+Three matched `witchy-types` pairs used identical package, target, lint, and
+feature selections from identical target clones. Reuse reduced reported Cargo
+compiler actions from 62 to 35, but median completion increased from 24.818s
+parallel to 30.968s sequential: 6.150s slower (24.8%). This package-scoped
+result has limited authority over whole-workspace CPU effects, but it provides
+no wall-latency basis for changing the current parallel gate.
+
 ## Change ledger
 
 | Date | Change | Local evidence | Landing evidence | Measured result |
@@ -114,6 +124,8 @@ Structural Wasm validation cannot replace source provenance or admission.
 | 2026-09-12 | Minimal path-routed edit command | `agent-check edit` on `wir_prelude.rs` passed all three named probes. One-time native setup was 152.98s; unchanged-source warm runs were 2.79s, 2.89s, and 2.85s, median 2.85s. | `00b909301`, attempt `mqa-6fd0a28e0a522aa636ff10246f6d5d556498f88d` | Current warm feedback is measured. The previous broad route is estimated at 4-6 minutes from recorded oracle costs because rerunning it would be a heavyweight suite; this is not a matched before/after claim. Mixed or uncovered paths fail safe to the broader focused set. |
 | 2026-09-12 | Development-latency report | Exact fixture covers batch deduplication, conflict exclusion, change-bounded rework, and a resubmission racing an older live attempt | `00b909301`, attempt `mqa-f51696c563780a019ef2a7b8215b428888c999bf` | Current 24-hour view: 31 terminal member events become 24 physical attempts; 22 landed samples; submit-to-land p50/p90 672s/1859s; scheduling residual 17s/911s; 5/22 landed changes had failure rework. First-edit time remains unavailable, and scheduling can include sleep or coordinator absence. |
 | 2026-09-12 | Defer post-merge worktree reclamation while ready work exists | Focused fixture models two incompatible ready gates and proves both merge before the first sweep, then proves both worktrees are reclaimed after drain | `8cda23310`, attempt `mqa-74b14f10a20079721b783d54dd88a124bb1c624a` | With 452 linked worktrees and a 13,613-line journal, the old coordinator delayed its next loop heartbeat by 507s and 250s after two observed batch landings while ready work waited. Expected busy-queue saving is 4m10s-8m27s per affected landing, high confidence; the running daemon keeps its loaded old function until a natural restart, so post-change field evidence is pending. |
+| 2026-09-12 | Consolidate identical WIR edit probes | Nextest listings prove the old 2+2 selections and new four-test selection have identical sorted-set SHA-256 `21cc6ce7ec1f25c8a5267ff2fbc21f311ce55026d125c2e060676476d96b4619`; package, `native` feature, and lib target are unchanged; normalized feature graphs match | `4bec6d70c`, attempt `mqa-dce6643ed87bcee2bd16af82e613bc366a5cfded`; 4,187/4,187 landing tests passed in 557s | Three warm pairs: old median 2.733s, new median 1.449s, saving 1.284s (47.0%) for the WIR probe segment. All samples passed the same four tests. Scope is only `scripts/rfc0165-dev/shards.sh` and its README. |
+| 2026-09-12 | Remove synthetic waits from queue timing fixture | The named fixture retained its one nonzero foreground/background timing relation, fail-fast red, process-reaping, feature, selector, and stage-order assertions. Three warm focused runs passed in 19.789s, 20.928s, and 20.966s. | `476169601`, attempt `mqa-e62c475e5ee58adb7729a6595ec7aa967712ed06`; the unchanged queue shard passed 67/67 | The fixture fell from a stable recent 49.283-49.554s range to 18.267s in the landing log. The isolated queue stage fell from 153/156/159s (median 156s) to 137s, saving 19s (12.2%); full gate work fell from a 161s recent median to 147s, saving 14s (8.7%). Confidence is medium because only one post-change landing is available. Scope is one test fixture file; production polling is unchanged. |
 
 Update this table only after terminal queue evidence. Record proposals and
 failed experiments in the criterion state or accompanying change, without
