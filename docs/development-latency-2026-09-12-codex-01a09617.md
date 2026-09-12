@@ -3,15 +3,70 @@
 This contributor note records three opportunities from existing agent transcripts,
 Cargo logs, and merge-queue events. It is a documentation-only follow-up, not a
 change to compiler behavior, feature activation, test selection, or gate policy.
-The implementation suggestions below remain proposals. Follow the current
+The original sections preserve the evidence and recommendations at that time;
+the outcome update below records later landed work. Follow the current
 [agent playbook](agile-agent-playbook.md) and
 [queue operator guide](../scripts/MERGE-QUEUE.md) when applying them.
 
 The measurement snapshot ends at `8f907d084861d00bdeec9bed76e2c6f514d68e24`,
 landed at 2026-09-12 14:36:20 UTC. Later compiler work is outside this sample.
 All durations are historical observations, not promises about the current tree.
-The investigation ran no builds or suites and changed no processes or power
-settings. This follow-up adds only this file.
+The initial investigation ran no builds or suites and changed no processes or
+power settings. Its first follow-up added only this file; the outcome update is
+based on the later landed changes and terminal evidence named below.
+
+## Outcome update at 2026-09-12 19:18 UTC
+
+The three highest-impact implementation areas are now bounded as follows.
+
+1. **Remove merge-queue sweep stalls without weakening reclamation guards.**
+   Ready work waited 507s, 250s, and 258s behind observed post-merge sweeps; a
+   periodic sweep delayed another ready submission by 231s. Commit `8cda23310`
+   defers post-merge reclamation while ready work exists. Commit `1475a0d2e`
+   lets a persistent coordinator re-exec a committed, syntax-valid script only
+   between attempts while retaining its PID and singleton lock. Commit
+   `6b6d4213a` parses the append-only merged history once and intersects current
+   local refs instead of launching one Git probe per historical branch. In a
+   2,464-row matched fixture that branch-history phase fell from 81.01s to a
+   0.09s median, saving 80.92s (99.9%). Worktree cleanliness, containment,
+   patch equivalence, journal authority, and the live per-worktree queue check
+   remain. Risk is coordinator lifecycle and reclamation authority; focused
+   lifecycle/sweep fixtures and the full queue shard passed 69/69. The
+   current eight-day-old daemon loaded code before these changes, so field
+   activation awaits its natural restart. Expected busy-queue savings have high
+   confidence; current-daemon activation timing is unknown.
+
+2. **Run decisive ownership, admission, ABI, and driver-budget probes before
+   submission.** Commit `eb190d687` routes the existing 0.026-0.387s assertions
+   on their relevant paths, and `07c3611c5` separates the small edit selection
+   from the full oracle corpus and unchanged landing set. Historical failures
+   reached the full gate after 112s, 121s, 151s, 233s, and 554s. A similar
+   affected episode is estimated to save 6-10 minutes when the focused binary
+   is warm. The estimate has medium confidence because build time and concurrent
+   load vary. Exact scope is the RFC-0165 developer shard/router and tests; all
+   fail-closed ownership, bounds, admission, catalog, semantic, and backend
+   assertions remain in either the edit checkpoint or landing set.
+
+3. **Consolidate identical test invocations and remove fixture-only waiting.**
+   Commit `4bec6d70c` combines two identical WIR package/feature/lib invocations
+   after proving exact four-test selection and feature-graph equivalence. Three
+   warm pairs fell from a 2.733s median to 1.449s, saving 1.284s (47.0%) for that
+   edit-loop segment. Commit `476169601` removes synthetic sleeps while keeping
+   the queue timing relation and failure assertions. Three post-change queue
+   shards passed 67/67, 68/68, and 69/69 in 137s, 137s, and 135s versus the
+   preceding 153s, 156s, and 159s, a 19s median saving (12.2%). Confidence is
+   high for these bounded segments and medium for whole-gate savings. Exact
+   scope is the WIR developer helper/README and one queue fixture; production
+   polling, gate selection, policy, budgets, and exclusions are unchanged.
+
+The current 24-hour report deduplicates 37 terminal member events into 29
+physical attempts. Across 31 landed samples, submit-to-land p50/p90 is
+562s/1776s and scheduling residual p50/p90 is 79s/834s. Five landed changes had
+failure-driven rework totaling 5,684 deduplicated attempt seconds. Heartbeats
+cover only 24.7% of the window, so pre-dequeue idle still cannot distinguish
+machine sleep from coordinator absence. First-edit timestamps remain available
+only in the reconstructed transcript slices below; no telemetry framework was
+added.
 
 **How the time was counted.** First edit means the earliest located source
 mutation in the parent or worker transcript, including the service prototype.
