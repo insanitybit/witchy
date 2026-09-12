@@ -1097,7 +1097,7 @@ fn unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest() {
 
     // Red exactly while the culprit's file is in the candidate tree, with a
     // nextest-shaped FAIL line naming the culprit's test binary.
-    let gate = "test ! -f tests/foo_widget.rs || { printf 'FAIL [   0.42s] witchy::foo_widget foo_widget::renders_the_widget\\n'; exit 1; }";
+    let gate = "test ! -f tests/foo_widget.rs || { printf 'FAIL [   0.42s] ( 1/3) witchy::foo_widget foo_widget::renders_the_widget\\n'; exit 1; }";
     fixture.mq_ok(&["run", "--once"], gate);
 
     let journal = fixture.journal();
@@ -1118,6 +1118,34 @@ fn unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest() {
             .is_some_and(|reason| reason.contains("failing target")),
         "eviction reason is missing: {evicted}",
     );
+    let changes: Vec<serde_json::Value> = fs::read_dir(fixture.state.join("changes"))
+        .expect("read change records")
+        .map(|entry| entry.expect("read change entry"))
+        .map(|entry| {
+            serde_json::from_slice(&fs::read(entry.path()).expect("read change record"))
+                .expect("change record is JSON")
+        })
+        .collect();
+    let culprit = changes
+        .iter()
+        .find(|change| change["branch"] == "widget-fix")
+        .expect("culprit change record exists");
+    assert!(
+        culprit["preflight"]
+            .as_str()
+            .is_some_and(|expr| expr.contains("foo_widget::renders_the_widget")),
+        "culprit did not retain its focused failure replay: {culprit}",
+    );
+    for innocent in ["notes-a", "notes-b"] {
+        let change = changes
+            .iter()
+            .find(|change| change["branch"] == innocent)
+            .unwrap_or_else(|| panic!("innocent change record exists: {innocent}"));
+        assert!(
+            change.get("preflight").is_none(),
+            "batch failure was attached to innocent {innocent}: {change}",
+        );
+    }
     let merged: Vec<_> = journal
         .iter()
         .filter(|event| event["event"] == "merged")

@@ -2100,7 +2100,7 @@ evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> 
         # heuristic's name-matching signal rarely fired as designed.
         # shellcheck disable=SC2046 — word splitting is the parse here.
         set -- $(printf '%s\n' "$fail_line" \
-            | sed -E 's/^[[:space:]]*(TRY [0-9]+ )?[A-Z]+ \[[^]]*\][[:space:]]*(\([0-9]+\/[0-9]+\)[[:space:]]*)?//')
+            | sed -E 's/^[[:space:]]*(TRY [0-9]+ )?[A-Z]+ \[[^]]*\][[:space:]]*(\([[:space:]]*[0-9]+[[:space:]]*\/[[:space:]]*[0-9]+[[:space:]]*\)[[:space:]]*)?//')
         target="${1:-}"; test_path="${2:-}"
         crate="${target%%::*}"
         binary="${target##*::}"
@@ -2760,9 +2760,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             release_lock
             local why="red" extra=""
             [ "$gate_result" != "red" ] && { why="timeout"; extra="${gate_result#timeout: }"; }
-            # So the next attempt for this change does not pay full test
-            # execution to rediscover the same failures.
-            remember_preflight "$change_id" "$(failing_test_expr "$log" || true)"
+            # So the next attempt for the responsible change does not pay full
+            # test execution to rediscover the same failures. A batch head is
+            # only the scheduling representative, so do not attach its failure
+            # to that change until attribution below identifies the owner.
+            local failed_preflight
+            failed_preflight="$(failing_test_expr "$log" || true)"
             if [ "${#batch_branches[@]}" -gt 1 ]; then
                 # A red batch indicts no one member. Keep every queue file;
                 # ordered dependency stacks bisect by prefix, while unrelated
@@ -2799,6 +2802,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                         "${batch_attempt_ids[$bi]}" || true
                 done
                 if [ "$stack_mode" -eq 1 ]; then
+                    # A dependency stack is one ordered candidate. Preserve
+                    # the existing replay on its representative while the
+                    # prefix splitter finds the failing boundary.
+                    remember_preflight "$change_id" "$failed_preflight"
                     # A dependency stack has an ordered failure boundary. Gate
                     # the first half as one prefix next; green lands that prefix
                     # and exposes the remaining suffix, while another red halves
@@ -2808,6 +2815,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                     set_queue_batch_limit "$f" "$change_id" "$submitted_sha" "$attempt_id" "$next_prefix" || true
                     note "  dependency stack will re-gate prefix of $next_prefix before the blocked suffix"
                 elif [ -n "$evict_index" ]; then
+                    # The failure-to-diff match gives this replay a concrete
+                    # owner. Innocent members re-gate without compiling or
+                    # executing a product preflight learned from another diff.
+                    remember_preflight "${batch_ids[$evict_index]}" "$failed_preflight"
                     # Only the evicted member gates alone; everyone else keeps
                     # batching eligibility and re-gates together next loop.
                     mark_queue_entry "${batch_files[$evict_index]}" "${batch_ids[$evict_index]}" \
@@ -2833,6 +2844,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 done
                 return 1
             fi
+            remember_preflight "$change_id" "$failed_preflight"
             [ "$why" = "red" ] && extra="$(failure_summary "$log")"
             note "$branch is $(echo "$why" | tr a-z A-Z) after ${gate_took}s — $extra"
             note "  log: $log"
