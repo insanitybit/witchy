@@ -1775,6 +1775,65 @@ fn the_coordinator_sweeps_landed_worktrees_at_startup() {
 }
 
 #[test]
+fn sweep_caches_merged_history_but_keeps_queue_admission_live() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    run_git(&fixture.root, &["merge", "--ff-only", "a"]);
+    let queued_worktree = fixture._temp.path().join("queued-worktree");
+    run_git(
+        &fixture.root,
+        &["worktree", "add", queued_worktree.to_str().unwrap(), "a"],
+    );
+    run_git(
+        &fixture.root,
+        &["branch", "landed-without-worktree", "master"],
+    );
+    run_git(&fixture.root, &["branch", "unrelated", "master"]);
+
+    fixture.mq_ok(&["status"], "true");
+    fs::write(
+        fixture.state.join("journal.jsonl"),
+        concat!(
+            "{\"event\":\"merged\",\"branch\":\"a\"}\n",
+            "{\"event\":\"merged\",\"branch\":\"landed-without-worktree\"}\n",
+        ),
+    )
+    .expect("write merged branch history");
+    let queued = fixture.state.join("queue/queued.json");
+    fs::write(&queued, "{\"branch\":\"a\"}\n").expect("write live queue entry");
+
+    fixture.mq_ok(&["sweep"], "true");
+    assert!(
+        queued_worktree.exists(),
+        "sweep removed a worktree whose branch is currently queued",
+    );
+    assert!(
+        !git_output(
+            &fixture.root,
+            &["show-ref", "--verify", "refs/heads/landed-without-worktree"],
+        )
+        .status
+        .success(),
+        "sweep retained a journal-merged local branch with no worktree",
+    );
+    assert!(
+        git_output(
+            &fixture.root,
+            &["show-ref", "--verify", "refs/heads/unrelated"],
+        )
+        .status
+        .success(),
+        "sweep removed a branch absent from merged history",
+    );
+
+    fs::remove_file(queued).expect("remove live queue entry");
+    fixture.mq_ok(&["sweep"], "true");
+    assert!(
+        !queued_worktree.exists(),
+        "sweep did not reclaim the merged worktree after its queue entry left",
+    );
+}
+
+#[test]
 fn ready_queue_items_run_before_post_merge_worktree_sweep() {
     let fixture = QueueFixture::stack(&["docs/a.md", "src/b.rs"]);
     let a_worktree = fixture._temp.path().join("worktree-a");

@@ -3358,6 +3358,14 @@ cmd_run() {
 # removal frees a multi-GB target/.
 cmd_sweep() {
     if [ ! -f "$journal" ]; then note "sweep: no journal; nothing merged yet"; return 0; fi
+    # The journal is append-only and this singleton coordinator cannot append
+    # another merge while it is sweeping. Parse the merged branch set once.
+    # Re-reading the full journal for every linked worktree made reclamation
+    # quadratic in repository history (13,642 rows x 450 worktrees in the
+    # measured 2026-09-12 queue). Queue entries remain a live per-worktree
+    # check below because submit may race this function.
+    local merged_branches
+    merged_branches="$(jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" | sort -u)"
     local swept=0
     while IFS= read -r wt; do
         [ "$wt" = "$root" ] && continue
@@ -3367,10 +3375,9 @@ cmd_sweep() {
         case "$branch" in '?' | HEAD) continue ;; esac
         # The guard: only branches this queue landed or proved represented, and
         # not re-queued since.
-        jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" \
-            | grep -qx "$branch" || continue
+        grep -Fqx -- "$branch" <<<"$merged_branches" || continue
         if ls "$queue_dir"/*.json >/dev/null 2>&1 && \
-           jq -r .branch "$queue_dir"/*.json | grep -qx "$branch"; then continue; fi
+           jq -r .branch "$queue_dir"/*.json | grep -Fqx -- "$branch"; then continue; fi
         # Safety: clean and nothing beyond master. Gated merges land a REBASED
         # sha, so the original commits are often not ancestors — `git cherry`
         # treats patch-equivalent commits (all "-") as merged too.
@@ -3388,11 +3395,16 @@ cmd_sweep() {
         fi
     done < <(git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}')
     # Journal-merged branches with no worktree left behind are safe to drop too.
+    # Intersect the two sorted sets once instead of starting `git show-ref` for
+    # every historical merge. The measured journal named 2,464 merged branch
+    # rows, while most refs had already been deleted.
     local b
     while IFS= read -r b; do
-        git -C "$root" show-ref --verify --quiet "refs/heads/$b" || continue
+        [ -n "$b" ] || continue
         git -C "$root" branch -d "$b" >/dev/null 2>&1 && note "sweep: deleted merged branch $b"
-    done < <(jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" | sort -u)
+    done < <(comm -12 \
+        <(printf '%s\n' "$merged_branches") \
+        <(git -C "$root" for-each-ref --format='%(refname:lstrip=2)' refs/heads | sort -u))
     note "sweep: removed $swept worktree(s)"
 }
 
