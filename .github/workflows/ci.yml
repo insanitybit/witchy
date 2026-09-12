@@ -92,6 +92,17 @@ jobs:
         # expression written here; the native security suites stay mandatory.
         run: cargo nextest run --workspace --features witchy-wir/native --profile ci --all-targets --partition "count:${SHARD}/4" -E "$(./scripts/rfc0165-deferred-filter.sh)"
 
+      # Workspace feature unification enables test fixtures. Exercise the
+      # production-disabled boundary separately, and reject an empty selection
+      # if feature drift compiles this security test out.
+      - name: Console fixture imports fail closed without fixture support
+        if: matrix.shard == 1
+        run: >-
+          cargo nextest run -p witchy-runtime --no-default-features --features native
+          --profile ci --test console_fixture_disabled --ignore-default-filter
+          --no-tests=fail
+          -E 'test(=disabled_console_fixture_import_refuses_before_memory_or_output)'
+
   # SBPL is undocumented and version-sensitive, and a preamble that an OS
   # upgrade invalidates fails as a SIGABRT in dyld with no stderr and no
   # unified-log entry -- the profile denies dyld's own diagnostic write. A local
