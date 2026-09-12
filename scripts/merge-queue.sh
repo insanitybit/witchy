@@ -3185,6 +3185,23 @@ next_ready_queue_file() {
     return 1
 }
 
+# Cheap admission probe for cleanup. Unlike next_ready_queue_file, this does
+# not perform patch-equivalence checks: sweep only needs to yield to an entry
+# whose dependency state already says it can run.
+queue_has_ready_change() {
+    local qf identity branch change_id submitted_sha attempt_id
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        identity="$(jq -r '[.branch // "", .change_id // "", .sha // "", .attempt_id // ""] | @tsv' "$qf" 2>/dev/null || true)"
+        IFS=$'\t' read -r branch change_id submitted_sha attempt_id <<<"$identity"
+        [ -n "$branch" ] && [ -n "$change_id" ] \
+            && [ -n "$submitted_sha" ] && [ -n "$attempt_id" ] || continue
+        queue_entry_matches "$qf" "$change_id" "$submitted_sha" "$attempt_id" || continue
+        [ "$(queue_readiness "$qf")" = ready ] && return 0
+    done
+    return 1
+}
+
 flush_deferred_sweep() {
     [ "$deferred_sweep" -eq 1 ] || return 0
     cmd_sweep || true
@@ -3371,6 +3388,11 @@ cmd_run() {
 # removal frees a multi-GB target/.
 cmd_sweep() {
     if [ ! -f "$journal" ]; then note "sweep: no journal; nothing merged yet"; return 0; fi
+    if queue_has_ready_change; then
+        deferred_sweep=1
+        note "sweep: ready queue work is pending; deferring cleanup"
+        return 0
+    fi
     # The journal is append-only and this singleton coordinator cannot append
     # another merge while it is sweeping. Parse the merged branch set once.
     # Re-reading the full journal for every linked worktree made reclamation
@@ -3379,8 +3401,14 @@ cmd_sweep() {
     # check below because submit may race this function.
     local merged_branches
     merged_branches="$(jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" | sort -u)"
-    local swept=0
+    local swept=0 sweep_probe=0
     while IFS= read -r wt; do
+        sweep_probe=$((sweep_probe + 1))
+        if [ "$((sweep_probe % 16))" -eq 0 ] && queue_has_ready_change; then
+            deferred_sweep=1
+            note "sweep: ready queue work arrived; deferring remaining cleanup after $swept worktree(s)"
+            return 0
+        fi
         [ "$wt" = "$root" ] && continue
         [ "$wt" = "$gate_wt" ] && continue
         [ -d "$wt" ] || continue
@@ -3407,12 +3435,34 @@ cmd_sweep() {
             note "sweep: git worktree remove refused $wt; leaving it"
         fi
     done < <(git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}')
+    if queue_has_ready_change; then
+        deferred_sweep=1
+        note "sweep: ready queue work arrived; deferring historical branch cleanup"
+        return 0
+    fi
+    # Deterministic concurrency seam for the fixture that submits work after
+    # branch pruning has begun. Production never sets this variable.
+    if [ -n "${MERGE_QUEUE_TEST_SWEEP_BRANCH_MARKER:-}" ]; then
+        : >"$MERGE_QUEUE_TEST_SWEEP_BRANCH_MARKER"
+        local marker_wait=0
+        while [ ! -f "$MERGE_QUEUE_TEST_SWEEP_BRANCH_MARKER.continue" ] \
+            && [ "$marker_wait" -lt 500 ]; do
+            sleep 0.01
+            marker_wait=$((marker_wait + 1))
+        done
+    fi
     # Journal-merged branches with no worktree left behind are safe to drop too.
     # Intersect the two sorted sets once instead of starting `git show-ref` for
     # every historical merge. The measured journal named 2,464 merged branch
     # rows, while most refs had already been deleted.
     local b
     while IFS= read -r b; do
+        sweep_probe=$((sweep_probe + 1))
+        if [ "$((sweep_probe % 16))" -eq 0 ] && queue_has_ready_change; then
+            deferred_sweep=1
+            note "sweep: ready queue work arrived; deferring remaining historical branch cleanup"
+            return 0
+        fi
         [ -n "$b" ] || continue
         git -C "$root" branch -d "$b" >/dev/null 2>&1 && note "sweep: deleted merged branch $b"
     done < <(comm -12 \

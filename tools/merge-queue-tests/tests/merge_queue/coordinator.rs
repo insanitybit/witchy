@@ -1840,6 +1840,112 @@ fn sweep_caches_merged_history_but_keeps_queue_admission_live() {
 }
 
 #[test]
+fn sweep_defers_branch_pruning_while_ready_work_waits() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["status"], "true");
+    run_git(
+        &fixture.root,
+        &["branch", "landed-without-worktree", "master"],
+    );
+    fs::write(
+        fixture.state.join("journal.jsonl"),
+        "{\"event\":\"merged\",\"branch\":\"landed-without-worktree\"}\n",
+    )
+    .expect("write merged branch history");
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let deferred = fixture.mq_ok(&["sweep"], "true");
+    let deferred_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&deferred.stdout),
+        String::from_utf8_lossy(&deferred.stderr),
+    );
+    assert!(
+        deferred_output.contains("ready queue work is pending; deferring cleanup"),
+        "sweep did not yield to ready admission: {deferred_output}",
+    );
+    assert!(
+        git_output(
+            &fixture.root,
+            &["show-ref", "--verify", "refs/heads/landed-without-worktree"],
+        )
+        .status
+        .success(),
+        "sweep pruned history while ready work was waiting",
+    );
+
+    fixture.mq_ok(&["drop", "a", "fixture cleanup"], "true");
+    fixture.mq_ok(&["sweep"], "true");
+    assert!(
+        !git_output(
+            &fixture.root,
+            &["show-ref", "--verify", "refs/heads/landed-without-worktree"],
+        )
+        .status
+        .success(),
+        "deferred branch cleanup did not resume after admission drained",
+    );
+}
+
+#[test]
+fn sweep_yields_when_ready_work_arrives_during_branch_pruning() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["status"], "true");
+    let mut journal = String::new();
+    for index in 0..32 {
+        let branch = format!("landed-{index:02}");
+        run_git(&fixture.root, &["branch", &branch, "master"]);
+        journal.push_str(&format!(
+            "{{\"event\":\"merged\",\"branch\":\"{branch}\"}}\n"
+        ));
+    }
+    fs::write(fixture.state.join("journal.jsonl"), journal)
+        .expect("write merged branch history");
+    let marker = fixture._temp.path().join("branch-pruning-started");
+    let sweep = fixture
+        .mq_command(&["sweep"], "true")
+        .env("MERGE_QUEUE_TEST_SWEEP_BRANCH_MARKER", &marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start concurrent sweep");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "sweep did not enter historical branch pruning");
+    fixture.mq_ok(&["submit", "a"], "true");
+    fs::write(format!("{}.continue", marker.display()), "continue\n")
+        .expect("release branch pruning fixture");
+    let output = sweep.wait_with_output().expect("wait for concurrent sweep");
+    assert!(output.status.success(), "concurrent sweep failed");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains("ready queue work arrived; deferring"),
+        "sweep did not yield after admission changed: {combined}",
+    );
+    let retained = (0..32)
+        .filter(|index| {
+            git_output(
+                &fixture.root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    &format!("refs/heads/landed-{index:02}"),
+                ],
+            )
+            .status
+            .success()
+        })
+        .count();
+    assert!(retained > 0, "sweep finished every branch before yielding");
+}
+
+#[test]
 fn ready_queue_items_run_before_post_merge_worktree_sweep() {
     let fixture = QueueFixture::stack(&["docs/a.md", "src/b.rs"]);
     let a_worktree = fixture._temp.path().join("worktree-a");
