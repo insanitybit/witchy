@@ -63,8 +63,84 @@ pub(crate) fn validate_checked_module(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Deliberately link only the exact canonical diagnostic ABIs. Unknown
+    /// imports or mismatched signatures must still fail instantiation. These
+    /// imports always terminate; a no-op host would conceal failed guards.
+    pub(crate) fn fixture_diagnostic_linker<T: 'static>(engine: &wasmtime::Engine) -> wasmtime::Linker<T> {
+        let mut linker = wasmtime::Linker::new(engine);
+        linker.func_wrap("witchy", "__witchy_abort_at",
+            |mut caller: wasmtime::Caller<'_, T>, message: i32, message_len: i32,
+             function: i32, function_len: i32, line: i32| -> wasmtime::Result<()> {
+                let message = fixture_diagnostic_text(&mut caller, message, message_len)?;
+                let function = fixture_diagnostic_text(&mut caller, function, function_len)?;
+                let core = witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, &message);
+                wasmtime::bail!("{}", witchy_syntax::diag::runtime_error(&function, line as u32, &core));
+            }).expect("bind exact canonical fail ABI");
+        linker.func_wrap("witchy", "__witchy_list_bounds_at",
+            |mut caller: wasmtime::Caller<'_, T>, index: i64, length: i32,
+             function: i32, function_len: i32, line: i32| -> wasmtime::Result<()> {
+                let function = fixture_diagnostic_text(&mut caller, function, function_len)?;
+                let core = witchy_syntax::diag::DiagTemplate::ListIndexOob.render(index, i64::from(length as u32), "");
+                wasmtime::bail!("{}", witchy_syntax::diag::runtime_error(&function, line as u32, &core));
+            }).expect("bind exact canonical list bounds ABI");
+        linker
+    }
+
+    fn fixture_diagnostic_text<T>(caller: &mut wasmtime::Caller<'_, T>, pointer: i32, length: i32) -> wasmtime::Result<String> {
+        let memory = caller.get_export("memory").and_then(wasmtime::Extern::into_memory)
+            .ok_or_else(|| wasmtime::Error::msg("diagnostic memory missing"))?;
+        let start = pointer as u32 as usize;
+        let end = start.checked_add(length as u32 as usize)
+            .ok_or_else(|| wasmtime::Error::msg("diagnostic slice overflow"))?;
+        let bytes = memory.data(&*caller).get(start..end)
+            .ok_or_else(|| wasmtime::Error::msg("diagnostic slice out of bounds"))?;
+        Ok(std::str::from_utf8(bytes)
+            .map_err(|_| wasmtime::Error::msg("diagnostic slice is not UTF-8"))?.to_owned())
+    }
+
+    #[test]
+    fn fixture_diagnostics_reject_wrong_imports_and_never_continue() {
+        let engine = wasmtime::Engine::default();
+        let linker = fixture_diagnostic_linker(&engine);
+        let mut store = wasmtime::Store::new(&engine, ());
+        for import in [
+            "(import \"other\" \"__witchy_abort_at\" (func (param i32 i32 i32 i32 i32)))",
+            "(import \"witchy\" \"__witchy_abort_at_alias\" (func (param i32 i32 i32 i32 i32)))",
+            "(import \"witchy\" \"__witchy_abort_at\" (func (param i32 i32 i32 i32 i32) (result i32)))",
+            "(import \"witchy\" \"__witchy_list_bounds_at\" (func (param i32 i32 i32 i32 i32)))",
+        ] {
+            let module = wasmtime::Module::new(&engine, format!("(module {import})")).unwrap();
+            assert!(linker.instantiate(&mut store, &module).is_err(), "reject {import}");
+        }
+        let module = wasmtime::Module::new(&engine, r#"(module
+            (import "witchy" "__witchy_abort_at" (func $abort (param i32 i32 i32 i32 i32)))
+            (import "witchy" "__witchy_list_bounds_at" (func $bounds (param i64 i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "boommain")
+            (global $continued (export "continued") (mut i32) (i32.const 0))
+            (func (export "abort")
+                i32.const 0 i32.const 4 i32.const 4 i32.const 4 i32.const 8 call $abort
+                i32.const 1 global.set $continued)
+            (func (export "bounds")
+                i64.const -1 i32.const 2 i32.const 4 i32.const 4 i32.const 8 call $bounds
+                i32.const 1 global.set $continued)
+            (func (export "bad_slice")
+                i64.const 0 i32.const 0 i32.const -1 i32.const 1 i32.const 8 call $bounds
+                i32.const 1 global.set $continued))"#).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        for (name, expected) in [
+            ("abort", "runtime error: `main`, line 8: boom"),
+            ("bounds", "runtime error: `main`, line 8: list index -1 out of bounds (length 2)"),
+            ("bad_slice", "diagnostic slice out of bounds"),
+        ] {
+            let call = instance.get_typed_func::<(), ()>(&mut store, name).unwrap();
+            assert_eq!(call.call(&mut store, ()).unwrap_err().root_cause().to_string(), expected);
+            assert_eq!(instance.get_global(&mut store, "continued").unwrap().get(&mut store).i32(), Some(0));
+        }
+    }
 
     struct FixtureConsole;
 
@@ -229,7 +305,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted console.print artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
@@ -258,7 +334,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted RFC-0165 list-for artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
@@ -290,7 +366,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted canonical artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted canonical artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
@@ -314,7 +390,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile canonical unary artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate canonical unary artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
@@ -348,7 +424,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, &bytes)
             .expect("compile public production Wasm");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate public production Wasm");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
@@ -474,7 +550,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted direct-call artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted direct-call artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -499,7 +575,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted parameterized-call artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted parameterized-call artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -524,7 +600,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile canonical var write-back artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate canonical var write-back artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -547,7 +623,7 @@ mod tests {
             let engine = wasmtime::Engine::default();
             let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile branch-local headers");
             let mut store = wasmtime::Store::new(&engine, ());
-            let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate branch-local headers");
+            let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate branch-local headers");
             let main = instance.get_typed_func::<(), i64>(&mut store, "f1").expect("branch-local headers main");
             assert_eq!(main.call(&mut store, ()).expect("run branch-local headers"), 44);
         }
@@ -568,7 +644,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted own List identity artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted own List identity artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -607,7 +683,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted forwarded own List artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted forwarded own List artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f2")
@@ -626,7 +702,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect own List artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect own List artifact");
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate indirect own List artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect own List main export");
         assert_eq!(main.call(&mut store, ()).expect("run indirect own List main"), 42);
     }
@@ -642,7 +718,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect let List artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect let List artifact");
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate indirect let List artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect let List main export");
         assert_eq!(main.call(&mut store, ()).expect("run indirect let List main"), 42);
     }
@@ -658,7 +734,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect var replacements");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect var replacements");
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate indirect var replacements");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("var replacements main");
         assert_eq!(main.call(&mut store, ()).expect("run var replacements"), 149);
     }
@@ -679,7 +755,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect own List tail artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiate indirect own List tail artifact");
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate indirect own List tail artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("indirect own List tail main export");
         assert_eq!(main.call(&mut store, ()).expect("run indirect own List tail main"), 42);
     }
@@ -711,7 +787,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted function-value artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted function-value artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -744,7 +820,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted function-value tail-call artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted function-value tail-call artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -769,7 +845,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile memory-bearing function-value artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate memory-bearing function-value artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -794,7 +870,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted proper-tail artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted proper-tail artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -843,14 +919,33 @@ mod tests {
         let canonical = checked.canonical_source().expect("canonical source");
         let bundle = derive_layout_bundle(canonical).expect("project canonical layouts");
 
-        assert_eq!(bundle.roots().len(), 1);
+        assert_eq!(bundle.roots().len(), 2, "List(Int) and the diagnostic source-label String");
         let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
             .expect("decode projected layout bundle");
-        let descriptor = layouts.get(bundle.roots()[0]).expect("List(Int) descriptor");
-        assert!(matches!(
-            descriptor.kind(),
-            witchy_wir::layout::LayoutKind::PackedList { .. }
-        ));
+        let mut lists = 0;
+        let mut labels = 0;
+        for root in bundle.roots() {
+            let descriptor = layouts.get(*root).expect("projected root descriptor");
+            match descriptor.kind() {
+                witchy_wir::layout::LayoutKind::PackedList { element, rc } => {
+                    lists += 1;
+                    assert_eq!(*rc, witchy_wir::layout::RcHeader::Required);
+                    assert_eq!(layouts.get(*element).unwrap().kind(),
+                        &witchy_wir::layout::LayoutKind::Scalar(witchy_wir::layout::ScalarKind::Int));
+                }
+                witchy_wir::layout::LayoutKind::RuntimeBuffer { element } => {
+                    labels += 1;
+                    assert_eq!(descriptor.size(), witchy_wir::layout::LayoutSize::Dynamic { base: 4, stride: 1 });
+                    assert_eq!(layouts.get(*element).unwrap().kind(),
+                        &witchy_wir::layout::LayoutKind::Scalar(witchy_wir::layout::ScalarKind::RawByte));
+                }
+                other => panic!("unexpected source layout {other:?}"),
+            }
+        }
+        assert_eq!((lists, labels), (1, 1));
+        let candidate = lower_typed_module(canonical, bundle).expect("lower projected list and label");
+        assert_eq!(candidate.static_data_segments().len(), 1);
+        assert_eq!(candidate.static_data_segments()[0].bytes(), b"\x09\0\0\0main.read");
         validate_checked_module(&checked).expect("validate projected List(Int) source");
     }
 
@@ -870,7 +965,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted List(Int) artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted List(Int) artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
@@ -896,7 +991,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted packed Point artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted packed Point artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f0")
             .expect("canonical Point main export");
@@ -920,7 +1015,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted List(Int) push artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted List(Int) push artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
@@ -944,13 +1039,15 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile bounds-checked List push artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate bounds-checked List push artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
             .expect("canonical main export");
 
-        assert!(main.call(&mut store, ()).is_err());
+        let error = main.call(&mut store, ()).expect_err("logical-length OOB access must terminate");
+        assert_eq!(error.root_cause().to_string(),
+            "runtime error: `main`, line 4: list index 2 out of bounds (length 2)");
     }
 
     #[test]
@@ -969,7 +1066,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted borrowed List(Int) artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted borrowed List(Int) artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f1")
@@ -993,7 +1090,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile non-tail let List(Int) artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate non-tail let List(Int) artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f1")
             .expect("canonical main export");
@@ -1034,7 +1131,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile proper-tail let List(Int) artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate proper-tail let List(Int) artifact");
         let main = instance.get_typed_func::<(), i64>(&mut store, "f2")
             .expect("canonical main export");
@@ -1057,7 +1154,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted list loop artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted list loop artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
@@ -1082,13 +1179,15 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted bounds-checked artifact");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted bounds-checked artifact");
         let main = instance
             .get_typed_func::<(), i64>(&mut store, "f0")
             .expect("canonical main export");
 
-        assert!(main.call(&mut store, ()).is_err());
+        let error = main.call(&mut store, ()).expect_err("admitted OOB access must terminate");
+        assert_eq!(error.root_cause().to_string(),
+            "runtime error: `main`, line 2: list index 1 out of bounds (length 1)");
     }
 
     #[test]
@@ -1149,7 +1248,7 @@ mod tests {
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted UTF-8 String literal");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
             .expect("instantiate admitted UTF-8 String literal");
         let main = instance
             .get_typed_func::<(), i32>(&mut store, "f0")
@@ -1172,7 +1271,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted direct String-result artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
@@ -1305,15 +1404,15 @@ mod tests {
         let layouts = derive_layout_bundle(canonical).expect("canonical pointer-list layouts");
         let candidate =
             lower_typed_module(canonical, layouts).expect("canonical List(String) index lowering");
-        assert!(candidate.functions()[0].blocks[0]
-            .operations
-            .iter()
+        assert!(candidate.functions()[0].blocks.iter()
+            .flat_map(|block| &block.operations)
             .any(|operation| matches!(
                 operation,
                 witchy_wir::canonical_safewir::Operation::Load {
                     transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared,
+                    place,
                     ..
-                }
+                } if matches!(place.projection(), witchy_wir::canonical_safewir::Projection::Element { .. })
             )));
         let initial = witchy_wir::canonical_safewir::check_initial(candidate.clone());
         assert!(initial.is_ok(), "{initial:?}\n{candidate:#?}");
@@ -1325,7 +1424,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted indexed List(String) artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
@@ -1364,7 +1463,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted List(String) push artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
@@ -1397,7 +1496,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted pointer-list result artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker
@@ -1430,7 +1529,7 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
             .expect("compile admitted UTF-8 concat artifact");
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker = fixture_diagnostic_linker(&engine);
         linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");
         let mut store = wasmtime::Store::new(&engine, Vec::<u8>::new());
         let instance = linker

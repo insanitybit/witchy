@@ -16,7 +16,7 @@ fn owned_result_source_allocates_returns_indexes_and_executes() {
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("admitted module");
     let mut store = wasmtime::Store::new(&engine, ());
-    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instance");
+    let instance = crate::canonical_pipeline::tests::fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instance");
     let main = instance.get_typed_func::<(), i64>(&mut store, "f1").expect("main export");
     assert_eq!(main.call(&mut store, ()).expect("execute owned result"), 42);
 }
