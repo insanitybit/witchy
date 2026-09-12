@@ -1,7 +1,7 @@
 //! RFC-0135/RFC-0165 execution oracle: every admitted program runs through
 //! the executable SafeWIR interpreter (the checker's semantics) and through
-//! the admitted Wasm; the two must print the same lines, and neither may end
-//! with a live reference-counted object. The oracle is what catches an
+//! the admitted Wasm; both must match the checked source interpreter's output,
+//! and neither may end with a live reference-counted object. The oracle catches an
 //! encoder defect the plan mirror faithfully reproduces (the destructor
 //! scratch-slot leak was one).
 
@@ -494,6 +494,22 @@ fn oracle_checked(
     let run = interpret_entry_program(&validated, function, arguments, &[], config)
         .unwrap_or_else(|e| panic!("{label}: oracle refused: {e:?}"));
 
+    // Use the same authenticated checked source, not reconstructed raw AST.
+    // This is an independent output leg, not an assertion of complete host
+    // trace or exit-code equivalence. In particular, source main -> Int sets
+    // an exit code rather than printing its result; a silent main -> Float
+    // surfaces its result as output.
+    let source_output = witchy::interpreter::run_checked_module(checked, ".", Vec::new())
+        .unwrap_or_else(|e| panic!("{label}: source interpreter refused: {e}"));
+    let mut oracle_source_output = run.output.clone();
+    if oracle_source_output.is_empty()
+        && let Some(InterpreterValue::FloatBits(bits)) = run.results.first()
+    {
+        oracle_source_output.push(witchy_syntax::fmt::render_float(f64::from_bits(*bits)));
+    }
+    assert_eq!(source_output, oracle_source_output,
+        "{label}: printed lines differ between source and oracle");
+
     let mut runtime = Runtime::batch().expect("runtime");
     let mut vm = runtime
         .spawn_admitted(
@@ -617,6 +633,7 @@ fn oracle_agrees_on_the_foundation_programs() {
     let programs: &[(&str, &str)] = &[
         ("print", "fn main(console: Console):\n    console.print(\"ok\")\n"),
         ("int result", "fn main() -> Int:\n    40 + 2\n"),
+        ("float result", "fn main() -> Float:\n    1.5\n"),
         ("loops", "fn main(console: Console):\n    var i = 0\n    while i < 3:\n        console.print(\"tick\")\n        i = i + 1\n    for j in 0..2:\n        console.print(\"tock\")\n"),
         ("strings", "pub fn shout(name: String) -> String:\n    \"hi \" + name\n\nfn keep(own value: String) -> String:\n    value\n\nfn main(console: Console):\n    console.print(shout(\"x\"))\n    console.print(keep(\"ok\"))\n    console.print(\"${16} ${-7} ${0}\")\n"),
         ("lists", "pub fn dot(a: List(Int), b: List(Int)) -> Int:\n    var sum = 0\n    var i = 0\n    while i < a.length():\n        sum = sum + a[i] * b[i]\n        i = i + 1\n    sum\n\npub fn grow(placed: List(Int), col: Int) -> Int:\n    var next = placed\n    next.push(col)\n    next.length()\n\nfn main(console: Console):\n    let u = [1, 2, 3]\n    console.print(\"${dot(u, [4, 5, 6])} ${grow(u, 9)} ${u.length()}\")\n"),
