@@ -569,11 +569,11 @@ if cargo nextest --version >/dev/null 2>&1; then
     #
     # Narrow deliberately: only when the selection is exactly that one binary,
     # so a mapper bug that genuinely selects nothing still fails loudly here.
-    main_no_tests_warn=0
+    main_queue_only=0
     if [ "${#nextest_sel[@]}" -eq 2 ] \
         && [ "${nextest_sel[0]}" = "--test" ] \
         && [ "${nextest_sel[1]}" = "merge_queue" ]; then
-        main_no_tests_warn=1
+        main_queue_only=1
     fi
     # RFC-0159 follow-up: replay the tests that red the PREVIOUS attempt for this
     # change, before the full suite.
@@ -621,9 +621,17 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         main_expr="$excl"
     fi
-    test_cmd=("${nextest_cmd[@]}")
-    [ "$main_no_tests_warn" -eq 0 ] || test_cmd+=(--no-tests=warn)
-    [ -z "$main_expr" ] || test_cmd+=(-E "$main_expr")
+    if [ "$main_queue_only" -eq 1 ]; then
+        # merge_queue now belongs to the standalone merge-queue-tests package.
+        # Asking root Cargo to resolve `--test merge_queue` fails before its
+        # exclusion can produce an empty selection. The isolated shard below
+        # runs that binary plus test_for_paths with the owning package selected.
+        preflight_cmd=()
+        test_cmd=(true)
+    else
+        test_cmd=("${nextest_cmd[@]}")
+        [ -z "$main_expr" ] || test_cmd+=(-E "$main_expr")
+    fi
 
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
@@ -1112,8 +1120,14 @@ run_watched() {
     stage_heartbeat_pid=$!
     "$@" &
     failfast_fg_pid=$!
-    local poll="${WITCHY_FAILFAST_POLL:-5}"
-    case "$poll" in '' | *[!0-9]* | 0) poll=5 ;; esac
+    local poll="${WITCHY_FAILFAST_POLL:-1}"
+    # Tests with fake tools need subsecond polling so the monitor does not
+    # dominate the behavior being checked. Operators may also choose a
+    # fractional interval for faster failure detection. Reject zero and
+    # malformed values rather than spinning or passing bad input to sleep.
+    if ! [[ "$poll" =~ ^([1-9][0-9]*|0[.][0-9]*[1-9][0-9]*)$ ]]; then
+        poll=1
+    fi
     while kill -0 "$failfast_fg_pid" 2>/dev/null; do
         if failfast_scan; then
             printf '\n\033[1;31m%s FAILED while %s ran — aborting the foreground stage (fail-fast)\033[0m\n' \

@@ -343,7 +343,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
          fi\n\
          if [ \"$1\" = nextest ] && [ \"$2\" = run ] && [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" != 1 ]; then sleep \"${FAKE_CARGO_NEXTEST_SECS:-0}\"; exit 0; fi\n\
          if [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" = 1 ] && [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
-           sleep 1; exit 7\n\
+           sleep 0.1; exit 7\n\
          fi\n\
          exit 0\n",
     )
@@ -366,6 +366,20 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     .expect("write fake rustup");
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
         .expect("chmod fake rustup");
+    // This fixture invokes check.sh eleven times without changing repository
+    // sources. Return the already-audited ignore-policy census instead of
+    // rescanning every Rust file eleven times; test-nextest-list-wrapper.sh
+    // retains the real positive and negative policy checks.
+    let find = bin.join("find");
+    fs::write(
+        &find,
+        "#!/bin/sh\n\
+         if [ \"$1\" = src ]; then exit 0; fi\n\
+         PATH=/usr/bin:/bin:/usr/sbin:/sbin exec find \"$@\"\n",
+    )
+    .expect("write fake ignore-policy finder");
+    fs::set_permissions(&find, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake ignore-policy finder");
 
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let cargo_args_file = temp.path().join("cargo-args");
@@ -383,8 +397,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
         .env("FAKE_CARGO_CLIPPY_SECS", "1")
-        .env("FAKE_CARGO_NEXTEST_SECS", "3")
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("FAKE_CARGO_NEXTEST_SECS", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with fake tools");
@@ -462,7 +476,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert_eq!(timings[0]["kind"], "foreground");
     assert_eq!(timings[0]["name"], "tests (workspace, minus e2e)");
     assert_eq!(timings[0]["status"], "green");
-    assert!(timings[0]["elapsed_s"].as_u64().unwrap() >= 3);
+    assert!(timings[0]["elapsed_s"].as_u64().unwrap() >= 1);
     assert_eq!(timings[1]["kind"], "background");
     assert_eq!(timings[1]["name"], "clippy (bug lints)");
     assert_eq!(timings[1]["status"], "green");
@@ -476,7 +490,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with isolated queue fixtures");
@@ -513,6 +527,39 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             }),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",
     );
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let queue_only = check_sh(&root, &["--fast"])
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-queue-only"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_QUEUE_INFRA", "1")
+        .env("WITCHY_GATE_NEXTEST", "--test merge_queue")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "0.05")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run queue-only gate with standalone fixture package");
+    assert!(
+        queue_only.status.success(),
+        "queue-only fake gate failed: {}",
+        String::from_utf8_lossy(&queue_only.stderr)
+    );
+    let queue_only_args =
+        fs::read_to_string(&cargo_args_file).expect("read queue-only fake cargo arguments");
+    assert!(
+        !queue_only_args
+            .lines()
+            .any(|line| line.starts_with("nextest run --test merge_queue")),
+        "root Cargo was asked to resolve the standalone queue target: {queue_only_args}",
+    );
+    assert!(
+        queue_only_args.lines().any(|line| {
+            line.starts_with(
+                "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 2",
+            )
+        }),
+        "queue-only selection did not run the owning package shard: {queue_only_args}",
+    );
     let invalid_width = check_sh(&root, &["--queue-infra"])
         .env("PATH", &path)
         .env("WITCHY_QUEUE_INFRA_JOBS", "0")
@@ -535,7 +582,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "package(witchy-types) or test(/^example_tests::/)",
         )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with a focused nextest selection");
@@ -569,7 +616,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_FUZZ_ENV_FILE", &fuzz_env_file)
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for differential fuzz");
@@ -613,7 +660,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for an example_tests-only batch");
@@ -666,7 +713,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for a types-only batch");
@@ -705,7 +752,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for interp+example_tests");
@@ -744,7 +791,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     let failed = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
-        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("FAKE_CARGO_FAIL_NEXTEST", "1")
         .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
