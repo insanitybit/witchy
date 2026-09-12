@@ -11,6 +11,7 @@ pub(super) struct PreparedWriteBack {
 enum PreparedProjection {
     Field { source: Type, index: usize },
     Index { source: Type, index: ValueId, site: abort::Site },
+    Dictionary { source: Type, key: ValueId },
 }
 
 enum AssignmentProjection<'a> {
@@ -29,7 +30,7 @@ fn assignment_read_matches(expression: &Expr, root: &str, path: &[AssignmentProj
             field == expected && assignment_read_matches(base, root, prefix)
         }
         (AssignmentProjection::Index { index: expected, .. }, Expr::Call { name, args }) => {
-            name == witchy_syntax::intrinsics::LIST_AT && args.len() == 2
+            matches!(name.as_str(), witchy_syntax::intrinsics::LIST_AT | witchy_syntax::intrinsics::DICT_AT) && args.len() == 2
                 && args[1] == **expected && assignment_read_matches(&args[0], root, prefix)
         }
         (AssignmentProjection::Index { index: expected, .. }, Expr::Index { base, index }) => {
@@ -45,7 +46,7 @@ fn assignment_plan<'a>(root: &str, expression: &'a Expr, depth: u32) -> Option<(
     for _ in 0..depth {
         match replacement {
             Expr::Call { name, args }
-                if name == witchy_syntax::intrinsics::LIST_SET_AT && args.len() == 3
+                if matches!(name.as_str(), witchy_syntax::intrinsics::LIST_SET_AT | witchy_syntax::intrinsics::DICT_INSERT) && args.len() == 3
                     && assignment_read_matches(&args[0], root, &path) =>
             {
                 path.push(AssignmentProjection::Index { base: &args[0], index: &args[1], expression: replacement });
@@ -68,7 +69,7 @@ pub(super) fn source_place_root(expression: &Expr) -> Option<&str> {
         Expr::Var(name) => Some(name),
         Expr::Field { base, .. } | Expr::Index { base, .. } => source_place_root(base),
         Expr::Call { name, args }
-            if name == witchy_syntax::intrinsics::LIST_AT && args.len() == 2 =>
+            if matches!(name.as_str(), witchy_syntax::intrinsics::LIST_AT | witchy_syntax::intrinsics::DICT_AT) && args.len() == 2 =>
         {
             source_place_root(&args[0])
         }
@@ -86,10 +87,7 @@ impl FunctionLowerer<'_> {
         // Parser provenance owns the RHS boundary. Shape checking validates
         // those exact layers; it never absorbs a similar-looking RHS update.
         let Some((path, replacement)) = assignment_plan(root, expression, depth) else {
-            // This helper owns record/list places, not every typed assignment
-            // family. Leave the WHOLE expression to its existing typed lowerer
-            // (for example dictionary insertion), never a partial decoded path.
-            return Ok(false);
+            return Err(CanonicalLoweringError::UnsupportedExpression("assignment place provenance does not match its typed rebuild"));
         };
         let mut place = PreparedWriteBack { root: root.to_owned(), projections: Vec::with_capacity(path.len()) };
         for projection in path {
@@ -118,11 +116,11 @@ impl FunctionLowerer<'_> {
             }
             Expr::Index { base, index } => self.prepare_index_write_back(base, index, expression),
             Expr::Call { name, args }
-                if name == witchy_syntax::intrinsics::LIST_AT && args.len() == 2 =>
+                if matches!(name.as_str(), witchy_syntax::intrinsics::LIST_AT | witchy_syntax::intrinsics::DICT_AT) && args.len() == 2 =>
             {
                 self.prepare_index_write_back(&args[0], &args[1], expression)
             }
-            _ => Err(CanonicalLoweringError::UnsupportedExpression("var write-back requires a typed record/list place")),
+            _ => Err(CanonicalLoweringError::UnsupportedExpression("var write-back requires a typed record/list/dictionary place")),
         }
     }
 
@@ -150,6 +148,18 @@ impl FunctionLowerer<'_> {
 
     fn prepare_index_projection(&mut self, base: &Expr, index: &Expr, expression: &Expr) -> Result<PreparedProjection, CanonicalLoweringError> {
         let source = self.expression_type(base)?;
+        if matches!(source.unqualified(), Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2) {
+            let (_, key_type, _) = self.dictionary_parts(&source)?;
+            let key = self.lower_expr(index)?;
+            if self.values[&key] != self.field_value_type(&key_type)? {
+                return Err(CanonicalLoweringError::UnsupportedExpression("dictionary place key type"));
+            }
+            // Own the coordinate before the RHS can change its source binding.
+            // The dictionary itself is deliberately read only after the RHS.
+            let key = if Self::dict_scalar_value(&key_type) { key }
+                else { self.owned_for_storage(key, &key_type)? };
+            return Ok(PreparedProjection::Dictionary { source, key });
+        }
         if !matches!(source.unqualified(), Type::Named(name, arguments) if name == "List" && arguments.len() == 1) {
             return Err(CanonicalLoweringError::UnsupportedType(source));
         }
@@ -188,6 +198,14 @@ impl FunctionLowerer<'_> {
 
     fn read_write_back_projection(&mut self, value: ValueId, projection: &PreparedProjection) -> Result<ValueId, CanonicalLoweringError> {
         match projection {
+            PreparedProjection::Dictionary { source, key } => {
+                let (shape, key_type, value_type) = self.dictionary_parts(source)?;
+                let keys = self.dict_list(value, &shape, 0)?;
+                let (found, index) = self.lower_dict_find(keys, *key, &key_type)?;
+                self.push_trap_unless(found)?;
+                let values = self.dict_list(value, &shape, 1)?;
+                self.lower_dict_value_at(values, index, &value_type)
+            }
             PreparedProjection::Field { source, index } => {
                 let shape = scalar_aggregate_shape(source, self.definitions)
                     .filter(|shape| !shape.tagged)
@@ -230,6 +248,11 @@ impl FunctionLowerer<'_> {
             self.rebuild_write_back(child, rest, replacement)?
         };
         match projection {
+            PreparedProjection::Dictionary { source, key } => {
+                let (shape, key_type, value_type) = self.dictionary_parts(source)?;
+                let (rebuilt, _) = self.lower_dict_insert(current, &shape, &key_type, &value_type, *key, replacement, false)?;
+                Ok(rebuilt)
+            }
             PreparedProjection::Index { source, index, site } => {
                 self.replace_list_value(current, *index, replacement, source.clone(), site)
             }

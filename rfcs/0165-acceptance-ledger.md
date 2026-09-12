@@ -1133,3 +1133,29 @@ and its runner still expects generated-driver bytes. Restoration must bind
 compiler-generated entry selection to exact source and carry admitted artifacts
 through launch, not activate that raw-byte route. This is a remaining workflow
 obligation, not an admission exception.
+
+### 2026-09-12: assignment provenance and dictionary coordinates, focused-green
+
+The canonical assignment path now consumes the parser's exact `place_depth`,
+captures each coordinate once before the source RHS, and rebuilds the current
+root after the RHS. Dictionary keys are owned before later evaluation can
+replace their source binding; insertion reuses the checked typed dictionary
+kernel and language equality. Ordinary depth-zero calls keep ordinary value
+argument semantics. Positive provenance that does not match its typed rebuild
+refuses rather than falling back to ordinary expression evaluation.
+
+On integration base `f3f830fa5` plus this dictionary repair, the focused
+assignment/pop/bounds/nominal-key set passed 13/13 (9.131s), including the new
+three-legged dictionary key/root/sibling/snapshot probe with zero leaks. The
+same rebuilt CLI agreed for hello (3 lines), wrap (5), and jq (7). Removed the
+now-passing `simple_nested_method_and_free_calls_write_back_on_both_backends`
+and `stale_assignment_projection_uses_ordinary_bounds_behavior` deferrals.
+Static independent review found no concrete blocker; it did not establish
+soundness.
+
+The broader selected native run was 809/831, not green: 22 lowerer fixtures
+still assume import-free indexed programs or the pre-diagnostic layout set.
+They require reconciliation with the checked bounds-diagnostic ABI before
+queue submission. Logs: `/tmp/witchy-assignment-compact-20260912.log` and
+`/tmp/witchy-assignment-dictionary-integrated-20260912.log`.
+No full-corpus or compiler-wide memory-safety completion is claimed.

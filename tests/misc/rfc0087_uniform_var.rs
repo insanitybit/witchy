@@ -947,3 +947,42 @@ fn main(console: Console):
 "#;
     assert_pop_three_legs(source, &["1 2", "2"]);
 }
+
+#[test]
+fn assignment_provenance_dictionary_captures_key_and_reloads_current_root_on_three_legs() {
+    let source = r#"
+import dict
+
+type Box:
+    values: Dict(String, Int)
+    marker: Int
+
+fn coordinate(var calls: Int, key: String) -> String:
+    calls = calls + 1
+    key
+
+fn replace(var values: Dict(String, Int), var key: String) -> Int:
+    values["sibling"] = 9
+    key = "changed"
+    7
+
+fn replace_box(var box: Box) -> Int:
+    box.values["sibling"] = 11
+    box.marker = 6
+    8
+
+fn main(console: Console):
+    var values: Dict(String, Int) = dict.new()
+    values["original"] = 2
+    let snapshot = values
+    var key = "original"
+    var calls = 0
+    values[coordinate(calls, key)] = replace(values, key)
+    console.print("${calls} ${key} ${values.get_or("original", 0)} ${values.get_or("sibling", 0)} ${snapshot.get_or("original", 0)}")
+    var box = Box(values, 0)
+    box.values[coordinate(calls, "original")] = replace_box(box)
+    console.print("${calls} ${box.marker} ${box.values.get_or("original", 0)} ${box.values.get_or("sibling", 0)}")
+    console.print("${values.get_or("original", 0)} ${values.get_or("sibling", 0)}")
+"#;
+    assert_pop_three_legs(source, &["1 changed 7 9 2", "2 6 8 11", "7 9"]);
+}
