@@ -662,6 +662,69 @@ fn main(console: Console):
 }
 
 #[test]
+fn canonical_bounds_diagnostics_preserve_current_root_effects_and_owned_snapshots() {
+    use witchy_wir::canonical_interpreter::{interpret_program, InterpretError, InterpreterValue};
+    use witchy_wir::canonical_safewir::FunctionId;
+    let template = r#"fn coordinate(console: Console, var calls: Int) -> Int:
+    calls = calls + 1
+    console.print("index ${calls}")
+    return INDEX
+
+fn replacement(console: Console, var values: List(String), shrink: Bool) -> String:
+    console.print("rhs")
+    if shrink:
+        let _ = values.pop()
+    "new"
+
+fn main(console: Console):
+    var calls = 0
+    var values = ["old" + "!"]
+    let snapshot = values
+    values[coordinate(console, calls)] = replacement(console, values, SHRINK)
+    console.print(values[0])
+    console.print(snapshot[0])
+"#;
+    for (index, shrink, length) in [(0_i64, true, 0), (-1, false, 1), (4294967296, false, 1), (0, false, 1)] {
+        let source = template.replace("INDEX", &index.to_string()).replace("SHRINK", if shrink { "true" } else { "false" });
+        let checked = checked(&source);
+        let traps = index != 0 || shrink;
+        let expected = format!("runtime error: `main`, line 16: list index {index} out of bounds (length {length})");
+        let source_run = interpreter::run_checked_module(&checked, ".", Vec::new());
+        let output = ["index 1", "rhs", "new", "old!"].map(str::to_owned).to_vec();
+        if traps {
+            assert_eq!(format!("runtime error: {}", source_run.unwrap_err().message), expected);
+        } else {
+            assert_eq!(source_run.unwrap(), output);
+        }
+        let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("bounds diagnostic admission");
+        let entry = artifact.entry().unwrap();
+        let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let validated = codegen::validate_checked_module_for_oracle(&checked).expect("independent bounds validation");
+        let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+        let oracle = interpret_program(&validated, function, arguments, Default::default());
+        let mut runtime = Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true, ..Default::default() }, 256).unwrap();
+        let wasm = vm.run();
+        if traps {
+            assert_eq!(oracle.unwrap_err(), InterpretError::DiagnosticAbort {
+                message: expected.clone(), output: vec!["index 1".into(), "rhs".into()],
+            });
+            assert_eq!(wasm.unwrap_err().root_cause().to_string(), expected);
+            assert_eq!(vm.output(), ["index 1", "rhs"]);
+            assert_eq!(vm.run().unwrap_err().root_cause().to_string(), "an aborted Witchy VM cannot be run again");
+            assert_eq!(vm.output(), ["index 1", "rhs"]);
+        } else {
+            let oracle = oracle.unwrap();
+            assert_eq!(oracle.output, output);
+            assert_eq!(oracle.leaked_objects, 0);
+            wasm.unwrap();
+            assert_eq!(vm.output(), output);
+            assert_eq!(vm.canonical_heap_leaks().unwrap().unwrap(), 0);
+        }
+    }
+}
+
+#[test]
 fn function_value_conventions_are_identity_and_preserve_writeback() {
     let source = r#"
 fn bump(var n: Int) -> Int:

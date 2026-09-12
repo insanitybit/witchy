@@ -353,11 +353,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_recv_all_size" (func $net_recv_all_size_host (param externref) (result i32)))
   (import "witchy" "net_connect_at" (func $net_connect_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
+  (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 134;
+pub const IMPORT_COUNT: usize = 135;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -619,7 +620,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_service_response_into" | "vm_service_close"
         => C::InternalService,
 
-        "heap_register" | "heap_unregister" | "heap_frontier" | "__witchy_abort" | "__witchy_abort_at" => {
+        "heap_register" | "heap_unregister" | "heap_frontier" | "__witchy_abort" | "__witchy_abort_at" | "__witchy_list_bounds_at" => {
             C::RuntimeDiagnostic
         }
         _ => return None,

@@ -744,7 +744,7 @@ pub fn lower_typed_module(
             .into_iter()
             .filter(|import| {
                 (import.name == "console_print" && prints)
-                    || (import.name == abort::IMPORT && !abort_sites.is_empty())
+                    || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
@@ -755,6 +755,7 @@ pub fn lower_typed_module(
             .collect::<Vec<_>>();
         host_imports = HostImports {
             abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
+            bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
             abort_sites,
             vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
@@ -6257,7 +6258,7 @@ impl FunctionLowerer<'_> {
                 Ok(value)
             }
             Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
-            Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(args),
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(expression, args),
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::GENERATED_LIST_PUSH => {
                 self.lower_generated_list_push(args)
             }
@@ -6478,7 +6479,7 @@ impl FunctionLowerer<'_> {
                 let [base, index] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("list.at arity"));
                 };
-                self.lower_index(base, index)
+                self.lower_index(expression, base, index)
             }
             Expr::Call { name, args } if witchy_syntax::ast::is_render_intrinsic(name) => {
                 let [argument] = args.as_slice() else {
@@ -6619,7 +6620,7 @@ impl FunctionLowerer<'_> {
             Expr::While { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while value")),
             Expr::For { .. } => Err(CanonicalLoweringError::UnsupportedExpression("for")),
             Expr::Range { .. } => Err(CanonicalLoweringError::UnsupportedExpression("range")),
-            Expr::Index { base, index } => self.lower_index(base, index),
+            Expr::Index { base, index } => self.lower_index(expression, base, index),
             Expr::WhileLet { .. } => Err(CanonicalLoweringError::UnsupportedExpression("while let")),
             Expr::TaggedLit { .. } => {
                 Err(CanonicalLoweringError::UnsupportedExpression("tagged literal"))
@@ -9176,7 +9177,8 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
-    fn lower_index(&mut self, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+    fn lower_index(&mut self, expression: &Expr, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let site = self.diagnostic_site(expression)?;
         let logical_type = self.expression_type(base)?;
         if self.closures.layouts.opaque_type(&logical_type, self.definitions).is_some() {
             let list = self.lower_expr(base)?;
@@ -9186,6 +9188,7 @@ impl FunctionLowerer<'_> {
             if self.values[&index] != ValueType::Int {
                 return Err(CanonicalLoweringError::UnsupportedExpression("opaque list index type"));
             }
+            self.diagnose_list_index(list, index, &site)?;
             let index_size = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
             let destination = self.fresh(ValueType::Gc(family.owner_type))?;
@@ -9204,6 +9207,7 @@ impl FunctionLowerer<'_> {
         if self.values[&index_value] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("list index type"));
         }
+        self.diagnose_list_index(object, index_value, &site)?;
         let index_size = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::NarrowSize { destination: index_size, value: index_value });
         // `lower_expr(base)` has already authenticated the list header and
@@ -13531,6 +13535,7 @@ fn string_layout(
 #[derive(Clone, Default)]
 struct HostImports {
     abort: Option<witchy_wir::canonical_safewir::ImportId>,
+    bounds: Option<witchy_wir::canonical_safewir::ImportId>,
     abort_sites: HashMap<usize, abort::Site>,
     vm_service: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     vm_sites: HashMap<usize, u32>,
@@ -14155,17 +14160,9 @@ mod tests {
     }
 
     fn list_layouts() -> LayoutBundle {
-        let mut interner = LayoutInterner::new();
-        let list = interner
-            .intern_type(
-                &witchy_syntax::ast::Type::Named(
-                    "List".into(),
-                    vec![witchy_syntax::ast::Type::Named("Int".into(), Vec::new())],
-                ),
-                &ListResolver,
-            )
-            .expect("canonical List(Int) layout");
-        LayoutBundle::from_interner(&interner, [list]).expect("list layout bundle is canonical")
+        let checked = checked("fn read(xs: List(Int), i: Int) -> Int:\n    xs[i]\n");
+        crate::canonical_layouts::derive_layout_bundle(checked.canonical_source().unwrap())
+            .expect("List(Int) plus the authenticated diagnostic-label layout")
     }
 
     fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
@@ -14719,7 +14716,8 @@ fn main() -> Int:
             list_layouts(),
         )
         .expect("lower List(Int) source");
-        let operations = &candidate.functions()[0].blocks[0].operations;
+        let operations = candidate.functions()[0].blocks.iter()
+            .flat_map(|block| &block.operations).collect::<Vec<_>>();
 
         let (count, capacity) = operations
             .iter()
@@ -14917,7 +14915,8 @@ fn main() -> Int:
             list_layouts(),
         )
         .expect("lower borrowed List(Int) parameter index");
-        let operations = &candidate.functions()[0].blocks[0].operations;
+        let operations = candidate.functions()[0].blocks.iter()
+            .flat_map(|block| &block.operations).collect::<Vec<_>>();
 
         let (header_position, logical_length) = operations
             .iter()

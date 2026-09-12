@@ -2,7 +2,7 @@
 use super::*;
 
 impl FunctionLowerer<'_> {
-    pub(super) fn lower_list_set_at(&mut self, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
+    pub(super) fn lower_list_set_at(&mut self, expression: &Expr, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         let [source_expr, index_expr, replacement_expr] = args else {
             return Err(CanonicalLoweringError::CallArityMismatch {
                 callee: witchy_syntax::intrinsics::LIST_SET_AT.to_owned(), expected: 3, actual: args.len(),
@@ -13,7 +13,8 @@ impl FunctionLowerer<'_> {
         let source = self.lower_expr(source_expr)?;
         let index = self.lower_expr(index_expr)?;
         let replacement = self.lower_expr(replacement_expr)?;
-        self.replace_list_value(source, index, replacement, list_type)
+        let site = self.diagnostic_site(expression)?;
+        self.replace_list_value(source, index, replacement, list_type, &site)
     }
 
     /// The same checked replacement for already evaluated place coordinates.
@@ -23,7 +24,9 @@ impl FunctionLowerer<'_> {
         index: ValueId,
         replacement: ValueId,
         list_type: Type,
+        site: &abort::Site,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        self.diagnose_list_index(source, index, site)?;
         if let Some(family) = self.owner_list_family(source).cloned() {
             if self.values[&index] != ValueType::Int
                 || self.values[&replacement] != ValueType::Gc(family.owner_type)

@@ -319,6 +319,12 @@ impl LayoutProjection {
     ) -> Result<(), CanonicalLayoutError> {
         // This callback omits only the result layout. The AST visitor still
         // checks every descendant, including values on terminating edges.
+        if matches!(expression, ast::Expr::Index { .. }) || matches!(expression,
+            ast::Expr::Call { name, .. } if matches!(name.as_str(), "list.at" | "list.__at" | "list.__set_at"))
+        {
+            // The failure edge borrows an immutable source-function label.
+            self.visit_type(&Type::Named("String".into(), Vec::new()))?;
+        }
         if checked_noncompletion {
             return Ok(());
         }

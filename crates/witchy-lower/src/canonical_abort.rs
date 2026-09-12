@@ -2,6 +2,12 @@
 use super::*;
 
 pub(super) const IMPORT: &str = "__witchy_abort_at";
+pub(super) const BOUNDS_IMPORT: &str = "__witchy_list_bounds_at";
+
+pub(super) fn is_list_access(expression: &Expr) -> bool {
+    matches!(expression, Expr::Index { .. }) || matches!(expression,
+        Expr::Call { name, .. } if matches!(name.as_str(), "list.at" | "list.__at" | "list.__set_at"))
+}
 
 #[derive(Clone)]
 pub(super) struct Site {
@@ -35,11 +41,11 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module) -> Result<HashMap<usize
                     }
                     _ => {}
                 }
-                if matches!(expression, Expr::Call { name, .. } if name == "fail") {
+                if is_list_access(expression) || matches!(expression, Expr::Call { name, .. } if name == "fail") {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
-                            CanonicalLoweringError::UnsupportedExpression("fail source location"),
+                            CanonicalLoweringError::UnsupportedExpression("diagnostic source location"),
                         )?;
                         sites.insert(key, Site { function: function.to_owned(), line });
                     }
@@ -75,10 +81,70 @@ pub(super) fn catalog(
             parameter_effects: BTreeMap::from([(0, vec![MemoryEffect::Read]), (1, vec![MemoryEffect::Read])]),
         },
     });
-    catalog.with_abort_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)
+    let catalog = catalog.with_abort_import(id, layout)
+        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+    let parameters = vec![ValueType::Int, ValueType::Size, ValueType::Ref(layout), ValueType::Size];
+    signatures.push(FunctionSignature {
+        id, parameters: parameters.clone(), results: Vec::new(),
+        contract: CallableContract {
+            parameters: parameters.into_iter().map(|value_type| ParameterContract {
+                value_type, ownership: ParameterOwnership::Value,
+            }).collect(), results: Vec::new(),
+            parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
+        },
+    });
+    catalog.with_list_bounds_import(id, layout).map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)
 }
 
 impl FunctionLowerer<'_> {
+    pub(super) fn diagnostic_site(&self, expression: &Expr) -> Result<Site, CanonicalLoweringError> {
+        self.host_imports.abort_sites.get(&(expression as *const Expr as usize)).cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("bounds source witness"))
+    }
+
+    /// Diagnostic only: the ordinary narrowing and dominating Bounds guard
+    /// remain on success. This branch establishes no memory authority.
+    pub(super) fn diagnose_list_index(&mut self, object: ValueId, index: ValueId, site: &Site) -> Result<(), CanonicalLoweringError> {
+        let length = if let Some(family) = self.owner_list_family(object).cloned() {
+            self.owner_list_length(object, family.signature)?
+        } else {
+            self.ensure_list_extent(object)?;
+            self.tracked_lanes(object).ok_or(CanonicalLoweringError::UnsupportedExpression("bounds list extent"))?.0
+        };
+        let wide_length = self.widen_size_to_int(length)?;
+        // Full-width unsigned comparison rejects negatives and >u32::MAX
+        // without truncating the original signed diagnostic value.
+        let valid = self.push_compare(ComparisonOperator::LessUnsigned, index, wide_length)?;
+        let proceed = self.new_block(&[])?;
+        let fail = self.new_block(&[])?;
+        let facts = self.snapshot_facts();
+        self.finish_current(Terminator::BranchIf {
+            condition: valid, then_target: proceed, then_arguments: Vec::new(),
+            else_target: fail, else_arguments: Vec::new(),
+        })?;
+        self.current = fail;
+        let function = self.lower_string_literal(&site.function)?;
+        let start = self.push_const_size(0)?;
+        let function_length = self.string_lengths[&function];
+        let line = self.push_const_size(u64::from(site.line))?;
+        let import = self.host_imports.bounds.ok_or_else(|| CanonicalLoweringError::InvalidAuthenticatedAbiCatalog("bounds import missing".into()))?;
+        self.push_operation(Operation::HostCall {
+            destinations: Vec::new(), import, arguments: vec![
+                HostCallArgument::Value(index), HostCallArgument::Value(length),
+                HostCallArgument::Buffer {
+                    place: witchy_wir::canonical_safewir::Place::projected(function,
+                        Projection::Slice { start, length: function_length }, self.values[&function], AccessMode::Read),
+                    extent: HostBufferExtent::Slice,
+                }, HostCallArgument::Value(line),
+            ],
+        });
+        self.finish_current(Terminator::Trap)?;
+        self.current = proceed;
+        self.restore_snapshot(facts);
+        Ok(())
+    }
+
     pub(super) fn lower_abort(&mut self, expression: &Expr, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
         let [message] = arguments else {
             return Err(CanonicalLoweringError::UnsupportedExpression("fail arguments"));

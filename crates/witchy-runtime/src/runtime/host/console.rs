@@ -34,6 +34,7 @@ pub(super) fn host_print_captured(
 pub(in crate::runtime) fn link_abort(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "__witchy_abort", host_witchy_abort)?;
     linker.func_wrap("witchy", "__witchy_abort_at", host_witchy_abort_at)?;
+    linker.func_wrap("witchy", "__witchy_list_bounds_at", host_witchy_list_bounds_at)?;
     Ok(())
 }
 
@@ -48,6 +49,36 @@ pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()>
 mod canonical_console_tests {
     use super::*;
     use wasmtime::{ExternRef, Rooted};
+
+    #[test]
+    fn canonical_list_bounds_checks_unsigned_label_slice_and_signed_index() -> Result<()> {
+        let mut runtime = super::super::super::Runtime::new()?;
+        let engine = runtime.engine.clone();
+        let empty = wasmtime::Module::new(&engine, "(module)")?;
+        let vm = runtime.instantiate_module(crate::runtime::WorkerModule::Unadmitted(empty),
+            super::super::super::Capabilities::none(), 1, None)?;
+        let mut store = vm.store;
+        let mut linker = Linker::new(&engine);
+        link_abort(&mut linker)?;
+        let module = wasmtime::Module::new(&engine, r#"(module
+            (import "witchy" "__witchy_list_bounds_at" (func $bounds (param i64 i32 i32 i32 i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 0) "main\ff")
+            (func (export "call") (param i64 i32 i32 i32)
+                local.get 0 local.get 1 local.get 2 local.get 3 i32.const 8 call $bounds))"#)?;
+        let instance = linker.instantiate(&mut store, &module)?;
+        let call = instance.get_typed_func::<(i64, i32, i32, i32), ()>(&mut store, "call")?;
+        for (ptr, len) in [(65535, 2), (-1, 1), (0, -1)] {
+            assert_eq!(call.call(&mut store, (0, 0, ptr, len)).unwrap_err().root_cause().to_string(), "abort slice out of bounds");
+        }
+        assert_eq!(call.call(&mut store, (0, 0, 4, 1)).unwrap_err().root_cause().to_string(), "abort slice is not UTF-8");
+        for (index, length) in [(-1, 0), (4294967296, 1), (i64::MIN, -1)] {
+            assert_eq!(call.call(&mut store, (index, length, 0, 4)).unwrap_err().root_cause().to_string(),
+                format!("runtime error: `main`, line 8: list index {index} out of bounds (length {})", length as u32));
+        }
+        assert!(store.data().output.lock().unwrap().is_empty());
+        Ok(())
+    }
 
     #[test]
     fn canonical_abort_checks_both_unsigned_slices_without_output() -> Result<()> {
@@ -177,21 +208,32 @@ fn guest_i64_global(caller: &mut Caller<'_, VmState>, name: &str) -> Option<i64>
 
 /// Canonical diagnostic ABI: raw byte slices, never implicit String headers or
 /// a stale site global. All reads finish before rendering the terminal error.
+fn diagnostic_text(data: &[u8], ptr: i32, len: i32) -> Result<&str> {
+    let start = ptr as u32 as usize;
+    let end = start.checked_add(len as u32 as usize)
+        .ok_or_else(|| wasmtime::Error::msg("abort slice overflow"))?;
+    let bytes = data.get(start..end).ok_or_else(|| wasmtime::Error::msg("abort slice out of bounds"))?;
+    std::str::from_utf8(bytes).map_err(|_| wasmtime::Error::msg("abort slice is not UTF-8"))
+}
+
+fn host_witchy_list_bounds_at(
+    mut caller: Caller<'_, VmState>, index: i64, length: i32,
+    function_ptr: i32, function_len: i32, line: i32,
+) -> Result<()> {
+    let memory = memory_of(&mut caller)?;
+    let function = diagnostic_text(memory.data(&caller), function_ptr, function_len)?;
+    let core = witchy_syntax::diag::DiagTemplate::ListIndexOob.render(index, i64::from(length as u32), "");
+    bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
+}
+
 fn host_witchy_abort_at(
     mut caller: Caller<'_, VmState>, message_ptr: i32, message_len: i32,
     function_ptr: i32, function_len: i32, line: i32,
 ) -> Result<()> {
-    fn text(data: &[u8], ptr: i32, len: i32) -> Result<&str> {
-        let start = ptr as u32 as usize;
-        let end = start.checked_add(len as u32 as usize)
-            .ok_or_else(|| wasmtime::Error::msg("abort slice overflow"))?;
-        let bytes = data.get(start..end).ok_or_else(|| wasmtime::Error::msg("abort slice out of bounds"))?;
-        std::str::from_utf8(bytes).map_err(|_| wasmtime::Error::msg("abort slice is not UTF-8"))
-    }
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
-    let message = text(data, message_ptr, message_len)?;
-    let function = text(data, function_ptr, function_len)?;
+    let message = diagnostic_text(data, message_ptr, message_len)?;
+    let function = diagnostic_text(data, function_ptr, function_len)?;
     let core = witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, message);
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }

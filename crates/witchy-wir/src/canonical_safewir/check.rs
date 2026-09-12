@@ -2524,6 +2524,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn canonical_list_bounds_diagnostic_grants_no_slice_access_or_liveness() {
+        for case in 0..6 {
+            let (mut module, _) = allocated_host_buffer_module(true, 0, 2, 1,
+                HostBufferExtent::Slice, HostBufferExtent::Slice);
+            let text = module.functions[0].value_types[&ValueId::new(5)];
+            let ValueType::Ref(layout) = text else { unreachable!() };
+            let id = FunctionSignatureId::new(1);
+            let parameters = vec![ValueType::Int, ValueType::Size, text, ValueType::Size];
+            module.signatures[1] = FunctionSignature {
+                id, parameters: parameters.clone(), results: Vec::new(),
+                contract: CallableContract {
+                    parameters: parameters.into_iter().map(|value_type| ParameterContract { value_type, ownership: ParameterOwnership::Value }).collect(),
+                    results: Vec::new(), parameter_effects: BTreeMap::from([(2, vec![MemoryEffect::Read])]),
+                },
+            };
+            let catalog = CanonicalAbiCatalog::from_imports(Vec::new()).with_list_bounds_import(id, layout).unwrap();
+            let import = catalog.imports().pop().unwrap();
+            module.imports = vec![import.clone()];
+            let object = ValueId::new(5);
+            let index = ValueId::new(6);
+            let mut label = HostCallArgument::Buffer {
+                place: Place::projected(object, Projection::Slice {
+                    start: ValueId::new(0), length: ValueId::new(if case == 1 { 1 } else { 2 }),
+                }, text, AccessMode::Read), extent: HostBufferExtent::Slice,
+            };
+            if case == 2 { label = HostCallArgument::Value(object); }
+            let function = &mut module.functions[0];
+            let block = &mut function.blocks[0];
+            block.operations.retain(|operation| !matches!(operation, Operation::HostCall { .. } | Operation::DropRef { .. }));
+            block.operations.push(Operation::WidenSize { destination: index, value: ValueId::new(0) });
+            if case == 3 { block.operations.push(Operation::DropRef { object }); }
+            block.operations.push(Operation::HostCall {
+                destinations: Vec::new(), import: import.id,
+                arguments: vec![HostCallArgument::Value(index), HostCallArgument::Value(ValueId::new(2)), label, HostCallArgument::Value(ValueId::new(2))],
+            });
+            if case == 4 || case == 5 {
+                let result = ValueId::new(7);
+                function.value_types.insert(result, ValueType::Size);
+                // A returning call cannot authorize an unguarded element read.
+                // Nor may a released label be reused after that call.
+                if case == 5 { block.operations.push(Operation::DropRef { object }); }
+                block.operations.push(Operation::Load { destination: result,
+                    place: Place::projected(object, Projection::Element { index: ValueId::new(2) }, ValueType::Size, AccessMode::Read),
+                    transfer: LoadTransfer::CopyScalar,
+                });
+            }
+            block.terminator = Terminator::Trap;
+            let result = check_initial(module.with_abi_catalog(catalog));
+            if case == 0 { result.expect("bounded live diagnostic label"); }
+            else { assert!(result.is_err(), "case {case} must not gain slice, bounds, or lifetime authority"); }
+        }
+    }
+
     /// A `float_to_str`-shaped host call: the guest hands the host a unique
     /// raw-byte buffer to fill, then publishes the returned byte count under
     /// its own capacity guard.

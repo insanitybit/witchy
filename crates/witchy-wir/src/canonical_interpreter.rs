@@ -1348,10 +1348,7 @@ impl<'a> Engine<'a> {
         if contract.module != "witchy" {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
         }
-        if contract.name == "__witchy_abort_at" {
-            let ([HostCallArgument::Buffer { place: message, .. }, HostCallArgument::Buffer { place: function, .. }, HostCallArgument::Value(line)], []) = (arguments, destinations) else {
-                return Err(InterpretError::TypeMismatch("abort arguments"));
-            };
+        if matches!(contract.name.as_str(), "__witchy_abort_at" | "__witchy_list_bounds_at") {
             let read = |place| -> Result<String, InterpretError> {
                 let (object, start, length) = self.slice_place(place, values)?;
                 self.check_range(object, start, length, false)?;
@@ -1365,12 +1362,23 @@ impl<'a> Engine<'a> {
                 }
                 String::from_utf8(bytes).map_err(|_| InterpretError::TypeMismatch("abort UTF-8"))
             };
-            let message = read(message)?;
+            let (core, function, line) = match (contract.name.as_str(), arguments, destinations) {
+                ("__witchy_abort_at", [HostCallArgument::Buffer { place: message, .. }, HostCallArgument::Buffer { place: function, .. }, HostCallArgument::Value(line)], []) =>
+                    (witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, &read(message)?), function, line),
+                ("__witchy_list_bounds_at", [HostCallArgument::Value(index), HostCallArgument::Value(length), HostCallArgument::Buffer { place: function, .. }, HostCallArgument::Value(line)], []) => {
+                    let (InterpreterValue::Int(index), InterpreterValue::Size(length)) = (self.value(*index, values)?, self.value(*length, values)?) else {
+                        return Err(InterpretError::TypeMismatch("bounds diagnostic values"));
+                    };
+                    let length = u32::try_from(*length).map_err(|_| InterpretError::ArithmeticTrap)?;
+                    (witchy_syntax::diag::DiagTemplate::ListIndexOob.render(*index, i64::from(length), ""), function, line)
+                }
+                _ => return Err(InterpretError::TypeMismatch("abort arguments")),
+            };
             let function = read(function)?;
             let InterpreterValue::Size(line) = self.value(*line, values)? else { return Err(InterpretError::TypeMismatch("abort line")); };
             let line = u32::try_from(*line).map_err(|_| InterpretError::ArithmeticTrap)?;
             return Err(InterpretError::DiagnosticAbort {
-                message: witchy_syntax::diag::runtime_error(&function, line, &witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, &message)),
+                message: witchy_syntax::diag::runtime_error(&function, line, &core),
                 output: self.output.clone(),
             });
         }

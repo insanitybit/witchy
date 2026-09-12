@@ -10,12 +10,12 @@ pub(super) struct PreparedWriteBack {
 
 enum PreparedProjection {
     Field { source: Type, index: usize },
-    Index { source: Type, index: ValueId },
+    Index { source: Type, index: ValueId, site: abort::Site },
 }
 
 enum AssignmentProjection<'a> {
     Field { base: &'a Expr, field: &'a str },
-    Index { base: &'a Expr, index: &'a Expr },
+    Index { base: &'a Expr, index: &'a Expr, expression: &'a Expr },
 }
 
 /// Match only the read spine corresponding to the parser's outward rebuild.
@@ -48,7 +48,7 @@ fn assignment_plan<'a>(root: &str, expression: &'a Expr) -> Option<(Vec<Assignme
                 if name == witchy_syntax::intrinsics::LIST_SET_AT && args.len() == 3
                     && assignment_read_matches(&args[0], root, &path) =>
             {
-                path.push(AssignmentProjection::Index { base: &args[0], index: &args[1] });
+                path.push(AssignmentProjection::Index { base: &args[0], index: &args[1], expression: replacement });
                 replacement = &args[2];
             }
             Expr::RecordUpdate { name: None, base, fields }
@@ -87,7 +87,7 @@ impl FunctionLowerer<'_> {
         for projection in path {
             place.projections.push(match projection {
                 AssignmentProjection::Field { base, field } => self.prepare_field_projection(base, field)?,
-                AssignmentProjection::Index { base, index } => self.prepare_index_projection(base, index)?,
+                AssignmentProjection::Index { base, index, expression } => self.prepare_index_projection(base, index, expression)?,
             });
         }
         let replacement = self.lower_expr(replacement)?;
@@ -108,19 +108,19 @@ impl FunctionLowerer<'_> {
                 place.projections.push(self.prepare_field_projection(base, field)?);
                 Ok(place)
             }
-            Expr::Index { base, index } => self.prepare_index_write_back(base, index),
+            Expr::Index { base, index } => self.prepare_index_write_back(base, index, expression),
             Expr::Call { name, args }
                 if name == witchy_syntax::intrinsics::LIST_AT && args.len() == 2 =>
             {
-                self.prepare_index_write_back(&args[0], &args[1])
+                self.prepare_index_write_back(&args[0], &args[1], expression)
             }
             _ => Err(CanonicalLoweringError::UnsupportedExpression("var write-back requires a typed record/list place")),
         }
     }
 
-    fn prepare_index_write_back(&mut self, base: &Expr, index: &Expr) -> Result<PreparedWriteBack, CanonicalLoweringError> {
+    fn prepare_index_write_back(&mut self, base: &Expr, index: &Expr, expression: &Expr) -> Result<PreparedWriteBack, CanonicalLoweringError> {
         let mut place = self.prepare_write_back(base)?;
-        place.projections.push(self.prepare_index_projection(base, index)?);
+        place.projections.push(self.prepare_index_projection(base, index, expression)?);
         Ok(place)
     }
 
@@ -140,7 +140,7 @@ impl FunctionLowerer<'_> {
         Ok(PreparedProjection::Field { source, index })
     }
 
-    fn prepare_index_projection(&mut self, base: &Expr, index: &Expr) -> Result<PreparedProjection, CanonicalLoweringError> {
+    fn prepare_index_projection(&mut self, base: &Expr, index: &Expr, expression: &Expr) -> Result<PreparedProjection, CanonicalLoweringError> {
         let source = self.expression_type(base)?;
         if !matches!(source.unqualified(), Type::Named(name, arguments) if name == "List" && arguments.len() == 1) {
             return Err(CanonicalLoweringError::UnsupportedType(source));
@@ -151,7 +151,7 @@ impl FunctionLowerer<'_> {
         if self.values[&index] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("list place index type"));
         }
-        Ok(PreparedProjection::Index { source, index })
+        Ok(PreparedProjection::Index { source, index, site: self.diagnostic_site(expression)? })
     }
 
     pub(super) fn read_prepared_write_back(&mut self, place: &PreparedWriteBack) -> Result<ValueId, CanonicalLoweringError> {
@@ -187,11 +187,12 @@ impl FunctionLowerer<'_> {
                 let ty = self.field_value_type(&shape.fields[*index])?;
                 self.read_write_back_field(value, source, *index, ty)
             }
-            PreparedProjection::Index { source, index } => {
+            PreparedProjection::Index { source, index, site } => {
                 let Type::Named(_, arguments) = source.unqualified() else {
                     return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
                 };
                 let ty = self.field_value_type(&arguments[0])?;
+                self.diagnose_list_index(value, *index, site)?;
                 let index_size = self.fresh(ValueType::Size)?;
                 self.push_operation(Operation::NarrowSize { destination: index_size, value: *index });
                 self.ensure_list_extent(value)?;
@@ -221,8 +222,8 @@ impl FunctionLowerer<'_> {
             self.rebuild_write_back(child, rest, replacement)?
         };
         match projection {
-            PreparedProjection::Index { source, index } => {
-                self.replace_list_value(current, *index, replacement, source.clone())
+            PreparedProjection::Index { source, index, site } => {
+                self.replace_list_value(current, *index, replacement, source.clone(), site)
             }
             PreparedProjection::Field { source, index } => {
                 let shape = scalar_aggregate_shape(source, self.definitions)
