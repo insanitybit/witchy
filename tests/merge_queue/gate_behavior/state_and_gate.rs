@@ -339,9 +339,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
          if [ -n \"${FAKE_FUZZ_ENV_FILE:-}\" ]; then printf '%s\\n' \"${WITCHY_FUZZ_PROGRAMS-unset}\" >>\"$FAKE_FUZZ_ENV_FILE\"; fi\n\
          if [ \"$1\" = clippy ]; then\n\
            if [ -n \"${FAKE_CLIPPY_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_CLIPPY_PID_FILE\"; sleep 30; exit 0; fi\n\
-           sleep 1; exit 0\n\
+           sleep \"${FAKE_CARGO_CLIPPY_SECS:-0}\"; exit 0\n\
          fi\n\
-         if [ \"$1\" = nextest ] && [ \"$2\" = run ] && [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" != 1 ]; then sleep 3; exit 0; fi\n\
+         if [ \"$1\" = nextest ] && [ \"$2\" = run ] && [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" != 1 ]; then sleep \"${FAKE_CARGO_NEXTEST_SECS:-0}\"; exit 0; fi\n\
          if [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" = 1 ] && [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
            sleep 1; exit 7\n\
          fi\n\
@@ -371,6 +371,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     let cargo_args_file = temp.path().join("cargo-args");
     let cargo_env_file = temp.path().join("cargo-env");
     let proof_sha = "0123456789abcdef0123456789abcdef01234567";
+    // Only this invocation asserts a nonzero foreground duration. The later
+    // command-shape cases use the same fake without paying an unrelated delay.
     let output = check_sh(&root, &["--fast"])
         .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
@@ -380,6 +382,9 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("FAKE_GIT_HEAD", proof_sha)
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
+        .env("FAKE_CARGO_CLIPPY_SECS", "1")
+        .env("FAKE_CARGO_NEXTEST_SECS", "3")
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with fake tools");
@@ -471,6 +476,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with isolated queue fixtures");
@@ -525,6 +531,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "package(witchy-types) or test(/^example_tests::/)",
         )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with a focused nextest selection");
@@ -558,6 +565,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_FUZZ_ENV_FILE", &fuzz_env_file)
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for differential fuzz");
@@ -601,6 +609,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for an example_tests-only batch");
@@ -653,6 +662,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for a types-only batch");
@@ -691,6 +701,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("WITCHY_GATE_SKIP_WASM", "1")
         .env("WITCHY_GATE_SKIP_FMT", "1")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run serialized gate for interp+example_tests");
@@ -729,6 +740,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     let failed = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
+        .env("WITCHY_FAILFAST_POLL", "1")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("FAKE_CARGO_FAIL_NEXTEST", "1")
         .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
