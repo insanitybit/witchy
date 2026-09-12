@@ -476,6 +476,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
         commands[0].contains("every_prelude_import_has_abi_metadata"),
         "{commands:?}"
     );
+    assert!(commands[0].contains("--features native"), "{commands:?}");
     assert!(
         commands[1].contains("public_spec_contains_the_generated_complete_catalog"),
         "{commands:?}"

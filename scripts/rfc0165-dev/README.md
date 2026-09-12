@@ -14,7 +14,7 @@ Environment they assume (override with `WITCHY_DEV_TARGET`):
 |---|---|
 | `build.sh` | `cargo build -p witchy` in the background; `status/build.status` holds `exit=N`; log in `status/build.log`. The binary is `$WITCHY_DEV_TARGET/debug/witchy`. |
 | `one-test.sh <filter> [cargo test args]` | one `cargo test --test misc <filter>` run in the background (`status/one.status`, `status/one.log`). |
-| `shards.sh edit` | the default inner loop: named root-driver budget, WIR prelude/ABI, prefix-ownership, lowering-publication, and admitted aggregate probes (`status/shards.log`, `status/shards.status`). `edit` is the default argument. Feature contexts match the routed probes; no build consolidation is assumed. |
+| `shards.sh edit` | the default inner loop: named root-driver budget, WIR prelude/ABI, prefix-ownership, lowering-publication, and admitted aggregate probes (`status/shards.log`, `status/shards.status`). `edit` is the default argument. WIR probes use `native`, which the current lib-test target requires; separate invocations avoid assuming build equivalence. |
 | `shards.sh corpus` | all existing `rfc0165_` misc tests, including every admitted-example oracle partition. Use for family-completion checkpoints. |
 | `shards.sh landing` | the previous broad local sequence unchanged: all `rfc0165_` misc tests, ABI catalog, lower canonical, WIR native, types, and runtime native. This is a local checkpoint; the merge queue remains the authoritative landing set. |
 | `census.sh` | `witchy check` on every example and `witchy parity` on the ones whose `main` takes only Console/Dir/Env; prints check and agree counts, writes `status/census-fail.txt` and `status/census-parity.txt`. |

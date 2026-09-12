@@ -262,7 +262,7 @@ for p in "${paths[@]}"; do
         crates/witchy-wir/examples/abi_catalog.rs | \
         tests/misc/wasm_abi_catalog.rs | \
         spec/wasm-abi.md)
-            add_early "cargo nextest run -p witchy-wir --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete)'"
+            add_early "cargo nextest run -p witchy-wir --features native --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete)'"
             add_early "cargo nextest run --test misc -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog)'"
             path_has_early=1 ;;
     esac
