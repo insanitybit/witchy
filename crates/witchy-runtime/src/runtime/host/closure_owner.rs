@@ -236,11 +236,42 @@ enum CaptureFieldKind {
     Owner(witchy_wir::canonical_safewir::GcTypeId),
 }
 
-fn require_capability(store: impl wasmtime::AsContext, token: Rooted<ExternRef>, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<()> {
+// Store authority is private to this bridge. Capturing a fixture token must
+// authenticate it against the current session, not merely its Rust payload
+// type. This exposes no token constructor or public capability policy API.
+trait CaptureAuthority: 'static {
+    fn require_console(&self, data: &dyn std::any::Any) -> Result<()>;
+}
+
+fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
+    if !data.is::<super::super::ConsoleCapability>() {
+        bail!("closure capture has wrong capability kind");
+    }
+    Ok(())
+}
+
+impl CaptureAuthority for super::super::VmState {
+    fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
+        #[cfg(feature = "test-fixtures")]
+        if self.fixture_console.is_some() {
+            return super::canonical_fixture::authenticate(self.fixture_console.as_ref(), data);
+        }
+        require_production_console(data)
+    }
+}
+
+#[cfg(test)]
+impl CaptureAuthority for () {
+    fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
+        require_production_console(data)
+    }
+}
+
+fn require_capability<T: CaptureAuthority>(store: impl wasmtime::AsContext<Data = T>, token: Rooted<ExternRef>, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<()> {
     let context = store.as_context();
-    let data = token.data(context)?.ok_or_else(|| wasmtime::Error::msg("capability has no host data"))?;
+    let data = token.data(&context)?.ok_or_else(|| wasmtime::Error::msg("capability has no host data"))?;
     let matches = match kind.get() {
-        0 => data.is::<super::super::ConsoleCapability>(),
+        0 => return context.data().require_console(data),
         1 => data.is::<super::super::DirAuthority>(),
         2 => data.is::<super::super::EnvAuthority>(),
         3 => data.is::<super::super::FileAuthority>(),
@@ -250,6 +281,14 @@ fn require_capability(store: impl wasmtime::AsContext, token: Rooted<ExternRef>,
     };
     if !matches { bail!("closure capture has wrong capability kind"); }
     Ok(())
+}
+
+#[cfg(all(test, feature = "test-fixtures"))]
+pub(super) fn check_fixture_capture_for_test(
+    store: &wasmtime::Store<super::super::VmState>, token: Rooted<ExternRef>,
+    kind: witchy_wir::canonical_safewir::CapabilityKindId,
+) -> Result<()> {
+    require_capability(store, token, kind)
 }
 
 struct Live<P> {
@@ -278,9 +317,9 @@ struct CleanupItem {
 impl Binding {
     // The immutable binding owns the exact checked layout and capture mapping.
     // A bridge call supplies neither a layout nor a field selector.
-    fn seal_gc(
+    fn seal_gc<T: CaptureAuthority>(
         &self,
-        mut store: impl AsContextMut,
+        mut store: impl AsContextMut<Data = T>,
         payload: Rooted<wasmtime::StructRef>,
     ) -> Result<Rooted<ExternRef>> {
         if !wasmtime::StructType::eq(&payload.ty(store.as_context())?, &self.payload_type)
@@ -311,9 +350,9 @@ impl Binding {
     // P is the rooted typed GC payload in the eventual bridge. Keeping the
     // lifecycle generic lets the explicit cleanup handoff be tested without
     // enabling unreviewed GC construction or pretending a scalar is a payload.
-    fn seal<P: Send + Sync + 'static>(
+    fn seal<P: Send + Sync + 'static, T: CaptureAuthority>(
         &self,
-        mut store: impl AsContextMut,
+        mut store: impl AsContextMut<Data = T>,
         payload: P,
         capabilities: &[Rooted<ExternRef>],
     ) -> Result<Rooted<ExternRef>> {

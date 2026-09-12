@@ -50,6 +50,33 @@ fn run_oracle(driver: &witchy_types::pipeline::CheckedTestDriverModule, artifact
 }
 
 #[test]
+fn canonical_console_fixture_captured_console_executes_with_complete_parity() {
+    let files = Files::new("fn test_console(console: Console):\n    let emit = fn():\n        console.print(\"captured\")\n    emit()\n");
+    let driver = files.driver();
+    let artifact = codegen::compile_checked_test_driver_artifact(&driver).expect_lowered("captured fixture Console admission");
+    let plan = plan(&["captured"]);
+    let source = source_outcome(&driver, &plan);
+    let native = runtime::Runtime::batch().unwrap().run_admitted_fixtures(&artifact, plan, crate::RUN_MEMORY_PAGES).unwrap();
+    assert_eq!(source.result, TestResult::Passed);
+    assert_eq!(source, native.transcript, "captured Console full source/native transcript");
+    assert_eq!(source.stdout, ["captured"]);
+    assert_eq!(native.output, source.stdout);
+    assert_eq!(native.leaked_objects, Some(0));
+    assert_eq!(source.events.len(), 1);
+    assert_eq!(source.events[0].effective_rights, ["Write"]);
+    assert_eq!(source.events[0].source, Some(SourceLocation {
+        module: "suite".into(), line: U64Text::new(3), column: U64Text::new(1),
+    }));
+    let (run, events) = run_oracle(&driver, &artifact);
+    let run = run.unwrap();
+    assert_eq!(run.output, source.stdout);
+    assert_eq!(run.leaked_objects, 0);
+    assert_eq!(events, [OracleConsoleEvent {
+        text: "captured".into(), function: "suite.test_console".into(), line: 3,
+    }]);
+}
+
+#[test]
 fn canonical_console_fixture_source_admission_full_trace_and_zero_leaks() {
     let files = Files::new("fn helper(console: Console) -> String:\n    console.print(\"inner\")\n    \"outer\"\nfn main(console: Console):\n    console.print(\"unused main\")\nfn test_console(console: Console):\n    console.print(helper(console))\n    console.print(\"last\\n\")\n");
     let driver = files.driver();

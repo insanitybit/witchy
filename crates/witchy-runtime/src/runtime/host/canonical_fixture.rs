@@ -9,7 +9,7 @@ use super::super::{VmState, memory_of};
 pub(in crate::runtime) struct Session;
 struct ConsoleToken { issuer: Arc<Session>, kind: u32, write: bool }
 
-fn authenticate(session: Option<&Arc<Session>>, value: &dyn Any) -> Result<()> {
+pub(super) fn authenticate(session: Option<&Arc<Session>>, value: &dyn Any) -> Result<()> {
     let token = value.downcast_ref::<ConsoleToken>()
         .ok_or_else(|| Error::msg("fixture Console token has wrong kind"))?;
     if token.kind != 0 { return Err(Error::msg("fixture Console token has wrong kind")); }
@@ -75,6 +75,46 @@ fn print_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canonical_console_fixture_capture_checks_the_active_store_session_and_rights() -> Result<()> {
+        use super::super::closure_owner::check_fixture_capture_for_test;
+        use super::super::super::{Capabilities, ConsoleCapability, Runtime, vmstate_from_caps};
+        use witchy_wir::canonical_safewir::CapabilityKindId;
+        let runtime = Runtime::batch()?;
+        let engine = runtime.engine.clone();
+        // Inert bookkeeping for a host-only Store test: no Wasm instance is
+        // created or executed. Actual capture execution uses admitted source.
+        let module = wasmtime::Module::new(&engine, "(module)")?;
+        let mut state = vmstate_from_caps(0, &Capabilities::none(),
+            wasmtime::StoreLimitsBuilder::new().build(), None, &engine, &module,
+            runtime.preempt, runtime.compiler_services.clone())?;
+        let first = Arc::new(Session);
+        state.fixture_console = Some(first.clone());
+        state.fixture_host = Some(witchy_test_host::FixtureHost::new(witchy_testkit::FixturePlan {
+            console: Some(Default::default()), ..Default::default()
+        }).map_err(|error| Error::msg(error.to_string()))?);
+        let mut store = Store::new(&engine, state);
+        let kind = CapabilityKindId::new(0);
+        let valid = mint(&mut store)?;
+        check_fixture_capture_for_test(&store, valid, kind)?;
+        let foreign = ExternRef::new(&mut store, ConsoleToken { issuer: Arc::new(Session), kind: 0, write: true })?;
+        assert!(check_fixture_capture_for_test(&store, foreign, kind).unwrap_err().to_string().contains("another session"));
+        let wrong = ExternRef::new(&mut store, ConsoleToken { issuer: first.clone(), kind: 1, write: true })?;
+        assert!(check_fixture_capture_for_test(&store, wrong, kind).unwrap_err().to_string().contains("wrong kind"));
+        let read_only = ExternRef::new(&mut store, ConsoleToken { issuer: first, kind: 0, write: false })?;
+        assert!(check_fixture_capture_for_test(&store, read_only, kind).unwrap_err().to_string().contains("Write"));
+        let arbitrary = ExternRef::new(&mut store, 7_i32)?;
+        let production = ExternRef::new(&mut store, ConsoleCapability)?;
+        for token in [arbitrary, production] {
+            assert!(check_fixture_capture_for_test(&store, token, kind).is_err(), "no production or arbitrary-token fallback in a fixture session");
+        }
+        assert!(check_fixture_capture_for_test(&store, valid, CapabilityKindId::new(1)).is_err());
+        store.data_mut().fixture_console = None;
+        assert!(check_fixture_capture_for_test(&store, valid, kind).is_err(), "fixture token grants nothing outside its session");
+        check_fixture_capture_for_test(&store, production, kind)?;
+        Ok(())
+    }
+
     #[test]
     fn canonical_console_fixture_tokens_are_kind_rights_and_session_checked() {
         let first = Arc::new(Session);
