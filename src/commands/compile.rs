@@ -1,6 +1,6 @@
 //! Native compilation, artifact emission, and source-cache services.
 
-use witchy::{artifact, enforce_performance_modes, trusted_publisher};
+use witchy::{enforce_performance_modes, trusted_publisher};
 use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_interp::pipeline;
@@ -355,7 +355,7 @@ pub(super) fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Resu
 pub(super) fn compile_checked_to_development_wasm(
     checked: &pipeline::CheckedModule,
 ) -> Result<codegen::CompiledDevelopmentModule, String> {
-    let mut compiled = match codegen::compile_checked_development_module(checked) {
+    let compiled = match codegen::compile_checked_development_module(checked) {
         codegen::LoweringOutcome::Lowered(compiled) => compiled,
         codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("cannot compile to WASM: {reason}"));
@@ -364,7 +364,9 @@ pub(super) fn compile_checked_to_development_wasm(
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
-    compiled.wasm = artifact::embed_launch_contract(compiled.wasm, checked.module());
+    // Metadata belongs in the compiler's admitted output, never in a later
+    // packaging mutation. The development lowerer remains fail-closed until
+    // it can produce that output through canonical admission.
     Ok(compiled)
 }
 
