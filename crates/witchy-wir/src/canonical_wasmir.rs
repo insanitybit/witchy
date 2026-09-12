@@ -1591,6 +1591,8 @@ pub struct AdmittedCanonicalArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalEntryCapability {
     Console,
+    /// A recipe-only, write-only build output grant (kind 9).
+    BuildOut,
     /// A root `Dir` grant, minted by the launcher from the grant ordinal
     /// among the entry's `Dir` parameters (kind 1).
     Dir,
@@ -1656,6 +1658,7 @@ impl CanonicalEntry {
                 CanonicalEntryCapability::Dir => 1,
                 CanonicalEntryCapability::Env => 2,
                 CanonicalEntryCapability::Net => 4,
+                CanonicalEntryCapability::BuildOut => 9,
             });
         }
         bytes.push(match self.result {
@@ -1694,6 +1697,7 @@ impl CanonicalEntry {
                 1 => Ok(CanonicalEntryCapability::Dir),
                 2 => Ok(CanonicalEntryCapability::Env),
                 4 => Ok(CanonicalEntryCapability::Net),
+                9 => Ok(CanonicalEntryCapability::BuildOut),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -6878,7 +6882,7 @@ fn derive_entry(
 
     // The linker leaves the program entry unqualified as `main` whatever the
     // entry module is called; a library has no `main` and no launch entry.
-    let Some(abi) = source.closed_callable_abi("main") else {
+    let Some(abi) = source.closed_callable_abi(source.entry_declaration()) else {
         return Ok(None);
     };
     let CanonicalTargetPolicy::ClosedLocal(target) = abi.target_policy else {
@@ -6903,7 +6907,7 @@ fn derive_entry(
         .find(|signature| signature.id == function.signature)
         .ok_or_else(|| CanonicalAdmissionError::UnsupportedEntry("entry function has no signature".into()))?;
     let Some(witchy_syntax::ast::Type::Fn(source_parameters, _, _, _)) =
-        source.callable_signature("main").map(|ty| ty.unqualified())
+        source.callable_signature(source.entry_declaration()).map(|ty| ty.unqualified())
     else {
         return Err(CanonicalAdmissionError::UnsupportedEntry("entry lacks its checked source signature".into()));
     };
@@ -6925,6 +6929,9 @@ fn derive_entry(
             ValueType::Capability(kind) if *kind == CapabilityKindId::new(2) => {
                 capabilities.push(CanonicalEntryCapability::Env);
             }
+ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND && source.is_build_recipe() => {
+    capabilities.push(CanonicalEntryCapability::BuildOut);
+}
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Net);
             }

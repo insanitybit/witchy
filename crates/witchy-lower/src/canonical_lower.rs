@@ -721,6 +721,12 @@ pub fn lower_typed_module(
             catalog = catalog
                 .with_capability_imports(capability_signatures, string_layout)
                 .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+if capability_imports.contains("build_out_write_at") {
+    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND);
+    let signature = push_import_signature(vec![build, text, text], Vec::new(), None)?;
+    catalog = catalog.with_build_out_import(signature, string_layout)
+        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+}
             if !compiler_imports.is_empty() {
                 let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
                     footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
@@ -7718,6 +7724,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability operation receiver"));
         };
         let receiver_kind = match self.expression_type(receiver)?.unqualified() {
+            Type::Named(kind, arguments) if kind == "BuildOut" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
             Type::Named(kind, _) if kind == "Dir" => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
             Type::Named(kind, _) if kind == "File" => witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "Env" && arguments.is_empty() => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
@@ -7790,10 +7797,11 @@ impl FunctionLowerer<'_> {
                 let exists = self.push_compare(ComparisonOperator::NotEqual, flag, zero)?;
                 Ok(Some(exists))
             }
-            ("__capop.write", true, false, [path, data]) => {
+            ("__capop.write", true, false, [path, data]) | ("__capop.write_out", false, false, [path, data])
+                if is_dir || receiver_kind == witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND => {
                 let path = self.lower_string_argument(path)?;
                 let data = self.lower_string_argument(data)?;
-                let import = self.capability_import("dir_write_at")?;
+                let import = self.capability_import(if is_dir { "dir_write_at" } else { "build_out_write_at" })?;
                 let path_slice = self.string_slice_argument(path, layout)?;
                 let data_slice = self.string_slice_argument(data, layout)?;
                 self.push_operation(Operation::HostCall {
@@ -13284,6 +13292,7 @@ fn source_value_type(
             CapabilityKind::Net => witchy_wir::canonical_safewir::NET_CAPABILITY_KIND,
             CapabilityKind::Listener => witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND,
             CapabilityKind::Socket => witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND,
+            CapabilityKind::BuildOut => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
         };
         return Ok(match representation {
             CapabilityRepresentation::Direct(_) => ValueType::Capability(kind),
@@ -13592,8 +13601,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 9] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into"];
+const CAPABILITY_IMPORTS: [&str; 10] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -13629,7 +13638,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
-    matches!(name, "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
+    matches!(name, "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -13654,6 +13663,7 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     ("__capop.list", "Dir") => { needed.insert("dir_list_into"); }
                     ("__capop.exists", "Dir") => { needed.insert("dir_exists_at"); }
                     ("__capop.write", "Dir") => { needed.insert("dir_write_at"); }
+                    ("__capop.write_out", "BuildOut") => { needed.insert("build_out_write_at"); }
                     ("__capop.subtree", "Dir") => { needed.insert("dir_subtree_at"); }
                     ("__capop.read_file", "Dir") => { needed.insert("dir_read_file"); }
                     ("__capop.read", "File") => { needed.insert("file_read_into"); }

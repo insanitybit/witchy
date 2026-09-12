@@ -62,7 +62,7 @@ pub use glamour_metadata::{
     GlamourWorkMetadata,
 };
 pub use assembly::{
-    compile_checked_build_module,
+    compile_checked_build_module, compile_checked_build_recipe_artifact,
     check_glamour_island_executable, compile_checked_development_module,
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
     compile_checked_module_artifact,
@@ -12620,4 +12620,11 @@ pub fn validate_checked_test_driver_for_oracle(
     let source = checked.canonical_source()
         .ok_or_else(|| "canonical test driver lacks authenticated source recipe".to_string())?;
     crate::canonical_pipeline::validate_checked_source(source).map_err(|error| error.to_string())
+}
+
+/// Independent initial/final validation for the source-backed build oracle.
+pub fn validate_checked_build_recipe_for_oracle(
+    checked: &witchy_types::pipeline::CheckedBuildRecipe,
+) -> Result<witchy_wir::canonical_safewir::ValidatedSafeWir, String> {
+    crate::canonical_pipeline::validate_checked_source(checked.canonical_source()).map_err(|error| error.to_string())
 }

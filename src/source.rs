@@ -1,5 +1,9 @@
 //! Native source discovery, loading, linking, and expansion.
 
+#[cfg(test)]
+#[path = "source/build_recipe_tests.rs"]
+mod build_recipe_tests;
+
 use witchy_syntax::{ast, format, parser, unstable};
 #[cfg(test)]
 use witchy_syntax::linker;
@@ -78,6 +82,21 @@ pub(crate) fn link_file(path: &str) -> Result<(ast::Module, String), String> {
         &std::collections::HashMap::new(),
         linker::LinkMode::Production,
     )
+}
+
+/// Authenticate raw source ownership in THIS process, then derive the only
+/// supported production build recipe. No caller-supplied AST or digest enters.
+pub(crate) fn link_build_file(path: &str) -> Result<witchy_types::pipeline::CheckedBuildRecipe, String> {
+    let entry_path = std::path::Path::new(path);
+    let stem = entry_path.file_stem().and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?;
+    let owner = workspace_module_owner(entry_path, stem)?;
+    let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
+        path, &HashMap::new(), owner, &HashMap::new(),
+    )?;
+    witchy_types::pipeline::check_build_recipe_from_source_bundle(
+        sources, &entry, comptime::expand_compile_time, &user_modules, owners,
+    ).map_err(|error| error.to_string())
 }
 
 pub(crate) fn link_test_file(

@@ -241,6 +241,9 @@ enum CaptureFieldKind {
 // type. This exposes no token constructor or public capability policy API.
 trait CaptureAuthority: 'static {
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()>;
+    fn require_build_out(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("BuildOut capture has no instance authority");
+    }
 }
 
 fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
@@ -251,6 +254,9 @@ fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
 }
 
 impl CaptureAuthority for super::super::VmState {
+    fn require_build_out(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::build_out::authenticate_capture(self, data)
+    }
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
         #[cfg(feature = "test-fixtures")]
         if self.fixture_console.is_some() {
@@ -272,6 +278,7 @@ fn require_capability<T: CaptureAuthority>(store: impl wasmtime::AsContext<Data 
     let data = token.data(&context)?.ok_or_else(|| wasmtime::Error::msg("capability has no host data"))?;
     let matches = match kind.get() {
         0 => return context.data().require_console(data),
+        9 => return context.data().require_build_out(data),
         1 => data.is::<super::super::DirAuthority>(),
         2 => data.is::<super::super::EnvAuthority>(),
         3 => data.is::<super::super::FileAuthority>(),

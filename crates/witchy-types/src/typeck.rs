@@ -12594,7 +12594,8 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         }
         Ty::Socket => T::Named("Socket".into(), Vec::new()),
         Ty::Listener => T::Named("Listener".into(), Vec::new()),
-        Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {
+        Ty::BuildOut => T::Named("BuildOut".into(), Vec::new()),
+        Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {
             return None
         }
         Ty::List(e) => T::Named("List".into(), vec![ty_to_ast(e)?]),

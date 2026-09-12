@@ -21,6 +21,8 @@ use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind
 
 const SIZE_MAX: u64 = u32::MAX as u64;
 
+mod build_out;
+pub use build_out::OracleBuildWrite;
 mod launch;
 mod nullable;
 mod regex;
@@ -90,12 +92,13 @@ pub struct CapabilityToken {
     scope: String,
     net: Option<net::Token>,
     service: Option<vm_service::Token>,
+    build_out: Option<build_out::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new(), net: None, service: None }
+        Self { kind, scope: String::new(), net: None, service: None, build_out: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -119,6 +122,7 @@ impl InterpreterValue {
     pub fn entry_capability(capability: crate::CanonicalEntryCapability) -> Self {
         Self::capability(match capability {
             crate::CanonicalEntryCapability::Console => 0,
+            crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::Dir => DIR_KIND,
             crate::CanonicalEntryCapability::Env => ENV_KIND,
             crate::CanonicalEntryCapability::Net => crate::canonical_safewir::NET_CAPABILITY_KIND.get(),
@@ -131,6 +135,8 @@ impl InterpreterValue {
 /// `Dir` grant addresses its root.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OracleFixture {
+    /// Explicit write grant for a fresh virtual build output directory.
+    pub build_out: bool,
     pub files: BTreeMap<String, Vec<u8>>,
     pub environment: BTreeMap<String, String>,
     /// A directory the oracle reads when a path is not in `files` (the
@@ -238,6 +244,8 @@ impl OracleFixture {
 /// The observable outcome of running a program entry to completion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProgramRun {
+    /// Successful BuildOut writes in execution order, including overwrites.
+    pub build_trace: Vec<OracleBuildWrite>,
     pub results: Vec<InterpreterValue>,
     /// Lines the program printed through the console host call, in order.
     pub output: Vec<String>,
@@ -287,6 +295,7 @@ pub enum InterpretError {
     },
     UninitializedPlace,
     UnsupportedHostImport,
+    BuildOut(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
 }
@@ -419,6 +428,7 @@ pub fn interpret_program(
     }
     let mut engine = Engine::new(module.module(), config);
     let arguments = engine.bind_net_entry(arguments)?;
+    let arguments = engine.bind_build_entry(arguments)?;
     let results = engine.execute(function, arguments)?;
     let net_trace = engine.finish_net()?;
     let leaked_objects = engine
@@ -428,7 +438,7 @@ pub fn interpret_program(
         .count()
         + engine.owners.len()
         + engine.owner_lists.len();
-    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace })
+    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace, build_trace: engine.build_out.writes })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -490,6 +500,7 @@ enum RuntimeStorage {
 }
 
 struct Engine<'a> {
+    build_out: build_out::State,
     services: vm_service::ServiceState<'a>,
     isolated: bool,
     module: &'a CanonicalModule<InitialValid>,
@@ -516,6 +527,7 @@ impl<'a> Engine<'a> {
         let net = config.fixture.net.take().map(net::NetState::new);
         Self {
             services: vm_service::ServiceState::new(),
+            build_out: build_out::State::new(),
             isolated: false,
             module,
             config,
@@ -1421,6 +1433,9 @@ impl<'a> Engine<'a> {
         }
         if self.isolated && !vm_service::isolated_import_allowed(contract) {
             return Err(InterpretError::UnsupportedHostImport);
+        }
+        if contract.name == "build_out_write_at" {
+            return self.build_out_host_call(destinations, arguments, values);
         }
         if vm_service::is_import(&contract.name) {
             return self.vm_service_host_call(&contract.name, destinations, arguments, values);

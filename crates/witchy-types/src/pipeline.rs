@@ -5,6 +5,9 @@
 //! authoritative expanded source remains intact. Only that proof can enter
 //! destructive source lowering.
 
+mod build_recipe;
+pub use build_recipe::{BuildRecipeIdentity, CheckedBuildRecipe, check_build_recipe_from_source_bundle};
+
 mod test_driver;
 pub use test_driver::{CheckedTestSuite, TestDriverIdentity, check_bare_test_driver, check_console_fixture_test_driver, link_checked_test_suite_from_source_bundle};
 
@@ -157,6 +160,8 @@ impl CheckedSourceWitness {
 pub struct CanonicalCheckedSource {
     // Minted only by the source-backed compiler Console fixture recipe.
     console_fixture: bool,
+    // Only a source-backed build recipe may select a non-main launch entry.
+    build_entry: Option<String>,
     typed: typeck::TypedModule,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     source_witness: CheckedSourceWitness,
@@ -169,6 +174,9 @@ pub struct CanonicalCheckedSource {
 
 impl CanonicalCheckedSource {
     pub fn is_console_fixture(&self) -> bool { self.console_fixture }
+
+    pub fn entry_declaration(&self) -> &str { self.build_entry.as_deref().unwrap_or("main") }
+    pub fn is_build_recipe(&self) -> bool { self.build_entry.is_some() }
 
     /// Dynamic metadata for this exact checked source and its authenticated
     /// declaration owners. This does not authorize dynamic AST expansion.
@@ -718,6 +726,7 @@ fn attach_canonical_source(
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
+        build_entry: None,
         typed,
         dynamic_runtime_plan,
         source_witness: CheckedSourceWitness {

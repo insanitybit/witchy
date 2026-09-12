@@ -1362,6 +1362,7 @@ pub struct VmState {
     /// (`BuildRead`) — host-side. Build capabilities are zero-representation at
     /// the host ABI; import linking, not a guest handle, carries the authority.
     build_out: Option<crate::confine::ConfinedDir>,
+    build_out_issuer: Arc<()>,
     build_read_roots: Vec<crate::confine::ConfinedDir>,
     build_exec_tools:
         std::collections::BTreeMap<String, crate::confine::ConfinedFile>,
@@ -1516,6 +1517,10 @@ impl Vm {
                     dir_ordinal += 1;
                     ExternRef::new(&mut self.store, authority)?
                 }
+CanonicalEntryCapability::BuildOut => {
+    let authority = host::build_out::mint(self.store.data())?;
+    ExternRef::new(&mut self.store, authority)?
+}
                 CanonicalEntryCapability::Env => {
                     if !self.store.data().caps.env {
                         bail!("the program's `main` requires an Env capability that was not granted");
@@ -2543,6 +2548,9 @@ pub(crate) fn link_capability_imports(
     // The build-time capabilities. Like Dir, each is linked only when granted
     // — a build step compiled against `write_out` cannot even instantiate
     // without a `BuildOut` grant, and `read_build` without a `BuildRead` one.
+    // Canonical imports may be present in uncalled public declarations. The
+    // operation authenticates a private token; linking itself grants nothing.
+    host::build_out::link(linker)?;
     if caps.build_out.is_some() {
         host::build::link_out(linker)?;
     }
@@ -2682,6 +2690,7 @@ fn vmstate_from_caps(
         fetch_grants: caps.fetch_grants.clone(),
         worker_listener,
         build_out,
+        build_out_issuer: Arc::new(()),
         build_read_roots,
         build_exec_tools,
         heap_objects: Vec::new(),

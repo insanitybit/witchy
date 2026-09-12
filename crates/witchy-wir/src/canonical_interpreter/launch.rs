@@ -27,7 +27,8 @@ pub fn interpret_entry_program(
         .map_err(|_| InterpretError::TypeMismatch("launch argument layouts"))?;
     let program = module.module();
     let mut engine = Engine::new(program, config);
-    let mut capabilities = engine.bind_net_entry(capabilities)?.into_iter();
+    let capabilities = engine.bind_net_entry(capabilities)?;
+    let mut capabilities = engine.bind_build_entry(capabilities)?.into_iter();
     let mut values = Vec::new();
     for parameter in &signature.parameters {
         if *parameter == ValueType::Ref(list_layout) {
@@ -76,7 +77,7 @@ pub fn interpret_entry_program(
         matches!(object.storage, RuntimeStorage::Allocation(_))).count()
         + engine.owners.len()
         + engine.owner_lists.len();
-    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace })
+    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace, build_trace: engine.build_out.writes })
 }
 
 #[cfg(test)]

@@ -449,6 +449,9 @@ pub const ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(2);
 
 pub const FILE_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(3);
 
+/// BuildOut is a write-only host capability, never a linear-memory value.
+pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9);
+
 /// The canonical signatures the module declares for the six `Dir`/`Env`
 /// operations. Lowering owns the signature ids; the catalog owns everything
 /// authenticated about the imports themselves.
@@ -622,6 +625,20 @@ fn authenticated_import(
 }
 
 impl CanonicalAbiCatalog {
+    pub fn with_build_out_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
+        use crate::wir_prelude::{WasmTy, AbiImportAuthority};
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_capability_import(
+            "build_out_write_at", &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[], signature, vec![HostParameterRole::Capability(BUILD_OUT_CAPABILITY_KIND), read(), read()],
+            Vec::new(), HostMutation::ReadOnly, &[AbiImportAuthority::BuildOut],
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
     /// Source-bearing Console output borrows two bounded slices and carries
     /// the actual checked receiver. This adds no ambient grant or write range.
     pub fn with_console_print_at(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {

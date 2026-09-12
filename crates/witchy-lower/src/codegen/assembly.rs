@@ -8545,6 +8545,13 @@ pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_build_module_mode(module, None)
 }
 
+/// Only the sealed production source recipe can select a build launch entry.
+pub fn compile_checked_build_recipe_artifact(
+    checked: &witchy_types::pipeline::CheckedBuildRecipe,
+) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
+    canonical_artifact_outcome(crate::canonical_pipeline::admit_checked_source(checked.canonical_source()))
+}
+
 /// Compile a build module that crossed the canonical linked type-check boundary.
 pub fn compile_checked_build_module(
     _checked: &witchy_types::pipeline::CheckedModule,

@@ -355,11 +355,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
   (import "witchy" "console_print_at" (func $console_print_at_host (param externref i32 i32 i32 i32 i32)))
+  (import "witchy" "build_out_write_at" (func $build_out_write_at_host (param externref i32 i32 i32 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 136;
+pub const IMPORT_COUNT: usize = 137;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -532,6 +533,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_list_size"
         | "build_read_len"
         | "build_out_write"
+        | "build_out_write_at"
         | "build_env_len"
         | "build_env_fill"
         | "build_fetch_len"
@@ -674,7 +676,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "rand_u64" => AUTH_RAND,
         "mint_exec" | "exec_only" | "exec_run" => AUTH_EXEC,
         "build_read_len" => AUTH_BUILD_READ,
-        "build_out_write" => AUTH_BUILD_OUT,
+        "build_out_write" | "build_out_write_at" => AUTH_BUILD_OUT,
         "build_env_len" | "build_env_fill" => AUTH_BUILD_ENV,
         "build_fetch_len" => AUTH_BUILD_FETCH,
         "build_exec_run" => AUTH_BUILD_EXEC,

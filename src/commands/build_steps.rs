@@ -6,7 +6,7 @@ use crate::ast;
 use crate::{codegen, link_file_checked, runtime};
 
 pub(crate) const BUILD_CHILD_COMMAND: &str = "@compiler:build-child";
-const BUILD_CHILD_REQUEST_VERSION: u32 = 2;
+const BUILD_CHILD_REQUEST_VERSION: u32 = 3;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -19,7 +19,7 @@ struct BuildExecTool {
 #[serde(deny_unknown_fields)]
 struct BuildChildRequest {
     version: u32,
-    wasm: Vec<u8>,
+    source: std::path::PathBuf,
     grants: BuildRuntimeGrants,
 }
 
@@ -126,6 +126,7 @@ fn run_build_step_compiled_with_env(
     )
 }
 
+#[cfg(test)]
 fn run_build_step_wasm(
     wasm: &[u8],
     grants: BuildRuntimeGrants,
@@ -198,6 +199,7 @@ fn run_build_step_file_with_env(
     child_paths: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
+    #[cfg(test)]
     let (checked, _) = link_file_checked(path)?;
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
     #[cfg(test)]
@@ -215,14 +217,13 @@ fn run_build_step_file_with_env(
     #[cfg(not(test))]
     {
         std::fs::create_dir_all(&out).map_err(|e| format!("build: output dir: {e}"))?;
-        let wasm = match codegen::compile_checked_build_module(&checked) {
-            codegen::LoweringOutcome::Lowered(bytes) => bytes,
-            codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
-            codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
-        };
+// The child loads and authenticates its own immutable source snapshot;
+// no checked identity or compiled bytes cross the process boundary.
+let source = std::fs::canonicalize(path)
+    .map_err(|error| format!("build: source path: {error}"))?;
         let request = BuildChildRequest {
             version: BUILD_CHILD_REQUEST_VERSION,
-            wasm,
+            source,
             grants: BuildRuntimeGrants {
                 out_dir: out,
                 read_roots,
@@ -249,11 +250,37 @@ pub(crate) fn run_build_step_child() -> Result<Vec<String>, String> {
             request.version
         ));
     }
-    run_build_step_wasm(
-        &request.wasm,
-        request.grants,
-        witchy_confinement::EnforcementMode::BestEffort,
-    )
+let grants = request.grants;
+if !grants.read_roots.is_empty() || !grants.env.is_empty() || !grants.exec_tools.is_empty()
+    || !grants.child_paths.is_empty() || !grants.net_hosts.is_empty()
+{
+    return Err("build recipe: BuildRead, BuildEnv, BuildExec and BuildNet grants are unsupported".into());
+}
+let source = request.source.to_str().ok_or_else(|| "build source path is not UTF-8".to_string())?;
+let recipe = crate::source::link_build_file(source)?;
+let artifact = match codegen::compile_checked_build_recipe_artifact(&recipe) {
+    codegen::LoweringOutcome::Lowered(artifact) => artifact,
+    codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+    codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
+};
+std::fs::create_dir_all(&grants.out_dir).map_err(|error| format!("build: output dir: {error}"))?;
+let caps = runtime::Capabilities {
+    build_out: Some(grants.out_dir.clone()), ..runtime::Capabilities::none()
+};
+super::confinement::arm(&caps, witchy_confinement::EnforcementMode::BestEffort)?;
+let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;
+let mut vm = runtime.spawn_admitted(&artifact, caps, crate::RUN_MEMORY_PAGES)
+    .map_err(|error| error.to_string())?;
+vm.run().map_err(|error| error.root_cause().to_string())?;
+let leaks = vm.canonical_heap_leaks().map_err(|error| error.to_string())?;
+if leaks != Some(0) { return Err(format!("build: canonical heap audit did not establish zero leaks: {leaks:?}")); }
+let mut generated = std::fs::read_dir(&grants.out_dir)
+    .map_err(|error| format!("build: reading output dir: {error}"))?
+    .map(|entry| entry.map(|entry| entry.file_name()).map_err(|error| error.to_string()))
+    .collect::<Result<Vec<_>, _>>()?
+    .into_iter().filter_map(|name| name.into_string().ok()).collect::<Vec<_>>();
+generated.sort();
+Ok(generated)
 }
 
 #[cfg(not(test))]

@@ -325,6 +325,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `console_print_at` | `(externref, i32, i32, i32, i32, i32)` | non-authority infrastructure | none | omitted |
+| `build_out_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Build.Out | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 
@@ -452,3 +453,34 @@ import cannot reenter Wasm. Fixture tokens are private, session-bound and
 Write-checked. Calls record the complete deterministic provider transcript with
 source module/line/column, including effects before a terminal abort. Successful
 runs report checked zero live objects; aborted runs report no leak measurement.
+
+### Source-backed BuildOut recipes
+
+BuildOut recipe v1 accepts retained source bytes and loader-authenticated module
+ownership, not an AST or a supplied digest. It selects the unique own-entry
+`build` declaration with one default-convention, checked BuildOut parameter.
+An explicit-Nil compiler wrapper is freshly checked with that source; ordinary
+`main` still cannot receive build capabilities. The original raw identity is
+retained separately from the versioned recipe identity.
+
+The build-specific `witchy.launch` payload uses version 2: recipe-kind byte 1,
+little-endian u32 entry-name byte length, UTF-8 entry name, little-endian u32
+fresh callable ordinal, 32-byte callable ABI key, then canonical capability kind
+9 and write-right byte 1. This entire payload is bound by the checked source's
+launch digest and initial/final validation. Admission derives `witchy.entry`
+from that same selected callable binding. Ordinary v1 launch readers refuse
+this build-only contract rather than infer authority from imports.
+
+The private child request v3 contains a source path and host grants, never
+compiled bytes, ASTs, witnesses, digests or a selected entry. The child loads
+and authenticates its own source snapshot, derives the recipe and admits the
+artifact before arming execution confinement. Only then may it instantiate via
+`spawn_admitted`, with BuildOut and no inherited production grants.
+
+`build_out_write_at` takes a private instance-bound, write-checked BuildOut
+externref and two bounded, initialized, read-only UTF-8 slices. It authenticates
+and reads both slices before filesystem effects. Writes retain the existing
+handle-rooted relative-path, traversal and symlink confinement. Captures retain
+and authenticate the same issuer-bound token. No reentrancy is permitted.
+Successful builds measure zero guest leaks; a terminal error supplies no cleanup
+claim. BuildRead/BuildEnv/BuildExec/BuildNet recipes and Glamour remain unsupported.
