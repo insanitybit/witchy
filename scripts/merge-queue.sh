@@ -2928,7 +2928,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # (The branch refs themselves are NOT force-moved: under batching the merged
     # sha contains OTHER branches' commits, and pointing an agent's branch at it
     # would hand the agent unrelated work. sweep deletes fully-merged refs.)
-    cmd_sweep || true
+    # A large shared checkout can have hundreds of linked worktrees. Do not hold
+    # ready queue items behind that full scan; coalesce reclamation until the
+    # queue drains, as already done for patch-equivalent submissions above.
+    if [ -n "$(next_ready_queue_file || true)" ]; then
+        deferred_sweep=1
+    else
+        cmd_sweep || true
+    fi
     return 0
 }
 

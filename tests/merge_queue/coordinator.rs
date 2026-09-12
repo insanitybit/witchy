@@ -1649,6 +1649,40 @@ fn the_coordinator_sweeps_landed_worktrees_at_startup() {
     );
 }
 
+#[test]
+fn ready_queue_items_run_before_post_merge_worktree_sweep() {
+    let fixture = QueueFixture::stack(&["docs/a.md", "src/b.rs"]);
+    let a_worktree = fixture._temp.path().join("worktree-a");
+    let b_worktree = fixture._temp.path().join("worktree-b");
+    run_git(
+        &fixture.root,
+        &["worktree", "add", a_worktree.to_str().unwrap(), "a"],
+    );
+    run_git(
+        &fixture.root,
+        &["worktree", "add", b_worktree.to_str().unwrap(), "b"],
+    );
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(&["submit", "b"], "true");
+    fixture.mq_ok(&["run", "--once"], "true");
+
+    let journal = fixture.journal();
+    let merged_b = journal
+        .iter()
+        .position(|event| event["event"] == "merged" && event["branch"] == "b")
+        .expect("second ready branch merged");
+    let first_sweep = journal
+        .iter()
+        .position(|event| event["event"] == "swept")
+        .expect("deferred reclamation ran after the queue drained");
+    assert!(
+        merged_b < first_sweep,
+        "worktree sweep blocked a ready queue item: {journal:?}"
+    );
+    assert!(!a_worktree.exists(), "first landed worktree was not reclaimed");
+    assert!(!b_worktree.exists(), "second landed worktree was not reclaimed");
+}
+
 /// A branch that keeps failing the same test used to pay full test-execution
 /// cost on every attempt to rediscover it -- RFC-0158 did that eight times,
 /// with the whole serialized queue stuck behind it. Retries do not get cheaper
