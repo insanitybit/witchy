@@ -166,3 +166,70 @@ fn build_recipe_symlink_escape_preserves_handle_confinement() {
     }
     assert!(!outside.join("escape.txt").exists());
 }
+
+#[test]
+fn build_recipe_trailing_separators_preserve_file_and_directory_meaning() {
+    // ConfinedDir resolves the final basename, rather than passing a trailing
+    // slash to open(2). These spellings name files in the existing BuildOut
+    // contract. A name that actually resolves to a directory must still fail.
+    for directory_target in [false, true] {
+        let folder = Folder::new();
+        let source = if directory_target {
+            "fn build(out: BuildOut):\n    out.write_out(\"nested/file\", \"retained\")\n    out.write_out(\"nested/.\", \"must not replace directory\")\n"
+        } else {
+            "fn build(out: BuildOut):\n    out.write_out(\"slash/\", \"slash\")\n    out.write_out(\"dot/.\", \"dot\")\n    out.write_out(\"nested//value/\", \"nested\")\n"
+        };
+        let recipe = checked(&folder, source);
+        let interpreted = folder.0.join("interpreted");
+        let source_result = crate::interpreter::run_build_step(
+            recipe.original_module().module().clone(),
+            crate::interpreter::BuildGrants {
+                out_dir: interpreted.clone(), ..Default::default()
+            },
+        );
+        let compiled = folder.0.join("compiled");
+        let native_result = native(&recipe, Some(compiled.clone()));
+        assert_eq!(source_result.is_err(), directory_target, "source: {source_result:?}");
+        assert_eq!(native_result.is_err(), directory_target, "native: {native_result:?}");
+        for directory in [&interpreted, &compiled] {
+            if directory_target {
+                assert!(directory.join("nested").is_dir());
+                assert_eq!(std::fs::read_to_string(directory.join("nested/file")).unwrap(), "retained");
+            } else {
+                for (path, contents) in [("slash", "slash"), ("dot", "dot"), ("nested/value", "nested")] {
+                    assert_eq!(std::fs::read_to_string(directory.join(path)).unwrap(), contents);
+                }
+            }
+        }
+        let artifact = crate::codegen::compile_checked_build_recipe_artifact(&recipe).expect_lowered("artifact");
+        let function = witchy_wir::canonical_safewir::FunctionId::new(
+            artifact.entry().unwrap().export().strip_prefix('f').unwrap().parse().unwrap(),
+        );
+        let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&recipe).unwrap();
+        for argv_launcher in [false, true] {
+            let config = InterpreterConfig {
+                fixture: OracleFixture { build_out: true, ..Default::default() }, ..Default::default()
+            };
+            let parameters = vec![InterpreterValue::entry_capability(witchy_wir::CanonicalEntryCapability::BuildOut)];
+            let result = if argv_launcher {
+                oracle::interpret_entry_program(&validated, function, parameters, &[], config)
+            } else {
+                oracle::interpret_program(&validated, function, parameters, config)
+            };
+            if directory_target {
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("target is a directory"), "{error}");
+                // An aborted run does not supply a success trace or leak result.
+            } else {
+                let run = result.expect("independent oracle accepts file spellings");
+                assert_eq!(run.leaked_objects, 0);
+                assert!(run.output.is_empty());
+                assert_eq!(run.build_trace, vec![
+                    oracle::OracleBuildWrite { path: "slash/".into(), contents: "slash".into() },
+                    oracle::OracleBuildWrite { path: "dot/.".into(), contents: "dot".into() },
+                    oracle::OracleBuildWrite { path: "nested//value/".into(), contents: "nested".into() },
+                ]);
+            }
+        }
+    }
+}
