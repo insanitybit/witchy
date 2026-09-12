@@ -14266,6 +14266,88 @@ mod tests {
     }
 
     #[test]
+    fn unique_pop_generated_helpers_copy_neither_receiver_nor_payload() {
+        let main = r#"import helper
+fn main(console: Console):
+    var words = ["first", "last"]
+    let saved_words = words
+    console.print(helper.take_string(words) ?? "empty")
+    console.print(saved_words[1])
+    var numbers = [7, 9]
+    let saved_numbers = numbers
+    console.print("${helper.take_int(numbers) ?? 0}:${saved_numbers[1]}")
+"#;
+        let helper = r#"mode opt
+pub fn take_string(var xs: unique List(String)) -> Option(String):
+    xs.pop()
+pub fn take_int(var xs: unique List(Int)) -> Option(Int):
+    xs.pop()
+"#;
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), main.as_bytes().to_vec()), ("helper".into(), helper.as_bytes().to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("fresh source-backed opt helper witnesses");
+        let source = checked.canonical_source().unwrap();
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).unwrap();
+        let candidate = lower_typed_module(source, layouts).unwrap()
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let mut helpers = 0;
+        let mut prepared_calls = 0;
+        for function in candidate.functions() {
+            let extracts = function.blocks.iter().flat_map(|block| &block.operations)
+                .filter(|op| matches!(op, Operation::Load { transfer: LoadTransfer::TakeLast, .. })).count();
+            if extracts > 0 {
+                helpers += 1;
+                assert_eq!(extracts, 1);
+                let signature = candidate.signatures().iter().find(|s| s.id == function.signature).unwrap();
+                assert_eq!(signature.contract.parameters[0].ownership, ParameterOwnership::UniqueWriteBack);
+                let ValueType::Ref(option_layout) = signature.results[0] else { panic!("Option result") };
+                let mut option_allocations = 0;
+                for operation in function.blocks.iter().flat_map(|block| &block.operations) {
+                    match operation {
+                        Operation::Alloc { layout, extent, .. } => {
+                            assert_eq!(*layout, option_layout, "generated helper copied receiver or payload");
+                            assert!(matches!(extent, Extent::FixedBytes(_)));
+                            option_allocations += 1;
+                        }
+                        Operation::CopyBytes { .. } | Operation::CloneRange { .. } | Operation::MoveRange { .. }
+                        | Operation::Call { .. } | Operation::VarCall { .. } | Operation::HostCall { .. } =>
+                            panic!("generated extraction must not hide a copy: {operation:?}"),
+                        _ => {},
+                    }
+                }
+                assert!(option_allocations > 0, "allow the ordinary Option allocation");
+                assert!(function.blocks.iter().all(|block| !matches!(block.terminator, Terminator::TailCall { .. })));
+            }
+            for block in &function.blocks {
+                let mut private_copies = std::collections::BTreeSet::new();
+                for operation in &block.operations {
+                    match operation {
+                        Operation::CloneRange { destination, .. } => { private_copies.insert(destination.object()); }
+                        Operation::Call { callee, arguments, .. } => {
+                            let called = candidate.functions().iter().find(|f| f.id == *callee).unwrap();
+                            let signature = candidate.signatures().iter().find(|s| s.id == called.signature).unwrap();
+                            for (argument, parameter) in arguments.iter().zip(&signature.contract.parameters) {
+                                if parameter.ownership == ParameterOwnership::UniqueWriteBack
+                                    && matches!(argument, CallArgument::Move(value) if private_copies.contains(value)) {
+                                    prepared_calls += 1;
+                                }
+                            }
+                        }
+                        _ => {},
+                    }
+                }
+            }
+        }
+        assert_eq!(helpers, 2, "both source-generated scalar and reference extraction helpers");
+        assert!(prepared_calls >= 2, "snapshot preparation must precede both normal-to-opt calls");
+        let initial = check_initial_with_witness(candidate, source).unwrap();
+        let validated = validate_final(initial, source).unwrap();
+        let artifact = witchy_wir::admit_canonical(validated, source).unwrap();
+        assert!(!artifact.wasm().is_empty());
+    }
+
+    #[test]
     fn nested_shared_string_joins_preserve_capacity_lane() {
         let candidate = lower_with_derived_layouts(
             "fn classify(n: Int) -> String:\n    match n:\n        0 -> \"zero\"\n        _ -> if n > 0: \"positive\" else: \"negative\"\n",

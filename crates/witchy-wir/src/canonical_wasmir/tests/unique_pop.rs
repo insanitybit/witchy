@@ -56,13 +56,44 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
         // tail child. The caller retains this token across both extractions.
         make.push(Operation::Load { destination: v(8), place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Read), transfer: LoadTransfer::CloneShared });
     }
+    let mut returned_root = v(3);
+    if matches!(mutation, Some(3..=6)) {
+        assert!(pointer);
+        make.extend([
+            Operation::Load { destination: v(9), place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Read), transfer: LoadTransfer::TakeLast },
+            Operation::DropRef { object: v(9) },
+            Operation::Alloc { destination: v(10), layout: child, extent: Extent::Counted { header_bytes: child_base, count: v(0), capacity: v(0), stride_bytes: child_stride }, class: AllocationClass::ReferenceCounted },
+        ]);
+        if matches!(mutation, Some(4 | 6)) {
+            make.push(Operation::MoveValue { destination: v(11), source: v(3) });
+            returned_root = v(11);
+        }
+        let append = matches!(mutation, Some(5 | 6));
+        make.push(Operation::Store { place: Place::projected(returned_root, Projection::Element { index: if append { v(1) } else { v(0) } }, payload, AccessMode::Write), value: v(10), transfer: StoreTransfer::MoveUnique });
+        if append { make.push(Operation::UpdateCount { object: returned_root, count: v(2) }); }
+    }
+    if mutation == Some(8) {
+        assert!(!pointer);
+        make.retain(|op| !matches!(op, Operation::Store { .. }));
+    }
+    if mutation == Some(9) {
+        assert!(!pointer);
+        make.extend([
+            Operation::Load { destination: v(7), place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Read), transfer: LoadTransfer::TakeLast },
+            Operation::UpdateCount { object: v(3), count: v(2) },
+        ]);
+    }
     let function = |id, types, parameters, operations, returns| Function {
         id: FunctionId::new(id), signature: FunctionSignatureId::new(id), entry: BlockId::new(0), value_types: types,
         blocks: vec![BasicBlock { id: BlockId::new(0), parameters, operations, terminator: Terminator::Return { values: returns } }],
     };
     let mut make_types = BTreeMap::from([(v(0), ValueType::Size), (v(1), ValueType::Size), (v(2), ValueType::Size), (v(3), root), (v(4), payload), (v(5), ValueType::Bool), (v(6), ValueType::Bool)]);
     if pointer { make_types.extend([(v(7), payload), (v(8), payload)]); }
-    let make = function(0, make_types, vec![], make, vec![v(3), if pointer { v(8) } else { v(4) }]);
+    if matches!(mutation, Some(3..=6)) { make_types.extend([(v(9), payload), (v(10), payload)]); }
+    if matches!(mutation, Some(4 | 6)) { make_types.insert(v(11), root); }
+    if mutation == Some(9) { make_types.insert(v(7), payload); }
+    let make = function(0, make_types, vec![], make, vec![returned_root, if pointer { v(8) } else { v(4) }]);
+
     let mut take = function(1, BTreeMap::from([(v(0), root), (v(1), ValueType::Size), (v(2), ValueType::Size), (v(3), ValueType::Size), (v(4), ValueType::Bool), (v(5), payload), (v(6), ValueType::Size), (v(7), ValueType::Bool), (v(8), ValueType::Size), (v(9), ValueType::Bool)]),
         vec![BlockParameter { value: v(0), value_type: root, ownership: Some(Ownership::Unique) }], vec![
             Operation::Load { destination: v(1), place: Place::projected(v(0), Projection::Header(crate::canonical_safewir::HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
@@ -81,7 +112,7 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
     let drop_list = function(2, BTreeMap::from([(v(0), root)]), vec![BlockParameter { value: v(0), value_type: root, ownership: Some(Ownership::Shared) }], vec![Operation::DropRef { object: v(0) }], vec![]);
     let drop_child = function(3, BTreeMap::from([(v(0), payload)]), vec![BlockParameter { value: v(0), value_type: payload, ownership: pointer.then_some(Ownership::Shared) }], if pointer { vec![Operation::DropRef { object: v(0) }] } else { vec![] }, vec![]);
     let drop_argument = |value| if pointer { CallArgument::Move(value) } else { CallArgument::Value(value) };
-    let closed = function(4, BTreeMap::from([(v(0), root), (v(1), payload), (v(2), payload), (v(3), root), (v(4), payload), (v(5), root), (v(6), ValueType::Size)]), vec![], vec![
+    let mut closed = function(4, BTreeMap::from([(v(0), root), (v(1), payload), (v(2), payload), (v(3), root), (v(4), payload), (v(5), root), (v(6), ValueType::Size)]), vec![], vec![
         Operation::Call { destinations: vec![v(0), v(1)], callee: FunctionId::new(0), arguments: vec![] },
         Operation::Call { destinations: vec![v(2), v(3)], callee: FunctionId::new(1), arguments: vec![CallArgument::Move(v(0))] },
         Operation::Call { destinations: vec![v(4), v(5)], callee: FunctionId::new(1), arguments: vec![CallArgument::Move(v(3))] },
@@ -91,6 +122,18 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
         Operation::Call { destinations: vec![], callee: FunctionId::new(3), arguments: vec![drop_argument(v(1))] },
         Operation::ConstSize { destination: v(6), value: 42 },
     ], vec![v(6)]);
+    if matches!(mutation, Some(3..=6)) {
+        closed.value_types.retain(|value, _| matches!(value.get(), 0 | 1 | 6));
+        closed.blocks[0].operations = vec![
+            Operation::Call { destinations: vec![v(0), v(1)], callee: FunctionId::new(0), arguments: vec![] },
+            Operation::Call { destinations: vec![], callee: FunctionId::new(2), arguments: vec![CallArgument::Move(v(0))] },
+            Operation::Call { destinations: vec![], callee: FunctionId::new(3), arguments: vec![CallArgument::Move(v(1))] },
+            Operation::ConstSize { destination: v(6), value: 42 },
+        ];
+    }
+    if matches!(mutation, Some(8 | 9)) {
+        closed.blocks[0].terminator = Terminator::Return { values: vec![v(4)] };
+    }
     match mutation {
         Some(0) => {
             signatures[1].contract.parameters[0].ownership = ParameterOwnership::WriteBack;
@@ -98,7 +141,19 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
         }
         Some(1) => take.blocks[0].operations.retain(|op| !matches!(op, Operation::Guard { .. })),
         Some(2) => take.blocks[0].operations[2] = Operation::ConstSize { destination: v(3), value: 0 },
-        None => {},
+        Some(7) => {
+            assert!(pointer);
+            take.value_types.extend([(v(10), ValueType::Size), (v(11), payload), (v(12), ValueType::Bool)]);
+            take.blocks[0].operations.extend([
+                Operation::ConstSize { destination: v(10), value: 0 },
+                Operation::Compare { destination: v(12), operator: ComparisonOperator::LessUnsigned, left: v(10), right: v(6) },
+                Operation::Guard { condition: v(12), kind: GuardKind::Bounds },
+                Operation::Alloc { destination: v(11), layout: child, extent: Extent::Counted { header_bytes: child_base, count: v(10), capacity: v(10), stride_bytes: child_stride }, class: AllocationClass::ReferenceCounted },
+                Operation::Store { place: Place::projected(v(0), Projection::Element { index: v(10) }, payload, AccessMode::Write), value: v(11), transfer: StoreTransfer::MoveUnique },
+            ]);
+        }
+        Some(3..=6 | 8 | 9) | None => {},
+
         _ => panic!("unknown negative fixture"),
     }
     CanonicalModule::from_lowering(LoweredModuleParts {
@@ -193,5 +248,56 @@ fn unique_pop_native_preserves_receiver_address_heap_top_and_shared_child() {
             assert_eq!(u32::from_le_bytes(memory.data(&store)[child as usize - 8..child as usize - 4].try_into().unwrap()), 1, "external child survives both transfers and list destruction");
         }
         drop_child.call(&mut store, child).unwrap();
+    }
+}
+
+#[test]
+fn unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown() {
+    for mutation in [3, 4, 7] {
+        let result = check_initial_with_test_witness(candidate(true, Some(mutation)));
+        let error = match result {
+            Err(error) => format!("{error:?}"),
+            Ok(_) => panic!("live-prefix overwrite admitted: mutation {mutation}"),
+        };
+        assert!(error.contains("Store(overwrite initialized prefix)"), "mutation {mutation}: {error}");
+    }
+}
+
+#[test]
+fn unique_pop_append_after_pop_preserves_prefix_direct_and_moved() {
+    for mutation in [5, 6] {
+        let validated = finalize(candidate(true, Some(mutation)));
+        let result = crate::canonical_interpreter::interpret_program(&validated, FunctionId::new(4), vec![], Default::default()).unwrap();
+        assert_eq!(result.leaked_objects, 0);
+        let artifact = admit_canonical(validated).unwrap();
+        #[cfg(feature = "native")]
+        {
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+            let closed = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap();
+            assert_eq!(closed.call(&mut store, ()).unwrap(), 42);
+        }
+    }
+}
+
+#[test]
+fn unique_pop_scalar_zero_storage_and_republished_bytes_agree() {
+    for (mutation, expected) in [(8, 0), (9, 42)] {
+        let validated = finalize(candidate(false, Some(mutation)));
+        let result = crate::canonical_interpreter::interpret_program(&validated, FunctionId::new(4), vec![], Default::default()).unwrap();
+        assert_eq!(result.results, vec![crate::canonical_interpreter::InterpreterValue::Size(expected)]);
+        assert_eq!(result.leaked_objects, 0);
+        let artifact = admit_canonical(validated).unwrap();
+        #[cfg(feature = "native")]
+        {
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+            let closed = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap();
+            assert_eq!(closed.call(&mut store, ()).unwrap(), expected as i32);
+        }
     }
 }

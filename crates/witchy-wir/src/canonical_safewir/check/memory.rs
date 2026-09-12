@@ -2302,9 +2302,9 @@ impl<'a> MemoryChecker<'a> {
         let Extent::Counted { header_bytes, count, capacity, stride_bytes } = state.extent else {
             return self.unsupported("TakeLast(uncounted)");
         };
-        if self.descriptor(state.layout)?.kind().packed_element_layout().is_none() {
+        let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout() else {
             return self.unsupported("TakeLast(non-list)");
-        }
+        };
         // check_place already requires index < current logical count. The
         // unique SSA definition must additionally identify that exact tail.
         let last = self.constant_relation(*index, count, |index, count| index.checked_add(1) == Some(count))
@@ -2325,6 +2325,16 @@ impl<'a> MemoryChecker<'a> {
         for candidate in self.state.objects.values_mut().filter(|candidate| candidate.identity == state.identity) {
             candidate.extent = Extent::Counted { header_bytes, count: *index, capacity, stride_bytes };
             candidate.initialized_owned_slots = true;
+        }
+        if matches!(expected, ValueType::Ref(_)) {
+            // Remaining slots are live owning edges, not vacant capacity.
+            // Preserve shared children through stores, moves and publication.
+            self.state.range_states.insert(
+                RangeIdentity { object, start: *index, length: *index },
+                RangeState { element, ownership: Ownership::Shared,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    initialized: true, zero_width: self.is_zero(*index), zero_start: true },
+            );
         }
         self.state.header_values.retain(|(container, field), _| !containers.contains(container) || *field != HeaderField::Length);
         self.state.header_values.insert((object, HeaderField::Length), *index);
@@ -2661,11 +2671,28 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Store(self-owned edge)");
         }
         if let Projection::Element { index } = place.projection() {
+            let root = self.live_object(place.object())?;
+            if root.initialized_owned_slots {
+                let Extent::Counted { count, .. } = root.extent else {
+                    return self.unsupported("Store(unknown initialized prefix)");
+                };
+                if !self.less_equal(count, *index) {
+                    return self.unsupported("Store(overwrite initialized prefix)");
+                }
+            }
             if self.state.range_states.iter().any(|(identity, state)| {
-                identity.object == place.object()
+                self.same_allocation(identity.object, place.object())
                     && state.initialized
-                    && state.zero_start
-                    && self.strict_less(*index, identity.length)
+                    && state.ownership != Ownership::Consumed
+                    && !state.zero_width && !self.is_zero(identity.length)
+                    // Live ranges forbid overwrite; moved-out ranges do not.
+                    // Require proved disjointness. Unknown is not permission.
+                    && !(if state.zero_start {
+                        self.less_equal(identity.length, *index)
+                    } else {
+                        self.strict_less(*index, identity.start)
+                            || self.range_within(identity.start, identity.length, *index)
+                    })
             }) {
                 return self.unsupported("Store(overwrite initialized prefix)");
             }

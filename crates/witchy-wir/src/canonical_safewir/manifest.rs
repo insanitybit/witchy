@@ -323,7 +323,7 @@ pub const RULES: &[RuleEntry] = &[
         rule: CanonicalRuleId::Load,
         judgment: "check/memory.rs::MemoryChecker::load (check_place, promote_header_extent)",
         predicate: "a header field loads a typed scalar; an element load needs a `Bounds` guard against the logical length; a reference load takes a shared clone of a stored slot or an initialized prefix element; TakeLast requires an exclusive complete packed list and exact final index, transfers one owning edge and publishes the shorter prefix atomically",
-        interpreter: "load: reads an initialized cell; cloning retains; TakeLast removes the cell and shortens the count without retaining",
+        interpreter: "load: reads an initialized cell; cloning retains; TakeLast detaches reference cells, preserves scalar bytes (fresh storage is zero), and shortens count without retaining",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryLoad),
         admits: &[
             t(Check, "guarded_dynamic_element_load_is_admitted"),
@@ -332,10 +332,13 @@ pub const RULES: &[RuleEntry] = &[
             t(Memory, "pointer_slot_move_and_clone_preserve_structural_ownership"),
             t(EvidenceFile::UniquePopBackend, "unique_pop_native_preserves_receiver_address_heap_top_and_shared_child"),
             t(EvidenceFile::UniquePopBackend, "unique_pop_oracle_complete_call_chain_reclaims_every_reference"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_append_after_pop_preserves_prefix_direct_and_moved"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_scalar_zero_storage_and_republished_bytes_agree"),
         ],
         refuses: &[
             t(Check, "dynamic_element_load_without_guard_is_refused"),
             t(EvidenceFile::UniquePopBackend, "unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_rejects_live_prefix_overwrite_direct_moved_and_unknown"),
             t(EvidenceFile::UniquePopBackend, "unique_pop_byte_plan_rejects_capacity_write_instead_of_tail_publication"),
             t(Authority, "unique_pop_source_abi_requires_checked_unique_input_and_output"),
             t(Check, "header_projection_cannot_claim_non_scalar_type"),

@@ -2182,7 +2182,21 @@ impl<'a> Engine<'a> {
             if index.checked_add(1) != Some(count) { return Err(InterpretError::GuardTrap); }
             self.check_element(object, index)?;
             let root = self.object_mut(object)?;
-            let value = root.cells.remove(&CellKey::Element(index)).ok_or(InterpretError::UninitializedPlace)?;
+            let key = CellKey::Element(index);
+            let value = if matches!(place.value_type(), ValueType::Ref(_)) {
+                root.cells.remove(&key).ok_or(InterpretError::UninitializedPlace)?
+            } else {
+                // Alloc uses fresh zero-filled linear storage. Scalar bytes
+                // remain resident after shrinking count, unlike owning edges.
+                // Unit still needs explicit semantic initialization.
+                root.cells.get(&key).cloned().or_else(|| match place.value_type() {
+                    ValueType::Int => Some(InterpreterValue::Int(0)),
+                    ValueType::Float => Some(InterpreterValue::FloatBits(0)),
+                    ValueType::Bool => Some(InterpreterValue::Bool(false)),
+                    ValueType::Size => Some(InterpreterValue::Size(0)),
+                    _ => None,
+                }).ok_or(InterpretError::UninitializedPlace)?
+            };
             if let RuntimeExtent::Counted { count, .. } = &mut root.extent { *count = index; }
             return Ok(value);
         }
