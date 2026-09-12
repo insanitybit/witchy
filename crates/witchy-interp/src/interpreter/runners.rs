@@ -569,7 +569,7 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
 ) -> Result<ComptimeOutputs, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers)
+        run_module_inner_limited_with_catalog_and_seed(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers, None, None, Some(0))
     })
     .map(|outcome| ComptimeOutputs {
         output: outcome.output,
@@ -896,8 +896,23 @@ fn run_module_inner_limited_with_catalog(
     runtime_catalog: Option<RuntimeDeclarationCatalog>,
     console_input: Option<Vec<String>>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
+    run_module_inner_limited_with_catalog_and_seed(module, root, dir_roots, file_grants,
+        net_allow, fetch_origins, args, signing_key, named_secrets, user_caps, step_limit,
+        fresh_ident_scope, compiler_expr_qualifiers, runtime_catalog, console_input,
+        witchy_runtime::rand::seed_from_env())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_module_inner_limited_with_catalog_and_seed(
+    module: Module, root: PathBuf, dir_roots: Vec<PathBuf>, file_grants: Vec<PathBuf>,
+    net_allow: Vec<String>, fetch_origins: Vec<String>, args: Vec<String>,
+    signing_key: Option<[u8; 32]>, named_secrets: Vec<(String, Vec<u8>, bool)>,
+    user_caps: UserCapGrants, step_limit: u64, fresh_ident_scope: Option<String>,
+    compiler_expr_qualifiers: Option<Vec<String>>, runtime_catalog: Option<RuntimeDeclarationCatalog>,
+    console_input: Option<Vec<String>>, rand_seed: Option<u64>,
+) -> Result<InterpreterOutcome, RuntimeError> {
     let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
-    let mut interp = Interpreter::new_with_witnesses(module, witnesses);
+    let mut interp = Interpreter::new_with_witnesses_and_seed(module, witnesses, rand_seed);
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
     interp.compiler_expr_qualifiers = compiler_expr_qualifiers;

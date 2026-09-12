@@ -18,18 +18,23 @@ use witchy_runtime::{
 };
 
 const MAGIC: &[u8; 16] = b"WITCHY-EXE-0092!";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
+const LEGACY_DESCRIPTOR_LEN: usize = 184;
 /// Version of the Witchy host ABI implemented by this launcher.
 pub const HOST_ABI: u32 = 1;
 
 const DIGEST_LEN: usize = 32;
-const DESCRIPTOR_PREFIX_LEN: usize = 16 + 4 + 4 + 8 + 8 + 8 + 8 + DIGEST_LEN * 3;
+const DESCRIPTOR_PREFIX_LEN: usize = 16 + 4 + 4 + 8 * 6 + DIGEST_LEN * 4;
 const DESCRIPTOR_LEN: usize = DESCRIPTOR_PREFIX_LEN + DIGEST_LEN;
+
+pub mod source_inputs;
+use source_inputs::SourceInputs;
 
 /// A validated application recovered from a trusted-publisher application image.
 #[derive(Debug, Clone, Copy)]
 pub struct EmbeddedApplication<'a> {
     pub wasm: &'a [u8],
+    pub source_inputs: &'a [u8],
     /// Canonical, versioned capability-binding plan. Its schema is owned by the
     /// target-binding layer; the envelope treats it as authenticated bytes.
     pub bindings: &'a [u8],
@@ -39,6 +44,7 @@ pub struct EmbeddedApplication<'a> {
 pub struct OwnedEmbeddedApplication {
     pub wasm: Vec<u8>,
     pub bindings: Vec<u8>,
+    pub source_inputs: SourceInputs,
 }
 
 const PLAN_VERSION: u32 = 4;
@@ -632,7 +638,7 @@ fn owned_contract(contract: &capabilities::CapSet) -> BTreeMap<String, BTreeSet<
 }
 
 /// Append a Witchy application to a native launcher template.
-pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>, String> {
+pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8], inputs: &SourceInputs) -> Result<Vec<u8>, String> {
     if probe(template)?.is_some() {
         return Err("trusted-publisher application launcher template already contains an application".into());
     }
@@ -640,6 +646,10 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>,
         .map_err(|error| format!("cannot package invalid application WASM: {error}"))?;
     let launch = artifact::launch_contract_payload(wasm)?
         .ok_or_else(|| "cannot package application WASM without `witchy.launch` metadata".to_string())?;
+    let mut inputs = inputs.clone();
+    inputs.launcher_digest = digest(template);
+    inputs.validate(template)?;
+    let inputs = serde_json::to_vec(&inputs).map_err(|error| error.to_string())?;
 
     let wasm_offset = u64::try_from(template.len())
         .map_err(|_| "launcher template is too large".to_string())?;
@@ -649,6 +659,8 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>,
         .ok_or_else(|| "trusted-publisher application payload offset overflow".to_string())?;
     let bindings_len = u64::try_from(bindings.len())
         .map_err(|_| "trusted-publisher application binding plan is too large".to_string())?;
+    let inputs_offset = bindings_offset.checked_add(bindings_len).ok_or("application source offset overflow")?;
+    let inputs_len = u64::try_from(inputs.len()).map_err(|_| "application source inputs too large")?;
 
     let mut descriptor = Vec::with_capacity(DESCRIPTOR_LEN);
     descriptor.extend_from_slice(MAGIC);
@@ -661,6 +673,9 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>,
     descriptor.extend_from_slice(&digest(wasm));
     descriptor.extend_from_slice(&digest(launch));
     descriptor.extend_from_slice(&digest(bindings));
+    descriptor.extend_from_slice(&inputs_offset.to_le_bytes());
+    descriptor.extend_from_slice(&inputs_len.to_le_bytes());
+    descriptor.extend_from_slice(&digest(&inputs));
     let descriptor_digest = digest(&descriptor);
     descriptor.extend_from_slice(&descriptor_digest);
     debug_assert_eq!(descriptor.len(), DESCRIPTOR_LEN);
@@ -669,12 +684,14 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>,
         .len()
         .checked_add(wasm.len())
         .and_then(|n| n.checked_add(bindings.len()))
+        .and_then(|n| n.checked_add(inputs.len()))
         .and_then(|n| n.checked_add(DESCRIPTOR_LEN))
         .ok_or_else(|| "trusted-publisher application image is too large".to_string())?;
     let mut image = Vec::with_capacity(capacity);
     image.extend_from_slice(template);
     image.extend_from_slice(wasm);
     image.extend_from_slice(bindings);
+    image.extend_from_slice(&inputs);
     image.extend_from_slice(&descriptor);
     Ok(image)
 }
@@ -692,15 +709,19 @@ pub fn load(path: &std::path::Path) -> Result<Option<OwnedEmbeddedApplication>, 
         .metadata()
         .map_err(|error| format!("cannot inspect executable `{}`: {error}", path.display()))?
         .len();
-    if len < DESCRIPTOR_LEN as u64 {
+    if len < LEGACY_DESCRIPTOR_LEN as u64 {
         return Ok(None);
     }
-    file.seek(SeekFrom::End(-(DESCRIPTOR_LEN as i64)))
+    let tail_len = usize::try_from(len.min(DESCRIPTOR_LEN as u64)).map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::End(-(tail_len as i64)))
         .map_err(|error| format!("cannot seek executable `{}`: {error}", path.display()))?;
-    let mut descriptor = [0u8; DESCRIPTOR_LEN];
+    let mut descriptor = vec![0u8; tail_len];
     file.read_exact(&mut descriptor)
         .map_err(|error| format!("cannot read executable descriptor `{}`: {error}", path.display()))?;
-    if &descriptor[..MAGIC.len()] != MAGIC {
+    if &descriptor[tail_len - LEGACY_DESCRIPTOR_LEN..][..MAGIC.len()] == MAGIC {
+        return Err("legacy packaged application has no closed source admission inputs; rebuild the package".into());
+    }
+    if tail_len != DESCRIPTOR_LEN || &descriptor[..MAGIC.len()] != MAGIC {
         return Ok(None);
     }
     file.seek(SeekFrom::Start(0))
@@ -713,6 +734,7 @@ pub fn load(path: &std::path::Path) -> Result<Option<OwnedEmbeddedApplication>, 
     Ok(Some(OwnedEmbeddedApplication {
         wasm: embedded.wasm.to_vec(),
         bindings: embedded.bindings.to_vec(),
+        source_inputs: serde_json::from_slice(embedded.source_inputs).map_err(|error| error.to_string())?,
     }))
 }
 
@@ -723,6 +745,7 @@ pub fn package_file(
     output_path: &std::path::Path,
     wasm: &[u8],
     bindings: &[u8],
+    inputs: &SourceInputs,
 ) -> Result<(), String> {
     use std::io::Write as _;
 
@@ -737,7 +760,7 @@ pub fn package_file(
     }
     let template = std::fs::read(template_path)
         .map_err(|error| format!("cannot read launcher template `{}`: {error}", template_path.display()))?;
-    let image = package(&template, wasm, bindings)?;
+    let image = package(&template, wasm, bindings, inputs)?;
     let permissions = std::fs::metadata(template_path)
         .map_err(|error| format!("cannot inspect launcher template `{}`: {error}", template_path.display()))?
         .permissions();
@@ -805,6 +828,11 @@ fn create_owned_temporary(
 /// is present every malformed field fails closed; it is never reinterpreted as
 /// compiler command-line input.
 pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
+    if image.len() >= LEGACY_DESCRIPTOR_LEN
+        && &image[image.len() - LEGACY_DESCRIPTOR_LEN..][..MAGIC.len()] == MAGIC
+    {
+        return Err("legacy packaged application has no closed source admission inputs; rebuild the package".into());
+    }
     if image.len() < DESCRIPTOR_LEN {
         return Ok(None);
     }
@@ -833,6 +861,8 @@ pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
     let wasm_len = read_usize(descriptor, 32, "WASM length")?;
     let bindings_offset = read_usize(descriptor, 40, "binding-plan offset")?;
     let bindings_len = read_usize(descriptor, 48, "binding-plan length")?;
+    let inputs_offset = read_usize(descriptor, 152, "source-input offset")?;
+    let inputs_len = read_usize(descriptor, 160, "source-input length")?;
     let tail_offset = image.len() - DESCRIPTOR_LEN;
     let wasm_end = wasm_offset
         .checked_add(wasm_len)
@@ -840,7 +870,8 @@ pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
     let bindings_end = bindings_offset
         .checked_add(bindings_len)
         .ok_or_else(|| "trusted-publisher application binding-plan range overflows".to_string())?;
-    if wasm_end != bindings_offset || bindings_end != tail_offset {
+    let inputs_end = inputs_offset.checked_add(inputs_len).ok_or("source-input range overflows")?;
+    if wasm_offset == 0 || wasm_end != bindings_offset || bindings_end != inputs_offset || inputs_end != tail_offset {
         return Err("trusted-publisher application descriptor contains non-contiguous or out-of-bounds payload ranges".into());
     }
     let wasm = image
@@ -849,16 +880,22 @@ pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
     let bindings = image
         .get(bindings_offset..bindings_end)
         .ok_or_else(|| "trusted-publisher application descriptor points outside the artifact".to_string())?;
+    let source_inputs = image.get(inputs_offset..inputs_end).ok_or("source inputs point outside the artifact")?;
+    let launcher = image.get(..wasm_offset).ok_or("invalid launcher prefix")?;
 
     require_digest("application WASM", wasm, &descriptor[56..88])?;
     require_digest("binding plan", bindings, &descriptor[120..152])?;
+    require_digest("source inputs", source_inputs, &descriptor[168..200])?;
+    let inputs: SourceInputs = serde_json::from_slice(source_inputs)
+        .map_err(|error| format!("invalid packaged source inputs: {error}"))?;
+    inputs.validate(launcher)?;
     wasmparser::validate(wasm)
         .map_err(|error| format!("trusted-publisher application contains invalid application WASM: {error}"))?;
     let launch = artifact::launch_contract_payload(wasm)?
         .ok_or_else(|| "trusted-publisher application application has no `witchy.launch` metadata".to_string())?;
     require_digest("`witchy.launch` contract", launch, &descriptor[88..120])?;
 
-    Ok(Some(EmbeddedApplication { wasm, bindings }))
+    Ok(Some(EmbeddedApplication { wasm, bindings, source_inputs }))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
@@ -894,6 +931,22 @@ fn digest(bytes: &[u8]) -> [u8; DIGEST_LEN] {
 mod tests {
     use super::*;
     use wasm_encoder::Module;
+
+    fn fixture_inputs() -> SourceInputs {
+        use source_inputs::SourceFile;
+        SourceInputs::captured("src/main.witchy".into(), Vec::new(), vec![
+            SourceFile { path: "src/main.witchy".into(), contents: Some("fn main() -> Nil:\n    Nil\n".into()) },
+            SourceFile { path: "witchy.toml".into(), contents: Some("[rune]\nname = \"fixture\"\nversion = \"1\"\n".into()) },
+        ], "witchy.toml".into())
+    }
+
+    fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>, String> {
+        super::package(template, wasm, bindings, &fixture_inputs())
+    }
+
+    fn package_file(template: &std::path::Path, output: &std::path::Path, wasm: &[u8], bindings: &[u8]) -> Result<(), String> {
+        super::package_file(template, output, wasm, bindings, &fixture_inputs())
+    }
 
     fn app_wasm() -> Vec<u8> {
         let source = witchy_syntax::parser::parse_module("fn main(console: Console):\n    return\n").unwrap();

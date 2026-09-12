@@ -111,6 +111,26 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
             std::process::exit(1);
         };
         let result = (|| -> Result<(), String> {
+            if target == "trusted-publisher" {
+                if package_owner.is_some() || !dep_owners.is_empty() {
+                    return Err("trusted-publisher source replay does not yet support custom/registry owner assignments; resolver provenance must be retained, not relabeled".into());
+                }
+                let output = out.as_ref().ok_or("`--target trusted-publisher` requires `--out <executable>`")?;
+                let manifest = manifest.as_ref().ok_or("`--target trusted-publisher` requires `--manifest <witchy.toml>`")?;
+                let (checked, stem, inputs) = crate::source::capture_packaged_source(&entry, &deps, manifest)?;
+                enforce_performance_modes(checked.module(), &stem)?;
+                let artifact = match codegen::compile_checked_module_artifact(&checked) {
+                    codegen::LoweringOutcome::Lowered(artifact) => artifact,
+                    codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+                    codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+                };
+                let manifest = inputs.files.iter().find(|file| file.path == inputs.target_manifest)
+                    .and_then(|file| file.contents.as_deref()).ok_or("captured target manifest missing")?;
+                let bindings = trusted_publisher::build_binding_plan(checked.module(), manifest)?;
+                let launcher = std::env::current_exe().map_err(|error| error.to_string())?;
+                trusted_publisher::package_file(&launcher, std::path::Path::new(output), artifact.wasm(), &bindings, &inputs)?;
+                return Ok(());
+            }
             let (checked, stem) = if package_owner.is_some() || !dep_owners.is_empty() {
                 let package_owner = package_owner.ok_or_else(|| {
                     "authenticated dependency ownership requires --package-owner".to_string()
@@ -152,27 +172,6 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                         std::fs::write(f, &bytes)
                             .map_err(|e| format!("cannot write `{f}`: {e}"))?;
                     }
-                }
-                "trusted-publisher" => {
-                    let output = out.as_ref().ok_or_else(|| {
-                        "`witchy compile --target trusted-publisher` requires `--out <executable>`"
-                            .to_string()
-                    })?;
-                    let manifest = manifest.as_ref().ok_or_else(|| {
-                        "`witchy compile --target trusted-publisher` requires `--manifest <witchy.toml>`".to_string()
-                    })?;
-                    let source = std::fs::read_to_string(manifest).map_err(|e| {
-                        format!("cannot read trusted-publisher manifest `{manifest}`: {e}")
-                    })?;
-                    let bindings = trusted_publisher::build_binding_plan(linked, &source)?;
-                    let launcher = std::env::current_exe()
-                        .map_err(|e| format!("cannot locate trusted-publisher launcher template: {e}"))?;
-                    trusted_publisher::package_file(
-                        &launcher,
-                        std::path::Path::new(output),
-                        &bytes,
-                        &bindings,
-                    )?;
                 }
                 other => {
                     return Err(format!(

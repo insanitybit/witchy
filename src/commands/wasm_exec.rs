@@ -282,6 +282,8 @@ pub(crate) fn run_wasm_module(
 pub(crate) fn run_trusted_application(
     application: &trusted_publisher::OwnedEmbeddedApplication,
 ) -> Result<i32, String> {
+    // Recheck closed inputs and compare exact bytes before grants or execution.
+    let artifact = crate::source::restore_packaged_artifact(application)?;
     let cwd = std::env::current_dir()
         .map_err(|error| format!("cannot determine launch working directory: {error}"))?;
     let resolved = trusted_publisher::resolve_binding_plan(
@@ -321,15 +323,16 @@ pub(crate) fn run_trusted_application(
         ..Default::default()
     };
     crate::commands::confinement::arm(&caps, confinement)?;
-    // The executable's embedded descriptor validates these exact Wasm bytes
-    // and bindings. Publisher applications still use the ordinary cache policy:
-    // cache entries are optimization records and every hit is validated by the
-    // runtime before Wasmtime compiles or instantiates it.
+    // Retain fresh admission and its instance-bound owner recipes through launch.
     let mut rt = Runtime::batch().map_err(|error| error.to_string())?;
     let mut vm = rt
-        .spawn(&application.wasm, caps, RUN_MEMORY_PAGES)
+        .spawn_admitted(&artifact, caps, RUN_MEMORY_PAGES)
         .map_err(|error| error.to_string())?;
     vm.run().map_err(|error| error.root_cause().to_string())?;
+    let leaks = vm.canonical_heap_leaks().map_err(|error| error.to_string())?;
+    if leaks != Some(0) {
+        return Err(format!("packaged application did not establish zero owned leaks: {leaks:?}"));
+    }
     let mut lines = vm.output();
     let exit = if wasm_main_returns_int(&application.wasm) {
         lines.pop().and_then(|line| line.parse::<i32>().ok())

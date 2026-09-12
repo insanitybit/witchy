@@ -1,5 +1,9 @@
 //! Native source discovery, loading, linking, and expansion.
 
+mod package_inputs;
+pub(crate) use package_inputs::{capture_packaged_source, restore_packaged_artifact};
+use package_inputs::{AmbientFiles, SourceFiles};
+
 #[cfg(test)]
 #[path = "source/build_recipe_tests.rs"]
 mod build_recipe_tests;
@@ -286,6 +290,16 @@ fn load_file_modules_authenticated(
     entry_owner: ModuleLoadIdentity,
     dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
 ) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
+    load_file_modules_with_files(path, deps, entry_owner, dep_owners, &AmbientFiles)
+}
+
+fn load_file_modules_with_files(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+    entry_owner: ModuleLoadIdentity,
+    dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
+    files: &dyn SourceFiles,
+) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -324,16 +338,19 @@ fn load_file_modules_authenticated(
         if !loaded.insert(name.clone()) {
             continue;
         }
-        let (source, owner, user_source) = match std::fs::read_to_string(&module_path) {
-            Ok(source) => {
+        let (source, owner, user_source) = match files.read(&module_path)? {
+            Some(source) => {
                 if bundled_module(&name) == Some(source.as_str()) {
                     (source, bundled_module_owner(&name)?, false)
                 } else {
+                    if files.closed_package() && bundled_module(&name).is_some() {
+                        return Err(format!("packaged source cannot replace bundled module `{name}`"));
+                    }
                     user_modules.insert(name.clone());
                     (source, proposed_owner, true)
                 }
             }
-            Err(error) => match bundled_module(&name) {
+            None => match bundled_module(&name) {
                 Some(source) => (source.to_string(), bundled_module_owner(&name)?, false),
                 None => {
                     let hint = if name != entry_stem {
@@ -344,7 +361,7 @@ fn load_file_modules_authenticated(
                         String::new()
                     };
                     return Err(format!(
-                        "cannot read `{}`: {error}{hint}",
+                        "cannot read `{}`: source is missing{hint}",
                         module_path.display()
                     ));
                 }
@@ -452,17 +469,21 @@ fn workspace_module_owner(
     source_path: &std::path::Path,
     fallback_name: &str,
 ) -> Result<ModuleLoadIdentity, String> {
-    let manifest = source_path
-        .parent()
-        .into_iter()
-        .flat_map(std::path::Path::ancestors)
-        .find_map(|directory| {
-            let path = directory.join("witchy.toml");
-            path.is_file().then_some((directory, path))
-        });
-    let (package_name, package_version, module_path) = if let Some((root, manifest)) = manifest {
-        let source = std::fs::read_to_string(&manifest)
-            .map_err(|error| format!("cannot read `{}`: {error}", manifest.display()))?;
+    workspace_module_owner_with_files(source_path, fallback_name, &AmbientFiles)
+}
+
+fn workspace_module_owner_with_files(
+    source_path: &std::path::Path, fallback_name: &str, files: &dyn SourceFiles,
+) -> Result<ModuleLoadIdentity, String> {
+    let mut manifest = None;
+    for directory in source_path.parent().into_iter().flat_map(std::path::Path::ancestors) {
+        let path = directory.join("witchy.toml");
+        if let Some(source) = files.read(&path)? {
+            manifest = Some((directory, path, source));
+            break;
+        }
+    }
+    let (package_name, package_version, module_path) = if let Some((root, manifest, source)) = manifest {
         let mut in_rune = false;
         let mut name = None;
         let mut version = None;

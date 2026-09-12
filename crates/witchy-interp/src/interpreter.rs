@@ -812,6 +812,10 @@ impl Interpreter {
     }
 
     fn new_with_witnesses(module: Module, witnesses: WitnessPlan) -> Self {
+        Self::new_with_witnesses_and_seed(module, witnesses, witchy_runtime::rand::seed_from_env())
+    }
+
+    fn new_with_witnesses_and_seed(module: Module, witnesses: WitnessPlan, rand_seed: Option<u64>) -> Self {
         let compiler_item_syntax = module
             .compiler_item_syntax
             .into_iter()
@@ -910,7 +914,7 @@ impl Interpreter {
             net_allow: Vec::new(),
             fetch_origins: Vec::new(),
             console_input: None,
-            rand_state: witchy_runtime::rand::seed_from_env(),
+            rand_state: rand_seed,
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),
             user_cap_grants: UserCapGrants::new(),
