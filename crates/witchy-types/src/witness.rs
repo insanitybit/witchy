@@ -69,6 +69,26 @@ pub struct WitnessCatalog {
 }
 
 impl WitnessCatalog {
+    /// Resolve a dictionary comparator from retained declarations, never from
+    /// a backend reconstruction of a mangled function name. The canonical
+    /// frontend still checks the selected executable body and its signature.
+    pub(crate) fn dictionary_equality(&self, concrete: &Type) -> Result<String, String> {
+        let mut declarations = self.traits.iter().filter(|definition| {
+            crate::traits::is_standard_trait_identity(&definition.name, "cmp", "PartialEq")
+        });
+        let declaration = declarations.next().ok_or("dictionary equality trait is absent")?;
+        if declarations.next().is_some() {
+            return Err("dictionary equality trait identity is ambiguous".into());
+        }
+        let method = declaration.methods.iter().find(|method| method.name == "eq")
+            .ok_or("dictionary equality method is absent")?;
+        let impls = self.impls.iter().collect::<Vec<_>>();
+        let (implementation, bindings) = resolve_impl(&impls, &declaration.name, &[], concrete)?;
+        monomorphic_impl_method_name(
+            &declaration.name, implementation, method, &HashMap::new(), &bindings,
+        )
+    }
+
     pub fn from_module(module: &Module) -> Self {
         let mut catalog = Self::default();
         let trait_methods = module

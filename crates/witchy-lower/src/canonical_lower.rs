@@ -789,6 +789,7 @@ pub fn lower_typed_module(
             &signatures,
             &tail_manifest,
             typed.table(),
+            source.dictionary_key_comparators(),
             &layouts,
             &layout_catalog,
             &string_data_ids,
@@ -833,6 +834,7 @@ pub fn lower_typed_module(
             &signatures,
             &tail_manifest,
             typed.table(),
+            source.dictionary_key_comparators(),
             &layouts,
             &layout_catalog,
             &string_data_ids,
@@ -1363,6 +1365,7 @@ fn lower_function(
     signatures: &[FunctionSignature],
     tail_manifest: &ProperTailSiteManifest,
     type_table: &TypeTable,
+    dictionary_comparators: &[(Type, String)],
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
@@ -1403,6 +1406,7 @@ fn lower_function(
         signatures,
         tail_manifest,
         type_table,
+        dictionary_comparators,
         layout_bundle,
         layouts,
         string_data_ids,
@@ -1879,6 +1883,7 @@ struct FunctionLowerer<'a> {
     signatures: &'a [FunctionSignature],
     tail_manifest: &'a ProperTailSiteManifest,
     type_table: &'a TypeTable,
+    dictionary_comparators: &'a [(Type, String)],
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
@@ -9813,7 +9818,10 @@ impl FunctionLowerer<'_> {
 
     /// Search `keys` for `key` in insertion order: `(found, index)`.
     fn lower_dict_find(&mut self, keys: ValueId, key: ValueId, key_type: &Type) -> Result<(ValueId, ValueId), CanonicalLoweringError> {
-        if !Self::dict_key_supported(key_type) {
+        let comparator = self.dictionary_comparators.iter()
+            .find(|(ty, _)| ty.unqualified() == key_type.unqualified())
+            .map(|(_, name)| name.clone());
+        if !Self::dict_key_supported(key_type) && comparator.is_none() {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict key type"));
         }
         let list_type = Type::Named("List".into(), vec![key_type.clone()]);
@@ -9843,7 +9851,9 @@ impl FunctionLowerer<'_> {
         self.current = body;
         let cursor = self.block_parameter_values(body)[0];
         let element = self.load_list_element(keys, cursor, element_type)?;
-        let matched = if Self::is_string_type(key_type) {
+        let matched = if let Some(comparator) = &comparator {
+            self.lower_dict_key_comparison(comparator, element, key)?
+        } else if Self::is_string_type(key_type) {
             self.lower_string_equality(element, key, false)?
         } else {
             self.push_compare(ComparisonOperator::Equal, element, key)?
@@ -9862,6 +9872,32 @@ impl FunctionLowerer<'_> {
         self.current = exit;
         let exit_values = self.block_parameter_values(exit);
         Ok((exit_values[0], exit_values[1]))
+    }
+
+    fn lower_dict_key_comparison(&mut self, name: &str, left: ValueId, right: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let (callee, signature_id) = self.functions.get(name).copied()
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.into()))?;
+        let signature = self.signatures.get(signature_id.get() as usize).cloned()
+            .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.into()))?;
+        if signature.parameters != vec![self.values[&left], self.values[&right]]
+            || signature.results != vec![ValueType::Bool]
+            || signature.contract.parameters.len() != 2
+            || self.checked_parameter_conventions.get(&signature_id).map(Vec::as_slice)
+                != Some(&[Convention::Let, Convention::Let])
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict comparator signature"));
+        }
+        let mut arguments = Vec::new();
+        for (value, contract) in [left, right].into_iter().zip(&signature.contract.parameters) {
+            arguments.push(match contract.ownership {
+                ParameterOwnership::Value => CallArgument::Value(value),
+                ParameterOwnership::Shared => CallArgument::Move(self.clone_reference_token(value)?),
+                _ => return Err(CanonicalLoweringError::UnsupportedExpression("dict comparator ownership")),
+            });
+        }
+        let destination = self.fresh(ValueType::Bool)?;
+        self.push_operation(Operation::Call { destinations: vec![destination], callee, arguments });
+        Ok(destination)
     }
 
     /// The value at `index` of the dictionary's value list as an owned value
@@ -9910,9 +9946,9 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    /// The dictionary intrinsics over the canonical representation. Keys
-    /// are `Int` or `String`; values a scalar or a `String` for reads and a
-    /// scalar for in-place writes; everything else is refused by name.
+    /// Dictionary keys use intrinsic scalar/string equality or a checked
+    /// source comparator. Values are scalars or strings for reads and scalars
+    /// for in-place writes; other value representations still fail closed.
     fn lower_dict_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         match name {
             "dict.new" => {
@@ -10118,7 +10154,8 @@ impl FunctionLowerer<'_> {
         // Miss: both lists grow by the new entry; `None` comes back.
         self.current = miss;
         self.restore_snapshot(facts.clone());
-        let key = if Self::is_string_type(&key_type) { self.owned_dict_value(key, &key_type)? } else { key };
+        let key = if Self::dict_scalar_value(&key_type) { key }
+            else { self.owned_for_storage(key, &key_type)? };
         let grown_keys = self.push_owned_element(keys, key, &key_list)?;
         let grown_values = self.push_owned_element(values, value, &value_list)?;
         let rebuilt = self.lower_aggregate_moving(shape, 0, vec![grown_keys, grown_values])?;

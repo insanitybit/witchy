@@ -2,6 +2,79 @@
 //! ownership through the source interpreter, canonical oracle, and admitted Wasm.
 
 #[test]
+fn nominal_dictionary_keys_use_declared_equality_across_three_legs() {
+    assert_three_legs(r#"
+import cmp
+import dict
+
+type ById derive(Eq):
+    id: Int
+    cache: Int
+
+impl PartialEq for ById:
+    fn eq(self, other: ById) -> Bool:
+        self.id == other.id
+
+type ByCache derive(Eq):
+    id: Int
+    cache: Int
+
+impl PartialEq for ByCache:
+    fn eq(self, other: ByCache) -> Bool:
+        self.cache == other.cache
+
+fn main(console: Console):
+    var ids: Dict(ById, Int) = dict.new()
+    let original = ById(1, 10)
+    ids[original] = 1
+    let snapshot = ids
+    ids[ById(1, 20)] = 2
+    ids[ById(2, 20)] = 3
+    var caches: Dict(ByCache, Int) = dict.new()
+    caches[ByCache(1, 10)] = 4
+    caches[ByCache(2, 10)] = 5
+    console.print("${ids.length()} ${ids.get_or(ById(1, 30), 0)} ${ids.get_or(ById(3, 20), 0)}")
+    console.print("${snapshot.length()} ${snapshot.get_or(ById(1, 99), 0)} ${original.cache}")
+    console.print("${caches.length()} ${caches.get_or(ByCache(99, 10), 0)}")
+    var scalars: Dict(Int, Int) = dict.new()
+    scalars[1] = 6
+    scalars[1] = 7
+    console.print("${scalars.length()} ${scalars.get_or(1, 0)}")
+"#, vec!["2 2 0".into(), "1 1 10".into(), "1 5".into(), "1 7".into()]);
+}
+
+#[test]
+fn nominal_dictionary_comparators_close_over_nested_dictionary_calls() {
+    assert_three_legs(r#"
+import cmp
+import dict
+
+type Inner derive(Eq):
+    id: Int
+    cache: Int
+
+impl PartialEq for Inner:
+    fn eq(self, other: Inner) -> Bool:
+        self.id == other.id
+
+type Outer derive(Eq):
+    id: Int
+
+impl PartialEq for Outer:
+    fn eq(self, other: Outer) -> Bool:
+        var nested: Dict(Inner, Int) = dict.new()
+        nested[Inner(self.id, 0)] = 1
+        nested.contains_key(Inner(other.id, 99))
+
+fn main(console: Console):
+    var values: Dict(Outer, Int) = dict.new()
+    values[Outer(4)] = 1
+    values[Outer(4)] = 2
+    console.print("${values.length()} ${values.get_or(Outer(4), 0)} ${values.get_or(Outer(5), 0)}")
+"#, vec!["1 2 0".into()]);
+}
+
+#[test]
 fn recursive_generic_stack_int_and_string_agree_across_three_legs() {
     let source = r#"
 type Stack:

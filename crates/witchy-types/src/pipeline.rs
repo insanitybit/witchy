@@ -34,6 +34,7 @@ use crate::typeck::{self, ProperTailSiteManifest, TypeError};
 #[derive(Debug, PartialEq)]
 struct CanonicalCallableWitness {
     signatures: BTreeMap<String, witchy_syntax::ast::Type>,
+    dictionary_comparators: Vec<(witchy_syntax::ast::Type, String)>,
     generic_instances: BTreeMap<String, crate::traits::LogicalSpecializationIdentity>,
     abi_manifest: CanonicalCallableAbiManifest,
     closed_abis: BTreeMap<String, CanonicalCallableAbi>,
@@ -195,6 +196,13 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn callable_signature(&self, name: &str) -> Option<&witchy_syntax::ast::Type> {
         self.callable_witness.signatures.get(name)
+    }
+
+    /// Typed comparator roots derived from this source's retained trait
+    /// declarations and included in its rechecked callable inventory.
+    #[doc(hidden)]
+    pub fn dictionary_key_comparators(&self) -> &[(witchy_syntax::ast::Type, String)] {
+        &self.callable_witness.dictionary_comparators
     }
 
     /// Return the typechecker-owned specialization identity for a generated
@@ -712,6 +720,7 @@ fn attach_canonical_source(
 /// and signature.
 fn canonicalize_callable_instances(
     typed: typeck::TypedModule,
+    dictionary_catalog: Option<&crate::witness::WitnessCatalog>,
 ) -> Result<(typeck::TypedModule, CanonicalCallableWitness), PipelineError> {
     // The linked semantic proof already prepares generators through
     // witchy_syntax::generators::lower: owned tuple frames and iter.unfold,
@@ -733,7 +742,13 @@ fn canonicalize_callable_instances(
     let (module, generic_instances) =
         crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
     let typed = typeck::annotate_checked(module)?;
-    let callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
+    let (typed, dictionary_comparators) = match dictionary_catalog {
+        Some(catalog) => crate::canonical_dictionary::prepare(typed, catalog)
+            .map_err(|message| PipelineError::Type(TypeError { message }))?,
+        None => (typed, Vec::new()),
+    };
+    let mut callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
+    callable_witness.dictionary_comparators = dictionary_comparators;
     Ok((typed, callable_witness))
 }
 
@@ -937,6 +952,7 @@ fn bind_canonical_callable_witness(
             obligations.insert(CanonicalObligation::CallableAbi(error.to_string()));
             return Ok(CanonicalCallableWitness {
                 signatures,
+                dictionary_comparators: Vec::new(),
                 generic_instances,
                 abi_manifest: CanonicalCallableAbiManifest::empty(),
                 closed_abis: BTreeMap::new(),
@@ -960,6 +976,7 @@ fn bind_canonical_callable_witness(
         .collect::<Result<BTreeMap<_, _>, PipelineError>>()?;
     Ok(CanonicalCallableWitness {
         signatures,
+        dictionary_comparators: Vec::new(),
         generic_instances,
         abi_manifest,
         closed_abis,
@@ -1043,7 +1060,8 @@ fn link_checked_source_bundle_with(
     // The same checked link retains the resolved pre-erasure declarations;
     // capture their witnesses here, never from the later canonical AST.
     let witness_catalog = crate::witness::WitnessCatalog::from_module(checked.module());
-    let (mut typed_source, mut callable_witness) = canonicalize_callable_instances(typed_source)?;
+    let (mut typed_source, mut callable_witness) =
+        canonicalize_callable_instances(typed_source, Some(&witness_catalog))?;
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
     let dynamic_runtime_plan = if checked.module_owners.is_some() {
@@ -1067,7 +1085,9 @@ fn link_checked_source_bundle_with(
         }).collect::<HashSet<_>>();
         let instances = callable_witness.generic_instances.into_iter()
             .filter(|(name, _)| retained.contains(name)).collect();
+        let dictionary_comparators = callable_witness.dictionary_comparators;
         callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
+        callable_witness.dictionary_comparators = dictionary_comparators;
         Some(plan)
     } else {
         typed_source = crate::canonical_messages::prepare(typed_source, None)
@@ -1318,7 +1338,7 @@ fn main() -> Int:
                 LinkMode::Production, None, true,
                 Some(dynamic_source_owners("example/catalog-binding")),
             ).expect("authenticated original crosses the semantic source boundary");
-            let (typed, _) = canonicalize_callable_instances(typed.unwrap())
+            let (typed, _) = canonicalize_callable_instances(typed.unwrap(), None)
                 .expect("original pre-preparation callable instances");
             (checked, typed)
         };

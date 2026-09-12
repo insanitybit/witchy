@@ -1003,6 +1003,32 @@ whole-corpus count is claimed, and compiler-wide memory safety remains unproven.
 - The catalog submission was red at 18:28:32Z, candidate `768fd4ffc9aeb81681d858f8fcd04d3a443c86ae`: 2184 passed, one aggregate oracle sweep timed out at 270s. Log: `state/merge-queue/logs/20260911-142149-impl~rfc0165-runtime-parity-catalog-38402-91.log`. No timeout increase, exclusion, or assertion weakening is being used as a repair.
 - Duplicate admission in that sweep is being removed; the independent planner's per-block layout/catalog copying is the next measured repeated-work candidate. The exact sweep probe is pending. `serve_api` still needs its closure witness repaired. No fresh whole-corpus count or merged completion is claimed.
 
+### 2026-09-12: owned-prefix landing and dictionary equality follow-up
+
+The owned-prefix/publication repair submitted as `be8aaa5ec` landed on master
+`8f907d084861d00bdeec9bed76e2c6f514d68e24` at `2026-09-12T14:36:20Z`,
+queue attempt `mqa-eda0b92723d5498d1c72be945bcf292f2cafd160` (373-second green
+gate, zero flakes). The canonical WAT/production-sealing slice landed earlier
+as `f5ac4e702cc051551e463e9bca54c096a28e80f7` at `14:25:10Z`.
+
+A census using that exact master and its matching warmed gate binary measured
+162/163 example checks and 91 runnable CLI parity agreements, zero disagreements.
+The sole check refusal is `opt_mode.ScanState` under the `Unique` qualifier.
+This CLI subset is not a new full three-legged corpus or a soundness claim.
+Command: `WITCHY_DEV_TARGET=/Users/cobrien/workspace/witchy/.claude/worktrees/merge-gate/target-prewarm taskpolicy -c utility bash scripts/rfc0165-dev/census.sh`.
+Local evidence: `/tmp/witchy-master-8f907d084-census.log`.
+
+Dictionary keys now select equality through the checked pre-erasure trait
+catalog, retain typed comparator calls in the canonical source witness, and
+close discovery over comparator bodies. No checker rule or memory authority is
+selected by a backend helper name. The original RFC-0087 dictionary-key test
+and two three-legged regressions pass, covering same-layout nominal keys with
+different equality, scalar insertion, preserved snapshots, and dictionaries
+used inside another key's equality method. Review found scalar insertion and
+transitive discovery omissions; both have focused regressions in the corrected
+slice. Command: `cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter --no-fail-fast -E 'test(=rfc0087_uniform_var::dict_place_assignment_uses_language_key_equality) | test(nominal_dictionary_)'`.
+Local evidence: `/tmp/witchy-dictionary-comparators-v4.log` (3/3 passed).
+This dictionary slice is focused-green, not yet landed.
 ### 2026-09-11: isolated persistent `vm.serve` integration
 
 The preceding task/Net integration landed through queue change
