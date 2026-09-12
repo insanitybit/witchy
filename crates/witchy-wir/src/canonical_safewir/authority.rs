@@ -1030,7 +1030,10 @@ fn candidate_signature_matches_source_inner(
             (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (super::ValueType::Gc(_), _) => false,
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
-            (_, witchy_syntax::ast::Convention::Var) => matches!(actual.ownership, super::ParameterOwnership::WriteBack),
+            (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var)
+                if matches!(source, witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _)) =>
+                    actual.ownership == super::ParameterOwnership::UniqueWriteBack,
+            (_, witchy_syntax::ast::Convention::Var) => actual.ownership == super::ParameterOwnership::WriteBack,
             (_, witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Value),
             (super::ValueType::Ref(_), _) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             _ => matches!(actual.ownership, super::ParameterOwnership::Value),
@@ -1044,15 +1047,21 @@ fn candidate_signature_matches_source_inner(
     let write_back_parameters = parameters.iter().enumerate()
         .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
         .collect::<Vec<_>>();
-    let matched = actual.results.len() == ordinary_results + write_back_parameters.len()
+    let unique_results_match = actual.contract.results.iter().enumerate().all(|(index, result)| {
+        let unique_parameter = index.checked_sub(ordinary_results)
+            .and_then(|offset| write_back_parameters.get(offset))
+            .is_some_and(|(parameter, _)| actual.contract.parameters[*parameter].ownership == super::ParameterOwnership::UniqueWriteBack);
+        unique_parameter == matches!(result, super::ResultContract::Unique { .. })
+    });
+    let matched = unique_results_match && actual.results.len() == ordinary_results + write_back_parameters.len()
         && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, context, records, closure_layouts))
         && write_back_parameters.iter().enumerate().all(|(offset, (parameter, source))| {
             value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, context, records, closure_layouts)
-                && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack)
+                && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack | super::ParameterOwnership::UniqueWriteBack)
         })
         && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
             matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_) | super::ValueType::Gc(_)))
-                && (matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::ParameterOwnership::WriteBack))
+                && (matches!(actual.contract.parameters.get(*parameter as usize).map(|parameter| parameter.ownership), Some(super::ParameterOwnership::WriteBack | super::ParameterOwnership::UniqueWriteBack))
                     || effects.iter().all(|effect| matches!(effect, super::MemoryEffect::Read | super::MemoryEffect::Retain | super::MemoryEffect::Release)))
         });
     context.finish_callable(key, matched);
@@ -1923,6 +1932,45 @@ mod tests {
     }
 
     #[test]
+    fn unique_pop_source_abi_requires_checked_unique_input_and_output() {
+        use witchy_syntax::ast::{Convention, Type, TypeQual};
+        use crate::canonical_safewir::ParameterOwnership;
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_owned(), b"fn take(var xs: unique List(Int)) -> Int:\n    0\n\nfn main() -> Int:\n    var xs = [1]\n    take(xs)\n".to_vec())],
+            "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).unwrap();
+        let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
+        let mut interner = crate::layout::LayoutInterner::new();
+        let integer = interner.intern_scalar(crate::layout::ScalarKind::Int).unwrap();
+        let list = interner.intern_packed_list(integer, crate::layout::RcHeader::Required).unwrap();
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(list)],
+            results: vec![ValueType::Int, ValueType::Ref(list)],
+            contract: CallableContract {
+                parameters: vec![super::super::ParameterContract { value_type: ValueType::Ref(list), ownership: ParameterOwnership::UniqueWriteBack }],
+                results: vec![ResultContract::Value(ValueType::Int), ResultContract::Unique { layout: list }],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(1), checked_source: CheckedSourceIdentity::from_digest([0; 32]),
+            layouts: LayoutBundle::from_interner(&interner, [list]).unwrap(), signatures: vec![signature.clone()],
+            imports: vec![], functions: vec![], proper_tail_sites: vec![],
+        });
+        assert!(candidate_signature_matches_source(&signature, source, &module), "checked signature: {source:?}");
+        let mut weaker = signature.clone();
+        weaker.contract.parameters[0].ownership = ParameterOwnership::WriteBack;
+        assert!(!candidate_signature_matches_source(&weaker, source, &module));
+        weaker = signature.clone();
+        weaker.contract.results[1] = ResultContract::Shared { layout: list };
+        assert!(!candidate_signature_matches_source(&weaker, source, &module));
+        let Type::Fn(parameters, result, _, qualifiers) = source else { panic!("checked callable") };
+        let Type::Qualified(TypeQual::Unique, plain) = &parameters[0] else { panic!("checked unique qualifier") };
+        let ordinary = Type::Fn(vec![(**plain).clone()], result.clone(), vec![Convention::Var], qualifiers.clone());
+        assert!(!candidate_signature_matches_source(&signature, &ordinary, &module), "candidate cannot invent unique authority for plain source var");
+    }
+
+    #[test]
     fn source_closure_family_normalizes_nominals_and_default_let_not_own() {
         use witchy_syntax::ast::{CallableQualifiers, Convention, Type};
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
@@ -2034,8 +2082,8 @@ mod tests {
         }
         candidate.signatures[0] = signature(0, vec![ValueType::Ref(string)],
             vec![ValueType::Ref(string), ValueType::Ref(string)]);
-        candidate.signatures[0].contract.parameters[0].ownership = ParameterOwnership::WriteBack;
-        candidate.signatures[0].contract.results[1] = ResultContract::BodyDerived(ValueType::Ref(string));
+        candidate.signatures[0].contract.parameters[0].ownership = ParameterOwnership::UniqueWriteBack;
+        candidate.signatures[0].contract.results[1] = ResultContract::Unique { layout: string };
         let unique = Type::Qualified(TypeQual::Unique, Box::new(string_ty.clone()));
         assert!(candidate_signature_matches_source(&candidate.signatures[0],
             &function(unique.clone(), string_ty.clone(), Convention::Var), &candidate));

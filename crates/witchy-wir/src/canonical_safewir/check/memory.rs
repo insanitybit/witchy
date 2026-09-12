@@ -733,7 +733,7 @@ impl<'a> MemoryChecker<'a> {
                     signature: signature.id,
                 })?;
             let ownership = match contract.ownership {
-                ParameterOwnership::Unique => Ownership::Unique,
+                ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => Ownership::Unique,
                 ParameterOwnership::Shared | ParameterOwnership::WriteBack => Ownership::Shared,
                 ParameterOwnership::Value => {
                     continue;
@@ -741,13 +741,13 @@ impl<'a> MemoryChecker<'a> {
             };
             let extent = self.parameter_extent(layout)?;
             let (allocation_class, shared_immutable) = match contract.ownership {
-                ParameterOwnership::Unique => (Some(AllocationClass::ReferenceCounted), false),
+                ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => (Some(AllocationClass::ReferenceCounted), false),
                 ParameterOwnership::Shared | ParameterOwnership::WriteBack => (None, true),
                 ParameterOwnership::Value => unreachable!(),
             };
             let initialized_owned_slots = matches!(
                 contract.ownership,
-                ParameterOwnership::Unique | ParameterOwnership::Shared | ParameterOwnership::WriteBack
+                ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack
             );
             self.state.objects.insert(
                 parameter.value,
@@ -845,6 +845,16 @@ impl<'a> MemoryChecker<'a> {
                             initialized_owned_slots: true,
                         },
                     );
+                }
+                ResultContract::Unique { layout } => {
+                    self.require_ref_type(*destination, *layout)?;
+                    let extent = self.parameter_extent(*layout)?;
+                    self.state.objects.insert(*destination, ObjectState {
+                        identity: *destination, layout: *layout, extent,
+                        ownership: Ownership::Unique,
+                        allocation_class: Some(AllocationClass::ReferenceCounted),
+                        shared_immutable: false, initialized_owned_slots: true,
+                    });
                 }
                 ResultContract::Shared { layout } => {
                     self.require_ref_type(*destination, *layout)?;
@@ -962,6 +972,16 @@ impl<'a> MemoryChecker<'a> {
                             function: self.function.id,
                             object: *value,
                         });
+                    }
+                }
+                ResultContract::Unique { layout } => {
+                    self.require_owned_slots_initialized(*value, "Return(uninitialized unique write-back)")?;
+                    let state = self.live_object(*value)?;
+                    if state.layout != *layout || state.ownership != Ownership::Unique
+                        || state.allocation_class != Some(AllocationClass::ReferenceCounted)
+                        || !self.is_sole_live_token(*value, state.identity)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: *value });
                     }
                 }
                 ResultContract::Shared { layout } => {
@@ -1890,7 +1910,7 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         let state = self.live_object(source)?;
         let permitted = match parameter {
-            ParameterOwnership::Unique => state.ownership == Ownership::Unique,
+            ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => state.ownership == Ownership::Unique,
             ParameterOwnership::Shared | ParameterOwnership::WriteBack => {
                 matches!(state.ownership, Ownership::Unique | Ownership::Shared)
             }
@@ -1917,7 +1937,7 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-        if parameter == ParameterOwnership::Unique
+        if matches!(parameter, ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack)
             && !self.is_sole_live_token(source, state.identity)
         {
             return Err(InitialCheckError::InvalidOwnership {
@@ -2267,6 +2287,57 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    /// One atomic ownership transition. Live prefix facts are replaced only
+    /// after proving completeness and absence of unpublished owned edges.
+    /// Moved-out history is not a live edge. Unknown bounds grant no authority.
+    fn take_last(&mut self, destination: ValueId, place: &Place, expected: ValueType) -> Result<(), InitialCheckError> {
+        self.require_type(destination, expected)?;
+        let Projection::Element { index } = place.projection() else { return self.unsupported("TakeLast(non-element)"); };
+        let object = place.object();
+        let state = self.live_object(object)?.clone();
+        if state.ownership != Ownership::Unique
+            || state.allocation_class != Some(AllocationClass::ReferenceCounted)
+            || !self.is_sole_live_token(object, state.identity)
+        { return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object }); }
+        let Extent::Counted { header_bytes, count, capacity, stride_bytes } = state.extent else {
+            return self.unsupported("TakeLast(uncounted)");
+        };
+        if self.descriptor(state.layout)?.kind().packed_element_layout().is_none() {
+            return self.unsupported("TakeLast(non-list)");
+        }
+        // check_place already requires index < current logical count. The
+        // unique SSA definition must additionally identify that exact tail.
+        let last = self.constant_relation(*index, count, |index, count| index.checked_add(1) == Some(count))
+            || self.function.blocks.iter().flat_map(|block| &block.operations).any(|operation| {
+                matches!(operation, Operation::Arithmetic { destination, operator: ArithmeticOperator::Subtract, left, right, .. }
+                    if destination == index && self.same_scalar(*left, count) && self.state.constants.get(right) == Some(&1))
+            });
+        if !last { return self.unsupported("TakeLast(not-last)"); }
+        self.require_owned_slots_initialized(object, "TakeLast(uninitialized prefix)")?;
+        if !matches!(expected, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Size | ValueType::Unit | ValueType::Ref(_)) {
+            return self.unsupported("TakeLast(element type)");
+        }
+        let containers = self.state.objects.iter().filter_map(|(value, candidate)|
+            (candidate.identity == state.identity).then_some(*value)).collect::<BTreeSet<_>>();
+        self.state.stored_objects.retain(|(container, _), _| !containers.contains(container));
+        self.state.range_states.retain(|range, _| !containers.contains(&range.object));
+        self.state.initialized_scalar_slots.retain(|(container, _)| !containers.contains(container));
+        for candidate in self.state.objects.values_mut().filter(|candidate| candidate.identity == state.identity) {
+            candidate.extent = Extent::Counted { header_bytes, count: *index, capacity, stride_bytes };
+            candidate.initialized_owned_slots = true;
+        }
+        self.state.header_values.retain(|(container, field), _| !containers.contains(container) || *field != HeaderField::Length);
+        self.state.header_values.insert((object, HeaderField::Length), *index);
+        if let ValueType::Ref(layout) = expected {
+            let extent = self.parameter_extent(layout)?;
+            // Transfer one owned reference, never manufacture child exclusivity.
+            self.state.objects.insert(destination, ObjectState {
+                identity: destination, layout, extent, ownership: Ownership::Shared,
+                allocation_class: None, shared_immutable: true, initialized_owned_slots: true,
+            });
+        }
+        Ok(())
+    }
     fn load(
         &mut self,
         destination: ValueId,
@@ -2277,6 +2348,9 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Load(access)");
         }
         let expected = self.check_place(place)?;
+        if transfer == LoadTransfer::TakeLast {
+            return self.take_last(destination, place, expected);
+        }
         if expected == ValueType::Unit && !self.checked_scalar_slot_initialized(place)?
             && self.require_owned_slots_initialized(place.object(), "Load(uninitialized Unit)").is_err() {
             return self.unsupported("Load(uninitialized Unit)");
@@ -2471,7 +2545,7 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         match transfer {
-            LoadTransfer::ClonePresent => unreachable!("handled before ordinary reference loads"),
+            LoadTransfer::ClonePresent | LoadTransfer::TakeLast => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::CloneShared => {
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
                     || !Self::is_managed_storage(&stored)

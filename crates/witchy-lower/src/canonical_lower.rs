@@ -1059,7 +1059,7 @@ fn synthesize_adapter(adapter: &AdapterFunction, signatures: &[FunctionSignature
             value: fresh(*value_type, &mut value_types),
             value_type: *value_type,
             ownership: match (contract.ownership, value_type) {
-                (ParameterOwnership::Unique, _) => Some(Ownership::Unique),
+                (ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack, _) => Some(Ownership::Unique),
                 (ParameterOwnership::Shared | ParameterOwnership::WriteBack, ValueType::Ref(_) | ValueType::Gc(_)) => Some(Ownership::Shared),
                 _ => None,
             },
@@ -1217,6 +1217,7 @@ fn signature_from_type(
             // reference that lane is the replacement token; for a scalar it is
             // a plain value and the parameter carries no memory token at all.
             (ValueType::Gc(_), Convention::Var) => return Err(CanonicalLoweringError::UnsupportedExpression("opaque owner var parameter")),
+            (ValueType::Ref(_), Convention::Var) if matches!(parameter, Type::Qualified(TypeQual::Unique, _)) => ParameterOwnership::UniqueWriteBack,
             (_, Convention::Var) => ParameterOwnership::WriteBack,
             (_, Convention::Let | Convention::Borrow | Convention::Own) => ParameterOwnership::Value,
         };
@@ -1227,7 +1228,7 @@ fn signature_from_type(
                     MemoryEffect::Read,
                     MemoryEffect::Retain,
                     MemoryEffect::Release,
-                ],
+                ].into_iter().chain((ownership == ParameterOwnership::UniqueWriteBack).then_some(MemoryEffect::Write)).collect(),
             );
         }
         value_parameters.push(value_type);
@@ -1239,12 +1240,13 @@ fn signature_from_type(
         ValueType::Ref(layout) => ResultContract::Shared { layout },
         result => ResultContract::Value(result),
     }).collect::<Vec<_>>();
-    for parameter in contract_parameters.iter().filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack) {
+    for parameter in contract_parameters.iter().filter(|parameter| matches!(parameter.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack)) {
         results.push(parameter.value_type);
         // A write-back transfers the replacement value's owned token. It need
         // not retain the input's storage identity (the body may replace it).
         // The return checker establishes layout, initialization, and ownership.
         result_contracts.push(match parameter.value_type {
+            ValueType::Ref(layout) if parameter.ownership == ParameterOwnership::UniqueWriteBack => ResultContract::Unique { layout },
             ValueType::Ref(layout) => ResultContract::Shared { layout },
             value_type => ResultContract::Value(value_type),
         });
@@ -1257,10 +1259,8 @@ fn signature_from_type(
     })
 }
 
-/// `unique` on a `var` parameter names the write-back convention the
-/// canonical ABI already carries (the callee holds the value's token and
-/// hands the value back); it is not a deferred optimization qualifier, so
-/// the parameter reads as its plain type.
+/// The layout of `var unique T` is T; its exclusivity is carried separately
+/// by UniqueWriteBack and independently matched against checked source.
 fn var_parameter_type(ty: &Type, convention: Convention) -> Type {
     match ty {
         Type::Qualified(TypeQual::Unique, inner) if matches!(convention, Convention::Var) => (**inner).clone(),
@@ -1369,7 +1369,7 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
 
 fn write_back_count(signature: &FunctionSignature) -> usize {
     signature.contract.parameters.iter()
-        .filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack)
+        .filter(|parameter| matches!(parameter.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack))
         .count()
 }
 
@@ -1462,7 +1462,7 @@ fn lower_function(
         .parameters.iter_mut().zip(&signature.contract.parameters)
     {
         parameter.ownership = match (contract.ownership, parameter.value_type) {
-            (ParameterOwnership::Unique, _) => Some(Ownership::Unique),
+            (ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack, _) => Some(Ownership::Unique),
             (ParameterOwnership::Shared | ParameterOwnership::WriteBack, ValueType::Ref(_) | ValueType::Gc(_)) => Some(Ownership::Shared),
             (ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value, _) => None,
         };
@@ -1473,7 +1473,7 @@ fn lower_function(
         .zip(&signature.contract.parameters)
         .filter_map(|(parameter, contract)| {
             (matches!(parameter.value_type, ValueType::Ref(_))
-                && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
+                && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
             .then_some(parameter.value)
         })
         .collect();
@@ -1486,11 +1486,11 @@ fn lower_function(
         lowerer.parameter_names.insert(parameter.value, source.name.clone());
     }
     lowerer.write_back_parameters = function.params.iter().zip(&signature.contract.parameters)
-        .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
+        .filter(|(_, contract)| matches!(contract.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack))
         .map(|(parameter, _)| parameter.name.clone())
         .collect();
     lowerer.write_back_parameter_types = function.params.iter().zip(&signature.contract.parameters)
-        .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
+        .filter(|(_, contract)| matches!(contract.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack))
         .filter_map(|(parameter, _)| parameter.ty.clone().map(|ty| (parameter.name.clone(), ty)))
         .collect();
     // A lambda receives the uniform closure record.  Its owned environment is
@@ -5149,7 +5149,7 @@ impl FunctionLowerer<'_> {
             block.operations.iter().any(|operation| match operation {
                 Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
                 | Operation::CloneRef { destination, .. } => *destination == value,
-                Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent, .. } => {
+                Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast, .. } => {
                     *destination == value
                 }
                 Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
@@ -5289,7 +5289,7 @@ impl FunctionLowerer<'_> {
                     .and_then(|signature| self.signatures.get(signature.get() as usize))
                 else { return Ok(()) };
                 for (argument, contract) in args.iter().zip(&signature.contract.parameters) {
-                    if contract.ownership == ParameterOwnership::WriteBack
+                    if matches!(contract.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack)
                         && let Some(name) = source_place_root(argument)
                     {
                         if matches!(argument, Expr::Var(_)) {
@@ -5395,18 +5395,31 @@ impl FunctionLowerer<'_> {
             block.parameters.iter().any(|parameter| {
                 parameter.value == value && parameter.ownership == Some(Ownership::Shared)
             }) || block.operations.iter().any(|operation| match operation {
-                Operation::StaticData { destination, .. }
-                | Operation::CloneRef { destination, .. } => *destination == value,
+                Operation::StaticData { destination, .. } => *destination == value,
+                // Retaining a snapshot demotes both tokens. Preparation must
+                // recognize the original binding, not only the new alias.
+                Operation::CloneRef { destination, source } => *destination == value || *source == value,
                 Operation::Load {
                     destination,
-                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent,
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
                     ..
                 } => *destination == value,
                 // A call's reference result is a shared token (its result
                 // contract), never a unique one.
-                Operation::Call { destinations, .. }
-                | Operation::VarCall { destinations, .. }
-                | Operation::HostCall { destinations, .. } => destinations.contains(&value),
+                Operation::Call { destinations, callee, .. } => {
+                    destinations.iter().position(|v| *v == value).is_some_and(|index| {
+                        let signature = self.functions.values().find(|(function, _)| function == callee)
+                            .and_then(|(_, signature)| self.signatures.get(signature.get() as usize));
+                        !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. })))
+                    })
+                }
+                Operation::VarCall { destinations, signature, .. } => {
+                    destinations.iter().position(|v| *v == value).is_some_and(|index| {
+                        !self.signatures.get(signature.get() as usize).is_some_and(|signature|
+                            matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. })))
+                    })
+                }
+                Operation::HostCall { destinations, .. } => destinations.contains(&value),
                 _ => false,
             })
         }) || self.blocks.iter().any(|block| {
@@ -6179,7 +6192,7 @@ impl FunctionLowerer<'_> {
                         }),
                     },
                     Convention::Var => {
-                        if contract.ownership != ParameterOwnership::WriteBack {
+                        if !matches!(contract.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack) {
                             return Err(CanonicalLoweringError::UnsupportedCallOwnership {
                                 callee: callee.to_owned(), parameter, ownership: contract.ownership,
                             });

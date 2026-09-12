@@ -30,6 +30,7 @@ enum DerivedResult {
     },
     StaticData(crate::layout::LayoutId),
     Shared(crate::layout::LayoutId),
+    Unique(crate::layout::LayoutId),
     AliasesParameter { parameter: u32, layout: crate::layout::LayoutId },
     ReallocatesParameter { parameter: u32, layout: crate::layout::LayoutId },
 }
@@ -55,6 +56,7 @@ impl DerivedResult {
             }),
             Self::StaticData(layout) => Ok(ResultContract::StaticData { layout: *layout }),
             Self::Shared(layout) => Ok(ResultContract::Shared { layout: *layout }),
+            Self::Unique(layout) => Ok(ResultContract::Unique { layout: *layout }),
             Self::AliasesParameter { parameter, layout } => Ok(ResultContract::AliasesParameter {
                 parameter: *parameter,
                 layout: *layout,
@@ -324,14 +326,14 @@ fn derive_summary(
         .copied()
         .ok_or(InitialCheckError::MissingSignature(function.signature))?;
     for (index, declared) in signature.contract.results.iter().enumerate() {
-        if let ResultContract::Shared { layout } = declared {
+        if let ResultContract::Shared { layout } | ResultContract::Unique { layout } = declared {
             if signature.results.get(index) != Some(&ValueType::Ref(*layout)) {
                 return Err(contract_mismatch(signature.id, "contracts.rs site 2"));
             }
             let result = summary.results.get_mut(index).ok_or_else(|| {
                 contract_mismatch(signature.id, "declared Shared result has no derived slot")
             })?;
-            *result = DerivedResult::Shared(*layout);
+            *result = if matches!(declared, ResultContract::Unique { .. }) { DerivedResult::Unique(*layout) } else { DerivedResult::Shared(*layout) };
         }
     }
     Ok(summary)
@@ -613,6 +615,9 @@ fn derive_operation(
         Operation::FunctionValue { .. } => {}
         Operation::Load { destination, place, transfer } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);
+            if *transfer == LoadTransfer::TakeLast {
+                add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
+            }
             origins.insert(
                 *destination,
                 load_result_origin(function, *destination, place.value_type(), *transfer),
@@ -952,7 +957,7 @@ fn load_result_origin(
 ) -> Origin {
     match (transfer, place_type, function.value_types.get(&destination).copied()) {
         (
-            LoadTransfer::CloneShared,
+            LoadTransfer::CloneShared | LoadTransfer::TakeLast,
             ValueType::Ref(place_layout),
             Some(ValueType::Ref(destination_layout)),
         ) if place_layout == destination_layout => Origin::Shared(place_layout),
@@ -968,7 +973,7 @@ fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &B
             extent: extent.clone(),
         },
         DerivedResult::StaticData(layout) => Origin::StaticData(*layout),
-        DerivedResult::Shared(layout) => Origin::Shared(*layout),
+        DerivedResult::Shared(layout) | DerivedResult::Unique(layout) => Origin::Shared(*layout),
         DerivedResult::AliasesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).map(|origin| match origin { Origin::Parameter { parameter, .. } => Origin::Parameter { parameter, layout: Some(*layout) }, other => other }).unwrap_or(Origin::Unknown),
         DerivedResult::ReallocatesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).and_then(|origin| match origin { Origin::Parameter { parameter, .. } => Some(Origin::ReallocatesParameter { parameter, layout: *layout }), _ => None }).unwrap_or(Origin::Unknown),
         DerivedResult::Unseen => Origin::Unseen,
@@ -1023,7 +1028,7 @@ fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Re
 
 fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffect>) -> bool {
     needs.iter().all(|need| match (parameter.ownership, need) {
-        (ParameterOwnership::Unique | ParameterOwnership::WriteBack, _) => true,
+        (ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::WriteBack, _) => true,
         (ParameterOwnership::Shared, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release) => true,
         _ => false,
     })
@@ -1031,6 +1036,7 @@ fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffe
 
 fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
     match (declared, derived) {
+        (ResultContract::Unique { layout: expected }, DerivedResult::Unique(actual)) => expected == actual,
         (ResultContract::Value(expected), DerivedResult::Value(actual)) => expected == actual,
         (ResultContract::CheckedValue { layout: expected }, DerivedResult::Fresh { layout: actual, .. })
         | (ResultContract::CheckedValue { layout: expected }, DerivedResult::StaticData(actual))

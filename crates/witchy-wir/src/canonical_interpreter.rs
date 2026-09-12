@@ -2172,6 +2172,20 @@ impl<'a> Engine<'a> {
         values: &BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<InterpreterValue, InterpretError> {
         let object = self.object_value(place.object(), values)?;
+        if transfer == LoadTransfer::TakeLast {
+            let Projection::Element { index } = place.projection() else { return Err(InterpretError::UnsupportedOperation("TakeLast non-element")); };
+            let index = self.size_value(*index, values)?;
+            let root = self.object(object)?;
+            if root.immutable { return Err(InterpretError::ImmutableObject(object)); }
+            if root.references != 1 { return Err(InterpretError::ReclaimWithAliases { object, references: root.references }); }
+            let RuntimeExtent::Counted { count, .. } = root.extent else { return Err(InterpretError::TypeMismatch("TakeLast uncounted")); };
+            if index.checked_add(1) != Some(count) { return Err(InterpretError::GuardTrap); }
+            self.check_element(object, index)?;
+            let root = self.object_mut(object)?;
+            let value = root.cells.remove(&CellKey::Element(index)).ok_or(InterpretError::UninitializedPlace)?;
+            if let RuntimeExtent::Counted { count, .. } = &mut root.extent { *count = index; }
+            return Ok(value);
+        }
         if place.value_type() == ValueType::Unit {
             if transfer != LoadTransfer::CopyScalar { return Err(InterpretError::TypeMismatch("Unit load")); }
             let key = self.unit_cell(object, place, values, false)?;
@@ -2220,7 +2234,7 @@ impl<'a> Engine<'a> {
                     }
                     self.object_mut(object)?.cells.remove(&key).ok_or(InterpretError::UninitializedPlace)
                 }
-                LoadTransfer::CopyScalar => unreachable!("handled below"),
+                LoadTransfer::CopyScalar | LoadTransfer::TakeLast => unreachable!("handled below"),
             };
         }
         match place.projection() {

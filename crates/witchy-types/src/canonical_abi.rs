@@ -75,6 +75,7 @@ pub enum CanonicalParameterConvention {
     Borrow,
     Var,
     Own,
+    VarUnique,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -222,6 +223,34 @@ pub(crate) fn canonical_ast_type_bytes(
 /// Derive the complete callable ABI manifest from the final checked module.
 /// Declarations contribute closed local targets. Concrete expression types
 /// contribute open ABI entries, including nested function types.
+/// Preserve the checked declaration's resource qualifier, erased by HM value
+/// types. This never substitutes annotation payloads for checked closed types.
+pub(crate) fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<Type, CanonicalAbiError> {
+    let mut signature = typed.table().function_type(name).ok_or_else(||
+        CanonicalAbiError::InvalidCallable(format!("checked declaration `{name}` has no finalized signature")))?;
+    let declaration = typed.module().items.iter().find_map(|item| match item {
+        Item::Function(function) if function.name == name => Some(function),
+        _ => None,
+    }).ok_or_else(|| CanonicalAbiError::InvalidCallable(format!("missing checked declaration `{name}`")))?;
+    let Type::Fn(parameters, _, conventions, _) = &mut signature else {
+        return Err(CanonicalAbiError::InvalidCallable("checked declaration is not callable".into()));
+    };
+    if parameters.len() != declaration.params.len() {
+        return Err(CanonicalAbiError::InvalidCallable("checked declaration parameter arity".into()));
+    }
+    for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
+        if declared.convention == Convention::Var
+            && matches!(&declared.ty, Some(Type::Qualified(ast::TypeQual::Unique, _)))
+        {
+            if conventions.get(index) != Some(&Convention::Var) {
+                return Err(CanonicalAbiError::InvalidCallable("checked unique write-back convention".into()));
+            }
+            *parameter = Type::Qualified(ast::TypeQual::Unique, Box::new(parameter.unqualified().clone()));
+        }
+    }
+    Ok(signature)
+}
+
 pub fn derive_manifest(
     typed: &TypedModule,
     closed_functions: &[String],
@@ -232,9 +261,7 @@ pub fn derive_manifest(
         let function_ordinal = u32::try_from(ordinal).map_err(|_| {
             CanonicalAbiError::InvalidCallable("function ordinal overflow".into())
         })?;
-        let signature = typed.table().function_type(name).ok_or_else(|| {
-            CanonicalAbiError::InvalidCallable(format!("checked declaration at ordinal {function_ordinal} has no finalized signature"))
-        })?;
+        let signature = checked_declaration_signature(typed, name)?;
         let entry = callable_from_ast(
             &signature,
             CanonicalTargetPolicy::ClosedLocal(CanonicalLocalTarget { function_ordinal }),
@@ -320,7 +347,10 @@ fn callable_from_ast(
         .enumerate()
         .map(|(index, ty)| {
             Ok(CanonicalParameterAbi {
-                convention: convention(conventions.get(index).copied().unwrap_or_default()),
+                convention: if conventions.get(index) == Some(&Convention::Var)
+                    && matches!(ty, Type::Qualified(ast::TypeQual::Unique, _))
+                { CanonicalParameterConvention::VarUnique }
+                else { convention(conventions.get(index).copied().unwrap_or_default()) },
                 value: value_from_ast(ty, context)?,
             })
         })
@@ -408,7 +438,7 @@ fn encode_callable_parts(parameters: &[CanonicalParameterAbi], result: &Canonica
     let mut bytes = b"witchy.canonical-callable-abi.v1".to_vec();
     put_len(&mut bytes, parameters.len());
     for parameter in parameters {
-        bytes.push(match parameter.convention { CanonicalParameterConvention::Let => 0, CanonicalParameterConvention::Borrow => 1, CanonicalParameterConvention::Var => 2, CanonicalParameterConvention::Own => 3 });
+        bytes.push(match parameter.convention { CanonicalParameterConvention::Let => 0, CanonicalParameterConvention::Borrow => 1, CanonicalParameterConvention::Var => 2, CanonicalParameterConvention::Own => 3, CanonicalParameterConvention::VarUnique => 4 });
         encode_value(&mut bytes, &parameter.value);
     }
     encode_result(&mut bytes, result);

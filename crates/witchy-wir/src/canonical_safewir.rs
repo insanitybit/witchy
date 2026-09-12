@@ -261,6 +261,9 @@ pub enum LoadTransfer {
     CopyScalar,
     CloneShared,
     ClonePresent,
+    /// Detach the final element of a unique packed list and publish its shorter
+    /// count atomically. The element's allocation need not be unique.
+    TakeLast,
     MoveUnique,
 }
 
@@ -285,6 +288,8 @@ pub enum ParameterOwnership {
     /// An affine managed-reference token passed by source `var`. The ABI
     /// returns one trailing replacement token per such parameter.
     WriteBack,
+    /// Checked source `var unique`: exclusive RC input and unique write-back.
+    UniqueWriteBack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +321,8 @@ pub enum ResultContract {
         extent: ReturnedExtent,
     },
     Shared { layout: LayoutId },
+    /// A complete exclusive RC token, not a claim of fresh allocation.
+    Unique { layout: LayoutId },
     AliasesParameter { parameter: u32, layout: LayoutId },
     ReallocatesParameter { parameter: u32, layout: LayoutId },
     StaticData { layout: LayoutId },

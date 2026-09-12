@@ -35,8 +35,8 @@ fn checked_opt_pop_boundary(opt_caller: bool) -> witchy_types::pipeline::Checked
 
 #[test]
 fn normal_opt_pop_retains_snapshot_across_three_legs() {
-    // Value/ownership evidence only. The separately recorded no-copy defect
-    // must not be hidden by all three backends returning the correct values.
+    // Source boundary/value evidence. The companion unique_pop native tests
+    // separately assert stable receiver storage and no extraction allocation.
     let checked = checked_opt_pop_boundary(false);
     witchy::enforce_performance_modes(checked.module(), "main")
         .expect("normal caller may prepare an aliased unique argument");
@@ -82,6 +82,41 @@ fn normal_opt_pop_aliased_opt_caller_refuses_no_copy_miss() {
         .expect_err("an opt caller cannot silently prepare the aliased argument");
     assert!(error.contains("no-copy `var` contract"), "{error}");
     assert!(error.contains("helper.take"), "{error}");
+}
+
+#[test]
+fn normal_opt_pop_repeated_shared_children_and_empty_across_three_legs() {
+    let source = r#"
+fn take(var xs: unique List(String)) -> Option(String):
+    xs.pop()
+
+fn main(console: Console):
+    let word = "held"
+    var words = [word, word]
+    let snapshot = words
+    console.print(take(words) ?? "empty")
+    console.print(take(words) ?? "empty")
+    console.print(take(words) ?? "empty")
+    console.print("${words.length()}:${snapshot.length()}:${snapshot[0]}:${word}")
+    var numbers = [7, 9]
+    console.print("${numbers.pop() ?? 0}:${numbers.pop() ?? 0}:${numbers.pop() ?? 0}")
+"#;
+    let expected = ["held", "held", "empty", "0:2:held:held", "9:7:0"].map(str::to_owned).to_vec();
+    let checked = witchy::resolve_std_only_checked(source).unwrap();
+    assert_eq!(witchy::interpreter::run_module_args(checked.module().clone(), ".", vec![], vec![]).unwrap(), expected);
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked).expect_lowered("repeated pop admission");
+    let entry = artifact.entry().unwrap();
+    let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked).unwrap();
+    let capabilities = entry.capabilities().iter().copied().map(witchy_wir::canonical_interpreter::InterpreterValue::entry_capability).collect();
+    let oracle = witchy_wir::canonical_interpreter::interpret_program(&validated, function, capabilities, Default::default()).unwrap();
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = witchy::runtime::Runtime::batch().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, witchy::runtime::Capabilities { print: true, quiet: true, ..Default::default() }, 256).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
 
 #[test]

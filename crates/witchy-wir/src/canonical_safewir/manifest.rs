@@ -35,6 +35,7 @@ pub enum EvidenceFile {
     /// Nullable fixed-field admission probes, using internal source witnesses.
     NullableBackend,
     UnitBackend,
+    UniquePopBackend,
     /// `tests/misc/rfc0165_admitted_launch.rs` (end to end through the runtime)
     Launch,
     /// `crates/witchy-wir/src/canonical_safewir/authority.rs`
@@ -57,6 +58,7 @@ impl EvidenceFile {
             Self::Interpreter => "crates/witchy-wir/src/canonical_interpreter.rs",
             Self::Backend => "crates/witchy-wir/src/canonical_wasmir.rs",
             Self::UnitBackend => "crates/witchy-wir/src/canonical_wasmir/tests/unit_storage.rs",
+            Self::UniquePopBackend => "crates/witchy-wir/src/canonical_wasmir/tests/unique_pop.rs",
             Self::NullableBackend => "crates/witchy-wir/src/canonical_wasmir/tests/nullable_admission.rs",
             Self::Launch => "tests/misc/rfc0165_admitted_launch.rs",
             Self::Authority => "crates/witchy-wir/src/canonical_safewir/authority.rs",
@@ -74,6 +76,7 @@ impl EvidenceFile {
             Self::Interpreter => include_str!("../canonical_interpreter.rs"),
             Self::Backend => include_str!("../canonical_wasmir.rs"),
             Self::UnitBackend => include_str!("../canonical_wasmir/tests/unit_storage.rs"),
+            Self::UniquePopBackend => include_str!("../canonical_wasmir/tests/unique_pop.rs"),
             Self::NullableBackend => include_str!("../canonical_wasmir/tests/nullable_admission.rs"),
             Self::Launch => include_str!("../../../../tests/misc/rfc0165_admitted_launch.rs"),
             Self::Authority => include_str!("authority.rs"),
@@ -319,17 +322,22 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Load,
         judgment: "check/memory.rs::MemoryChecker::load (check_place, promote_header_extent)",
-        predicate: "a header field loads a typed scalar; an element load needs a `Bounds` guard against the logical length; a reference load takes a shared clone of a stored slot or an initialized prefix element, never an uninitialized one",
-        interpreter: "load: reads an initialized cell; a reference load retains",
+        predicate: "a header field loads a typed scalar; an element load needs a `Bounds` guard against the logical length; a reference load takes a shared clone of a stored slot or an initialized prefix element; TakeLast requires an exclusive complete packed list and exact final index, transfers one owning edge and publishes the shorter prefix atomically",
+        interpreter: "load: reads an initialized cell; cloning retains; TakeLast removes the cell and shortens the count without retaining",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryLoad),
         admits: &[
             t(Check, "guarded_dynamic_element_load_is_admitted"),
             t(Check, "counted_header_projections_load_typed_scalars"),
             t(Backend, "admitted_int_list_load_store_executes"),
             t(Memory, "pointer_slot_move_and_clone_preserve_structural_ownership"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_native_preserves_receiver_address_heap_top_and_shared_child"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_oracle_complete_call_chain_reclaims_every_reference"),
         ],
         refuses: &[
             t(Check, "dynamic_element_load_without_guard_is_refused"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail"),
+            t(EvidenceFile::UniquePopBackend, "unique_pop_byte_plan_rejects_capacity_write_instead_of_tail_publication"),
+            t(Authority, "unique_pop_source_abi_requires_checked_unique_input_and_output"),
             t(Check, "header_projection_cannot_claim_non_scalar_type"),
             t(Memory, "pointer_bearing_ranges_fail_closed_without_element_transfer_state"),
         ],
@@ -945,6 +953,7 @@ fn cite(tests: &[TestRef]) -> String {
                 OwnerBackend => "owner backend",
                 OwnerLaunch => "owner launch",
                 OwnerRuntime => "owner runtime",
+                EvidenceFile::UniquePopBackend => "unique pop backend",
             };
             format!("`{}` ({file})", test.name)
         })

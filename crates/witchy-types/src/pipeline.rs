@@ -941,10 +941,8 @@ fn bind_canonical_callable_witness(
     let functions = runtime_functions.iter().map(String::as_str).collect::<HashSet<_>>();
     let mut signatures = BTreeMap::new();
     for name in &runtime_functions {
-        let signature = typed.table().function_type(name).ok_or_else(|| {
-            PipelineError::Type(TypeError {
-                message: format!("canonical runtime function `{name}` lacks a finalized signature"),
-            })
+        let signature = canonical_abi::checked_declaration_signature(typed, name).map_err(|error| {
+            PipelineError::Type(TypeError { message: error.to_string() })
         })?;
         signatures.insert(name.clone(), signature);
     }

@@ -215,7 +215,7 @@ fn call_flow(
         }
     }
     let write_back_count = signature.contract.parameters.iter()
-        .filter(|parameter| parameter.ownership == ParameterOwnership::WriteBack)
+        .filter(|parameter| matches!(parameter.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack))
         .count();
     if destinations.len() < write_back_count {
         return Err(ReleasePlacementError::UnresolvedResult(
@@ -234,7 +234,7 @@ fn call_flow(
         }
         match contract {
             ResultContract::Value(ValueType::Gc(_)) => { owned.insert(*destination); }
-            ResultContract::Shared { .. }
+            ResultContract::Shared { .. } | ResultContract::Unique { .. }
             | ResultContract::Fresh { class: AllocationClass::ReferenceCounted, .. } => { owned.insert(*destination); }
             ResultContract::BodyDerived(_) | ResultContract::CheckedValue { .. }
             | ResultContract::AliasesParameter { .. } | ResultContract::ReallocatesParameter { .. }
@@ -289,7 +289,7 @@ fn operation_flow(
             }
         }
         Operation::Alloc { destination, class: AllocationClass::ReferenceCounted, .. }
-        | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique, .. } => {
+        | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique | LoadTransfer::TakeLast, .. } => {
             if is_reference(function, *destination) { owned.insert(*destination); }
         }
         Operation::CloneRef { destination, source } => {
@@ -370,7 +370,7 @@ pub(super) fn insert_releases(
     let entry = blocks.get(&function.entry).ok_or(ReleasePlacementError::MissingBlock(function.entry))?;
     let owned = entry.parameters.iter().zip(&signature.contract.parameters).filter_map(|(parameter, contract)| {
         (is_reference(function, parameter.value)
-            && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
+            && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
             .then_some(parameter.value)
     }).collect::<Values>();
     let live_in = liveness(function);

@@ -258,6 +258,7 @@ impl CanonicalWriter {
             LoadTransfer::CloneShared => 1,
             LoadTransfer::MoveUnique => 2,
             LoadTransfer::ClonePresent => 3,
+            LoadTransfer::TakeLast => 4,
         });
     }
 
@@ -314,6 +315,7 @@ impl CanonicalWriter {
             ParameterOwnership::Unique => self.u8(1),
             ParameterOwnership::Shared => self.u8(2),
             ParameterOwnership::WriteBack => self.u8(3),
+            ParameterOwnership::UniqueWriteBack => self.u8(4),
         }
     }
 
@@ -369,6 +371,7 @@ impl CanonicalWriter {
 
     fn result_contract(&mut self, result: &ResultContract) {
         match result {
+            ResultContract::Unique { layout } => { self.u8(8); self.layout_id(*layout); }
             ResultContract::BodyDerived(value_type) => {
                 self.u8(6);
                 self.value_type(*value_type);

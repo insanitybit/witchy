@@ -779,7 +779,7 @@ fn check_entry_parameters(
                     });
                 }
             }
-            ParameterOwnership::Unique => {
+            ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => {
                 if parameter.ownership != Some(super::Ownership::Unique) {
                     return Err(InitialCheckError::CallableContractMismatch {
                         signature: signature.id,
@@ -1391,6 +1391,7 @@ fn check_call(
             (ParameterOwnership::Value, ParameterOwnership::Value)
             | (ParameterOwnership::Unique, ParameterOwnership::Unique)
             | (ParameterOwnership::WriteBack, ParameterOwnership::Unique)
+            | (ParameterOwnership::UniqueWriteBack, ParameterOwnership::Unique)
             // A scalar `var` parameter has no token: the argument is a value
             // and the write-back is a result lane.
             | (ParameterOwnership::WriteBack, ParameterOwnership::Value)
@@ -1398,6 +1399,7 @@ fn check_call(
             (ParameterOwnership::Value, ParameterOwnership::Value)
             | (ParameterOwnership::Unique, ParameterOwnership::Unique)
             | (ParameterOwnership::WriteBack, ParameterOwnership::Unique)
+            | (ParameterOwnership::UniqueWriteBack, ParameterOwnership::Unique)
             // Moving a unique token into a shared parameter is a safe
             // ownership weakening; the callee receives that token.
             | (ParameterOwnership::Shared, ParameterOwnership::Unique) => true,
@@ -1420,6 +1422,7 @@ fn check_call(
             super::ResultContract::CheckedValue { layout }
             | super::ResultContract::Fresh { layout, .. }
             | super::ResultContract::Shared { layout }
+            | super::ResultContract::Unique { layout }
             | super::ResultContract::StaticData { layout }
             | super::ResultContract::AliasesParameter { layout, .. }
             | super::ResultContract::ReallocatesParameter { layout, .. } => {

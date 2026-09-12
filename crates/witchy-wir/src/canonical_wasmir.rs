@@ -953,10 +953,10 @@ fn lower_operation(
                         && place.value_type() == ValueType::Ref(pointee)
                 }
                 Some(pointee) => {
-                    matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::MoveUnique)
+                    matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::MoveUnique | LoadTransfer::TakeLast)
                         && place.value_type() == ValueType::Ref(pointee)
                 }
-                None => *transfer == LoadTransfer::CopyScalar,
+                None => matches!(transfer, LoadTransfer::CopyScalar | LoadTransfer::TakeLast),
             };
             if !valid_transfer || place.access() != AccessMode::Read {
                 return Err(LoweringError::UnsupportedLayout { function, operation: "Load" });
@@ -3007,6 +3007,10 @@ fn emit_instruction(
             match transfer {
                 LoadTransfer::CloneShared => emit_clone_ref(body, layout, *destination, *destination, function)?,
                 LoadTransfer::ClonePresent => emit_clone_present(body, layout, *destination, function)?,
+                LoadTransfer::TakeLast => {
+                    let Projection::Element { index } = place.projection() else { return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "TakeLast" }); };
+                    emit_update_count(body, function, layout, layouts, place.object(), *index)?;
+                }
                 LoadTransfer::MoveUnique | LoadTransfer::CopyScalar => {}
             }
         }
@@ -5498,6 +5502,7 @@ fn expected_block_operations_plan(
                         | LoadTransfer::CloneShared
                         | LoadTransfer::ClonePresent
                         | LoadTransfer::MoveUnique
+                        | LoadTransfer::TakeLast
                 ) =>
             {
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
@@ -5506,6 +5511,10 @@ fn expected_block_operations_plan(
                     LoadTransfer::ClonePresent => {
                         push_require_present_plan(&mut plan, &layout, *destination)?;
                         push_share_plan(&mut plan, &layout, *destination, *destination)?;
+                    }
+                    LoadTransfer::TakeLast => {
+                        let Projection::Element { index } = place.projection() else { return Err(CanonicalAdmissionError::UnsupportedPlan); };
+                        push_update_count_plan(&mut plan, function, layouts, &layout, place.object(), *index)?;
                     }
                     LoadTransfer::CopyScalar | LoadTransfer::MoveUnique => {}
                 }
@@ -7055,6 +7064,7 @@ fn admit_canonical_with_bytes_for_test(
 }
 #[cfg(test)]
 mod tests {
+    mod unique_pop;
     /// Every entry capability tag survives the custom section, so a
     /// launcher reading a `.wasm` back mints exactly the tokens the checked
     /// signature declared.
