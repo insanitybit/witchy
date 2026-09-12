@@ -5,7 +5,7 @@
 use crate::commands::execution::run_checked_test_driver_compiled;
 use crate::{
     ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
-    link_test_file, parser, run_wasm_test_bytes, runtime, typeck,
+    link_test_file, parser, run_admitted_test_artifact, runtime, typeck,
 };
 use witchy_testkit::{FixturePlan, TestResult, TestTranscript};
 
@@ -693,12 +693,13 @@ struct TestModuleResult {
 /// (from `raw_test_shapes`, since lowering erased the AST flags). Returns
 /// `(passed, failures)` where each failure is `(name, message)`.
 fn run_tests_in_module(
-    checked: &witchy_types::pipeline::CheckedModule,
+    suite: &witchy_types::pipeline::CheckedTestSuite,
     stem: &str,
     async_tests: &std::collections::HashSet<String>,
     gen_tests: &std::collections::HashSet<String>,
     policy: TestRunPolicy<'_>,
 ) -> Result<TestModuleResult, String> {
+    let checked = suite.checked_module();
     let linked = checked.module();
     // BUG-177: a test run honors `mode opt` like `check`/`run` — a copy-cliff or a
     // missing ownership convention fails the run, it is not silently ignored.
@@ -786,6 +787,17 @@ fn run_tests_in_module(
         // read as a method call — so parse a placeholder and patch the call in the AST.
         // `task.run` is in scope: async lowering imported `task` into a file with any
         // `async fn`, which is exactly the case an async test needs it.
+        let checked = if policy.fixture_plan.is_none() && !policy.integration {
+            match witchy_interp::pipeline::check_bare_test_driver(suite, &test) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    result.failed.push((test, error.to_string()));
+                    continue;
+                }
+            }
+        } else {
+        // Legacy fixture/integration AST recipes remain interpreter-only or
+        // explicitly unsupported at canonical codegen; they gain no authority.
         let mut m = linked.clone();
         m.items
             .retain(|it| !matches!(it, ast::Item::Function(f) if f.name == "main"));
@@ -804,8 +816,9 @@ fn run_tests_in_module(
             }
         }
         m.items.extend(driver.items);
-        let checked = witchy_types::pipeline::check_test_driver_module(checked, m)
-            .map_err(|error| error.to_string())?;
+        witchy_types::pipeline::check_test_driver_module(checked, m)
+            .map_err(|error| error.to_string())?
+        };
         // Run the test on the COMPILED WASM tier — the tier users ship — not the
         // interpreter oracle: a `witchy test` that passes must reflect the backend
         // that actually runs in production. A `testing.assert` / `fail_with` lowers
@@ -862,9 +875,9 @@ fn run_tests_in_module(
             )
         } else {
             (
-                match codegen::compile_checked_test_driver_binary(&checked) {
-                    codegen::LoweringOutcome::Lowered(bytes) => {
-                        run_wasm_test_bytes(&bytes).map_err(|error| (error, Vec::new()))
+                match codegen::compile_checked_test_driver_artifact(&checked) {
+                    codegen::LoweringOutcome::Lowered(artifact) => {
+                        run_admitted_test_artifact(&artifact).map_err(|error| (error, Vec::new()))
                     }
                     codegen::LoweringOutcome::Unsupported(reason) => {
                         Err((reason.to_string(), Vec::new()))
@@ -1535,3 +1548,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
     }
     Ok(total_fail == 0)
 }
+
+#[cfg(test)]
+#[path = "test_runner/canonical_bare.rs"]
+mod canonical_bare_tests;

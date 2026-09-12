@@ -295,3 +295,25 @@ mod tests {
         );
     }
 }
+
+/// Retain the exact source bundle and loader ownership for compiler-owned tests.
+pub fn link_checked_test_suite_from_source_bundle(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+    owners: AuthenticatedModuleOwners,
+) -> Result<witchy_types::pipeline::CheckedTestSuite, PipelineError> {
+    witchy_types::pipeline::link_checked_test_suite_from_source_bundle(
+        sources, entry, crate::comptime::expand_compile_time, user_modules, owners,
+    )
+}
+
+/// Select a declared bare test; the caller supplies neither a body nor witnesses.
+pub fn check_bare_test_driver(
+    suite: &witchy_types::pipeline::CheckedTestSuite,
+    target: &str,
+) -> Result<witchy_types::pipeline::CheckedTestDriverModule, PipelineError> {
+    witchy_types::pipeline::check_bare_test_driver(
+        suite, target, crate::comptime::expand_compile_time,
+    )
+}

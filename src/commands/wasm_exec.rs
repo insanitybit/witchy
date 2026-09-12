@@ -478,12 +478,12 @@ pub(crate) fn run_admitted_artifact(
 /// and heap guards are always linked by the runtime). No Clock/Rand/Env/Dir/File/
 /// Net/Secret/Exec imports are granted here; a reached real host-capability use
 /// therefore fails closed at instantiation.
-pub(crate) fn run_wasm_test_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
+pub(crate) fn run_admitted_test_artifact(artifact: &witchy_wir::AdmittedCanonicalArtifact) -> Result<Vec<String>, String> {
     use crate::runtime::{Capabilities, Runtime};
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn(
-            bytes,
+        .spawn_admitted(
+            artifact,
             Capabilities {
                 print: true,
                 print_int: true,
@@ -494,6 +494,10 @@ pub(crate) fn run_wasm_test_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
         )
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
+    let leaks = vm.canonical_heap_leaks().map_err(|e| e.to_string())?;
+    if leaks != Some(0) {
+        return Err(format!("canonical test heap accounting expected zero leaks, got {leaks:?}"));
+    }
     Ok(vm.output())
 }
 

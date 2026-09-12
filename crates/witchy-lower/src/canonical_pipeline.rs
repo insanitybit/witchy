@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use witchy_types::pipeline::CheckedModule;
+use witchy_types::pipeline::{CanonicalCheckedSource, CheckedModule};
 use witchy_wir::canonical_safewir::{
     FinalValidationError, InitialWitnessError,
     ValidatedSafeWir, check_initial_with_witness, validate_final,
@@ -32,7 +32,13 @@ pub(crate) fn admit_checked_module(
     let source = checked
         .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
-    let validated = validate_checked_module(checked)?;
+    admit_checked_source(source)
+}
+
+pub(crate) fn admit_checked_source(
+    source: &CanonicalCheckedSource,
+) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
+    let validated = validate_checked_source(source)?;
     admit_canonical(validated, source).map_err(CanonicalPipelineError::Admission)
 }
 
@@ -50,6 +56,12 @@ pub(crate) fn validate_checked_module(
     let source = checked
         .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
+    validate_checked_source(source)
+}
+
+pub(crate) fn validate_checked_source(
+    source: &CanonicalCheckedSource,
+) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
     let layouts = derive_layout_bundle(source).map_err(CanonicalPipelineError::Layout)?;
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?

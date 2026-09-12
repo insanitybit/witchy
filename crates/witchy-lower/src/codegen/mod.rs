@@ -67,7 +67,7 @@ pub use assembly::{
     compile_checked_glamour_island_execution_binary, compile_checked_module_binary,
     compile_checked_module_artifact,
     compile_checked_module_binary_with_deterministic_counters,
-    compile_checked_test_driver_binary,
+    compile_checked_test_driver_binary, compile_checked_test_driver_artifact,
     CheckedGlamourExecutable, CompiledDevelopmentModule, GlamourDevelopmentField,
     GlamourDevelopmentMetadata,
 };
@@ -12610,4 +12610,14 @@ pub fn validate_checked_module_for_oracle(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> Result<witchy_wir::canonical_safewir::ValidatedSafeWir, String> {
     crate::canonical_pipeline::validate_checked_module(checked).map_err(|error| error.to_string())
+}
+
+/// Independently lower and validate the exact source-bearing test driver for
+/// the execution oracle. No graph or bytes from compilation are reused.
+pub fn validate_checked_test_driver_for_oracle(
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+) -> Result<witchy_wir::canonical_safewir::ValidatedSafeWir, String> {
+    let source = checked.canonical_source()
+        .ok_or_else(|| "canonical test driver lacks authenticated source recipe".to_string())?;
+    crate::canonical_pipeline::validate_checked_source(source).map_err(|error| error.to_string())
 }

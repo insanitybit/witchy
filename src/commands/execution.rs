@@ -442,14 +442,14 @@ pub(crate) fn run_checked_test_driver_compiled(
     strict_dir: bool,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
-    let wasm = match codegen::compile_checked_test_driver_binary(checked) {
+    let wasm = match codegen::compile_checked_test_driver_artifact(checked) {
         codegen::LoweringOutcome::Lowered(wasm) => wasm,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
     };
     run_compiled(
         checked.module(),
-        CompiledWasm::GeneratedDriver(wasm),
+        CompiledWasm::Admitted(wasm),
         dir_roots,
         file_grants,
         net_allow,
@@ -468,7 +468,6 @@ pub(crate) fn run_checked_test_driver_compiled(
 
 enum CompiledWasm {
     Admitted(witchy_wir::AdmittedCanonicalArtifact),
-    GeneratedDriver(Vec<u8>),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -637,7 +636,6 @@ fn run_compiled(
         CompiledWasm::Admitted(artifact) => {
             rt.spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
         }
-        CompiledWasm::GeneratedDriver(bytes) => rt.spawn(bytes, caps, RUN_MEMORY_PAGES),
     }
     .map_err(|e| e.to_string())?;
     // Surface the *root cause*, not wasmtime's outer "error while executing at

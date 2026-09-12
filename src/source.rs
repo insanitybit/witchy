@@ -82,16 +82,17 @@ pub(crate) fn link_file(path: &str) -> Result<(ast::Module, String), String> {
 
 pub(crate) fn link_test_file(
     path: &str,
-) -> Result<(pipeline::CheckedModule, String), TestFileError> {
-    let (modules, entry_stem, user_modules) =
-        load_file_modules(path, &std::collections::HashMap::new())
-            .map_err(TestFileError::Load)?;
-    let checked = pipeline::link_checked_test_with_user_modules(
-        modules,
-        &entry_stem,
-        &user_modules,
-    )
-    .map_err(TestFileError::Pipeline)?;
+) -> Result<(witchy_types::pipeline::CheckedTestSuite, String), TestFileError> {
+    let entry_path = std::path::Path::new(path);
+    let stem = entry_path.file_stem().and_then(|stem| stem.to_str())
+        .ok_or_else(|| TestFileError::Load(format!("invalid file name: {path}")))?;
+    let owner = workspace_module_owner(entry_path, stem).map_err(TestFileError::Load)?;
+    let (sources, entry_stem, user_modules, owners) = load_file_modules_authenticated(
+        path, &HashMap::new(), owner, &HashMap::new(),
+    ).map_err(TestFileError::Load)?;
+    let checked = pipeline::link_checked_test_suite_from_source_bundle(
+        sources, &entry_stem, &user_modules, owners,
+    ).map_err(TestFileError::Pipeline)?;
     Ok((checked, entry_stem))
 }
 

@@ -3294,7 +3294,13 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
 pub fn compile_checked_module_artifact(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
-    match crate::canonical_pipeline::admit_checked_module(checked) {
+    canonical_artifact_outcome(crate::canonical_pipeline::admit_checked_module(checked))
+}
+
+fn canonical_artifact_outcome(
+    result: Result<witchy_wir::AdmittedCanonicalArtifact, crate::canonical_pipeline::CanonicalPipelineError>,
+) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
+    match result {
         Ok(artifact) => LoweringOutcome::Lowered(artifact),
         Err(crate::canonical_pipeline::CanonicalPipelineError::Layout(error)) => {
             LoweringOutcome::Unsupported(UnsupportedLowering {
@@ -3336,6 +3342,16 @@ pub fn compile_checked_module_binary_with_deterministic_counters(
 /// Compile a generated test driver that was proved to differ from its checked
 /// source program only at `main`. Keeping this boundary distinct prevents the
 /// post-link rewrite from impersonating a production `CheckedModule`.
+pub fn compile_checked_test_driver_artifact(
+    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
+    let Some(source) = checked.canonical_source() else {
+        return public_outcome(unsupported("canonical test drivers require retained raw sources and a compiler-owned recipe; AST-only, fixture and integration drivers are unsupported"));
+    };
+    canonical_artifact_outcome(crate::canonical_pipeline::admit_checked_source(source))
+}
+
+/// Legacy fixture-byte compilation is deliberately not upgraded by the bare recipe.
 pub fn compile_checked_test_driver_binary(
     _checked: &witchy_types::pipeline::CheckedTestDriverModule,
 ) -> LoweringOutcome<Vec<u8>> {

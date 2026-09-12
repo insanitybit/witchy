@@ -5,6 +5,9 @@
 //! authoritative expanded source remains intact. Only that proof can enter
 //! destructive source lowering.
 
+mod test_driver;
+pub use test_driver::{CheckedTestSuite, TestDriverIdentity, check_bare_test_driver, link_checked_test_suite_from_source_bundle};
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -110,6 +113,9 @@ pub struct CheckedSourceWitness {
 }
 
 impl CheckedSourceWitness {
+    /// Production uses the exact raw bundle identity. A compiler-owned test
+    /// driver uses its domain-separated recipe-derived identity; that driver's
+    /// TestDriverIdentity separately retains the original raw bundle identity.
     pub fn source_bundle_digest(&self) -> [u8; 32] {
         self.source_bundle_digest
     }
@@ -280,6 +286,8 @@ pub struct CheckedEvaluationModule {
 pub struct CheckedTestDriverModule {
     module: Module,
     runtime_catalog: Option<RuntimeDeclarationCatalog>,
+    canonical_source: Option<CanonicalCheckedSource>,
+    identity: Option<TestDriverIdentity>,
 }
 
 impl CheckedEvaluationModule {
@@ -293,6 +301,15 @@ impl CheckedEvaluationModule {
 }
 
 impl CheckedTestDriverModule {
+    /// Only the raw-source, compiler-owned driver recipe can mint this product.
+    pub fn canonical_source(&self) -> Option<&CanonicalCheckedSource> {
+        self.canonical_source.as_ref()
+    }
+
+    pub fn identity(&self) -> Option<&TestDriverIdentity> {
+        self.identity.as_ref()
+    }
+
     pub fn module(&self) -> &Module {
         &self.module
     }
@@ -569,6 +586,8 @@ pub fn check_test_driver_module(
     Ok(CheckedTestDriverModule {
         module,
         runtime_catalog: authority.runtime_declaration_catalog().ok(),
+        canonical_source: None,
+        identity: None,
     })
 }
 
@@ -1056,6 +1075,16 @@ fn link_checked_source_bundle_with(
             message: "canonical checked link did not return its typed source".to_string(),
         })
     })?;
+    finish_canonical_source(checked, typed_source, source_bundle_digest)
+}
+
+// Both production source and compiler-owned driver source arrive here only
+// after complete source checking. Every witness is derived afresh below.
+fn finish_canonical_source(
+    checked: CheckedModule,
+    typed_source: typeck::TypedModule,
+    source_bundle_digest: [u8; 32],
+) -> Result<CheckedModule, PipelineError> {
     // Semantic checking has already erased traits from its typed projection.
     // The same checked link retains the resolved pre-erasure declarations;
     // capture their witnesses here, never from the later canonical AST.
