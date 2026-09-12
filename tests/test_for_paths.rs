@@ -469,6 +469,44 @@ fn wir_abi_surfaces_run_the_three_catalog_contracts_first() {
 }
 
 #[test]
+fn edit_loop_stops_after_named_cheap_probes_when_available() {
+    let commands = selected(&["--edit-loop", "crates/witchy-wir/src/wir_prelude.rs"]);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(
+        commands[0].contains("every_prelude_import_has_abi_metadata"),
+        "{commands:?}"
+    );
+    assert!(
+        commands[1].contains("public_spec_contains_the_generated_complete_catalog"),
+        "{commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|command| command.contains("check.sh --wasm")),
+        "{commands:?}"
+    );
+
+    let focused = selected(&["--focused", "crates/witchy-wir/src/wir_prelude.rs"]);
+    assert!(
+        focused
+            .iter()
+            .any(|command| command.contains("check.sh --wasm")),
+        "{focused:?}"
+    );
+
+    let mixed = selected(&[
+        "--edit-loop",
+        "crates/witchy-wir/src/wir_prelude.rs",
+        "crates/witchy-lower/src/canonical_lower.rs",
+    ]);
+    assert!(
+        mixed.iter().any(|command| command.contains("check.sh --wasm")),
+        "an uncovered mixed path must retain ordinary focused checks: {mixed:?}"
+    );
+}
+
+#[test]
 fn owned_prefix_routes_stay_on_narrow_publication_surfaces() {
     let checker = selected(&["crates/witchy-wir/src/canonical_safewir/check/memory.rs"]);
     assert!(checker[0].contains("constant_successor_publication_keeps_the_existing_prefix_ownership"), "{checker:?}");

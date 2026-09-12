@@ -7,6 +7,7 @@
 #   ./scripts/test-for-paths.sh --run              # print AND run the commands
 #   ./scripts/test-for-paths.sh --focused          # focused crate-only checks (no check.sh --fast fallback)
 #   ./scripts/test-for-paths.sh --focused --run    # run focused crate-only checks
+#   ./scripts/test-for-paths.sh --edit-loop        # cheapest named probes when available
 #   ./scripts/test-for-paths.sh --gate-nextest     # serialized-gate selection:
 #                                                 # print WORKSPACE, or a -p/--test
 #                                                 # line plus an optional inclusion
@@ -20,12 +21,14 @@ cd "$(dirname "$0")/.."
 
 run=0
 focused=0
+edit_loop=0
 gate_nextest=0
 paths=()
 for arg in "$@"; do
     case "$arg" in
         --run) run=1 ;;
         --focused) focused=1 ;;
+        --edit-loop) edit_loop=1; focused=1 ;;
         --gate-nextest) gate_nextest=1 ;;
         -h | --help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) paths+=("$arg") ;;
@@ -247,7 +250,9 @@ emit_gate_nextest() {
 }
 
 any_rust=0
+all_paths_have_early=1
 for p in "${paths[@]}"; do
+    path_has_early=0
     case "$p" in
         web/witchy-runtime/*.mjs)
             add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
@@ -258,17 +263,21 @@ for p in "${paths[@]}"; do
         tests/misc/wasm_abi_catalog.rs | \
         spec/wasm-abi.md)
             add_early "cargo nextest run -p witchy-wir --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete)'"
-            add_early "cargo nextest run --test misc -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog)'" ;;
+            add_early "cargo nextest run --test misc -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog)'"
+            path_has_early=1 ;;
     esac
     case "$p" in
         crates/witchy-wir/src/canonical_safewir/check/memory.rs)
-            add_early "cargo nextest run -p witchy-wir --features native --lib -E 'test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children)'" ;;
+            add_early "cargo nextest run -p witchy-wir --features native --lib -E 'test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children)'"
+            path_has_early=1 ;;
         crates/witchy-lower/src/canonical_list_update.rs | \
         crates/witchy-lower/src/canonical_pipeline.rs)
             add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'"
-            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'" ;;
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
+            path_has_early=1 ;;
         tests/misc/rfc0165_admitted_launch.rs)
-            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'" ;;
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
+            path_has_early=1 ;;
     esac
     case "$p" in
         crates/witchy-types/*)
@@ -434,6 +443,7 @@ for p in "${paths[@]}"; do
             test_name="${test_name%.rs}"
             if ! git cat-file -e "master:$p" 2>/dev/null; then
                 add_early "cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
+                path_has_early=1
             fi
             add_gate_test "$test_name"
             printf -v test_name_q '%q' "$test_name"
@@ -503,6 +513,7 @@ for p in "${paths[@]}"; do
         *.md | rfcs/* | bugs/* | wiki/*)
             : ;; # prose only — but book/README witchy blocks are covered above
     esac
+    [ "$path_has_early" -eq 1 ] || all_paths_have_early=0
 done
 
 # Corpus impact: partition example_tests by what the tests already name
@@ -546,7 +557,10 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
+if [ "$edit_loop" -eq 1 ] && [ "$all_paths_have_early" -eq 1 ] \
+    && [ "${#early_cmds[@]}" -gt 0 ]; then
+    cmds=("${early_cmds[@]}")
+elif [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
     remaining=()
     for c in ${cmds[0]+"${cmds[@]}"}; do
         case "$c" in

@@ -34,7 +34,7 @@ run_paths_checks() {
 
 run_edit_checks() {
     ensure_agent_target
-    run_in_agent_env ./scripts/test-for-paths.sh --focused --run "$@"
+    run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
 }
 
 ensure_agent_target() {
