@@ -14,7 +14,8 @@
 # nothing, which is what the first landing attempt hit), and no entry may
 # reach the native security suites, which stay mandatory everywhere: the
 # whole `witchy-wir` crate, the canonical `witchy-lower` tests, and the
-# `rfc0165_*` tests. (The legacy `codegen` boundary tests in `witchy-lower`
+# `rfc0165_*` and `canonical_bare_driver_*` tests, including nested modules.
+# (The legacy `codegen` boundary tests in `witchy-lower`
 # are a deferred family, not a security suite.)
 set -euo pipefail
 list="${1:-$(dirname "$0")/rfc0165-deferred-tests.txt}"
@@ -42,7 +43,7 @@ while read -r binary test _; do
             esac ;;
     esac
     case "$test" in
-        rfc0165_*)
+        rfc0165_*|*::rfc0165_*|canonical_bare_driver_*|*::canonical_bare_driver_*)
             echo "rfc0165-deferred-filter: '$binary $test' would defer a foundation test" >&2
             exit 2 ;;
     esac

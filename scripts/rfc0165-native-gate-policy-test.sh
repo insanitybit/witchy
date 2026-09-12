@@ -22,7 +22,10 @@ full='not ((binary_id(=witchy-lower) and test(=codegen::legacy_fixture)) or (bin
 for entry in \
     'witchy-wir check::sentinel' \
     'witchy-lower canonical_lower::sentinel' \
-    'witchy::misc rfc0165_native_sentinel'; do
+    'witchy::misc rfc0165_native_sentinel' \
+    'witchy::misc nested::rfc0165_native_sentinel' \
+    'witchy::bin/witchy canonical_bare_driver_sentinel' \
+    'witchy::bin/witchy commands::test_runner::canonical_bare::canonical_bare_driver_sentinel'; do
     printf '%s\n' "$entry" > "$tmp/forbidden"
     if bash "$root/scripts/rfc0165-deferred-filter.sh" "$tmp/forbidden" unrelated-package > "$tmp/out" 2> "$tmp/err"; then
         fail "forbidden exclusion accepted: $entry"
