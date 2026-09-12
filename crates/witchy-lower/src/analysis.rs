@@ -4754,7 +4754,7 @@ pub fn module_boundary_repair_ptrs(
 /// an unlinked opt file retains the plain `opt` marker.  A missing no-copy
 /// proof in either form is an opt contract failure, never a normal-mode repair
 /// entry.
-fn function_is_opt(module: &Module, function: &str) -> bool {
+pub fn function_is_opt(module: &Module, function: &str) -> bool {
     function
         .rsplit_once('.')
         .map(|(owner, _)| {

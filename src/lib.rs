@@ -246,9 +246,9 @@ pub fn is_entry_function(name: &str, entry_stem: &str) -> bool {
     name == "main" || name.starts_with("main::<") || name.starts_with(&format!("{entry_stem}."))
 }
 
-/// Enforce the source file's declared performance mode after linking and type
-/// checking. This lives in the wasm-safe library so CLI, LSP, and browser
-/// compilation apply one contract.
+/// Enforce each source declaration's performance mode after linking and type
+/// checking, including opt callees imported by normal callers. This lives in
+/// the wasm-safe library so CLI, LSP, and browser apply one contract.
 pub fn enforce_performance_modes(
     linked: &witchy_syntax::ast::Module,
     entry_stem: &str,
@@ -259,17 +259,24 @@ pub fn enforce_performance_modes(
         .filter(|mode| !mode.starts_with('@'))
         .map(String::as_str)
         .collect();
-    if source_modes.is_empty() {
+    if source_modes.is_empty() && !linked.modes.iter().any(|mode| mode.starts_with("@opt:")) {
         return Ok(());
     }
 
     let mode_names = source_modes.join(", ");
+    let declaration_modes = |function: &str| {
+        if !source_modes.is_empty() && is_entry_function(function, entry_stem) {
+            Some(mode_names.as_str())
+        } else if witchy_lower::analysis::function_is_opt(linked, function) {
+            Some("opt")
+        } else {
+            None
+        }
+    };
     let mut errors = Vec::new();
 
     for (func, cliff) in witchy_lower::analysis::module_cliffs(linked) {
-        if !is_entry_function(&func, entry_stem) {
-            continue;
-        }
+        let Some(mode_names) = declaration_modes(&func) else { continue; };
         errors.push(format!(
             "error: in `{func}` (line {}): `{}` is rebuilt by copy on every \
              iteration of this loop — it is {} [mode {}]\n  keep `{}` on the \
@@ -280,9 +287,7 @@ pub fn enforce_performance_modes(
     }
 
     for miss in witchy_lower::analysis::try_module_no_copy_misses(linked)? {
-        if !is_entry_function(&miss.function, entry_stem) {
-            continue;
-        }
+        let Some(mode_names) = declaration_modes(&miss.function) else { continue; };
         let advice = if miss.reason.contains("first-class call ABI") {
             "call the function directly so its capacity token stays in the compiled ABI, or use normal mode for the copy-correct indirect call".to_string()
         } else {
@@ -299,9 +304,7 @@ pub fn enforce_performance_modes(
     }
 
     for miss in witchy_lower::analysis::module_fip_misses(linked) {
-        if !is_entry_function(&miss.function, entry_stem) {
-            continue;
-        }
+        let Some(mode_names) = declaration_modes(&miss.function) else { continue; };
         errors.push(format!(
             "error: in `{}` (line {}): functional-in-place contract failed — {} \
              [mode {}]\n  keep recursion in tail position, forward the `own unique` \
@@ -314,9 +317,7 @@ pub fn enforce_performance_modes(
         let witchy_syntax::ast::Item::Function(function) = item else {
             continue;
         };
-        if !is_entry_function(&function.name, entry_stem) {
-            continue;
-        }
+        let Some(mode_names) = declaration_modes(&function.name) else { continue; };
         for param in &function.params {
             if param.convention == witchy_syntax::ast::Convention::Let
                 && ownership_relevant(&param.ty)
@@ -548,6 +549,40 @@ fn main() -> Int:
             .expect_err("an entry lambda is part of the entry module contract");
         assert!(error.contains("main::<lambda>"), "{error}");
         assert!(error.contains("bound to a new name"), "{error}");
+    }
+
+    fn linked_performance_boundary(helper: &str, caller: &str) -> witchy_syntax::ast::Module {
+        let mut modules = super::resolve_std_modules(helper).expect("resolve helper dependencies");
+        modules.iter_mut().find(|(name, _)| name == "main").unwrap().0 = "helper".into();
+        modules.push(("main".into(), witchy_syntax::parser::parse_module(caller).expect("parse caller")));
+        witchy_interp::pipeline::link(modules, "main").expect("link and type-check boundary")
+    }
+
+    #[test]
+    fn performance_gate_checks_imported_opt_bodies_for_normal_and_opt_callers() {
+        let helper = "mode opt\n\npub fn accumulate() -> Int:\n    var xs = []\n    var snapshots = []\n    for i in [1, 2, 3]:\n        list.push(snapshots, xs)\n        list.push(xs, i)\n    list.length(xs) + list.length(snapshots[0])\n";
+        for mode in ["", "mode opt\n"] {
+            let caller = format!("{mode}import helper\n\nfn main() -> Int:\n    helper.accumulate()\n");
+            let linked = linked_performance_boundary(helper, &caller);
+            let error = super::enforce_performance_modes(&linked, "main")
+                .expect_err("an imported opt body's existing copy cliff must reject");
+            assert!(error.contains("in `helper.accumulate`"), "{error}");
+            assert!(error.contains("rebuilt by copy on every iteration"), "{error}");
+            assert!(error.contains("[mode opt]"), "{error}");
+        }
+        let linked = linked_performance_boundary(helper.strip_prefix("mode opt\n").unwrap(),
+            "import helper\nfn main() -> Int:\n    helper.accumulate()\n");
+        super::enforce_performance_modes(&linked, "main")
+            .expect("the same copy-correct body remains permitted in normal mode");
+    }
+
+    #[test]
+    fn performance_gate_keeps_normal_caller_costs_separate_from_opt_callee() {
+        let linked = linked_performance_boundary(
+            "mode opt\n\npub fn update(var xs: List(Int)) -> Nil:\n    xs[0] = 2\n",
+            "import helper\n\nfn main() -> Int:\n    var xs = [1]\n    let snapshot = xs\n    helper.update(xs)\n    snapshot[0] + xs[0]\n");
+        super::enforce_performance_modes(&linked, "main")
+            .expect("normal caller may retain a snapshot while calling an ordinary-var opt helper");
     }
 }
 

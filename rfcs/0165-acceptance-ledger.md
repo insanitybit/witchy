@@ -1163,6 +1163,20 @@ assertions. Integration `7697af802` passed 832/832 selected native tests
 fixture-linker test. Logs: `/tmp/witchy-assignment-compact-20260912.log`,
 `/tmp/witchy-assignment-dictionary-integrated-20260912.log` (initial red), and
 `/tmp/witchy-assignment-fixtures-integrated-20260912.log` (green).
-The linear landing branch preserves newer master changes; terminal queue
-evidence is still pending.
+The linear landing branch preserved newer master changes and landed at
+`eb190d687e2d398e594a1e0b4ca62509c94f0e3f` on 2026-09-12T16:55:43Z.
+Submission `f52f92b4c3b46b2140583fb107eca9252c710d71`, attempt
+`mqa-73e0675f0f6c088e30aef6679f7026e2cba1fd1a`, completed its serialized
+batch gate in 877 seconds with zero recorded flakes.
 No full-corpus or compiler-wide memory-safety completion is claimed.
+
+### 2026-09-12: imported opt-body source contracts, candidate-green
+
+The existing performance gate now checks imported opt declarations even when
+the entry is normal. Six focused tests and the CLI direct/imported cliff
+probes pass; a snapshot-preserving ordinary-var boundary still produces `1 2`,
+and hello/wrap/jq retain parity. See
+`security-eval/findings/BUG-2026-09-12-imported-opt-enforcement.md` for the
+reproducer and limits. Canonical no-copy preparation, withdrawn-surface
+conformance, optimizer assurance, and overall completion remain open. This
+source-diagnostic repair is not proof of runtime allocation placement.
