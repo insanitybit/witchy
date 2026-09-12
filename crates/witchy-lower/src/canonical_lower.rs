@@ -26,6 +26,9 @@ mod net;
 #[path = "canonical_list_update.rs"]
 mod list_update;
 
+#[path = "canonical_list_pop.rs"]
+mod list_pop;
+
 #[path = "canonical_write_back.rs"]
 mod write_back;
 use write_back::{PreparedWriteBack, source_place_root};
@@ -1970,6 +1973,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_place_assignment(name, value)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -2240,6 +2244,10 @@ impl FunctionLowerer<'_> {
                 self.lower_regex_spans(args)?;
                 Ok(())
             }
+            Expr::Call { name, args } if witchy_syntax::intrinsics::is_list_pop_extract(name) => {
+                self.lower_list_pop_extract(expression, args)?;
+                Ok(())
+            }
             // A capability operation in statement position: `dir.write` has
             // no value; a value-bearing one is released like any other
             // discarded result.
@@ -2333,6 +2341,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_place_assignment(name, value)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -2446,6 +2455,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_place_assignment(name, value)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -2824,6 +2834,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
+                    if self.try_lower_place_assignment(name, value)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -5236,6 +5247,11 @@ impl FunctionLowerer<'_> {
         let mut rebound = loop_rebindings(body);
         let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut |expression| {
             if let Expr::Call { name, args } = expression {
+                if witchy_syntax::intrinsics::is_list_pop_extract(name)
+                    && let Some(root) = args.first().and_then(source_place_root)
+                {
+                    rebound.assigned.insert(root.to_owned());
+                }
                 let signature_id = self.functions.get(name.as_str()).map(|(_, signature)| *signature)
                     .or_else(|| {
                         let value = self.bindings.get(name)?;
@@ -6244,6 +6260,9 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(args),
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::GENERATED_LIST_PUSH => {
                 self.lower_generated_list_push(args)
+            }
+            Expr::Call { name, args } if witchy_syntax::intrinsics::is_list_pop_extract(name) => {
+                self.lower_list_pop_extract(expression, args)
             }
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => self.lower_regex_spans(args),
             Expr::Call { name, args } if is_capability_op(name) => self

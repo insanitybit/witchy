@@ -104,39 +104,8 @@ impl FunctionLowerer<'_> {
         let body_values = self.block_parameter_values(body);
         let (output, cursor, output_capacity) = (body_values[0], body_values[1], body_values[2]);
         self.set_tracked_lanes(output, cursor, output_capacity);
-        let replace = self.push_compare(ComparisonOperator::Equal, cursor, index_size)?;
-        let replace_block = self.new_block(&[])?;
-        let copy_block = self.new_block(&[])?;
-        let pointer = matches!(element_type, ValueType::Ref(_));
-        let selected = self.new_block_owned(&[(element_type, pointer.then_some(Ownership::Unique))])?;
-        let selection_facts = self.snapshot_facts();
-        self.finish_current(Terminator::BranchIf {
-            condition: replace, then_target: replace_block, then_arguments: Vec::new(),
-            else_target: copy_block, else_arguments: Vec::new(),
-        })?;
-
-        self.current = replace_block;
-        let value = if pointer { self.owned_for_storage(replacement, element_source_type)? } else { replacement };
-        self.finish_current(Terminator::Branch { target: selected, arguments: vec![value] })?;
-        self.restore_facts(selection_facts.clone(), copy_block);
-        self.current = copy_block;
-        let value = self.load_list_element(source, cursor, element_type)?;
-        let value = if pointer { self.owned_for_storage(value, element_source_type)? } else { value };
-        self.finish_current(Terminator::Branch { target: selected, arguments: vec![value] })?;
-
-        self.restore_facts(selection_facts, selected);
-        self.current = selected;
-        let value = self.block_parameter_values(selected)[0];
         let fits = self.push_compare(ComparisonOperator::LessUnsigned, cursor, output_capacity)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.push_operation(Operation::Store {
-            place: witchy_wir::canonical_safewir::Place::projected(
-                output, Projection::Element { index: cursor }, element_type, AccessMode::Write,
-            ),
-            value,
-            transfer: if pointer { witchy_wir::canonical_safewir::StoreTransfer::MoveUnique }
-                else { witchy_wir::canonical_safewir::StoreTransfer::CopyScalar },
-        });
         let maximum = self.push_const_size(u64::from(u32::MAX))?;
         let increment_fits = self.push_compare(ComparisonOperator::LessUnsigned, cursor, maximum)?;
         self.push_guard(increment_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
@@ -144,13 +113,54 @@ impl FunctionLowerer<'_> {
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
         let next_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, output_capacity)?;
         self.push_guard(next_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.push_operation(Operation::UpdateCount { object: output, count: next });
-        self.finish_current(Terminator::Branch { target: header, arguments: vec![output, next, output_capacity] })?;
+        let replace = self.push_compare(ComparisonOperator::Equal, cursor, index_size)?;
+        let replace_block = self.new_block(&[])?;
+        let copy_block = self.new_block(&[])?;
+        let selected = self.new_block_owned(&lanes)?;
+        let pointer = matches!(element_type, ValueType::Ref(_));
+        let selection_facts = self.snapshot_facts();
+        self.finish_current(Terminator::BranchIf {
+            condition: replace, then_target: replace_block, then_arguments: Vec::new(),
+            else_target: copy_block, else_arguments: Vec::new(),
+        })?;
+
+        // Store while the arm still holds the child's complete extent facts.
+        // A bare child Ref phi loses a nested list's initialized-prefix proof;
+        // the completed output list instead crosses the join with all lanes.
+        self.current = replace_block;
+        let value = if pointer { self.owned_for_storage(replacement, element_source_type)? } else { replacement };
+        self.store_replacement_element(output, cursor, value, next, element_type);
+        self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, output_capacity] })?;
+
+        self.restore_facts(selection_facts.clone(), copy_block);
+        self.current = copy_block;
+        let value = self.load_list_element(source, cursor, element_type)?;
+        let value = if pointer { self.owned_for_storage(value, element_source_type)? } else { value };
+        self.store_replacement_element(output, cursor, value, next, element_type);
+        self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, output_capacity] })?;
+
+        self.restore_facts(selection_facts, selected);
+        self.current = selected;
+        let selected_values = self.block_parameter_values(selected);
+        self.set_tracked_lanes(selected_values[0], selected_values[1], selected_values[2]);
+        self.finish_current(Terminator::Branch { target: header, arguments: selected_values })?;
 
         self.restore_facts(facts, exit);
         self.current = exit;
         let result = self.block_parameter_values(exit);
         self.set_tracked_lanes(result[0], result[1], result[2]);
         Ok(result[0])
+    }
+
+    fn store_replacement_element(&mut self, output: ValueId, index: ValueId, value: ValueId, next: ValueId, element_type: ValueType) {
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                output, Projection::Element { index }, element_type, AccessMode::Write,
+            ),
+            value,
+            transfer: if matches!(element_type, ValueType::Ref(_)) { witchy_wir::canonical_safewir::StoreTransfer::MoveUnique }
+                else { witchy_wir::canonical_safewir::StoreTransfer::CopyScalar },
+        });
+        self.push_operation(Operation::UpdateCount { object: output, count: next });
     }
 }

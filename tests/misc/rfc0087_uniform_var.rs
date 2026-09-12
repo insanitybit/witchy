@@ -140,6 +140,93 @@ fn main(console: Console):
     assert_both_backends(source, &["1 1 2 2", "1 root 2 tail"]);
 }
 
+fn assert_pop_three_legs(source: &str, expected: &[&str]) {
+    use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
+    use witchy_wir::canonical_safewir::FunctionId;
+
+    let module = checked(source);
+    assert_eq!(interpreter::run_checked_module(&module, ".", Vec::new()).expect("source pop"), expected);
+    let artifact = codegen::compile_checked_module_artifact(&module).expect_lowered("pop admits");
+    let validated = codegen::validate_checked_module_for_oracle(&module).expect("independent pop validation");
+    let entry = artifact.entry().expect("pop entry");
+    let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+    let capabilities = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+    let oracle = interpret_entry_program(&validated, function, capabilities, &[], InterpreterConfig::default())
+        .expect("canonical pop oracle");
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.leaked_objects, 0, "pop oracle owns and releases every payload");
+    let mut runtime = Runtime::batch().expect("pop runtime");
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        print: true, print_int: true, quiet: true, ..Default::default()
+    }, 256).expect("admitted pop instance");
+    vm.run().expect("admitted pop execution");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().expect("pop heap audit"), Some(0));
+}
+
+#[test]
+fn list_pop_scalar_and_string_payloads_preserve_snapshots_on_three_legs() {
+    let source = r#"
+import list
+
+fn main(console: Console):
+    var numbers = [10, 20]
+    let original = numbers
+    let first = numbers.pop()
+    let second = list.pop(numbers)
+    let empty = numbers.pop()
+    console.print("${first ?? -1} ${second ?? -1} ${empty ?? -1} ${numbers.length()} ${original}")
+
+    var words = ["root", "tail"]
+    let old_words = words
+    let tail = words.pop()
+    let root = list.pop(words)
+    let none = words.pop()
+    words.push("new")
+    console.print("${tail ?? "missing"} ${root ?? "missing"} ${none ?? "missing"} ${words[0]}")
+    console.print("${old_words[0]} ${old_words[1]}")
+    let _ = words.pop()
+    let _ = words.pop()
+    console.print("${words.length()}")
+"#;
+    assert_pop_three_legs(source, &["20 10 -1 0 [10, 20]", "tail root missing new", "root tail", "0"]);
+}
+
+#[test]
+fn list_pop_projected_coordinates_and_nested_payloads_on_three_legs() {
+    let source = r#"
+type State:
+    rows: List(List(String))
+
+fn grow(var words: List(String)) -> Nil:
+    words.push("grown")
+    return
+
+fn coordinate(var calls: Int) -> Int:
+    calls = calls + 1
+    0
+
+fn main(console: Console):
+    var calls = 0
+    var state = State([["a", "b"], ["sibling"]])
+    let before = state
+    let item = state.rows[coordinate(calls)].pop()
+    console.print("${calls} ${item ?? "missing"} ${state.rows[0].length()} ${state.rows[1][0]}")
+    console.print("${before.rows[0][0]} ${before.rows[0][1]}")
+    var rows = [["kept"], ["last"]]
+    let original = rows
+    let removed = rows.pop() ?? []
+    grow(rows[0])
+    console.print("${removed[0]} ${rows[0].length()} ${original[0].length()} ${original[1][0]}")
+    var total = 0
+    var numbers = [1, 2, 3]
+    for ignored in [0, 1, 2, 3]:
+        total = total + (numbers.pop() ?? 0)
+    console.print("${total} ${numbers.length()}")
+"#;
+    assert_pop_three_legs(source, &["1 b 1 sibling", "a b", "last 2 1 last", "6 0"]);
+}
+
 #[test]
 fn simple_nested_method_and_free_calls_write_back_on_both_backends() {
     let source = r#"
@@ -172,6 +259,38 @@ fn main(console: Console):
         source,
         &["5 50", "[[2, 8]] 80", "[1] 2", "[1] 2"],
     );
+}
+
+#[test]
+fn list_assignment_preserves_coordinate_order_and_post_rhs_siblings_on_three_legs() {
+    let source = r#"
+type State:
+    rows: List(List(Int))
+    flag: Int
+
+fn coordinate(var log: List(Int), marker: Int) -> Int:
+    log.push(marker)
+    0
+
+fn add_row(var rows: List(List(Int))) -> Nil:
+    rows.push([30])
+    return
+
+fn replacement(var state: State, var log: List(Int)) -> Int:
+    log.push(3)
+    add_row(state.rows)
+    state.flag = 7
+    9
+
+fn main(console: Console):
+    var state = State([[1]], 0)
+    let before = state
+    var log: List(Int) = []
+    state.rows[coordinate(log, 1)][coordinate(log, 2)] = replacement(state, log)
+    console.print("${state.rows} ${state.flag} ${log}")
+    console.print("${before.rows} ${before.flag}")
+"#;
+    assert_pop_three_legs(source, &["[[9], [30]] 7 [1, 2, 3]", "[[1]] 0"]);
 }
 
 #[test]

@@ -13,6 +13,56 @@ enum PreparedProjection {
     Index { source: Type, index: ValueId },
 }
 
+enum AssignmentProjection<'a> {
+    Field { base: &'a Expr, field: &'a str },
+    Index { base: &'a Expr, index: &'a Expr },
+}
+
+/// Match only the read spine corresponding to the parser's outward rebuild.
+/// An ordinary set-at value expression must retain ordinary argument semantics.
+fn assignment_read_matches(expression: &Expr, root: &str, path: &[AssignmentProjection<'_>]) -> bool {
+    let Some((last, prefix)) = path.split_last() else {
+        return matches!(expression, Expr::Var(name) if name == root);
+    };
+    match (last, expression) {
+        (AssignmentProjection::Field { field: expected, .. }, Expr::Field { base, field }) => {
+            field == expected && assignment_read_matches(base, root, prefix)
+        }
+        (AssignmentProjection::Index { index: expected, .. }, Expr::Call { name, args }) => {
+            name == witchy_syntax::intrinsics::LIST_AT && args.len() == 2
+                && args[1] == **expected && assignment_read_matches(&args[0], root, prefix)
+        }
+        (AssignmentProjection::Index { index: expected, .. }, Expr::Index { base, index }) => {
+            index.as_ref() == *expected && assignment_read_matches(base, root, prefix)
+        }
+        _ => false,
+    }
+}
+
+fn assignment_plan<'a>(root: &str, expression: &'a Expr) -> Option<(Vec<AssignmentProjection<'a>>, &'a Expr)> {
+    let mut path = Vec::new();
+    let mut replacement = expression;
+    loop {
+        match replacement {
+            Expr::Call { name, args }
+                if name == witchy_syntax::intrinsics::LIST_SET_AT && args.len() == 3
+                    && assignment_read_matches(&args[0], root, &path) =>
+            {
+                path.push(AssignmentProjection::Index { base: &args[0], index: &args[1] });
+                replacement = &args[2];
+            }
+            Expr::RecordUpdate { name: None, base, fields }
+                if fields.len() == 1 && assignment_read_matches(base, root, &path) =>
+            {
+                path.push(AssignmentProjection::Field { base, field: &fields[0].0 });
+                replacement = &fields[0].1;
+            }
+            _ => break,
+        }
+    }
+    (!path.is_empty()).then_some((path, replacement))
+}
+
 pub(super) fn source_place_root(expression: &Expr) -> Option<&str> {
     match expression {
         Expr::Var(name) => Some(name),
@@ -27,6 +77,24 @@ pub(super) fn source_place_root(expression: &Expr) -> Option<&str> {
 }
 
 impl FunctionLowerer<'_> {
+    /// The source assignment captures coordinates, not the old root's token.
+    /// Its RHS may replace that root or modify a sibling before the store.
+    pub(super) fn try_lower_place_assignment(&mut self, root: &str, expression: &Expr) -> Result<bool, CanonicalLoweringError> {
+        let Some((path, replacement)) = assignment_plan(root, expression) else {
+            return Ok(false);
+        };
+        let mut place = PreparedWriteBack { root: root.to_owned(), projections: Vec::with_capacity(path.len()) };
+        for projection in path {
+            place.projections.push(match projection {
+                AssignmentProjection::Field { base, field } => self.prepare_field_projection(base, field)?,
+                AssignmentProjection::Index { base, index } => self.prepare_index_projection(base, index)?,
+            });
+        }
+        let replacement = self.lower_expr(replacement)?;
+        self.commit_prepared_write_back(&place, replacement)?;
+        Ok(true)
+    }
+
     pub(super) fn prepare_write_back(&mut self, expression: &Expr) -> Result<PreparedWriteBack, CanonicalLoweringError> {
         match expression {
             Expr::Var(root) => {
@@ -37,19 +105,7 @@ impl FunctionLowerer<'_> {
             }
             Expr::Field { base, field } => {
                 let mut place = self.prepare_write_back(base)?;
-                let source = self.expression_type(base)?;
-                let shape = scalar_aggregate_shape(&source, self.definitions)
-                    .filter(|shape| !shape.tagged)
-                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
-                let index = match source.unqualified() {
-                    Type::Tuple(fields) => field.parse::<usize>().ok().filter(|index| *index < fields.len()),
-                    Type::Named(name, _) => self.record_definition(name)
-                        .and_then(|definition| definition.variants.first())
-                        .and_then(|variant| variant.field_names.iter().position(|name| name == field)),
-                    _ => None,
-                }.filter(|index| *index < shape.fields.len())
-                    .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.clone()))?;
-                place.projections.push(PreparedProjection::Field { source, index });
+                place.projections.push(self.prepare_field_projection(base, field)?);
                 Ok(place)
             }
             Expr::Index { base, index } => self.prepare_index_write_back(base, index),
@@ -64,6 +120,27 @@ impl FunctionLowerer<'_> {
 
     fn prepare_index_write_back(&mut self, base: &Expr, index: &Expr) -> Result<PreparedWriteBack, CanonicalLoweringError> {
         let mut place = self.prepare_write_back(base)?;
+        place.projections.push(self.prepare_index_projection(base, index)?);
+        Ok(place)
+    }
+
+    fn prepare_field_projection(&self, base: &Expr, field: &str) -> Result<PreparedProjection, CanonicalLoweringError> {
+        let source = self.expression_type(base)?;
+        let shape = scalar_aggregate_shape(&source, self.definitions)
+            .filter(|shape| !shape.tagged)
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+        let index = match source.unqualified() {
+            Type::Tuple(fields) => field.parse::<usize>().ok().filter(|index| *index < fields.len()),
+            Type::Named(name, _) => self.record_definition(name)
+                .and_then(|definition| definition.variants.first())
+                .and_then(|variant| variant.field_names.iter().position(|name| name == field)),
+            _ => None,
+        }.filter(|index| *index < shape.fields.len())
+            .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
+        Ok(PreparedProjection::Field { source, index })
+    }
+
+    fn prepare_index_projection(&mut self, base: &Expr, index: &Expr) -> Result<PreparedProjection, CanonicalLoweringError> {
         let source = self.expression_type(base)?;
         if !matches!(source.unqualified(), Type::Named(name, arguments) if name == "List" && arguments.len() == 1) {
             return Err(CanonicalLoweringError::UnsupportedType(source));
@@ -74,8 +151,7 @@ impl FunctionLowerer<'_> {
         if self.values[&index] != ValueType::Int {
             return Err(CanonicalLoweringError::UnsupportedExpression("list place index type"));
         }
-        place.projections.push(PreparedProjection::Index { source, index });
-        Ok(place)
+        Ok(PreparedProjection::Index { source, index })
     }
 
     pub(super) fn read_prepared_write_back(&mut self, place: &PreparedWriteBack) -> Result<ValueId, CanonicalLoweringError> {
