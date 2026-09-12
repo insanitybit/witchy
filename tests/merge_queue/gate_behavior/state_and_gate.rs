@@ -178,24 +178,38 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
         .expect("write timeout fixture log");
     let red_log = logs.join("red.log");
     fs::write(&red_log, "error: test run failed\n").expect("write red fixture log");
+    let batch_red_log = logs.join("batch-red.log");
+    fs::write(&batch_red_log, "error: batch test run failed\n")
+        .expect("write batch-red fixture log");
+    let old_red_log = logs.join("old-red.log");
+    fs::write(&old_red_log, "error: old unrelated run failed\n")
+        .expect("write old red fixture log");
 
     let journal = format!(
         concat!(
-            "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-15T23:59:00Z\",\"event\":\"red\",\"branch\":\"a\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"gate_elapsed_s\":\"10\",\"log\":{old_red:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a0\",\"submitted_sha\":\"sha-a0\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b0\",\"submitted_sha\":\"sha-b0\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:20Z\",\"event\":\"batch_red\",\"branch\":\"a\",\"members\":\"a b\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"gate_elapsed_s\":\"10\",\"log\":{batch_red:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:30Z\",\"event\":\"resubmitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:35Z\",\"event\":\"resubmitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:40Z\",\"event\":\"coordinator_started\",\"branch\":\"a\",\"attempt_id\":\"attempt-a1\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:00Z\",\"event\":\"resubmitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a2\",\"submitted_sha\":\"sha-a2\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:03:20Z\",\"event\":\"submitted\",\"branch\":\"c\"}}\n",
             "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"gate_load_start\":\"40.00\",\"gate_load_end\":\"41.00\",\"host_ncpu\":\"10\",\"log\":{timeout:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:05:00Z\",\"event\":\"submitted\",\"branch\":\"d\"}}\n",
             "{{\"ts\":\"2026-07-16T00:05:40Z\",\"event\":\"red\",\"branch\":\"d\",\"elapsed_s\":\"40\",\"log\":{red:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:06:00Z\",\"event\":\"requeued\",\"branch\":\"e\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:06:10Z\",\"event\":\"conflict\",\"branch\":\"f\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:06:10Z\",\"event\":\"conflict\",\"branch\":\"f\",\"elapsed_s\":\"99\",\"attempt_elapsed_s\":\"99\",\"gate_elapsed_s\":\"99\"}}\n",
             "{{\"ts\":\"2026-07-16T00:06:20Z\",\"event\":\"blocked\",\"branch\":\"g\"}}\n"
         ),
         green = green_log.to_string_lossy(),
         timeout = timeout_log.to_string_lossy(),
         red = red_log.to_string_lossy(),
+        batch_red = batch_red_log.to_string_lossy(),
+        old_red = old_red_log.to_string_lossy(),
     );
     fs::write(state.join("journal.jsonl"), journal).expect("write report fixture journal");
 
@@ -223,26 +237,40 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
 
     assert_eq!(report["throughput"]["merged_branches"], 2);
     assert_eq!(report["throughput"]["green_gates"], 1);
-    assert_eq!(report["throughput"]["failed_attempts"], 2);
+    assert_eq!(report["throughput"]["failed_attempts"], 4);
     assert_eq!(report["throughput"]["branches_per_green_gate"], 2.0);
     assert_eq!(report["throughput"]["batched_gates"], 1);
     let failed_gate_minutes = report["throughput"]["failed_gate_minutes"]
         .as_f64()
         .expect("failed gate minutes is numeric");
-    assert!((failed_gate_minutes - (100.0 / 60.0)).abs() < f64::EPSILON);
+    assert!((failed_gate_minutes - (120.0 / 60.0)).abs() < f64::EPSILON);
     assert_eq!(report["schema"], 3);
-    assert_eq!(report["attempt_s"]["p50"], 60);
+    assert_eq!(report["attempt_s"]["p50"], 40);
     assert_eq!(report["attempt_s"]["p90"], 302);
-    assert_eq!(report["gate_s"]["p50"], 60);
+    assert_eq!(report["gate_s"]["p50"], 40);
     assert_eq!(report["gate_s"]["p90"], 111);
     assert_eq!(report["attempt_phases_s"]["lock_wait"]["count"], 1);
     assert_eq!(report["attempt_phases_s"]["lock_wait"]["p50"], 181);
     assert_eq!(report["attempt_phases_s"]["prepare"]["p50"], 5);
     assert_eq!(report["attempt_phases_s"]["preflight"]["p50"], 0);
-    assert_eq!(report["attempt_phases_s"]["gate"]["count"], 3);
+    assert_eq!(report["attempt_phases_s"]["gate"]["count"], 5);
     assert_eq!(report["attempt_phases_s"]["landing"]["p50"], 5);
+    assert_eq!(report["development_latency"]["coverage"]["edit_to_submit"]["available"], false);
+    assert_eq!(report["development_latency"]["coverage"]["final_submit_to_land"]["samples"], 2);
+    assert_eq!(report["development_latency"]["final_submit_to_land_s"]["p50"], 65);
+    assert_eq!(report["development_latency"]["final_submit_to_land_s"]["max"], 70);
+    assert_eq!(report["development_latency"]["shared_batch_dedup"]["terminal_events"], 6);
+    assert_eq!(report["development_latency"]["shared_batch_dedup"]["unique_attempts"], 5);
+    assert_eq!(report["development_latency"]["shared_batch_dedup"]["duplicate_member_events"], 1);
+    assert_eq!(report["development_latency"]["rework"]["affected_changes"], 2);
+    assert_eq!(report["development_latency"]["rework"]["unique_failed_attempts"], 4);
+    assert_eq!(report["development_latency"]["rework"]["unique_failed_attempt_s_total"], 120);
+    assert_eq!(report["development_latency"]["rework"]["failed_attempts_per_affected_change"]["p50"], 1);
+    assert_eq!(report["development_latency"]["rework"]["failed_attempts_per_affected_change"]["max"], 1);
+    assert_eq!(report["development_latency"]["rework"]["failed_attempt_s_per_affected_change"]["max"], 10);
     assert_eq!(report["outcomes"]["requeued"], 1);
     assert_eq!(report["outcomes"]["conflict"], 1);
+    assert_eq!(report["throughput"]["failed_attempts"], 4, "conflict is not a failed gate");
 
     // Contention covariate. Branch `d` deliberately carries no load fields:
     // journals written before the signal landed must read as "no sample"
@@ -257,7 +285,8 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(buckets[2]["n"], 1, "saturated bucket: {buckets:?}");
     assert_eq!(buckets[2]["red_rate"], 1.0, "saturated gate failed: {buckets:?}");
     assert_eq!(report["outcomes"]["blocked"], 1);
-    assert_eq!(report["outcomes"]["automatic_retries"], 1);
+    assert_eq!(report["outcomes"]["batch_red"], 1);
+    assert_eq!(report["outcomes"]["automatic_retries"], 2);
     assert_eq!(report["phases_s"]["compile"]["p50"], 20);
     assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 21);
     assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);

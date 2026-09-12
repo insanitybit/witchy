@@ -164,7 +164,8 @@ report="$tmp/report.json"
 jq -sn \
     --arg generated "$generated" --arg since "$since" --arg state_dir "$state_dir" \
     --argjson cutoff "$cutoff" --slurpfile journal "$journal" --slurpfile phases "$phases" '
-    def terminal: .event=="merged" or .event=="red" or .event=="timeout" or .event=="batch_red";
+    def gate_terminal: .event=="merged" or .event=="red" or .event=="timeout" or .event=="batch_red";
+    def gate_failure: .event=="red" or .event=="timeout" or .event=="batch_red";
     def percentile($p):
         map(select(. != null)) | sort as $values
         | if ($values|length)==0 then null
@@ -174,6 +175,19 @@ jq -sn \
         {count:(map(select(. != null))|length),
          p50:(percentile(0.50)), p90:(percentile(0.90)), max:(map(select(. != null))|max//null)};
     def numeric($value): if $value==null then null else ($value|tonumber) end;
+    # A successful batch writes one `merged` event per member. Those events
+    # describe one physical coordinator attempt and share its gate log. Keep
+    # branch throughput per member, but count attempt time only once. The
+    # fallback covers older timing-bearing batch events that lack a log.
+    def attempt_key:
+        if ((.log//"")|length)>0 then "log:"+.log
+        elif ((.batch//"1"|tonumber)>1) then
+            ["batch", (.sha//"unknown"), (.attempt_elapsed_s//.elapsed_s//""),
+             (.prepare_elapsed_s//""), (.lock_wait_s//""),
+             (.preflight_elapsed_s//""), (.gate_elapsed_s//.elapsed_s//""),
+             (.landing_elapsed_s//"")] | map(tostring) | join(":")
+        else ["event", .ts, .event, (.branch//"")] | join(":")
+        end;
     # Load per core at gate start. Absent on attempts journalled before the
     # contention signal landed, and on hosts where the probe failed -- both
     # must read as "no sample", never as zero load.
@@ -184,17 +198,68 @@ jq -sn \
               | if $n==0 then null else ((.gate_load_start|tonumber)/$n) end)
         end;
     ($journal | map(select((.ts|fromdateiso8601) >= $cutoff))) as $recent
-    | ($recent | map(select(terminal and .log != null and .elapsed_s != null)) | unique_by(.log)) as $attempts
+    | ($recent | map(select(gate_terminal and (.attempt_elapsed_s != null or .elapsed_s != null)))) as $terminal_events
+    | ($terminal_events | unique_by(attempt_key)) as $attempts
     | ($recent | map(select(.event=="merged" and .log != null and .elapsed_s != null))) as $merged
     | ($merged | unique_by(.log)) as $green
-    | ($attempts | map(select(.event!="merged"))) as $failed
-    | ([ $journal | group_by(.branch)[] | sort_by(.ts) as $events
-          | range(0; $events|length) as $i
-          | select($events[$i].event=="merged" and (($events[$i].ts|fromdateiso8601) >= $cutoff))
-          | ([range(0;$i) | select($events[.].event=="submitted")] | last) as $submitted
+    # Conflicts, requeues, and blocks are coordinator outcomes, but no gate ran;
+    # keep them out of failed-attempt counts and failed gate time.
+    | ($attempts | map(select(gate_failure))) as $failed
+    | ([ $journal | map(select(.event=="merged" and ((.ts|fromdateiso8601) >= $cutoff)))[] as $landed
+          | ($landed.attempt_id//"") as $landed_attempt
+          | ($landed.change_id//"") as $landed_change
+          | ($landed.submitted_sha//"") as $landed_sha
+          | ([ $journal[]
+                | select(.ts <= $landed.ts and .branch==$landed.branch)
+                | select(.event=="submitted" or .event=="resubmitted")
+                # A branch may be resubmitted while an older snapshot is in a
+                # live gate. Match that landed snapshot exactly when current
+                # journal identifiers exist; chronology is only for legacy
+                # records that have no exact attempt or change/SHA identity.
+                | select(if ($landed_attempt|length)>0 then
+                             ((.attempt_id//"")==$landed_attempt)
+                         elif ($landed_change|length)>0 and ($landed_sha|length)>0 then
+                             ((.change_id//"")==$landed_change
+                              and (.submitted_sha//"")==$landed_sha)
+                         else true end)
+             ] | last) as $submitted
           | select($submitted != null)
-          | (($events[$i].ts|fromdateiso8601)-($events[$submitted].ts|fromdateiso8601))
-       ]) as $waits
+          | (($landed.ts|fromdateiso8601)-($submitted.ts|fromdateiso8601)) as $total
+          | ([ $journal[]
+                | select(.ts >= $submitted.ts and .ts <= $landed.ts)
+                | select(gate_terminal and (.attempt_elapsed_s != null or .elapsed_s != null))
+                | select(.branch==$landed.branch
+                         or (((.members//"")|split(" ")|index($landed.branch)) != null))
+             ] | unique_by(attempt_key)
+                | map(numeric(.attempt_elapsed_s // .elapsed_s)) | add//0) as $attempt
+          | {branch:$landed.branch, total:$total, attempt:$attempt,
+             scheduling:(if $total>$attempt then $total-$attempt else 0 end)}
+       ]) as $landed_rows
+    | ([ $journal | map(select(.event=="merged" and ((.ts|fromdateiso8601) >= $cutoff)))[] as $landed
+          | ($landed.change_id//"") as $change_id
+          | ([ $journal[]
+                | select(.branch==$landed.branch and .ts < $landed.ts and .event=="merged")
+                | .ts
+             ] | max//"") as $previous_land
+          | ([ $journal[]
+                | select(.branch==$landed.branch and .ts <= $landed.ts)
+                | select(.event=="submitted" or .event=="resubmitted")
+                | select(if ($change_id|length)>0 then (.change_id==$change_id)
+                         else .ts>$previous_land end)
+                | .ts
+             ] | min//"") as $change_start
+          | (if ($change_start|length)==0 then [] else
+               [ $journal[]
+                 | select(.ts >= $change_start and .ts <= $landed.ts)
+                 | select(gate_failure)
+                 | select((if ($change_id|length)>0 then (.change_id==$change_id)
+                           else .branch==$landed.branch end)
+                          or (((.members//"")|split(" ")|index($landed.branch)) != null))
+               ] | unique_by(attempt_key)
+             end) as $prior_failures
+          | {branch:$landed.branch, failures:($prior_failures|length),
+             failed_attempt_s:($prior_failures|map(numeric(.attempt_elapsed_s // .elapsed_s))|add//0)}
+       ]) as $rework_rows
     | {
         schema:3, generated_at:$generated, since:$since, state_dir:$state_dir,
         throughput:{submissions:($recent|map(select(.event=="submitted"))|length),
@@ -211,7 +276,9 @@ jq -sn \
                   blocked:($recent|map(select(.event=="blocked"))|length),
                   automatic_retries:(($recent|map(select(.event=="requeued"))|length)
                                      +($attempts|map(select(.event=="batch_red"))|length))},
-        queue_wait_s:($waits|distribution),
+        # Retained for schema-3 consumers. This is final submit/resubmit through
+        # landing, including the coordinator attempt; it is not pure queue wait.
+        queue_wait_s:($landed_rows|map(.total)|distribution),
         attempt_s:($attempts|map(numeric(.attempt_elapsed_s // .elapsed_s))|distribution),
         gate_s:($attempts|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution),
         attempt_phases_s:{lock_wait:($attempts|map(numeric(.lock_wait_s))|distribution),
@@ -219,6 +286,36 @@ jq -sn \
                           preflight:($attempts|map(numeric(.preflight_elapsed_s))|distribution),
                           gate:($attempts|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution),
                           landing:($attempts|map(numeric(.landing_elapsed_s))|distribution)},
+        development_latency:{
+          coverage:{edit_to_submit:{available:false,
+                                    reason:"the merge-queue journal does not record first-edit timestamps"},
+                    final_submit_to_land:{available:true, samples:($landed_rows|length),
+                                          merged_events:($recent|map(select(.event=="merged"))|length),
+                                          source:"matching attempt_id; change_id plus submitted_sha fallback; branch chronology only for legacy records"},
+                    scheduling_wait:{available:true, samples:($landed_rows|length),
+                                     source:"final submit-to-land minus dequeue-to-terminal attempt",
+                                     limitation:"pre-dequeue idle can include coordinator unavailability or machine sleep; the journal cannot distinguish them"},
+                    attempt_phases:{available:true, unique_attempts:($attempts|length),
+                                    instrumented:($attempts|map(select(.attempt_timing_schema != null))|length)},
+                    gate_outcomes:{source:"merged, red, timeout, and batch_red only",
+                                   limitation:"conflict, requeued, and blocked are counted as outcomes but never as gate attempts or failed gate time"},
+                    concurrency:{available:($attempts|map(select(load_per_core != null))|length>0),
+                                 samples:($attempts|map(select(load_per_core != null))|length),
+                                 source:"host load per core at gate start"}},
+          shared_batch_dedup:{terminal_events:($terminal_events|length),
+                              unique_attempts:($attempts|length),
+                              duplicate_member_events:(($terminal_events|length)-($attempts|length)),
+                              key:"shared gate log; timing tuple fallback for legacy logless batches"},
+          final_submit_to_land_s:($landed_rows|map(.total)|distribution),
+          scheduling_wait_s:($landed_rows|map(.scheduling)|distribution),
+          rework:{landed_changes:($rework_rows|length),
+                  affected_changes:($rework_rows|map(select(.failures>0))|length),
+                  failed_attempts_per_affected_change:($rework_rows|map(select(.failures>0)|.failures)|distribution),
+                  failed_attempt_s_per_affected_change:($rework_rows|map(select(.failures>0)|.failed_attempt_s)|distribution),
+                  unique_failed_attempts:($failed|length),
+                  unique_failed_attempt_s_total:($failed|map(numeric(.attempt_elapsed_s // .elapsed_s))|add//0),
+                  attribution:"batch failures affect every branch named in members; aggregate attempt cost remains deduplicated",
+                  lineage:"change_id when present; otherwise submissions after the previous merge on the branch"}},
         phases_s:{compile:($phases|map(.compile_s)|distribution),
                   discovery_estimate:($phases|map(.discovery_estimate_s)|distribution),
                   execution:($phases|map(.execution_s)|distribution),
@@ -264,18 +361,9 @@ jq -sn \
         # change spent being worked on versus time it spent waiting for a
         # coordinator to exist. The tail is dominated by the second, which no
         # amount of gate-speed work can touch.
-        work_vs_idle_s:(([ $journal | group_by(.branch)[] | sort_by(.ts) as $events
-              | range(0; $events|length) as $i
-              | select($events[$i].event=="merged" and (($events[$i].ts|fromdateiso8601) >= $cutoff))
-              | ([range(0;$i) | select($events[.].event=="submitted")] | last) as $submitted
-              | select($submitted != null)
-              | (($events[$i].ts|fromdateiso8601)-($events[$submitted].ts|fromdateiso8601)) as $total
-              | ([range($submitted;$i+1) | $events[.] | numeric(.attempt_elapsed_s) // 0] | add) as $work
-              | {total:$total, work:$work, idle:(if $total>$work then $total-$work else 0 end)}
-           ]) as $rows
-          | {time_to_land:($rows|map(.total)|distribution),
-             attempt_work:($rows|map(.work)|distribution),
-             idle_in_queue:($rows|map(.idle)|distribution)}),
+        work_vs_idle_s:{time_to_land:($landed_rows|map(.total)|distribution),
+                        attempt_work:($landed_rows|map(.attempt)|distribution),
+                        idle_in_queue:($landed_rows|map(.scheduling)|distribution)},
         first_pass_clean:(([ $journal | group_by(.change_id//.branch)[] | sort_by(.ts) as $events
               | select($events|map(select(.event=="merged"))|length > 0)
               | select(($events|map(select(.event=="merged"))|last|.ts|fromdateiso8601) >= $cutoff)
@@ -316,6 +404,12 @@ jq -r '
     "  queue wait:              \(value(.queue_wait_s.p50; "s")) / \(value(.queue_wait_s.p90; "s")) / \(value(.queue_wait_s.max; "s"))",
     "  coordinator attempt:     \(value(.attempt_s.p50; "s")) / \(value(.attempt_s.p90; "s")) / \(value(.attempt_s.max; "s"))",
     "  actual gate:             \(value(.gate_s.p50; "s")) / \(value(.gate_s.p90; "s")) / \(value(.gate_s.max; "s"))",
+    "",
+    "Development latency from journal boundaries (p50 / p90 / max)",
+    "  final submit to land (n=\(.development_latency.final_submit_to_land_s.count)): \(value(.development_latency.final_submit_to_land_s.p50; "s")) / \(value(.development_latency.final_submit_to_land_s.p90; "s")) / \(value(.development_latency.final_submit_to_land_s.max; "s"))",
+    "  scheduling/idle (n=\(.development_latency.scheduling_wait_s.count)): \(value(.development_latency.scheduling_wait_s.p50; "s")) / \(value(.development_latency.scheduling_wait_s.p90; "s")) / \(value(.development_latency.scheduling_wait_s.max; "s"))",
+    "  terminal events / unique attempts / duplicate batch members: \(.development_latency.shared_batch_dedup.terminal_events) / \(.development_latency.shared_batch_dedup.unique_attempts) / \(.development_latency.shared_batch_dedup.duplicate_member_events)",
+    "  landed changes with failure-driven rework: \(.development_latency.rework.affected_changes)/\(.development_latency.rework.landed_changes)",
     "",
     "Coordinator attempt phases (p50 / p90; exact where instrumented)",
     "  lock wait (n=\(.attempt_phases_s.lock_wait.count)): \(value(.attempt_phases_s.lock_wait.p50; "s")) / \(value(.attempt_phases_s.lock_wait.p90; "s"))",
@@ -369,6 +463,8 @@ jq -r '
      end),
     "",
     "Discovery is estimated as test-stage wall time minus Cargo compile and nextest execution.",
+    "First-edit latency is unavailable: the journal begins at submit/resubmit.",
+    "Scheduling/idle can include coordinator unavailability or machine sleep; the journal cannot distinguish them.",
     "A gate is only comparable to another at similar load per core; see the contention buckets.",
     "A green shard receipt certifies the AUTHOR'"'"'S tree, not the rebased tree the gate runs."
 ' "$report"
