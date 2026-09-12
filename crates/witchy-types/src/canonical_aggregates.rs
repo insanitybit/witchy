@@ -246,8 +246,15 @@ fn definition_fields_ok(
             if !consume_shape_nodes(budget, nodes) {
                 return false;
             }
-            substitute_type(field, &substitutions)
-                .is_some_and(|field| field_type_ok_at(&field, definitions, active, depth + 1, budget, completed))
+            // An empty substitution is the identity. Keep the same node
+            // accounting and recursive checks, but borrow the immutable
+            // declaration instead of cloning its complete field-type tree.
+            if substitutions.is_empty() {
+                field_type_ok_at(field, definitions, active, depth + 1, budget, completed)
+            } else {
+                substitute_type(field, &substitutions)
+                    .is_some_and(|field| field_type_ok_at(&field, definitions, active, depth + 1, budget, completed))
+            }
         })
     });
     active.remove(&key);
