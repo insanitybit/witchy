@@ -481,6 +481,7 @@ fn oracle_checked(
     // process environment (the dev grants `witchy run` derives), so an
     // example with `Dir`/`Env` parameters runs on both legs.
     let config = InterpreterConfig {
+        console_trace: None,
         compiler_services: Some(witchy::compiler_oracle::call),
         max_steps: 20_000_000_000,
         fixture: witchy_wir::canonical_interpreter::OracleFixture {
