@@ -4,6 +4,9 @@
 use super::*;
 use witchy_syntax::ast::{Expr, Item, Stmt, Type};
 
+mod console_fixture;
+pub use console_fixture::check_console_fixture_test_driver;
+
 const BARE_RECIPE_VERSION: u32 = 1;
 
 #[derive(Debug)]

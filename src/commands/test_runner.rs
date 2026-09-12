@@ -591,10 +591,16 @@ fn run_interpreter_fixtures(
 ) -> Result<FixtureBackendOutcome, String> {
     let outcome = interpreter::run_checked_test_driver_fixtures(checked, plan.clone())
         .map_err(|error| error.to_string())?;
-    let (passed, output, error) = match outcome.result {
-        interpreter::FixtureProgramResult::Passed { output, .. } => (true, output, None),
-        interpreter::FixtureProgramResult::Failed { output, error } => {
-            (false, output, Some(error.to_string()))
+    let output = match outcome.result {
+        interpreter::FixtureProgramResult::Passed { output, .. }
+        | interpreter::FixtureProgramResult::Failed { output, .. } => output,
+    };
+    // A normal guest return is not a passed fixture: finalization also checks
+    // required script steps, call counts, ordering and absence obligations.
+    let (passed, error) = match &outcome.transcript.result {
+        TestResult::Passed => (true, None),
+        TestResult::Failed { message } | TestResult::InfrastructureError { message } => {
+            (false, Some(message.clone()))
         }
     };
     Ok(FixtureBackendOutcome {
@@ -606,17 +612,12 @@ fn run_interpreter_fixtures(
 }
 
 fn run_wasm_fixtures(
-    checked: &witchy_types::pipeline::CheckedTestDriverModule,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
     plan: &FixturePlan,
 ) -> Result<FixtureBackendOutcome, String> {
-    let bytes = match codegen::compile_checked_test_driver_binary(checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
-        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
-        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
-    };
     let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;
     let outcome = runtime
-        .run_fixtures(&bytes, plan.clone(), crate::RUN_MEMORY_PAGES)
+        .run_admitted_fixtures(artifact, plan.clone(), crate::RUN_MEMORY_PAGES)
         .map_err(|error| error.to_string())?;
     let (passed, error) = match outcome.result {
         runtime::FixtureWasmResult::Passed => (true, None),
@@ -631,21 +632,7 @@ fn run_wasm_fixtures(
 }
 
 fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool {
-    let same_result_kind = matches!(
-        (&left.result, &right.result),
-        (TestResult::Passed, TestResult::Passed)
-            | (TestResult::Failed { .. }, TestResult::Failed { .. })
-            | (
-                TestResult::InfrastructureError { .. },
-                TestResult::InfrastructureError { .. }
-            )
-    );
-    left.version == right.version
-        && left.seed == right.seed
-        && left.events == right.events
-        && left.stdout == right.stdout
-        && left.stderr == right.stderr
-        && same_result_kind
+    left == right
 }
 
 fn run_fixture_test(
@@ -653,12 +640,20 @@ fn run_fixture_test(
     plan: &FixturePlan,
     backend: TestBackend,
 ) -> Result<FixtureBackendOutcome, String> {
+    // Admission precedes either execution leg. An interpreter-only selection
+    // cannot silently execute an unsupported fixture recipe or operation.
+    let artifact = match codegen::compile_checked_test_driver_artifact(checked) {
+        codegen::LoweringOutcome::Lowered(artifact) => artifact,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+    };
     match backend {
+
         TestBackend::Interpreter => run_interpreter_fixtures(checked, plan),
-        TestBackend::Wasm => run_wasm_fixtures(checked, plan),
+        TestBackend::Wasm => run_wasm_fixtures(&artifact, plan),
         TestBackend::Both => {
             let interpreted = run_interpreter_fixtures(checked, plan)?;
-            let compiled = run_wasm_fixtures(checked, plan)?;
+            let compiled = run_wasm_fixtures(&artifact, plan)?;
             if interpreted.passed != compiled.passed
                 || interpreted.output != compiled.output
                 || !same_fixture_evidence(&interpreted.transcript, &compiled.transcript)
@@ -789,6 +784,14 @@ fn run_tests_in_module(
         // `async fn`, which is exactly the case an async test needs it.
         let checked = if policy.fixture_plan.is_none() && !policy.integration {
             match witchy_interp::pipeline::check_bare_test_driver(suite, &test) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    result.failed.push((test, error.to_string()));
+                    continue;
+                }
+            }
+        } else if policy.fixture_plan.is_some() {
+            match witchy_interp::pipeline::check_console_fixture_test_driver(suite, &test) {
                 Ok(driver) => driver,
                 Err(error) => {
                     result.failed.push((test, error.to_string()));
@@ -1552,3 +1555,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
 #[cfg(test)]
 #[path = "test_runner/canonical_bare.rs"]
 mod canonical_bare_tests;
+
+#[cfg(test)]
+#[path = "test_runner/canonical_console_fixture.rs"]
+mod canonical_console_fixture_tests;

@@ -354,11 +354,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_connect_at" (func $net_connect_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
+  (import "witchy" "console_print_at" (func $console_print_at_host (param externref i32 i32 i32 i32 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 135;
+pub const IMPORT_COUNT: usize = 136;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -490,6 +491,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     let class = match name {
         "print"
         | "console_print"
+        | "console_print_at"
         | "crypto.sha256"
         | "crypto.sha256_bytes"
         | "crypto.rune_hash"

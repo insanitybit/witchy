@@ -15,9 +15,9 @@ pub(super) struct Site {
     pub line: u32,
 }
 
-pub(super) fn sites(module: &witchy_syntax::ast::Module) -> Result<HashMap<usize, Site>, CanonicalLoweringError> {
+pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Result<HashMap<usize, Site>, CanonicalLoweringError> {
     fn block(
-        body: &witchy_syntax::ast::Block, function: &str,
+        body: &witchy_syntax::ast::Block, function: &str, console: bool,
         sites: &mut HashMap<usize, Site>, visited: &mut HashSet<usize>,
     ) -> Result<(), CanonicalLoweringError> {
         if !visited.insert(body as *const _ as usize) { return Ok(()); }
@@ -34,14 +34,14 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module) -> Result<HashMap<usize
                 match expression {
                     Expr::Block(body) | Expr::Lambda { body, .. }
                     | Expr::While { body, .. } | Expr::WhileLet { body, .. }
-                    | Expr::For { body, .. } => block(body, function, sites, visited)?,
+                    | Expr::For { body, .. } => block(body, function, console, sites, visited)?,
                     Expr::If { then_block, else_block, .. } => {
-                        block(then_block, function, sites, visited)?;
-                        if let Some(body) = else_block { block(body, function, sites, visited)?; }
+                        block(then_block, function, console, sites, visited)?;
+                        if let Some(body) = else_block { block(body, function, console, sites, visited)?; }
                     }
                     _ => {}
                 }
-                if is_list_access(expression) || matches!(expression, Expr::Call { name, .. } if name == "fail") {
+                if is_list_access(expression) || matches!(expression, Expr::Call { name, .. } if name == "fail" || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
@@ -60,7 +60,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module) -> Result<HashMap<usize
     let mut visited = HashSet::new();
     for item in &module.items {
         if let Item::Function(function) = item && scope.contains(&function.name) {
-            block(&function.body, &function.name, &mut sites, &mut visited)?;
+            block(&function.body, &function.name, console, &mut sites, &mut visited)?;
         }
     }
     Ok(sites)

@@ -24,6 +24,8 @@ use witchy_wir::wir_prelude::abi_import_info;
 mod compiler;
 mod host;
 mod launch_arguments;
+#[cfg(feature = "test-fixtures")]
+mod console_fixtures;
 
 const LAYOUT_SECTION: &str = "witchy.layouts";
 
@@ -1382,6 +1384,8 @@ pub struct VmState {
     vm_services: Arc<Mutex<VmServiceMetrics>>,
     #[cfg(feature = "test-fixtures")]
     pub(crate) fixture_host: Option<witchy_test_host::FixtureHost>,
+    #[cfg(feature = "test-fixtures")]
+    fixture_console: Option<Arc<host::canonical_fixture::Session>>,
 }
 
 #[cfg(feature = "test-fixtures")]
@@ -1394,6 +1398,8 @@ pub enum FixtureWasmResult {
 #[cfg(feature = "test-fixtures")]
 #[derive(Debug)]
 pub struct FixtureWasmOutcome {
+    /// Measured only after normal completion, never inferred after an abort.
+    pub leaked_objects: Option<usize>,
     pub result: FixtureWasmResult,
     pub output: Vec<String>,
     pub transcript: witchy_testkit::TestTranscript,
@@ -1491,6 +1497,12 @@ impl Vm {
         for capability in entry.capabilities() {
             let token = match capability {
                 CanonicalEntryCapability::Console => {
+                    #[cfg(feature = "test-fixtures")]
+                    if self.store.data().fixture_console.is_some() {
+                        let token = host::canonical_fixture::mint(&mut self.store)?;
+                        params.push(Val::ExternRef(Some(token)));
+                        continue;
+                    }
                     if !self.store.data().caps.print && !self.store.data().caps.console_read {
                         bail!("the program's `main` requires a Console capability that was not granted");
                     }
@@ -2358,6 +2370,7 @@ impl Runtime {
             },
         };
         Ok(FixtureWasmOutcome {
+            leaked_objects: None,
             result,
             output,
             transcript,
@@ -2680,6 +2693,8 @@ fn vmstate_from_caps(
         vm_services: Arc::new(Mutex::new(VmServiceMetrics::default())),
         #[cfg(feature = "test-fixtures")]
         fixture_host: None,
+        #[cfg(feature = "test-fixtures")]
+        fixture_console: None,
     })
 }
 

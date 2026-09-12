@@ -115,6 +115,10 @@ pub fn run_checked_test_driver_fixtures(
     checked: &witchy_types::pipeline::CheckedTestDriverModule,
     plan: FixturePlan,
 ) -> Result<FixtureInterpreterOutcome, RuntimeError> {
+    if checked.canonical_source().is_some_and(|source| source.is_console_fixture()) {
+        witchy_test_host::validate_console_output_plan(&plan)
+            .map_err(|message| RuntimeError { message })?;
+    }
     let runtime_catalog = checked.runtime_declaration_catalog().cloned();
     let module = checked.module().clone();
     let host = FixtureHost::new(plan).map_err(|error| RuntimeError {

@@ -211,7 +211,7 @@ pub fn lower_typed_module(
         aggregate_owners: aggregate_families.iter().map(|(source, family)|
             (source.clone(), (family.owner_type, family.list_type))).collect(),
     };
-    let abort_sites = abort::sites(typed.module())?;
+    let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
     let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
     string_payloads.sort();
@@ -613,6 +613,8 @@ pub fn lower_typed_module(
     let mut imports = Vec::new();
     let mut abi_catalog = None;
     let mut host_imports = HostImports::default();
+    let print_at = source.is_console_fixture();
+    let print_name = if print_at { "console_print_at" } else { "console_print" };
     let prints = contains_console_print(typed.module());
     let floats = renders_float(typed.module(), typed.table(), &definitions);
     let capability_imports = collect_capability_imports(typed.module(), typed.table());
@@ -733,7 +735,24 @@ pub fn lower_typed_module(
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
         }
+        if print_at && prints {
+            let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+            let parameters = vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
+                ValueType::Ref(string_layout), ValueType::Ref(string_layout), ValueType::Size];
+            signatures.push(FunctionSignature {
+                id, parameters: parameters.clone(), results: Vec::new(),
+                contract: CallableContract {
+                    parameters: parameters.into_iter().map(|value_type| ParameterContract {
+                        value_type, ownership: ParameterOwnership::Value,
+                    }).collect(), results: Vec::new(),
+                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read]), (2, vec![MemoryEffect::Read])]),
+                },
+            });
+            catalog = catalog.with_console_print_at(id, string_layout)
+                .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        }
         // RFC-0165 Net catalog registration (Net track).
+
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
         if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
@@ -743,7 +762,7 @@ pub fn lower_typed_module(
             .imports()
             .into_iter()
             .filter(|import| {
-                (import.name == "console_print" && prints)
+                (import.name == print_name && prints)
                     || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
@@ -765,7 +784,8 @@ pub fn lower_typed_module(
             compiler: compiler_imports.iter()
                 .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
                 .collect(),
-            print: projected.iter().find(|import| import.name == "console_print").map(|import| import.id),
+            print_at,
+            print: projected.iter().find(|import| import.name == print_name).map(|import| import.id),
             float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
             capabilities: CAPABILITY_IMPORTS
                 .iter()
@@ -2007,7 +2027,7 @@ impl FunctionLowerer<'_> {
                                     "console.print in value-returning function",
                                 ));
                             }
-                            self.lower_console_print(args)?;
+                            self.lower_console_print(call, args)?;
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
                             return Ok(());
                         }
@@ -2105,7 +2125,7 @@ impl FunctionLowerer<'_> {
                                     "console.print in value-returning function",
                                 ));
                             }
-                            self.lower_console_print(args)?;
+                            self.lower_console_print(call, args)?;
                             self.finish_current(Terminator::Return { values: Vec::new() })?;
                             return Ok(());
                         }
@@ -2236,7 +2256,7 @@ impl FunctionLowerer<'_> {
             Expr::WhileLet { pattern, scrutinee, body } => self.lower_while_let(pattern, scrutinee, body),
             Expr::For { var, iter, body } => self.lower_for(var, iter, body),
             Expr::Block(block) => self.lower_block_effect(block),
-            Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(args),
+            Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(expression, args),
             Expr::Call { name, args } if compiler_service_import(name).is_some() => {
                 self.lower_compiler_service(name, args)?;
                 Ok(())
@@ -6270,7 +6290,7 @@ impl FunctionLowerer<'_> {
                 .lower_capability_op(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("capability operation without a value")),
             Expr::Call { name, args } if is_console_print(name) => {
-                self.lower_console_print(args)?;
+                self.lower_console_print(expression, args)?;
                 self.push_zero(ValueType::Unit)
             }
             // The `Bytes` intrinsics behind `std/bytes`.
@@ -7629,7 +7649,7 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
-    fn lower_console_print(&mut self, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
+    fn lower_console_print(&mut self, expression: &Expr, arguments: &[Expr]) -> Result<(), CanonicalLoweringError> {
         let [receiver, message] = arguments else {
             return Err(CanonicalLoweringError::UnsupportedExpression("console.print arguments"));
         };
@@ -7663,10 +7683,7 @@ impl FunctionLowerer<'_> {
         let length = self.string_lengths.get(&object).copied().ok_or(
             CanonicalLoweringError::UnsupportedExpression("console.print dynamic string length"),
         )?;
-        self.push_operation(Operation::HostCall {
-            destinations: Vec::new(),
-            import,
-            arguments: vec![HostCallArgument::Capability(receiver), HostCallArgument::Buffer {
+        let mut arguments = vec![HostCallArgument::Capability(receiver), HostCallArgument::Buffer {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     object,
                     Projection::Slice { start, length },
@@ -7674,8 +7691,21 @@ impl FunctionLowerer<'_> {
                     AccessMode::Read,
                 ),
                 extent: HostBufferExtent::Slice,
-            }],
-        });
+            }];
+        if self.host_imports.print_at {
+            let site = self.diagnostic_site(expression)?;
+            let function = self.lower_string_literal(&site.function)?;
+            let length = self.string_lengths[&function];
+            let line = self.push_const_size(u64::from(site.line))?;
+            arguments.push(HostCallArgument::Buffer {
+                place: witchy_wir::canonical_safewir::Place::projected(function,
+                    Projection::Slice { start, length }, ValueType::Ref(layout), AccessMode::Read),
+                extent: HostBufferExtent::Slice,
+            });
+            arguments.push(HostCallArgument::Value(line));
+        }
+        self.push_operation(Operation::HostCall { destinations: Vec::new(), import, arguments });
+
         Ok(())
     }
 
@@ -13545,6 +13575,7 @@ fn string_layout(
 /// by the role the lowering reaches them through.
 #[derive(Clone, Default)]
 struct HostImports {
+    print_at: bool,
     abort: Option<witchy_wir::canonical_safewir::ImportId>,
     bounds: Option<witchy_wir::canonical_safewir::ImportId>,
     abort_sites: HashMap<usize, abort::Site>,

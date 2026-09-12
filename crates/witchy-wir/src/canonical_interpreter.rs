@@ -305,6 +305,8 @@ impl std::error::Error for InterpretError {}
 /// imports observe.
 #[derive(Debug, Clone)]
 pub struct InterpreterConfig {
+    /// Observation only; this sink grants no capability and survives a trap.
+    pub console_trace: Option<std::sync::Arc<std::sync::Mutex<Vec<OracleConsoleEvent>>>>,
     pub max_steps: u64,
     pub fixture: OracleFixture,
     pub compiler_services: Option<fn(CompilerServiceKind, &[String]) -> Result<String, String>>,
@@ -312,12 +314,20 @@ pub struct InterpreterConfig {
 
 impl Default for InterpreterConfig {
     fn default() -> Self {
-        Self { max_steps: 1_000_000, fixture: OracleFixture::default(), compiler_services: None }
+        Self { max_steps: 1_000_000, fixture: OracleFixture::default(), compiler_services: None, console_trace: None }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompilerServiceKind { Footprint, Diff }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleConsoleEvent {
+    pub text: String,
+    pub function: String,
+    pub line: u32,
+}
+
 
 /// Execute one function from an independently validated SafeWIR module.
 pub fn interpret(
@@ -1421,10 +1431,24 @@ impl<'a> Engine<'a> {
         if let Some(name) = CAPABILITY_IMPORTS.iter().find(|name| **name == contract.name) {
             return self.capability_host_call(name, destinations, arguments, values);
         }
-        if !matches!(contract.name.as_str(), "print" | "console_print") || !destinations.is_empty() {
+        if !matches!(contract.name.as_str(), "print" | "console_print" | "console_print_at") || !destinations.is_empty() {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
         }
+        let site = if contract.name == "console_print_at" {
+            let [token, HostCallArgument::Buffer { .. }, HostCallArgument::Buffer { place, .. }, HostCallArgument::Value(line)] = arguments else {
+                return Err(InterpretError::UnsupportedOperation("Console source arguments"));
+            };
+            self.capability_scope(token, 0, values)?;
+            let function = self.host_string(place, values)?;
+            let line = match values.get(line) {
+                Some(InterpreterValue::Size(line)) => u32::try_from(*line).map_err(|_| InterpretError::ArithmeticTrap)?,
+                _ => return Err(InterpretError::TypeMismatch("Console source line")),
+            };
+            Some((function, line))
+        } else { None };
         let place = match (contract.name.as_str(), arguments) {
+            ("console_print_at", [_, HostCallArgument::Buffer { place, .. }, _, _]) => place,
+
             ("console_print", [token, HostCallArgument::Buffer { place, .. }]) => {
                 self.capability_scope(token, 0, values)?;
                 place
@@ -1444,7 +1468,15 @@ impl<'a> Engine<'a> {
             }
         }
         // The console host records a line with its trailing newlines removed.
-        self.output.push(String::from_utf8_lossy(&bytes).trim_end_matches('\n').to_owned());
+        let text = String::from_utf8_lossy(&bytes).trim_end_matches('\n').to_owned();
+        if let Some((function, line)) = site
+            && let Some(trace) = &self.config.console_trace
+        {
+            trace.lock().map_err(|_| InterpretError::UnsupportedOperation("Console trace lock"))?
+                .push(OracleConsoleEvent { text: text.clone(), function, line });
+        }
+        self.output.push(text);
+
         Ok(())
     }
 

@@ -6,7 +6,7 @@
 //! destructive source lowering.
 
 mod test_driver;
-pub use test_driver::{CheckedTestSuite, TestDriverIdentity, check_bare_test_driver, link_checked_test_suite_from_source_bundle};
+pub use test_driver::{CheckedTestSuite, TestDriverIdentity, check_bare_test_driver, check_console_fixture_test_driver, link_checked_test_suite_from_source_bundle};
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -155,6 +155,8 @@ impl CheckedSourceWitness {
 /// AST-only checked-link APIs never mint this product.
 #[derive(Debug, PartialEq)]
 pub struct CanonicalCheckedSource {
+    // Minted only by the source-backed compiler Console fixture recipe.
+    console_fixture: bool,
     typed: typeck::TypedModule,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     source_witness: CheckedSourceWitness,
@@ -166,6 +168,8 @@ pub struct CanonicalCheckedSource {
 }
 
 impl CanonicalCheckedSource {
+    pub fn is_console_fixture(&self) -> bool { self.console_fixture }
+
     /// Dynamic metadata for this exact checked source and its authenticated
     /// declaration owners. This does not authorize dynamic AST expansion.
     #[doc(hidden)]
@@ -713,6 +717,7 @@ fn attach_canonical_source(
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     checked.canonical_source = Some(CanonicalCheckedSource {
+        console_fixture: false,
         typed,
         dynamic_runtime_plan,
         source_witness: CheckedSourceWitness {

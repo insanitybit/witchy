@@ -622,6 +622,23 @@ fn authenticated_import(
 }
 
 impl CanonicalAbiCatalog {
+    /// Source-bearing Console output borrows two bounded slices and carries
+    /// the actual checked receiver. This adds no ambient grant or write range.
+    pub fn with_console_print_at(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_prelude_import(
+            "console_print_at", &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[], signature, vec![HostParameterRole::Capability(CapabilityKindId::new(0)),
+                read(), read(), HostParameterRole::Value(ValueType::Size)],
+            Vec::new(), HostMutation::ReadOnly,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
     /// Terminal list diagnostics carry values and a bounded read-only label,
     /// not pointer authority. They do not replace an access's Bounds guard.
     pub fn with_list_bounds_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {

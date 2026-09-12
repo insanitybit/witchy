@@ -908,3 +908,20 @@ mod tests {
         assert_eq!(transcript.result, TestResult::Passed);
     }
 }
+
+/// Supported provider subset, not an authority constructor. Every execution
+/// adapter still authenticates its own tokens and checked entry independently.
+pub fn validate_console_output_plan(plan: &FixturePlan) -> Result<(), String> {
+    if plan.clock.is_some() || plan.rand.is_some() || plan.env.is_some()
+        || plan.filesystem.is_some() || plan.fetch.is_some() || plan.secrets.is_some()
+        || plan.exec.is_some() || plan.argv.is_some()
+    {
+        return Err("admitted Console fixture: other providers and argv are unsupported".into());
+    }
+    let console = plan.console.as_ref()
+        .ok_or_else(|| "admitted Console fixture: missing Console provider".to_owned())?;
+    if console.script.iter().any(|step| step.operation != "print") {
+        return Err("admitted Console fixture: only Console output scripts are supported".into());
+    }
+    Ok(())
+}

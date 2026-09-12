@@ -317,3 +317,12 @@ pub fn check_bare_test_driver(
         suite, target, crate::comptime::expand_compile_time,
     )
 }
+
+/// Source-backed Console recipe; inert provider data cannot choose its entry.
+pub fn check_console_fixture_test_driver(
+    suite: &witchy_types::pipeline::CheckedTestSuite, target: &str,
+) -> Result<witchy_types::pipeline::CheckedTestDriverModule, PipelineError> {
+    witchy_types::pipeline::check_console_fixture_test_driver(
+        suite, target, crate::comptime::expand_compile_time,
+    )
+}

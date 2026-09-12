@@ -223,6 +223,10 @@ fn host_witchy_list_bounds_at(
     let memory = memory_of(&mut caller)?;
     let function = diagnostic_text(memory.data(&caller), function_ptr, function_len)?;
     let core = witchy_syntax::diag::DiagTemplate::ListIndexOob.render(index, i64::from(length as u32), "");
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_console.is_some() {
+        return Err(super::super::console_fixtures::diagnostic(function, line as u32, core));
+    }
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 
@@ -235,6 +239,10 @@ fn host_witchy_abort_at(
     let message = diagnostic_text(data, message_ptr, message_len)?;
     let function = diagnostic_text(data, function_ptr, function_len)?;
     let core = witchy_syntax::diag::DiagTemplate::Fail.render(0, 0, message);
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_console.is_some() {
+        return Err(super::super::console_fixtures::diagnostic(function, line as u32, core));
+    }
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 

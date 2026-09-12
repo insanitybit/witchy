@@ -324,6 +324,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_connect_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
+| `console_print_at` | `(externref, i32, i32, i32, i32, i32)` | non-authority infrastructure | none | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 
@@ -435,3 +436,19 @@ message, not merely on the fact of erroring.
   full named-frame wasm backtrace beneath the message (the emitted name section
   makes frames readable). It's a debugging add-on for *frames*; the message
   itself now always prints regardless.
+
+### Admitted Console-output fixture recipe v1
+
+The compiler derives a fresh explicit-`Nil` fixture entry from retained raw
+sources and an exact selected local test declaration. Its source identity binds
+those original bytes separately from the versioned Console-output recipe and
+selected declaration ordinal. Provider plans supply data, never source, entry,
+or callable witnesses. Other providers and capability-record construction are
+explicitly unsupported by this recipe.
+
+`console_print_at` takes the checked Console token, message byte slice, checked
+source function byte slice, and statement line. Both slices are read-only; the
+import cannot reenter Wasm. Fixture tokens are private, session-bound and
+Write-checked. Calls record the complete deterministic provider transcript with
+source module/line/column, including effects before a terminal abort. Successful
+runs report checked zero live objects; aborted runs report no leak measurement.

@@ -12,3 +12,5 @@ pub(super) mod regex;
 pub(super) mod secret;
 pub(super) mod staging;
 pub(super) mod vm_worker;
+#[cfg(feature = "test-fixtures")]
+pub(super) mod canonical_fixture;
