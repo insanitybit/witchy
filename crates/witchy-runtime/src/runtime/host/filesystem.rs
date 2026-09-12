@@ -1,5 +1,8 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
+#[path = "exec.rs"]
+mod canonical_exec;
+
 use super::super::{
     confine, fill_slice, memory_of, read_slice_str, read_wbytes, read_wstr, read_wstr_list,
     DirAuthority, DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
@@ -77,6 +80,7 @@ pub(in crate::runtime) fn link_exec(linker: &mut Linker<VmState>) -> Result<()> 
     linker.func_wrap("witchy", "mint_exec", host_mint_exec)?;
     linker.func_wrap("witchy", "exec_only", host_exec_only)?;
     linker.func_wrap("witchy", "exec_run", host_exec_run)?;
+    canonical_exec::link(linker)?;
     Ok(())
 }
 
@@ -658,30 +662,36 @@ fn host_exec_run(
     let path = read_wstr(data, path_ptr)?;
     let joined = read_wstr(data, args_ptr)?;
     let stdin = read_wstr(data, stdin_ptr)?;
+    let dir = dir_authority_ref(&caller, d)?;
+    let payload = run_exec(&exec, &dir, &path, &joined, &stdin)?;
+    let len = payload.len() as i32;
+    caller.data_mut().pending = Some(payload);
+    Ok(len)
+}
+
+/// Shared policy and handle-backed execution for both guest ABI adapters.
+/// `ConfinedFile::run` remains the sole process launcher.
+fn run_exec(exec: &ExecAuthority, dir: &DirAuthority, path: &str, joined: &str, stdin: &str) -> Result<Vec<u8>> {
     if let Some(allow) = &exec.allow {
-        if !allow.contains(&path) {
+        if !allow.contains(path) {
             return Err(Error::msg(format!("exec: `{path}` is not in this Exec grant's allow-list")));
         }
     }
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_read(&dir)?;
+    dir_require_read(dir)?;
     // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy gate as
     // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
     // can only run a file you can read" was false while this was skipped.
-    dir_guard(&dir, &path, false)?;
+    dir_guard(dir, path, false)?;
     let DirBacking::Fs(base) = &dir.backing;
-    let prog = confine(base.file(&path, true))?;
+    let prog = confine(base.file(path, true))?;
     let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
-    let output = prog.run(&argv, &stdin).map_err(|e| {
+    let output = prog.run(&argv, stdin).map_err(|e| {
         Error::msg(format!("exec failed running `{}`: {e}", prog.display_path().display()))
     })?;
     let code = output.status.code().unwrap_or(-1);
     let out = String::from_utf8_lossy(&output.stdout);
     let serr = String::from_utf8_lossy(&output.stderr);
-    let payload = format!("{code}\n{out}{serr}");
-    let len = payload.len() as i32;
-    caller.data_mut().pending = Some(payload.into_bytes());
-    Ok(len)
+    Ok(format!("{code}\n{out}{serr}").into_bytes())
 }
 
 /// `dir_exists(h, rel) -> bool`: total — an escaping or missing path is `false`.
