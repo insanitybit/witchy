@@ -3961,6 +3961,7 @@ impl Parser {
         self.compr_counter += 1;
         // Innermost action: append `elem` to the accumulator.
         let mut inner = Stmt::Assign {
+            place_depth: 0,
             name: acc.clone(),
             value: Expr::Call {
                 name: crate::intrinsics::GENERATED_LIST_PUSH.to_string(),
@@ -4440,33 +4441,36 @@ fn bin_op(t: &Tok) -> BinOp {
 /// step reassigns a value, so the uniqueness pass keeps it in place. The base
 /// must bottom out at a variable.
 pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
-    match place {
-        Expr::Var(name) => Ok(Stmt::Assign { name, value }),
-        Expr::Unary { op: UnOp::Deref, expr } => Ok(Stmt::Expr(Expr::Call {
-            name: intrinsics::REFERENCE_WRITE.to_string(),
-            args: vec![*expr, value],
-        })),
-        Expr::Index { base, index } => {
-            let new_base = Expr::MethodCall {
-                receiver: base.clone(),
-                method: "__set_at".to_string(),
-                args: vec![*index, value],
-            };
-            desugar_place_assign(*base, new_base)
+    fn desugar(place: Expr, value: Expr, place_depth: u32) -> Result<Stmt, String> {
+        match place {
+            Expr::Var(name) => Ok(Stmt::Assign { name, value, place_depth }),
+            Expr::Unary { op: UnOp::Deref, expr } => Ok(Stmt::Expr(Expr::Call {
+                name: intrinsics::REFERENCE_WRITE.to_string(),
+                args: vec![*expr, value],
+            })),
+            Expr::Index { base, index } => {
+                let new_base = Expr::MethodCall {
+                    receiver: base.clone(),
+                    method: "__set_at".to_string(),
+                    args: vec![*index, value],
+                };
+                desugar(*base, new_base, place_depth + 1)
+            }
+            Expr::Field { base, field } => {
+                let new_base = Expr::RecordUpdate {
+                    name: None,
+                    base: base.clone(),
+                    fields: vec![(field, value)],
+                };
+                desugar(*base, new_base, place_depth + 1)
+            }
+            _ => Err(
+                "the left side of `=` must be a variable, an index `x[i]`, or a field `x.f`"
+                    .to_string(),
+            ),
         }
-        Expr::Field { base, field } => {
-            let new_base = Expr::RecordUpdate {
-                name: None,
-                base: base.clone(),
-                fields: vec![(field, value)],
-            };
-            desugar_place_assign(*base, new_base)
-        }
-        _ => Err(
-            "the left side of `=` must be a variable, an index `x[i]`, or a field `x.f`"
-                .to_string(),
-        ),
     }
+    desugar(place, value, 0)
 }
 
 /// Desugar `for var x in xs:` (RFC-0028) into an indexed loop that writes each
@@ -4666,6 +4670,7 @@ pub fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     let body = Block {
         stmts: vec![
             Stmt::Assign {
+                place_depth: 0,
                 name: acc.clone(),
                 value: Expr::Call {
                     name: crate::intrinsics::GENERATED_LIST_PUSH.to_string(),
@@ -4673,6 +4678,7 @@ pub fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
                 },
             },
             Stmt::Assign {
+                place_depth: 0,
                 name: idx.clone(),
                 value: Expr::Binary {
                     op: BinOp::Add,

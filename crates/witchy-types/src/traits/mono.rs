@@ -469,7 +469,7 @@ impl Mono<'_> {
                         (None, false) => scope.bind_local(name),
                     }
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     self.walk_expr(value, scope);
                     if let Some(t) = self.type_ast(value, scope) {
                         scope.insert(name.clone(), t);

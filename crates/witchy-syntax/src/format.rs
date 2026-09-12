@@ -694,40 +694,34 @@ fn compound_op(op: BinOp) -> Option<&'static str> {
 /// `v[i] += e` / `v.f += e` when the RHS reads the same place. Returns `None` when
 /// `value` is not such a self-assignment, so a plain assignment prints normally.
 /// (BUG-333/BUG-330 — mirrors the while-let/UFCS/comprehension re-sugaring.)
-fn place_assign_sugar(name: &str, value: &Expr) -> Option<String> {
-    let same_var = |e: &Expr| matches!(e, Expr::Var(v) if v == name);
-    match value {
-        Expr::MethodCall { receiver, method, args }
-            if matches!(method.as_str(), "set_at" | "__set_at") && args.len() == 2 && same_var(receiver) =>
-        {
-            let idx = &args[0];
-            let val = &args[1];
-            // Compound `v[i] += e`: RHS is `v[i] <op> e` reading the same place.
-            if let Expr::Binary { op, lhs, rhs } = val {
-                if let (Expr::Index { base, index }, Some(sym)) = (lhs.as_ref(), compound_op(*op)) {
-                    if same_var(base) && index.as_ref() == idx {
-                        return Some(format!("{name}[{}] {sym}= {}", expr(idx), expr(rhs)));
-                    }
-                }
+fn place_assign_sugar(name: &str, value: &Expr, depth: u32) -> Option<String> {
+    if depth == 0 { return None; }
+    let mut replacement = value;
+    let mut place = Expr::Var(name.to_owned());
+    for _ in 0..depth {
+        match replacement {
+            Expr::MethodCall { receiver, method, args }
+                if method == "__set_at" && args.len() == 2 && receiver.as_ref() == &place =>
+            {
+                place = Expr::Index { base: receiver.clone(), index: Box::new(args[0].clone()) };
+                replacement = &args[1];
             }
-            Some(format!("{name}[{}] = {}", expr(idx), expr(val)))
-        }
-        Expr::RecordUpdate { name: _, base, fields } if fields.len() == 1 && same_var(base) => {
-            let (f, val) = &fields[0];
-            // Compound `v.f += e`: RHS is `v.f <op> e` reading the same field.
-            if let Expr::Binary { op, lhs, rhs } = val {
-                if let (Expr::Field { base: fb, field }, Some(sym)) =
-                    (lhs.as_ref(), compound_op(*op))
-                {
-                    if same_var(fb) && field == f {
-                        return Some(format!("{name}.{f} {sym}= {}", expr(rhs)));
-                    }
-                }
+            Expr::RecordUpdate { name: None, base, fields }
+                if fields.len() == 1 && base.as_ref() == &place =>
+            {
+                place = Expr::Field { base: base.clone(), field: fields[0].0.clone() };
+                replacement = &fields[0].1;
             }
-            Some(format!("{name}.{f} = {}", expr(val)))
+            _ => return None,
         }
-        _ => None,
     }
+    if let Expr::Binary { op, lhs, rhs } = replacement
+        && lhs.as_ref() == &place
+        && let Some(symbol) = compound_op(*op)
+    {
+        return Some(format!("{} {symbol}= {}", expr(&place), expr(rhs)));
+    }
+    Some(format!("{} = {}", expr(&place), expr(replacement)))
 }
 
 /// Recognize the `for var x in xs:` desugar (an indexed `__fvN` loop that binds
@@ -759,7 +753,7 @@ fn for_var_sugar<'a>(idx: &str, iter: &'a Expr, body: &'a Block) -> Option<(&'a 
         return None;
     }
     // Last stmt: `list[idx] = x`  (i.e. `list.set_at(idx, x)`).
-    let Stmt::Assign { name: wb_list, value: wb } = body.stmts.last()? else { return None };
+    let Stmt::Assign { name: wb_list, value: wb, place_depth: 1 } = body.stmts.last()? else { return None };
     if wb_list != list_var {
         return None;
     }
@@ -792,12 +786,12 @@ fn stmt(s: &mut String, st: &Stmt, depth: usize, c: &mut Comments, upper: u32) {
             s.push_str(" = ");
             value_or_block(s, value, depth, c, upper);
         }
-        Stmt::Assign { name, value } => {
+        Stmt::Assign { name, value, place_depth } => {
             pad(s, depth);
             // (RFC-0022) Re-sugar a place-assignment that the parser lowered to a
             // self-`set_at`/`RecordUpdate` back to `v[i] = e` / `v.f = e`
             // (BUG-333/BUG-330); an ordinary assignment prints normally.
-            if let Some(line) = place_assign_sugar(name, value) {
+            if let Some(line) = place_assign_sugar(name, value, *place_depth) {
                 s.push_str(&line);
                 s.push('\n');
                 return;
@@ -1180,7 +1174,7 @@ fn arm_body(s: &mut String, body: &Expr, depth: usize, c: &mut Comments, upper: 
         Expr::Block(b) if b.stmts.len() == 1 && b.region.is_none() => {
             let inline = match &b.stmts[0] {
                 Stmt::Return(Some(e)) => inline_value(e).map(|v| format!("return {v}")),
-                Stmt::Assign { name, value } => place_assign_sugar(name, value)
+                Stmt::Assign { name, value, place_depth } => place_assign_sugar(name, value, *place_depth)
                     .filter(|l| !l.contains('\n'))
                     .or_else(|| inline_value(value).map(|v| format!("{name} = {v}"))),
                 Stmt::Break => Some("break".into()),
@@ -1812,7 +1806,7 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
                 clauses.push_str(&format!(" if {}", expr(cond)));
                 cur = &then_block.stmts[0];
             }
-            Stmt::Assign { name, value: Expr::Call { name: push, args } } => {
+            Stmt::Assign { name, value: Expr::Call { name: push, args }, .. } => {
                 if name != acc
                     || push != crate::intrinsics::GENERATED_LIST_PUSH
                     || args.len() != 2

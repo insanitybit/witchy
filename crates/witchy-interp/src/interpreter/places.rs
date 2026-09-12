@@ -229,10 +229,12 @@ impl Interpreter {
         &mut self,
         name: &str,
         expression: &Expr,
+        depth: u32,
         env: &mut Env,
     ) -> Result<bool, Flow> {
-        let Some(plan) = desugared_assignment_plan(name, expression) else {
-            return Ok(false);
+        if depth == 0 { return Ok(false); }
+        let Some(plan) = desugared_assignment_plan(name, expression, depth) else {
+            return err("invalid assignment place provenance");
         };
         let mut projections = Vec::with_capacity(plan.projections.len());
         for projection in plan.projections {

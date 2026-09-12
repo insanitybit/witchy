@@ -2822,7 +2822,7 @@ impl LoanCtx<'_> {
                         local.push(loan);
                     }
                 }
-            } else if let Stmt::Assign { name, value } = stmt {
+            } else if let Stmt::Assign { name, value, .. } = stmt {
                 if let Some(mutation) = self.replace_shell_roots(
                     block,
                     idx,
@@ -2933,7 +2933,7 @@ impl LoanCtx<'_> {
     ) -> Result<(), TypeError> {
         let (name, args, assigned_list) = match stmt {
             Stmt::Expr(Expr::Call { name, args }) => (name, args, None),
-            Stmt::Assign { name, value: Expr::Call { name: call, args } } => {
+            Stmt::Assign { name, value: Expr::Call { name: call, args }, .. } => {
                 (call, args, Some(name.as_str()))
             }
             _ => return Ok(()),
@@ -4784,6 +4784,7 @@ fn stmt_lets_view_escape(
         Stmt::Assign {
             name,
             value: Expr::RecordUpdate { base, .. },
+            ..
         } if name == view && matches!(base.as_ref(), Expr::Var(base) if base == view)
     );
     match stmt {

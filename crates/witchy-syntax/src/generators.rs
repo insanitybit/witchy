@@ -500,6 +500,7 @@ fn normalize_loop_then_finite_tail(f: &Function, names: &GeneratorNames) -> Opti
         value: Expr::Bool(true),
     });
     let mut tail_statements = vec![Stmt::Assign {
+        place_depth: 0,
         name: active.clone(),
         value: Expr::Bool(false),
     }];
@@ -600,6 +601,7 @@ fn normalize_terminal_for(
             },
         },
         Stmt::Assign {
+            place_depth: 0,
             name: index.clone(),
             value: Expr::Binary {
                 op: BinOp::Add,
@@ -670,6 +672,7 @@ fn normalize_finite_one_shot(f: &Function, names: &GeneratorNames) -> Function {
     });
     let mut body = f.body.stmts[prelude_len..].to_vec();
     body.push(Stmt::Assign {
+        place_depth: 0,
         name: once.clone(),
         value: Expr::Bool(false),
     });
@@ -720,6 +723,7 @@ fn normalize_finite_conditional_then_direct(
 
     let mut then_statements = then_prefix;
     then_statements.push(Stmt::Assign {
+        place_depth: 0,
         name: finite_stage.clone(),
         value: Expr::Int(1),
     });
@@ -739,6 +743,7 @@ fn normalize_finite_conditional_then_direct(
         }));
     }
     else_statements.push(Stmt::Assign {
+        place_depth: 0,
         name: finite_stage.clone(),
         value: Expr::Int(2),
     });
@@ -823,6 +828,7 @@ fn normalize_prefix_yield_loop(f: &Function, names: &GeneratorNames) -> Option<F
                 then_block: Block {
                     stmts: vec![
                         Stmt::Assign {
+                            place_depth: 0,
                             name: once,
                             value: Expr::Bool(false),
                         },
@@ -1218,6 +1224,7 @@ fn rewrite_outer_generator_continues(block: Block, resume_name: &str) -> Block {
             match statement {
                 Stmt::Continue if loop_depth == 0 => {
                     statements.push(Stmt::Assign {
+                        place_depth: 0,
                         name: resume_name.to_string(),
                         value: Expr::Int(0),
                     });
@@ -1233,7 +1240,8 @@ fn rewrite_outer_generator_continues(block: Block, resume_name: &str) -> Block {
                     pattern,
                     value: rewrite_expr(value, resume_name, loop_depth),
                 }),
-                Stmt::Assign { name, value } => statements.push(Stmt::Assign {
+                Stmt::Assign { name, value, place_depth } => statements.push(Stmt::Assign {
+                    place_depth,
                     name,
                     value: rewrite_expr(value, resume_name, loop_depth),
                 }),
@@ -1983,11 +1991,13 @@ fn lower_owned_loop_frame(
         })?
         .stmts;
         yielding_branch.push(Stmt::Assign {
+            place_depth: 0,
             name: yielded_option_name.clone(),
             value: Expr::Ctor { name: "Some".into(), args: vec![nested.yielded] },
         });
         for (binding, captured) in live_locals.iter().zip(&captured_live_names) {
             yielding_branch.push(Stmt::Assign {
+                place_depth: 0,
                 name: captured.clone(),
                 value: Expr::Ctor {
                     name: "Some".into(),
@@ -1996,6 +2006,7 @@ fn lower_owned_loop_frame(
             });
         }
         yielding_branch.push(Stmt::Assign {
+            place_depth: 0,
             name: suspended_name.clone(),
             value: Expr::Bool(true),
         });
@@ -2115,10 +2126,12 @@ fn lower_owned_loop_frame(
             })?
             .stmts;
             statements.push(Stmt::Assign {
+                place_depth: 0,
                 name: yielded_option_name.clone(),
                 value: Expr::Ctor { name: "Some".into(), args: vec![yielded] },
             });
             statements.push(Stmt::Assign {
+                place_depth: 0,
                 name: suspended_name.clone(),
                 value: Expr::Int(phase),
             });
@@ -2264,6 +2277,7 @@ fn lower_owned_loop_frame(
                 .stmts;
                 if let Some(yielded) = arm.yielded {
                     statements.push(Stmt::Assign {
+                        place_depth: 0,
                         name: yielded_option_name.clone(),
                         value: Expr::Ctor { name: "Some".into(), args: vec![yielded] },
                     });
@@ -2273,6 +2287,7 @@ fn lower_owned_loop_frame(
                         .zip(&captured_match_names[offset..])
                     {
                         statements.push(Stmt::Assign {
+                            place_depth: 0,
                             name: captured.clone(),
                             value: Expr::Ctor {
                                 name: "Some".into(),
@@ -2281,6 +2296,7 @@ fn lower_owned_loop_frame(
                         });
                     }
                     statements.push(Stmt::Assign {
+                        place_depth: 0,
                         name: suspended_name.clone(),
                         value: Expr::Int((index + 1) as i64),
                     });
@@ -2435,6 +2451,7 @@ fn lower_owned_loop_frame(
             after,
         );
         after.stmts.push(Stmt::Assign {
+            place_depth: 0,
             name: resume_name.clone(),
             value: Expr::Int(0),
         });
@@ -2785,7 +2802,8 @@ fn rewrite_owned_frame_returns(block: Block) -> Result<Block, String> {
                 mutable,
                 value: rewrite_owned_frame_return_expr(value)?,
             },
-            Stmt::Assign { name, value } => Stmt::Assign {
+            Stmt::Assign { name, value, place_depth } => Stmt::Assign {
+                place_depth,
                 name,
                 value: rewrite_owned_frame_return_expr(value)?,
             },

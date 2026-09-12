@@ -1179,7 +1179,7 @@ fn collect_accumulators(
     loop_sites: &mut HashMap<usize, HashSet<String>>,
 ) {
     for stmt in &b.stmts {
-        if let Stmt::Assign { name, value } = stmt {
+        if let Stmt::Assign { name, value, .. } = stmt {
             if is_self_assign_shape(name, value, summaries) {
                 accs.insert(name.clone());
                 for lp in loop_ptrs.iter() {
@@ -1423,7 +1423,7 @@ impl<'a> Walker<'a> {
                 Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => {
                     self.scan(value, true, "bound to a new name", &mut shares);
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     if let Some((fname, idx)) =
                         self_own_call(name, value, self.summaries).filter(|_| self.accs.contains(name))
                     {
@@ -1586,7 +1586,7 @@ impl<'a> Walker<'a> {
             // intended ownership transfer — the fast path — so `self.cliff` is not called.
             let mut moved = Vec::new();
             match stmt {
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     collect_moved_accs(value, self.accs, &mut moved);
                     // `name = f(move name)` is the own-ABI pipeline (ownership round-trips) and
                     // `name = …move name…` re-binds `name` anyway, so the assignment itself
@@ -1995,7 +1995,7 @@ fn collect_field_push_candidates(
     out: &mut HashSet<(String, String)>,
 ) {
     for stmt in &body.stmts {
-        if let Stmt::Assign { name, value: Expr::RecordUpdate { name: _, base, fields } } = stmt {
+        if let Stmt::Assign { name, value: Expr::RecordUpdate { name: _, base, fields }, .. } = stmt {
             if matches!(base.as_ref(), Expr::Var(v) if v == name) {
                 for (f, fv) in fields {
                     if let Expr::Call { name: pn, args } = fv {
@@ -3361,7 +3361,7 @@ impl<'a> FipChecker<'a> {
                         self.miss("the fallthrough path does not return the owned value");
                     }
                 }
-                Stmt::Assign { name, value } if name == self.owner => {
+                Stmt::Assign { name, value, .. } if name == self.owner => {
                     match value {
                         Expr::RecordUpdate { base, fields, .. }
                             if self.is_owner_value(base) =>
@@ -4145,7 +4145,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     shadowed.entry(name.clone()).or_insert_with(|| env.get(name).cloned());
                     env.insert(name.clone(), proof);
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     let mut proof = self.expr(value, stmt, env);
                     if self_inplace_op(name, value).is_some()
                         || self_own_call(name, value, self.summaries).is_some()

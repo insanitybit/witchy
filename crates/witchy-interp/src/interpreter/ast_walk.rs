@@ -138,7 +138,7 @@ pub(super) fn idents_in_block(b: &Block, f: &mut dyn FnMut(&str)) {
     for stmt in &b.stmts {
         match stmt {
             Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => idents_in_expr(value, f),
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 f(name);
                 idents_in_expr(value, f);
             }

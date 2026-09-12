@@ -345,7 +345,7 @@ fn mark_nonuniform_reassigns(
     out: &mut HashSet<String>,
 ) {
     for s in &b.stmts {
-        if let Stmt::Assign { name, value } = s {
+        if let Stmt::Assign { name, value, .. } = s {
             if let Some(shape) = shape_of.get(name) {
                 let matches = match (shape, value) {
                     // A list var may be reassigned to a list literal of ANY length —
@@ -401,7 +401,7 @@ enum CallExempt<'a> {
 /// confinement (`NonLeaking`).
 fn scan_uses_block(b: &Block, mode: UseScan, call: CallExempt, out: &mut HashSet<String>) {
     for s in &b.stmts {
-        if let Stmt::Assign { name, value } = s {
+        if let Stmt::Assign { name, value, .. } = s {
             match mode {
                 UseScan::Whole => {
                     // The only SROA-compatible write is a SINGLE-field self-update
@@ -707,7 +707,7 @@ fn collect_alias_assigned_vars(
     out: &mut HashSet<String>,
 ) {
     for s in &b.stmts {
-        if let Stmt::Assign { name, value } = s {
+        if let Stmt::Assign { name, value, .. } = s {
             if !assignment_preserves_fresh_storage(
                 name,
                 value,

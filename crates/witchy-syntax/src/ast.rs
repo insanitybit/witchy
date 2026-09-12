@@ -781,6 +781,10 @@ pub enum Stmt {
     Assign {
         name: String,
         value: Expr,
+        /// Exact number of outward rebuild layers generated from the source
+        /// destination. Zero is ordinary value assignment. This boundary must
+        /// survive AST rewrites: the RHS may itself look like a place rebuild.
+        place_depth: u32,
     },
     /// `let PAT = e` — destructure via an irrefutable pattern into immutable
     /// bindings (RFC-0052). `PAT` is any pattern the refutability checker proves

@@ -839,3 +839,111 @@ fn async_and_generator_var_parameters_reject_at_the_shared_parser() {
         assert_source_facing(&error);
     }
 }
+
+#[test]
+fn assignment_provenance_spreads_follow_written_order_on_three_legs() {
+    // spec/language.md: overrides precede the trailing ..base, and written
+    // field order is independent of declaration order. These are expected
+    // effects, not a majority vote between the three execution backends.
+    let source = r#"
+type Pair:
+    a: Int
+    b: Int
+
+type Holder:
+    saved: List(String)
+
+fn reset(var words: List(String)) -> Holder:
+    words = ["new"]
+    Holder(["base"])
+
+fn mark(var log: List(Int), value: Int) -> Int:
+    log.push(value)
+    value
+
+fn base(var log: List(Int)) -> Pair:
+    log.push(3)
+    Pair(10, 20)
+
+fn replace(var pair: Pair) -> Int:
+    pair.b = 9
+    7
+
+fn main(console: Console):
+    var log: List(Int) = []
+    let named = Pair(b: mark(log, 2), a: mark(log, 1), ..base(log))
+    console.print("${named.a} ${named.b} ${log}")
+    log = []
+    let anonymous: Pair = .{b: mark(log, 2), a: mark(log, 1), ..base(log)}
+    console.print("${anonymous.a} ${anonymous.b} ${log}")
+    var explicit = Pair(1, 2)
+    explicit = .{a: replace(explicit), ..explicit}
+    console.print("${explicit.a} ${explicit.b}")
+    var projected = Pair(1, 2)
+    projected.a = replace(projected)
+    console.print("${projected.a} ${projected.b}")
+    var words = ["old"]
+    let held = Holder(saved: words, ..reset(words))
+    console.print("${held.saved[0]} ${words[0]}")
+"#;
+    assert_pop_three_legs(source, &["1 2 [2, 1, 3]", "1 2 [2, 1, 3]", "7 9", "7 9", "old new"]);
+}
+
+#[test]
+fn assignment_provenance_nested_rhs_repeats_its_own_coordinate_on_three_legs() {
+    let source = r#"
+type Pair:
+    a: Int
+    b: Int
+
+type State:
+    rows: List(Pair)
+
+fn coordinate(var calls: Int) -> Int:
+    calls = calls + 1
+    0
+
+fn replace(var state: State, var calls: Int) -> Int:
+    calls = calls * 10 + 3
+    state.rows[0].b = 9
+    7
+
+fn main(console: Console):
+    var calls = 0
+    var state = State([Pair(1, 2)])
+    let before = state
+    state.rows[coordinate(calls)] = .{a: replace(state, calls), ..state.rows[coordinate(calls)]}
+    console.print("${state.rows[0].a} ${state.rows[0].b} ${calls}")
+    console.print("${before.rows[0].a} ${before.rows[0].b}")
+    calls = 0
+    state = State([Pair(1, 2)])
+    state.rows[coordinate(calls)].a = replace(state, calls)
+    console.print("${state.rows[0].a} ${state.rows[0].b} ${calls}")
+"#;
+    assert_pop_three_legs(source, &["7 9 14", "1 2", "7 9 13"]);
+}
+
+#[test]
+fn assignment_provenance_ordinary_call_retains_its_earlier_snapshot_on_three_legs() {
+    let source = r#"
+type Pair:
+    a: Int
+    b: Int
+
+fn replace(var pair: Pair) -> Int:
+    pair.b = 9
+    7
+
+fn earlier(snapshot: Pair, ignored: Int) -> Pair:
+    snapshot
+
+fn main(console: Console):
+    var pair = Pair(1, 2)
+    pair = earlier(pair, replace(pair))
+    console.print("${pair.a} ${pair.b}")
+    var values: Dict(Int, Int) = dict.new()
+    values[1] = 2
+    console.print("${values.get_or(1, 0)}")
+"#;
+    assert_pop_three_legs(source, &["1 2", "2"]);
+}

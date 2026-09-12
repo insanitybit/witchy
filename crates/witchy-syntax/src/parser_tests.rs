@@ -483,6 +483,7 @@ fn f():
     assert_eq!(
         stmts[1],
         Stmt::Assign {
+            place_depth: 0,
             name: "x".into(),
             value: Expr::Binary {
                 op: BinOp::Add,
@@ -2083,3 +2084,26 @@ fn string_literal_record_field_names_are_rejected() {
     assert!(lit_err.to_string().contains("expected an identifier"), "{lit_err}");
 }
 
+
+#[test]
+fn assignment_provenance_keeps_the_exact_source_rhs_boundary() {
+    fn body(source: &str) -> Vec<Stmt> {
+        parse_module(source).unwrap().items.into_iter().find_map(|item| {
+            if let Item::Function(function) = item { Some(function.body.stmts) } else { None }
+        }).unwrap()
+    }
+    let source = r#"
+fn f():
+    rows[coordinate()].a = .{b: replacement(), ..rows[coordinate()].a}
+    rows = .{a: replacement(), ..rows}
+    rows = rows.__set_at(coordinate(), replacement())
+"#;
+    let statements = body(source);
+    assert!(matches!(&statements[0], Stmt::Assign { place_depth: 2, .. }));
+    assert!(matches!(&statements[1], Stmt::Assign { place_depth: 0, .. }));
+    assert!(matches!(&statements[2], Stmt::Assign { place_depth: 0, .. }));
+    // Formatting must not turn the ordinary method-call assignment into place
+    // sugar, or pull a similar-looking explicit RHS into the destination.
+    let formatted = crate::format::reformat(source).expect("format provenance fixture");
+    assert_eq!(statements, body(&formatted));
+}

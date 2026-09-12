@@ -166,7 +166,7 @@ impl DevirtScan {
                 *self.let_bind.entry(name.clone()).or_insert(0) += 1;
                 self.walk_expr(value);
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 self.reassigned.insert(name.clone());
                 if !matches!(
                     crate::analysis::self_inplace_op(name, value),

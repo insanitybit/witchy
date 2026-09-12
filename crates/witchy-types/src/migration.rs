@@ -201,7 +201,7 @@ fn walk_block(
                     mutable.remove(name);
                 }
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 let mechanical = direct_var_call(value, signatures).is_some_and(|(_, args, sig)| {
                     sig.params
                         .iter()

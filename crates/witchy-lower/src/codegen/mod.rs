@@ -4367,7 +4367,7 @@ impl<'types> Codegen<'types> {
                         }
                     }
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     // `d = insert(d, k, v)` carries the Dict's key/value types forward.
                     if let Some(vvt) = self.dict_value_valtype_of(value) {
                         self.local_dict_value_valtype.insert(name.clone(), vvt);
@@ -5722,7 +5722,7 @@ impl<'types> Codegen<'types> {
             }
             let push = match loop_body.stmts.as_slice() {
                 [Stmt::Expr(push)] => push,
-                [Stmt::Assign { name: target, value }] if target == name => value,
+                [Stmt::Assign { name: target, value, .. }] if target == name => value,
                 _ => continue,
             };
             let Expr::Call { args, .. } = push else {
@@ -11296,7 +11296,7 @@ impl<'types> Codegen<'types> {
     fn scan_escapes_block(&self, b: &Block, inner: &HashSet<String>, ok: &mut bool) {
         for stmt in &b.stmts {
             match stmt {
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     if self.outer_write_can_escape_heap(name, inner) {
                         *ok = false;
                     }
@@ -12318,7 +12318,7 @@ fn scan_scalar_record_block(
                 }
                 scan_scalar_record_expr(value, candidates, producers, bindings, disqualified);
             }
-            Stmt::Assign { name, value } if candidates.contains_key(name) => {
+            Stmt::Assign { name, value, .. } if candidates.contains_key(name) => {
                 let compatible = matches!(value,
                     Expr::Call { name: producer, .. }
                         if producers.get(producer).map(|producer| producer.layout)
@@ -12438,7 +12438,7 @@ fn expr_reads_var(e: &Expr, name: &str) -> bool {
 
 fn block_reads_var(block: &Block, name: &str) -> bool {
     block.stmts.iter().any(|statement| match statement {
-        Stmt::Assign { name: target, value } => target == name || expr_reads_var(value, name),
+        Stmt::Assign { name: target, value, .. } => target == name || expr_reads_var(value, name),
         Stmt::Let { value, .. }
         | Stmt::LetPattern { value, .. }
         | Stmt::Return(Some(value))

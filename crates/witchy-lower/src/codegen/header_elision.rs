@@ -286,7 +286,7 @@ fn check_block(
                     return false;
                 }
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 if roots.is_some_and(|roots| roots.contains(name))
                     || expr_is_exact_type(table, value, candidate)
                     || !check_expr(

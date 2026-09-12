@@ -1770,7 +1770,7 @@ fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
     fn walk_block(block: &witchy_syntax::ast::Block, out: &mut LoopRebindings) {
         for statement in &block.stmts {
             match statement {
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     if let Expr::Call { name: call, .. } = value
                         && matches!(call.as_str(), "list.push" | "list.__push")
                     {
@@ -1959,7 +1959,7 @@ impl FunctionLowerer<'_> {
                     let value = self.lower_let_value(*mutable, value)?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                     }
@@ -1974,7 +1974,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_place_assignment(name, value)? { continue; }
+                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -2327,7 +2327,7 @@ impl FunctionLowerer<'_> {
                     let value = self.lower_let_value(*mutable, value)?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                     }
@@ -2342,7 +2342,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_place_assignment(name, value)? { continue; }
+                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -2441,7 +2441,7 @@ impl FunctionLowerer<'_> {
                     let value = self.lower_let_value(*mutable, value)?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                     }
@@ -2456,7 +2456,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_place_assignment(name, value)? { continue; }
+                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -2820,7 +2820,7 @@ impl FunctionLowerer<'_> {
                     let value = self.lower_let_value(*mutable, value)?;
                     self.bind_lexical(name, value, *mutable)?;
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if !self.bindings.contains_key(name) {
                         return Err(CanonicalLoweringError::MissingBinding(name.clone()));
                     }
@@ -2835,7 +2835,7 @@ impl FunctionLowerer<'_> {
                         }
                         continue;
                     }
-                    if self.try_lower_place_assignment(name, value)? { continue; }
+                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
                     let value = self.lower_expr(value)?;
                     self.bindings.insert(name.clone(), value);
                 }
@@ -6951,14 +6951,25 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::MissingBinding(given.clone()));
             }
         }
+        // Evaluate each written override before the trailing spread base.
+        // Retain independent tokens now: a later expression may replace the
+        // binding from which an earlier reference-valued field was read.
+        let mut overrides = Vec::with_capacity(fields.len());
+        for (field, expression) in fields {
+            let value = self.lower_expr(expression)?;
+            let value = if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
+                self.clone_reference_token(value)?
+            } else { value };
+            overrides.push((field, value));
+        }
         let base = match spread {
             Some(base) => Some(self.lower_expr(base)?),
             None => None,
         };
         let mut values = Vec::with_capacity(field_names.len());
         for (index, field_name) in field_names.iter().enumerate() {
-            if let Some((_, value)) = fields.iter().find(|(given, _)| given == field_name) {
-                values.push(self.lower_expr(value)?);
+            if let Some((_, value)) = overrides.iter().find(|(given, _)| *given == field_name) {
+                values.push(*value);
             } else if let Some(base) = base {
                 let index = u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
                 let value_type = self.field_value_type(&field_types[index as usize])?;

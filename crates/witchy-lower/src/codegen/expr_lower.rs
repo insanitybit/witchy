@@ -3671,7 +3671,7 @@ impl<'types> Codegen<'types> {
         }
         let last = body.stmts.last()?;
         match last {
-            Stmt::Assign { name, value } if name == &i_var => match value {
+            Stmt::Assign { name, value, .. } if name == &i_var => match value {
                 Expr::Binary { op: BinOp::Add, lhs, rhs } => match (lhs.as_ref(), rhs.as_ref()) {
                     (Expr::Var(v), Expr::Int(1)) if v == &i_var => {}
                     _ => return None,
@@ -3682,7 +3682,7 @@ impl<'types> Codegen<'types> {
         }
         for stmt in &body.stmts[..body.stmts.len() - 1] {
             match stmt {
-                Stmt::Assign { name, value } if name != &i_var => {
+                Stmt::Assign { name, value, .. } if name != &i_var => {
                     if !Self::is_pure_scalar_expr(value) {
                         return None;
                     }

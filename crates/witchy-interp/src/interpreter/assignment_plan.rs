@@ -65,12 +65,17 @@ pub(super) fn expression_reads_assignment_place(
 pub(super) fn desugared_assignment_plan<'a>(
     root: &str,
     expression: &'a Expr,
+    depth: u32,
 ) -> Option<AssignmentPlan<'a>> {
     fn decode<'a>(
         root: &str,
         expression: &'a Expr,
         projections: &mut Vec<AssignmentProjection<'a>>,
+        remaining: u32,
     ) -> Option<&'a Expr> {
+        // Stop at the source RHS even when it has exactly the same shape as
+        // another generated rebuild. Its coordinates are separate evaluations.
+        if remaining == 0 { return Some(expression); }
         match expression {
             Expr::Call { name, args }
                 if args.len() == 3
@@ -93,7 +98,7 @@ pub(super) fn desugared_assignment_plan<'a>(
                     access,
                     expression: &args[1],
                 });
-                decode(root, &args[2], projections).or(Some(&args[2]))
+                decode(root, &args[2], projections, remaining - 1)
             }
             Expr::RecordUpdate { name: None, base, fields }
                 if fields.len() == 1
@@ -105,13 +110,13 @@ pub(super) fn desugared_assignment_plan<'a>(
             {
                 let (field, value) = &fields[0];
                 projections.push(AssignmentProjection::Field(field));
-                decode(root, value, projections).or(Some(value))
+                decode(root, value, projections, remaining - 1)
             }
             _ => None,
         }
     }
 
     let mut projections = Vec::new();
-    let replacement = decode(root, expression, &mut projections)?;
+    let replacement = decode(root, expression, &mut projections, depth)?;
     Some(AssignmentPlan { projections, replacement })
 }

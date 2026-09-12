@@ -811,7 +811,7 @@ impl<'a> Ctx<'a> {
                     next_line(rest_lines, line),
                 ))
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 reject_await(value, &self.fname)?;
                 // A plain reassignment of an in-scope `var` (a mutable local or an
                 // `own` segment/loop parameter). Kept verbatim; if the var is
@@ -1289,6 +1289,7 @@ impl<'a> Ctx<'a> {
         loop_stmts.extend(body.stmts.iter().cloned());
         loop_lines.extend(body.lines.iter().copied());
         loop_stmts.push(Stmt::Assign {
+            place_depth: 0,
             name: cursor.clone(),
             value: Expr::Binary {
                 op: BinOp::Add,
@@ -2518,7 +2519,8 @@ fn rewrite_local_select_match_stmt(
             name: name.clone(), ty: ty.clone(), mutable: *mutable,
             value: rewrite(value, rewritten_any),
         },
-        Stmt::Assign { name, value } => Stmt::Assign {
+        Stmt::Assign { name, value, place_depth } => Stmt::Assign {
+            place_depth: *place_depth,
             name: name.clone(), value: rewrite(value, rewritten_any),
         },
         Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
@@ -2656,7 +2658,8 @@ fn rewrite_local_select3_match_stmt(
             name: name.clone(), ty: ty.clone(), mutable: *mutable,
             value: rewrite(value, rewritten_any),
         },
-        Stmt::Assign { name, value } => Stmt::Assign {
+        Stmt::Assign { name, value, place_depth } => Stmt::Assign {
+            place_depth: *place_depth,
             name: name.clone(), value: rewrite(value, rewritten_any),
         },
         Stmt::LetPattern { pattern, value } => Stmt::LetPattern {
@@ -2802,7 +2805,8 @@ fn rewrite_local_select4_match_stmt(
             name: name.clone(), ty: ty.clone(), mutable: *mutable,
             value: rewrite(value, rewritten_any),
         },
-        Stmt::Assign { name, value } => Stmt::Assign {
+        Stmt::Assign { name, value, place_depth } => Stmt::Assign {
+            place_depth: *place_depth,
             name: name.clone(), value: rewrite(value, rewritten_any),
         },
         Stmt::LetPattern { pattern, value } => Stmt::LetPattern {

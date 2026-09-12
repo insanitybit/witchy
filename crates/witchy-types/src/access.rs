@@ -3547,7 +3547,7 @@ impl<'a> AccessVerifier<'a> {
                     environment.insert(name.clone(), value);
                     AccessFlow::None
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     let hint = match environment.get(name) {
                         Some(AccessFlow::Callable(signature)) => Some(signature.as_type()),
                         _ => None,

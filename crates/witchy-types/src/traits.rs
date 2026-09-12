@@ -4406,7 +4406,7 @@ fn rename_calls_block(
                 let value_ty = (ctx.resolve)(value, scope);
                 bind_typed_pattern(pattern, ctx.ctor_infos, value_ty.as_ref(), scope);
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 walk_expr(value, scope, ctx);
                 if let Some(ty) = (ctx.resolve)(value, scope) {
                     scope.insert(name.clone(), ty);

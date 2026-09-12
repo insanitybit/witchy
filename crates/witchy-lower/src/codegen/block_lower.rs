@@ -341,7 +341,7 @@ impl<'types> Codegen<'types> {
             };
             let analyzed_stmt = stmt;
             self.invalidate_range_built_lengths(analyzed_stmt);
-            let forward_sequence_store = if let Stmt::Assign { name, value } = analyzed_stmt {
+            let forward_sequence_store = if let Stmt::Assign { name, value, .. } = analyzed_stmt {
                 match crate::analysis::self_inplace_op(name, value) {
                     Some(crate::analysis::InPlaceOp::SetAt(index, _))
                         if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::InPlace)
@@ -2335,7 +2335,7 @@ impl<'types> Codegen<'types> {
             if let Some(capture) = forwarded_store {
                 seq.push(capture);
             }
-            if let Stmt::Assign { name, value } = analyzed_stmt {
+            if let Stmt::Assign { name, value, .. } = analyzed_stmt {
                 seq.extend(self.synchronize_sequence_cursors(name, value));
             }
             // Derive source-site propagation from the lowered artifact, not from

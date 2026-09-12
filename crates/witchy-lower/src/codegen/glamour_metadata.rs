@@ -2601,7 +2601,7 @@ impl<'a> BrowserPolicyAnalyzer<'a> {
         let mut result = BrowserAuthorityValue::Unknown;
         for statement in &block.stmts {
             match statement {
-                Stmt::Let { name, value, .. } | Stmt::Assign { name, value } => {
+                Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
                     let value = self.expression(owner, value, environment, ordinal)?;
                     environment.insert(name.clone(), value);
                 }

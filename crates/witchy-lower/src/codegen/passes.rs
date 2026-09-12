@@ -72,7 +72,7 @@ impl Renamer {
                 self.rename_expr(value);
                 *name = self.declare(name);
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 self.rename_expr(value);
                 *name = self.resolve(name);
             }

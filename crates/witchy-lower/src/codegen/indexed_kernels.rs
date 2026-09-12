@@ -81,7 +81,7 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
                 && matches!(args.get(1), Some(Expr::Binary { op: BinOp::Sub, lhs, rhs })
                     if matches!(lhs.as_ref(), Expr::Var(name) if name == index)
                         && matches!(rhs.as_ref(), Expr::Int(1))));
-        let decrement = matches!(last, Stmt::Assign { name, value } if name == index
+        let decrement = matches!(last, Stmt::Assign { name, value, .. } if name == index
             && matches!(value, Expr::Binary { op: BinOp::Sub, lhs, rhs }
                 if matches!(lhs.as_ref(), Expr::Var(name) if name == index)
                     && matches!(rhs.as_ref(), Expr::Int(1))));
@@ -101,7 +101,7 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
     fn final_increment(stmt: Option<&Stmt>, index: &str) -> bool {
         matches!(stmt, Some(Stmt::Expr(Expr::If { then_block, else_block: Some(else_block), .. }))
             if !block_assigns(then_block, index)
-                && matches!(else_block.stmts.as_slice(), [Stmt::Assign { name, value }]
+                && matches!(else_block.stmts.as_slice(), [Stmt::Assign { name, value, .. }]
                     if name == index && is_increment(value, index)))
     }
 
@@ -202,7 +202,7 @@ pub(super) fn guarded_range_built_loop_pairs(body: &Block) -> Vec<(Expr, Vec<(St
                 completed_countdown = normal_countdown(expr, facts);
             }
             invalidate_temporal_facts(stmt, facts);
-            if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt
+            if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } = stmt
                 && let Expr::Var(source) = value
             {
                 facts.aliases.insert(name.clone(), source.clone());
@@ -298,7 +298,7 @@ pub(super) fn guarded_range_built_nonempty_roots(body: &Block) -> Vec<(Expr, Vec
         let (Expr::Var(index), Expr::Int(1)) = (lhs.as_ref(), rhs.as_ref()) else { return None };
         let bound = aliases.get(index)?;
         let built = facts.get(bound)?;
-        let [first, Stmt::Assign { name, value }] = countdown_body.stmts.as_slice() else { return None };
+        let [first, Stmt::Assign { name, value, .. }] = countdown_body.stmts.as_slice() else { return None };
         if name != index || !matches!(value, Expr::Binary { op: BinOp::Sub, lhs, rhs } if matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))) { return None; }
         let writes_built = matches!(stmt_value(first), Some(Expr::Call { name, args }) if name == intrinsics::LIST_SET_AT && matches!((&args[0], &args[1]), (Expr::Var(root), Expr::Binary { op: BinOp::Sub, lhs, rhs }) if built.contains(root) && matches!(lhs.as_ref(), Expr::Var(v) if v == index) && matches!(rhs.as_ref(), Expr::Int(1))));
         if !writes_built { return None; }
@@ -329,7 +329,7 @@ pub(super) fn guarded_range_built_nonempty_roots(body: &Block) -> Vec<(Expr, Vec
             out.push(proof);
         }
         invalidate_entry_facts(stmt, &mut facts, &mut aliases);
-        if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value } = stmt {
+        if let Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } = stmt {
             if let Expr::Var(source) = value { aliases.insert(name.clone(), source.clone()); } else { aliases.remove(name); }
         }
         if let (Some(Stmt::Let { name: list, value: Expr::List(items), .. }), Stmt::Expr(Expr::For { iter, body, .. })) = (position.checked_sub(1).and_then(|i| body.stmts.get(i)), stmt)
@@ -673,7 +673,7 @@ impl<'types> Codegen<'types> {
     ) -> bool {
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, value, .. } | Stmt::Assign { name, value } => {
+                Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. } => {
                     if !self.range_value_expr_writes_preserve(
                         value,
                         domain,
@@ -1018,7 +1018,7 @@ impl<'types> Codegen<'types> {
         let (Expr::Int(0), Expr::Var(bound)) = (lo.as_ref(), hi.as_ref()) else { return };
         let push = match body.stmts.as_slice() {
             [Stmt::Expr(push)] => push,
-            [Stmt::Assign { name: target, value }] if target == list => value,
+            [Stmt::Assign { name: target, value, .. }] if target == list => value,
             _ => return,
         };
         let Some(analysis::InPlaceOp::Push(element)) = analysis::self_inplace_op(list, push)
@@ -1137,7 +1137,7 @@ impl<'types> Codegen<'types> {
         let Stmt::Expr(Expr::For { var, iter, body }) = current else { return };
         let Expr::Range { lo, hi, inclusive: false } = iter.as_ref() else { return };
         let (Expr::Int(0), Expr::Var(bound)) = (lo.as_ref(), hi.as_ref()) else { return };
-        let [Stmt::Assign { name: dst, value }] = body.stmts.as_slice() else { return };
+        let [Stmt::Assign { name: dst, value, .. }] = body.stmts.as_slice() else { return };
         let Some(analysis::InPlaceOp::SetAt(index, element)) = analysis::self_inplace_op(dst, value)
         else { return };
         let Expr::Call { name: at, args } = element else { return };

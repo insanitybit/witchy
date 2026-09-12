@@ -2754,7 +2754,7 @@ fn resolve_in_block(
                     vars.insert(name.clone(), t);
                 }
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 resolve_in_expr(value, sig, by_base, vars);
                 match expr_nominal_type(value, sig, vars) {
                     Some(t) => {
@@ -4264,7 +4264,7 @@ fn check_reserved_stmt(
             }
             check_reserved_expr(module_name, value, line, generated_anon_types)
         }
-        Stmt::Assign { name, value } => {
+        Stmt::Assign { name, value, .. } => {
             check_reserved_binding(module_name, "assignment target", name, line)?;
             check_reserved_expr(module_name, value, line, generated_anon_types)
         }

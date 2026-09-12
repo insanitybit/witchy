@@ -7418,7 +7418,7 @@ impl Checker {
                     }
                     ty = Ty::Unit;
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, .. } => {
                     let Some(existing) = self.lookup(name) else {
                         self.pop();
                         return terr(format!("assignment to unbound variable `{name}`"));

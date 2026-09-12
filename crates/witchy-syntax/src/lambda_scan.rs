@@ -119,7 +119,7 @@ fn fv_block(block: &Block, s: &mut ScanState) {
                 fv_expr(value, s);
                 s.bind(name.clone());
             }
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { name, value, .. } => {
                 s.assign(name);
                 fv_expr(value, s);
             }

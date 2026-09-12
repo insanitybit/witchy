@@ -1638,9 +1638,9 @@ impl Interpreter {
                     env.define(name, value, *mutable);
                     Ok(Value::Unit)
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if !self.try_inplace_assign(name, value, env)?
-                        && !self.try_desugared_place_assign(name, value, env)?
+                        && !self.try_desugared_place_assign(name, value, *place_depth, env)?
                     {
                         let value = self.eval(value, env)?;
                         match env.assign(name, value) {
@@ -1883,9 +1883,9 @@ impl Interpreter {
                     env.define(name, v, *mutable);
                     result = Value::Unit;
                 }
-                Stmt::Assign { name, value } => {
+                Stmt::Assign { name, value, place_depth } => {
                     if !self.try_inplace_assign(name, value, env)?
-                        && !self.try_desugared_place_assign(name, value, env)?
+                        && !self.try_desugared_place_assign(name, value, *place_depth, env)?
                     {
                         let v = self.eval(value, env)?;
                         match env.assign(name, v) {
@@ -2237,16 +2237,21 @@ impl Interpreter {
                 })
             }
             Expr::RecordUpdate { name: _, base, fields } => {
+                // Surface spread evaluates overrides in written order, then
+                // its trailing base (spec/language.md, Evaluation order).
+                let mut overrides = Vec::with_capacity(fields.len());
+                for (field, expression) in fields {
+                    overrides.push((field, self.eval(expression, env)?));
+                }
                 let v = self.eval(base, env)?;
                 let Value::Ctor { name, fields: mut values } = v else {
                     return err(format!("`update` requires a record value, got `{v}`"));
                 };
-                for (fname, vexpr) in fields {
+                for (fname, val) in overrides {
                     let idx = self
                         .record_fields
                         .get(&*name)
                         .and_then(|names| names.iter().position(|n| n == fname));
-                    let val = self.eval(vexpr, env)?;
                     match idx.filter(|i| *i < values.len()) {
                         Some(i) => Rc::make_mut(&mut values)[i] = val,
                         None => return err(format!("`{name}` has no field `{fname}`")),

@@ -39,10 +39,10 @@ fn assignment_read_matches(expression: &Expr, root: &str, path: &[AssignmentProj
     }
 }
 
-fn assignment_plan<'a>(root: &str, expression: &'a Expr) -> Option<(Vec<AssignmentProjection<'a>>, &'a Expr)> {
+fn assignment_plan<'a>(root: &str, expression: &'a Expr, depth: u32) -> Option<(Vec<AssignmentProjection<'a>>, &'a Expr)> {
     let mut path = Vec::new();
     let mut replacement = expression;
-    loop {
+    for _ in 0..depth {
         match replacement {
             Expr::Call { name, args }
                 if name == witchy_syntax::intrinsics::LIST_SET_AT && args.len() == 3
@@ -57,7 +57,7 @@ fn assignment_plan<'a>(root: &str, expression: &'a Expr) -> Option<(Vec<Assignme
                 path.push(AssignmentProjection::Field { base, field: &fields[0].0 });
                 replacement = &fields[0].1;
             }
-            _ => break,
+            _ => return None,
         }
     }
     (!path.is_empty()).then_some((path, replacement))
@@ -79,8 +79,16 @@ pub(super) fn source_place_root(expression: &Expr) -> Option<&str> {
 impl FunctionLowerer<'_> {
     /// The source assignment captures coordinates, not the old root's token.
     /// Its RHS may replace that root or modify a sibling before the store.
-    pub(super) fn try_lower_place_assignment(&mut self, root: &str, expression: &Expr) -> Result<bool, CanonicalLoweringError> {
-        let Some((path, replacement)) = assignment_plan(root, expression) else {
+    pub(super) fn try_lower_place_assignment(&mut self, root: &str, expression: &Expr, depth: u32) -> Result<bool, CanonicalLoweringError> {
+        if depth == 0 {
+            return Ok(false);
+        }
+        // Parser provenance owns the RHS boundary. Shape checking validates
+        // those exact layers; it never absorbs a similar-looking RHS update.
+        let Some((path, replacement)) = assignment_plan(root, expression, depth) else {
+            // This helper owns record/list places, not every typed assignment
+            // family. Leave the WHOLE expression to its existing typed lowerer
+            // (for example dictionary insertion), never a partial decoded path.
             return Ok(false);
         };
         let mut place = PreparedWriteBack { root: root.to_owned(), projections: Vec::with_capacity(path.len()) };

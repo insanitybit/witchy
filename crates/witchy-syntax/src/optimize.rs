@@ -91,7 +91,7 @@ fn opt_stmt(s: &mut Stmt, consts: &mut Consts) {
                 consts.remove(name);
             }
         }
-        Stmt::Assign { name, value } => {
+        Stmt::Assign { name, value, .. } => {
             opt_expr(value, consts);
             consts.remove(name); // reassigned: no longer its old constant
         }
