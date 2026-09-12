@@ -29,10 +29,20 @@ pub(crate) enum CanonicalPipelineError {
 pub(crate) fn admit_checked_module(
     checked: &CheckedModule,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalPipelineError> {
+    admit_checked_module_with_observer(checked, |_, _| ())
+        .map(|(artifact, ())| artifact)
+}
+
+pub(crate) fn admit_checked_module_with_observer<R>(
+    checked: &CheckedModule,
+    observe: impl FnOnce(&ValidatedSafeWir, &AdmittedCanonicalArtifact) -> R,
+) -> Result<(AdmittedCanonicalArtifact, R), CanonicalPipelineError> {
     let source = checked
         .canonical_source()
         .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
-    admit_checked_source(source)
+    let validated = validate_checked_source(source)?;
+    witchy_wir::admit_canonical_with_observer(validated, source, observe)
+        .map_err(CanonicalPipelineError::Admission)
 }
 
 pub(crate) fn admit_checked_source(

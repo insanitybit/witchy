@@ -8,7 +8,70 @@
 use witchy::codegen;
 use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
-use witchy_wir::canonical_safewir::FunctionId;
+use witchy_wir::canonical_safewir::{FunctionId, ValidatedSafeWir};
+
+#[test]
+fn admitted_observer_preserves_exact_artifact_and_execution() {
+    let source = r#"
+fn make(console: Console, text: String) -> fn() -> Nil:
+    fn(): console.print(text)
+
+fn main(console: Console):
+    let log = make(console, "held" + "!")
+    log()
+    log()
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("observer source checks");
+    let ordinary = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("ordinary admission");
+    assert!(!ordinary.owner_bridges().is_empty(), "exercise sealed owner metadata");
+    let mut calls = 0;
+    let (observed, output) = codegen::compile_checked_module_artifact_with_observer(
+        &checked, |validated, artifact| {
+            calls += 1;
+            assert!(artifact == &ordinary, "complete artifact equality inside observer");
+            oracle_validated(&checked, validated, artifact, "observed owner capture")
+        },
+    ).expect_lowered("observed admission");
+    assert_eq!(calls, 1);
+    assert!(observed == ordinary, "bytes and all sealed metadata remain identical");
+    assert_eq!(output, ["held!", "held!"]);
+}
+
+#[test]
+fn admitted_observer_is_not_called_on_refusal() {
+    let unsupported = witchy::resolve_std_only_checked("fn main(exec: Exec):\n    Nil\n")
+        .expect("backend-unsupported source checks");
+    let ast = witchy_syntax::parser::parse_module("fn main() -> Int:\n    1\n")
+        .expect("AST-only source parses");
+    let ast_only = witchy_types::pipeline::link_checked(
+        vec![("main".to_owned(), ast)], "main", |_, _, _| Ok(Default::default()),
+    ).expect("AST-only module passes real source checking");
+    assert!(ast_only.canonical_source().is_none(), "AST checking cannot mint retained source authority");
+    for (checked, unsupported) in [(unsupported, true), (ast_only, false)] {
+        let mut calls = 0;
+        let outcome = codegen::compile_checked_module_artifact_with_observer(
+            &checked, |_, _| { calls += 1; },
+        );
+        assert_eq!(calls, 0, "no observer before successful admission");
+        match (outcome, unsupported) {
+            (codegen::LoweringOutcome::Unsupported(_), true)
+            | (codegen::LoweringOutcome::Rejected(_), false) => {}
+            _ => panic!("refusal classification must not change"),
+        }
+    }
+}
+
+#[test]
+fn admitted_observer_examples_three_legs() {
+    for (label, source) in [
+        ("hello", include_str!("../../examples/hello/src/hello.witchy")),
+        ("wrap", include_str!("../../examples/wrap/src/wrap.witchy")),
+        ("jq", include_str!("../../examples/jq/src/jq.witchy")),
+    ] {
+        oracle(source, label);
+    }
+}
 
 #[test]
 fn result_coalescing_is_lazy_and_releases_both_variant_payloads() {
@@ -460,13 +523,16 @@ fn main(console: Console):
 
 fn oracle(source: &str, label: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
-    let artifact = codegen::compile_checked_module_artifact(&checked)
+    let (_, output) = codegen::compile_checked_module_artifact_with_observer(
+        &checked, |validated, artifact| oracle_validated(&checked, validated, artifact, label),
+    )
         .expect_lowered(&format!("{label}: the foundation subset admits this program"));
-    oracle_checked(&checked, &artifact, label)
+    output
 }
 
-fn oracle_checked(
+fn oracle_validated(
     checked: &witchy_types::pipeline::CheckedModule,
+    validated: &ValidatedSafeWir,
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     label: &str,
 ) -> Vec<String> {
@@ -475,7 +541,6 @@ fn oracle_checked(
     witchy_interp::compiler_natives::install();
     let entry = artifact.entry().unwrap_or_else(|| panic!("{label}: a program has an entry"));
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
-    let validated = codegen::validate_checked_module_for_oracle(checked).unwrap_or_else(|e| panic!("{label}: {e}"));
     let arguments = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
     // The oracle and the runtime both see the working directory and the
     // process environment (the dev grants `witchy run` derives), so an
@@ -491,7 +556,7 @@ fn oracle_checked(
             ..Default::default()
         },
     };
-    let run = interpret_entry_program(&validated, function, arguments, &[], config)
+    let run = interpret_entry_program(validated, function, arguments, &[], config)
         .unwrap_or_else(|e| panic!("{label}: oracle refused: {e:?}"));
 
     // Use the same authenticated checked source, not reconstructed raw AST.
@@ -703,19 +768,20 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
         // Only programs the foundation subset admits are the oracle's
         // business; refused programs are the census's.
         let Ok(checked) = witchy::resolve_std_only_checked(&source) else { continue };
-        let codegen::LoweringOutcome::Lowered(artifact) =
-            codegen::compile_checked_module_artifact(&checked)
+        let codegen::LoweringOutcome::Lowered((_, ran)) =
+            codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
+                // The semantic oracle deliberately has no network-I/O world.
+                // Preserve the sweep's policy after full production admission.
+                if artifact.entry().is_some_and(|entry| entry.capabilities().contains(
+                    &witchy_wir::CanonicalEntryCapability::Net,
+                )) {
+                    return false;
+                }
+                oracle_validated(&checked, validated, artifact, &format!("examples/{name}"));
+                true
+            })
         else { continue };
-        // The semantic oracle deliberately has no network-I/O world. Net
-        // admission and execution are covered by the bounded real-socket
-        // tests; long-running servers cannot participate in this sweep.
-        if artifact.entry().is_some_and(|entry| entry.capabilities().contains(
-            &witchy_wir::CanonicalEntryCapability::Net,
-        )) {
-            continue;
-        }
-        oracle_checked(&checked, &artifact, &format!("examples/{name}"));
-        checked_any = true;
+        checked_any |= ran;
     }
     assert!(checked_any, "at least one example admits");
 }

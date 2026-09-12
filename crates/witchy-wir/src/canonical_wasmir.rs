@@ -4053,7 +4053,7 @@ fn encode_function(
 }
 
 fn authorize_wasm_ir(
-    validated: ValidatedSafeWir,
+    validated: &ValidatedSafeWir,
     source_witness: &witchy_types::pipeline::CanonicalCheckedSource,
     entry: Option<&CanonicalEntry>,
 ) -> Result<CheckedWasmIr, EncodeError> {
@@ -4062,11 +4062,11 @@ fn authorize_wasm_ir(
 
 #[cfg(test)]
 fn authorize_wasm_ir_for_test(validated: ValidatedSafeWir) -> Result<CheckedWasmIr, EncodeError> {
-    authorize_wasm_ir_inner(validated, None, None)
+    authorize_wasm_ir_inner(&validated, None, None)
 }
 
 fn authorize_wasm_ir_inner(
-    validated: ValidatedSafeWir,
+    validated: &ValidatedSafeWir,
     source_witness: Option<&witchy_types::pipeline::CanonicalCheckedSource>,
     entry_payload: Option<Vec<u8>>,
 ) -> Result<CheckedWasmIr, EncodeError> {
@@ -4082,7 +4082,7 @@ fn authorize_wasm_ir_inner(
     let checked_source = validated.checked_source();
     let final_module_digest = validated.final_module_digest();
     let authority_digest = validated.authority_digest();
-    let mut target = lower_validated(&validated).map_err(EncodeError::Lowering)?;
+    let mut target = lower_validated(validated).map_err(EncodeError::Lowering)?;
     target.entry_payload = entry_payload;
     let receipt = check_correspondence(&source, &target).map_err(EncodeError::Correspondence)?;
     if receipt.mappings.len() != expected_source_items(&source).len() {
@@ -6982,8 +6982,20 @@ pub fn admit_canonical(
     validated: ValidatedSafeWir,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
 ) -> Result<AdmittedCanonicalArtifact, CanonicalAdmissionError> {
+    admit_canonical_with_observer(validated, source, |_, _| ())
+        .map(|(artifact, ())| artifact)
+}
+
+/// Observe the original immutable validated graph only after full production
+/// admission succeeds. The graph is neither cloned nor retained by the artifact.
+#[cfg(not(test))]
+pub fn admit_canonical_with_observer<R>(
+    validated: ValidatedSafeWir,
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    observe: impl FnOnce(&ValidatedSafeWir, &AdmittedCanonicalArtifact) -> R,
+) -> Result<(AdmittedCanonicalArtifact, R), CanonicalAdmissionError> {
     let entry = derive_entry(&validated, source)?;
-    let checked = authorize_wasm_ir(validated, source, entry.as_ref()).map_err(|error| match error {
+    let checked = authorize_wasm_ir(&validated, source, entry.as_ref()).map_err(|error| match error {
         EncodeError::Lowering(_) | EncodeError::UnsupportedLayout { .. } => {
             CanonicalAdmissionError::Lowering(format!("{error:?}"))
         }
@@ -7003,7 +7015,9 @@ pub fn admit_canonical(
         authority_digest,
     } = checked;
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
-    admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, entry)
+    let artifact = admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, entry)?;
+    let observation = observe(&validated, &artifact);
+    Ok((artifact, observation))
 }
 
 #[cfg(test)]

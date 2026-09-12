@@ -31,6 +31,8 @@ pub use canonical_wasmir::{
     AdmittedVmService, AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,
     CanonicalEntryResult, HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT, admit_canonical,
 };
+#[cfg(not(test))]
+pub use canonical_wasmir::admit_canonical_with_observer;
 pub mod safewir;
 pub mod safewir_adapter;
 mod safewir_call;

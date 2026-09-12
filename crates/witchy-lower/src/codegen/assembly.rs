@@ -3297,9 +3297,24 @@ pub fn compile_checked_module_artifact(
     canonical_artifact_outcome(crate::canonical_pipeline::admit_checked_module(checked))
 }
 
-fn canonical_artifact_outcome(
-    result: Result<witchy_wir::AdmittedCanonicalArtifact, crate::canonical_pipeline::CanonicalPipelineError>,
-) -> LoweringOutcome<witchy_wir::AdmittedCanonicalArtifact> {
+/// Run an observer on the exact production-validated graph and its admitted
+/// artifact. Refusal never calls the observer; ordinary compilation shares the
+/// same initial/final validation, backend correspondence and byte matcher.
+pub fn compile_checked_module_artifact_with_observer<R>(
+    checked: &witchy_types::pipeline::CheckedModule,
+    observe: impl FnOnce(
+        &witchy_wir::canonical_safewir::ValidatedSafeWir,
+        &witchy_wir::AdmittedCanonicalArtifact,
+    ) -> R,
+) -> LoweringOutcome<(witchy_wir::AdmittedCanonicalArtifact, R)> {
+    canonical_artifact_outcome(
+        crate::canonical_pipeline::admit_checked_module_with_observer(checked, observe),
+    )
+}
+
+fn canonical_artifact_outcome<T>(
+    result: Result<T, crate::canonical_pipeline::CanonicalPipelineError>,
+) -> LoweringOutcome<T> {
     match result {
         Ok(artifact) => LoweringOutcome::Lowered(artifact),
         Err(crate::canonical_pipeline::CanonicalPipelineError::Layout(error)) => {
