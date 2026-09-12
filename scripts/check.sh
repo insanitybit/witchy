@@ -532,21 +532,17 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         nextest_sel=(--workspace)
     fi
-    if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" "${nextest_sel[@]}" -E "$excl")
-    elif [ -n "$gate_test_jobs" ]; then
-        test_cmd=(cargo nextest run "$max_fail" -j "$gate_test_jobs" "${nextest_sel[@]}")
-    elif [ -n "$excl" ]; then
-        test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}" -E "$excl")
-    else
-        test_cmd=(cargo nextest run "$max_fail" "${nextest_sel[@]}")
+    nextest_cmd=(cargo nextest run "$max_fail")
+    if [ -n "$gate_test_jobs" ]; then
+        nextest_cmd+=(-j "$gate_test_jobs")
     fi
+    nextest_cmd+=("${nextest_sel[@]}")
     # The ordinary profile excludes the exhaustive differential-fuzz binary.
     # An explicit selector is an intentional opt-in (used by the focused
     # shard and nightly jobs), so bypass that default filter instead of
     # silently turning the shard into a zero-test run.
     if [[ " ${nextest_sel[*]} " == *" --test differential_fuzz "* ]]; then
-        test_cmd+=(--ignore-default-filter --profile nightly)
+        nextest_cmd+=(--ignore-default-filter --profile nightly)
     fi
 
     # RFC-0165 A1: witchy-wir's native canonical/adapter tests must be part of
@@ -558,7 +554,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # witchy-wir, while workspace, lowerer, and WIR batches do.
     case " ${nextest_sel[*]} " in
         *" --workspace "* | *" -p witchy-wir "* | *" -p witchy-lower "*)
-            test_cmd+=(--features witchy-wir/native)
+            nextest_cmd+=(--features witchy-wir/native)
             ;;
     esac
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
@@ -572,10 +568,11 @@ if cargo nextest --version >/dev/null 2>&1; then
     #
     # Narrow deliberately: only when the selection is exactly that one binary,
     # so a mapper bug that genuinely selects nothing still fails loudly here.
+    main_no_tests_warn=0
     if [ "${#nextest_sel[@]}" -eq 2 ] \
         && [ "${nextest_sel[0]}" = "--test" ] \
         && [ "${nextest_sel[1]}" = "merge_queue" ]; then
-        test_cmd+=(--no-tests=warn)
+        main_no_tests_warn=1
     fi
     # RFC-0159 follow-up: replay the tests that red the PREVIOUS attempt for this
     # change, before the full suite.
@@ -585,10 +582,20 @@ if cargo nextest --version >/dev/null 2>&1; then
     # it -- RFC-0158 did that eight times. Retries do not get cheaper either:
     # measured over 173 paired attempts, TRY2/TRY1 duration is p50 1.00.
     #
-    # This runs INSIDE the tests stage, after the build, so it costs only the
-    # named tests rather than a second compile. It can only FAIL a gate early;
-    # passing it proceeds to the full suite, so nothing is adjudicated by the
-    # preflight alone and the merge guarantee is unchanged.
+    # Nine recent green-preflight gates immediately repeated ten passing tests
+    # in the main run: 169.137s of summed per-test work. The tests overlap, so
+    # the defensible wall-time saving is smaller (roughly 1-55s per affected
+    # gate, commonly 12-30s when a serialized performance test is replayed).
+    #
+    # Preflight and the main run share one fully composed command context. For
+    # an exact workspace selection, a green preflight satisfies its
+    # intersection with the landing selection and the main invocation runs the
+    # exact remainder. Their union is the original selection. Remembered
+    # failures are capped at eight by the coordinator, while the workspace has
+    # thousands of selected tests, so subtraction cannot create an empty main
+    # run. Scoped selections keep the replay in the main run: without a
+    # machine-readable preflight match count, `--no-tests=warn` on a possibly
+    # exhausted remainder could hide a mapper error.
     preflight_cmd=()
     if [ -n "${WITCHY_GATE_PREFLIGHT_EXPR:-}" ]; then
         # --no-tests=warn: the replay expression names tests that red the LAST
@@ -602,9 +609,20 @@ if cargo nextest --version >/dev/null 2>&1; then
         # optimization -- when it has nothing to replay the correct outcome is
         # to fall through to the full run. `warn` over `pass` so the empty
         # replay still shows up in the log.
-        preflight_cmd=(cargo nextest run --max-fail=1:immediate --no-tests=warn \
-            "${nextest_sel[@]}" -E "${WITCHY_GATE_PREFLIGHT_EXPR}")
+        preflight_expr="($excl) and (${WITCHY_GATE_PREFLIGHT_EXPR})"
+        preflight_cmd=("${nextest_cmd[@]}" --no-tests=warn -E "$preflight_expr")
+        if [ "${#nextest_sel[@]}" -eq 1 ] \
+            && [ "${nextest_sel[0]}" = "--workspace" ]; then
+            main_expr="($excl) and not (${WITCHY_GATE_PREFLIGHT_EXPR})"
+        else
+            main_expr="$excl"
+        fi
+    else
+        main_expr="$excl"
     fi
+    test_cmd=("${nextest_cmd[@]}")
+    [ "$main_no_tests_warn" -eq 0 ] || test_cmd+=(--no-tests=warn)
+    [ -z "$main_expr" ] || test_cmd+=(-E "$main_expr")
 
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while

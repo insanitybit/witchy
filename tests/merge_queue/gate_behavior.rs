@@ -7,3 +7,7 @@ mod prewarm {
 mod state_and_gate {
     include!("gate_behavior/state_and_gate.rs");
 }
+
+mod preflight_reuse {
+    include!("gate_behavior/preflight_reuse.rs");
+}
