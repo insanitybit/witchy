@@ -62,6 +62,7 @@ fn main(console: Console, net: Net[Connect, Tcp]):
         loop {
             match listener.accept() {
                 Ok((mut socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                     socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
                     let mut request = [0; 4];
@@ -311,6 +312,7 @@ fn two_byte_peer(listener: TcpListener, run: impl FnOnce() -> Result<(), String>
         loop {
             match listener.accept() {
                 Ok((mut socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
                     socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
                     socket.write_all(b"ab").unwrap();
                     break;
