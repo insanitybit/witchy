@@ -142,6 +142,7 @@ gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
 gate_cmd_is_default=1
 [ -z "${MERGE_QUEUE_GATE_CMD+x}" ] || gate_cmd_is_default=0
 coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
+loaded_coordinator_hash=""
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-0}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
 workspace_test_budget="${MERGE_QUEUE_WORKSPACE_TEST_BUDGET:-1800}"
@@ -966,6 +967,48 @@ acquire_coordinator_lock() {
     echo "$$" >"$coordinator_lock/pid"
     holding_coordinator_lock=1
     coordinator_owner_shell_pid="${BASHPID:-$$}"
+}
+
+# `exec` preserves the coordinator PID and does not run the old shell's EXIT
+# trap. The new shell may therefore adopt the lifetime lock only when both
+# persistent owner files already name its own PID and the old shell supplied a
+# one-use marker. A separately started shell cannot satisfy the PID equality.
+adopt_reexec_coordinator_lock() {
+    [ "${MERGE_QUEUE_REEXEC_OWNER_PID:-}" = "$$" ] || return 1
+    [ "$(cat "$coordinator_lock/pid" 2>/dev/null || true)" = "$$" ] || return 1
+    [ "$(cat "$qdir/coordinator.pid" 2>/dev/null || true)" = "$$" ] || return 1
+    holding_coordinator_lock=1
+    coordinator_owner_shell_pid="${BASHPID:-$$}"
+    unset MERGE_QUEUE_REEXEC_OWNER_PID
+}
+
+# Bash loads function bodies once, so a long-lived coordinator otherwise keeps
+# using old queue policy after a script-only change lands. Reload only at the
+# attempt boundary, with no gate process or short-lived lock active. The file
+# we execute must be byte-for-byte the committed master blob; dirty checkout
+# bytes and syntax-invalid updates stay dormant for operator recovery.
+reexec_if_coordinator_updated() {
+    local once="$1" committed_hash disk_hash
+    [ "$once" -eq 0 ] || return 0
+    [ -z "$active_gate_pgid" ] || return 0
+    [ "$holding_lock" -eq 0 ] || return 0
+    [ "$holding_change_lock" -eq 0 ] || return 0
+    coordinator_lock_owned || return 0
+    committed_hash="$(git -C "$root" rev-parse 'master:scripts/merge-queue.sh' 2>/dev/null || true)"
+    [ -n "$committed_hash" ] || return 0
+    [ "$committed_hash" != "$loaded_coordinator_hash" ] || return 0
+    disk_hash="$(git -C "$root" hash-object "$coordinator_script" 2>/dev/null || true)"
+    if [ "$disk_hash" != "$committed_hash" ]; then
+        note "coordinator update is committed but working-tree script differs; deferring reload"
+        return 0
+    fi
+    if ! bash -n "$coordinator_script"; then
+        note "coordinator update failed bash -n; deferring reload"
+        return 0
+    fi
+    note "reloading committed coordinator update (pid $$ stays constant)"
+    record coordinator_reexec "" pid "$$" from "$loaded_coordinator_hash" to "$committed_hash"
+    MERGE_QUEUE_REEXEC_OWNER_PID="$$" exec "$coordinator_script" run
 }
 
 coordinator_pid() {
@@ -3138,6 +3181,7 @@ flush_deferred_sweep() {
 cmd_run() {
     local once=0
     [ "${1:-}" = "--once" ] && once=1
+    loaded_coordinator_hash="$(git -C "$root" hash-object "$coordinator_script" 2>/dev/null || true)"
     if [ -f "$qdir/migrating" ]; then
         note "state migration is in progress; refusing to start a coordinator"
         exit 1
@@ -3156,7 +3200,9 @@ cmd_run() {
         note "a coordinator is already running (pid $cpid); refusing to start a second"
         exit 1
     fi
-    if ! acquire_coordinator_lock; then
+    if [ "$once" -eq 0 ] && adopt_reexec_coordinator_lock; then
+        note "adopted coordinator singleton across re-exec (pid $$)"
+    elif ! acquire_coordinator_lock; then
         cpid="$(cat "$coordinator_lock/pid" 2>/dev/null || true)"
         if [ "$once" -eq 1 ]; then
             note "a coordinator (pid ${cpid:-?}) won the startup race — it will drain the queue; not starting a --once run"
@@ -3267,6 +3313,7 @@ cmd_run() {
         fi
         local process_status=0
         process_one "$queue_dir/$f" || process_status=$?
+        reexec_if_coordinator_updated "$once"
         [ "$process_status" -ne 2 ] && deferrals=0
         [ "$process_status" -eq 0 ] && continue
         if [ "$process_status" -eq 2 ]; then

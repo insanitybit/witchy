@@ -1426,6 +1426,131 @@ fn daemon_enters_an_independent_process_group() {
 }
 
 #[test]
+fn coordinator_reexecs_committed_script_between_attempts_without_losing_singleton() {
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let root = temp.path().join("repo");
+    let state = temp.path().join("state");
+    let gate_worktree = temp.path().join("gate");
+    let scripts = root.join("scripts");
+    fs::create_dir_all(&scripts).expect("create fixture scripts directory");
+    fs::copy(
+        source_root.join("scripts/merge-queue.sh"),
+        scripts.join("merge-queue.sh"),
+    )
+    .expect("copy coordinator script");
+    fs::copy(
+        source_root.join("scripts/state-paths.sh"),
+        scripts.join("state-paths.sh"),
+    )
+    .expect("copy state path helper");
+    fs::write(root.join("base.txt"), "base\n").expect("write base file");
+    run_git(&root, &["init", "-b", "master"]);
+    run_git(
+        &root,
+        &["config", "user.email", "queue-test@witchy.invalid"],
+    );
+    run_git(&root, &["config", "user.name", "Witchy Queue Test"]);
+    run_git(&root, &["add", "."]);
+    run_git(&root, &["commit", "-m", "base"]);
+
+    let marker = temp.path().join("reexec-marker");
+    run_git(&root, &["switch", "-c", "a"]);
+    fs::write(root.join("a.txt"), "a\n").expect("write first change");
+    let script_path = scripts.join("merge-queue.sh");
+    let original = fs::read_to_string(&script_path).expect("read coordinator script");
+    let instrumented = original.replacen(
+        "set -euo pipefail\n",
+        "set -euo pipefail\n[ -z \"${MERGE_QUEUE_REEXEC_TEST_MARKER:-}\" ] || printf '%s\\n' \"$$\" >\"$MERGE_QUEUE_REEXEC_TEST_MARKER\"\n",
+        1,
+    );
+    assert_ne!(
+        instrumented, original,
+        "could not instrument reexec generation"
+    );
+    fs::write(&script_path, instrumented).expect("write second coordinator generation");
+    run_git(&root, &["add", "a.txt", "scripts/merge-queue.sh"]);
+    run_git(&root, &["commit", "-m", "update coordinator"]);
+    run_git(&root, &["switch", "-c", "b"]);
+    fs::write(root.join("b.txt"), "b\n").expect("write second change");
+    run_git(&root, &["add", "b.txt"]);
+    run_git(&root, &["commit", "-m", "add second change"]);
+    run_git(&root, &["switch", "master"]);
+
+    let fixture = QueueFixture {
+        _temp: temp,
+        root,
+        state,
+        gate_worktree,
+    };
+    let coordinator_script = fixture.root.join("scripts/merge-queue.sh");
+    fixture
+        .mq_command(&["submit", "a"], "true")
+        .env("MERGE_QUEUE_COORDINATOR_SCRIPT", &coordinator_script)
+        .output()
+        .expect("submit coordinator update");
+    fixture
+        .mq_command(&["submit", "--after", "a", "b"], "true")
+        .env("MERGE_QUEUE_COORDINATOR_SCRIPT", &coordinator_script)
+        .output()
+        .expect("submit change behind coordinator update");
+
+    let mut coordinator = fixture
+        .mq_command(&["run"], "true")
+        .env("MERGE_QUEUE_COORDINATOR_SCRIPT", &coordinator_script)
+        .env("MERGE_QUEUE_REEXEC_TEST_MARKER", &marker)
+        .env("MERGE_QUEUE_BATCH_MAX", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start persistent coordinator");
+    let pid = coordinator.id() as i32;
+    let guard = ProcessGroupGuard(pid);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let journal = fs::read_to_string(fixture.state.join("journal.jsonl")).unwrap_or_default();
+        let merged = journal
+            .lines()
+            .filter(|line| line.contains("\"event\":\"merged\""))
+            .count();
+        if merged == 2 && marker.exists() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "coordinator did not reload and drain both attempts; journal:\n{journal}",
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    assert_eq!(
+        fs::read_to_string(&marker)
+            .expect("read reexec marker")
+            .trim(),
+        pid.to_string(),
+        "reexec changed the coordinator pid",
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.state.join("coordinator.lock/pid"))
+            .expect("read singleton lock owner")
+            .trim(),
+        pid.to_string(),
+        "reexec lost singleton ownership",
+    );
+    let reexecs = fixture
+        .journal()
+        .iter()
+        .filter(|event| event["event"] == "coordinator_reexec")
+        .count();
+    assert_eq!(reexecs, 1, "expected exactly one committed-script reload");
+    assert!(process_is_alive(pid), "coordinator exited after reexec");
+
+    drop(guard);
+    let _ = coordinator.wait();
+}
+
+#[test]
 fn concurrent_daemon_starts_create_exactly_one_coordinator() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let temp = TempDir::new();
