@@ -40,6 +40,7 @@ pub fn check_console_fixture_test_driver(
     hash.update(&(selected.len() as u64).to_le_bytes());
     hash.update(selected.as_bytes());
     let identity = TestDriverIdentity {
+        recipe_version: 1,
         original_source_digest: suite.original_source_digest,
         derived_source_digest: *hash.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,

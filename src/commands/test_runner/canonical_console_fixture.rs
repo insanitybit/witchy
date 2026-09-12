@@ -81,6 +81,7 @@ fn canonical_console_fixture_source_admission_full_trace_and_zero_leaks() {
     let files = Files::new("fn helper(console: Console) -> String:\n    console.print(\"inner\")\n    \"outer\"\nfn main(console: Console):\n    console.print(\"unused main\")\nfn test_console(console: Console):\n    console.print(helper(console))\n    console.print(\"last\\n\")\n");
     let driver = files.driver();
     assert!(driver.canonical_source().unwrap().is_console_fixture());
+    assert_eq!(driver.identity().unwrap().recipe_version(), 1);
     let main = driver.module().items.iter().find_map(|item| match item {
         ast::Item::Function(function) if function.name == "main" => Some(function), _ => None,
     }).unwrap();

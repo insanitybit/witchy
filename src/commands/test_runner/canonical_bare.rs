@@ -35,7 +35,7 @@ fn test_other():
     let (suite, _) = link_test_file(&files.path()).expect("authenticated raw suite");
     let driver = check_bare_test_driver(&suite, "suite.test_good").expect("compiler-owned recipe");
     let identity = driver.identity().expect("recipe identity");
-    assert_eq!(identity.recipe_version(), 1);
+    assert_eq!(identity.recipe_version(), 2);
     assert_eq!(identity.original_source_digest(), suite.original_source_digest());
     let source = driver.canonical_source().expect("fresh canonical source");
     assert_eq!(source.source_witness().source_bundle_digest(), identity.derived_source_digest());
@@ -44,6 +44,7 @@ fn test_other():
     // This is a second lowering/validation, not the encoder's graph or bytes.
     let validated = codegen::validate_checked_test_driver_for_oracle(&driver).expect("independent validation");
     let entry = artifact.entry().expect("admitted entry");
+    assert_eq!(entry.result(), witchy_wir::CanonicalEntryResult::Unit);
     assert!(entry.capabilities().is_empty(), "discarded main grants must not survive");
     let function = witchy_wir::canonical_safewir::FunctionId::new(
         entry.export().strip_prefix('f').unwrap().parse().unwrap(),
@@ -59,6 +60,17 @@ fn test_other():
     vm.run().expect("selected test actually executes");
     assert!(vm.output().is_empty());
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+}
+
+#[test]
+fn canonical_bare_driver_refuses_inferred_non_nil_results() {
+    for body in ["1", "\"value\"", "true"] {
+        let files = Files::new(&format!("fn test_value():\n    {body}\n"));
+        let (suite, _) = link_test_file(&files.path()).expect("source with inferred result checks");
+        let error = check_bare_test_driver(&suite, "suite.test_value")
+            .expect_err("the generated Nil entry cannot discard an inferred result").to_string();
+        assert!(error.contains("expected `()`"), "{body}: {error}");
+    }
 }
 
 #[test]

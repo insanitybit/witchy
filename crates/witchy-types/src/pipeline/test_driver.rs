@@ -1,4 +1,4 @@
-//! Bare test recipe v1. Raw bytes and loader ownership survive discovery; a
+//! Bare test recipe v2. Raw bytes and loader ownership survive discovery; a
 //! fresh parse/check of the compiler-created entry derives ALL driver witnesses.
 //! Async, parameterized, fixture and integration recipes are separate obligations.
 use super::*;
@@ -7,7 +7,7 @@ use witchy_syntax::ast::{Expr, Item, Stmt, Type};
 mod console_fixture;
 pub use console_fixture::check_console_fixture_test_driver;
 
-const BARE_RECIPE_VERSION: u32 = 1;
+const BARE_RECIPE_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub struct CheckedTestSuite {
@@ -27,6 +27,7 @@ impl CheckedTestSuite {
 /// A sealed derivation, not a caller-supplied hash or a digest of an AST render.
 #[derive(Debug)]
 pub struct TestDriverIdentity {
+    recipe_version: u32,
     original_source_digest: [u8; 32],
     derived_source_digest: [u8; 32],
     selected_declaration: String,
@@ -38,7 +39,7 @@ impl TestDriverIdentity {
     pub fn derived_source_digest(&self) -> [u8; 32] { self.derived_source_digest }
     pub fn selected_declaration(&self) -> &str { &self.selected_declaration }
     pub fn declaration_ordinal(&self) -> u64 { self.declaration_ordinal }
-    pub fn recipe_version(&self) -> u32 { BARE_RECIPE_VERSION }
+    pub fn recipe_version(&self) -> u32 { self.recipe_version }
 }
 
 fn refused(message: impl Into<String>) -> PipelineError {
@@ -124,6 +125,7 @@ pub fn check_bare_test_driver(
     hasher.update(&(selected.len() as u64).to_le_bytes());
     hasher.update(selected.as_bytes());
     let identity = TestDriverIdentity {
+        recipe_version: BARE_RECIPE_VERSION,
         original_source_digest: suite.original_source_digest,
         derived_source_digest: *hasher.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
@@ -131,7 +133,7 @@ pub fn check_bare_test_driver(
 
     // This fixed compiler template is not user input. Use the local source
     // declaration before linking, never a guessed post-link callable spelling.
-    let mut generated = witchy_syntax::parser::parse_module("fn main():\n    Nil\n")
+    let mut generated = witchy_syntax::parser::parse_module("fn main() -> Nil:\n    Nil\n")
         .map_err(|error| refused(format!("invalid compiler test recipe: {error}")))?;
     let Item::Function(main) = &mut generated.items[0] else {
         return Err(refused("invalid compiler test recipe entry"));
