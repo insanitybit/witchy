@@ -251,8 +251,31 @@ emit_gate_nextest() {
 
 any_rust=0
 all_paths_have_early=1
+canonical_rewrite=0
+canonical_rewrite_paths_only=1
 for p in "${paths[@]}"; do
     path_has_early=0
+    case "$p" in
+        crates/witchy-lower/src/canonical* | \
+        crates/witchy-types/src/canonical* | \
+        crates/witchy-wir/src/canonical* | \
+        tests/misc/rfc0165_*.rs)
+            canonical_rewrite=1 ;;
+    esac
+    case "$p" in
+        crates/witchy-interp/src/* | \
+        crates/witchy-lower/src/* | \
+        crates/witchy-runtime/src/* | \
+        crates/witchy-runtime/tests/* | \
+        crates/witchy-test-host/src/* | \
+        crates/witchy-types/src/* | \
+        crates/witchy-wir/src/* | \
+        spec/wasm-abi.md | \
+        src/* | \
+        tests/misc.rs | \
+        tests/misc/*.rs) ;;
+        *) canonical_rewrite_paths_only=0 ;;
+    esac
     case "$p" in
         web/witchy-runtime/*.mjs)
             add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
@@ -263,7 +286,7 @@ for p in "${paths[@]}"; do
         tests/misc/wasm_abi_catalog.rs | \
         spec/wasm-abi.md)
             add_early "cargo nextest run -p witchy-wir --features native --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete)'"
-            add_early "cargo nextest run --test misc -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog)'"
+            add_early "cargo nextest run --test misc -E 'test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged)'"
             path_has_early=1 ;;
     esac
     case "$p" in
@@ -579,7 +602,20 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$edit_loop" -eq 1 ] && [ "$all_paths_have_early" -eq 1 ] \
+if [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
+    && [ "$canonical_rewrite_paths_only" -eq 1 ]; then
+    # A cross-stage canonical compiler edit previously expanded to crate suites,
+    # the complete example matrix twice, all misc tests, Wasm, check, and
+    # clippy. That is a checkpoint workload and discouraged exact-tip receipts.
+    # Keep the edit loop to three feature-distinct invocations that retain the
+    # load-bearing ABI, authority, ownership, bounds, admission, and independent
+    # semantic assertions. The serialized landing selection is unchanged.
+    cmds=(
+        "cargo nextest run -p witchy-wir --features native --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(owned_tail_nonprefix_range_requires_a_checked_end_bound) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot)'"
+        "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'"
+        "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
+    )
+elif [ "$edit_loop" -eq 1 ] && [ "$all_paths_have_early" -eq 1 ] \
     && [ "${#early_cmds[@]}" -gt 0 ]; then
     cmds=("${early_cmds[@]}")
 elif [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then

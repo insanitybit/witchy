@@ -462,7 +462,7 @@ fn new_root_integration_driver_checks_the_binary_budget_first() {
 }
 
 #[test]
-fn wir_abi_surfaces_run_the_three_catalog_contracts_first() {
+fn wir_abi_surfaces_run_the_catalog_contracts_first() {
     for path in [
         "crates/witchy-wir/src/wir_prelude.rs",
         "crates/witchy-wir/examples/abi_catalog.rs",
@@ -473,6 +473,9 @@ fn wir_abi_surfaces_run_the_three_catalog_contracts_first() {
         assert!(commands[0].contains("every_prelude_import_has_abi_metadata"), "{path}: {commands:?}");
         assert!(commands[0].contains("parsed_prelude_imports_are_complete"), "{path}: {commands:?}");
         assert!(commands[1].contains("public_spec_contains_the_generated_complete_catalog"), "{path}: {commands:?}");
+        assert!(commands[1].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{path}: {commands:?}");
+        assert!(commands[1].contains("capability_imports_name_their_authority_family"), "{path}: {commands:?}");
+        assert!(commands[1].contains("precompiled_runner_authority_rows_are_cataloged"), "{path}: {commands:?}");
     }
 }
 
@@ -509,10 +512,54 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
         "crates/witchy-wir/src/wir_prelude.rs",
         "crates/witchy-lower/src/canonical_lower.rs",
     ]);
+    assert_eq!(mixed.len(), 3, "canonical edit loop expanded past its sentinels: {mixed:?}");
+    assert!(mixed[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{mixed:?}");
+    assert!(mixed[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{mixed:?}");
+    assert!(mixed[0].contains("scalar_clone_range_is_ownership_safe_and_admitted"), "{mixed:?}");
+    assert!(mixed[0].contains("owned_tail_nonprefix_range_requires_a_checked_end_bound"), "{mixed:?}");
+    assert!(mixed[1].contains("canonical_pipeline::tests::list_string_"), "{mixed:?}");
+    assert!(mixed[2].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{mixed:?}");
+    assert!(mixed[2].contains("admitted_entry_without_a_console_grant_is_refused_before_it_runs"), "{mixed:?}");
+    assert!(mixed[2].contains("admitted_guard_near_misses_trap_exactly_at_the_boundary"), "{mixed:?}");
+    assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
+    assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
+}
+
+#[test]
+fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-types/src/typeck.rs",
+        "crates/witchy-lower/src/canonical_pipeline.rs",
+        "crates/witchy-wir/src/canonical_safewir.rs",
+        "crates/witchy-runtime/src/runtime/host/console.rs",
+        "src/commands/execution.rs",
+        "tests/misc/rfc0165_oracle.rs",
+        "spec/wasm-abi.md",
+    ]);
+    assert_eq!(commands.len(), 3, "cross-stage edit loop was not bounded: {commands:?}");
     assert!(
-        mixed.iter().any(|command| command.contains("check.sh --wasm")),
-        "an uncovered mixed path must retain ordinary focused checks: {mixed:?}"
+        !commands.iter().any(|command| {
+            command.contains("test(/^example_tests::/)")
+                || command == "cargo nextest run --test misc"
+                || command.contains("cargo clippy")
+                || command.contains("check.sh --wasm")
+        }),
+        "checkpoint work leaked into the edit loop: {commands:?}",
     );
+}
+
+#[test]
+fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-types/src/canonical_aggregates.rs",
+    ]);
+    assert_eq!(commands.len(), 3, "canonical type edit expanded past its sentinels: {commands:?}");
+    assert!(commands[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{commands:?}");
+    assert!(commands[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{commands:?}");
+    assert!(commands[1].contains("canonical_pipeline::tests::list_string_"), "{commands:?}");
+    assert!(commands[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{commands:?}");
 }
 
 #[test]
