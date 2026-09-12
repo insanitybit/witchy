@@ -628,7 +628,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     # Every queue fixture owns a distinct temporary repository, state root, and
     # process group. Width two removes the serialized 31-fixture floor while
     # retaining an operator override for repeated reliability measurements.
-    queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue -j "$queue_infra_jobs" \
+    queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}" -E \
         'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|coordinator_reexecs_committed_script_between_attempts_without_losing_singleton|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|sweep_caches_merged_history_but_keeps_queue_admission_live)|gate_behavior::state_and_gate::(fast_gate_emits_structured_foreground_and_background_timings|gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover)|submit_warns_when_the_commit_has_no_green_shard_receipt)$/)')
@@ -641,7 +641,7 @@ else
     # Without this explicit feature, witchy-wir's native security tests are
     # compiled out while cargo still reports a green workspace test run.
     test_cmd=(cargo test --workspace --features witchy-wir/native)
-    queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue -- --test-threads=1)
+    queue_infra_cmd=(cargo test -p merge-queue-tests --test merge_queue --test test_for_paths -- --test-threads=1)
     # Plain Cargo accepts only one substring filter, which cannot express the
     # representative cross-module selection without dropping coverage. Keep
     # the complete shard in this uncommon fallback.

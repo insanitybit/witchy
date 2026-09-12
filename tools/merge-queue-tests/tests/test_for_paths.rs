@@ -3,6 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("merge-queue-tests lives under tools/")
+        .to_path_buf()
+}
+
 struct TempRepo(PathBuf);
 
 impl TempRepo {
@@ -17,11 +25,11 @@ impl TempRepo {
         ));
         fs::create_dir_all(path.join("scripts")).expect("create fixture scripts");
         fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh"),
+            workspace_root().join("scripts/test-for-paths.sh"),
             path.join("scripts/test-for-paths.sh"),
         )
         .expect("copy path router");
-        let impact = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-impact.py");
+        let impact = workspace_root().join("scripts/test-impact.py");
         if impact.exists() {
             fs::copy(impact, path.join("scripts/test-impact.py")).expect("copy test-impact");
         }
@@ -49,7 +57,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn route(paths: &[&str]) -> String {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
+    let script = workspace_root().join("scripts/test-for-paths.sh");
     let output = Command::new("bash")
         .arg(script)
         .args(paths)
@@ -71,7 +79,7 @@ fn selected(paths: &[&str]) -> Vec<String> {
 }
 
 fn route_focused(paths: &[&str]) -> String {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
+    let script = workspace_root().join("scripts/test-for-paths.sh");
     let output = Command::new("bash")
         .arg(script)
         .arg("--focused")
@@ -94,7 +102,7 @@ fn selected_focused(paths: &[&str]) -> Vec<String> {
 }
 
 fn gate_nextest(paths: &[&str]) -> String {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
+    let script = workspace_root().join("scripts/test-for-paths.sh");
     let output = Command::new("bash")
         .arg(script)
         .arg("--gate-nextest")
@@ -168,7 +176,7 @@ fn gate_nextest_does_not_narrow_past_the_bin_target() {
 #[test]
 fn example_tests_is_declared_in_the_bin_target() {
     let main = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        workspace_root().join("src/main.rs"),
     )
     .expect("read src/main.rs");
     assert!(
@@ -574,8 +582,16 @@ fn e2e_integration_test_keeps_its_dedicated_shard() {
 fn router_changes_run_router_regressions() {
     let output = route(&["scripts/test-for-paths.sh"]);
     assert!(output.contains("for f in scripts/*.sh; do bash -n"));
-    assert!(output.contains("cargo nextest run --test test_for_paths"));
+    assert!(output.contains("cargo nextest run -p merge-queue-tests --test test_for_paths"));
     assert!(output.contains("./scripts/check.sh --queue-infra"));
+}
+
+#[test]
+fn glamour_dom_harness_change_runs_its_structural_probe() {
+    assert_eq!(
+        selected_focused(&["tests/glamour/dom.rs"]),
+        ["cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'"],
+    );
 }
 
 #[test]

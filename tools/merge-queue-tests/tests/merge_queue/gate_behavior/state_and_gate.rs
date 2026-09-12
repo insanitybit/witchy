@@ -508,7 +508,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .lines()
             .any(|line| {
                 line.starts_with(
-                    "nextest run -p merge-queue-tests --test merge_queue -j 2",
+                    "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 2",
                 )
             }),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",

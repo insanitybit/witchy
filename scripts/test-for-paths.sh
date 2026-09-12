@@ -420,18 +420,24 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test browser" ;;
         tools/merge-queue-tests/Cargo.toml | \
         tools/merge-queue-tests/tests/merge_queue.rs | \
+        tools/merge-queue-tests/tests/test_for_paths.rs | \
         tools/merge-queue-tests/tests/merge_queue/*.rs | \
         tools/merge-queue-tests/tests/merge_queue/**/*.rs)
             add_gate_test merge_queue
             add "./scripts/check.sh --queue-infra" ;;
         tests/test_for_paths.rs)
-            any_rust=1
+            # Keep deleted-path routing narrow during the one-time move into
+            # the standalone tooling package.
             add_gate_test test_for_paths
-            add "./scripts/check.sh --queue-infra" ;;
+            add "cargo nextest run -p merge-queue-tests --test test_for_paths" ;;
         tests/worktree/*.rs)
             any_rust=1
             add_gate_test worktree
             add "cargo nextest run --test worktree" ;;
+        tests/glamour/dom.rs)
+            any_rust=1
+            add_gate_test glamour
+            add "cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'" ;;
         tests/e2e.rs)
             gate_workspace=1
             add "./scripts/check.sh --e2e" ;;
@@ -498,7 +504,7 @@ for p in "${paths[@]}"; do
             add_gate_test test_for_paths
             add_gate_test merge_queue
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test test_for_paths"
+            add "cargo nextest run -p merge-queue-tests --test test_for_paths"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;

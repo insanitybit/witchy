@@ -1200,7 +1200,7 @@ fn every_node_test_driver_is_wired_to_a_rust_test() {
         "tests/browser/shim.rs",
         "tests/browser/encoding.rs",
         "tests/misc/wasm_abi_catalog.rs",
-        "tests/test_for_paths.rs",
+        "tools/merge-queue-tests/tests/test_for_paths.rs",
         "src/example_tests/glamour.rs",
         "scripts/check.sh",
     ] {
