@@ -49,9 +49,13 @@ if [ "${#paths[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# Accumulate commands, deduped, in priority order.
+# Accumulate commands, deduped, in priority order. Early probes are kept ahead
+# of the broader Rust shard: they catch cheap structural failures before a
+# multi-minute build/test cycle reaches the same assertion.
 cmds=()
+early_cmds=()
 add() { local c="$1"; local x; for x in ${cmds[0]+"${cmds[@]}"}; do [ "$x" = "$c" ] && return; done; cmds+=("$c"); }
+add_early() { local c="$1"; local x; for x in ${early_cmds[0]+"${early_cmds[@]}"}; do [ "$x" = "$c" ] && return; done; early_cmds+=("$c"); }
 
 # Serialized-gate nextest selection (crate/binary only). Fail-safe to
 # WORKSPACE when the diff is broader than the mapped areas.
@@ -249,6 +253,24 @@ for p in "${paths[@]}"; do
             add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
     esac
     case "$p" in
+        crates/witchy-wir/src/wir_prelude.rs | \
+        crates/witchy-wir/examples/abi_catalog.rs | \
+        tests/misc/wasm_abi_catalog.rs | \
+        spec/wasm-abi.md)
+            add_early "cargo nextest run -p witchy-wir --lib -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete)'"
+            add_early "cargo nextest run --test misc -E 'test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog)'" ;;
+    esac
+    case "$p" in
+        crates/witchy-wir/src/canonical_safewir/check/memory.rs)
+            add_early "cargo nextest run -p witchy-wir --features native --lib -E 'test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children)'" ;;
+        crates/witchy-lower/src/canonical_list_update.rs | \
+        crates/witchy-lower/src/canonical_pipeline.rs)
+            add_early "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'"
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'" ;;
+        tests/misc/rfc0165_admitted_launch.rs)
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'" ;;
+    esac
+    case "$p" in
         crates/witchy-types/*)
             any_rust=1
             gate_need_conformance=1
@@ -410,6 +432,9 @@ for p in "${paths[@]}"; do
             any_rust=1
             test_name="${p#tests/}"
             test_name="${test_name%.rs}"
+            if ! git cat-file -e "master:$p" 2>/dev/null; then
+                add_early "cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
+            fi
             add_gate_test "$test_name"
             printf -v test_name_q '%q' "$test_name"
             add "cargo nextest run --test $test_name_q" ;;
@@ -536,7 +561,9 @@ if [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
             *) remaining+=("$c") ;;
         esac
     done
-    cmds=("./scripts/check.sh --fast" ${remaining[0]+"${remaining[@]}"})
+    cmds=(${early_cmds[0]+"${early_cmds[@]}"} "./scripts/check.sh --fast" ${remaining[0]+"${remaining[@]}"})
+else
+    cmds=(${early_cmds[0]+"${early_cmds[@]}"} ${cmds[0]+"${cmds[@]}"})
 fi
 
 if [ "${#cmds[@]}" -eq 0 ]; then

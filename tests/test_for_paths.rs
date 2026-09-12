@@ -438,6 +438,62 @@ fn rust_integration_tests_use_fast_without_redundant_binary_run() {
 }
 
 #[test]
+fn new_root_integration_driver_checks_the_binary_budget_first() {
+    let commands = selected(&["tests/new_velocity_probe_driver.rs"]);
+    assert_eq!(
+        commands.first().map(String::as_str),
+        Some("cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'")
+    );
+    assert!(commands.contains(&"./scripts/check.sh --fast".to_owned()), "{commands:?}");
+
+    let existing = selected(&["tests/differential_fuzz.rs"]);
+    assert!(
+        !existing.iter().any(|command| command.contains("root_integration_test_binaries_stay_within_budget")),
+        "an existing driver edit cannot increase the binary count: {existing:?}"
+    );
+}
+
+#[test]
+fn wir_abi_surfaces_run_the_three_catalog_contracts_first() {
+    for path in [
+        "crates/witchy-wir/src/wir_prelude.rs",
+        "crates/witchy-wir/examples/abi_catalog.rs",
+        "tests/misc/wasm_abi_catalog.rs",
+        "spec/wasm-abi.md",
+    ] {
+        let commands = selected(&[path]);
+        assert!(commands[0].contains("every_prelude_import_has_abi_metadata"), "{path}: {commands:?}");
+        assert!(commands[0].contains("parsed_prelude_imports_are_complete"), "{path}: {commands:?}");
+        assert!(commands[1].contains("public_spec_contains_the_generated_complete_catalog"), "{path}: {commands:?}");
+    }
+}
+
+#[test]
+fn owned_prefix_routes_stay_on_narrow_publication_surfaces() {
+    let checker = selected(&["crates/witchy-wir/src/canonical_safewir/check/memory.rs"]);
+    assert!(checker[0].contains("constant_successor_publication_keeps_the_existing_prefix_ownership"), "{checker:?}");
+    assert!(checker[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{checker:?}");
+
+    for path in [
+        "crates/witchy-lower/src/canonical_list_update.rs",
+        "crates/witchy-lower/src/canonical_pipeline.rs",
+    ] {
+        let commands = selected(&[path]);
+        assert!(commands[0].contains("canonical_pipeline::tests::list_string_"), "{path}: {commands:?}");
+        assert!(commands[1].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{path}: {commands:?}");
+    }
+
+    let launch = selected(&["tests/misc/rfc0165_admitted_launch.rs"]);
+    assert!(launch[0].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{launch:?}");
+
+    let broad_lowering = selected(&["crates/witchy-lower/src/canonical_lower.rs"]);
+    assert!(
+        !broad_lowering.iter().any(|command| command.contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them")),
+        "the shared lowering file is too broad for the publication probe: {broad_lowering:?}"
+    );
+}
+
+#[test]
 fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
     let expected = [
         "cargo check -p witchy --all-targets",
