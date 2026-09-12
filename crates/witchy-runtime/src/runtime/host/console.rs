@@ -39,6 +39,22 @@ pub(in crate::runtime) fn link_abort(linker: &mut Linker<VmState>) -> Result<()>
 }
 
 /// Register the Console string print.
+pub(in crate::runtime) fn link_fixture_console(linker: &mut Linker<VmState>) -> Result<()> {
+    #[cfg(feature = "test-fixtures")]
+    linker.func_wrap("witchy", "console_print_at", super::canonical_fixture::print_at)?;
+    #[cfg(not(feature = "test-fixtures"))]
+    linker.func_wrap("witchy", "console_print_at", |
+        _caller: Caller<'_, VmState>,
+        _token: Option<wasmtime::Rooted<wasmtime::ExternRef>>,
+        _message_ptr: i32, _message_len: i32,
+        _function_ptr: i32, _function_len: i32, _line: i32,
+    | -> Result<()> {
+        bail!("Console fixture support is unavailable in this runtime");
+    })?;
+    Ok(())
+}
+
+/// Register the Console string print.
 pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "print", host_print)?;
     linker.func_wrap("witchy", "console_print", host_print_captured)?;

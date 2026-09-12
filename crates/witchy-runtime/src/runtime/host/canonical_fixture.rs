@@ -1,7 +1,7 @@
 //! Admitted Console slices only. No legacy mint import or ambient Console grant.
 use std::any::Any;
 use std::sync::Arc;
-use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted, Store};
+use wasmtime::{Caller, Error, ExternRef, Result, Rooted, Store};
 use witchy_test_host::{HostRequest, HostResponse};
 use witchy_testkit::{SourceLocation, U64Text};
 use super::super::{VmState, memory_of};
@@ -37,12 +37,7 @@ fn text(data: &[u8], pointer: i32, length: i32) -> Result<String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| Error::msg("fixture Console slice is not UTF-8"))
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "console_print_at", print_at)?;
-    Ok(())
-}
-
-fn print_at(
+pub(super) fn print_at(
     mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
     message_ptr: i32, message_len: i32, function_ptr: i32, function_len: i32, line: i32,
 ) -> Result<()> {

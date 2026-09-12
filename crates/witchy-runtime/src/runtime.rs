@@ -2447,6 +2447,9 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "heap_frontier", host_heap_frontier)?;
 
     host::console::link_abort(linker)?;
+    // Linking the fixture ABI grants no provider or token. Its handler checks
+    // the private fixture session before reading guest memory or producing output.
+    host::console::link_fixture_console(linker)?;
     // --- capability wiring: only granted host functions are defined ---
     if caps.print {
         host::console::link_print(linker)?;

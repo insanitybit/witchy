@@ -133,6 +133,47 @@ fn public_spec_contains_the_generated_complete_catalog() {
     );
 }
 
+#[test]
+fn console_fixture_import_links_but_grants_no_session_or_memory_access() {
+    let mut types = TypeSection::new();
+    types.ty().function([
+        ValType::EXTERNREF, ValType::I32, ValType::I32,
+        ValType::I32, ValType::I32, ValType::I32,
+    ], []);
+    types.ty().function([], []);
+    let mut imports = ImportSection::new();
+    imports.import("witchy", "console_print_at", EntityType::Function(0));
+    let mut functions = FunctionSection::new();
+    functions.function(1);
+    let mut exports = ExportSection::new();
+    exports.export("run", ExportKind::Func, 1);
+    // The default local is null. Deliberately supply invalid slices and no
+    // memory: refusal must precede any guest-memory access or output.
+    let mut run = Function::new([(1, ValType::EXTERNREF)]);
+    run.instruction(&Instruction::LocalGet(0));
+    for _ in 0..5 { run.instruction(&Instruction::I32Const(-1)); }
+    run.instruction(&Instruction::Call(0));
+    run.instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    code.function(&run);
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&functions);
+    module.section(&exports);
+    module.section(&code);
+    let wasm = module.finish();
+    for caps in [Capabilities::none(), maximal_capabilities()] {
+        let mut runtime = Runtime::new().expect("native runtime");
+        let mut vm = runtime.spawn(&wasm, caps, 4).expect("fixture ABI is linkable");
+        let error = vm.run().expect_err("linking does not create fixture authority");
+        let message = error.root_cause().to_string();
+        assert!(message == "fixture Console token is null"
+            || message == "Console fixture support is unavailable in this runtime", "{message}");
+        assert!(vm.output().is_empty());
+    }
+}
+
 fn authorities_for(name: &str) -> Vec<AbiImportAuthority> {
     abi_import_info(name)
         .unwrap_or_else(|| panic!("missing ABI metadata for `{name}`"))

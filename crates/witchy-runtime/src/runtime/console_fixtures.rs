@@ -65,7 +65,6 @@ impl Runtime {
         if self.preempt { store.set_epoch_deadline(1); }
         let mut linker = Linker::new(&self.engine);
         link_capability_imports(&mut linker, &caps)?;
-        host::canonical_fixture::link(&mut linker)?;
         host::closure_owner::register(&mut linker, artifact)?;
         let instance = linker.instantiate(&mut store, module.module())?;
         self.next_id += 1;
