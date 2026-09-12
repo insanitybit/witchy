@@ -3,10 +3,15 @@
 # This script intentionally runs targeted checks, never the full workspace gate.
 #
 #   ./scripts/agent-check.sh target --package <name> [--filter <filter>]
+#   ./scripts/agent-check.sh edit [path...]
 #   ./scripts/agent-check.sh paths <path-pattern...>
 #   ./scripts/agent-check.sh syntax
 #   ./scripts/agent-check.sh link
 #   ./scripts/agent-check.sh parity
+#
+# `edit` is the minimal inner-loop selection for the current diff (or explicit
+# paths). The merge queue remains the separate landing set and runs its own
+# serialized gate after submission.
 #
 # Set AGENT_CHECK_RUNNER=nextest to use nextest for a focused package; the
 # default cargo test runner avoids nextest startup overhead for one binary.
@@ -15,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 usage() {
-    sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d; s/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -25,6 +30,11 @@ run_in_agent_env() {
 
 run_paths_checks() {
     ./scripts/test-for-paths.sh --run "$@"
+}
+
+run_edit_checks() {
+    ensure_agent_target
+    run_in_agent_env ./scripts/test-for-paths.sh --focused --run "$@"
 }
 
 ensure_agent_target() {
@@ -50,6 +60,10 @@ while [ "$#" -gt 0 ] && [ "${1:-}" = "--target-dir" ]; do
 done
 
 case "$command" in
+    edit)
+        run_edit_checks "$@"
+        ;;
+
     target)
         package=""
         filter=""
