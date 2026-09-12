@@ -1,8 +1,8 @@
 # Owned children outside a published list prefix
 
 Status: static checker/backend discrepancy identified on master `b7b9dd8c6`;
-candidate correction and seven regression tests implemented. Native library
-validation is green; source-pipeline probes and merge evidence remain pending.
+candidate correction and source-construction repair implemented. Native library
+and focused source-pipeline validation are green; merge evidence remains pending.
 No source-reachable corruption or executable admission claim is established by
 this finding.
 
@@ -66,3 +66,35 @@ new cases. Log: `/private/tmp/witchy-owned-tail-b7-checker-final.log`.
 The initial CLI rebuild was deliberately terminated under host memory pressure
 and restarted with `CARGO_BUILD_JOBS=1`. Neither an interrupted build nor native
 unit tests establish source-pipeline or backend execution agreement.
+
+## Source construction and incremental publication
+
+The first queue attempt exposed the same obligation in ordinary lowering:
+
+```witchy
+fn main(console: Console):
+    let words: List(Option(String)) = [Some("a"), None]
+    console.print("${words}")
+```
+
+While preparing the second element, branching cleanup could drop a zero-length
+list whose slot zero already owned the first element. The strengthened checker
+correctly refused `DropRef(uninitialized owned slot)` in the aggregate-rendering
+launch test. The repair publishes each completed owned slot before evaluating
+the next expression, rather than changing the cleanup or prefix-containment rule.
+
+Constant one-step publication uses checked `old + 1 == new` equality and retains
+the existing capacity, child initialization, pointee, ownership, and allocation
+class obligations. The resulting prefix preserves the old prefix's ownership:
+adding a unique child cannot make shared earlier children unique. Negative tests
+reject skipped and uninitialized slots. Independent bounded review found no
+concrete authority concern in these changes.
+
+Repaired-tree evidence: 685 native WIR tests passed with zero skips, three list
+lowering tests passed, and five source tests passed, including the formerly red
+aggregate-rendering test. Logs are `/tmp/witchy-prefix-publication-wir-v2.log`,
+`/tmp/witchy-prefix-publication-lower-v2.log`, and
+`/tmp/witchy-prefix-publication-source-v2.log`. Rebuilt CLI parity also agrees for
+hello, wrap, jq, the program above, and a nested string-list snapshot/mutation
+program; `/tmp/witchy-prefix-publication-cli-v2.log`. This remains candidate
+evidence, not a whole-compiler memory-safety claim.

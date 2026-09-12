@@ -1270,6 +1270,23 @@ mod tests {
                 .count(),
             2
         );
+        let mut prefix = 0_u64;
+        for (index, operation) in operations.iter().enumerate() {
+            if let witchy_wir::canonical_safewir::Operation::Store {
+                place,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+                ..
+            } = operation {
+                prefix += 1;
+                let witchy_wir::canonical_safewir::Operation::ConstSize { destination, value } =
+                    operations[index + 1] else { panic!("owned store must publish its prefix") };
+                assert_eq!(*value, prefix);
+                assert!(matches!(operations[index + 2],
+                    witchy_wir::canonical_safewir::Operation::UpdateCount { object, count }
+                    if *object == place.object() && count == destination),
+                    "publish before evaluating another element or entering cleanup");
+            }
+        }
         validate_checked_module(&checked)
             .expect("List(String) reaches final SafeWIR validation");
     }

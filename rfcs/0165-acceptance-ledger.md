@@ -1,5 +1,49 @@
 # RFC-0165 acceptance ledger
 
+## Current prefix-publication repair, 2026-09-12
+
+The owned-prefix submission at `616b3702c` was red on the aggregate-rendering
+launch test, not on an infrastructure timeout. Constructing
+`List(Option(String))` could enter cleanup while an earlier owned child remained
+outside the list's published length. Literal lowering now publishes each owned
+slot before evaluating the next element. The checker recognizes exact constant
+successors under the existing initialized-slot and capacity obligations, and
+appending a unique child does not upgrade a shared prefix to unique.
+
+Focused evidence on the repaired integration tree:
+
+- Native WIR: 685 passed, zero skipped; `/tmp/witchy-prefix-publication-wir-v2.log`.
+- Lowerer `canonical_pipeline::tests::list_string_`: three passed;
+  `/tmp/witchy-prefix-publication-lower-v2.log`.
+- Aggregate rendering, immutable snapshots, projected writeback, and source-order
+  coordinates: five passed; `/tmp/witchy-prefix-publication-source-v2.log`.
+- Rebuilt CLI parity: hello, wrap, jq, the optional-string list reproducer, and
+  the nested string-list snapshot reproducer all agree;
+  `/tmp/witchy-prefix-publication-cli-v2.log`.
+
+Commands use `RUSTC_WRAPPER= CC=cc CARGO_BUILD_JOBS=1` and
+`CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-reflect-specialization-target`,
+with `taskpolicy -c utility cargo nextest run`. The native selection is
+`-p witchy-wir --features native --lib`; the lowerer selection is
+`-p witchy-lower --features witchy-wir/native --lib -E
+'test(canonical_pipeline::tests::list_string_)'`; the source selection is
+`-p witchy --features witchy-wir/native --test misc --ignore-default-filter
+--no-fail-fast -E 'test(admitted_aggregates_render_structurally_as_the_interpreter_prints_them)
+| test(owned_binding_snapshots_survive_source_list_growth) | test(projected_var_)
+| test(source_order_coordinates_and_same_root_snapshots_are_stable)'`.
+
+Independent bounded review found no concrete authority concern in the successor
+or shared-prefix rules. The first test-fixture run failed before publication
+because its store lacked a bounds guard; the corrected fixtures exercise the
+publication rule without relaxing production checks. Prefix landing is pending.
+List-pop integration and exact abort diagnostics remain separate open work.
+
+The WAT/production-route sealing slice has landed: queue change
+`mq-2314ebed77c1b1eae5f65e84aaa3312150388321`, master
+`f5ac4e702cc051551e463e9bca54c096a28e80f7`, merged at
+`2026-09-12T14:25:10Z`, gate 384 seconds, no recorded flakes.
+This is not a fresh full corpus result or compiler-wide soundness evidence.
+
 ## Owned-prefix and projected-writeback integration, focused-green
 
 `fix/rfc0165-owned-prefix-accounting` combines the owned-prefix containment

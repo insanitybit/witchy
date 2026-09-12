@@ -8091,6 +8091,16 @@ impl FunctionLowerer<'_> {
                     witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
                 },
             });
+            if matches!(element_type, ValueType::Ref(_)) {
+                // Preparing the next element can branch or trap. Cleanup
+                // must see every child already transferred into this list,
+                // not a zero-length shell with unpublished owned slots.
+                let initialized = position.checked_add(1)
+                    .and_then(|length| u64::try_from(length).ok())
+                    .ok_or(CanonicalLoweringError::IdOverflow)?;
+                let published = self.push_const_size(initialized)?;
+                self.push_operation(Operation::UpdateCount { object, count: published });
+            }
         }
         if matches!(element_type, ValueType::Ref(_)) {
             self.push_operation(Operation::UpdateCount { object, count });

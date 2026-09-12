@@ -3122,6 +3122,8 @@ impl<'a> MemoryChecker<'a> {
         let one_step = self.state.exact_additions.get(&count).is_some_and(|(left, right)| {
             (self.same_scalar(*left, existing.0.length) && self.state.constants.get(right) == Some(&1))
                 || (self.same_scalar(*right, existing.0.length) && self.state.constants.get(left) == Some(&1))
+        }) || self.constant_relation(existing.0.length, count, |old, new| {
+            old.checked_add(1) == Some(new)
         });
         if one_step {
             let key = self.slot_key(object, existing.0.length);
@@ -3147,7 +3149,9 @@ impl<'a> MemoryChecker<'a> {
                 RangeIdentity { object, start: existing.0.start, length: count },
                 RangeState {
                     element,
-                    ownership: Ownership::Unique,
+                    // Appending a unique child cannot make the already
+                    // published children unique if that prefix was shared.
+                    ownership: existing.1.ownership,
                     allocation_class: stored.allocation_class,
                     initialized: true,
                     zero_width: self.is_zero(count),
@@ -4434,6 +4438,75 @@ mod tests {
                 Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
             ));
         });
+    }
+
+    #[test]
+    fn constant_successor_publication_keeps_the_existing_prefix_ownership() {
+        for ownership in [Ownership::Unique, Ownership::Shared] {
+            with_pointer_slot_checker(|checker, list, pointee| {
+                // Seed a complete one-element prefix with spare capacity.
+                // The new stored child below is a separate unique token.
+                checker.state.constants.insert(CAPACITY, 3);
+                checker.state.constants.insert(ALIAS_LENGTH, 2);
+                checker.check(&Operation::Compare {
+                    destination: CONDITION, operator: ComparisonOperator::LessUnsigned,
+                    left: COUNT, right: CAPACITY,
+                }).expect("next child fits spare capacity");
+                checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                    .expect("guard the next child store");
+                let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+                checker.state.range_states.clear();
+                checker.state.range_states.insert(
+                    RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                    RangeState { element, ownership, allocation_class: Some(AllocationClass::ReferenceCounted),
+                        initialized: true, zero_width: false, zero_start: true },
+                );
+                checker.check(&Operation::Store {
+                    place: Place::projected(SOURCE, Projection::Element { index: COUNT },
+                        ValueType::Ref(pointee), AccessMode::Write),
+                    value: CHILD, transfer: StoreTransfer::MoveUnique,
+                }).expect("store the next owned child");
+                checker.check(&Operation::UpdateCount { object: SOURCE, count: ALIAS_LENGTH })
+                    .expect("constant one-step publication");
+                assert_eq!(checker.state.range_states[&RangeIdentity {
+                    object: SOURCE, start: START, length: ALIAS_LENGTH,
+                }].ownership, ownership);
+            });
+        }
+    }
+
+    #[test]
+    fn constant_prefix_publication_rejects_gaps_and_missing_children() {
+        for (next, store_child) in [(3, true), (2, false)] {
+            with_pointer_slot_checker(|checker, list, pointee| {
+                checker.state.constants.insert(CAPACITY, 3);
+                checker.state.constants.insert(ALIAS_LENGTH, next);
+                checker.check(&Operation::Compare {
+                    destination: CONDITION, operator: ComparisonOperator::LessUnsigned,
+                    left: COUNT, right: CAPACITY,
+                }).expect("next child fits spare capacity");
+                checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                    .expect("guard the next child store");
+                let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+                checker.state.range_states.clear();
+                checker.state.range_states.insert(
+                    RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                    RangeState { element, ownership: Ownership::Unique,
+                        allocation_class: Some(AllocationClass::ReferenceCounted),
+                        initialized: true, zero_width: false, zero_start: true },
+                );
+                if store_child {
+                    checker.check(&Operation::Store {
+                        place: Place::projected(SOURCE, Projection::Element { index: COUNT },
+                            ValueType::Ref(pointee), AccessMode::Write),
+                        value: CHILD, transfer: StoreTransfer::MoveUnique,
+                    }).expect("store only the next child");
+                }
+                assert!(checker.check(&Operation::UpdateCount {
+                    object: SOURCE, count: ALIAS_LENGTH,
+                }).is_err(), "every newly published child must be initialized");
+            });
+        }
     }
 
     #[test]
