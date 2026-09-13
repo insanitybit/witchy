@@ -571,6 +571,8 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("admitted_guard_near_misses_trap_exactly_at_the_boundary"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_owner_adapters::server_pool_oracle::"), "{mixed:?}");
+    assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
+    assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
 }
 
@@ -725,6 +727,34 @@ fn server_pool_oracle_edit_keeps_its_authority_and_execution_probes() {
         commands[2].contains("test(rfc0165_owner_adapters::server_pool_oracle::)"),
         "{commands:?}",
     );
+}
+
+#[test]
+fn integration_driver_edits_use_the_bounded_semantic_contracts() {
+    for path in [
+        "crates/witchy-types/src/pipeline/test_driver/integration.rs",
+        "src/commands/test_runner/canonical_integration.rs",
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert!(commands[0].contains("--bin witchy --test misc"), "{path}: {commands:?}");
+        assert!(
+            commands[0].contains(
+                "source_integration_recipe_runs_selected_console_capture_and_reports_abort",
+            ),
+            "{path}: {commands:?}",
+        );
+        assert!(
+            commands[0].contains("commands::test_runner::canonical_integration_tests::"),
+            "{path}: {commands:?}",
+        );
+        assert!(
+            commands[0].contains(
+                "wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature",
+            ),
+            "{path}: {commands:?}",
+        );
+    }
 }
 
 #[test]
