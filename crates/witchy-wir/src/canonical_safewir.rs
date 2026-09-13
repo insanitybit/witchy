@@ -61,6 +61,8 @@ pub mod closure_owner_contract;
 mod owner_authority;
 mod exec;
 pub use exec::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND, EXEC_IMPORT_NAMES};
+mod build_read;
+pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 mod crypto;
 mod dir_metadata;
 pub use crypto::{CRYPTO_ED25519_VERIFY_IMPORT, CRYPTO_SHA256_IMPORT, CRYPTO_RUNE_HASH_IMPORT};

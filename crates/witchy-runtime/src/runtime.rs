@@ -1359,11 +1359,12 @@ pub struct VmState {
     /// primary spawns workers).
     worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
     /// A build step's confined output directory (`BuildOut`) and read roots
-    /// (`BuildRead`) — host-side. Build capabilities are zero-representation at
-    /// the host ABI; import linking, not a guest handle, carries the authority.
+    /// (`BuildRead`) — host-side. Canonical entry tokens are instance-bound;
+    /// legacy build imports retain their separate grant-gated registration.
     build_out: Option<crate::confine::ConfinedDir>,
     build_out_issuer: Arc<()>,
     build_read_roots: Vec<crate::confine::ConfinedDir>,
+    build_read_issuer: Arc<()>,
     build_exec_tools:
         std::collections::BTreeMap<String, crate::confine::ConfinedFile>,
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
@@ -1521,6 +1522,10 @@ CanonicalEntryCapability::BuildOut => {
     let authority = host::build_out::mint(self.store.data())?;
     ExternRef::new(&mut self.store, authority)?
 }
+                CanonicalEntryCapability::BuildRead => {
+                    let authority = host::build_read::mint(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
                 CanonicalEntryCapability::Exec => {
                     let authority = host::filesystem::exec_grant(self.store.data())?;
                     ExternRef::new(&mut self.store, authority)?
@@ -2558,6 +2563,7 @@ pub(crate) fn link_capability_imports(
     // Canonical imports may be present in uncalled public declarations. The
     // operation authenticates a private token; linking itself grants nothing.
     host::build_out::link(linker)?;
+    host::build_read::link(linker)?;
     if caps.build_out.is_some() {
         host::build::link_out(linker)?;
     }
@@ -2699,6 +2705,7 @@ fn vmstate_from_caps(
         build_out,
         build_out_issuer: Arc::new(()),
         build_read_roots,
+        build_read_issuer: Arc::new(()),
         build_exec_tools,
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),

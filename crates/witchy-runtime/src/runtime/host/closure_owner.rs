@@ -244,6 +244,12 @@ trait CaptureAuthority: 'static {
     fn require_build_out(&self, _data: &dyn std::any::Any) -> Result<()> {
         bail!("BuildOut capture has no instance authority");
     }
+    fn require_build_read(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("BuildRead capture has no instance authority");
+    }
+    fn require_build_read_response(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("BuildRead response capture has no instance authority");
+    }
 }
 
 fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
@@ -256,6 +262,12 @@ fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
 impl CaptureAuthority for super::super::VmState {
     fn require_build_out(&self, data: &dyn std::any::Any) -> Result<()> {
         super::build_out::authenticate_capture(self, data)
+    }
+    fn require_build_read(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::build_read::authenticate_capture(self, data)
+    }
+    fn require_build_read_response(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::build_read::authenticate_response_capture(self, data)
     }
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
         #[cfg(feature = "test-fixtures")]
@@ -276,9 +288,17 @@ impl CaptureAuthority for () {
 fn require_capability<T: CaptureAuthority>(store: impl wasmtime::AsContext<Data = T>, token: Rooted<ExternRef>, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<()> {
     let context = store.as_context();
     let data = token.data(&context)?.ok_or_else(|| wasmtime::Error::msg("capability has no host data"))?;
+    require_capability_data(context.data(), data, kind)
+}
+
+fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::Any, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<()> {
     let matches = match kind.get() {
-        0 => return context.data().require_console(data),
-        9 => return context.data().require_build_out(data),
+        0 => return state.require_console(data),
+        9 => return state.require_build_out(data),
+        id if id == witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get() =>
+            return state.require_build_read(data),
+        id if id == witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND.get() =>
+            return state.require_build_read_response(data),
         1 => data.is::<super::super::DirAuthority>(),
         2 => data.is::<super::super::EnvAuthority>(),
         3 => data.is::<super::super::FileAuthority>(),
@@ -458,17 +478,27 @@ impl Binding {
     }
 
     // capture is a fixed Rust bridge-registration operand, never a Wasm input.
-    fn capability<P: Send + Sync + 'static>(&self, store: impl wasmtime::AsContext, owner: Rooted<ExternRef>, capture: u32) -> Result<OwnedRooted<ExternRef>> {
-        let index = self.capture_fields.iter().filter(|field| matches!(field.kind, CaptureFieldKind::Capability(_)))
-            .position(|field| field.capture == capture)
+    fn capability<P: Send + Sync + 'static>(&self, store: impl wasmtime::AsContext<Data: CaptureAuthority>, owner: Rooted<ExternRef>, capture: u32) -> Result<OwnedRooted<ExternRef>> {
+        let (index, kind) = self.capture_fields.iter().filter_map(|field| match field.kind {
+            CaptureFieldKind::Capability(kind) => Some((field.capture, kind)),
+            CaptureFieldKind::Owner(_) => None,
+        }).enumerate().find_map(|(index, (ordinal, kind))| (ordinal == capture).then_some((index, kind)))
             .ok_or_else(|| wasmtime::Error::msg("not a capability capture"))?;
-        self.access::<P, _>(store, owner, |live| {
-            live.capabilities.get(index).cloned().ok_or_else(|| wasmtime::Error::msg("missing captured capability"))
+        let context = store.as_context();
+        self.access::<P, _>(&context, owner, |live| {
+            let token = live.capabilities.get(index)
+                .ok_or_else(|| wasmtime::Error::msg("missing captured capability"))?;
+            let data = token.data(&context)?
+                .ok_or_else(|| wasmtime::Error::msg("capability has no host data"))?;
+            // Sealing authenticates the original capture. Projection must also
+            // satisfy the current store's authority, before cloning its root.
+            require_capability_data(context.data(), data, kind)?;
+            Ok(token.clone())
         })
     }
 
     #[cfg(test)]
-    fn console<P: Send + Sync + 'static>(&self, store: impl wasmtime::AsContext, owner: Rooted<ExternRef>) -> Result<OwnedRooted<ExternRef>> {
+    fn console<P: Send + Sync + 'static>(&self, store: impl wasmtime::AsContext<Data: CaptureAuthority>, owner: Rooted<ExternRef>) -> Result<OwnedRooted<ExternRef>> {
         self.capability::<P>(store, owner, 0)
     }
 
@@ -1009,6 +1039,57 @@ mod tests {
         let pre = wasmtime::StructRefPre::new(&mut *store, binding.payload_type.clone());
         let payload = wasmtime::StructRef::new(&mut *store, &pre, fields)?;
         binding.seal_gc(store, payload)
+    }
+
+    #[test]
+    fn build_read_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        use witchy_wir::canonical_safewir::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND};
+        let (_root, mut vm, grant) = super::super::build_read::tests::setup();
+        let response = super::super::build_read::tests::read(&mut vm, grant, "sample.txt")?;
+        for (kind, token, wrong_kind) in [
+            (BUILD_READ_CAPABILITY_KIND, grant.unwrap(), response.unwrap()),
+            (BUILD_READ_RESPONSE_KIND, response.unwrap(), grant.unwrap()),
+        ] {
+            let (mut binding, _) = list_capture_bindings(vm.store.engine())?;
+            binding.payload_type = StructType::new(vm.store.engine(), [
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+            ])?;
+            binding.capture_fields = vec![CaptureField {
+                capture: 0, field: 2, kind: CaptureFieldKind::Capability(kind),
+            }].into_boxed_slice();
+            let pre = StructRefPre::new(&mut vm.store, binding.payload_type.clone());
+            for invalid in [wrong_kind, ExternRef::new(&mut vm.store, kind.get())?] {
+                let payload = StructRef::new(&mut vm.store, &pre,
+                    &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(invalid))])?;
+                assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            }
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            let owner = binding.seal_gc(&mut vm.store, payload)?;
+            assert!(require_capability(&vm.store, owner, kind).is_err(), "owner wrapper is not the captured token");
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            let issuer = vm.store.data().build_read_issuer.clone();
+            vm.store.data_mut().build_read_issuer = Arc::new(());
+            assert!(require_capability(&vm.store, token, kind).is_err());
+            assert!(binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0).is_err(),
+                "projection must reauthenticate the captured session");
+            vm.store.data_mut().build_read_issuer = issuer;
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?,
+                "failed projection must not consume or replace the captured token");
+            drop(projected);
+            binding.family_retain(&vm.store, owner)?;
+            assert!(binding.release_owner_cleanup_items(&mut vm.store, owner)?.is_empty());
+            let cleanup = binding.release_owner_cleanup_items(&mut vm.store, owner)?;
+            assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [91]);
+            assert!(binding.family_retain(&vm.store, owner).is_err());
+        }
+        Ok(())
     }
 
     #[test]

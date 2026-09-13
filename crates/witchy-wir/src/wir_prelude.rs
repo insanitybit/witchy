@@ -363,11 +363,14 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto_sha256_slices" (func $crypto_sha256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_rune_hash_slices" (func $crypto_rune_hash_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "dir_is_dir_at" (func $dir_is_dir_at_host (param externref i32 i32) (result i32)))
+  (import "witchy" "build_read_at" (func $build_read_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "build_read_response_size" (func $build_read_response_size_host (param externref) (result i32)))
+  (import "witchy" "build_read_response_into" (func $build_read_response_into_host (param externref i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 144;
+pub const IMPORT_COUNT: usize = 147;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -602,6 +605,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "mint_exec"
         | "exec_only"
         | "exec_run_at"
+        | "build_read_at"
         | "exec_run"
         // The canonical route's stateless `Dir`/`Env` operations. They take a
         // capability token and checked slices, never host-staged state.
@@ -634,6 +638,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_with_dir_run"
         | "vm_serve_run"
         | "exec_response_size" | "exec_response_into"
+        | "build_read_response_size" | "build_read_response_into"
         | "vm_service_start" | "vm_service_step" | "vm_service_response_size"
         | "vm_service_response_into" | "vm_service_close"
         => C::InternalService,
@@ -691,7 +696,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "rand_u64" => AUTH_RAND,
         "exec_run_at" => AUTH_EXEC_DIR,
         "mint_exec" | "exec_only" | "exec_run" => AUTH_EXEC,
-        "build_read_len" => AUTH_BUILD_READ,
+        "build_read_len" | "build_read_at" => AUTH_BUILD_READ,
         "build_out_write" | "build_out_write_at" => AUTH_BUILD_OUT,
         "build_env_len" | "build_env_fill" => AUTH_BUILD_ENV,
         "build_fetch_len" => AUTH_BUILD_FETCH,

@@ -28,6 +28,8 @@ mod crypto_hash;
 mod dir_metadata;
 mod build_out;
 pub use build_out::OracleBuildWrite;
+mod build_read;
+pub use build_read::OracleBuildReadFixture;
 mod launch;
 mod nullable;
 mod regex;
@@ -100,13 +102,14 @@ pub struct CapabilityToken {
     net: Option<net::Token>,
     service: Option<vm_service::Token>,
     build_out: Option<build_out::Token>,
+    build_read: Option<build_read::Token>,
     exec: Option<exec::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new(), net: None, service: None, build_out: None, exec: None }
+        Self { kind, scope: String::new(), net: None, service: None, build_out: None, build_read: None, exec: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -132,6 +135,7 @@ impl InterpreterValue {
             crate::CanonicalEntryCapability::Console => 0,
             crate::CanonicalEntryCapability::Exec => crate::canonical_safewir::EXEC_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::BuildRead => crate::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::Dir => DIR_KIND,
             crate::CanonicalEntryCapability::Env => ENV_KIND,
             crate::CanonicalEntryCapability::Net => crate::canonical_safewir::NET_CAPABILITY_KIND.get(),
@@ -147,6 +151,7 @@ pub struct OracleFixture {
     pub exec: Option<OracleExecFixture>,
     /// Explicit write grant for a fresh virtual build output directory.
     pub build_out: bool,
+    pub build_read: Option<OracleBuildReadFixture>,
     pub files: BTreeMap<String, Vec<u8>>,
     pub environment: BTreeMap<String, String>,
     /// A directory the oracle reads when a path is not in `files` (the
@@ -309,6 +314,7 @@ pub enum InterpretError {
     UninitializedPlace,
     UnsupportedHostImport,
     BuildOut(String),
+    BuildRead(String),
     ExecFixture(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
@@ -444,6 +450,7 @@ pub fn interpret_program(
     let mut engine = Engine::new(module.module(), config);
     let arguments = engine.bind_net_entry(arguments)?;
     let arguments = engine.bind_build_entry(arguments)?;
+    let arguments = engine.bind_build_read_entry(arguments)?;
     let arguments = engine.bind_exec_entry(arguments)?;
     let results = engine.execute(function, arguments)?;
     let net_trace = engine.finish_net()?;
@@ -520,6 +527,7 @@ struct Engine<'a> {
     server: net::ServerState,
     exec: exec::State,
     build_out: build_out::State,
+    build_read: build_read::State,
     services: vm_service::ServiceState<'a>,
     isolated: bool,
     module: &'a CanonicalModule<InitialValid>,
@@ -556,6 +564,7 @@ impl<'a> Engine<'a> {
             exec: exec::State::new(),
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
+            build_read: build_read::State::new(),
             isolated: false,
             module,
             layouts,
@@ -1473,6 +1482,9 @@ impl<'a> Engine<'a> {
         }
         if exec::is_import(&contract.name) {
             return self.exec_host_call(&contract.name, destinations, arguments, values);
+        }
+        if build_read::is_import(&contract.name) {
+            return self.build_read_host_call(&contract.name, destinations, arguments, values);
         }
         if contract.name == "build_out_write_at" {
             return self.build_out_host_call(destinations, arguments, values);

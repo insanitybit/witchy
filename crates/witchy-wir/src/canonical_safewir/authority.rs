@@ -1150,6 +1150,7 @@ pub(super) fn value_type_matches_source(
             CapabilityRepresentation::Direct(CapabilityKind::Socket) | CapabilityRepresentation::Nullable(CapabilityKind::Socket) => super::SOCKET_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::Exec) | CapabilityRepresentation::Nullable(CapabilityKind::Exec) => super::EXEC_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::BuildOut) | CapabilityRepresentation::Nullable(CapabilityKind::BuildOut) => super::BUILD_OUT_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::BuildRead) | CapabilityRepresentation::Nullable(CapabilityKind::BuildRead) => super::BUILD_READ_CAPABILITY_KIND,
         };
         return matches!(
             (representation, actual),

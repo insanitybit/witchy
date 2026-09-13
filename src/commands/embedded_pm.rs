@@ -13,6 +13,11 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec)
     cmd_run(console, runner, root, bin, args)
 "#;
 
+const PROJECT_BUILD_ENTRY: &str = r#"from grimoire import cmd_build
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec, env: Env) -> Int:
+    cmd_build(console, runner, root, bin, env, args)
+"#;
+
 /// Run the EMBEDDED witchy package-manager front-end (`projects/grimoire/src/grimoire.witchy`)
 /// — the cargo-equivalent CLI, itself written in witchy and bundled into the
 /// toolchain like std (rfcs/0004-self-hosted-cli.md). `raw` is the front-end's
@@ -79,6 +84,8 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
         let (entry, source) = if pm_args.first().map(String::as_str) == Some("run") {
             ("__witchy_project_run", PROJECT_RUN_ENTRY)
+        } else if pm_args.first().map(String::as_str) == Some("build") {
+            ("__witchy_project_build", PROJECT_BUILD_ENTRY)
         } else {
             ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"))
         };

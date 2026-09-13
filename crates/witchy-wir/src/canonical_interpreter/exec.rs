@@ -52,7 +52,7 @@ impl Engine<'_> {
                 && token.kind == EXEC_CAPABILITY_KIND.get()
             {
                 if self.config.fixture.exec.is_none() || self.isolated { return Err(refusal("Exec entry was not granted")); }
-                if token.exec.is_some() || token.net.is_some() || token.service.is_some() || token.build_out.is_some() || !token.scope.is_empty() {
+                if token.exec.is_some() || token.build_read.is_some() || token.net.is_some() || token.service.is_some() || token.build_out.is_some() || !token.scope.is_empty() {
                     return Err(refusal("Exec entry is not a fresh root request"));
                 }
                 token.exec = Some(Token { issuer: self.exec.issuer.clone(), resource: Resource::Grant });

@@ -45,12 +45,14 @@ fn build(out: BuildOut):
     let write = fn(): out.write_out("nested/result.txt", "final\n")
     write()
 "#);
-    assert_eq!(recipe.identity().recipe_version(), 1);
+    assert_eq!(recipe.identity().recipe_version(), 2);
+    assert_eq!(recipe.identity().parameter_kinds(), &[9]);
     assert_eq!(recipe.identity().selected_declaration(), "recipe.build");
     assert_ne!(recipe.identity().original_source_digest(), recipe.identity().derived_source_digest());
     let source = recipe.canonical_source();
     assert_eq!(source.entry_declaration(), "recipe.witchy_build_recipe_entry");
-    assert_eq!(&source.launch_contract_payload()[..2], &[2, 1]);
+    assert_eq!(&source.launch_contract_payload()[..2], &[2, 2]);
+    assert!(source.launch_contract_payload().ends_with(&[1, 0, 0, 0, 9, 1]));
     assert!(source.closed_callable_abi(source.entry_declaration()).is_some());
     assert!(source.closed_callable_abi("main").is_none());
     let interpreted = folder.0.join("interpreted");
@@ -232,4 +234,131 @@ fn build_recipe_trailing_separators_preserve_file_and_directory_meaning() {
             }
         }
     }
+}
+
+#[test]
+fn build_read_recipe_three_legs_capture_order_utf8_fallback_and_zero_leaks() {
+    use std::collections::BTreeMap;
+    use witchy_wir::CanonicalEntryCapability::{BuildOut, BuildRead};
+    witchy_interp::compiler_natives::install();
+    for reversed in [false, true] {
+        let folder = Folder::new();
+        let parameters = if reversed { "input: BuildRead, out: BuildOut" } else { "out: BuildOut, input: BuildRead" };
+        let recipe = checked(&folder, &format!("fn build({parameters}):\n    let read = fn(): input.read_build(\"input.txt\")\n    let value = read()\n    out.write_out(\"value.txt\", value)\n    out.write_out(\"first.txt\", input.read_build(\"first.txt\"))\n"));
+        let kinds = if reversed { vec![12, 9] } else { vec![9, 12] };
+        assert_eq!(recipe.identity().parameter_kinds(), kinds);
+        let mut expected_abi = vec![2, 0, 0, 0];
+        for kind in &kinds { expected_abi.extend_from_slice(&[*kind, 1]); }
+        assert!(recipe.canonical_source().launch_contract_payload().ends_with(&expected_abi));
+        let contents = "caf\u{e9} ".repeat(70);
+        let roots = vec![
+            BTreeMap::from([("input.txt".to_owned(), vec![0xff]), ("first.txt".to_owned(), b"first wins".to_vec())]),
+            BTreeMap::from([("input.txt".to_owned(), contents.as_bytes().to_vec()), ("first.txt".to_owned(), b"second loses".to_vec())]),
+        ];
+        let read_roots = roots.iter().enumerate().map(|(index, files)| {
+            let root = folder.0.join(format!("root{index}"));
+            std::fs::create_dir_all(&root).unwrap();
+            for (path, bytes) in files { std::fs::write(root.join(path), bytes).unwrap(); }
+            root
+        }).collect::<Vec<_>>();
+        let interpreted = folder.0.join("interpreted");
+        crate::interpreter::run_build_step(recipe.original_module().module().clone(), crate::interpreter::BuildGrants {
+            out_dir: interpreted.clone(), read_roots: read_roots.clone(), ..Default::default()
+        }).expect("source BuildRead preserves ordered strict-UTF8 fallback");
+        let artifact = crate::codegen::compile_checked_build_recipe_artifact(&recipe).expect_lowered("BuildRead admission");
+        let expected_caps = if reversed { vec![BuildRead, BuildOut] } else { vec![BuildOut, BuildRead] };
+        assert_eq!(artifact.entry().unwrap().capabilities(), expected_caps);
+        let compiled = folder.0.join("compiled");
+        std::fs::create_dir_all(&compiled).unwrap();
+        let mut runtime = crate::runtime::Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted(&artifact, crate::runtime::Capabilities {
+            build_out: Some(compiled.clone()), build_read_roots: read_roots, ..crate::runtime::Capabilities::none()
+        }, crate::RUN_MEMORY_PAGES).unwrap();
+        vm.run().expect("native BuildRead executes");
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+        assert!(vm.output().is_empty());
+        for directory in [&interpreted, &compiled] {
+            assert_eq!(std::fs::read_to_string(directory.join("value.txt")).unwrap(), contents);
+            assert_eq!(std::fs::read_to_string(directory.join("first.txt")).unwrap(), "first wins");
+        }
+        let function = witchy_wir::canonical_safewir::FunctionId::new(artifact.entry().unwrap().export().strip_prefix('f').unwrap().parse().unwrap());
+        let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&recipe).unwrap();
+        for argv_launcher in [false, true] {
+            let parameters = expected_caps.iter().copied().map(InterpreterValue::entry_capability).collect();
+            let config = InterpreterConfig { fixture: OracleFixture {
+                build_out: true,
+                build_read: Some(oracle::OracleBuildReadFixture { roots: roots.clone() }),
+                ..Default::default()
+            }, ..Default::default() };
+            let run = if argv_launcher {
+                oracle::interpret_entry_program(&validated, function, parameters, &[], config)
+            } else { oracle::interpret_program(&validated, function, parameters, config) }.unwrap();
+            assert_eq!(run.leaked_objects, 0);
+            assert!(run.output.is_empty());
+            assert_eq!(run.build_trace, vec![
+                oracle::OracleBuildWrite { path: "value.txt".into(), contents: contents.clone() },
+                oracle::OracleBuildWrite { path: "first.txt".into(), contents: "first wins".into() },
+            ]);
+        }
+    }
+}
+
+#[test]
+fn build_read_recipe_missing_grant_and_escape_refuse_across_three_legs() {
+    use std::collections::BTreeMap;
+    witchy_interp::compiler_natives::install();
+    for escape in [false, true] {
+        let folder = Folder::new();
+        let path = if escape { "../outside.txt" } else { "inside.txt" };
+        let recipe = checked(&folder, &format!("fn build(out: BuildOut, input: BuildRead):\n    out.write_out(\"result.txt\", input.read_build(\"{path}\"))\n"));
+        let root = folder.0.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(folder.0.join("outside.txt"), "secret").unwrap();
+        std::fs::write(root.join("inside.txt"), "inside").unwrap();
+        let read_roots = if escape { vec![root] } else { Vec::new() };
+        let interpreted = folder.0.join("interpreted");
+        assert!(crate::interpreter::run_build_step(recipe.original_module().module().clone(), crate::interpreter::BuildGrants {
+            out_dir: interpreted.clone(), read_roots: read_roots.clone(), ..Default::default()
+        }).is_err());
+        let artifact = crate::codegen::compile_checked_build_recipe_artifact(&recipe).expect_lowered("checked read recipe");
+        let compiled = folder.0.join("compiled");
+        std::fs::create_dir_all(&compiled).unwrap();
+        let mut runtime = crate::runtime::Runtime::batch().unwrap();
+        let result = runtime.spawn_admitted(&artifact, crate::runtime::Capabilities {
+            build_out: Some(compiled.clone()), build_read_roots: read_roots, ..crate::runtime::Capabilities::none()
+        }, crate::RUN_MEMORY_PAGES).and_then(|mut vm| vm.run());
+        assert!(result.is_err(), "missing grant or confined escape must not execute a read");
+        assert!(!compiled.join("result.txt").exists());
+        assert!(!interpreted.join("result.txt").exists());
+        let function = witchy_wir::canonical_safewir::FunctionId::new(artifact.entry().unwrap().export().strip_prefix('f').unwrap().parse().unwrap());
+        let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&recipe).unwrap();
+        for argv_launcher in [false, true] {
+            let config = InterpreterConfig { fixture: OracleFixture {
+                build_out: true,
+                build_read: escape.then(|| oracle::OracleBuildReadFixture {
+                    roots: vec![BTreeMap::from([("../outside.txt".into(), b"secret".to_vec())])],
+                }),
+                ..Default::default()
+            }, ..Default::default() };
+            let parameters = vec![InterpreterValue::capability(9), InterpreterValue::capability(12)];
+            let result = if argv_launcher {
+                oracle::interpret_entry_program(&validated, function, parameters, &[], config)
+            } else { oracle::interpret_program(&validated, function, parameters, config) };
+            assert!(result.is_err(), "fixture data must not authorize escape or mint missing grants");
+        }
+    }
+}
+
+#[test]
+fn build_read_recipe_binds_order_and_remains_unavailable_to_ordinary_main() {
+    let folder = Folder::new();
+    let first = checked(&folder, "fn build(input: BuildRead, out: BuildOut):\n    out.write_out(\"x\", input.read_build(\"input\"))\n");
+    let second = checked(&folder, "fn build(out: BuildOut, input: BuildRead):\n    out.write_out(\"x\", input.read_build(\"input\"))\n");
+    assert_eq!(first.identity().parameter_kinds(), &[12, 9]);
+    assert_eq!(second.identity().parameter_kinds(), &[9, 12]);
+    assert_ne!(first.identity().derived_source_digest(), second.identity().derived_source_digest());
+    let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&first).unwrap();
+    assert!(witchy_wir::admit_canonical(validated, second.canonical_source()).is_err());
+    let path = folder.source("fn main(input: BuildRead) -> Nil:\n    Nil\n");
+    assert!(crate::link_file_checked(path.to_str().unwrap()).is_err(), "ordinary main cannot request BuildRead");
 }

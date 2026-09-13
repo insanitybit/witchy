@@ -12595,9 +12595,10 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Socket => T::Named("Socket".into(), Vec::new()),
         Ty::Listener => T::Named("Listener".into(), Vec::new()),
         Ty::BuildOut => T::Named("BuildOut".into(), Vec::new()),
-        Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {
-            return None
-        }
+        Ty::BuildRead => T::Named("BuildRead".into(), Vec::new()),
+        Ty::BuildEnv => T::Named("BuildEnv".into(), Vec::new()),
+        Ty::BuildNet => T::Named("BuildNet".into(), Vec::new()),
+        Ty::BuildExec => T::Named("BuildExec".into(), Vec::new()),
         Ty::List(e) => T::Named("List".into(), vec![ty_to_ast(e)?]),
         Ty::Tuple(ts) => {
             T::Tuple(ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?)

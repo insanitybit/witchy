@@ -5,6 +5,13 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use witchy::trusted_publisher::source_inputs::{SourceDependency, SourceFile, SourceInputs, validate_path};
 
+#[path = "package_inputs/generated.rs"]
+mod generated;
+
+#[cfg(test)]
+#[path = "package_inputs/generated_replay_tests.rs"]
+mod generated_replay_tests;
+
 pub(super) trait SourceFiles {
     fn read(&self, path: &Path) -> Result<Option<String>, String>;
     fn closed_package(&self) -> bool { false }
@@ -75,10 +82,11 @@ impl SourceFiles for ReplayFiles<'_> {
 fn load(
     path: &Path, dependencies: &HashMap<String, PathBuf>, files: &dyn SourceFiles,
 ) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
+    let entry_path = path;
     let stem = path.file_stem().and_then(|stem| stem.to_str()).ok_or("invalid package entry")?;
-    let owner = workspace_module_owner_with_files(path, stem, files)?;
+    let owner = generated::module_owner(path, stem, path, files)?;
     let owners = dependencies.iter().map(|(alias, path)| {
-        Ok((alias.clone(), workspace_module_owner_with_files(path, alias, files)?))
+        Ok((alias.clone(), generated::module_owner(path, alias, entry_path, files)?))
     }).collect::<Result<HashMap<_, _>, String>>()?;
     load_file_modules_with_files(path.to_str().ok_or("non-UTF-8 package entry")?, dependencies, owner, &owners, files)
 }
@@ -125,7 +133,7 @@ pub(crate) fn capture_project_source(
         manifest.to_str().ok_or("non-UTF-8 project manifest")?)?;
     let files = ReplayFiles(&inputs);
     let assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
-        let actual = workspace_module_owner_with_files(Path::new(path), alias, &files)?;
+        let actual = generated::module_owner(Path::new(path), alias, Path::new(&inputs.entry), &files)?;
         // The existing project resolver spells a root module `foo`, whereas
         // the native loader records its package-relative path as `src.foo`.
         // Accept that spelling only as an assertion; always retain `actual`.

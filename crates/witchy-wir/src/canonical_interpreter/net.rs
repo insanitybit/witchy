@@ -309,7 +309,7 @@ impl Engine<'_> {
         let mut ordinal = 0;
         for argument in &mut arguments {
             if let InterpreterValue::Capability(token) = argument && token.kind == NET {
-                if token.net.is_some() || !token.scope.is_empty() { return Err(refused(OracleNetError::Unauthenticated)); }
+                if token.net.is_some() || token.build_read.is_some() || !token.scope.is_empty() { return Err(refused(OracleNetError::Unauthenticated)); }
                 if ordinal >= state.grants.len() { return Err(refused(OracleNetError::MissingGrant)); }
                 *token = state.token(Resource::Grant(ordinal));
                 ordinal += 1;

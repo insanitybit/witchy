@@ -35,7 +35,7 @@ impl Engine<'_> {
                     return Err(InterpretError::BuildOut("write_out: no BuildOut grant".into()));
                 }
                 // A public root is a launch request, never a reusable host token.
-                if token.build_out.is_some() || token.net.is_some() || token.service.is_some() || !token.scope.is_empty() {
+                if token.build_out.is_some() || token.build_read.is_some() || token.net.is_some() || token.service.is_some() || !token.scope.is_empty() {
                     return Err(InterpretError::BuildOut("write_out: invalid root request".into()));
                 }
                 token.build_out = Some(Token(self.build_out.issuer.clone()));

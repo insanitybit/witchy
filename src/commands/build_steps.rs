@@ -251,10 +251,10 @@ pub(crate) fn run_build_step_child() -> Result<Vec<String>, String> {
         ));
     }
 let grants = request.grants;
-if !grants.read_roots.is_empty() || !grants.env.is_empty() || !grants.exec_tools.is_empty()
+if !grants.env.is_empty() || !grants.exec_tools.is_empty()
     || !grants.child_paths.is_empty() || !grants.net_hosts.is_empty()
 {
-    return Err("build recipe: BuildRead, BuildEnv, BuildExec and BuildNet grants are unsupported".into());
+    return Err("build recipe: BuildEnv, BuildExec and BuildNet grants are unsupported".into());
 }
 let source = request.source.to_str().ok_or_else(|| "build source path is not UTF-8".to_string())?;
 let recipe = crate::source::link_build_file(source)?;
@@ -265,7 +265,9 @@ let artifact = match codegen::compile_checked_build_recipe_artifact(&recipe) {
 };
 std::fs::create_dir_all(&grants.out_dir).map_err(|error| format!("build: output dir: {error}"))?;
 let caps = runtime::Capabilities {
-    build_out: Some(grants.out_dir.clone()), ..runtime::Capabilities::none()
+    build_out: Some(grants.out_dir.clone()),
+    build_read_roots: grants.read_roots,
+    ..runtime::Capabilities::none()
 };
 super::confinement::arm(&caps, witchy_confinement::EnforcementMode::BestEffort)?;
 let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;

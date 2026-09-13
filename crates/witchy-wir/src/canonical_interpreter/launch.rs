@@ -47,6 +47,7 @@ pub(super) fn prepare_launch(
     let engine = self;
     let capabilities = engine.bind_net_entry(capabilities)?;
     let capabilities = engine.bind_build_entry(capabilities)?;
+    let capabilities = engine.bind_build_read_entry(capabilities)?;
     let mut capabilities = engine.bind_exec_entry(capabilities)?.into_iter();
     let mut values = Vec::new();
     for parameter in parameters {

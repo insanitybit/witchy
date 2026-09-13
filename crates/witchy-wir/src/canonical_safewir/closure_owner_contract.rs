@@ -80,6 +80,7 @@ impl<'a> SourceConstructor<'a> {
                     CapabilityKind::Socket => super::SOCKET_CAPABILITY_KIND,
                     CapabilityKind::Exec => super::EXEC_CAPABILITY_KIND,
                     CapabilityKind::BuildOut => super::BUILD_OUT_CAPABILITY_KIND,
+                    CapabilityKind::BuildRead => super::BUILD_READ_CAPABILITY_KIND,
                 }))
             }
         }).collect::<Result<Vec<_>, _>>()?;

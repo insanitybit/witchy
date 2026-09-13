@@ -1293,3 +1293,48 @@ preparation-scope repair. Project CLI source admission and its reachable crypto
 operations are separate, unsubmitted integration work. Their latest focused run
 still refuses a hash probe with `InvalidGuard` and an ordinary project command
 with `MissingBinding("__capop.is_dir")`; neither is claimed complete here.
+
+## Current checkpoint: BuildRead and generated workspace sources (2026-09-13)
+
+This supersedes the earlier source-integration pending status: that slice merged
+as `2981eb73342961302f96d1dd27011bf919e4484d` at `2026-09-13T21:30:47Z`,
+with a 373-second coordinator gate and zero flakes. The BuildRead slice on
+`impl/rfc0165-build-read-ready` is focused-green, not yet merged at this checkpoint.
+
+- Ordinary `witchy build app` now runs the existing Grimoire build handler through
+  a checked source entry, forwards manifest-relative BuildRead grants, executes
+  the admitted recipe, audits generated source, and compiles the consumer.
+- BuildRead uses instance-bound root/response externrefs and one immutable UTF-8
+  snapshot. Ordered-root fallback, short-buffer behavior, confinement, capture
+  reauthentication, and source/oracle/admitted-Wasm agreement have focused probes.
+- Generated workspace module ownership is reconstructed from the actual consumer
+  ancestry, declared path dependency, explicit build grant, and producer inputs.
+  CLI owner flags remain assertions. Output-side ownership manifests and registry
+  relabeling refuse. This is namespace assignment, NOT proof that a build produced
+  particular bytes. Closed replay retains the raw observations and freshly checks
+  the captured source; missing observations and forged producer claims refuse.
+- Focused CI-profile run `b58890b1-0a5b-4dc8-8b37-a7f79f90733c`: **38/38 passed**
+  in 12.068 seconds after a 2m07s rebuild. Log:
+  `/private/tmp/witchy-build-read-namespace-focused.log`.
+- Package/project regression run `29a91342-074d-4db5-9cbd-356575b97a28`:
+  **12/12 passed** in 14.280 seconds, including existing parent/symlink replay.
+  Log: `/private/tmp/witchy-build-read-package-regressions.log`.
+- The same rebuilt binary reports interpreter/compiled-Wasm agreement for
+  `hello` (3 lines), `wrap` (5), and `jq` (7). These CLI probes are not claimed
+  as three independently executed legs. No fresh broad census was run.
+- Independent static reviews covered the host contract, captured-token projection,
+  checked project entry, and generated namespace derivation before submission.
+  Initial/final validation and independent expected-byte matching remain enabled.
+
+Reproduce the focused commands from the existing warmed physical worktree:
+
+```sh
+cd /private/tmp/witchy-rfc0165-dominance-admission
+common=(env CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target CARGO_BUILD_JOBS=1 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy --features native --lib --bin witchy --test misc --ignore-default-filter --profile ci --test-threads 2 --no-fail-fast)
+"${common[@]}" -E 'test(build_read) | test(build_recipe) | test(rfc0103_build_step_confinement) | test(wasm_abi_catalog) | test(generated_workspace_ownership) | test(generated_replay_tests)'
+"${common[@]}" -E 'test(source::package_inputs) | test(rfc0165_packaged_source) | test(rfc0165_project_run)'
+```
+
+BuildEnv/BuildExec/BuildNet, registry/custom resolver replay, general workflow
+coverage, and the remaining optimizer/security acceptance obligations stay open.
+Compiler-wide memory safety is not established.

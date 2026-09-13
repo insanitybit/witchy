@@ -157,7 +157,7 @@ pub fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(S
         run_compiler(console, runner, bin, "run", flatten_argv([target], app_args))
 
 // build <file|dir> — compile a program (and its vendored deps) to verify it builds.
-fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
+pub fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
     warn_staged_lock_pins(console, root)
     let options = build_options(args)
     let dir = options.dir
