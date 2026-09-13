@@ -556,6 +556,25 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
                 .contains("canonical_wasm_encoding_is_private_and_requires_final_authority"),
         "the focused route omitted the final-authority admission boundary: {commands:?}",
     );
+    assert!(
+        commands[2].starts_with("WITCHY_ORACLE_EXAMPLE=calc ")
+            && commands[2].contains(
+                "test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)",
+            ),
+        "the focused route omitted the filtered production oracle: {commands:?}",
+    );
+}
+
+#[test]
+fn oracle_harness_edit_runs_only_the_filtered_production_oracle() {
+    let commands = selected(&["--edit-loop", "tests/misc/rfc0165_oracle.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(commands[0].starts_with("WITCHY_ORACLE_EXAMPLE=calc "), "{commands:?}");
+    assert!(
+        commands[0]
+            .contains("test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)"),
+        "{commands:?}",
+    );
 }
 
 #[test]
