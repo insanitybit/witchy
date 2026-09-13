@@ -152,3 +152,28 @@ fn boolean_reaches_closed_diamond_still_passes_independent_admission() {
     let bytes = encode_validated(validate_final_for_test(checked_for_bytes).unwrap()).unwrap();
     decode_and_match_plan(validated.module(), &target, &bytes).unwrap();
 }
+
+#[test]
+fn cached_natural_loop_membership_matches_full_sets_for_nested_loops() {
+    with_graph(&[&[1], &[2, 5], &[3], &[4, 1], &[3], &[]], |encoder, planner| {
+        for header in [1, 3] {
+            let header = BlockId::new(header);
+            let encoded_members = encoder.natural_loop_members(header).unwrap();
+            let planned_members = planner.natural_loop_members(header).unwrap();
+            for _ in 0..64 {
+                for block in (0..6).chain([99]).map(BlockId::new) {
+                    assert_eq!(encoder.in_natural_loop(header, block).unwrap(),
+                        block != header && encoded_members.contains(&block));
+                    assert_eq!(planner.in_natural_loop(header, block).unwrap(),
+                        block != header && planned_members.contains(&block));
+                }
+            }
+        }
+        assert!(encoder.in_natural_loop(BlockId::new(1), BlockId::new(4)).unwrap());
+        assert!(!planner.in_natural_loop(BlockId::new(3), BlockId::new(2)).unwrap());
+        assert!(matches!(encoder.in_natural_loop(BlockId::new(99), BlockId::new(0)),
+            Err(EncodeError::MissingBlock { .. })));
+        assert_eq!(planner.in_natural_loop(BlockId::new(99), BlockId::new(0)),
+            Err(CanonicalAdmissionError::UnsupportedPlan));
+    });
+}

@@ -3626,7 +3626,13 @@ impl StructuredEmitter<'_> {
         header: crate::canonical_safewir::BlockId,
         block: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        Ok(block != header && self.natural_loop_members(header)?.contains(&block))
+        if block == header {
+            return Ok(false);
+        }
+        if let Some(members) = self.natural_loop_facts.borrow().get(&header) {
+            return Ok(members.contains(&block));
+        }
+        Ok(self.natural_loop_members(header)?.contains(&block))
     }
 
     fn find_join(
@@ -6081,7 +6087,13 @@ impl<'a> PlanEmitter<'a> {
     }
 
     fn in_natural_loop(&self, header: crate::canonical_safewir::BlockId, block: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
-        Ok(block != header && self.natural_loop_members(header)?.contains(&block))
+        if block == header {
+            return Ok(false);
+        }
+        if let Some(members) = self.natural_loop_facts.borrow().get(&header) {
+            return Ok(members.contains(&block));
+        }
+        Ok(self.natural_loop_members(header)?.contains(&block))
     }
 
     fn find_join(

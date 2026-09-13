@@ -256,6 +256,19 @@ async fn test_abort():
         suite.clone().into_os_string(),
     ]);
     assert!(success.status.success(), "{}", text(&success));
+}
+
+#[test]
+fn source_integration_async_recipe_preserves_abort_from_body() {
+    // This is an independent whole-compiler invocation, not state shared with
+    // the passing case. Keep both source declarations and the selected filter.
+    let temp = TempDir::new("integration-recipe-async-abort");
+    let suite = temp.write("suite.witchy", r#"import testing
+async fn test_pass():
+    testing.assert_int_eq(2 + 2, 4)
+async fn test_abort():
+    testing.fail_with("async integration body ran")
+"#);
     let failure = run([
         "test".into(), "--integration".into(), "--filter".into(), "test_abort".into(),
         suite.into_os_string(),
