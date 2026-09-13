@@ -707,6 +707,24 @@ fn workspace_manifest_runs_the_stage_crate_dag_probe_early() {
 }
 
 #[test]
+fn source_backed_test_driver_runs_the_native_host_catalog_probe_early() {
+    let probe = "cargo nextest run --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'";
+    for path in [
+        "crates/witchy-types/src/pipeline/test_driver.rs",
+        "crates/witchy-types/src/pipeline/test_driver/console_fixture.rs",
+        "src/commands/test_runner/canonical_bare.rs",
+        "src/commands/test_runner/canonical_console_fixture.rs",
+    ] {
+        let commands = selected(&[path]);
+        assert_eq!(
+            commands.first().map(String::as_str),
+            Some(probe),
+            "focused route for {path}: {commands:?}"
+        );
+    }
+}
+
+#[test]
 fn worktree_module_and_script_route_to_the_real_integration_binary() {
     assert_eq!(
         selected(&["tests/worktree/status.rs"]),

@@ -290,6 +290,12 @@ for p in "${paths[@]}"; do
             add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
     esac
     case "$p" in
+        crates/witchy-types/src/pipeline/test_driver.rs | \
+        crates/witchy-types/src/pipeline/test_driver/*.rs | \
+        src/commands/test_runner/canonical_bare.rs | \
+        src/commands/test_runner/canonical_console_fixture.rs)
+            add_early "cargo nextest run --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
+            path_has_early=1 ;;
         tests/misc/rfc0165_oracle.rs)
             add_early "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)'"
             path_has_early=1 ;;
