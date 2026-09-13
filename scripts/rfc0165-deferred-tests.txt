@@ -77,7 +77,6 @@ witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_bu
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_exec_runs_only_allow_listed_tools
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_net_fetches_only_allow_listed_hosts
 witchy::bin/witchy commands::execution::runtime_parity_tests::parity_authenticates_user_dynamic_declarations
-witchy::bin/witchy commands::test_runner::test_mode_link_tests::fixture_test_assembles_owned_capability_record_on_both_backends
 witchy::bin/witchy commands::test_runner::test_mode_link_tests::fixture_test_runs_real_witchy_source_with_identical_backend_evidence
 witchy::bin/witchy commands::test_runner::test_mode_link_tests::witchy_test_allows_entry_to_construct_foreign_sealed_data
 witchy::bin/witchy commands::test_runner::test_mode_link_tests::witchy_test_prunes_unused_effectful_main_under_zero_grant
