@@ -51,7 +51,7 @@ pub(super) fn validate<S: ModuleStage>(
                 return Err(refuse());
             }
             let declaration = candidate.signatures().iter().find(|s| s.id == family.declaration_signature).ok_or_else(refuse)?;
-            if !candidate_signature_matches_source_with_records(declaration, &signature, candidate, &records)
+            if !candidate_signature_matches_source_with_layouts(declaration, &signature, candidate, &records, &layouts)
                 || constructor.captures.len() != witness.captures().len()
             { return Err(refuse()); }
             let related = witnesses.iter().enumerate().filter(|(_, w)| {

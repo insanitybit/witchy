@@ -319,6 +319,12 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
     let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+    // One decode of the candidate's layout bundle serves every signature
+    // comparison and the closure catalog below.
+    let (_bundle, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
+        Ok(value) => value,
+        Err(_) => return Err(CandidateAbiBindingError::MissingCanonicalLayouts),
+    };
     let mut bindings = BTreeMap::new();
     let mut bound_functions = BTreeMap::new();
     for binding in candidate.source_abi_bindings().entries() {
@@ -358,7 +364,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = source.closed_callable_signature(binding.source_declaration_ordinal()) else {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
         };
-        if !candidate_signature_matches_source_with_records(signature, source_signature, candidate, &records) {
+        if !candidate_signature_matches_source_with_layouts(signature, source_signature, candidate, &records, &layouts) {
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
@@ -367,10 +373,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
     // owns a tagged environment record; captures are its checked scalar or
     // managed-reference payloads, never capabilities or an erased value.
     let closures = source.closure_witness().entries();
-    let (_bundle, closure_layout_catalog) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
-        Ok(value) => value,
-        Err(_) => return Err(CandidateAbiBindingError::MissingCanonicalLayouts),
-    };
+    let closure_layout_catalog = &layouts;
     let mut closure_bound = BTreeMap::new();
     for binding in candidate.closure_bindings().entries() {
         if bound_functions.contains_key(&binding.function())
@@ -405,7 +408,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             declaration.contract.parameters.remove(0);
             declaration.contract.parameter_effects = declaration.contract.parameter_effects.into_iter()
                 .filter_map(|(index, effects)| index.checked_sub(1).map(|index| (index, effects))).collect();
-            if !candidate_signature_matches_source_with_records(&declaration, &source_signature, candidate, &records) {
+            if !candidate_signature_matches_source_with_layouts(&declaration, &source_signature, candidate, &records, &layouts) {
                 return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
             }
             continue;
@@ -462,7 +465,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                            witchy_types::canonical_closure::ClosureCaptureTransfer::CopyScalar)
                 );
                 (transfer_matches && value_type_matches_source(
-                    actual, capture.checked_type(), &closure_layout_catalog, candidate.signatures(), &mut correspondence,
+                    actual, capture.checked_type(), closure_layout_catalog, candidate.signatures(), &mut correspondence,
                     &records, candidate.closure_layouts(),
                 )).then_some(actual)
             }).collect::<Vec<_>>();
@@ -487,7 +490,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_lanes) = strip_closure_environment(signature, candidate) else {
             return Err(CandidateAbiBindingError::MissingClosureEnvironmentParameter { function: binding.function() });
         };
-        if !candidate_signature_matches_source_with_records(&source_lanes, &source_signature, candidate, &records) {
+        if !candidate_signature_matches_source_with_layouts(&source_lanes, &source_signature, candidate, &records, &layouts) {
             return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
         }
     }
@@ -933,9 +936,22 @@ pub(super) fn candidate_signature_matches_source_with_records<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     records: &ScalarRecordFields,
 ) -> bool {
-    let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     let (_, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) { Ok(value) => value, Err(_) => return false };
-    candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, &layouts, candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), records, candidate.closure_layouts())
+    candidate_signature_matches_source_with_layouts(actual, source, candidate, records, &layouts)
+}
+
+/// `candidate_signature_matches_source_with_records` over an already decoded
+/// layout catalog: a binding pass compares hundreds of signatures against one
+/// bundle and must not decode it once per comparison.
+pub(super) fn candidate_signature_matches_source_with_layouts<S: ModuleStage>(
+    actual: &super::FunctionSignature,
+    source: &witchy_syntax::ast::Type,
+    candidate: &CanonicalModule<S>,
+    records: &ScalarRecordFields,
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
+    candidate_signature_matches_source_inner(actual, source, parameters, result, conventions, layouts, candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate), records, candidate.closure_layouts())
 }
 
 /// Check the original source graph before any ABI comparison erases wrappers.

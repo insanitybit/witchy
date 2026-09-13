@@ -969,7 +969,7 @@ pub trait ClosedTypeResolver {
     fn resolve_named<'a>(&'a self, name: &str, arguments: &[Type]) -> Option<ResolvedNamed<'a>>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LayoutInterner {
     descriptors: BTreeMap<LayoutId, LayoutDescriptor>,
     nominal_bindings: BTreeMap<LayoutId, LayoutId>,

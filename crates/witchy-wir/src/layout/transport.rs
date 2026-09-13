@@ -118,7 +118,35 @@ impl LayoutBundle {
     /// Decode and validate a bundle into a fresh interner. Descriptors must be
     /// dependency-first; this prevents an artifact from relying on lookup order
     /// or lazily accepting a dangling layout reference.
+    /// Decode a bundle. The same bytes decode to the same bundle and
+    /// interner, and one compile decodes its bundle many times (checker,
+    /// authority, encoder, oracle), so the validated result is memoized by the
+    /// content digest of the bytes within this process. Nothing is trusted
+    /// that was not decoded and validated here from identical bytes.
     pub fn decode_canonical(
+        bytes: &[u8],
+    ) -> Result<(Self, LayoutInterner), LayoutTransportError> {
+        use std::sync::{Arc, Mutex, OnceLock};
+        static DECODED: OnceLock<Mutex<Vec<([u8; 32], Arc<(LayoutBundle, LayoutInterner)>)>>> = OnceLock::new();
+        const MEMO_ENTRIES: usize = 8;
+        let digest = *blake3::hash(bytes).as_bytes();
+        let memo = DECODED.get_or_init(|| Mutex::new(Vec::new()));
+        if let Ok(entries) = memo.lock()
+            && let Some((_, decoded)) = entries.iter().find(|(key, _)| *key == digest)
+        {
+            return Ok((decoded.0.clone(), decoded.1.clone()));
+        }
+        let decoded = Self::decode_canonical_uncached(bytes)?;
+        if let Ok(mut entries) = memo.lock() {
+            if entries.len() >= MEMO_ENTRIES {
+                entries.remove(0);
+            }
+            entries.push((digest, Arc::new(decoded.clone())));
+        }
+        Ok(decoded)
+    }
+
+    fn decode_canonical_uncached(
         bytes: &[u8],
     ) -> Result<(Self, LayoutInterner), LayoutTransportError> {
         let mut decoder = Decoder::new(bytes);
