@@ -652,7 +652,7 @@ fn check_memory_cfg(
     functions: &FunctionIndex,
     blocks: &BTreeMap<BlockId, &BasicBlock>,
     definition_sites: &BTreeMap<ValueId, DefinitionSite>,
-    dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    dominators: &Dominators,
     mut memory: MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
     let mut incoming = BTreeMap::new();
@@ -721,7 +721,7 @@ fn check_block_flow(
     functions: &FunctionIndex,
     blocks: &BTreeMap<BlockId, &BasicBlock>,
     definition_sites: &BTreeMap<ValueId, DefinitionSite>,
-    dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    dominators: &Dominators,
     memory: &mut MemoryChecker<'_>,
     incoming: &BTreeMap<BlockId, memory::MemoryState>,
 ) -> Result<Vec<(BlockId, memory::MemoryState)>, InitialCheckError> {
@@ -1096,7 +1096,7 @@ fn check_uses_dominate(
     use_operation_index: usize,
     uses: Vec<ValueId>,
     definitions: &BTreeMap<ValueId, DefinitionSite>,
-    dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
+    dominators: &Dominators,
 ) -> Result<(), InitialCheckError> {
     for value in uses {
         let definition = definitions
@@ -1111,9 +1111,7 @@ fn check_uses_dominate(
                 .operation_index
                 .is_none_or(|definition_index| definition_index < use_operation_index)
         } else {
-            dominators
-                .get(&use_block)
-                .is_some_and(|set| set.contains(&definition.block))
+            dominators.dominates(definition.block, use_block)
         };
         if !dominates {
             return Err(InitialCheckError::ValueDoesNotDominateUse {
@@ -1160,54 +1158,8 @@ fn successors(terminator: &Terminator) -> Vec<BlockId> {
     }
 }
 
-fn dominators(
-    function: &Function,
-    blocks: &BTreeMap<BlockId, &BasicBlock>,
-    predecessors: &BTreeMap<BlockId, BTreeSet<BlockId>>,
-) -> Result<BTreeMap<BlockId, BTreeSet<BlockId>>, InitialCheckError> {
-    let all: BTreeSet<_> = blocks.keys().copied().collect();
-    let mut reachable = BTreeSet::new();
-    let mut pending = vec![function.entry];
-    while let Some(block) = pending.pop() {
-        if reachable.insert(block) {
-            let body = blocks.get(&block).copied().ok_or(InitialCheckError::MissingBlock {
-                function: function.id,
-                block,
-            })?;
-            pending.extend(successors(&body.terminator));
-        }
-    }
-    let mut result = BTreeMap::new();
-    for block in blocks.keys().copied() {
-        result.insert(
-            block,
-            if block == function.entry {
-                [block].into_iter().collect()
-            } else {
-                all.clone()
-            },
-        );
-    }
-    loop {
-        let mut changed = false;
-        for block in blocks.keys().copied().filter(|block| *block != function.entry) {
-            let incoming = predecessors.get(&block).expect("all blocks have predecessor sets");
-            let mut updated = incoming
-                .iter()
-                .map(|predecessor| result[predecessor].clone())
-                .reduce(|left, right| left.intersection(&right).copied().collect())
-                .unwrap_or_default();
-            updated.insert(block);
-            if result[&block] != updated {
-                result.insert(block, updated);
-                changed = true;
-            }
-        }
-        if !changed {
-            return Ok(result);
-        }
-    }
-}
+mod dominance;
+use dominance::{Dominators, dominators};
 
 fn check_operation(
     function: &Function,
