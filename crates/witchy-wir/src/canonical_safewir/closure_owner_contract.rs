@@ -81,6 +81,7 @@ impl<'a> SourceConstructor<'a> {
                     CapabilityKind::Exec => super::EXEC_CAPABILITY_KIND,
                     CapabilityKind::BuildOut => super::BUILD_OUT_CAPABILITY_KIND,
                     CapabilityKind::BuildRead => super::BUILD_READ_CAPABILITY_KIND,
+                    CapabilityKind::BuildEnv => super::BUILD_ENV_CAPABILITY_KIND,
                 }))
             }
         }).collect::<Result<Vec<_>, _>>()?;

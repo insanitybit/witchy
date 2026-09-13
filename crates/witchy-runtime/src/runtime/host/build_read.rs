@@ -1,5 +1,6 @@
 //! Canonical BuildRead: an instance-bound grant and a single-read immutable
 //! response. Neither a path nor a response can mint filesystem authority.
+//! Kind13 also carries BuildEnv lookup results; None is not an empty string.
 use std::sync::Arc;
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::super::{memory_of, read_slice_str, VmState};
@@ -14,7 +15,7 @@ pub(in crate::runtime) struct Authority {
 #[derive(Clone, Debug)]
 struct Response {
     issuer: Arc<()>,
-    bytes: Arc<[u8]>,
+    bytes: Option<Arc<[u8]>>,
 }
 
 pub(in crate::runtime) fn mint(state: &VmState) -> Result<Authority> {
@@ -58,11 +59,25 @@ pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "build_read_at", read_at)?;
     linker.func_wrap("witchy", "build_read_response_size", response_size)?;
     linker.func_wrap("witchy", "build_read_response_into", response_into)?;
+    linker.func_wrap("witchy", "build_response_is_some", response_is_some)?;
     Ok(())
 }
 
 fn checked_response_len(len: usize) -> Result<i32> {
     i32::try_from(len).map_err(|_| Error::msg("BuildRead response exceeds guest ABI size limit"))
+}
+
+/// Only host-produced UTF-8 values enter the shared, authority-free carrier.
+/// The issuer is taken from the destination Store, never a caller-supplied token.
+pub(super) fn new_response(
+    mut store: impl wasmtime::AsContextMut<Data = VmState>, value: Option<&str>,
+) -> Result<Rooted<ExternRef>> {
+    let bytes = value.map(|text| {
+        checked_response_len(text.len())?;
+        Ok::<Arc<[u8]>, Error>(Arc::from(text.as_bytes()))
+    }).transpose()?;
+    let issuer = store.as_context().data().build_read_issuer.clone();
+    ExternRef::new(&mut store, Response { issuer, bytes })
 }
 
 fn read_at(
@@ -81,11 +96,7 @@ fn read_at(
         match root.file(&path, true) {
             Ok(file) => match file.read_to_string() {
                 Ok(contents) => {
-                    checked_response_len(contents.len())?;
-                    let response = Response {
-                        issuer: authority.issuer.clone(), bytes: contents.into_bytes().into(),
-                    };
-                    return ExternRef::new(&mut caller, response).map(Some);
+                    return new_response(&mut caller, Some(&contents)).map(Some);
                 }
                 Err(error) => last = format!("`{}`: {error}", file.display_path().display()),
             },
@@ -95,10 +106,18 @@ fn read_at(
     bail!("read_build: `{path}` not found in any granted read root ({last})")
 }
 
-fn response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Arc<[u8]>> {
+fn response_value(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Option<Arc<[u8]>>> {
     let token = token.ok_or_else(|| Error::msg("BuildRead response is null"))?;
     let data = token.data(caller)?.ok_or_else(|| Error::msg("BuildRead response has no host data"))?;
     Ok(authenticate_response(&caller.data().build_read_issuer, data)?.bytes.clone())
+}
+
+fn response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Arc<[u8]>> {
+    response_value(caller, token)?.ok_or_else(|| Error::msg("Build response is None"))
+}
+
+fn response_is_some(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    Ok(i32::from(response_value(&caller, token)?.is_some()))
 }
 
 fn response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {

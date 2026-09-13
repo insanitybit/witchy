@@ -29,7 +29,7 @@ mod dir_metadata;
 mod build_out;
 pub use build_out::OracleBuildWrite;
 mod build_read;
-pub use build_read::OracleBuildReadFixture;
+pub use build_read::{OracleBuildReadFixture, OracleBuildEnvFixture};
 mod launch;
 mod nullable;
 mod regex;
@@ -136,6 +136,7 @@ impl InterpreterValue {
             crate::CanonicalEntryCapability::Exec => crate::canonical_safewir::EXEC_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildRead => crate::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::BuildEnv => crate::canonical_safewir::BUILD_ENV_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::Dir => DIR_KIND,
             crate::CanonicalEntryCapability::Env => ENV_KIND,
             crate::CanonicalEntryCapability::Net => crate::canonical_safewir::NET_CAPABILITY_KIND.get(),
@@ -152,6 +153,8 @@ pub struct OracleFixture {
     /// Explicit write grant for a fresh virtual build output directory.
     pub build_out: bool,
     pub build_read: Option<OracleBuildReadFixture>,
+    /// Only this explicit snapshot grants BuildEnv; never consult ambient Env.
+    pub build_env: Option<OracleBuildEnvFixture>,
     pub files: BTreeMap<String, Vec<u8>>,
     pub environment: BTreeMap<String, String>,
     /// A directory the oracle reads when a path is not in `files` (the
@@ -315,6 +318,7 @@ pub enum InterpretError {
     UnsupportedHostImport,
     BuildOut(String),
     BuildRead(String),
+    BuildEnv(String),
     ExecFixture(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),

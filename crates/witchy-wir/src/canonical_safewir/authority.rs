@@ -1151,6 +1151,7 @@ pub(super) fn value_type_matches_source(
             CapabilityRepresentation::Direct(CapabilityKind::Exec) | CapabilityRepresentation::Nullable(CapabilityKind::Exec) => super::EXEC_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::BuildOut) | CapabilityRepresentation::Nullable(CapabilityKind::BuildOut) => super::BUILD_OUT_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::BuildRead) | CapabilityRepresentation::Nullable(CapabilityKind::BuildRead) => super::BUILD_READ_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::BuildEnv) | CapabilityRepresentation::Nullable(CapabilityKind::BuildEnv) => super::BUILD_ENV_CAPABILITY_KIND,
         };
         return matches!(
             (representation, actual),

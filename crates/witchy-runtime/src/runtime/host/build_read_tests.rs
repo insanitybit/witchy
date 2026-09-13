@@ -40,7 +40,7 @@ pub(in crate::runtime::host) fn read(vm: &mut Vm, grant: Token, path: &str) -> R
 }
 
 fn bytes(vm: &Vm, token: Token) -> &[u8] {
-    &token.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap().bytes
+    token.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap().bytes.as_deref().unwrap()
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn build_read_responses_are_immutable_bounded_reusable_and_released_with_store()
     let result = read(&mut vm, grant, "sample.txt").unwrap();
     let weak = {
         let data = result.unwrap().data(&vm.store).unwrap().unwrap().downcast_ref::<Response>().unwrap();
-        Arc::downgrade(&data.bytes)
+        Arc::downgrade(data.bytes.as_ref().unwrap())
     };
     std::fs::write(root.path().join("a/sample.txt"), "changed").unwrap();
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();

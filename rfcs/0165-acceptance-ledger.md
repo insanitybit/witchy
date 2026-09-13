@@ -1338,3 +1338,60 @@ common=(env CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target C
 BuildEnv/BuildExec/BuildNet, registry/custom resolver replay, general workflow
 coverage, and the remaining optimizer/security acceptance obligations stay open.
 Compiler-wide memory safety is not established.
+
+### BuildEnv integration checkpoint (2026-09-13, not submitted)
+
+BuildRead is merged at `b9ce0f2c0bcf4796f60507dde5f17168d8ae9500`
+(queue change `mq-289086a0b99bc7d8b16a25c774be552e6d477438`, submitted
+`cdb72409b7a91eb7a12b3b4e19cd34608ce8ebad`). BuildEnv remains uncommitted on
+`impl/rfc0165-build-io-next` in `/private/tmp/witchy-rfc0165-dominance-admission`.
+
+The integrated native focused run `732edb28-d80c-4bc1-9dca-e8b77f4e9c8d`
+finished with 49 passed and 2 failed (68.302 seconds after compilation).
+Evidence: `/private/tmp/witchy-build-env-integrated-focused.log`. Command:
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy --features native --lib --bin witchy --test misc --ignore-default-filter --profile ci -E 'test(build_env) | test(build_read) | test(build_recipe) | test(rfc0103_build_step_confinement) | test(wasm_abi_catalog)' --test-threads 2 --no-fail-fast
+```
+
+The passing tests cover build-only root authentication, immutable allow-listed
+snapshots, present-empty versus unset, denied keys, response/capture authority,
+checked recipe admission, source/native/oracle execution, and the ABI catalog.
+The existing `compiled_build_env_reads_only_allow_listed_keys` test is no longer
+deferred. No production validation or byte-plan matching was removed.
+
+Both failures are in the new `rfc0165_build_env_project` fixtures, before BuildEnv
+execution: `BLOCK: path dependency key `generator` does not match its manifest
+identity `env-producer` (../generator)`. The fixture must use a package identity
+accepted by the package manager; the package identity check must not be relaxed.
+The same file's denial assertion also needs an exact key-specific allow-list
+error instead of generic wording that can match its temporary directory name.
+Neither defect is counted as successful project/security evidence. The files
+remain preserved in the worktree; this slice is not queue-green or submitted.
+
+BuildEnv uses the existing immutable response service, with a private build-only
+root and an optional string response. Runtime and oracle consume explicit grant
+snapshots, not ambient environment. Existing environment-value build-cache
+invalidation is not established by this slice. Compiler-wide memory safety,
+optional-optimizer preservation, and the full SafeWIR goal remain unestablished.
+
+#### BuildEnv fixture resolution and focused-ready evidence
+
+The two fixture defects above are resolved: the producer manifest now matches
+its dependency key, and denial requires the exact key-specific allow-list
+message. No package identity or authorization check was weakened. Independent
+review cleared the corrected fixture before queue submission.
+
+Run `95a5bf7b-9bb1-45a1-81f6-d7739a8e4354` passed all 51 selected native tests
+in 117.035 seconds (4.22-second warmed rebuild), using the command above.
+Log: `/private/tmp/witchy-build-env-integrated-focused-fixed.log`.
+Run `0fca8b09-dde2-48a1-ae76-0ca8bbc7299d` also passed all 12 package/source
+regressions in 8.685 seconds; log:
+`/private/tmp/witchy-build-env-package-regressions.log`.
+The same built binary passed interpreter/compiled-Wasm parity for `hello`,
+`wrap`, and `jq` (3, 5, and 7 output lines respectively).
+
+This is focused-ready evidence, not a merged/full-gate claim. Queue state and
+terminal landing remain authoritative in the merge-queue journal. BuildExec,
+BuildNet, other remaining workflows, and optimizer/security acceptance remain
+open. The full SafeWIR goal is not complete.

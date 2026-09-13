@@ -335,6 +335,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `build_read_at` | `(externref, i32, i32) -> externref` | capability authority | Build.Read | omitted |
 | `build_read_response_size` | `(externref) -> i32` | internal/toolchain service | none | omitted |
 | `build_read_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `build_env_at` | `(externref, i32, i32) -> externref` | capability authority | Build.Env | omitted |
+| `build_response_is_some` | `(externref) -> i32` | internal/toolchain service | none | omitted |
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

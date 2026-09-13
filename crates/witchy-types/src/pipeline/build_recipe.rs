@@ -1,4 +1,4 @@
-//! Production BuildOut/BuildRead recipe v2. Raw source and loader ownership are inputs;
+//! Production BuildOut/BuildRead/BuildEnv recipe v2. Raw source and loader ownership are inputs;
 //! no AST, selected ordinal, generated body, or claimed digest is accepted.
 use super::*;
 use witchy_syntax::ast::{Convention, Expr, Item, Stmt, Type};
@@ -82,7 +82,7 @@ pub fn check_build_recipe_from_source_bundle(
         || target.params.iter().any(|parameter| parameter.ty.is_none()
             || parameter.default.is_some() || parameter.convention != Convention::Let)
     {
-        return Err(refused("build recipe supports default-convention BuildOut/BuildRead parameters; async, generic, defaulted and other build capability families are unsupported"));
+        return Err(refused("build recipe supports default-convention BuildOut/BuildRead/BuildEnv parameters; async, generic, defaulted and other build capability families are unsupported"));
     }
     let parameters = target.params.clone();
     let ordinal = u64::try_from(*ordinal).map_err(|_| refused("build declaration ordinal overflow"))?;
@@ -103,7 +103,8 @@ pub fn check_build_recipe_from_source_bundle(
     let parameter_kinds = original_parameters.iter().map(|parameter| match parameter.unqualified() {
         Type::Named(name, args) if name == "BuildOut" && args.is_empty() => Ok(9u8),
         Type::Named(name, args) if name == "BuildRead" && args.is_empty() => Ok(12u8),
-        _ => Err(refused("build recipe requires exact checked BuildOut/BuildRead parameters; other providers are unsupported")),
+        Type::Named(name, args) if name == "BuildEnv" && args.is_empty() => Ok(14u8),
+        _ => Err(refused("build recipe requires exact checked BuildOut/BuildRead/BuildEnv parameters; other providers are unsupported")),
     }).collect::<Result<Vec<_>, _>>()?;
     let mut parameter_abi = Vec::new();
     parameter_abi.extend_from_slice(&(parameter_kinds.len() as u32).to_le_bytes());
@@ -159,11 +160,12 @@ pub fn check_build_recipe_from_source_bundle(
         || args.iter().zip(&wrapper.params).zip(&identity.parameter_kinds).any(|((argument, parameter), kind)| {
             !matches!(argument, Expr::Var(name) if name == &parameter.name)
                 || !matches!((typed.table().type_of(argument), kind),
-                    (Some(typeck::Ty::BuildOut), 9) | (Some(typeck::Ty::BuildRead), 12))
+                    (Some(typeck::Ty::BuildOut), 9) | (Some(typeck::Ty::BuildRead), 12)
+                        | (Some(typeck::Ty::BuildEnv), 14))
         })
         || !matches!(wrapper.ret.as_ref(), Some(Type::Named(name, args)) if name == "Nil" && args.is_empty())
     {
-        return Err(refused("build recipe requires exact checked BuildOut/BuildRead parameters in source order and Nil result; other providers are unsupported"));
+        return Err(refused("build recipe requires exact checked BuildOut/BuildRead/BuildEnv parameters in source order and Nil result; other providers are unsupported"));
     }
     let mut checked = finish_canonical_source(checked, typed, identity.derived)?;
     let source = checked.canonical_source.as_mut().ok_or_else(|| refused("build recipe source missing"))?;
@@ -180,7 +182,7 @@ pub fn check_build_recipe_from_source_bundle(
     // checked ABI/census ordinal and ordered Write/Read roots. Ordinary
     // raw-byte launch readers that understand only v1 must refuse it.
     let name_len = u32::try_from(entry_name.len()).map_err(|_| refused("build entry name overflow"))?;
-    let mut payload = vec![2, 2]; // launch version, ordered BuildOut/BuildRead recipe
+    let mut payload = vec![2, 2]; // launch version, ordered BuildOut/BuildRead/BuildEnv recipe
     payload.extend_from_slice(&name_len.to_le_bytes());
     payload.extend_from_slice(entry_name.as_bytes());
     payload.extend_from_slice(&target.function_ordinal.to_le_bytes());
