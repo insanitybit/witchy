@@ -118,6 +118,15 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
     // not re-hash every earlier recipe on every new one.
     let import_ids = source.imports().iter().map(|import| import.id).collect::<BTreeSet<_>>();
     let mut admitted: BTreeMap<ImportId, usize> = BTreeMap::new();
+    // Families by the constructor ids and signatures the recipes name.
+    let mut family_by_constructor = BTreeMap::new();
+    let mut family_by_signature = BTreeMap::new();
+    for family in source.owner_families() {
+        family_by_signature.entry(family.signature).or_insert(family);
+        for constructor in &family.constructors {
+            family_by_constructor.entry(constructor.id.0).or_insert(family);
+        }
+    }
     for function in source.functions() {
         for operation in function.blocks.iter().flat_map(|b| &b.operations) {
             let Operation::ClosureOwner(operation) = operation else { continue };
@@ -126,12 +135,12 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
             let family = match &recipe {
                 OwnerBridgeRecipe::Construct(id) | OwnerBridgeRecipe::ReadCapability(id, _)
                 | OwnerBridgeRecipe::ReadOwner(id, _) | OwnerBridgeRecipe::CloneEnvironment(id) =>
-                    source.owner_families().iter().find(|f| f.constructors.iter().any(|c| c.id == *id)),
+                    family_by_constructor.get(&id.0).copied(),
                 OwnerBridgeRecipe::ReadTag(id) | OwnerBridgeRecipe::ReadCallable(id) | OwnerBridgeRecipe::Clone(id) | OwnerBridgeRecipe::Drop(id)
                 | OwnerBridgeRecipe::NewList(id, _) | OwnerBridgeRecipe::ListGet(id) | OwnerBridgeRecipe::ListLength(id)
                 | OwnerBridgeRecipe::CloneList(id) | OwnerBridgeRecipe::ListPush(id) | OwnerBridgeRecipe::ListSet(id)
                 | OwnerBridgeRecipe::DropList(id) =>
-                    source.owner_families().iter().find(|f| f.signature == *id),
+                    family_by_signature.get(id).copied(),
             }.ok_or_else(|| error("unregistered owner bridge"))?;
             if family.constructors.iter().any(|c| c.captures.iter().any(|capture| !matches!(
                 (capture.value_type, capture.storage),

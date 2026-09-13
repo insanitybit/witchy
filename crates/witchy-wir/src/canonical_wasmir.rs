@@ -3089,6 +3089,8 @@ struct StructuredEmitter<'a> {
     body: &'a mut WasmFunctionEncoder,
     source_function: &'a Function,
     target_function: &'a WasmFunction,
+    /// Target blocks by id, for the same reason as the plan emitter's map.
+    blocks_by_id: BTreeMap<crate::canonical_safewir::BlockId, &'a WasmBlock>,
     layout: &'a LocalLayout<'a>,
     function_indices: &'a BTreeMap<FunctionId, u32>,
     signature_indices: &'a BTreeMap<crate::canonical_safewir::FunctionSignatureId, u32>,
@@ -3122,10 +3124,9 @@ struct StructuredEmitter<'a> {
 
 impl StructuredEmitter<'_> {
     fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&WasmBlock, EncodeError> {
-        self.target_function
-            .blocks
-            .iter()
-            .find(|block| block.id == id)
+        self.blocks_by_id
+            .get(&id)
+            .copied()
             .ok_or(EncodeError::MissingBlock {
                 function: self.source_function.id,
                 block: id,
@@ -4023,6 +4024,7 @@ fn encode_function(
         body: &mut body,
         source_function,
         target_function,
+        blocks_by_id: target_function.blocks.iter().map(|block| (block.id, block)).collect(),
         layout: &layout,
         function_indices,
         signature_indices,
@@ -5599,6 +5601,9 @@ fn expected_block_operations_plan(
 
 struct PlanEmitter<'a> {
     source_function: &'a Function,
+    /// Blocks by id: the structured walk looks blocks up on every path,
+    /// join, and reachability step, so the lookup must not scan the body.
+    blocks_by_id: BTreeMap<crate::canonical_safewir::BlockId, &'a BasicBlock>,
     layout: &'a LocalLayout<'a>,
     layouts: &'a LayoutInterner,
     function_indices: &'a BTreeMap<FunctionId, u32>,
@@ -5631,11 +5636,7 @@ struct PlanEmitter<'a> {
 
 impl<'a> PlanEmitter<'a> {
     fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&'a BasicBlock, CanonicalAdmissionError> {
-        self.source_function
-            .blocks
-            .iter()
-            .find(|block| block.id == id)
-            .ok_or(CanonicalAdmissionError::UnsupportedPlan)
+        self.blocks_by_id.get(&id).copied().ok_or(CanonicalAdmissionError::UnsupportedPlan)
     }
 
     fn successors(&self, id: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
@@ -6417,6 +6418,7 @@ fn expected_function_plan(
     }
     let mut emitter = PlanEmitter {
         source_function: function,
+        blocks_by_id: function.blocks.iter().map(|block| (block.id, block)).collect(),
         layout: &layout,
         layouts,
         function_indices,
