@@ -42,7 +42,7 @@ def main():
         )
         output = result.stdout
         assert "nextest    1/2 slowest completed invocation" in output, output
-        assert "discovery  all 2 binaries started by stage+90s (overlaps test execution)" in output, output
+        assert "discovery  all 2 binaries observed started by stage+90s (upper bound; overlaps tests)" in output, output
         assert "startup" not in output, output
         assert "execution  102s wall" in output, output
         assert "test time  102s summed per-test wall (overlaps; not CPU)" in output, output

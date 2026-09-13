@@ -150,8 +150,8 @@ def profile(run, top, budget, exempt=None):
     print(f"tests      {run['count']}")
     if run["all_binaries_started_stage_s"] is not None:
         print(
-            f"discovery  all {run['binaries_started']} binaries started by "
-            f"stage+{run['all_binaries_started_stage_s']}s (overlaps test execution)"
+            f"discovery  all {run['binaries_started']} binaries observed started by "
+            f"stage+{run['all_binaries_started_stage_s']}s (upper bound; overlaps tests)"
         )
     print(f"execution  {run['wall']:.0f}s wall")
     print(f"test time  {test_seconds:.0f}s summed per-test wall (overlaps; not CPU)")
@@ -228,7 +228,7 @@ def trend(runs):
     print()
     print("Summed per-test time growing faster than the test count means the")
     print("observed tests are unusually expensive; read it beside execution wall.")
-    print("all-bin is the stage offset when every binary had started discovery;")
+    print("all-bin is a heartbeat-sampled upper bound for all binaries starting;")
     print("tests can already be running, so it is not a startup-only duration.")
 
     # Which tests grew? Compare the oldest and newest halves we have.
