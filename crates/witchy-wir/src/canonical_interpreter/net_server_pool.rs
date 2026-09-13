@@ -3,8 +3,10 @@
 //! Pre-rendezvous execution may only compute in its private heap and obtain
 //! the shared listener. Other host effects refuse, so moving those pure
 //! prefixes ahead of the sequential suffixes preserves the startup barrier.
-//! Scripts assign disjoint connections to workers; they do not supply guest
-//! results. Cross-worker socket traffic and unbounded servers are not modeled.
+//! This is an inbound-only profile: outbound connects refuse in the primary
+//! and every worker, even after rendezvous. Disjoint socket ids alone cannot
+//! prove independence from a peer blocked in another pool instance. Scripts
+//! do not supply guest results; arbitrary concurrency is not modeled.
 use super::*;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,6 +63,9 @@ impl ServerState {
     }
 
     pub(in super::super) fn before_host_call(&self, name: &str) -> Result<(), InterpretError> {
+        if (self.fixture.is_some() || self.worker) && name == "net_connect_at" {
+            return Err(InterpretError::UnsupportedOperation("server pool outbound traffic"));
+        }
         if self.worker && !self.rendezvous && !matches!(name,
             "net_listen_at" | "serve_pool" | "__witchy_abort_at" | "__witchy_list_bounds_at")
         {
@@ -147,6 +152,20 @@ impl<'a> Engine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_pool_outbound_connect_refuses_before_and_after_rendezvous() {
+        for worker in [false, true] {
+            let mut server = ServerState::new((!worker).then(OracleServerPoolFixture::default));
+            server.worker = worker;
+            for rendezvous in [false, true] {
+                server.rendezvous = rendezvous;
+                assert_eq!(server.before_host_call("net_connect_at"),
+                    Err(InterpretError::UnsupportedOperation("server pool outbound traffic")));
+            }
+        }
+        ServerState::new(None).before_host_call("net_connect_at").unwrap();
+    }
 
     #[test]
     fn server_pool_completion_requires_rendezvous_and_every_worker() {
