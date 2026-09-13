@@ -124,15 +124,14 @@ filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^concurrent_daemon_s
 test-group = 'queue-concurrency-serial'
 
 # These hermetic queue fixtures have sorted last in recent queue-infrastructure
-# gates, leaving the other queue workers idle. The first four take 5-9s;
+# gates, leaving the other queue workers idle. The first three take 5-9s;
 # `a_red_costs_the_front_entry_its_queue_head` was the final queue fixture in 7
 # of 10 recent complete queue runs, and the final test overall in four, at
-# 8.4-27.8s. After that fixture moved forward and shrank, `fast_gate_emits_...`
-# finished last in two consecutive landings at 6.054s and 6.136s. Start these
-# fixtures with the other known stragglers so their Git/process work overlaps
-# the shard; their existing test groups and every assertion remain unchanged.
+# 8.4-27.8s. Start them with the other known stragglers so their Git/process work
+# overlaps the shard; their existing test groups and every assertion remain
+# unchanged.
 [[profile.default.overrides]]
-filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^gate_behavior::state_and_gate::(unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest|prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha|full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red|a_red_costs_the_front_entry_its_queue_head|fast_gate_emits_structured_foreground_and_background_timings)$/)'
+filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^gate_behavior::state_and_gate::(unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest|prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha|full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red|a_red_costs_the_front_entry_its_queue_head)$/)'
 priority = 90
 
 # Corpus shards retain every admission and execution assertion. Each drives the
