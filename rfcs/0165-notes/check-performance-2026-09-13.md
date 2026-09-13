@@ -38,6 +38,28 @@ Measured on a loaded machine (three alternating runs, minimum user seconds):
 | channels | 28.0 | 24.7 |
 | cooperative_map | 34.5 | 25.7 |
 
+## Second batch (same day)
+
+- Dev-profile test builds optimize `sha2` and `blake3` (admission hashes on
+  every digest); release builds are unaffected.
+- The oracle decodes the layout bundle once per engine instead of inside every
+  projection check, static-data decode, and owner-environment construction.
+- The structured encoder and its plan mirror index blocks by id; the linear
+  body scan per lookup had made the join search quadratic in block count for
+  scheduler-sized functions. `owner_bridges::build` indexes owner families the
+  same way. After this the encoder and plan mirror together are under 10% of
+  a task-program compile; the two checker passes are about 90%.
+- The oracle example shards pin `for_await` and `worker_pool` to light shards
+  so no shard carries two task examples.
+
+Measured on a loaded machine (minimum of alternating runs, user seconds):
+
+| example | 2026-09-12 binary | after both batches |
+|---|---|---|
+| channels | 27.5 | 23.8 |
+| cooperative_map | 36.9 | 19.5 |
+| conventions | 28.4 | 23.1 |
+
 ## Not landed, recorded for the owners
 
 1. **The second full checker pass.** `validate_final_inner` verifies that the
