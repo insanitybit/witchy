@@ -551,7 +551,13 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("CARGO_TARGET_DIR", temp.path().join("target-queue-only"))
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
-        .env("WITCHY_GATE_NEXTEST", "--test merge_queue")
+        // This is the exact selector emitted for a queue-infrastructure-only
+        // landing. Both test binaries live in the standalone package, so root
+        // Cargo must not be asked to resolve either one.
+        .env(
+            "WITCHY_GATE_NEXTEST",
+            "--test merge_queue --test test_for_paths",
+        )
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -567,7 +573,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         !queue_only_args
             .lines()
-            .any(|line| line.starts_with("nextest run --test merge_queue")),
+            .any(|line| line.starts_with("nextest run --test")),
         "root Cargo was asked to resolve the standalone queue target: {queue_only_args}",
     );
     assert!(

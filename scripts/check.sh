@@ -567,13 +567,25 @@ if cargo nextest --version >/dev/null 2>&1; then
     # (1 binary skipped)" -> "error: no tests to run" -> branch RED, even
     # though its tests ran green in the queue-infra shard moments later.
     #
-    # Narrow deliberately: only when the selection is exactly that one binary,
-    # so a mapper bug that genuinely selects nothing still fails loudly here.
+    # Narrow deliberately: every selector must name one of the two standalone
+    # queue binaries, so a mapper bug that genuinely selects nothing or mixes
+    # in a product target still fails loudly here.
     main_queue_only=0
-    if [ "${#nextest_sel[@]}" -eq 2 ] \
-        && [ "${nextest_sel[0]}" = "--test" ] \
-        && [ "${nextest_sel[1]}" = "merge_queue" ]; then
+    if [ "${#nextest_sel[@]}" -ge 2 ] \
+        && [ "$(( ${#nextest_sel[@]} % 2 ))" -eq 0 ]; then
         main_queue_only=1
+        selector_index=0
+        while [ "$selector_index" -lt "${#nextest_sel[@]}" ]; do
+            if [ "${nextest_sel[$selector_index]}" != "--test" ]; then
+                main_queue_only=0
+                break
+            fi
+            case "${nextest_sel[$((selector_index + 1))]}" in
+                merge_queue | test_for_paths) ;;
+                *) main_queue_only=0; break ;;
+            esac
+            selector_index=$((selector_index + 2))
+        done
     fi
     # RFC-0159 follow-up: replay the tests that red the PREVIOUS attempt for this
     # change, before the full suite.
