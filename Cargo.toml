@@ -191,3 +191,11 @@ opt-level = 2
 # this override it wins. Tiny crate — no build-time cost.
 [profile.dev.package.foldhash]
 opt-level = 3
+# SafeWIR admission hashes constantly: sha2 for module and recipe digests,
+# blake3 for layout-bundle digests. Unoptimized SHA-256 is an order of
+# magnitude slower than optimized and showed up as top frames in a checker
+# profile (2026-09-13). Small crates, negligible build-time cost.
+[profile.dev.package.sha2]
+opt-level = 2
+[profile.dev.package.blake3]
+opt-level = 2
