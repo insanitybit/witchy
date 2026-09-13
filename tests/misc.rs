@@ -10,6 +10,9 @@ mod temp_dir;
 #[path = "misc/rfc0165_packaged_source.rs"]
 mod rfc0165_packaged_source;
 
+#[path = "misc/rfc0165_project_run.rs"]
+mod rfc0165_project_run;
+
 #[path = "misc/rfc0165_messages.rs"]
 mod rfc0165_messages;
 

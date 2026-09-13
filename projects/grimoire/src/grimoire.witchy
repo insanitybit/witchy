@@ -35,7 +35,7 @@ from toml import Toml
 from gm_core import arg, join_path, wire, basename, positionals, has_flag, flag_value, drop_flag_value, split_spec, canonical_version, humanize_wait, normalize_path, can_pop, drop_last, registry_get, registry_post, jget, jget_int, json_index_str
 from gm_core import BuildOptions, FootprintError, HostPortError, LockIntegrityError, LockPinError, RecordFootprintError, RecordVerifyError, RegistryRootKeyError, SourceFileSetError, SourceResponseError, TufError, VendoredRecord, VendoredRecordError, VersionResolveError
 from gm_core import add_unique, admits_any, allowed_caps, args_from, build_exec_child_paths, build_exec_programs, build_footprint, build_options, check_path_identity, choose, closure_has, compiler_report_document, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag, dep_flag_owned, dep_line_is, dep_req, dep_source, dependencies_has_key, eligible_versions, entry_alias, entry_hash, entry_is_registry, entry_name, entry_source, exact_record_state, field, find_exact_state, first_witchy, flatten_argv, footprint_diff_values, footprint_string_field, footprint_string_values, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_grants_section, has_path_dependency, has_path_flag, is_section_header, latest_label, latest_label_of, latest_version, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_has_dependencies, manifest_stub, manifest_upsert_dep, module_name, module_stem, name_char_ok, optional_lock_string, package_owner_flag, parse_authority, parse_origin, parse_snapshot_pin, parse_vendored_record, parse_version_records, path_deps, path_shape_ok, pick_version_cooled, pinned_registry_trust, project_data_dir, record_field_has_newline, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_origin, registry_placeholder, released_version_records, required_lock_field, required_manifest_coordinate, required_vendored_footprint, required_vendored_string, resp_field, rewrite_dependencies, runtime_net_flags, scaffold_name_error, set_at, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_has_int, signed_has_object, signed_has_str, signed_payload, signed_valid, snapshot_schema_ok, source_file_entry, source_files, strict_footprint, strict_strings, string_list_payload, strip_net_flags, target_digest, timestamp_schema_ok, union_all, unused_caps, update_positionals, valid_name_segment, valid_registry_rootpub, valid_scaffold_name, validate_source_files, vendored_footprint_strings, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, version_source
-from gm_engine import add_pkg_gated, add_rune, assume_yes, build_project_target, build_step_flags, cooldown_now, coven_addr, dep_flags, ensure_lock_integrity, gate_contributors, generate_lock, id_token_from_env, install_resolve, lock_problems, path_closure, print_versions, project_entry, publish_checked, report_check, report_dep_version, report_gate, report_rune_verify, resolution_footprint, run_compiler, run_project, rune_footprint, src_stub, staged_lock_pins, staged_pin_labels, tree_children, update_vendored, vendor_closure, verdict_vendor, verify_lock_integrity, verify_tuf, warn_staged_lock_pins, why_path
+from gm_engine import add_pkg_gated, add_rune, assume_yes, build_project_target, build_step_flags, cooldown_now, coven_addr, dep_flags_for_entry, ensure_lock_integrity, gate_contributors, generate_lock, id_token_from_env, install_resolve, lock_problems, path_closure, print_versions, project_entry, publish_checked, report_check, report_dep_version, report_gate, report_rune_verify, resolution_footprint, run_compiler, run_project, rune_footprint, src_stub, staged_lock_pins, staged_pin_labels, tree_children, update_vendored, vendor_closure, verdict_vendor, verify_lock_integrity, verify_tuf, warn_staged_lock_pins, why_path
 
 // `main` takes two `Dir` grants positionally: `root` (handle 0) is the project
 // tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used
@@ -47,7 +47,7 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, home: Dir, ru
         cmd_info(console, root, arg(args, 1))
         0
     else if cmd == "run":
-        cmd_run(console, runner, root, bin, env, clock, args)
+        cmd_run(console, runner, root, bin, args)
     else if cmd == "build":
         cmd_build(console, runner, root, bin, env, args)
     else if cmd == "typecheck":
@@ -141,7 +141,7 @@ fn cmd_info(console: Console, root: Dir, dir: String):
 // it runs that one module directly. This is the project-level `run` of RFC-0004 —
 // the front-end decides *what* to compile (entry + deps from the lock) and
 // `witchyc` does the compiling/running.
-fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
+pub fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, args: List(String)) -> Int:
     warn_staged_lock_pins(console, root)
     let target = arg(args, 1)
     let dir = if target.is_empty(): "." else: target
@@ -182,7 +182,7 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
                         if built.0 != 0:
                             built.0
                         else:
-                            match dep_flags(root, dir):
+                            match dep_flags_for_entry(root, dir, entry):
                                 Err(e) ->
                                     console.print(e.show())
                                     2

@@ -86,6 +86,76 @@ fn load(
 pub(crate) fn capture_packaged_source(
     entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: &str,
 ) -> Result<(pipeline::CheckedModule, String, SourceInputs), String> {
+    let inputs = capture_source_inputs(entry, dependencies, manifest)?;
+    let (checked, entry) = recheck_packaged_source(&inputs)?;
+    Ok((checked, entry, inputs))
+}
+
+/// Public owner flags are assertions about loader-selected inputs, never
+/// assignments passed to the checker. Registry replay needs resolver evidence
+/// that this workspace-only protocol deliberately does not manufacture.
+pub(crate) fn capture_project_source(
+    entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: Option<&str>,
+    entry_claim: &ModuleLoadIdentity, claims: &HashMap<String, ModuleLoadIdentity>,
+) -> Result<(pipeline::CheckedModule, String, SourceInputs), String> {
+    for claim in std::iter::once(entry_claim).chain(claims.values()) {
+        if claim.package().source() != &PackageSource::Workspace {
+            return Err("source replay does not yet support custom/registry owner assignments; resolver provenance must be retained, not relabeled".into());
+        }
+    }
+    if claims.len() != dependencies.len() || dependencies.keys().any(|alias| !claims.contains_key(alias)) {
+        return Err("project source requires exactly one owner assertion per selected dependency".into());
+    }
+    let manifest = match manifest {
+        Some(path) => PathBuf::from(path),
+        None => Path::new(entry).parent().into_iter().flat_map(Path::ancestors)
+            .map(|directory| directory.join("witchy.toml"))
+            .find(|path| path.is_file()).ok_or("project source requires a workspace manifest")?,
+    };
+    let inputs = capture_source_inputs(entry, dependencies,
+        manifest.to_str().ok_or("non-UTF-8 project manifest")?)?;
+    let files = ReplayFiles(&inputs);
+    let assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
+        let actual = workspace_module_owner_with_files(Path::new(path), alias, &files)?;
+        // The existing project resolver spells a root module `foo`, whereas
+        // the native loader records its package-relative path as `src.foo`.
+        // Accept that spelling only as an assertion; always retain `actual`.
+        let module_matches = claim.module_path() == actual.module_path()
+            || (actual.module_path().len() == 2 && actual.module_path()[0] == "src"
+                && claim.module_path() == &actual.module_path()[1..]);
+        if claim.package() != actual.package() || !module_matches {
+            return Err(format!("project owner assertion for `{alias}` differs from captured source/manifest ownership"));
+        }
+        Ok(())
+    };
+    let entry_name = Path::new(&inputs.entry).file_stem().and_then(|name| name.to_str())
+        .ok_or("project source entry has no UTF-8 module name")?;
+    assert_owner(&inputs.entry, entry_name, entry_claim)?;
+    for dependency in &inputs.dependencies {
+        assert_owner(&dependency.path, &dependency.alias, &claims[&dependency.alias])?;
+    }
+    // Do not turn a registry dependency into workspace ownership merely because
+    // its source happens to be on disk or its caller labels it `workspace`.
+    for file in &inputs.files {
+        if !file.path.ends_with("/witchy.toml") { continue; }
+        let Some(contents) = &file.contents else { continue; };
+        let manifest: toml::Value = toml::from_str(contents).map_err(|error| format!("project manifest: {error}"))?;
+        if let Some(dependencies) = manifest.get("dependencies") {
+            let dependencies = dependencies.as_table().ok_or("project dependencies must be a table")?;
+            for (alias, dependency) in dependencies {
+                if dependency.get("path").and_then(toml::Value::as_str).is_none() {
+                    return Err(format!("project registry dependency `{alias}` requires authenticated resolver replay; workspace relabeling is forbidden"));
+                }
+            }
+        }
+    }
+    let (checked, entry) = recheck_packaged_source(&inputs)?;
+    Ok((checked, entry, inputs))
+}
+
+fn capture_source_inputs(
+    entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: &str,
+) -> Result<SourceInputs, String> {
     let entry = absolute(Path::new(entry))?;
     let dependencies = dependencies.iter().map(|(alias, path)| Ok((alias.clone(), absolute(path)?)))
         .collect::<Result<HashMap<_, _>, String>>()?;
@@ -118,8 +188,7 @@ pub(crate) fn capture_packaged_source(
     if original != replay {
         return Err("closed package cannot preserve the selected source graph and loader ownership after path normalization".into());
     }
-    let (checked, entry) = recheck_packaged_source(&inputs)?;
-    Ok((checked, entry, inputs))
+    Ok(inputs)
 }
 
 pub(crate) fn recheck_packaged_source(inputs: &SourceInputs) -> Result<(pipeline::CheckedModule, String), String> {

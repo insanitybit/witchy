@@ -5,9 +5,6 @@ use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_interp::pipeline;
 use crate::{link_file_checked, link_file_checked_with_deps};
-use crate::source::{
-    link_file_checked_authenticated_with_deps, AuthenticatedDependency,
-};
 use witchy_types::runtime_type::{ModuleLoadIdentity, PackageCoordinate, PackageSource};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -18,7 +15,8 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
     // to a wasm binary — the low-level surface the witchy CLI front-end drives to
     // build a multi-rune project (rfcs/0004-self-hosted-cli.md §4). Without `--out`
     // it just verifies the program compiles.
-    if std::env::args().nth(1).as_deref() == Some("compile") {
+    let source_run = std::env::args().nth(1).as_deref() == Some("run-source");
+    if source_run || std::env::args().nth(1).as_deref() == Some("compile") {
         let mut entry: Option<String> = None;
         let mut deps: std::collections::HashMap<String, std::path::PathBuf> =
             std::collections::HashMap::new();
@@ -28,15 +26,29 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
         let mut out: Option<String> = None;
         let mut target = "wasm".to_string();
         let mut manifest: Option<String> = None;
+        let mut dir_roots = Vec::new();
+        let mut net_allow = Vec::new();
+        let mut launch_args = Vec::new();
         let mut argv = std::env::args().skip(2);
         while let Some(a) = argv.next() {
             match a.as_str() {
+                "--" if source_run => {
+                    launch_args.extend(argv);
+                    break;
+                }
+                "--dir" | "--net" if source_run => {
+                    let value = argv.next().ok_or_else(|| wasmtime::Error::msg(format!("{a} requires a value")))?;
+                    if a == "--dir" { dir_roots.push(std::path::PathBuf::from(value)); }
+                    else { net_allow.push(value); }
+                }
                 "--dep" => match argv.next().and_then(|s| {
                     s.split_once('=')
                         .map(|(n, p)| (n.to_string(), std::path::PathBuf::from(p)))
                 }) {
                     Some((n, p)) => {
-                        deps.insert(n, p);
+                        if deps.insert(n.clone(), p).is_some() {
+                            return Err(wasmtime::Error::msg(format!("duplicate dependency `{n}`")));
+                        }
                     }
                     None => {
                         eprintln!("--dep needs name=path");
@@ -100,7 +112,8 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 "--debug" => {
                     opt::configure("none").map_err(wasmtime::Error::msg)?;
                 }
-                _ if entry.is_none() => entry = Some(a),
+                _ if entry.is_none() && !a.starts_with('-') => entry = Some(a),
+                _ if source_run => return Err(wasmtime::Error::msg(format!("unknown run-source option `{a}`; application arguments must follow --"))),
                 _ => {}
             }
         }
@@ -111,13 +124,33 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
             std::process::exit(1);
         };
         let result = (|| -> Result<(), String> {
-            if target == "trusted-publisher" {
-                if package_owner.is_some() || !dep_owners.is_empty() {
-                    return Err("trusted-publisher source replay does not yet support custom/registry owner assignments; resolver provenance must be retained, not relabeled".into());
+            if source_run {
+                if out.is_some() || target != "wasm" {
+                    return Err("run-source does not emit or execute an external Wasm file".into());
                 }
+                let claim = package_owner.as_ref().ok_or("run-source requires the resolver's workspace owner assertion")?;
+                let (checked, stem, _) = crate::source::capture_project_source(
+                    &entry, &deps, manifest.as_deref(), claim, &dep_owners,
+                )?;
+                enforce_performance_modes(checked.module(), &stem)?;
+                let (lines, code) = super::execution::run_checked_compiled(
+                    &checked, dir_roots, Vec::new(), net_allow, Vec::new(),
+                    None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
+                    true, witchy_confinement::EnforcementMode::BestEffort,
+                )?;
+                for line in lines { println!("{line}"); }
+                std::process::exit(code.unwrap_or(0));
+            }
+            if target == "trusted-publisher" {
                 let output = out.as_ref().ok_or("`--target trusted-publisher` requires `--out <executable>`")?;
                 let manifest = manifest.as_ref().ok_or("`--target trusted-publisher` requires `--manifest <witchy.toml>`")?;
-                let (checked, stem, inputs) = crate::source::capture_packaged_source(&entry, &deps, manifest)?;
+                let (checked, stem, inputs) = if let Some(claim) = &package_owner {
+                    crate::source::capture_project_source(&entry, &deps, Some(manifest), claim, &dep_owners)?
+                } else if !dep_owners.is_empty() {
+                    return Err("dependency owner assertions require --package-owner".into());
+                } else {
+                    crate::source::capture_packaged_source(&entry, &deps, manifest)?
+                };
                 enforce_performance_modes(checked.module(), &stem)?;
                 let artifact = match codegen::compile_checked_module_artifact(&checked) {
                     codegen::LoweringOutcome::Lowered(artifact) => artifact,
@@ -132,31 +165,13 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 return Ok(());
             }
             let (checked, stem) = if package_owner.is_some() || !dep_owners.is_empty() {
-                let package_owner = package_owner.ok_or_else(|| {
+                let package_owner = package_owner.as_ref().ok_or_else(|| {
                     "authenticated dependency ownership requires --package-owner".to_string()
                 })?;
-                let authenticated = deps
-                    .iter()
-                    .map(|(alias, path)| {
-                        let owner = dep_owners.get(alias).cloned().ok_or_else(|| {
-                            format!("dependency `{alias}` is missing --dep-owner metadata")
-                        })?;
-                        Ok((
-                            alias.clone(),
-                            AuthenticatedDependency { path: path.clone(), owner },
-                        ))
-                    })
-                    .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
-                if let Some(alias) = dep_owners.keys().find(|alias| !deps.contains_key(*alias)) {
-                    return Err(format!(
-                        "--dep-owner was supplied for unknown dependency `{alias}`"
-                    ));
-                }
-                link_file_checked_authenticated_with_deps(
-                    &entry,
-                    &authenticated,
-                    package_owner,
-                )?
+                let (checked, stem, _) = crate::source::capture_project_source(
+                    &entry, &deps, None, package_owner, &dep_owners,
+                )?;
+                (checked, stem)
             } else {
                 link_file_checked_with_deps(&entry, &deps)?
             };

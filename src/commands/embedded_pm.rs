@@ -5,6 +5,14 @@
 
 use crate::{ast, bundled_module, commands, parser, pipeline};
 
+// Project execution has its own source entry, not an AST-selected declaration
+// or a copied witness. Both CLI routes call the same Grimoire handler; unrelated
+// registry command bodies do not become part of this entry's admission scope.
+const PROJECT_RUN_ENTRY: &str = r#"from grimoire import cmd_run
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec) -> Int:
+    cmd_run(console, runner, root, bin, args)
+"#;
+
 /// Run the EMBEDDED witchy package-manager front-end (`projects/grimoire/src/grimoire.witchy`)
 /// — the cargo-equivalent CLI, itself written in witchy and bundled into the
 /// toolchain like std (rfcs/0004-self-hosted-cli.md). `raw` is the front-end's
@@ -66,10 +74,15 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // Keep the checked source until the admitted launcher compiles it. A byte
     // projection loses the sealed owner bridges needed by captured values.
     let checked = (|| {
-        let mut modules: Vec<(String, ast::Module)> = Vec::new();
+        let mut modules: Vec<(String, Vec<u8>)> = Vec::new();
         let mut loaded: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
-        queue.push_back(("grimoire".to_string(), include_str!("../../projects/grimoire/src/grimoire.witchy").to_string()));
+        let (entry, source) = if pm_args.first().map(String::as_str) == Some("run") {
+            ("__witchy_project_run", PROJECT_RUN_ENTRY)
+        } else {
+            ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"))
+        };
+        queue.push_back((entry.to_string(), source.to_string()));
         while let Some((name, source)) = queue.pop_front() {
             if !loaded.insert(name.clone()) {
                 continue;
@@ -83,9 +96,13 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
                     }
                 }
             }
-            modules.push((name, module));
+            modules.push((name, source.into_bytes()));
         }
-        pipeline::link_checked(modules, "grimoire").map_err(|e| e.to_string())
+        // These exact bytes come only from the compiler's embedded sources.
+        // Parsing to discover imports must not discard canonical source proof.
+        witchy_types::pipeline::link_checked_from_source_bundle(
+            modules, entry, witchy_interp::comptime::expand_compile_time,
+        ).map_err(|e| e.to_string())
     })();
     let checked = match checked {
         Ok(checked) => checked,
@@ -245,6 +262,7 @@ fn main(console: Console, args: List(String)) -> Int:
 
 fn embedded_pm_module(name: &str) -> Option<&'static str> {
     match name {
+        "grimoire" => Some(include_str!("../../projects/grimoire/src/grimoire.witchy")),
         // grimoire's own shared leaf-helper module (arg/path/JSON/registry shims).
         "gm_core" => Some(include_str!("../../projects/grimoire/src/gm_core.witchy")),
         // grimoire's effectful package-manager engine (fetch/resolve/vendor/lock/verify).
@@ -257,3 +275,6 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+#[cfg(test)]
+#[path = "project_resolver_tests.rs"]
+mod project_resolver_tests;

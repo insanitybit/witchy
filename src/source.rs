@@ -1,7 +1,7 @@
 //! Native source discovery, loading, linking, and expansion.
 
 mod package_inputs;
-pub(crate) use package_inputs::{capture_packaged_source, restore_packaged_artifact};
+pub(crate) use package_inputs::{capture_packaged_source, capture_project_source, restore_packaged_artifact};
 use package_inputs::{AmbientFiles, SourceFiles};
 
 #[cfg(test)]

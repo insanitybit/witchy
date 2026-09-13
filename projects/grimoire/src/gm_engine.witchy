@@ -40,10 +40,9 @@ pub fn trusted_output(root: Dir, dir: String, mode: String) -> String:
     let name = field(manifest, "rune.name")
     join_path(join_path(join_path(dir, "target"), mode), module_name(name))
 
-// Link a project's entry + vendored deps to a wasm under <dir>/target, then run
-// that wasm. Two compiler invocations: `compile --dep ... --out` (link) then a
-// run of the wasm (which carries exactly its own footprint). The artifact goes
-// under the project's own tree so it is named through the project Dir.
+// The resolver selects source inputs; the compiler child checks their ownership,
+// compiles them and retains sealed admission through launch in that same process.
+// No writable intermediate Wasm file carries project execution authority.
 //
 // The run step is granted a `Dir` rooted at the PROJECT directory (`--dir <dir>`),
 // NOT pm's own working directory. This keeps the program's runtime authority
@@ -175,34 +174,22 @@ pub fn is_locked_path_dependency(root: Dir, dir: String, name: String) -> Bool:
     false
 
 pub fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, build_flags: List(String), app_args: List(String)) -> Int:
-    let outdir = join_path(dir, "target")
-    if !root.exists(outdir):
-        root.make_dir(outdir)
-    let wasm = join_path(outdir, "app.wasm")
-    match dep_flags(root, dir):
+    match dep_flags_for_entry(root, dir, entry):
         Err(e) ->
             console.print(e.show())
             2
         Ok(dep_argv) ->
-            compile_then_run_deps(console, runner, root, bin, dir, entry, wasm, flatten_argv(dep_argv, build_flags), app_args)
+            compile_then_run_deps(console, runner, root, bin, dir, entry, flatten_argv(dep_argv, build_flags), app_args)
 
 // The tail of `compile_then_run` once the lockfile `--dep` flags are resolved:
-// compile the entry + deps to `wasm`, then sandbox-run it. Split out so the
+// compile and launch the selected source in one admitted process. Split so the
 // lockfile-decode `Result` is handled once at the boundary above.
-pub fn compile_then_run_deps(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, wasm: String, deps: List(String), app_args: List(String)) -> Int:
-    let argv = flatten_argv(["compile", entry], flatten_argv(deps, ["--out", wasm]))
-    let built = exec.run_args(runner, bin, "witchy", argv)
-    if built.0 != 0:
-        console.print(built.1)
-        built.0
-    else:
-        // BUG-406: runtime `--net <addr>` grants (forwarded by the front-end as trailing
-        // args) must sit in the sandbox-flags position (before the wasm), not as the app's
-        // own argv. BUG-102: the program's remaining argv still follows the sandboxed wasm.
-        let net_flags = runtime_net_flags(app_args)
-        let real_args = strip_net_flags(app_args)
-        let sandbox_head = flatten_argv(["sandbox", "--dir", project_data_dir(dir)], flatten_argv(net_flags, [wasm]))
-        run_compiler(console, runner, bin, "run", flatten_argv(sandbox_head, real_args))
+pub fn compile_then_run_deps(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), app_args: List(String)) -> Int:
+    let net_flags = runtime_net_flags(app_args)
+    let real_args = strip_net_flags(app_args)
+    let head = ["run-source", entry, "--manifest", join_path(dir, "witchy.toml"), "--dir", project_data_dir(dir)]
+    let argv = flatten_argv(head, flatten_argv(deps, flatten_argv(net_flags, flatten_argv(["--"], real_args))))
+    run_compiler(console, runner, bin, "run", argv)
 
 // The project's entry source: the conventional `src/<module_name(rune.name)>.witchy`
 // (BUG-086), falling back to the first `.witchy` under <dir>/src for a rune with a
@@ -221,6 +208,14 @@ pub fn project_entry(root: Dir, dir: String) -> Option(String):
 // a sibling-library workspace builds without vendoring. Path wins when both are
 // present (the manifest is the source of truth for a path dep).
 pub fn dep_flags(root: Dir, dir: String) -> Result(List(String), LockIntegrityError):
+    match project_entry(root, dir):
+        Some(entry) -> dep_flags_for_entry(root, dir, entry)
+        None -> Err(LockEntryMalformed("project has no selected source entry"))
+
+// Keep the actual loader selection, including a non-conventional filename.
+// These flags assert ownership; the compiler independently checks the retained
+// source and nearest manifest rather than trusting this spelling as authority.
+pub fn dep_flags_for_entry(root: Dir, dir: String, entry: String) -> Result(List(String), LockIntegrityError):
     let manifest_path = join_path(dir, "witchy.toml")
     if !root.exists(manifest_path):
         Err(LockEntryMalformed("project has no witchy.toml for authenticated package ownership"))
@@ -228,7 +223,7 @@ pub fn dep_flags(root: Dir, dir: String) -> Result(List(String), LockIntegrityEr
         let manifest = root.read(manifest_path)
         let name = required_manifest_coordinate(manifest, "rune.name")?
         let version = required_manifest_coordinate(manifest, "rune.version")?
-        collect_deps(root, dir, package_owner_flag([], "workspace", name, version, module_name(name)))
+        collect_deps(root, dir, package_owner_flag([], "workspace", name, version, "src.${basename(entry).strip_suffix(".witchy")}"))
 
 // Accumulate `--dep` flags for the rune at `dir` and, recursively, the path
 // dependencies it declares — skipping any already present so the graph is walked
@@ -283,7 +278,7 @@ pub fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String,
                 let dep_dir = normalize_path(join_path(dir, rel))
                 let owner = workspace_dependency_owner(root, dep_dir)?
                 match module_in_src(root, dep_dir):
-                    Some(src) -> collect_deps(root, dep_dir, dep_flag_owned(flags, name, src, owner.0, owner.1, owner.2, owner.3))
+                    Some(src) -> collect_deps(root, dep_dir, dep_flag_owned(flags, name, src, owner.0, owner.1, owner.2, "src.${basename(src).strip_suffix(".witchy")}"))
                     None ->
                         Ok(dep_flag_owned(flags, name, conventional_entry(dep_dir, name), owner.0, owner.1, owner.2, owner.3))
             None -> Ok(flags)
