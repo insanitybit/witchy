@@ -17,7 +17,7 @@ use crate::canonical_safewir::{
 use crate::canonical_safewir::closure_owner_contract::{
     CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerOperation,
 };
-use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind};
+use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutInterner, LayoutKind, ScalarKind};
 
 const SIZE_MAX: u64 = u32::MAX as u64;
 
@@ -518,6 +518,9 @@ struct Engine<'a> {
     services: vm_service::ServiceState<'a>,
     isolated: bool,
     module: &'a CanonicalModule<InitialValid>,
+    /// The module's layout catalog, decoded once: projections, static data,
+    /// and owner environments consult it on every step.
+    layouts: Option<std::sync::Arc<LayoutInterner>>,
     config: InterpreterConfig,
     steps: u64,
     next_object: u64,
@@ -539,12 +542,16 @@ enum FunctionExit {
 impl<'a> Engine<'a> {
     fn new(module: &'a CanonicalModule<InitialValid>, mut config: InterpreterConfig) -> Self {
         let net = config.fixture.net.take().map(net::NetState::new);
+        let layouts = LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
+            .ok()
+            .map(|(_, layouts)| std::sync::Arc::new(layouts));
         Self {
             exec: exec::State::new(),
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
             isolated: false,
             module,
+            layouts,
             config,
             steps: 0,
             next_object: 0,
@@ -985,8 +992,7 @@ impl<'a> Engine<'a> {
                     }
                 }
                 let owner_number = self.next_owner.checked_add(1).ok_or(InterpretError::ArithmeticTrap)?;
-                let (_, layouts) = LayoutBundle::decode_canonical(&self.module.layouts().canonical_bytes())
-                    .map_err(|_| InterpretError::TypeMismatch("owner environment layouts"))?;
+                let layouts = self.layouts.clone().ok_or(InterpretError::TypeMismatch("owner environment layouts"))?;
                 let physical = layouts.resolve_nominal(environment_layout)
                     .map_err(|_| InterpretError::TypeMismatch("owner environment layout"))?;
                 let descriptor = layouts.get(physical)
@@ -2155,8 +2161,7 @@ impl<'a> Engine<'a> {
         extent: &RuntimeExtent,
         bytes: &[u8],
     ) -> Result<BTreeMap<CellKey, InterpreterValue>, InterpretError> {
-        let (_, layouts) = LayoutBundle::decode_canonical(&self.module.layouts().canonical_bytes())
-            .map_err(|_| InterpretError::UnsupportedOperation("StaticData layouts"))?;
+        let layouts = self.layouts.clone().ok_or(InterpretError::UnsupportedOperation("StaticData layouts"))?;
         let descriptor = layouts
             .get(layout)
             .ok_or(InterpretError::UnsupportedOperation("StaticData unknown layout"))?;
@@ -2368,8 +2373,7 @@ impl<'a> Engine<'a> {
     /// Oracle-owned projection checks; no checker or backend safety helpers.
     fn unit_cell(&self, object: u64, place: &Place, values: &BTreeMap<ValueId, InterpreterValue>, write: bool) -> Result<CellKey, InterpretError> {
         let root = self.object(object)?;
-        let (_, layouts) = LayoutBundle::decode_canonical(&self.module.layouts().canonical_bytes())
-            .map_err(|_| InterpretError::TypeMismatch("Unit layouts"))?;
+        let layouts = self.layouts.clone().ok_or(InterpretError::TypeMismatch("Unit layouts"))?;
         let physical = layouts.resolve_nominal(root.layout).map_err(|_| InterpretError::TypeMismatch("Unit layout"))?;
         let layout = layouts.get(physical).ok_or(InterpretError::TypeMismatch("Unit layout"))?;
         match place.projection() {
