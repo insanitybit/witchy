@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use crate::layout::{
     FieldKind, HeaderLayout, LayoutDescriptor, LayoutInterner, LayoutKind, LayoutSize, PointerSlot,
@@ -74,33 +76,117 @@ struct Comparison {
     right: ValueId,
 }
 
+/// Private storage sharing, never a source of checker facts. Reads retain the
+/// underlying collection's exact iteration/comparison behavior. Every mutable
+/// access first detaches this collection, including mutations through entries,
+/// iterators, and nested values. Other snapshots keep their original contents.
+struct CowFacts<T>(Arc<T>);
+
+impl<T> Clone for CowFacts<T> {
+    fn clone(&self) -> Self { Self(Arc::clone(&self.0)) }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for CowFacts<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.as_ref().fmt(formatter)
+    }
+}
+
+impl<T: PartialEq> PartialEq for CowFacts<T> {
+    fn eq(&self, other: &Self) -> bool {
+        // Equality remains equality of facts, not Arc identity or a cache hit.
+        self.0.as_ref() == other.0.as_ref()
+    }
+}
+
+impl<T: Eq> Eq for CowFacts<T> {}
+
+impl<T> From<T> for CowFacts<T> {
+    fn from(value: T) -> Self { Self(Arc::new(value)) }
+}
+
+impl<T: Default> Default for CowFacts<T> {
+    fn default() -> Self { T::default().into() }
+}
+
+impl<T, Item> FromIterator<Item> for CowFacts<T>
+where T: FromIterator<Item> {
+    fn from_iter<I: IntoIterator<Item = Item>>(items: I) -> Self {
+        T::from_iter(items).into()
+    }
+}
+
+impl<T> Deref for CowFacts<T> {
+    type Target = T;
+    fn deref(&self) -> &T { self.0.as_ref() }
+}
+
+impl<T: Clone> DerefMut for CowFacts<T> {
+    fn deref_mut(&mut self) -> &mut T { Arc::make_mut(&mut self.0) }
+}
+
+// Keep the receiver's two-phase borrow at the wrapper boundary: callers may
+// read existing facts while computing the key/value before mutation starts.
+// A DerefMut-only insert would acquire mutable access before those arguments.
+impl<K: Ord + Clone, V: Clone> CowFacts<BTreeMap<K, V>> {
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        Arc::make_mut(&mut self.0).insert(key, value)
+    }
+}
+
+impl<T: Ord + Clone> CowFacts<BTreeSet<T>> {
+    fn insert(&mut self, value: T) -> bool {
+        Arc::make_mut(&mut self.0).insert(value)
+    }
+}
+
+impl<'a, T> IntoIterator for &'a CowFacts<T>
+where &'a T: IntoIterator {
+    type Item = <&'a T as IntoIterator>::Item;
+    type IntoIter = <&'a T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter { self.0.as_ref().into_iter() }
+}
+
+impl<'a, T: Clone> IntoIterator for &'a mut CowFacts<T>
+where &'a mut T: IntoIterator {
+    type Item = <&'a mut T as IntoIterator>::Item;
+    type IntoIter = <&'a mut T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter { Arc::make_mut(&mut self.0).into_iter() }
+}
+
+impl<T: Clone + IntoIterator> IntoIterator for CowFacts<T> {
+    type Item = T::Item;
+    type IntoIter = T::IntoIter;
+    fn into_iter(self) -> Self::IntoIter { Arc::unwrap_or_clone(self.0).into_iter() }
+}
+
 /// All derived memory facts at one program point.  This is deliberately a
 /// checker-owned snapshot: transforms cannot attach a claimed range, extent,
 /// or ownership fact to an edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryState {
-    objects: BTreeMap<ValueId, ObjectState>,
+    objects: CowFacts<BTreeMap<ValueId, ObjectState>>,
     /// Physical identities that a Shared phi may select at runtime. The phi
     /// value is the SSA identity used by subsequent operations; this side
     /// relation prevents the checker from pretending distinct allocations
     /// became one allocation merely because control flow joined.
-    shared_phi_origins: BTreeMap<ValueId, BTreeSet<ValueId>>,
-    stored_objects: BTreeMap<(ValueId, SlotIdentity), ObjectState>,
+    shared_phi_origins: CowFacts<BTreeMap<ValueId, BTreeSet<ValueId>>>,
+    stored_objects: CowFacts<BTreeMap<(ValueId, SlotIdentity), ObjectState>>,
     /// Explicitly initialized nullable fixed slots that contain absence. This
     /// is distinct from an uninitialized slot and from a live stored edge.
-    nullable_absent_slots: BTreeSet<(ValueId, SlotIdentity)>,
-    range_states: BTreeMap<RangeIdentity, RangeState>,
-    constants: BTreeMap<ValueId, u64>,
-    exact_additions: BTreeMap<ValueId, (ValueId, ValueId)>,
-    comparisons: BTreeMap<ValueId, Comparison>,
-    guards: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
-    header_values: BTreeMap<(ValueId, HeaderField), ValueId>,
-    static_data_objects: BTreeSet<ValueId>,
+    nullable_absent_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
+    range_states: CowFacts<BTreeMap<RangeIdentity, RangeState>>,
+    constants: CowFacts<BTreeMap<ValueId, u64>>,
+    exact_additions: CowFacts<BTreeMap<ValueId, (ValueId, ValueId)>>,
+    comparisons: CowFacts<BTreeMap<ValueId, Comparison>>,
+    guards: CowFacts<BTreeSet<(ComparisonOperator, ValueId, ValueId)>>,
+    header_values: CowFacts<BTreeMap<(ValueId, HeaderField), ValueId>>,
+    static_data_objects: CowFacts<BTreeSet<ValueId>>,
     /// The callable and Unit lanes a `Store` has initialized, by container value and
     /// slot. A fresh closure record's code slot is unreadable until then;
     /// a record that arrived from outside (a parameter, a loaded child) is
     /// summarized complete by `initialized_owned_slots` like its owned slots.
-    initialized_scalar_slots: BTreeSet<(ValueId, SlotIdentity)>,
+    initialized_scalar_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -135,18 +221,18 @@ impl<'a> MemoryChecker<'a> {
             layouts,
             closure_layouts,
             state: MemoryState {
-                objects: BTreeMap::new(),
-                shared_phi_origins: BTreeMap::new(),
-                stored_objects: BTreeMap::new(),
-                nullable_absent_slots: BTreeSet::new(),
-                range_states: BTreeMap::new(),
-                constants: BTreeMap::new(),
-                exact_additions: BTreeMap::new(),
-                comparisons: BTreeMap::new(),
-                guards: BTreeSet::new(),
-                header_values: BTreeMap::new(),
-                static_data_objects: BTreeSet::new(),
-                initialized_scalar_slots: BTreeSet::new(),
+                objects: BTreeMap::new().into(),
+                shared_phi_origins: BTreeMap::new().into(),
+                stored_objects: BTreeMap::new().into(),
+                nullable_absent_slots: BTreeSet::new().into(),
+                range_states: BTreeMap::new().into(),
+                constants: BTreeMap::new().into(),
+                exact_additions: BTreeMap::new().into(),
+                comparisons: BTreeMap::new().into(),
+                guards: BTreeSet::new().into(),
+                header_values: BTreeMap::new().into(),
+                static_data_objects: BTreeSet::new().into(),
+                initialized_scalar_slots: BTreeSet::new().into(),
             },
         };
         checker.initialize_parameters(signature)?;
@@ -410,8 +496,8 @@ impl<'a> MemoryChecker<'a> {
         }
 
         Ok(MemoryState {
-            objects,
-            shared_phi_origins,
+            objects: objects.into(),
+            shared_phi_origins: shared_phi_origins.into(),
             initialized_scalar_slots: self
                 .state
                 .initialized_scalar_slots
@@ -695,17 +781,17 @@ impl<'a> MemoryChecker<'a> {
         }
 
         Ok(MemoryState {
-            objects,
-            shared_phi_origins: meet_shared_phi_origins(existing, incoming),
-            stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects),
+            objects: objects.into(),
+            shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
+            stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects).into(),
             nullable_absent_slots: existing.nullable_absent_slots.intersection(&incoming.nullable_absent_slots).copied().collect(),
             initialized_scalar_slots: existing.initialized_scalar_slots.intersection(&incoming.initialized_scalar_slots).copied().collect(),
-            range_states: meet_range_states(existing, incoming),
-            constants: intersect_map(&existing.constants, &incoming.constants),
-            exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions),
-            comparisons: intersect_map(&existing.comparisons, &incoming.comparisons),
+            range_states: meet_range_states(existing, incoming).into(),
+            constants: intersect_map(&existing.constants, &incoming.constants).into(),
+            exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions).into(),
+            comparisons: intersect_map(&existing.comparisons, &incoming.comparisons).into(),
             guards: existing.guards.intersection(&incoming.guards).copied().collect(),
-            header_values: intersect_map(&existing.header_values, &incoming.header_values),
+            header_values: intersect_map(&existing.header_values, &incoming.header_values).into(),
             static_data_objects: existing
                 .static_data_objects
                 .intersection(&incoming.static_data_objects)
@@ -4194,6 +4280,144 @@ mod tests {
     const ALIAS_START: ValueId = ValueId::new(11);
     const ALIAS_LENGTH: ValueId = ValueId::new(12);
     const ZERO: ValueId = ValueId::new(13);
+
+    #[test]
+    fn cow_memory_state_snapshot_isolates_every_fact_container() {
+        with_header_promotion_checker(2, |checker, _base, _stride| {
+            let base = checker.snapshot();
+            let fork = base.clone();
+            macro_rules! shared {
+                ($($field:ident),+ $(,)?) => {$(
+                    assert!(Arc::ptr_eq(&base.$field.0, &fork.$field.0), stringify!($field));
+                )+};
+            }
+            shared!(objects, shared_phi_origins, stored_objects, nullable_absent_slots,
+                range_states, constants, exact_additions, comparisons, guards,
+                header_values, static_data_objects, initialized_scalar_slots);
+
+            // Capture a deep value copy independently of the shared snapshots,
+            // so an accidental write-through cannot make both sides agree.
+            macro_rules! isolated {
+                ($field:ident, $edit:expr) => {{
+                    let before = (*base.$field).clone();
+                    let mut changed = base.clone();
+                    let _ = ($edit)(&mut changed);
+                    assert_eq!(&*base.$field, &before, stringify!($field));
+                    assert!(!Arc::ptr_eq(&base.$field.0, &changed.$field.0), stringify!($field));
+                    assert_ne!(changed, base, stringify!($field));
+                    changed.$field = base.$field.clone();
+                    assert_eq!(changed, base, "only the selected container changed");
+                }};
+            }
+            let object = base.objects[&SOURCE].clone();
+            let element = checker.descriptor(object.layout).unwrap().kind().packed_element_layout().unwrap();
+            isolated!(objects, |state: &mut MemoryState| {
+                state.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Consumed;
+            });
+            isolated!(shared_phi_origins, |state: &mut MemoryState| {
+                state.shared_phi_origins.entry(SOURCE).or_default().insert(DESTINATION)
+            });
+            isolated!(stored_objects, |state: &mut MemoryState| {
+                state.stored_objects.insert((SOURCE, SlotIdentity::Constant(0)), object.clone())
+            });
+            isolated!(nullable_absent_slots, |state: &mut MemoryState| {
+                state.nullable_absent_slots.insert((SOURCE, SlotIdentity::Constant(0)))
+            });
+            isolated!(range_states, |state: &mut MemoryState| {
+                state.range_states.insert(RangeIdentity { object: SOURCE, start: ZERO, length: COUNT },
+                    RangeState { element, ownership: Ownership::Shared, allocation_class: None,
+                        initialized: true, zero_width: false, zero_start: true })
+            });
+            isolated!(constants, |state: &mut MemoryState| state.constants.insert(COUNT, 99));
+            isolated!(exact_additions, |state: &mut MemoryState| state.exact_additions.insert(CAPACITY, (COUNT, COUNT)));
+            isolated!(comparisons, |state: &mut MemoryState| {
+                state.comparisons.insert(CONDITION, Comparison {
+                    operator: ComparisonOperator::LessUnsigned, left: COUNT, right: CAPACITY,
+                })
+            });
+            isolated!(guards, |state: &mut MemoryState| {
+                state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY))
+            });
+            isolated!(header_values, |state: &mut MemoryState| {
+                state.header_values.insert((SOURCE, HeaderField::Length), LENGTH)
+            });
+            isolated!(static_data_objects, |state: &mut MemoryState| state.static_data_objects.insert(SOURCE));
+            isolated!(initialized_scalar_slots, |state: &mut MemoryState| {
+                state.initialized_scalar_slots.insert((SOURCE, SlotIdentity::Constant(0)))
+            });
+        });
+    }
+
+    #[test]
+    fn cow_fact_clone_defers_element_cloning_until_first_mutation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CountedClone(Arc<AtomicUsize>);
+        impl Clone for CountedClone {
+            fn clone(&self) -> Self {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Self(Arc::clone(&self.0))
+            }
+        }
+        let clones = Arc::new(AtomicUsize::new(0));
+        let original: CowFacts<BTreeMap<u32, CountedClone>> = (0..64)
+            .map(|key| (key, CountedClone(Arc::clone(&clones)))).collect();
+        let mut fork = original.clone();
+        assert_eq!(clones.load(Ordering::Relaxed), 0, "snapshot must not clone map elements");
+        let _ = fork.get_mut(&0).unwrap();
+        assert_eq!(clones.load(Ordering::Relaxed), 64, "first mutable access detaches the map");
+        fork.remove(&0);
+        assert_eq!(clones.load(Ordering::Relaxed), 64, "exclusive mutation must not clone again");
+        assert_eq!(original.len(), 64);
+        assert_eq!(fork.len(), 63);
+    }
+
+    #[test]
+    fn cow_fact_map_and_set_keep_btree_behavior_and_nested_isolation() {
+        let original = BTreeMap::from([(3, BTreeSet::from([30])), (1, BTreeSet::from([10]))]);
+        let mut actual: CowFacts<_> = original.clone().into();
+        let snapshot = actual.clone();
+        let mut expected = original.clone();
+        actual.entry(1).or_default().insert(11);
+        expected.entry(1).or_default().insert(11);
+        for (_, values) in &mut actual { values.insert(99); }
+        for values in expected.values_mut() { values.insert(99); }
+        actual.retain(|key, _| *key != 3);
+        expected.retain(|key, _| *key != 3);
+        assert_eq!(&*actual, &expected);
+        assert_eq!(&*snapshot, &original, "nested entry/iterator mutation must not change the snapshot");
+        assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+        assert_eq!(actual.clone().into_iter().collect::<Vec<_>>(), expected.into_iter().collect::<Vec<_>>());
+
+        let mut set: CowFacts<BTreeSet<u32>> = [3, 1, 2].into_iter().collect();
+        let saved = set.clone();
+        set.remove(&3);
+        set.insert(4);
+        set.retain(|value| *value != 2);
+        set.extend([7, 0]);
+        assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec![0, 1, 4, 7]);
+        assert_eq!(saved.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(set.intersection(&saved).copied().collect::<Vec<_>>(), vec![1]);
+        let same_values: CowFacts<BTreeSet<_>> = set.iter().copied().collect();
+        assert!(!Arc::ptr_eq(&set.0, &same_values.0));
+        assert_eq!(set, same_values, "separate allocations must compare by value");
+        set.clear();
+        assert_eq!(same_values.len(), 4);
+    }
+
+    #[test]
+    fn cow_fact_insert_preserves_two_phase_argument_reads() {
+        let mut map: CowFacts<BTreeMap<u32, u32>> = BTreeMap::from([(1, 10)]).into();
+        let saved_map = map.clone();
+        map.insert(2, map[&1] + 1);
+        assert_eq!(map[&2], 11);
+        assert_eq!(&*saved_map, &BTreeMap::from([(1, 10)]));
+
+        let mut set: CowFacts<BTreeSet<u32>> = BTreeSet::from([1]).into();
+        let saved_set = set.clone();
+        set.insert(*set.first().unwrap() + 1);
+        assert_eq!(&*set, &BTreeSet::from([1, 2]));
+        assert_eq!(&*saved_set, &BTreeSet::from([1]));
+    }
 
     fn with_header_promotion_checker(
         family: u8,
