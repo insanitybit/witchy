@@ -508,12 +508,20 @@ fn authenticated_owner_surfaces_run_the_cli_contract_first() {
         "src/source/package_inputs.rs",
     ] {
         let commands = selected(&["--edit-loop", path]);
-        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert_eq!(
             commands[0],
             "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'",
             "{path}: {commands:?}"
         );
+        if path != "src/source/package_inputs.rs" {
+            assert!(
+                commands
+                    .iter()
+                    .skip(1)
+                    .any(|command| command.contains("nextest-admitted.sh")),
+                "{path}: {commands:?}"
+            );
+        }
     }
 }
 
