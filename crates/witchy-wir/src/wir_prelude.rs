@@ -362,11 +362,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto_ed25519_verify_slices" (func $crypto_ed25519_verify_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
   (import "witchy" "crypto_sha256_slices" (func $crypto_sha256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_rune_hash_slices" (func $crypto_rune_hash_slices_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "dir_is_dir_at" (func $dir_is_dir_at_host (param externref i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 143;
+pub const IMPORT_COUNT: usize = 144;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -607,6 +608,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_read_into"
         | "dir_list_into"
         | "dir_exists_at"
+        | "dir_is_dir_at"
         | "dir_write_at"
         | "dir_subtree_at"
         | "dir_read_file"
@@ -658,6 +660,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_read_into"
         | "dir_list_into"
         | "dir_exists_at"
+        | "dir_is_dir_at"
         | "dir_read_file" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"

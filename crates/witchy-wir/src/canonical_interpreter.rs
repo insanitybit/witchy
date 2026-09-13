@@ -25,6 +25,7 @@ mod exec;
 pub use exec::{OracleExecFixture, OracleExecCall};
 mod crypto;
 mod crypto_hash;
+mod dir_metadata;
 mod build_out;
 pub use build_out::OracleBuildWrite;
 mod launch;
@@ -36,10 +37,11 @@ pub use net::{OracleNetEvent, OracleNetFixture, OracleNetGrant, OracleNetError, 
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.
-const CAPABILITY_IMPORTS: [&str; 9] = [
+const CAPABILITY_IMPORTS: [&str; 10] = [
     "dir_read_into",
     "dir_list_into",
     "dir_exists_at",
+    "dir_is_dir_at",
     "dir_write_at",
     "dir_subtree_at",
     "dir_read_file",
@@ -1593,6 +1595,15 @@ impl<'a> Engine<'a> {
                 let path = self.host_path(&scope, &self.host_string(path, values)?)?;
                 let exists = self.config.fixture.exists(&path);
                 values.insert(*destination, InterpreterValue::Size(u64::from(exists)));
+                Ok(())
+            }
+            ("dir_is_dir_at", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
+                // Authenticate before any guest slice read. Path denial is a
+                // false predicate; malformed transport still traps.
+                let scope = self.capability_scope(token, DIR_KIND, values)?;
+                let path = self.host_string(path, values)?;
+                let result = self.config.fixture.metadata_is_directory(&scope, &path);
+                values.insert(*destination, InterpreterValue::Bool(result));
                 Ok(())
             }
             (

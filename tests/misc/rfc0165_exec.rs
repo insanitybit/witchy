@@ -3,6 +3,8 @@ use crate::temp_dir::TempDir;
 
 #[path = "rfc0165_crypto.rs"]
 mod crypto;
+#[path = "rfc0165_dir_metadata.rs"]
+mod dir_metadata;
 
 fn check_scoped_modules(entry: &[u8], library: &[u8]) -> witchy::pipeline::CheckedModule {
     use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};

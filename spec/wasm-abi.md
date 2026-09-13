@@ -331,6 +331,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `crypto_ed25519_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
 | `crypto_sha256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_rune_hash_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `dir_is_dir_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI
