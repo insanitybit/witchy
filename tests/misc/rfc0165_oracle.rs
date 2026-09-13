@@ -5,6 +5,8 @@
 //! encoder defect the plan mirror faithfully reproduces (the destructor
 //! scratch-slot leak was one).
 
+use std::time::{Duration, Instant};
+
 use witchy::codegen;
 use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
@@ -536,6 +538,26 @@ fn oracle_validated(
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     label: &str,
 ) -> Vec<String> {
+    oracle_validated_profiled(checked, validated, artifact, label, None)
+}
+
+#[derive(Default)]
+struct OraclePhaseTiming {
+    canonical_interpret: Duration,
+    source_interpret: Duration,
+    runtime_setup: Duration,
+    spawn_admitted: Duration,
+    wasm_run: Duration,
+    heap_audit: Duration,
+}
+
+fn oracle_validated_profiled(
+    checked: &witchy_types::pipeline::CheckedModule,
+    validated: &ValidatedSafeWir,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    label: &str,
+    mut timing: Option<&mut OraclePhaseTiming>,
+) -> Vec<String> {
     // Each nextest shard has its own process. Do not rely on an earlier
     // source-interpreter run to install the compiled compiler-service vtable.
     witchy_interp::compiler_natives::install();
@@ -556,16 +578,24 @@ fn oracle_validated(
             ..Default::default()
         },
     };
+    let phase_started = timing.as_ref().map(|_| Instant::now());
     let run = interpret_entry_program(validated, function, arguments, &[], config)
         .unwrap_or_else(|e| panic!("{label}: oracle refused: {e:?}"));
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
+        timing.canonical_interpret = started.elapsed();
+    }
 
     // Use the same authenticated checked source, not reconstructed raw AST.
     // This is an independent output leg, not an assertion of complete host
     // trace or exit-code equivalence. In particular, source main -> Int sets
     // an exit code rather than printing its result; a silent main -> Float
     // surfaces its result as output.
+    let phase_started = timing.as_ref().map(|_| Instant::now());
     let source_output = witchy::interpreter::run_checked_module(checked, ".", Vec::new())
         .unwrap_or_else(|e| panic!("{label}: source interpreter refused: {e}"));
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
+        timing.source_interpret = started.elapsed();
+    }
     let mut oracle_source_output = run.output.clone();
     if oracle_source_output.is_empty()
         && let Some(InterpreterValue::FloatBits(bits)) = run.results.first()
@@ -575,7 +605,15 @@ fn oracle_validated(
     assert_eq!(source_output, oracle_source_output,
         "{label}: printed lines differ between source and oracle");
 
-    let mut runtime = Runtime::batch().expect("runtime");
+    let phase_started = timing.as_ref().map(|_| Instant::now());
+    // This corpus checks observable equivalence, admission, and heap ownership;
+    // it does not assess Cranelift's Speed-tier code quality. Keep the same
+    // sandbox and ABI while avoiding expensive optimization of large examples.
+    let mut runtime = Runtime::batch_quick().expect("runtime");
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
+        timing.runtime_setup = started.elapsed();
+    }
+    let phase_started = timing.as_ref().map(|_| Instant::now());
     let mut vm = runtime
         .spawn_admitted(
             artifact,
@@ -597,7 +635,14 @@ fn oracle_validated(
             256,
         )
         .expect("spawn admitted artifact");
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
+        timing.spawn_admitted = started.elapsed();
+    }
+    let phase_started = timing.as_ref().map(|_| Instant::now());
     vm.run().unwrap_or_else(|e| panic!("{label}: wasm run failed: {e:#}"));
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
+        timing.wasm_run = started.elapsed();
+    }
     let mut wasm_lines = vm.output();
     // The host prints an `Int`/`Float` result after the entry returns; the
     // oracle reports it as a result value instead.
@@ -612,7 +657,11 @@ fn oracle_validated(
     }
     assert_eq!(run.output, wasm_lines, "{label}: printed lines differ between oracle and wasm");
     assert_eq!(run.leaked_objects, 0, "{label}: the oracle saw objects survive the entry");
+    let phase_started = timing.as_ref().map(|_| Instant::now());
     let leaks = vm.canonical_heap_leaks().expect("heap audit").expect("canonical module");
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
+        timing.heap_audit = started.elapsed();
+    }
     assert_eq!(leaks, 0, "{label}: the wasm heap kept unreleased objects");
     run.output
 }
@@ -748,10 +797,15 @@ oracle_example_shards! {
 
 fn oracle_examples_shard(shard: usize, shards: usize) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let requested = std::env::var("WITCHY_ORACLE_EXAMPLE").ok();
+    let emit_timing = std::env::var_os("WITCHY_ORACLE_TIMING").is_some();
     let mut checked_any = false;
     for entry in std::fs::read_dir(root.join("examples")).expect("examples directory") {
         let dir = entry.expect("example entry").path();
         let Some(name) = dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else { continue };
+        if requested.as_deref().is_some_and(|requested| requested != name) {
+            continue;
+        }
         // Stable assignment is independent of read_dir order and process hash
         // seeds. The registered shards partition the original corpus exactly;
         // no eligibility rule or execution assertion is relaxed.
@@ -767,9 +821,15 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
         eprintln!("oracle sweep: {}", file.display());
         // Only programs the foundation subset admits are the oracle's
         // business; refused programs are the census's.
+        let total_started = emit_timing.then(Instant::now);
+        let phase_started = emit_timing.then(Instant::now);
         let Ok(checked) = witchy::resolve_std_only_checked(&source) else { continue };
-        let codegen::LoweringOutcome::Lowered((_, ran)) =
-            codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
+        let check = phase_started.map_or(Duration::ZERO, |started| started.elapsed());
+        let phase_started = emit_timing.then(Instant::now);
+        let mut observer_elapsed = Duration::ZERO;
+        let mut oracle_phases = None;
+        let outcome = codegen::compile_checked_module_artifact_with_observer(
+            &checked, |validated, artifact| {
                 // The semantic oracle deliberately has no network-I/O world.
                 // Preserve the sweep's policy after full production admission.
                 if artifact.entry().is_some_and(|entry| entry.capabilities().contains(
@@ -777,13 +837,44 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
                 )) {
                     return false;
                 }
-                oracle_validated(&checked, validated, artifact, &format!("examples/{name}"));
+                let observer_started = emit_timing.then(Instant::now);
+                let mut phases = OraclePhaseTiming::default();
+                oracle_validated_profiled(
+                    &checked,
+                    validated,
+                    artifact,
+                    &format!("examples/{name}"),
+                    emit_timing.then_some(&mut phases),
+                );
+                observer_elapsed = observer_started
+                    .map_or(Duration::ZERO, |started| started.elapsed());
+                oracle_phases = emit_timing.then_some(phases);
                 true
-            })
+            });
+        let admission = phase_started.map_or(Duration::ZERO, |started| started.elapsed());
+        let codegen::LoweringOutcome::Lowered((_, ran)) = outcome
         else { continue };
+        if let Some(phases) = oracle_phases {
+            // The production observer runs only after lowering and admission;
+            // its public boundary does not split those two phases further.
+            let production_lowering_admission = admission.saturating_sub(observer_elapsed);
+            let total = total_started.map_or(Duration::ZERO, |started| started.elapsed());
+            eprintln!(
+                "WITCHY_ORACLE_TIMING\texample={name}\tcheck_ms={:.3}\tproduction_lowering_admission_ms={:.3}\tcanonical_interpret_ms={:.3}\tsource_interpret_ms={:.3}\truntime_setup_ms={:.3}\tspawn_admitted_ms={:.3}\twasm_run_ms={:.3}\theap_audit_ms={:.3}\ttotal_ms={:.3}",
+                check.as_secs_f64() * 1_000.0,
+                production_lowering_admission.as_secs_f64() * 1_000.0,
+                phases.canonical_interpret.as_secs_f64() * 1_000.0,
+                phases.source_interpret.as_secs_f64() * 1_000.0,
+                phases.runtime_setup.as_secs_f64() * 1_000.0,
+                phases.spawn_admitted.as_secs_f64() * 1_000.0,
+                phases.wasm_run.as_secs_f64() * 1_000.0,
+                phases.heap_audit.as_secs_f64() * 1_000.0,
+                total.as_secs_f64() * 1_000.0,
+            );
+        }
         checked_any |= ran;
     }
-    assert!(checked_any, "at least one example admits");
+    assert!(checked_any, "at least one requested example admits in shard {shard}");
 }
 
 fn assert_opaque_closure_three_legs(source: &str, expected: &[&str]) {
