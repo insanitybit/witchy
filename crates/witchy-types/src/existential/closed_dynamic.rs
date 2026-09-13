@@ -74,6 +74,12 @@ pub(crate) fn prepare(
     // Discover adapters by checked witness identity, then include their actual
     // transitive bodies. Never authorize a helper from a mangled-name pattern.
     let mut scope = (*crate::pipeline::canonical_scope(typed.module())).clone();
+    // Metadata-only Dynamic use still retains the authenticated method plan.
+    // Its declarations and transitive bodies must survive preparation so the
+    // fresh check below can compare their actual callable identities. These
+    // are preparation dependencies from the independently rebuilt plan, not
+    // additional executable roots or a namespace/attribute-based heuristic.
+    scope.extend(plan.methods().iter().map(|method| method.function.clone()));
     let witnesses = loop {
         let mut requests = Vec::new();
         let mut upcasts = Vec::new();

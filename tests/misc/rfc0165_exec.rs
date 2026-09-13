@@ -1,29 +1,44 @@
 //! Source-backed Exec admission and independent process transcript coverage.
 use crate::temp_dir::TempDir;
 
+fn check_scoped_modules(entry: &[u8], library: &[u8]) -> witchy::pipeline::CheckedModule {
+    use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+    // This fixture is the source loader: bind exact raw user modules to
+    // workspace owners and load imported std modules from compiler bytes only.
+    let package = PackageCoordinate::new(PackageSource::Workspace, "test/entry-scope", "0.1.0").unwrap();
+    let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", env!("CARGO_PKG_VERSION")).unwrap();
+    let mut assignments = ["entry", "library"].into_iter().map(|name| {
+        (name.to_owned(), ModuleLoadIdentity::new(package.clone(), ["src", name]).unwrap())
+    }).collect::<Vec<_>>();
+    assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
+        ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap())
+    }));
+    let user_modules = ["entry".to_owned(), "library".to_owned()].into_iter().collect::<std::collections::HashSet<_>>();
+    let mut loaded = user_modules.clone();
+    let mut sources = vec![("entry".to_owned(), entry.to_vec()), ("library".to_owned(), library.to_vec())];
+    let mut cursor = 0;
+    while cursor < sources.len() {
+        let parsed = witchy::parser::parse_module(std::str::from_utf8(&sources[cursor].1).unwrap()).unwrap();
+        for name in parsed.imports {
+            if loaded.insert(name.clone()) {
+                let source = witchy_syntax::linker::bundled_source(&name).expect("fixture imports only bundled std or its two user modules");
+                sources.push((name, source.as_bytes().to_vec()));
+            }
+        }
+        cursor += 1;
+    }
+    witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+        sources, "entry", &user_modules,
+        AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap(),
+    ).expect("all raw source checks, including unsupported declarations")
+}
+
 #[test]
 fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
     use witchy::runtime::{Capabilities, Runtime};
-    use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
     use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
     let library = b"fn add(a: Int, b: Int) -> Int:\n    a + b\npub fn make(offset: Int) -> fn(Int) -> Int:\n    fn(value: Int) -> Int: add(offset, value)\npub fn apply(operation: fn(Int) -> Int, value: Int) -> Int:\n    operation(value)\npub fn unused(fetch: Fetch) -> Int:\n    1\n";
-    let check = |entry: &[u8]| {
-        // This fixture is the source loader: bind both exact raw modules to
-        // workspace owners, then freshly check through the production expander.
-        let package = PackageCoordinate::new(PackageSource::Workspace, "test/entry-scope", "0.1.0").unwrap();
-        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", env!("CARGO_PKG_VERSION")).unwrap();
-        let mut assignments = ["entry", "library"].into_iter().map(|name| {
-            (name.to_owned(), ModuleLoadIdentity::new(package.clone(), ["src", name]).unwrap())
-        }).collect::<Vec<_>>();
-        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| {
-            ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).unwrap())
-        }));
-        witchy_interp::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-            vec![("entry".into(), entry.to_vec()), ("library".into(), library.to_vec())],
-            "entry", &["entry".to_owned(), "library".to_owned()].into_iter().collect(),
-            AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap(),
-        ).expect("all raw source checks, including unsupported declarations")
-    };
+    let check = |entry: &[u8]| check_scoped_modules(entry, library);
     let entry = b"import library\nfn main(console: Console):\n    let operation = library.make(4)\n    console.print(\"${library.apply(operation, 3)}\")\n";
     let checked = check(entry);
     let root = TempDir::new("checked-entry-scope");
@@ -56,6 +71,52 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
             _ => panic!("reachable or entry-exported Fetch must still refuse admission"),
         }
     }
+}
+
+#[test]
+fn checked_entry_scope_keeps_imported_metadata_only_dynamic_methods() {
+    use witchy::runtime::{Capabilities, Runtime};
+    use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
+    let entry = b"import library\nfn main(console: Console):\n    library.inspect(console)\n";
+    let library = br#"import dynamic
+import reflect
+type Counter derive(Reflect):
+    value: Int
+fn adjusted(value: Int, amount: Int) -> Int:
+    value + amount
+@dynamic
+pub fn add(self: Counter, amount: Int) -> Counter:
+    Counter(adjusted(self.value, amount))
+pub fn unused(fetch: Fetch) -> Int:
+    1
+pub fn inspect(console: Console):
+    let value = dynamic.dynamic(Counter(4))
+    console.print(dynamic.type_name(dynamic.type_of(value)))
+"#;
+    let checked = check_scoped_modules(entry, library);
+    let canonical = checked.canonical_source().unwrap();
+    assert!(canonical.dynamic_runtime_plan().unwrap().methods().iter().any(|method| method.function == "library.add"));
+    let module = canonical.typed_module().module();
+    for name in ["library.add", "library.adjusted"] {
+        assert!(module.items.iter().any(|item| matches!(item, witchy::ast::Item::Function(function) if function.name == name)), "retain the rechecked metadata dependency {name}");
+    }
+    assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.unused"));
+    let expected = ["library.Counter"];
+    let root = TempDir::new("checked-entry-metadata");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
+    let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
+        let entry = artifact.entry().unwrap();
+        let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
+        let tokens = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+        let run = interpret_entry_program(validated, function, tokens, &[], InterpreterConfig::default()).unwrap();
+        assert_eq!(run.output, expected);
+        assert_eq!(run.leaked_objects, 0);
+    }).expect_lowered("imported Dynamic metadata keeps its authenticated method declarations without calling them");
+    let mut runtime = Runtime::new().unwrap();
+    let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, ..Capabilities::none() }, 256).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 }
 
 #[test]
