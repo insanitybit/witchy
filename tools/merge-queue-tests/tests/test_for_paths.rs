@@ -519,6 +519,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[0].contains("owned_tail_nonprefix_range_requires_a_checked_end_bound"), "{mixed:?}");
     assert!(mixed[1].contains("canonical_pipeline::tests::list_string_"), "{mixed:?}");
     assert!(mixed[2].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{mixed:?}");
+    assert!(mixed[2].contains("list_pop_projected_coordinates_and_nested_payloads_on_three_legs"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_entry_without_a_console_grant_is_refused_before_it_runs"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_guard_near_misses_trap_exactly_at_the_boundary"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
