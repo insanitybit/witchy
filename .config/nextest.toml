@@ -134,6 +134,47 @@ priority = 90
 # Corpus shards retain every admission and execution assertion. Each drives the
 # multi-core compiler; use the existing two-wide group rather than multiplying
 # compiler contention inside the broader misc group. Keep the existing timeout.
+#
+# Five recent green gates put the six long shards at stable 95-217s medians.
+# Dispatch them longest first so the two workers finish together. The measured
+# lexical order models at 511.0s; this order models at 480.8s for the same
+# 960.8s of test work. The remaining short shards retain priority 90 below.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_10$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 100
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 99
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_12$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 98
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 97
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_4$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 96
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_6$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 95
+
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples(_shard_[0-9]+)?$/)'
 test-group = 'wasm-heavy'
