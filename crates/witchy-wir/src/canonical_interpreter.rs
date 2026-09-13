@@ -2161,7 +2161,7 @@ impl<'a> Engine<'a> {
         extent: &RuntimeExtent,
         bytes: &[u8],
     ) -> Result<BTreeMap<CellKey, InterpreterValue>, InterpretError> {
-        let layouts = self.layouts.clone().ok_or(InterpretError::UnsupportedOperation("StaticData layouts"))?;
+        let layouts = self.layouts.as_deref().ok_or(InterpretError::UnsupportedOperation("StaticData layouts"))?;
         let descriptor = layouts
             .get(layout)
             .ok_or(InterpretError::UnsupportedOperation("StaticData unknown layout"))?;
@@ -2373,7 +2373,7 @@ impl<'a> Engine<'a> {
     /// Oracle-owned projection checks; no checker or backend safety helpers.
     fn unit_cell(&self, object: u64, place: &Place, values: &BTreeMap<ValueId, InterpreterValue>, write: bool) -> Result<CellKey, InterpretError> {
         let root = self.object(object)?;
-        let layouts = self.layouts.clone().ok_or(InterpretError::TypeMismatch("Unit layouts"))?;
+        let layouts = self.layouts.as_deref().ok_or(InterpretError::TypeMismatch("Unit layouts"))?;
         let physical = layouts.resolve_nominal(root.layout).map_err(|_| InterpretError::TypeMismatch("Unit layout"))?;
         let layout = layouts.get(physical).ok_or(InterpretError::TypeMismatch("Unit layout"))?;
         match place.projection() {
