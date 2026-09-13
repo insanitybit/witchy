@@ -16,6 +16,7 @@ def main():
         log.write_text(
             """\
         PASS [   2.000s] (1/2) fixture::bin first
+[1] tests list progress: 2 test binaries started (stage+90s)
         SLOW [  90.000s] (───────) fixture::bin slow
         PASS [ 100.000s] (2/2) fixture::bin slow
      Summary [ 102.000s] 2 tests run: 2 passed, 0 skipped
@@ -41,6 +42,8 @@ def main():
         )
         output = result.stdout
         assert "nextest    1/2 slowest completed invocation" in output, output
+        assert "discovery  all 2 binaries started by stage+90s (overlaps test execution)" in output, output
+        assert "startup" not in output, output
         assert "execution  102s wall" in output, output
         assert "test time  102s summed per-test wall (overlaps; not CPU)" in output, output
         assert "overlap    1.0x summed-test-time / execution wall" in output, output

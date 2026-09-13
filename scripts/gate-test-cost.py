@@ -72,7 +72,9 @@ RESULT = re.compile(
     r"\s*\(?\s*[\d/ ]*\)?\s*(\S+)\s+(\S+)",
 )
 SUMMARY = re.compile(r"Summary \[\s*([\d.]+)s\]\s*(\d+) tests? run")
-LIST_DONE = re.compile(r"list progress: (\d+) test binaries started \(stage\+(\d+)s\)")
+ALL_BINARIES_STARTED = re.compile(
+    r"list progress: (\d+) test binaries started \(stage\+(\d+)s\)"
+)
 
 
 def parse(path):
@@ -96,13 +98,14 @@ def parse(path):
         return None
     selected_index, selected = max(enumerate(segments), key=lambda pair: pair[1][0])
     wall, count, tests = selected
-    listed = LIST_DONE.search(text) if selected_index == 0 else None
+    listed = ALL_BINARIES_STARTED.search(text) if selected_index == 0 else None
     return {
         "path": path,
         "mtime": os.path.getmtime(path),
         "wall": wall,
         "count": count,
-        "startup": int(listed.group(2)) if listed else None,
+        "binaries_started": int(listed.group(1)) if listed else None,
+        "all_binaries_started_stage_s": int(listed.group(2)) if listed else None,
         "tests": tests,
         "segment": selected_index + 1,
         "segments": len(segments),
@@ -145,8 +148,11 @@ def profile(run, top, budget, exempt=None):
     if run["segments"] > 1:
         print(f"nextest    {run['segment']}/{run['segments']} slowest completed invocation")
     print(f"tests      {run['count']}")
-    if run["startup"] is not None:
-        print(f"startup    {run['startup']}s  (build + binary discovery, before any test runs)")
+    if run["all_binaries_started_stage_s"] is not None:
+        print(
+            f"discovery  all {run['binaries_started']} binaries started by "
+            f"stage+{run['all_binaries_started_stage_s']}s (overlaps test execution)"
+        )
     print(f"execution  {run['wall']:.0f}s wall")
     print(f"test time  {test_seconds:.0f}s summed per-test wall (overlaps; not CPU)")
     print(f"overlap    {test_seconds / run['wall']:.1f}x summed-test-time / execution wall")
@@ -202,21 +208,28 @@ def trend(runs):
     for run in runs:
         week = datetime.datetime.fromtimestamp(run["mtime"]).strftime("%Y-W%V")
         test_seconds = sum(d for d, _, _ in run["tests"])
-        weeks[week].append((run["wall"], run["count"], test_seconds, run["startup"]))
+        weeks[week].append((
+            run["wall"],
+            run["count"],
+            test_seconds,
+            run["all_binaries_started_stage_s"],
+        ))
 
-    print(f"{'week':10} {'runs':>5} {'exec':>8} {'tests':>7} {'test-s':>8} {'s/test':>8} {'startup':>8}")
+    print(f"{'week':10} {'runs':>5} {'exec':>8} {'tests':>7} {'test-s':>8} {'s/test':>8} {'all-bin':>8}")
     for week in sorted(weeks):
         rows = weeks[week]
         wall = statistics.median([r[0] for r in rows])
         count = statistics.median([r[1] for r in rows])
         test_seconds = statistics.median([r[2] for r in rows])
         starts = [r[3] for r in rows if r[3] is not None]
-        startup = f"{statistics.median(starts):.0f}s" if starts else "-"
+        all_binaries = f"{statistics.median(starts):.0f}s" if starts else "-"
         print(f"{week:10} {len(rows):5} {wall:7.0f}s {count:7.0f} {test_seconds:7.0f}s "
-              f"{test_seconds / count:7.3f}s {startup:>8}")
+              f"{test_seconds / count:7.3f}s {all_binaries:>8}")
     print()
     print("Summed per-test time growing faster than the test count means the")
     print("observed tests are unusually expensive; read it beside execution wall.")
+    print("all-bin is the stage offset when every binary had started discovery;")
+    print("tests can already be running, so it is not a startup-only duration.")
 
     # Which tests grew? Compare the oldest and newest halves we have.
     if len(runs) >= 6:
