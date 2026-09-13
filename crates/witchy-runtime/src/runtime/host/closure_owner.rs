@@ -284,6 +284,8 @@ fn require_capability<T: CaptureAuthority>(store: impl wasmtime::AsContext<Data 
         3 => data.is::<super::super::FileAuthority>(),
         id if id == witchy_wir::canonical_safewir::NET_CAPABILITY_KIND.get() =>
             data.is::<super::super::NetAuthority>(),
+        id if id == witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND.get() =>
+            data.is::<super::super::ExecAuthority>(),
         _ => false,
     };
     if !matches { bail!("closure capture has wrong capability kind"); }
@@ -1007,6 +1009,43 @@ mod tests {
         let pre = wasmtime::StructRefPre::new(&mut *store, binding.payload_type.clone());
         let payload = wasmtime::StructRef::new(&mut *store, &pre, fields)?;
         binding.seal_gc(store, payload)
+    }
+
+    #[test]
+    fn exec_capture_requires_exact_host_grant_not_wrapper_or_response_kind() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructType, Val, ValType};
+        use witchy_wir::canonical_safewir::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND};
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let (mut wrapper, _) = list_capture_bindings(&engine)?;
+        wrapper.payload_type = StructType::new(&engine, [
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::I32.into()),
+            FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+        ])?;
+        wrapper.capture_fields = vec![CaptureField {
+            capture: 0, field: 2, kind: CaptureFieldKind::Capability(EXEC_CAPABILITY_KIND),
+        }].into_boxed_slice();
+        let grant = ExternRef::new(&mut store, super::super::super::ExecAuthority {
+            allow: Some(["probe".to_owned()].into_iter().collect()),
+        })?;
+        let console = ExternRef::new(&mut store, ConsoleCapability)?;
+        let forged = ExternRef::new(&mut store, EXEC_CAPABILITY_KIND.get())?;
+        require_capability(&store, grant, EXEC_CAPABILITY_KIND)?;
+        assert!(require_capability(&store, grant, EXEC_RESPONSE_KIND).is_err());
+        for invalid in [console, forged] {
+            assert!(test_seal(&wrapper, &mut store,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(invalid))]).is_err());
+        }
+        let owner = test_seal(&wrapper, &mut store,
+            &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(grant))])?;
+        assert!(require_capability(&store, owner, EXEC_CAPABILITY_KIND).is_err());
+        let projected = wrapper.capability::<OwnedRooted<wasmtime::StructRef>>(&store, owner, 0)?;
+        assert!(Rooted::ref_eq(&store, &grant, &projected)?);
+        let cleanup = wrapper.release_owner_cleanup_items(&mut store, owner)?;
+        assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [91]);
+        assert!(wrapper.family_retain(&store, owner).is_err());
+        Ok(())
     }
 
     #[test]

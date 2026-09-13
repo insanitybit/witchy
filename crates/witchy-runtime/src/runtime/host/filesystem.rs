@@ -96,14 +96,18 @@ fn exec_authority_ref(
         .ok_or_else(|| Error::msg("Exec externref has wrong host data"))
 }
 
-fn host_mint_exec(mut caller: Caller<'_, VmState>) -> Result<Option<Rooted<ExternRef>>> {
-    let allow = caller
-        .data()
-        .caps
-        .exec_allow
-        .as_ref()
+pub(in crate::runtime) fn exec_grant(state: &VmState) -> Result<ExecAuthority> {
+    if !state.caps.exec {
+        return Err(Error::msg("the program's `main` requires an Exec capability that was not granted"));
+    }
+    let allow = state.caps.exec_allow.as_ref()
         .map(|programs| programs.iter().cloned().collect());
-    ExternRef::new(&mut caller, ExecAuthority { allow }).map(Some)
+    Ok(ExecAuthority { allow })
+}
+
+fn host_mint_exec(mut caller: Caller<'_, VmState>) -> Result<Option<Rooted<ExternRef>>> {
+    let authority = exec_grant(caller.data())?;
+    ExternRef::new(&mut caller, authority).map(Some)
 }
 
 fn host_exec_only(

@@ -1521,6 +1521,10 @@ CanonicalEntryCapability::BuildOut => {
     let authority = host::build_out::mint(self.store.data())?;
     ExternRef::new(&mut self.store, authority)?
 }
+                CanonicalEntryCapability::Exec => {
+                    let authority = host::filesystem::exec_grant(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
                 CanonicalEntryCapability::Env => {
                     if !self.store.data().caps.env {
                         bail!("the program's `main` requires an Env capability that was not granted");
