@@ -829,6 +829,17 @@ fn nextest_config_change_runs_one_parse_smoke() {
 }
 
 #[test]
+fn gate_report_change_runs_its_end_to_end_probe() {
+    assert_eq!(
+        selected(&["--edit-loop", "scripts/gate-report.sh"]),
+        [
+            "bash -n scripts/gate-report.sh",
+            "cargo nextest run -p merge-queue-tests --test merge_queue --ignore-default-filter -E 'test(=gate_behavior::state_and_gate::gate_report_is_read_only_and_aggregates_batches_failures_and_phases)'",
+        ],
+    );
+}
+
+#[test]
 fn stage_dependency_contract_and_probe_route_to_the_no_build_check() {
     for path in [
         "scripts/check-stage-dependencies.py",

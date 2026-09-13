@@ -522,8 +522,11 @@ for p in "${paths[@]}"; do
             gate_workspace=1
             add_early "cargo nextest run -p merge-queue-tests --test test_for_paths --ignore-default-filter -E 'test(=nextest_config_change_runs_one_parse_smoke)'"
             path_has_early=1 ;;
+        scripts/gate-report.sh)
+            add_early "bash -n scripts/gate-report.sh"
+            add_early "cargo nextest run -p merge-queue-tests --test merge_queue --ignore-default-filter -E 'test(=gate_behavior::state_and_gate::gate_report_is_read_only_and_aggregates_batches_failures_and_phases)'"
+            path_has_early=1 ;;
         scripts/check.sh | \
-        scripts/gate-report.sh | \
         scripts/merge-queue.sh | \
         scripts/state-paths.sh)
             add_gate_test merge_queue
