@@ -537,6 +537,8 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
         "src/commands/execution.rs",
         "tests/misc/rfc0165_oracle.rs",
         "spec/wasm-abi.md",
+        "rfcs/0165-rule-manifest.md",
+        "security-eval/findings/canonical-pop.md",
     ]);
     assert_eq!(commands.len(), 3, "cross-stage edit loop was not bounded: {commands:?}");
     assert!(
@@ -547,6 +549,12 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
                 || command.contains("check.sh --wasm")
         }),
         "checkpoint work leaked into the edit loop: {commands:?}",
+    );
+    assert!(
+        commands[0].contains("--test rfc0165_route_gate")
+            && commands[0]
+                .contains("canonical_wasm_encoding_is_private_and_requires_final_authority"),
+        "the focused route omitted the final-authority admission boundary: {commands:?}",
     );
 }
 
