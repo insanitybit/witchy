@@ -270,6 +270,39 @@ directional evidence, but attribution is only moderate because that binary also
 contains other unlanded integration work. Confirm against the eventual landed
 commit and a later uncontended gate before claiming a production improvement.
 
+**Post-activation Boolean reachability and routing, 2026-09-13.** Commit
+`920616f36` landed the Boolean CFG reachability change with 852 selected
+workspace tests green. Its 101-second gate overlapped a separate compiler
+profile: host load rose from 4.03 to 9.32 on 10 cores. Two measurements from the
+landed, prewarmed gate binary were also contaminated by unrelated host work.
+`async_tasks` took 24.910s with 945,906 involuntary context switches and `scope`
+took 33.073s with 800,554. Exclude the gate and these two samples from intrinsic
+before/after claims. The earlier 4.5-4.9% candidate improvement remains
+directional, with moderate attribution uncertainty, until a later uncontended
+landing supplies a clean comparison.
+
+The landing log exposed a focused-selection gap: the four new
+`boolean_reaches` regression tests took 0.035-0.043s each, but the canonical
+compiler edit loop selected nine other `witchy-wir` checks and omitted them.
+Commit `424bd21d3` added `test(boolean_reaches::)` to the existing first command;
+it adds no process or compilation stage and leaves the landing gate unchanged.
+The clean-tip edit check passed 61 router tests and the 16-test queue edit shard
+in 44s. Its landing ran the unchanged 133-test queue suite in 91s. The expected
+warm edit-loop cost is below 0.2s from the four observed test durations. If one
+of these tests catches a future regression, discovery moves ahead of a roughly
+101-second workspace gate; that saving is conditional because this landing was
+green.
+
+At 21:07Z the rolling three-hour post-activation cohort contained 16
+submissions. First-pass success was 92.9%, exact-tip receipt adoption was 8 of
+13 eligible submissions (61.5%), and the one failed attempt contributed 25s of
+failed work plus 4s of lock wait. Missing receipts remained concentrated in
+compiler surfaces: two `codegen`, two `typeck,interp,wasm-abi`, and one
+unclassified submission. The compiler router now stays at three commands and
+retains ABI, authority, ownership, bounds, admission, and semantic sentinels.
+Improving use of that receipt-bearing command has more direct evidence than
+adding another gate or deleting coverage.
+
 **Evidence and reproduction of the analysis.** The source report is the local
 artifact `/private/tmp/witchy-development-latency-2026-09-12.md`, produced in
 Codex thread `01a09617-befb-7ad2-9ef1-e701722ee3a2`. These records are local and
