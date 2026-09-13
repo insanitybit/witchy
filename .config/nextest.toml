@@ -183,6 +183,24 @@ test-group = 'wasm-heavy'
 retries = 0
 priority = 95
 
+# The corpus rebalance pins `worker_pool` and `for_await` into shards 2 and 1.
+# Their first landing gate then measured 59.4s and 59.0s, but the generic
+# priority below dispatched them near the end (4317th and 4305th of 4327).
+# Start these newly heavy names immediately after the six longer shards so
+# their work overlaps the parallel bulk. Group width, retries, timeouts, corpus
+# membership, and every assertion remain unchanged.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_2$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 94
+
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_1$/)'
+test-group = 'wasm-heavy'
+retries = 0
+priority = 93
+
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples(_shard_[0-9]+)?$/)'
 test-group = 'wasm-heavy'
