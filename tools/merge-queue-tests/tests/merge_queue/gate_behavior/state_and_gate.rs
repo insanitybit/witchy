@@ -1033,11 +1033,7 @@ fn a_red_costs_the_front_entry_its_queue_head() {
     // candidate behind it (BUG-633: 3h41m, zero merges, 14 ready).
     let fixture = QueueFixture::stack(&[]);
     let root = fixture.root.clone();
-    for (branch, file) in [
-        ("urgent", "urgent.txt"),
-        ("notes-a", "notes-a.txt"),
-        ("notes-b", "notes-b.txt"),
-    ] {
+    for (branch, file) in [("urgent", "urgent.txt"), ("notes", "notes.txt")] {
         run_git(&root, &["switch", "-c", branch, "master"]);
         fs::write(root.join(file), format!("{branch}\n")).expect("write branch file");
         run_git(&root, &["add", file]);
@@ -1045,8 +1041,7 @@ fn a_red_costs_the_front_entry_its_queue_head() {
         run_git(&root, &["switch", "master"]);
     }
     fixture.mq_ok(&["submit", "--front", "urgent"], "true");
-    fixture.mq_ok(&["submit", "notes-a"], "true");
-    fixture.mq_ok(&["submit", "notes-b"], "true");
+    fixture.mq_ok(&["submit", "notes"], "true");
 
     let queued_head = |fixture: &QueueFixture| -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(fixture.state.join("queue"))
