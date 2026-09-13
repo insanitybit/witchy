@@ -84,3 +84,15 @@ including zero-leak checks. The original CLI reproducer now checks and agrees
 on output (`/private/tmp/witchy-scope-metadata.RG6MC9/fixed-parity.log`).
 Hello, wrap, jq, and dynamic reflection also agree using the same rebuilt
 binary (`/private/tmp/witchy-exec-scope-repair-compact-20260913.log`).
+
+## Terminal landing evidence (2026-09-13)
+
+The corrected scope rule and its focused evidence landed at
+`a71c5432e5c02829b1b670297d43dc071970c03b`, 2026-09-13T12:32:39Z.
+Coordinator change `mq-cef3c15092fec4c92765af7c5c0de5dec084c3b0`, attempt
+`mqa-b9af004086e5f205eaa6939d529588e83f1d6b30`, is terminal merged-green.
+The exact submitted candidate was `1fa6ed6475d9c58750af23d7e968a0c7a0d789bc`.
+The workspace gate passed without weakening the preparation identity checks.
+Log: `state/merge-queue/logs/20260913-082301-impl~rfc0165-exec-scope-admission-99116-5.log`.
+This closes this fail-closed coverage regression's landing obligation, not the
+remaining project CLI/crypto work or the compiler-wide soundness claim.

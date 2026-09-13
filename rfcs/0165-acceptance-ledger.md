@@ -1217,3 +1217,27 @@ the withdrawn `Unique` qualifier on `opt_mode.ScanState`. This is candidate
 CLI coverage, not fresh-master or full three-legged soundness evidence. The
 census script's exit 1 was its final zero-match `DISAGREE` grep, not a failed
 program; log: `scripts/rfc0165-dev/status/census-ab8eb27b8-20260912.log`.
+
+### 2026-09-13 Exec and checked-scope landing
+
+The Exec/scope candidate submitted as
+`1fa6ed6475d9c58750af23d7e968a0c7a0d789bc` merged through the coordinator at
+2026-09-13T12:32:39Z as `a71c5432e5c02829b1b670297d43dc071970c03b`.
+Change `mq-cef3c15092fec4c92765af7c5c0de5dec084c3b0`, attempt
+`mqa-b9af004086e5f205eaa6939d529588e83f1d6b30`, was terminal merged-green.
+Workspace tests, prose, compile check, clippy bug lints and the Wasm playground
+build passed; the journal records no flakes. Gate evidence:
+`state/merge-queue/logs/20260913-082301-impl~rfc0165-exec-scope-admission-99116-5.log`.
+The gate explicitly skipped runnable-book and Rust-class stages; this event is
+not evidence for those stages, hosted CI, or compiler-wide memory safety.
+
+The preceding attempt failed while linking the WIR test executable. A targeted,
+reversible quarantine of its test artifacts and WIR incremental cache at
+`/private/tmp/witchy-wir-link-cache.VES9VW` allowed an unchanged-source retry to
+pass. No validator or test assertion was weakened for that retry.
+
+This landing covers direct-source Exec admission and the imported dynamic-method
+preparation-scope repair. Project CLI source admission and its reachable crypto
+operations are separate, unsubmitted integration work. Their latest focused run
+still refuses a hash probe with `InvalidGuard` and an ordinary project command
+with `MissingBinding("__capop.is_dir")`; neither is claimed complete here.
