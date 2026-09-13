@@ -66,6 +66,7 @@ done
         .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "1")
         .env("MERGE_QUEUE_STALL_TIMEOUT", "600")
         .env("MERGE_QUEUE_BUSY_SILENCE_MAX", "1800")
+        .env("MERGE_QUEUE_TEST_TERMINATE_GRACE", "0.05")
         .output()
         .expect("run gate past the workspace-test budget");
     let elapsed = started.elapsed();

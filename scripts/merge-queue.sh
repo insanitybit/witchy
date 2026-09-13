@@ -1409,7 +1409,13 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     done
     note "killing gate (pgid $gpid): $why"
     kill -TERM -- "-$gpid" 2>/dev/null || kill -TERM "$gpid" 2>/dev/null || true
-    sleep 5
+    local terminate_grace=5
+    # Deterministic fixtures use fake children that exit immediately on TERM;
+    # they do not need to charge the production cleanup grace on every gate.
+    if [ "${MERGE_QUEUE_ALLOW_TEST_ROOT:-0}" = "1" ]; then
+        terminate_grace="${MERGE_QUEUE_TEST_TERMINATE_GRACE:-5}"
+    fi
+    sleep "$terminate_grace"
     kill -KILL -- "-$gpid" 2>/dev/null || true
     wait "$gpid" 2>/dev/null || true
     active_gate_pgid=""
