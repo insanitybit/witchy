@@ -520,8 +520,8 @@ for p in "${paths[@]}"; do
             add "./scripts/check.sh --queue-infra" ;;
         .config/nextest.toml)
             gate_workspace=1
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "./scripts/check.sh --queue-infra" ;;
+            add_early "cargo nextest run -p merge-queue-tests --test test_for_paths --ignore-default-filter -E 'test(=nextest_config_change_runs_one_parse_smoke)'"
+            path_has_early=1 ;;
         scripts/check.sh | \
         scripts/gate-report.sh | \
         scripts/merge-queue.sh | \

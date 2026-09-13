@@ -821,6 +821,14 @@ fn workspace_manifest_runs_the_stage_crate_dag_probe_early() {
 }
 
 #[test]
+fn nextest_config_change_runs_one_parse_smoke() {
+    assert_eq!(
+        selected(&["--edit-loop", ".config/nextest.toml"]),
+        ["cargo nextest run -p merge-queue-tests --test test_for_paths --ignore-default-filter -E 'test(=nextest_config_change_runs_one_parse_smoke)'"],
+    );
+}
+
+#[test]
 fn stage_dependency_contract_and_probe_route_to_the_no_build_check() {
     for path in [
         "scripts/check-stage-dependencies.py",
