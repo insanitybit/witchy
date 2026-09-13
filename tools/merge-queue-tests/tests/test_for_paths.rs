@@ -768,6 +768,34 @@ fn build_recipe_test_edits_run_their_executable_module() {
 }
 
 #[test]
+fn build_read_integration_edits_run_only_their_own_modules() {
+    for (path, module) in [
+        (
+            "tests/misc/rfc0103_build_step_confinement.rs",
+            "rfc0103_build_step_confinement",
+        ),
+        (
+            "tests/misc/rfc0165_build_read_project.rs",
+            "rfc0165_build_read_project",
+        ),
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert!(
+            commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- ")
+                && commands[0].contains("cargo nextest run --test misc")
+                && commands[0].contains(&format!("test(/^{}::/)", module)),
+            "{path}: {commands:?}",
+        );
+        assert_ne!(
+            commands[0],
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
+            "{path} expanded to every misc test: {commands:?}",
+        );
+    }
+}
+
+#[test]
 fn integration_grants_edit_runs_only_its_misc_module() {
     let commands = selected(&[
         "--edit-loop",

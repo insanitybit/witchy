@@ -263,7 +263,8 @@ for p in "${paths[@]}"; do
         crates/witchy-types/src/canonical* | \
         crates/witchy-wir/src/canonical*)
             canonical_rewrite=1 ;;
-        tests/misc/rfc0165_oracle.rs) ;;
+        tests/misc/rfc0165_oracle.rs | \
+        tests/misc/rfc0165_build_read_project.rs) ;;
         tests/misc/rfc0165_*.rs)
             canonical_rewrite=1 ;;
     esac
@@ -318,6 +319,12 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'" ;;
         src/source/build_recipe_tests.rs)
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::/)'"
+            path_has_early=1 ;;
+        tests/misc/rfc0103_build_step_confinement.rs)
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0103_build_step_confinement::/)'"
+            path_has_early=1 ;;
+        tests/misc/rfc0165_build_read_project.rs)
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_build_read_project::/)'"
             path_has_early=1 ;;
         crates/witchy-types/src/pipeline/test_driver/integration.rs | \
         src/commands/test_runner/canonical_integration.rs)
