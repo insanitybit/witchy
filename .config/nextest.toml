@@ -341,6 +341,14 @@ slow-timeout = { period = "600s", terminate-after = 2 }
 retries = 1
 priority = 90
 
+# This 15-25s test completed in the final six in each of ten recent full
+# gates, and was the last finisher in seven. It already inherits the bounded
+# async-channel group, timeout, and retry policy above; only dispatch it one
+# priority tier earlier so its work overlaps the parallel bulk.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::bin/witchy) & test(/^example_tests::async_channels::channel_structured_join_cancel_indexed_fanouts_backends_agree$/)'
+priority = 91
+
 # The fuzz binary's own per-seed budget (WITCHY_FUZZ_TIMEOUT_SECS, 180s) must
 # sit BELOW nextest's kill threshold, or the internal timeout can never fire --
 # nextest SIGKILLs first and the careful "TIMED OUT on seed N" diagnostic is
@@ -414,8 +422,7 @@ priority = 85
 
 # Serial-tail elimination: these tests are slow AND sort late by name, so at
 # default priority they were the last to COMPLETE every gate — `wir_binary_path`
-# (~9s), the structured channel fanout test (~15-25s), and the heavy
-# differential/example-matrix tests trailed the bulk. (The
+# (~9s) and the heavy differential/example-matrix tests trailed the bulk. (The
 # `stdlib_properties` proptests used to lead this list at ~19s; the linker's
 # pulled-std expansion cache cut them to ~2-4s, below the bar.) Running
 # alone at the end wastes ~9 idle cores for the length of the longest straggler.
@@ -429,7 +436,7 @@ priority = 85
 # compiler tests above. Keep this list to tests measured >8s that also sort
 # late; re-check with the per-test timings in a merge-queue gate log.
 [[profile.default.overrides]]
-filter = 'test(/^example_tests::([a-z0-9_]+::)?wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::([a-z0-9_]+::)?(documentation_examples_are_valid|all_examples_validate_via_cli|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::async_channels::channel_structured_join_cancel_indexed_fanouts_backends_agree$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
+filter = 'test(/^example_tests::([a-z0-9_]+::)?wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::([a-z0-9_]+::)?(documentation_examples_are_valid|all_examples_validate_via_cli|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
 test-group = 'wasm-heavy'
 retries = 0
 # 600s x 2. The whole-corpus sweeps in this filter are the most expensive
