@@ -291,6 +291,11 @@ for p in "${paths[@]}"; do
             add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
     esac
     case "$p" in
+        src/commands/compile.rs | \
+        src/commands/project_resolver_tests.rs | \
+        src/source.rs | src/source/package_inputs.rs)
+            add_early "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'"
+            path_has_early=1 ;;
         crates/witchy-types/src/pipeline/test_driver.rs | \
         crates/witchy-types/src/pipeline/test_driver/*.rs | \
         src/commands/test_runner/canonical_bare.rs | \

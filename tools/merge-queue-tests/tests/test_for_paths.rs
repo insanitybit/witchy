@@ -500,6 +500,24 @@ fn wir_abi_surfaces_run_the_catalog_contracts_first() {
 }
 
 #[test]
+fn authenticated_owner_surfaces_run_the_cli_contract_first() {
+    for path in [
+        "src/commands/compile.rs",
+        "src/commands/project_resolver_tests.rs",
+        "src/source.rs",
+        "src/source/package_inputs.rs",
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert_eq!(
+            commands[0],
+            "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'",
+            "{path}: {commands:?}"
+        );
+    }
+}
+
+#[test]
 fn edit_loop_stops_after_named_cheap_probes_when_available() {
     let commands = selected(&["--edit-loop", "crates/witchy-wir/src/wir_prelude.rs"]);
     assert_eq!(commands.len(), 2, "{commands:?}");
@@ -695,9 +713,15 @@ fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
         "cargo nextest run -p witchy-syntax",
     ];
 
-    for path in ["src/main.rs", "src/cli.rs", "src/source.rs"] {
+    for path in ["src/main.rs", "src/cli.rs"] {
         assert_eq!(selected(&[path]), expected, "focused route for {path}");
     }
+    let source = selected(&["src/source.rs"]);
+    assert_eq!(
+        source.first().map(String::as_str),
+        Some("cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'")
+    );
+    assert_eq!(&source[1..], expected, "focused route for src/source.rs");
 }
 
 #[test]
