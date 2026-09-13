@@ -113,6 +113,11 @@ impl AdmittedOwnerBridge {
 
 pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &CanonicalModule<S>) -> Result<Vec<AdmittedOwnerBridge>, LoweringError> {
     let mut result: Vec<AdmittedOwnerBridge> = vec![];
+    // Recipe ids are digests; compute each once and keep the ones already
+    // admitted in a map, so a module with thousands of owner operations does
+    // not re-hash every earlier recipe on every new one.
+    let import_ids = source.imports().iter().map(|import| import.id).collect::<BTreeSet<_>>();
+    let mut admitted: BTreeMap<ImportId, usize> = BTreeMap::new();
     for function in source.functions() {
         for operation in function.blocks.iter().flat_map(|b| &b.operations) {
             let Operation::ClosureOwner(operation) = operation else { continue };
@@ -180,12 +185,16 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 cleanup_type_index: 0,
                 cleanup_families: Vec::new(),
             };
-            if source.imports().iter().any(|import| import.id == bridge.id()) {
+            let id = bridge.id();
+            if import_ids.contains(&id) {
                 return Err(error("private owner import collision"));
             }
-            if let Some(previous) = result.iter().find(|previous| previous.id() == bridge.id()) {
-                if previous != &bridge { return Err(error("private owner recipe collision")); }
-            } else { result.push(bridge); }
+            if let Some(&index) = admitted.get(&id) {
+                if result[index] != bridge { return Err(error("private owner recipe collision")); }
+            } else {
+                admitted.insert(id, result.len());
+                result.push(bridge);
+            }
         }
     }
     let first_payload = (source.signatures().len() + source.imports().len() + result.len()) as u32;
