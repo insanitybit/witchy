@@ -796,6 +796,51 @@ fn build_read_integration_edits_run_only_their_own_modules() {
 }
 
 #[test]
+fn build_read_host_edits_keep_authority_bounds_and_abi_probes() {
+    for path in [
+        "crates/witchy-runtime/src/runtime/host/build_read.rs",
+        "crates/witchy-runtime/src/runtime/host/build_read_tests.rs",
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 2, "{path}: {commands:?}");
+        assert!(
+            commands[0].contains("runtime::host::build_read_tests::")
+                && commands[0].contains(
+                    "build_read_captures_authenticate_kind_session_projection_and_cleanup",
+                ),
+            "{path}: {commands:?}",
+        );
+        assert!(
+            commands[1].contains(
+                "wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature",
+            ),
+            "{path}: {commands:?}",
+        );
+        assert!(
+            commands.iter().all(|command| {
+                !command.contains("example_tests") && !command.contains("check.sh --wasm")
+            }),
+            "{path}: {commands:?}",
+        );
+    }
+}
+
+#[test]
+fn canonical_build_read_edit_keeps_its_catalog_contract() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-wir/src/canonical_safewir/build_read.rs",
+    ]);
+    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert!(
+        commands[0].contains(
+            "build_read_catalog_separates_root_authority_from_bounded_responses",
+        ),
+        "{commands:?}",
+    );
+}
+
+#[test]
 fn integration_grants_edit_runs_only_its_misc_module() {
     let commands = selected(&[
         "--edit-loop",
