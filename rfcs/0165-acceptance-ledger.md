@@ -22,8 +22,16 @@ qualifier refused. Exact per-file results are in
 `/private/tmp/witchy-canonical-check-census-loop-fixed-20260912/results.tsv`.
 This is not a fresh master three-legged execution census.
 
-Exec and ordinary project execution are the current integration family, not
-landed work. Remaining production workflows, full observation-trace evidence,
+Exec and preparation-scope admission landed at `a71c5432e`. Ordinary project
+execution, its reachable Ed25519/SHA-256/Rune operations, Dir metadata, and the
+nested-loop extent/prefix corrections are reviewed and focused-green, not yet
+landed. The combined native/root shard passed 53/53 tests (run
+`914ef1f0-e2c0-4172-82cd-4a842a52f5c6`), including project exit 7 and exact
+stdout-then-stderr capture; `hello`/`wrap`/`jq` parity is green. Evidence:
+`/private/tmp/witchy-loop-prefix-integrated-r7.log` and
+`/private/tmp/witchy-loop-extents-compact-r7.log`. The bounds-replacement negative
+checks source and admitted Wasm, not the oracle. No new census or current-master
+completion is claimed. Remaining production workflows, full observation-trace evidence,
 current hosted CI, opt-contract conformance, and security/optimizer acceptance
 remain open. Compiler-wide memory safety and optimizer correctness are not
 established. Pending descriptions in the older checkpoints below are historical;

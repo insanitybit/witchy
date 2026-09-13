@@ -50,3 +50,20 @@ source/oracle/admitted-Wasm probes. The separate `MissingBoundsGuard` refusal in
 `gm_engine.audit_then_flags` is still being traced and is not proven to have
 the same cause. No compiler-wide memory-safety conclusion follows from this
 finding or its eventual coverage repair.
+
+## Reviewed candidate correction, 2026-09-13
+
+The lowerer preserves unchanged list allocation-capacity identities, reloads
+invalidated logical counts, and carries nested invalidations through scalar
+`while` fact restoration. The checker independently preflights retained exact
+clones before phi rebasing, preserving only already-proven initialized prefixes.
+It does not infer completeness from alias overlap or another token's summary.
+
+Five loop regressions pass, including the review-discovered nested `for` inside
+scalar `while`. The combined native/root shard passes 53/53 (run
+`914ef1f0-e2c0-4172-82cd-4a842a52f5c6`), with incomplete-prefix, count-growth,
+move-invalidation and bounds-refusal controls. `hello`, `wrap`, and `jq` agree.
+Logs: `/private/tmp/witchy-loop-prefix-integrated-r7.log` and
+`/private/tmp/witchy-loop-extents-compact-r7.log`. Independent review is clear;
+terminal merge-queue landing remains outstanding. The replacement-bounds
+negative observes source and admitted Wasm, not three-leg oracle parity.
