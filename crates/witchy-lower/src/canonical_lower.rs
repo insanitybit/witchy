@@ -4401,6 +4401,13 @@ impl FunctionLowerer<'_> {
             .collect::<Result<Vec<_>, _>>()?;
         for name in list_names {
             let object = self.bindings[name];
+            // Nested control flow can invalidate an outer lane's cached
+            // extent without changing its current token. Reauthenticate the
+            // actual headers before carrying that lane across this edge.
+            if self.tracked_lanes(object).is_none() {
+                self.ensure_list_extent(object)?;
+                self.ensure_string_extent(object)?;
+            }
             let (count, capacity) = self.tracked_lanes(object).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("loop edge list count state"),
             )?;
@@ -4688,18 +4695,35 @@ impl FunctionLowerer<'_> {
             self.demote_unique_lanes_carrying_shared(header, exit, &carried);
             self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
         }
+        // A nested join can supersede an invariant's header evidence even
+        // when this loop carries only scalars. Restoring the entry snapshot
+        // must not resurrect those old count ids. Keep unchanged allocation
+        // capacity identities: invalidating a count is not reallocating a list.
+        let invalidated_counts = outer.values().copied().filter(|object| {
+            self.string_lengths.get(object) != facts.string_lengths.get(object)
+                || self.string_capacities.get(object) != facts.string_capacities.get(object)
+                || self.list_counts.get(object) != facts.list_counts.get(object)
+        }).collect::<BTreeSet<_>>();
         self.restore_facts(facts, exit);
+        for object in invalidated_counts {
+            self.invalidate_dynamic_count(object);
+        }
         // An uncarried snapshot keeps its token, but aliases carried through
         // the loop can make the checker forget its counted extent at the
         // join. Dominating scalar ids alone do not re-establish that fact.
         // Reload the real headers on the next use; exit lanes below retain
         // their explicitly transported metadata.
-        for object in outer.values() {
-            self.string_lengths.remove(object);
-            self.string_capacities.remove(object);
-            self.list_counts.remove(object);
-            self.list_capacities.remove(object);
-            self.known_list_lengths.remove(object);
+        // A scalar-only inner loop cannot rebase an outer reference through
+        // one of its phis. Keep those untouched facts, including the capacity
+        // identity an enclosing shared-phi edge must actually transport.
+        if names.iter().any(|name| matches!(self.values[&outer[name]], ValueType::Ref(_))) {
+            for object in outer.values() {
+                self.string_lengths.remove(object);
+                self.string_capacities.remove(object);
+                self.list_counts.remove(object);
+                self.list_capacities.remove(object);
+                self.known_list_lengths.remove(object);
+            }
         }
         self.current = exit;
         self.bindings = lane_bindings(&outer, &names, exit_parameters.iter().map(|parameter| parameter.value));
@@ -4951,6 +4975,19 @@ impl FunctionLowerer<'_> {
             self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
             metadata_index += 2;
         }
+        // An invariant token can survive the backedge while its counted
+        // extent meets down to header-only evidence. A pre-loop cached
+        // scalar does not reestablish that evidence inside the loop. Reload
+        // the live headers here; carried references use their explicit lanes.
+        let invariant_extents = outer.iter()
+            .filter(|(name, object)| !names.contains(name) && self.tracked_lanes(**object).is_some())
+            .map(|(_, object)| *object)
+            .collect::<BTreeSet<_>>();
+        for object in &invariant_extents {
+            self.invalidate_dynamic_count(*object);
+            self.ensure_list_extent(*object)?;
+            self.ensure_string_extent(*object)?;
+        }
         let index = *header_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
         let logical_length = owner_length.or_else(|| self.list_counts.get(&source).copied())
             .ok_or(CanonicalLoweringError::UnsupportedExpression("for list count state"))?;
@@ -5066,6 +5103,12 @@ impl FunctionLowerer<'_> {
 
         let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
         self.restore_facts(facts, exit);
+        // Header reads in the loop supersede the pre-loop count identities.
+        // Do not restore those old scalar ids as evidence for later accesses.
+        // The allocation-capacity bound of an unchanged list remains valid.
+        for object in invariant_extents {
+            self.invalidate_dynamic_count(object);
+        }
         self.current = exit;
         self.bindings = outer;
         for (name, parameter) in names.iter().zip(&exit_parameters) {
@@ -7649,6 +7692,14 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    fn invalidate_dynamic_count(&mut self, value: ValueId) {
+        self.string_lengths.remove(&value);
+        // String capacity is the same runtime word as its logical length.
+        self.string_capacities.remove(&value);
+        self.list_counts.remove(&value);
+        self.known_list_lengths.remove(&value);
+    }
+
     fn reload_dynamic_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
         self.string_lengths.remove(&value);
         self.string_capacities.remove(&value);
@@ -7694,17 +7745,25 @@ impl FunctionLowerer<'_> {
             ),
             transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
         });
-        let capacity = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::Load {
-            destination: capacity,
-            place: witchy_wir::canonical_safewir::Place::projected(
-                value,
-                Projection::Header(witchy_wir::canonical_safewir::HeaderField::Capacity),
-                ValueType::Size,
-                AccessMode::Read,
-            ),
-            transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
-        });
+        // Refreshing a count must not replace a known allocation-capacity
+        // bound with an unrelated physical-header SSA value. In particular,
+        // a shared phi must transport the bound the object actually carries.
+        let capacity = if let Some(&capacity) = self.list_capacities.get(&value) {
+            capacity
+        } else {
+            let capacity = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::Load {
+                destination: capacity,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    value,
+                    Projection::Header(witchy_wir::canonical_safewir::HeaderField::Capacity),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+            });
+            capacity
+        };
         let count_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: count_fits,
@@ -7761,6 +7820,9 @@ impl FunctionLowerer<'_> {
         if self.values.get(&object).copied() != Some(ValueType::Ref(layout)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("console.print string"));
         }
+        // A nested control-flow join may have invalidated cached lengths.
+        // Authenticate this live message's header before forming its slice.
+        self.ensure_string_extent(object)?;
         let import = self.host_imports.print.ok_or_else(|| {
             CanonicalLoweringError::InvalidAuthenticatedAbiCatalog(
                 "console.print has no projected ABI import".into(),

@@ -6,6 +6,9 @@ mod crypto;
 #[path = "rfc0165_dir_metadata.rs"]
 mod dir_metadata;
 
+#[path = "rfc0165_loop_extents.rs"]
+mod loop_extents;
+
 fn check_scoped_modules(entry: &[u8], library: &[u8]) -> witchy::pipeline::CheckedModule {
     use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
     // This fixture is the source loader: bind exact raw user modules to
