@@ -81,7 +81,7 @@ fn canonical_console_fixture_source_admission_full_trace_and_zero_leaks() {
     let files = Files::new("fn helper(console: Console) -> String:\n    console.print(\"inner\")\n    \"outer\"\nfn main(console: Console):\n    console.print(\"unused main\")\nfn test_console(console: Console):\n    console.print(helper(console))\n    console.print(\"last\\n\")\n");
     let driver = files.driver();
     assert!(driver.canonical_source().unwrap().is_console_fixture());
-    assert_eq!(driver.identity().unwrap().recipe_version(), 1);
+    assert_eq!(driver.identity().unwrap().recipe_version(), 2);
     let main = driver.module().items.iter().find_map(|item| match item {
         ast::Item::Function(function) if function.name == "main" => Some(function), _ => None,
     }).unwrap();
@@ -206,4 +206,67 @@ fn canonical_console_fixture_cli_required_step_failure_overrides_successful_gues
         // not success and not an infrastructure/compilation error (exit 2).
         assert_eq!(run_tests(&options), Ok(false), "{name} CLI status");
     }
+}
+
+#[test]
+fn canonical_console_fixture_owned_record_preserves_grants_source_and_transcript() {
+    let files = Files::new("capability TestRoot:\n    console: Console\n    args: List(String)\n\nfn test_console(root: TestRoot):\n    match root:\n        TestRoot(console, args) -> console.print(args.at(0))\n");
+    let driver = files.driver();
+    assert_eq!(driver.identity().unwrap().recipe_version(), 2);
+    assert_eq!(driver.identity().unwrap().selected_declaration(), "suite.test_console");
+    let artifact = codegen::compile_checked_test_driver_artifact(&driver).expect_lowered("source-owned record fixture admits");
+    let entry = artifact.entry().unwrap();
+    assert_eq!(entry.capabilities(), &[witchy_wir::CanonicalEntryCapability::Console]);
+    assert_eq!(entry.argument_positions(), &[1]);
+    let mut configured = plan(&["owned-input"]);
+    configured.argv = Some(vec!["owned-input".into()]);
+    let source = source_outcome(&driver, &configured);
+    let native = runtime::Runtime::batch().unwrap().run_admitted_fixtures(&artifact, configured.clone(), crate::RUN_MEMORY_PAGES).unwrap();
+    assert_eq!(source.result, TestResult::Passed);
+    assert_eq!(source.stdout, ["owned-input"]);
+    assert_eq!(source, native.transcript);
+    assert_eq!(native.leaked_objects, Some(0));
+    assert!(source.events.iter().any(|event| event.family == FixtureFamily::Argv));
+    // A filesystem provider cannot stand in for argv, and neither wrapper
+    // construction nor a valid admitted artifact widens the fixture grants.
+    let mut confused = configured;
+    confused.argv = None;
+    confused.filesystem = Some(Default::default());
+    for backend in [TestBackend::Interpreter, TestBackend::Wasm, TestBackend::Both] {
+        let error = run_fixture_test(&driver, &confused, backend).err().expect("unrelated provider cannot satisfy argv");
+        assert!(error.contains("other providers"), "{error}");
+    }
+    let missing = plan(&["owned-input"]);
+    for backend in [TestBackend::Interpreter, TestBackend::Wasm, TestBackend::Both] {
+        let error = run_fixture_test(&driver, &missing, backend).err().expect("argv is required independently of Console");
+        assert!(error.contains("missing argv provider"), "{error}");
+    }
+}
+
+#[test]
+fn canonical_console_fixture_owned_record_preserves_multiple_argv_leaf_order() {
+    let files = Files::new("capability TestRoot:\n    first: List(String)\n    console: Console\n    second: List(String)\n\nfn test_console(root: TestRoot):\n    match root:\n        TestRoot(first, console, second) -> console.print(first.at(0) + second.at(1))\n");
+    let driver = files.driver();
+    let artifact = codegen::compile_checked_test_driver_artifact(&driver).expect_lowered("multiple source-owned argv leaves admit");
+    let entry = artifact.entry().unwrap();
+    assert_eq!(entry.capabilities(), &[witchy_wir::CanonicalEntryCapability::Console]);
+    assert_eq!(entry.argument_positions(), &[0, 2]);
+    let mut configured = plan(&["first-second"]);
+    configured.argv = Some(vec!["first-".into(), "second".into()]);
+    let source = source_outcome(&driver, &configured);
+    let native = runtime::Runtime::batch().unwrap().run_admitted_fixtures(&artifact, configured, crate::RUN_MEMORY_PAGES).unwrap();
+    assert_eq!(source.result, TestResult::Passed);
+    assert_eq!(source.stdout, ["first-second"]);
+    assert_eq!(source, native.transcript);
+    assert_eq!(native.leaked_objects, Some(0));
+    assert_eq!(source.events.iter().map(|event| &event.family).collect::<Vec<_>>(),
+        [&FixtureFamily::Argv, &FixtureFamily::Argv, &FixtureFamily::Console]);
+}
+
+#[test]
+fn canonical_console_fixture_record_cannot_construct_an_imported_seal() {
+    let files = Files::new("from owner import TestRoot\nfn test_console(root: TestRoot):\n    Nil\n");
+    std::fs::write(files.0.join("owner.witchy"), "capability TestRoot:\n    console: Console\n    args: List(String)\n").unwrap();
+    let (suite, _) = crate::link_test_file(files.0.join("suite.witchy").to_str().unwrap()).unwrap();
+    assert!(witchy_interp::pipeline::check_console_fixture_test_driver(&suite, "suite.test_console").is_err());
 }

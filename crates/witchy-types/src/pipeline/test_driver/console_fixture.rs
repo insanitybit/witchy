@@ -1,9 +1,11 @@
-//! Console-output recipe v1. Providers are deliberately not an input here.
+//! Console-output recipe v2. Providers are deliberately not an input here.
 //! The original source identity is retained; the separate recipe domain binds
 //! its version and the exact selected raw declaration into every fresh witness.
 use super::*;
 use witchy_syntax::ast::Convention;
 use crate::typeck::Ty;
+
+mod arguments;
 
 pub fn check_console_fixture_test_driver(
     suite: &CheckedTestSuite, selected: &str, expand: ComptimeExpander,
@@ -28,11 +30,11 @@ pub fn check_console_fixture_test_driver(
     {
         return Err(refused("Console fixture recipe requires synchronous explicitly typed default-convention parameters; async, generic, defaulted and other conventions are unsupported"));
     }
-    let parameters = target.params.clone();
+    let shape = arguments::prepare(entry, &target.params)?;
     let declaration_ordinal = u64::try_from(ordinal).map_err(|_| refused("fixture declaration ordinal overflow"))?;
     let mut hash = blake3::Hasher::new();
     hash.update(b"witchy.checked-test-driver.test-mode.console-output\0");
-    hash.update(&1u32.to_le_bytes());
+    hash.update(&2u32.to_le_bytes());
     hash.update(&suite.original_source_digest);
     hash.update(&(suite.entry.len() as u64).to_le_bytes());
     hash.update(suite.entry.as_bytes());
@@ -40,7 +42,7 @@ pub fn check_console_fixture_test_driver(
     hash.update(&(selected.len() as u64).to_le_bytes());
     hash.update(selected.as_bytes());
     let identity = TestDriverIdentity {
-        recipe_version: 1,
+        recipe_version: 2,
         original_source_digest: suite.original_source_digest,
         derived_source_digest: *hash.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
@@ -52,10 +54,10 @@ pub fn check_console_fixture_test_driver(
         return Err(refused("invalid compiler Console recipe entry"));
     };
     main.line = 0;
-    main.params = parameters;
+    main.params = shape.parameters.clone();
     main.body.stmts = vec![Stmt::Expr(Expr::Call {
         name: bare.to_owned(),
-        args: main.params.iter().map(|parameter| Expr::Var(parameter.name.clone())).collect(),
+        args: shape.expressions(),
     })];
     main.body.lines = vec![0];
     for index in (0..entry.items.len()).rev() {
@@ -77,16 +79,10 @@ pub fn check_console_fixture_test_driver(
     let [Stmt::Expr(Expr::Call { name, args })] = main.body.stmts.as_slice() else {
         return Err(refused("checked Console recipe call shape changed"));
     };
-    if name != selected || args.len() != main.params.len() {
+    if name != selected || args.len() != shape.arguments.len() || main.params.len() != shape.parameters.len() {
         return Err(refused("checked Console recipe target or parameter binding changed"));
     }
-    for (argument, parameter) in args.iter().zip(&main.params) {
-        if !matches!(argument, Expr::Var(name) if name == &parameter.name)
-            || !matches!(typed.table().type_of(argument), Some(Ty::Console(rights)) if rights.write)
-        {
-            return Err(refused("Console fixture recipe requires exact checked Console Write parameters; records and other providers are unsupported"));
-        }
-    }
+    shape.check(&typed, &suite.entry, args, &main.params)?;
     let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest)?;
     let runtime_catalog = Some(checked.runtime_declaration_catalog()?);
     let mut canonical_source = checked.canonical_source.take()

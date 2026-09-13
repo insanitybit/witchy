@@ -42,18 +42,26 @@ impl Runtime {
         &mut self, artifact: &AdmittedCanonicalArtifact, plan: witchy_testkit::FixturePlan,
         memory_pages_max: usize,
     ) -> Result<FixtureWasmOutcome> {
-        witchy_test_host::validate_console_output_plan(&plan).map_err(Error::msg)?;
         let entry = artifact.entry().cloned().ok_or_else(|| Error::msg("admitted fixture entry missing"))?;
-        if entry.result() != CanonicalEntryResult::Unit || !entry.argument_positions().is_empty()
+        witchy_test_host::validate_console_output_plan_with_argv(&plan, entry.argument_positions().len()).map_err(Error::msg)?;
+        if entry.result() != CanonicalEntryResult::Unit
             || entry.capabilities().is_empty()
             || entry.capabilities().iter().any(|kind| *kind != CanonicalEntryCapability::Console)
         {
-            bail!("admitted Console fixture requires a Nil entry with only Console parameters; other recipes are unsupported");
+            bail!("admitted Console fixture requires a Nil entry with only Console and argv parameters; other recipes are unsupported");
         }
-        let host = witchy_test_host::FixtureHost::new(plan)
+        let mut host = witchy_test_host::FixtureHost::new(plan)
             .map_err(|error| Error::msg(format!("invalid fixture plan: {error}")))?;
         let module = WorkerModule::from_admitted(&self.engine, artifact)?;
-        let caps = Capabilities::none();
+        let mut caps = Capabilities::none();
+        for _ in entry.argument_positions() {
+            caps.args = match host.invoke(witchy_test_host::HostRequest::Argv, None)
+                .map_err(|failure| Error::msg(format!("fixture {:?}: {}", failure.code, failure.message)))?
+            {
+                witchy_test_host::HostResponse::Strings(arguments) => arguments,
+                _ => bail!("internal error: argv fixture returned a non-string list"),
+            };
+        }
         let limits = StoreLimitsBuilder::new().memory_size(memory_pages_max * 64 * 1024).build();
         let mut state = vmstate_from_caps(self.next_id, &caps, limits, None, &self.engine,
             module.module(), self.preempt, self.compiler_services.clone())?;

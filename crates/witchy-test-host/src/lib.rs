@@ -912,11 +912,20 @@ mod tests {
 /// Supported provider subset, not an authority constructor. Every execution
 /// adapter still authenticates its own tokens and checked entry independently.
 pub fn validate_console_output_plan(plan: &FixturePlan) -> Result<(), String> {
+    validate_console_output_plan_with_argv(plan, 0)
+}
+
+/// The adapters derive this count from their checked/admitted entry. Argv is
+/// inert fixture input, not an additional capability or a real host grant.
+pub fn validate_console_output_plan_with_argv(plan: &FixturePlan, argument_count: usize) -> Result<(), String> {
     if plan.clock.is_some() || plan.rand.is_some() || plan.env.is_some()
         || plan.filesystem.is_some() || plan.fetch.is_some() || plan.secrets.is_some()
-        || plan.exec.is_some() || plan.argv.is_some()
+        || plan.exec.is_some() || (argument_count == 0 && plan.argv.is_some())
     {
         return Err("admitted Console fixture: other providers and argv are unsupported".into());
+    }
+    if argument_count != 0 && plan.argv.is_none() {
+        return Err("admitted Console fixture: missing argv provider".into());
     }
     let console = plan.console.as_ref()
         .ok_or_else(|| "admitted Console fixture: missing Console provider".to_owned())?;
