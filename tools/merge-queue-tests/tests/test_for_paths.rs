@@ -570,6 +570,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("admitted_entry_without_a_console_grant_is_refused_before_it_runs"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_guard_near_misses_trap_exactly_at_the_boundary"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
+    assert!(mixed[2].contains("rfc0165_owner_adapters::server_pool_oracle::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
 }
 
@@ -709,6 +710,19 @@ fn oracle_harness_edit_runs_only_the_filtered_production_oracle() {
     assert!(
         commands[0]
             .contains("test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)"),
+        "{commands:?}",
+    );
+}
+
+#[test]
+fn server_pool_oracle_edit_keeps_its_authority_and_execution_probes() {
+    let commands = selected(&[
+        "--edit-loop",
+        "tests/misc/rfc0165_server_pool_oracle.rs",
+    ]);
+    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert!(
+        commands[2].contains("test(rfc0165_owner_adapters::server_pool_oracle::)"),
         "{commands:?}",
     );
 }
