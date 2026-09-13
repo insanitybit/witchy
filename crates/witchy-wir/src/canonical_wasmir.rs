@@ -3222,7 +3222,21 @@ impl StructuredEmitter<'_> {
         start: crate::canonical_safewir::BlockId,
         goal: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        Ok(self.distances_from(start)?.contains_key(&goal))
+        // encode_function checks every successor while constructing the
+        // predecessor map, before any query can succeed early. Keep distance
+        // maps for join scores; this query needs only graph membership.
+        let mut visited = BTreeSet::new();
+        let mut pending = VecDeque::from([start]);
+        while let Some(id) = pending.pop_front() {
+            if !visited.insert(id) { continue; }
+            self.block(id)?;
+            if id == goal { return Ok(true); }
+            let successors = self.successors_by_block.get(&id).ok_or(EncodeError::MissingBlock {
+                function: self.source_function.id, block: id,
+            })?;
+            pending.extend(successors.iter().copied());
+        }
+        Ok(false)
     }
 
     /// `start` is a terminal block, or a straight chain of unconditional
@@ -5741,7 +5755,20 @@ impl<'a> PlanEmitter<'a> {
     }
 
     fn reaches(&self, start: crate::canonical_safewir::BlockId, goal: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
-        Ok(self.distances_from(start)?.contains_key(&goal))
+        // Independently walk the checked-source graph. The complete edge
+        // census in expected_function_plan rejects missing successors before
+        // traversal; finding the goal cannot hide a malformed sibling edge.
+        let mut pending = vec![start];
+        let mut seen = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current) { continue; }
+            self.block(current)?;
+            if current == goal { return Ok(true); }
+            let successors = self.successors_by_block.get(&current)
+                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            pending.extend(successors.iter().rev().copied());
+        }
+        Ok(false)
     }
 
     fn reachable_avoiding(&self, start: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
@@ -7172,6 +7199,7 @@ fn admit_canonical_with_bytes_for_test(
 #[cfg(test)]
 mod tests {
     mod unique_pop;
+    mod boolean_reaches;
     /// Every entry capability tag survives the custom section, so a
     /// launcher reading a `.wasm` back mints exactly the tokens the checked
     /// signature declared.
