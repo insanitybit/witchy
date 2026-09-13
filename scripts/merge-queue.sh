@@ -431,13 +431,17 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
                 *"no log output"* | *"exceeded"* | *"timed out"* | *"creating test list failed"*)
                     if [ "$loaded" = "1" ]; then red_class="infra"; else red_class="timeout"; fi ;;
                 *)
-                    case "$failing_stage" in
-                        tests*)                 red_class="test" ;;
-                        *compile*)              red_class="compile" ;;
-                        *clippy*)               red_class="clippy" ;;
-                        *fmt*)                  red_class="fmt" ;;
-                        *"queue infrastructure"*) red_class="infra" ;;
-                        *)  [ "$event" = "timeout" ] && red_class="timeout" ;;
+                    case "$failure_line" in
+                        "error: linking with "*" failed"*) red_class="compile" ;;
+                        *)
+                            case "$failing_stage" in
+                                tests*)                 red_class="test" ;;
+                                *compile*)              red_class="compile" ;;
+                                *clippy*)               red_class="clippy" ;;
+                                *fmt*)                  red_class="fmt" ;;
+                                *"queue infrastructure"*) red_class="infra" ;;
+                                *)  [ "$event" = "timeout" ] && red_class="timeout" ;;
+                            esac ;;
                     esac ;;
             esac
             classified+=(failing_stage "$failing_stage" failure_line "$failure_line" red_class "$red_class")

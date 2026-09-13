@@ -2044,6 +2044,33 @@ fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
     );
 }
 
+#[test]
+fn a_linker_failure_during_test_build_is_classified_as_compile() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let gate = "printf '==> [1] tests (workspace) (t+0s)\\nerror: linking with `cc` failed: exit status: 1\\n'; exit 1";
+    fixture.mq_ok(&["submit", "a"], gate);
+    let out = fixture.mq(&["run", "--once"], gate);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let journal = fixture.journal();
+    let red = journal
+        .iter()
+        .find(|event| event["event"] == "red")
+        .unwrap_or_else(|| panic!("expected a red:\n{combined}"));
+
+    assert_eq!(red["failing_stage"], "tests (workspace)");
+    assert_eq!(red["red_class"], "compile");
+    assert!(
+        red["failure_line"]
+            .as_str()
+            .is_some_and(|line| line.contains("linking with `cc` failed")),
+        "journal lost the linker diagnostic: {red}"
+    );
+}
+
 /// One agent's ad-hoc `with-lock` suite blocks that agent; the coordinator
 /// blocks EVERY queued branch. The gate lock had no fairness, so measured
 /// 2026-08-27 the coordinator's lock wait went p50 0s -> 75s and p90 221s ->
