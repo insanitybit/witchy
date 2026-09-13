@@ -721,15 +721,28 @@ impl<'a> MemoryChecker<'a> {
         if !matches!(state.objects.get(&object)?.extent, Extent::HeaderPrefix { .. }) {
             return None;
         }
-        // Promotion needs the object's loaded length; without one it fails
-        // and the caller keeps the object as it was. Answer that before
-        // cloning the whole state into a scratch checker for one object.
-        if !state.header_values.contains_key(&(object, HeaderField::Length)) {
-            return None;
+        // Reject missing header/guard evidence against the borrowed edge,
+        // before allocating scratch storage. These are the same equations
+        // used by ordinary promotion, not facts imported from another edge.
+        let (extent, raw_buffer) = self.header_extent_in(state, object).ok()??;
+        let current = state.objects.get(&object)?;
+        let element = self.descriptor(current.layout).ok()?.kind().packed_element_layout();
+        let needs_prefix = !raw_buffer && element.is_some_and(|element| {
+            self.descriptor(element).map_or(true, |descriptor| matches!(descriptor.kind(),
+                LayoutKind::RuntimePointerValueSlot { .. } | LayoutKind::Scalar(ScalarKind::Unit)))
+        });
+        if needs_prefix {
+            // Managed/Unit consolidation can change range/slot facts and can
+            // fail. Keep its existing transactional scratch path intact.
+            let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
+            scratch.promote_header_extent(object).ok()?;
+            return scratch.state.objects.get(&object).cloned();
         }
-        let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
-        scratch.promote_header_extent(object).ok()?;
-        scratch.state.objects.get(&object).cloned()
+        // For pointer-free storage consolidation is a no-op. Only the one
+        // returned object changes; neither predecessor snapshot is mutated.
+        let mut promoted = current.clone();
+        promoted.extent = extent;
+        Some(promoted)
     }
 
     fn initialize_parameters(
@@ -3005,9 +3018,33 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn promote_header_extent(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
-        let state = self.live_object(object)?.clone();
-        let Extent::HeaderPrefix { minimum_bytes } = state.extent else {
+        let Some((extent, raw_buffer)) = self.header_extent_in(&self.state, object)? else {
             return Ok(());
+        };
+        if !raw_buffer {
+            let Extent::Counted { count, .. } = extent else { unreachable!() };
+            self.consolidate_pointer_prefix(object, count)?;
+        }
+        self.state.objects.get_mut(&object).expect("live object exists").extent = extent;
+        Ok(())
+    }
+
+    /// Compute only the header-derived extent. Prefix consolidation remains
+    /// the caller's obligation, with its original ordering and error behavior.
+    fn header_extent_in(
+        &self,
+        facts: &MemoryState,
+        object: ValueId,
+    ) -> Result<Option<(Extent, bool)>, InitialCheckError> {
+        let state = facts.objects.get(&object).ok_or(InitialCheckError::InvalidOwnership {
+            function: self.function.id,
+            object,
+        })?;
+        if state.ownership == Ownership::Consumed {
+            return Err(InitialCheckError::UseAfterConsume { function: self.function.id, object });
+        }
+        let Extent::HeaderPrefix { minimum_bytes } = state.extent else {
+            return Ok(None);
         };
         let LayoutSize::Dynamic { base, stride } = self.descriptor(state.layout)?.size() else {
             return self.invalid_projection(object);
@@ -3018,8 +3055,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        let count = self
-            .state.header_values
+        let count = facts.header_values
             .get(&(object, HeaderField::Length))
             .copied()
             .ok_or(InitialCheckError::InvalidExtent {
@@ -3029,51 +3065,47 @@ impl<'a> MemoryChecker<'a> {
         let is_raw_runtime_buffer = matches!(self.descriptor(state.layout)?.kind(), LayoutKind::RuntimeBuffer { element }
             if self.descriptor(*element).is_ok_and(|element| element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte)));
         if is_raw_runtime_buffer {
-            if !self.allocation_fits(count, base, stride) {
+            if !Self::allocation_fits_in(facts, count, base, stride) {
                 return Err(InitialCheckError::MissingAllocationSizeGuard {
                     function: self.function.id,
                     capacity: count,
                     maximum: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
                 });
             }
-            self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+            return Ok(Some((Extent::Counted {
                 header_bytes: base,
                 count,
                 capacity: count,
                 stride_bytes: stride,
-            };
-            return Ok(());
+            }, true)));
         }
-        let capacity = self
-            .state.header_values
+        let capacity = facts.header_values
             .get(&(object, HeaderField::Capacity))
             .copied()
             .ok_or(InitialCheckError::InvalidExtent {
                 function: self.function.id,
                 object,
             })?;
-        if !self.less_equal(count, capacity) {
+        if !Self::less_equal_in(facts, count, capacity) {
             return Err(InitialCheckError::MissingCapacityGuard {
                 function: self.function.id,
                 count,
                 capacity,
             });
         }
-        if !self.allocation_fits(capacity, base, stride) {
+        if !Self::allocation_fits_in(facts, capacity, base, stride) {
             return Err(InitialCheckError::MissingAllocationSizeGuard {
                 function: self.function.id,
                 capacity,
                 maximum: (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride),
             });
         }
-        self.consolidate_pointer_prefix(object, count)?;
-        self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+        Ok(Some((Extent::Counted {
             header_bytes: base,
             count,
             capacity,
             stride_bytes: stride,
-        };
-        Ok(())
+        }, false)))
     }
 
     fn update_count(&mut self, object: ValueId, count: ValueId) -> Result<(), InitialCheckError> {
@@ -3558,11 +3590,15 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn same_scalar(&self, left: ValueId, right: ValueId) -> bool {
+        Self::same_scalar_in(&self.state, left, right)
+    }
+
+    fn same_scalar_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
         left == right
-            || self.state.constants.get(&left).zip(self.state.constants.get(&right))
+            || facts.constants.get(&left).zip(facts.constants.get(&right))
                 .is_some_and(|(left, right)| left == right)
-            || self.state.header_values.iter().any(|((object, field), loaded)| {
-                let Some(state) = self.state.objects.get(object) else {
+            || facts.header_values.iter().any(|((object, field), loaded)| {
+                let Some(state) = facts.objects.get(object) else {
                     return false;
                 };
                 let Extent::Counted { count, .. } = state.extent else {
@@ -3618,17 +3654,20 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn less_equal(&self, left: ValueId, right: ValueId) -> bool {
-        self.constant_relation(left, right, |left, right| left <= right)
-            || self.is_zero(left)
-            || self
-                .state.guards
+        Self::less_equal_in(&self.state, left, right)
+    }
+
+    fn less_equal_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
+        Self::constant_relation_in(facts, left, right, |left, right| left <= right)
+            || facts.constants.get(&left) == Some(&0)
+            || facts.guards
                 .iter()
                 .any(|(operator, guarded_left, guarded_right)| {
                     *operator == ComparisonOperator::LessEqualUnsigned
-                        && self.same_scalar(left, *guarded_left)
-                        && self.same_scalar(right, *guarded_right)
+                        && Self::same_scalar_in(facts, left, *guarded_left)
+                        && Self::same_scalar_in(facts, right, *guarded_right)
                 })
-            || self.same_scalar(left, right)
+            || Self::same_scalar_in(facts, left, right)
     }
 
     /// A wrapping addition is exact only when the current path proves that its
@@ -3675,17 +3714,21 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn allocation_fits(&self, capacity: ValueId, base: u32, stride: u32) -> bool {
+        Self::allocation_fits_in(&self.state, capacity, base, stride)
+    }
+
+    fn allocation_fits_in(facts: &MemoryState, capacity: ValueId, base: u32, stride: u32) -> bool {
         if stride == 0 {
             return false;
         }
         let maximum = (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride);
-        self.state.constants
+        facts.constants
             .get(&capacity)
             .is_some_and(|capacity| *capacity <= maximum)
-            || self.state.guards.iter().any(|(operator, left, right)| {
+            || facts.guards.iter().any(|(operator, left, right)| {
                 *operator == ComparisonOperator::LessEqualUnsigned
                     && *left == capacity
-                    && self.state.constants.get(right).copied() == Some(maximum)
+                    && facts.constants.get(right).copied() == Some(maximum)
             })
     }
 
@@ -3695,10 +3738,19 @@ impl<'a> MemoryChecker<'a> {
         right: ValueId,
         predicate: impl FnOnce(u64, u64) -> bool,
     ) -> bool {
-        self.state.constants
+        Self::constant_relation_in(&self.state, left, right, predicate)
+    }
+
+    fn constant_relation_in(
+        facts: &MemoryState,
+        left: ValueId,
+        right: ValueId,
+        predicate: impl FnOnce(u64, u64) -> bool,
+    ) -> bool {
+        facts.constants
             .get(&left)
             .copied()
-            .zip(self.state.constants.get(&right).copied())
+            .zip(facts.constants.get(&right).copied())
             .is_some_and(|(left, right)| predicate(left, right))
     }
 
@@ -4142,6 +4194,131 @@ mod tests {
     const ALIAS_START: ValueId = ValueId::new(11);
     const ALIAS_LENGTH: ValueId = ValueId::new(12);
     const ZERO: ValueId = ValueId::new(13);
+
+    fn with_header_promotion_checker(
+        family: u8,
+        test: impl FnOnce(&mut MemoryChecker<'_>, u32, u32),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let element = match family {
+            0 => layouts.intern_scalar(ScalarKind::RawByte).unwrap(),
+            1 => layouts.intern_scalar(ScalarKind::U32).unwrap(),
+            2 => {
+                let child = layouts.intern_scalar(ScalarKind::Int).unwrap();
+                layouts.intern_runtime_pointer_value_slot(child, PointerSlot::Owned).unwrap()
+            }
+            3 => layouts.intern_scalar(ScalarKind::Unit).unwrap(),
+            _ => unreachable!(),
+        };
+        let layout = if family < 2 {
+            layouts.intern_runtime_buffer(element).unwrap()
+        } else {
+            layouts.intern_packed_list(element, RcHeader::Required).unwrap()
+        };
+        let LayoutSize::Dynamic { base, stride } = layouts.get(layout).unwrap().size() else {
+            panic!("dynamic promotion fixture");
+        };
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: BTreeMap::new(),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(), operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature, parameters: Vec::new(), results: Vec::new(),
+            contract: CallableContract { parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new() },
+        };
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts).unwrap();
+        // White-box edge facts model a complete managed ABI result whose
+        // header loads are authenticated but whose extent is still lazy.
+        checker.state.objects.insert(SOURCE, ObjectState {
+            identity: SOURCE, layout, extent: Extent::HeaderPrefix { minimum_bytes: base },
+            ownership: Ownership::Shared, allocation_class: None,
+            shared_immutable: true, initialized_owned_slots: true,
+        });
+        checker.state.constants.extend([(COUNT, 1), (CAPACITY, 2), (ZERO, 0)]);
+        checker.state.header_values.extend([
+            ((SOURCE, HeaderField::Length), COUNT), ((SOURCE, HeaderField::Capacity), CAPACITY),
+        ]);
+        test(&mut checker, base, stride);
+    }
+
+    fn assert_promotion_matches_scratch(checker: &MemoryChecker<'_>, expected: bool) {
+        let edge = checker.snapshot();
+        let mut scratch = MemoryChecker {
+            function: checker.function, layouts: checker.layouts,
+            closure_layouts: checker.closure_layouts, state: edge.clone(),
+        };
+        let old_result = scratch.promote_header_extent(SOURCE).ok()
+            .and_then(|()| scratch.state.objects.get(&SOURCE).cloned());
+        let result = checker.promoted_object(&edge, SOURCE);
+        assert_eq!(result.is_some(), expected);
+        assert_eq!(result, old_result, "borrowed projection must equal full scratch promotion");
+        assert_eq!(checker.state, edge, "projection must not publish scratch facts");
+    }
+
+    #[test]
+    fn header_promotion_borrowed_matches_scratch_positive_and_adversarial() {
+        for family in 0..4 {
+            for case in 0..10 {
+                with_header_promotion_checker(family, |checker, base, _stride| {
+                    let expected = match case {
+                        0 => true,
+                        1 => { checker.state.header_values.remove(&(SOURCE, HeaderField::Length)); false }
+                        2 => { checker.state.header_values.remove(&(SOURCE, HeaderField::Capacity)); family == 0 }
+                        3 => { checker.state.constants.insert(COUNT, 3); family == 0 }
+                        4 => { checker.state.constants.insert(CAPACITY, u64::from(u32::MAX)); family == 0 }
+                        5 => { checker.state.constants.insert(COUNT, u64::from(u32::MAX)); false }
+                        6 => { checker.state.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Consumed; false }
+                        7 => { checker.state.objects.get_mut(&SOURCE).unwrap().extent = Extent::HeaderPrefix { minimum_bytes: base + 1 }; false }
+                        8 => { checker.state.constants.remove(&COUNT); checker.state.constants.remove(&CAPACITY); false }
+                        9 => { checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = false; family < 2 }
+                        _ => unreachable!(),
+                    };
+                    assert_promotion_matches_scratch(checker, expected);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn header_promotion_borrowed_uses_only_the_supplied_edge_guards() {
+        for family in 0..4 {
+            with_header_promotion_checker(family, |checker, base, stride| {
+                checker.state.constants.remove(&COUNT);
+                checker.state.constants.remove(&CAPACITY);
+                checker.state.constants.insert(LONG_LENGTH,
+                    (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride));
+                let bounded = if family == 0 { COUNT } else { CAPACITY };
+                checker.state.guards.extend([
+                    (ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY),
+                    (ComparisonOperator::LessEqualUnsigned, bounded, LONG_LENGTH),
+                ]);
+                assert_promotion_matches_scratch(checker, true);
+                let mut unguarded_edge = checker.snapshot();
+                unguarded_edge.guards.clear();
+                assert!(checker.promoted_object(&unguarded_edge, SOURCE).is_none(),
+                    "the checker's own guards must not authorize the other predecessor");
+            });
+        }
+    }
+
+    #[test]
+    fn header_promotion_borrowed_keeps_managed_zero_prefix_refusal() {
+        with_header_promotion_checker(2, |checker, _base, _stride| {
+            checker.state.constants.insert(COUNT, 0);
+            assert_promotion_matches_scratch(checker, true);
+            let child = checker.state.objects[&SOURCE].clone();
+            checker.state.stored_objects.insert((SOURCE, SlotIdentity::Constant(0)), child);
+            assert_promotion_matches_scratch(checker, false);
+        });
+    }
 
     fn with_checker(
         pointer_element: bool,
