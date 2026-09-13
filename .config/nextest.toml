@@ -123,12 +123,12 @@ queue-concurrency-serial = { max-threads = 1 }
 filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
 test-group = 'queue-concurrency-serial'
 
-# This hermetic attribution fixture takes 7-8s and sorted last in five recent
-# queue-infrastructure gates, leaving the other queue workers idle. Start it
-# with the other known stragglers so its Git/process work overlaps the shard;
-# its existing gate-cold-heavy group and every assertion remain unchanged.
+# These hermetic queue fixtures take 5-8s and have each sorted last in recent
+# queue-infrastructure gates, leaving the other queue workers idle. Start them
+# with the other known stragglers so their Git/process work overlaps the shard;
+# their existing gate-cold-heavy group and every assertion remain unchanged.
 [[profile.default.overrides]]
-filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^gate_behavior::state_and_gate::unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest$/)'
+filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^gate_behavior::state_and_gate::(unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest|prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha)$/)'
 priority = 90
 
 # Corpus shards retain every admission and execution assertion. Each drives the
@@ -149,6 +149,11 @@ priority = 100
 filter = 'binary_id(witchy::misc) & test(/^rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3$/)'
 test-group = 'wasm-heavy'
 retries = 0
+# Current master put this shard directly on the default 270s kill boundary: it
+# passed in 268.495s, then two unchanged full gates timed out at 270.076s and
+# 270.067s. Keep the exact landing assertion and zero retries, but restore 1.3x
+# headroom without widening the two-worker compiler-heavy group.
+slow-timeout = { period = "120s", terminate-after = 3 }
 priority = 99
 
 [[profile.default.overrides]]
