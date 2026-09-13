@@ -54,23 +54,42 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
     if pointer {
         // Publish unique children first, then explicitly share the initialized
         // tail child. The caller retains this token across both extractions.
-        make.push(Operation::Load { destination: v(8), place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Read), transfer: LoadTransfer::CloneShared });
+        make.push(Operation::Load { destination: v(8), place: Place::projected(v(3), Projection::Element { index: if matches!(mutation, Some(10..=12)) { v(0) } else { v(1) } }, payload, AccessMode::Read), transfer: LoadTransfer::CloneShared });
     }
     let mut returned_root = v(3);
-    if matches!(mutation, Some(3..=6)) {
+    if matches!(mutation, Some(3..=6 | 10..=12)) {
         assert!(pointer);
         make.extend([
             Operation::Load { destination: v(9), place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Read), transfer: LoadTransfer::TakeLast },
             Operation::DropRef { object: v(9) },
             Operation::Alloc { destination: v(10), layout: child, extent: Extent::Counted { header_bytes: child_base, count: v(0), capacity: v(0), stride_bytes: child_stride }, class: AllocationClass::ReferenceCounted },
         ]);
-        if matches!(mutation, Some(4 | 6)) {
+        if matches!(mutation, Some(4 | 6 | 11)) {
             make.push(Operation::MoveValue { destination: v(11), source: v(3) });
             returned_root = v(11);
         }
-        let append = matches!(mutation, Some(5 | 6));
+        let append = matches!(mutation, Some(5 | 6 | 10..=12));
         make.push(Operation::Store { place: Place::projected(returned_root, Projection::Element { index: if append { v(1) } else { v(0) } }, payload, AccessMode::Write), value: v(10), transfer: StoreTransfer::MoveUnique });
+        if mutation == Some(12) {
+            make.push(Operation::MoveValue { destination: v(11), source: v(3) });
+            returned_root = v(11);
+        }
         if append { make.push(Operation::UpdateCount { object: returned_root, count: v(2) }); }
+        if matches!(mutation, Some(10..=12)) {
+            make.extend([
+                Operation::Alloc { destination: v(12), layout: list, extent: Extent::Counted { header_bytes: base, count: v(0), capacity: v(2), stride_bytes: stride }, class: AllocationClass::ReferenceCounted },
+                Operation::MoveRange {
+                    destination: Place::projected(v(12), Projection::Slice { start: v(0), length: v(2) }, payload, AccessMode::Write),
+                    source: Place::projected(returned_root, Projection::Slice { start: v(0), length: v(2) }, payload, AccessMode::Read),
+                    count: v(2),
+                },
+                Operation::UpdateCount { object: v(12), count: v(2) },
+                Operation::UpdateCount { object: returned_root, count: v(0) },
+                Operation::DropRef { object: returned_root },
+            ]);
+            returned_root = v(12);
+        }
+
     }
     if mutation == Some(8) {
         assert!(!pointer);
@@ -89,9 +108,10 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
     };
     let mut make_types = BTreeMap::from([(v(0), ValueType::Size), (v(1), ValueType::Size), (v(2), ValueType::Size), (v(3), root), (v(4), payload), (v(5), ValueType::Bool), (v(6), ValueType::Bool)]);
     if pointer { make_types.extend([(v(7), payload), (v(8), payload)]); }
-    if matches!(mutation, Some(3..=6)) { make_types.extend([(v(9), payload), (v(10), payload)]); }
-    if matches!(mutation, Some(4 | 6)) { make_types.insert(v(11), root); }
+    if matches!(mutation, Some(3..=6 | 10..=12)) { make_types.extend([(v(9), payload), (v(10), payload)]); }
+    if matches!(mutation, Some(4 | 6 | 11 | 12)) { make_types.insert(v(11), root); }
     if mutation == Some(9) { make_types.insert(v(7), payload); }
+    if matches!(mutation, Some(10..=12)) { make_types.insert(v(12), root); }
     let make = function(0, make_types, vec![], make, vec![returned_root, if pointer { v(8) } else { v(4) }]);
 
     let mut take = function(1, BTreeMap::from([(v(0), root), (v(1), ValueType::Size), (v(2), ValueType::Size), (v(3), ValueType::Size), (v(4), ValueType::Bool), (v(5), payload), (v(6), ValueType::Size), (v(7), ValueType::Bool), (v(8), ValueType::Size), (v(9), ValueType::Bool)]),
@@ -122,7 +142,7 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
         Operation::Call { destinations: vec![], callee: FunctionId::new(3), arguments: vec![drop_argument(v(1))] },
         Operation::ConstSize { destination: v(6), value: 42 },
     ], vec![v(6)]);
-    if matches!(mutation, Some(3..=6)) {
+    if matches!(mutation, Some(3..=6 | 10..=12)) {
         closed.value_types.retain(|value, _| matches!(value.get(), 0 | 1 | 6));
         closed.blocks[0].operations = vec![
             Operation::Call { destinations: vec![v(0), v(1)], callee: FunctionId::new(0), arguments: vec![] },
@@ -152,7 +172,7 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
                 Operation::Store { place: Place::projected(v(0), Projection::Element { index: v(10) }, payload, AccessMode::Write), value: v(11), transfer: StoreTransfer::MoveUnique },
             ]);
         }
-        Some(3..=6 | 8 | 9) | None => {},
+        Some(3..=6 | 8..=12) | None => {},
 
         _ => panic!("unknown negative fixture"),
     }
@@ -298,6 +318,33 @@ fn unique_pop_scalar_zero_storage_and_republished_bytes_agree() {
             let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
             let closed = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap();
             assert_eq!(closed.call(&mut store, ()).unwrap(), expected as i32);
+        }
+    }
+}
+
+#[test]
+fn unique_pop_append_then_complete_transfer_preserves_shared_child() {
+    for mutation in [10, 11, 12] {
+        let validated = finalize(candidate(true, Some(mutation)));
+        let result = crate::canonical_interpreter::interpret_program(&validated, FunctionId::new(4), vec![], Default::default()).unwrap();
+        assert_eq!(result.results, vec![crate::canonical_interpreter::InterpreterValue::Size(42)]);
+        assert_eq!(result.leaked_objects, 0);
+        let artifact = admit_canonical(validated).unwrap();
+        #[cfg(feature = "native")]
+        {
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+            let make = instance.get_typed_func::<(), (i32, i32)>(&mut store, "f0").unwrap();
+            let drop_list = instance.get_typed_func::<i32, ()>(&mut store, "f2").unwrap();
+            let drop_child = instance.get_typed_func::<i32, ()>(&mut store, "f3").unwrap();
+            let (root, child) = make.call(&mut store, ()).unwrap();
+            drop_list.call(&mut store, root).unwrap();
+            let memory = instance.get_memory(&mut store, "memory").unwrap();
+            assert_eq!(u32::from_le_bytes(memory.data(&store)[child as usize - 8..child as usize - 4].try_into().unwrap()), 1,
+                "shared child survives append, complete transfer and destination destruction");
+            drop_child.call(&mut store, child).unwrap();
         }
     }
 }

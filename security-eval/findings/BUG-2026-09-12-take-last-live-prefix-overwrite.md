@@ -32,3 +32,21 @@ range/byte copies or hidden calls. The existing three-leg cases remain required.
 
 Execution results are reported in the corrective commit handoff; this note
 does not claim that the pre-correction counterexample was executed.
+
+## Follow-up: stale alias prefix prevented complete transfer
+
+Independent review of 94f48e940 found a functional refusal after pop, MoveValue,
+append and complete MoveRange. Prefix seeding/consolidation looked up exact SSA
+tokens, duplicating the consumed alias's old prefix and leaving it behind when
+extending the moved token's prefix. The unchanged source-completeness check
+then correctly refused MoveRange(source-partial). No unsafe admission was
+identified in this follow-up.
+
+The narrow correction locates and replaces the published prefix by allocation
+identity and carries its Shared status. It consolidates only the published
+edge, leaving unrelated unpublished stores/ranges for the existing checks.
+Controls move a list containing a still-shared child through pop, append and
+complete transfer, directly and with token moves before/after the append store.
+
+Synthetic zero-start prefixes also no longer match their nonzero SSA placeholder:
+zero_start means exactly zero, not either zero or the placeholder's value.

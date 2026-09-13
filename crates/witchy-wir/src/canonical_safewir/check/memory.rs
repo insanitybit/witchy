@@ -3137,7 +3137,13 @@ impl<'a> MemoryChecker<'a> {
         if !state.initialized_owned_slots
             || !current_count.is_some_and(|current| self.same_scalar(current, count))
             || self.state.range_states.iter().any(|(identity, range)| {
-                identity.object == object && range.initialized && range.zero_start && !range.zero_width
+                // MoveValue changes the token, not the initialized storage.
+                // Reuse its prefix, including Shared child status, rather
+                // than inventing a second, apparently unique prefix.
+                self.same_allocation(identity.object, object)
+                    && range.initialized && range.zero_start
+                    && range.ownership != Ownership::Consumed
+                    && !range.zero_width
             })
         {
             return Ok(false);
@@ -3217,14 +3223,15 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         }
         let existing = self.state.range_states.iter().find_map(|(identity, state)| {
-            (identity.object == object && state.initialized && state.zero_start)
+            (self.same_allocation(identity.object, object) && state.initialized && state.zero_start
+                && state.ownership != Ownership::Consumed)
                 .then_some((*identity, *state))
         }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
             function: self.function.id,
             operation: "UpdateCount(pointer prefix missing)",
         })?;
         if self.same_scalar(existing.0.length, count) {
-            if existing.0.length != count {
+            if existing.0.length != count || existing.0.object != object {
                 self.state.range_states.remove(&existing.0);
                 self.state.range_states.insert(
                     RangeIdentity { object, start: existing.0.start, length: count },
@@ -3241,7 +3248,15 @@ impl<'a> MemoryChecker<'a> {
             old.checked_add(1) == Some(new)
         });
         if one_step {
-            let key = self.slot_key(object, existing.0.length);
+            let slot = self.slot_key(object, existing.0.length).1;
+            // Only the newly published edge is consolidated. Other stored
+            // slots remain visible to the existing completeness checks.
+            let key = self.state.stored_objects.keys().copied().find(|(container, candidate)| {
+                self.same_allocation(object, *container) && *candidate == slot
+            }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
+                function: self.function.id,
+                operation: "UpdateCount(pointer slot uninitialized)",
+            })?;
             let stored = self.state.stored_objects.remove(&key).ok_or(
                 InitialCheckError::UnsupportedMemoryOperation {
                     function: self.function.id,
@@ -3538,12 +3553,12 @@ impl<'a> MemoryChecker<'a> {
             })
     }
 
-    /// A range identity's start matches a place's start by scalar identity,
-    /// or because both are zero: a zero-start range that came through a loop
-    /// header keeps its `zero_start` fact while its start value (a constant
-    /// defined in the body) is renamed away.
+    /// A zero-start range is semantically rooted at zero. Its SSA start may
+    /// be only a placeholder (for example its count), never a second valid
+    /// nonzero start. Other ranges match their actual checked start value.
     fn range_start_matches(&self, identity: &RangeIdentity, state: &RangeState, start: ValueId) -> bool {
-        self.same_scalar(identity.start, start) || (state.zero_start && self.is_zero(start))
+        if state.zero_start { self.is_zero(start) }
+        else { self.same_scalar(identity.start, start) }
     }
 
     fn is_zero(&self, value: ValueId) -> bool {
@@ -5114,6 +5129,23 @@ mod tests {
         with_nullable_checker(|checker, child| {
             checker.check(&Operation::CloneRef { destination: DESTINATION, source: SOURCE }).unwrap();
             assert!(checker.check(&Operation::InitNullableOwned { place: nullable_field(SOURCE, child, AccessMode::Write) }).is_err());
+        });
+    }
+
+    #[test]
+    fn unique_pop_synthetic_zero_prefix_has_only_zero_start() {
+        with_pointer_slot_checker(|checker, list, _| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            let identity = RangeIdentity { object: SOURCE, start: COUNT, length: COUNT };
+            let mut state = RangeState { element, ownership: Ownership::Shared,
+                allocation_class: Some(AllocationClass::ReferenceCounted),
+                initialized: true, zero_width: false, zero_start: true };
+            assert!(checker.range_start_matches(&identity, &state, ZERO));
+            assert!(!checker.range_start_matches(&identity, &state, COUNT));
+            assert!(!checker.range_start_matches(&identity, &state, ALIAS_LENGTH));
+            state.zero_start = false;
+            assert!(checker.range_start_matches(&identity, &state, COUNT));
+            assert!(!checker.range_start_matches(&identity, &state, ZERO));
         });
     }
 
