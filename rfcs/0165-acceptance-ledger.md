@@ -2,6 +2,23 @@
 
 ## Current checkpoint, 2026-09-13
 
+Integration candidate `903caac9e` passed **783/783 selected tests** in
+216.289 seconds under the local nextest CI profile (1,655 skipped), run
+`c7d15ee2-a677-498b-8b9d-3c86a84b2dcd`. Source-backed integration recipes,
+including the separate async success and abort probes, are focused-green;
+the async probes took 166.268 and 167.001 seconds under the unchanged
+180-second per-test deadline. Log:
+`/private/tmp/witchy-source-borrowed-loop-ci.log`. Rebuilt CLI hello/wrap/jq
+agree with 3/5/7 output lines. This is local evidence, not a hosted CI run.
+
+Owned-fixture restoration and backend/compiler-memory improvements landed at
+`f84e6315c` and `1e1f3ace8`. Boolean reachability `920616f367` also landed,
+at 21:00:06Z through a 101-second gate with zero recorded flakes. The remaining
+source-backed integration recipes, bounded server oracle, and borrowed-loop
+cache/async-test split are integrated but not yet landed. The bounded
+server evidence executes admitted Wasm and the independent canonical oracle;
+neither it nor the source-hostful workflow tests is a three-leg execution claim.
+
 The ownership, unique-pop loop, and validated-observer admission slice landed
 at master `7d68ae97b070f6524bcbe06603e3858e61baa13a`, on
 `2026-09-13T02:48:26Z`. Queue change
@@ -31,8 +48,9 @@ and custom/registry replay remain unsupported. The terminal gate passed 4337
 workspace tests (337 skipped), all remaining selected stages, and 129 queue
 infrastructure tests, with no recorded flakes.
 
-The 2026-09-13 census reports **162/163 checks, 91 runnable parity agreements,
-zero disagreements**. Its pinned previously built binary has compiler/runtime
+The prior 2026-09-13 census remains **162/163 checks, 91 runnable CLI parity
+agreements, zero disagreements**; no fresh census was run for this checkpoint.
+Its pinned previously built binary has compiler/runtime
 source contents matching master `30655ea9c`; this is not a fresh master build
 or a complete three-legged workflow census. The only check refusal is
 `opt_mode`'s withdrawn `unique` type. Evidence:
@@ -54,13 +72,14 @@ it did not pass, and no green edit receipt is claimed. Logs are
 `/private/tmp/witchy-project-crypto-{presubmit,lower-filtered,wir-native,root}.log`;
 fresh `hello`/`wrap`/`jq` agreement is in
 `/private/tmp/witchy-project-crypto-compact-r2.log`. Those focused runs did not
-establish current-master completion. Remaining production workflows
-include source-backed test fixtures and async admission, build recipes, package
-replay, and server-oracle coverage. Full observation-trace evidence,
-current hosted CI, opt-contract conformance, and security/optimizer acceptance
-remain open. Compiler-wide memory safety and optimizer correctness are not
-established. Pending descriptions in the older checkpoints below are historical;
-they do not supersede this terminal landing record.
+establish current-master completion. The focused integration evidence above
+does not close remaining build-family coverage (including paused BuildRead),
+package/dependency replay coverage, or general server-oracle behavior. Full
+observation-trace evidence, current hosted CI, opt-contract conformance, and
+security/optimizer acceptance remain open. Compiler-wide memory safety,
+optimizer correctness, and full-goal completion are not established. Pending
+descriptions in the older checkpoints below are historical; they do not
+supersede this current checkpoint.
 
 ## Prefix-publication repair, 2026-09-12
 
