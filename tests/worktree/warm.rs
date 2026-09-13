@@ -23,6 +23,18 @@ fn seed(repo: &Path, destination: &str, mode: Option<&str>) -> Output {
     run_warm(repo, &["--target-dir", destination], mode)
 }
 
+fn seed_from_locked_gate(repo: &Path, destination: &str) -> Output {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-warm.sh");
+    Command::new("bash")
+        .arg(script)
+        .args(["--target-dir", destination])
+        .current_dir(repo)
+        .env("WITCHY_WORKTREE_WARM_COPY_MODE", "copy")
+        .env("WITCHY_WORKTREE_WARM_GATE_LOCKED", "1")
+        .output()
+        .expect("run locked worktree-warm.sh")
+}
+
 fn assert_seed(repo: &Path, destination: &str) {
     let target = repo.join(destination);
     for relative in [
@@ -109,4 +121,29 @@ fn worktree_warm_uses_portable_copy_modes_and_filters_dead_artifacts() {
     assert_eq!(invalid.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("expected apfs, reflink, or copy"));
     assert!(!root.join("seed-invalid").exists());
+}
+
+#[test]
+fn worktree_warm_uses_the_active_gate_generation_when_main_target_is_absent() {
+    let repo = temp_repo();
+    let root = repo.path();
+    write(root, "scripts/state-paths.sh", include_str!("../../scripts/state-paths.sh"));
+    write(root, "state/merge-queue/gate-target", "target-prewarm\n");
+    write(
+        root,
+        ".claude/worktrees/merge-gate/target-prewarm/debug/deps/keep.rlib",
+        "warm dependency\n",
+    );
+
+    let output = seed_from_locked_gate(root, "seed-gate");
+    assert!(
+        output.status.success(),
+        "gate fallback failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(root.join("seed-gate/debug/deps/keep.rlib").is_file());
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("merge-gate/target-prewarm (copy, incremental/")
+    );
 }

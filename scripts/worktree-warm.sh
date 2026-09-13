@@ -152,21 +152,56 @@ clone_target() { # clone_target <src-target> <dest-target>
     done
 }
 
+gate_seed_source() { # gate_seed_source <main-worktree>
+    local main="$1" qdir selected="target"
+    [[ "${WITCHY_WORKTREE_WARM_GATE_LOCKED:-}" == 1 ]] || return 1
+    [[ -f "$main/scripts/state-paths.sh" ]] || return 1
+    # shellcheck source=state-paths.sh
+    source "$main/scripts/state-paths.sh"
+    qdir="$(witchy_merge_queue_state_dir "$main")" || return 1
+    if [[ -f "$qdir/gate-target" ]]; then
+        selected="$(cat "$qdir/gate-target" 2>/dev/null || true)"
+    fi
+    case "$selected" in target | target-prewarm) ;; *) return 1 ;; esac
+    [[ -d "$main/.claude/worktrees/merge-gate/$selected" ]] || return 1
+    printf '%s\n' "$main/.claude/worktrees/merge-gate/$selected"
+}
+
+clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <main> <original-args...>
+    local source="$1" dest="$2" main="$3"
+    shift 3
+    if [[ ! -d "$source" ]]; then
+        if [[ "${WITCHY_WORKTREE_WARM_GATE_LOCKED:-}" == 1 ]]; then
+            source="$(gate_seed_source "$main")" || {
+                echo "worktree-warm: no safe warm target to clone" >&2
+                return 1
+            }
+        elif [[ -x "$main/scripts/merge-queue.sh" ]]; then
+            local script
+            script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+            exec env WITCHY_WORKTREE_WARM_GATE_LOCKED=1 \
+                WITCHY_WORKTREE_WARM_COPY_MODE="$copy_mode" \
+                "$main/scripts/merge-queue.sh" with-lock -- "$script" "$@"
+        else
+            echo "worktree-warm: no $source to clone (run a build in the main worktree first)" >&2
+            return 1
+        fi
+    fi
+    clone_target "$source" "$dest"
+    echo "worktree-warm: seeded $dest from $source ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
+}
+
 if [[ "${1:-}" == "--target-dir" ]]; then
     dest="$2"
     root="$(git rev-parse --show-toplevel)"
+    main="$(git worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
     case "$dest" in /*) ;; *) dest="$root/$dest" ;; esac
     if [[ -e "$dest" ]]; then
         echo "worktree-warm: $dest already exists; leaving it alone" >&2
         exit 0
     fi
-    if [[ ! -d "$root/target" ]]; then
-        echo "worktree-warm: no $root/target to clone (run a build first)" >&2
-        exit 1
-    fi
-    clone_target "$root/target" "$dest"
-    echo "worktree-warm: seeded $dest from $root/target ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
-    exit 0
+    clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+    exit $?
 fi
 
 dest="${1:-$(pwd)}"
@@ -183,10 +218,4 @@ if [[ -e "$dest/target" ]]; then
     echo "worktree-warm: $dest/target already exists; leaving it alone" >&2
     exit 0
 fi
-if [[ ! -d "$main/target" ]]; then
-    echo "worktree-warm: no $main/target to clone (run a build in the main worktree first)" >&2
-    exit 1
-fi
-
-clone_target "$main/target" "$dest/target"
-echo "worktree-warm: seeded $dest/target from $main/target ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
+clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"
