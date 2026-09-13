@@ -1,6 +1,35 @@
 # RFC-0165 acceptance ledger
 
-## Current prefix-publication repair, 2026-09-12
+## Current checkpoint, 2026-09-13
+
+The ownership, unique-pop loop, and validated-observer admission slice landed
+at master `7d68ae97b070f6524bcbe06603e3858e61baa13a`, on
+`2026-09-13T02:48:26Z`. Queue change
+`mq-21d8dd51020f2f94fa2b15ba388accf21caa5b1a`, attempt
+`mqa-d63fc8d0938e9655e4455b0466ccc0088676db1b`, passed its serialized gate
+in 454 seconds: 2,202 tests passed, 136 skipped, no recorded flakes. Prose,
+compile-check, and clippy bug-lint stages also passed. Exact log:
+`state/merge-queue/logs/20260912-224040-impl~rfc0165-owned-pop-admission-99116-1.log`.
+This is the configured gate, not an assertion that every workspace test ran.
+
+The integrated ownership/observer selection passed 31/31 tests, and the
+corrected native route/observer selection passed 18/18. Logs:
+`/private/tmp/witchy-pop-loop-integrated-20260912.log` and
+`/private/tmp/witchy-observer-route-pin-cfg-20260912.log`. The rebuilt CLI also
+agreed for hello, wrap, and jq. The final check-only census on candidate
+`1c04c2b38` accepted 162/163 source files; only the existing opt-mode `Unique`
+qualifier refused. Exact per-file results are in
+`/private/tmp/witchy-canonical-check-census-loop-fixed-20260912/results.tsv`.
+This is not a fresh master three-legged execution census.
+
+Exec and ordinary project execution are the current integration family, not
+landed work. Remaining production workflows, full observation-trace evidence,
+current hosted CI, opt-contract conformance, and security/optimizer acceptance
+remain open. Compiler-wide memory safety and optimizer correctness are not
+established. Pending descriptions in the older checkpoints below are historical;
+they do not supersede this terminal landing record.
+
+## Prefix-publication repair, 2026-09-12
 
 The owned-prefix submission at `616b3702c` was red on the aggregate-rendering
 launch test, not on an infrastructure timeout. Constructing
