@@ -986,3 +986,24 @@ fn main(console: Console):
 "#;
     assert_pop_three_legs(source, &["1 changed 7 9 2", "2 6 8 11", "7 9"]);
 }
+
+#[test]
+fn list_pop_loop_writebacks_preserve_unique_and_shared_lanes_on_three_legs() {
+    let source = r#"
+fn main(console: Console):
+    var words = ["a", "b"]
+    var rendered = ""
+    for ignored in [0, 1, 2]:
+        rendered = rendered + (words.pop() ?? "_")
+    console.print("${rendered}:${words.length()}")
+    console.print("${words.pop() ?? "_"}:${words.length()}")
+
+    var numbers = [1, 2]
+    let saved = numbers
+    var total = 0
+    while numbers.length() > 0:
+        total = total + (numbers.pop() ?? 0)
+    console.print("${total}:${numbers.length()}:${saved[0]}:${saved[1]}")
+"#;
+    assert_pop_three_legs(source, &["ba_:0", "_:0", "3:0:1:2"]);
+}

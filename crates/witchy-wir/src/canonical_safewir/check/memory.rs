@@ -195,17 +195,22 @@ impl<'a> MemoryChecker<'a> {
         target: &BasicBlock,
         arguments: &[ValueId],
     ) -> Result<MemoryState, InitialCheckError> {
-        // A shared phi needs the argument's counted extent, which promotion
+        // A managed phi needs the argument's counted extent, which promotion
         // derives lazily from the header loads already in this state. Derive
         // it now from the same facts; a promotion the facts do not justify is
         // left alone and the extent rule below reports it.
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
-            if parameter.ownership == Some(Ownership::Shared) && self.state.objects.contains_key(argument) {
+            if matches!(parameter.ownership, Some(Ownership::Shared | Ownership::Unique))
+                && self.state.objects.contains_key(argument)
+            {
                 let _ = self.promote_header_extent(*argument);
                 // Preserve completeness of this predecessor's current logical
                 // value before phi renaming or extent demotion loses its count.
-                // Missing slot evidence remains missing; capacity is not proof.
-                if self.require_owned_slots_initialized(*argument, "shared phi(uninitialized owned slot)").is_ok() {
+                // This applies equally to unique call write-backs: a fresh
+                // complete value and an ABI-complete value must carry the
+                // same proven summary. Keep every slot/range obligation;
+                // missing evidence remains missing, and capacity is not proof.
+                if self.require_owned_slots_initialized(*argument, "managed phi(uninitialized owned slot)").is_ok() {
                     self.state.objects.get_mut(argument).expect("object exists").initialized_owned_slots = true;
                 }
             }
@@ -4399,6 +4404,30 @@ mod tests {
                 let edge = checker.transfer_edge(&target, &[SOURCE, count, CAPACITY]).expect("shared phi");
                 assert_eq!(edge.objects[&target.parameters[0].value].initialized_owned_slots, empty);
             });
+        }
+    }
+
+    #[test]
+    fn owned_prefix_summary_at_unique_phi_requires_predecessor_evidence() {
+        for pointer_elements in [false, true] {
+            for empty in [false, true] {
+                with_checker(pointer_elements, |checker, list| {
+                    let count = if empty {
+                        checker.update_count(SOURCE, START).expect("empty initialized prefix");
+                        START
+                    } else {
+                        COUNT
+                    };
+                    let mut target = shared_extent_target(list);
+                    target.parameters[0].ownership = Some(Ownership::Unique);
+                    let edge = checker.transfer_edge(&target, &[SOURCE, count, CAPACITY])
+                        .expect("unique phi retains sole-token authority");
+                    let object = &edge.objects[&target.parameters[0].value];
+                    assert_eq!(object.ownership, Ownership::Unique);
+                    assert_eq!(object.initialized_owned_slots, !pointer_elements || empty,
+                        "only scalar storage or a proved empty pointer prefix is complete");
+                });
+            }
         }
     }
 

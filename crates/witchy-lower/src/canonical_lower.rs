@@ -1612,7 +1612,7 @@ fn lower_function(
         value_types: lowerer.values,
         blocks,
     };
-    demote_shared_reference_phis(&mut lowered);
+    demote_shared_reference_phis(&mut lowered, signatures, functions);
     let debug = std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some();
     if debug {
         eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
@@ -1626,11 +1626,23 @@ fn lower_function(
 }
 
 /// Normalize join ownership after all incoming edges have been lowered.
-fn demote_shared_reference_phis(function: &mut Function) {
+fn demote_shared_reference_phis(
+    function: &mut Function,
+    signatures: &[FunctionSignature],
+    functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+) {
     // A loop backedge can become shared after nested joins were constructed.
     // Propagate that loss of uniqueness through the completed graph before
     // requesting ownership judgments from the independent checker.
     let mut shared = BTreeSet::new();
+    // A call's ordinary result and its write-back lanes have independent
+    // contracts. Demoting an authenticated unique write-back here would
+    // invalidate earlier call preparation on the next loop iteration.
+    // Missing declarations remain conservative; the checker rejects them.
+    let shared_result = |signature: Option<&FunctionSignature>, index: usize| {
+        !signature.is_some_and(|signature|
+            matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. })))
+    };
     for block in &function.blocks {
         shared.extend(block.parameters.iter().filter_map(|parameter|
             (parameter.ownership == Some(Ownership::Shared)).then_some(parameter.value)));
@@ -1638,11 +1650,21 @@ fn demote_shared_reference_phis(function: &mut Function) {
             match operation {
                 Operation::CloneRef { destination, source } => { shared.extend([*destination, *source]); }
                 Operation::StaticData { destination, .. }
-                | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent, .. } => {
+                | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::TakeLast, .. } => {
                     shared.insert(*destination);
                 }
-                Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. }
-                | Operation::HostCall { destinations, .. } => { shared.extend(destinations.iter().copied()); }
+                Operation::Call { destinations, callee, .. } => {
+                    let signature = functions.values().find(|(function, _)| function == callee)
+                        .and_then(|(_, signature)| signatures.get(signature.get() as usize));
+                    shared.extend(destinations.iter().enumerate().filter_map(|(index, value)|
+                        shared_result(signature, index).then_some(*value)));
+                }
+                Operation::VarCall { destinations, signature, .. } => {
+                    let signature = signatures.get(signature.get() as usize);
+                    shared.extend(destinations.iter().enumerate().filter_map(|(index, value)|
+                        shared_result(signature, index).then_some(*value)));
+                }
+                Operation::HostCall { destinations, .. } => { shared.extend(destinations.iter().copied()); }
                 _ => {}
             }
         }
@@ -4634,6 +4656,18 @@ impl FunctionLowerer<'_> {
             self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
         }
         self.restore_facts(facts, exit);
+        // An uncarried snapshot keeps its token, but aliases carried through
+        // the loop can make the checker forget its counted extent at the
+        // join. Dominating scalar ids alone do not re-establish that fact.
+        // Reload the real headers on the next use; exit lanes below retain
+        // their explicitly transported metadata.
+        for object in outer.values() {
+            self.string_lengths.remove(object);
+            self.string_capacities.remove(object);
+            self.list_counts.remove(object);
+            self.list_capacities.remove(object);
+            self.known_list_lengths.remove(object);
+        }
         self.current = exit;
         self.bindings = lane_bindings(&outer, &names, exit_parameters.iter().map(|parameter| parameter.value));
         metadata_index = names.len();
@@ -14263,6 +14297,74 @@ mod tests {
         let layouts = crate::canonical_layouts::derive_layout_bundle(canonical)
             .expect("derive canonical layouts");
         lower_typed_module(canonical, layouts).expect("lower canonical SafeWIR")
+    }
+
+    #[test]
+    fn unique_pop_loop_preserves_receiver_authority() {
+        let candidate = lower_with_derived_layouts(r#"
+fn main(console: Console):
+    var total = 0
+    var numbers = [1, 2, 3]
+    for ignored in [0, 1, 2, 3]:
+        total = total + (numbers.pop() ?? 0)
+    console.print("${total} ${numbers.length()}")
+"#);
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "loop pop must preserve checked receiver ownership: {result:?}");
+    }
+
+    #[test]
+    fn late_phi_demotion_uses_each_call_result_contract_and_real_sharing() {
+        use super::{
+            demote_shared_reference_phis, BasicBlock, BlockId, BlockParameter,
+            CallableContract, Function, FunctionId, FunctionSignature,
+            FunctionSignatureId, ResultContract, ValueId,
+        };
+        use std::collections::{BTreeMap, HashMap};
+
+        let layout = witchy_wir::layout::LayoutId::from_bytes([17; 32]);
+        let ty = ValueType::Ref(layout);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ty, ty],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Shared { layout }, ResultContract::Unique { layout }],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let functions = HashMap::from([("callee".into(), (FunctionId::new(1), signature.id))]);
+        for indirect in [false, true] {
+            for clone_result in [false, true] {
+                let result = ValueId::new(0);
+                let write_back = ValueId::new(1);
+                let join_result = ValueId::new(2);
+                let join_write_back = ValueId::new(3);
+                let clone = ValueId::new(4);
+                let callable = ValueId::new(5);
+                let mut operations = vec![if indirect {
+                    Operation::VarCall { destinations: vec![result, write_back], callee: callable, signature: signature.id, arguments: Vec::new() }
+                } else {
+                    Operation::Call { destinations: vec![result, write_back], callee: FunctionId::new(1), arguments: Vec::new() }
+                }];
+                if clone_result { operations.push(Operation::CloneRef { destination: clone, source: write_back }); }
+                let mut function = Function {
+                    id: FunctionId::new(0), signature: signature.id, entry: BlockId::new(0),
+                    value_types: [(result, ty), (write_back, ty), (join_result, ty), (join_write_back, ty), (clone, ty), (callable, ValueType::Callable(signature.id))].into_iter().collect(),
+                    blocks: vec![
+                        BasicBlock { id: BlockId::new(0), parameters: Vec::new(), operations,
+                            terminator: Terminator::Branch { target: BlockId::new(1), arguments: vec![result, write_back] } },
+                        BasicBlock { id: BlockId::new(1), parameters: [join_result, join_write_back].map(|value|
+                            BlockParameter { value, value_type: ty, ownership: Some(Ownership::Unique) }).to_vec(),
+                            operations: Vec::new(), terminator: Terminator::Return { values: vec![join_result, join_write_back] } },
+                    ],
+                };
+                demote_shared_reference_phis(&mut function, std::slice::from_ref(&signature), &functions);
+                assert_eq!(function.blocks[1].parameters[0].ownership, Some(Ownership::Shared));
+                assert_eq!(function.blocks[1].parameters[1].ownership,
+                    Some(if clone_result { Ownership::Shared } else { Ownership::Unique }),
+                    "indirect={indirect}, clone={clone_result}");
+            }
+        }
     }
 
     #[test]
