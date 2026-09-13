@@ -1127,13 +1127,11 @@ fn green_dependency_stack_gates_the_tip_once_and_lands_the_whole_stack() {
 
 #[test]
 fn markdown_only_stack_can_exceed_the_semantic_batch_limit() {
-    let fixture = QueueFixture::stack(&[
-        "a.md", "b.md", "c.md", "d.md", "e.md", "f.md",
-    ]);
-    submit_stack(&fixture, &["a", "b", "c", "d", "e", "f"]);
+    let fixture = QueueFixture::stack(&["a.md", "b.md"]);
+    submit_stack(&fixture, &["a", "b"]);
     let output = fixture
         .mq_command(&["run", "--once"], "true")
-        .env("MERGE_QUEUE_BATCH_MAX", "5")
+        .env("MERGE_QUEUE_BATCH_MAX", "1")
         .env("MERGE_QUEUE_DOCS_BATCH_MAX", "20")
         .output()
         .expect("run documentation batch");
@@ -1143,14 +1141,14 @@ fn markdown_only_stack_can_exceed_the_semantic_batch_limit() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    assert!(run_git(&fixture.root, &["show", "master:f.md"]).status.success());
+    assert!(run_git(&fixture.root, &["show", "master:b.md"]).status.success());
     let merged: Vec<_> = fixture
         .journal()
         .into_iter()
         .filter(|event| event["event"] == "merged")
         .collect();
-    assert_eq!(merged.len(), 6);
-    assert!(merged.iter().all(|event| event["batch"] == "6"));
+    assert_eq!(merged.len(), 2);
+    assert!(merged.iter().all(|event| event["batch"] == "2"));
 }
 
 #[test]
