@@ -226,6 +226,7 @@ emit_gate_nextest() {
     done
     if [ "$need_witchy" -eq 1 ] \
         && [ "${#gate_pkgs[@]}" -eq 0 ] \
+        && [ "${#gate_tests[@]}" -eq 0 ] \
         && [ "$gate_need_conformance" -eq 0 ] \
         && [ "$witchy_tests_all_bin" -eq 1 ] \
         && { [ "$gate_need_examples" -eq 1 ] \
@@ -499,7 +500,7 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test $test_name_q" ;;
         Cargo.toml | Cargo.lock | build.rs | .cargo/* | rust-toolchain | rust-toolchain.toml)
             gate_workspace=1
-            add_early "cargo nextest run --test misc -E 'test(=architecture::stage_crates_follow_the_declared_dependency_dag)'"
+            add_early "python3 scripts/check-stage-dependencies.py"
             path_has_early=1 ;;
         .github/workflows/* | .github/actions/* | .github/zizmor.yml)
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows"
@@ -543,6 +544,9 @@ for p in "${paths[@]}"; do
             add "./scripts/check-spec-freshness.sh" ;;
         scripts/gate-test-cost.py | scripts/test-gate-test-cost.py)
             add "python3 scripts/test-gate-test-cost.py" ;;
+        scripts/check-stage-dependencies.py | spec/stage-dependencies.json)
+            add_early "python3 scripts/check-stage-dependencies.py"
+            path_has_early=1 ;;
         scripts/test-for-paths.sh | scripts/test-impact.py)
             add_gate_test test_for_paths
             add_gate_test merge_queue

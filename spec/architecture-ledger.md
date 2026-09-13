@@ -13,10 +13,14 @@ Classifications used below:
 - **NARROW**: callers see more implementation than their contract requires.
 - **DELETE**: a compatibility path or residue has no durable owner.
 
-The test `misc::architecture::stage_crates_follow_the_declared_dependency_dag`
-reads `cargo metadata` and rejects new stage edges. Removing an allowed edge is
-always legal. Adding one requires changing the test and this ledger together,
-so architecture growth is explicit and reviewable.
+The contract in `spec/stage-dependencies.json` lists the stage crates and their
+allowed library edges. The focused metadata probe and the landing test both
+consume it and reject new stage edges. Removing an allowed edge is always
+legal. Adding one requires changing the contract and this ledger together, so
+architecture growth is explicit and reviewable. `witchy-types` may depend on
+`witchy-caps` to bind the launch contract before admission, and `witchy-wir`
+may depend on `witchy-types` to authenticate lowered candidates against checked
+source; neither edge points back up the stage graph.
 
 ## Semantic-surface baseline
 

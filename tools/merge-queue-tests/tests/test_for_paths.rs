@@ -151,6 +151,26 @@ fn gate_nextest_docs_only_builds_the_bin_target() {
     }
 }
 
+#[test]
+fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
+    let output = gate_nextest(&[
+        "spec/architecture-ledger.md",
+        "tests/misc/architecture.rs",
+        "scripts/test-for-paths.sh",
+    ]);
+    let args = output.lines().next().unwrap_or_default();
+    assert!(args.contains("-p witchy"), "root package was omitted: {output}");
+    assert!(
+        !args.contains("--bin witchy"),
+        "bin narrowing excluded the misc integration test: {output}",
+    );
+    assert!(
+        output.contains("binary(misc)")
+            && output.contains("documentation_examples_are_valid"),
+        "mixed selection omitted a required target: {output}",
+    );
+}
+
 /// The narrowing must stay off wherever the selection can name a target outside
 /// the bin. `--bin` ANDs with `-p` instead of unioning, so a wrong narrowing
 /// does not error -- it silently runs a subset and reports green.
@@ -700,10 +720,22 @@ fn standalone_queue_fixture_uses_only_the_hermetic_shard() {
 fn workspace_manifest_runs_the_stage_crate_dag_probe_early() {
     assert_eq!(
         selected(&["Cargo.toml"]),
-        [
-            "cargo nextest run --test misc -E 'test(=architecture::stage_crates_follow_the_declared_dependency_dag)'",
-        ]
+        ["python3 scripts/check-stage-dependencies.py"]
     );
+}
+
+#[test]
+fn stage_dependency_contract_and_probe_route_to_the_no_build_check() {
+    for path in [
+        "scripts/check-stage-dependencies.py",
+        "spec/stage-dependencies.json",
+    ] {
+        assert_eq!(
+            selected(&["--edit-loop", path]),
+            ["python3 scripts/check-stage-dependencies.py"],
+            "{path}",
+        );
+    }
 }
 
 #[test]

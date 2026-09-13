@@ -4,50 +4,16 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
-    ("witchy-cap-model", &[]),
-    ("witchy-worker-protocol", &[]),
-    ("witchy-testkit", &["witchy-cap-model"]),
-    ("witchy-test-host", &["witchy-testkit"]),
-    ("witchy-syntax", &["witchy-cap-model"]),
-    // RFC-0165: the canonical checked source binds the launch contract
-    // (the host capability grant of `main`) into its identity before
-    // admission; the payload is computed by `witchy-caps`, which depends on
-    // nothing above the syntax stage, so the graph stays acyclic.
-    ("witchy-types", &["witchy-cap-model", "witchy-caps", "witchy-syntax"]),
-    // RFC-0165: the SafeWIR authority authenticates a lowered candidate
-    // against the checked source (`witchy_types::pipeline`) and shares the
-    // aggregate shape catalog with the lowering; `witchy-types` depends on
-    // nothing at or above the IR stage, so the graph stays acyclic.
-    ("witchy-wir", &["witchy-syntax", "witchy-types"]),
-    ("witchy-caps", &["witchy-cap-model", "witchy-syntax"]),
-    ("witchy-confinement", &[]),
-    ("witchy-compiler-worker", &["witchy-confinement", "witchy-worker-protocol"]),
-    ("witchy-lower", &["witchy-syntax", "witchy-types", "witchy-wir"]),
-    (
-        "witchy-runtime",
-        &[
-            "witchy-cap-model",
-            "witchy-caps",
-            "witchy-confinement",
-            "witchy-syntax",
-            "witchy-test-host",
-            "witchy-testkit",
-            "witchy-wir",
-        ],
-    ),
-    (
-        "witchy-interp",
-        &[
-            "witchy-caps",
-            "witchy-runtime",
-            "witchy-syntax",
-            "witchy-test-host",
-            "witchy-testkit",
-            "witchy-types",
-        ],
-    ),
-];
+fn stage_dependencies() -> BTreeMap<String, BTreeSet<String>> {
+    let dependencies: BTreeMap<String, Vec<String>> = serde_json::from_str(include_str!(
+        "../../spec/stage-dependencies.json"
+    ))
+    .expect("parse stage dependency contract");
+    dependencies
+        .into_iter()
+        .map(|(stage, dependencies)| (stage, dependencies.into_iter().collect()))
+        .collect()
+}
 
 fn metadata() -> Value {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -67,6 +33,7 @@ fn metadata() -> Value {
 #[test]
 fn stage_crates_follow_the_declared_dependency_dag() {
     let metadata = metadata();
+    let expected = stage_dependencies();
     let packages = metadata["packages"].as_array().expect("metadata packages");
     let mut actual: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
@@ -93,20 +60,19 @@ fn stage_crates_follow_the_declared_dependency_dag() {
         actual.insert(name.to_owned(), dependencies);
     }
 
-    let expected_stages: BTreeSet<&str> = STAGE_DEPENDENCIES.iter().map(|(name, _)| *name).collect();
+    let expected_stages: BTreeSet<&str> = expected.keys().map(String::as_str).collect();
     let actual_stages: BTreeSet<&str> = actual.keys().map(String::as_str).collect();
     assert_eq!(
         actual_stages, expected_stages,
         "workspace stage crates changed; update spec/architecture-ledger.md and this contract together"
     );
 
-    for (stage, allowed) in STAGE_DEPENDENCIES {
-        let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
-        let dependencies = &actual[*stage];
+    for (stage, allowed) in &expected {
+        let dependencies = &actual[stage];
         let forbidden: Vec<&str> = dependencies
             .iter()
             .map(String::as_str)
-            .filter(|dependency| !allowed.contains(dependency))
+            .filter(|dependency| !allowed.contains(*dependency))
             .collect();
         assert!(
             forbidden.is_empty(),
