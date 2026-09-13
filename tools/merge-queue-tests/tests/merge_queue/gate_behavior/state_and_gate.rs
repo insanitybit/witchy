@@ -390,11 +390,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "#!/bin/sh\nif [ \"$1\" = which ]; then echo /usr/bin/true; fi\nexit 0\n",
     )
     .expect("write fake rustup");
-    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake rustup");
-    // This fixture invokes check.sh eleven times without changing repository
+    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755)).expect("chmod fake rustup");
+    // This fixture invokes check.sh twelve times without changing repository
     // sources. Return the already-audited ignore-policy census instead of
-    // rescanning every Rust file eleven times; test-nextest-list-wrapper.sh
+    // rescanning every Rust file twelve times; test-nextest-list-wrapper.sh
     // retains the real positive and negative policy checks.
     let find = bin.join("find");
     fs::write(
@@ -407,9 +406,18 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     fs::set_permissions(&find, fs::Permissions::from_mode(0o755))
         .expect("chmod fake ignore-policy finder");
 
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
-    let cargo_args_file = temp.path().join("cargo-args");
-    let cargo_env_file = temp.path().join("cargo-env");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    // The command-shape groups have separate target and capture paths. Run
+    // them together so their repeated read-only check.sh startup does not
+    // serialize the queue shard; each group retains its original assertions.
+    std::thread::scope(|scope| {
+        let timing_and_strip = scope.spawn(|| {
+    let cargo_args_file = temp.path().join("cargo-args-timing");
+    let cargo_env_file = temp.path().join("cargo-env-timing");
     let proof_sha = "0123456789abcdef0123456789abcdef01234567";
     // Only this invocation asserts a nonzero foreground duration. The later
     // command-shape cases use the same fake without paying an unrelated delay.
@@ -510,7 +518,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         timings[1]["elapsed_s"].as_u64().unwrap() <= 2,
         "background timing included time spent waiting for foreground collection: {stdout}",
     );
+    });
 
+        let queue_selection = scope.spawn(|| {
+    let cargo_args_file = temp.path().join("cargo-args-queue-selection");
     let isolated = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
@@ -602,79 +613,88 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         String::from_utf8_lossy(&invalid_width.stderr)
             .contains("WITCHY_QUEUE_INFRA_JOBS must be a positive integer")
     );
+    });
 
-    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
-    let focused = check_sh(&root, &["--fast"])
-        .env("PATH", &path)
-        .env("CARGO_TARGET_DIR", temp.path().join("target-focused"))
-        .env("WITCHY_GATE_SCOPE", "all")
-        .env("WITCHY_GATE_NEXTEST", "-p witchy-types -p witchy")
-        .env(
-            "WITCHY_GATE_NEXTEST_EXPR",
-            "package(witchy-types) or test(/^example_tests::/)",
-        )
-        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("WITCHY_FAILFAST_POLL", "0.05")
-        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
-        .output()
-        .expect("run fast gate with a focused nextest selection");
-    assert!(
-        focused.status.success(),
-        "focused fake fast gate failed: {}",
-        String::from_utf8_lossy(&focused.stderr),
-    );
-    let focused_args = fs::read_to_string(&cargo_args_file).expect("read focused cargo arguments");
-    assert!(
-        focused_args.lines().any(|line| {
-            line.contains("nextest run")
-                && line.contains("-p witchy-types")
-                && line.contains("package(witchy-types)")
-                && !line.contains("--workspace")
-        }),
-        "types-only serialized nextest still used unfiltered --workspace: {focused_args}",
-    );
+        let focused_selection = scope.spawn(|| {
+            let cargo_args_file = temp.path().join("cargo-args-focused-selection");
+            let focused = check_sh(&root, &["--fast"])
+                .env("PATH", &path)
+                .env("CARGO_TARGET_DIR", temp.path().join("target-focused"))
+                .env("WITCHY_GATE_SCOPE", "all")
+                .env("WITCHY_GATE_NEXTEST", "-p witchy-types -p witchy")
+                .env(
+                    "WITCHY_GATE_NEXTEST_EXPR",
+                    "package(witchy-types) or test(/^example_tests::/)",
+                )
+                .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+                .env("WITCHY_FAILFAST_POLL", "0.05")
+                .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+                .output()
+                .expect("run fast gate with a focused nextest selection");
+            assert!(
+                focused.status.success(),
+                "focused fake fast gate failed: {}",
+                String::from_utf8_lossy(&focused.stderr),
+            );
+            let focused_args =
+                fs::read_to_string(&cargo_args_file).expect("read focused cargo arguments");
+            assert!(
+                focused_args.lines().any(|line| {
+                    line.contains("nextest run")
+                        && line.contains("-p witchy-types")
+                        && line.contains("package(witchy-types)")
+                        && !line.contains("--workspace")
+                }),
+                "types-only serialized nextest still used unfiltered --workspace: {focused_args}",
+            );
 
-    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
-    let fuzz_env_file = temp.path().join("fuzz-env");
-    let differential_fuzz = check_sh(&root, &["--fast"])
-        .env("PATH", &path)
-        .env("CARGO_TARGET_DIR", temp.path().join("target-differential-fuzz"))
-        .env("WITCHY_GATE_SCOPE", "all")
-        .env("WITCHY_GATE_FUZZ", "skip")
-        .env("WITCHY_GATE_FUZZ_REDUCED", "3")
-        .env(
-            "WITCHY_GATE_NEXTEST",
-            "--test merge_queue --test differential_fuzz",
-        )
-        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
-        .env("FAKE_FUZZ_ENV_FILE", &fuzz_env_file)
-        .env("WITCHY_FAILFAST_POLL", "0.05")
-        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
-        .output()
-        .expect("run serialized gate for differential fuzz");
-    assert!(
-        differential_fuzz.status.success(),
-        "serialized differential fuzz gate failed: {}",
-        String::from_utf8_lossy(&differential_fuzz.stderr),
-    );
-    let differential_fuzz_args =
-        fs::read_to_string(&cargo_args_file).expect("read differential fuzz cargo arguments");
-    let differential_fuzz_run = differential_fuzz_args
-        .lines()
-        .find(|line| line.starts_with("nextest run"))
-        .expect("serialized differential fuzz gate ran nextest");
-    assert!(
+            fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+            let fuzz_env_file = temp.path().join("fuzz-env");
+            let differential_fuzz = check_sh(&root, &["--fast"])
+                .env("PATH", &path)
+                .env(
+                    "CARGO_TARGET_DIR",
+                    temp.path().join("target-differential-fuzz"),
+                )
+                .env("WITCHY_GATE_SCOPE", "all")
+                .env("WITCHY_GATE_FUZZ", "skip")
+                .env("WITCHY_GATE_FUZZ_REDUCED", "3")
+                .env(
+                    "WITCHY_GATE_NEXTEST",
+                    "--test merge_queue --test differential_fuzz",
+                )
+                .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+                .env("FAKE_FUZZ_ENV_FILE", &fuzz_env_file)
+                .env("WITCHY_FAILFAST_POLL", "0.05")
+                .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+                .output()
+                .expect("run serialized gate for differential fuzz");
+            assert!(
+                differential_fuzz.status.success(),
+                "serialized differential fuzz gate failed: {}",
+                String::from_utf8_lossy(&differential_fuzz.stderr),
+            );
+            let differential_fuzz_args = fs::read_to_string(&cargo_args_file)
+                .expect("read differential fuzz cargo arguments");
+            let differential_fuzz_run = differential_fuzz_args
+                .lines()
+                .find(|line| line.starts_with("nextest run"))
+                .expect("serialized differential fuzz gate ran nextest");
+            assert!(
         differential_fuzz_run.contains("--test differential_fuzz")
             && !differential_fuzz_run.contains("not binary(differential_fuzz)"),
         "explicit differential fuzz selection was excluded by skip mode: {differential_fuzz_run}",
     );
-    let fuzz_env = fs::read_to_string(&fuzz_env_file).expect("read differential fuzz environment");
-    assert!(
-        !fuzz_env.trim().is_empty() && fuzz_env.lines().all(|value| value == "3"),
-        "explicit differential fuzz selection did not use the reduced corpus: {fuzz_env}",
-    );
+            let fuzz_env =
+                fs::read_to_string(&fuzz_env_file).expect("read differential fuzz environment");
+            assert!(
+                !fuzz_env.trim().is_empty() && fuzz_env.lines().all(|value| value == "3"),
+                "explicit differential fuzz selection did not use the reduced corpus: {fuzz_env}",
+            );
+        });
 
-    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+        let package_selection = scope.spawn(|| {
+    let cargo_args_file = temp.path().join("cargo-args-package-selection");
     let witchy_bin = temp.path().join("target-example-tests/debug/witchy");
     fs::create_dir_all(witchy_bin.parent().unwrap()).expect("create fake witchy dir");
     fs::write(&witchy_bin, "#!/bin/sh\nexit 0\n").expect("write fake witchy");
@@ -818,36 +838,55 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         !interp_args.lines().any(|line| line.contains("wasm32-unknown-unknown")),
         "interp+example_tests still launched the wasm playground: {interp_args}",
     );
+    });
 
-    let clippy_pid_file = temp.path().join("red-clippy.pid");
-    let failed = check_sh(&root, &["--fast"])
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
-        .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
-        .env("WITCHY_FAILFAST_POLL", "0.05")
-        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
-        .env("FAKE_CARGO_FAIL_NEXTEST", "1")
-        .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
-        .output()
-        .expect("run red fast gate with fake tools");
-    assert_eq!(failed.status.code(), Some(7));
-    let clippy_pid = fs::read_to_string(&clippy_pid_file)
-        .expect("red clippy leg recorded its pid")
-        .trim()
-        .parse::<i32>()
-        .expect("parse red clippy pid");
-    assert!(
-        !process_is_alive(clippy_pid),
-        "foreground failure orphaned background clippy pid {clippy_pid}",
-    );
-    let stdout = String::from_utf8(failed.stdout).expect("red check output is utf8");
-    let timing = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("WITCHY_TIMING "))
-        .map(|json| serde_json::from_str::<serde_json::Value>(json).expect("red timing is JSON"))
-        .expect("red foreground timing was emitted");
-    assert_eq!(timing["kind"], "foreground");
-    assert_eq!(timing["name"], "tests (workspace, minus e2e)");
-    assert_eq!(timing["status"], "red");
+        let failure_cleanup = scope.spawn(|| {
+            let clippy_pid_file = temp.path().join("red-clippy.pid");
+            let failed = check_sh(&root, &["--fast"])
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        bin.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
+                .env("WITCHY_FAILFAST_POLL", "0.05")
+                .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+                .env("FAKE_CARGO_FAIL_NEXTEST", "1")
+                .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
+                .output()
+                .expect("run red fast gate with fake tools");
+            assert_eq!(failed.status.code(), Some(7));
+            let clippy_pid = fs::read_to_string(&clippy_pid_file)
+                .expect("red clippy leg recorded its pid")
+                .trim()
+                .parse::<i32>()
+                .expect("parse red clippy pid");
+            assert!(
+                !process_is_alive(clippy_pid),
+                "foreground failure orphaned background clippy pid {clippy_pid}",
+            );
+            let stdout = String::from_utf8(failed.stdout).expect("red check output is utf8");
+            let timing = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("WITCHY_TIMING "))
+                .map(|json| {
+                    serde_json::from_str::<serde_json::Value>(json).expect("red timing is JSON")
+                })
+                .expect("red foreground timing was emitted");
+            assert_eq!(timing["kind"], "foreground");
+            assert_eq!(timing["name"], "tests (workspace, minus e2e)");
+            assert_eq!(timing["status"], "red");
+        });
+
+        timing_and_strip.join().expect("timing and strip checks");
+        queue_selection.join().expect("queue selection checks");
+        focused_selection.join().expect("focused selection checks");
+        package_selection.join().expect("package selection checks");
+        failure_cleanup.join().expect("failure cleanup checks");
+    });
 }
 
 /// Change 1 (gate fail-fast): the full merge-gate profile overlaps a compile
