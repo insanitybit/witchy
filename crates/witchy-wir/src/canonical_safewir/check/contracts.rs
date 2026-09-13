@@ -6,7 +6,7 @@ use super::super::{
     ReturnedExtent, Terminator,
     ValueId, ValueType,
 };
-use super::InitialCheckError;
+use super::{FunctionIndex, InitialCheckError};
 
 const MAX_CONTRACT_ITERATIONS: usize = 32;
 
@@ -113,7 +113,7 @@ impl Origin {
 }
 
 pub(super) fn check_all(
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
 ) -> Result<(), InitialCheckError> {
     let summaries = derive_all(functions, signatures)?;
@@ -128,7 +128,7 @@ pub(super) fn check_all(
 }
 
 pub(super) fn derive_result_contracts(
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
 ) -> Result<BTreeMap<FunctionSignatureId, Vec<ResultContract>>, InitialCheckError> {
     let summaries = derive_all(functions, signatures)?;
@@ -149,7 +149,7 @@ pub(super) fn derive_result_contracts(
 }
 
 fn derive_all(
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
 ) -> Result<BTreeMap<FunctionId, BodySummary>, InitialCheckError> {
     let mut summaries = functions
@@ -208,7 +208,7 @@ fn initial_summary(
 
 fn derive_summary(
     function: &Function,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
 ) -> Result<BodySummary, InitialCheckError> {
@@ -341,7 +341,7 @@ fn derive_summary(
 
 fn derive_origins(
     function: &Function,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     entry_origins: &BTreeMap<ValueId, Origin>,
@@ -403,7 +403,7 @@ fn derive_origins(
 fn propagate_operation_origins(
     function: &Function,
     operation: &Operation,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
@@ -582,7 +582,7 @@ fn join_origin(origins: &mut BTreeMap<ValueId, Origin>, destination: ValueId, in
 fn derive_operation(
     function: &Function,
     operation: &Operation,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
@@ -748,11 +748,11 @@ fn indirect_target_summary(
     function: &Function,
     callee: ValueId,
     signature: &FunctionSignature,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     summaries: &BTreeMap<FunctionId, BodySummary>,
 ) -> Result<BodySummary, InitialCheckError> {
     let mut target = None;
-    for candidate in functions.values().filter(|candidate| candidate.signature == signature.id) {
+    for candidate in functions.with_signature(signature.id) {
         let summary = summaries
             .get(&candidate.id)
             .ok_or(InitialCheckError::MissingFunction(candidate.id))?;
@@ -888,7 +888,7 @@ fn derive_tail_results(
     function: &Function,
     callee: FunctionId,
     arguments: &[CallArgument],
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &BTreeMap<ValueId, Origin>,
@@ -919,7 +919,7 @@ fn derive_tail_results(
 fn derive_call_needs(
     callee: FunctionId,
     arguments: &[CallArgument],
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
@@ -1134,7 +1134,7 @@ mod tests {
         assert!(declared_shared_summary(&signature).is_none());
     }
     fn layout() -> crate::layout::LayoutId { crate::layout::LayoutId::from_bytes([1; 32]) }
-    fn maps(function: Function, signature: FunctionSignature) -> (BTreeMap<FunctionId, &'static Function>, BTreeMap<FunctionSignatureId, &'static FunctionSignature>) { let function: &'static Function = Box::leak(Box::new(function)); let signature: &'static FunctionSignature = Box::leak(Box::new(signature)); ([(function.id, function)].into_iter().collect(), [(signature.id, signature)].into_iter().collect()) }
+    fn maps(function: Function, signature: FunctionSignature) -> (FunctionIndex<'static>, BTreeMap<FunctionSignatureId, &'static FunctionSignature>) { let function: &'static Function = Box::leak(Box::new(function)); let signature: &'static FunctionSignature = Box::leak(Box::new(signature)); ([(function.id, function)].into_iter().collect(), [(signature.id, signature)].into_iter().collect()) }
 
     #[test]
     fn scalar_indirect_call_uses_the_body_derived_target_contract() {
@@ -1232,7 +1232,7 @@ mod tests {
         }));
         let caller_signature: &'static FunctionSignature = Box::leak(Box::new(caller_signature));
         let target_signature: &'static FunctionSignature = Box::leak(Box::new(target_signature));
-        let functions = [(caller.id, caller), (target.id, target)].into_iter().collect();
+        let functions: FunctionIndex = [(caller.id, caller), (target.id, target)].into_iter().collect();
         let signatures = [(caller_signature.id, caller_signature), (target_signature.id, target_signature)]
             .into_iter()
             .collect();
@@ -1305,7 +1305,7 @@ mod tests {
         }));
         let caller_signature: &'static FunctionSignature = Box::leak(Box::new(caller_signature));
         let target_signature: &'static FunctionSignature = Box::leak(Box::new(target_signature));
-        let functions = [(caller.id, caller)].into_iter().collect();
+        let functions: FunctionIndex = [(caller.id, caller)].into_iter().collect();
         let signatures = [(caller_signature.id, caller_signature), (target_signature.id, target_signature)]
             .into_iter()
             .collect();

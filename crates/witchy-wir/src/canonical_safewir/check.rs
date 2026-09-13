@@ -290,6 +290,19 @@ fn check_candidate<S: ModuleStage>(
 
 fn has_unadmitted_nullable_owned_slot(layouts: &crate::layout::LayoutInterner) -> bool {
     use crate::layout::{FieldKind, LayoutKind, PointerSlot};
+    // One pass collects who carries whom, so the per-slot questions below are
+    // set lookups rather than rescans of the whole catalog.
+    let mut fixed_fields = BTreeSet::new();
+    let mut packed_elements = BTreeSet::new();
+    for (_, parent) in layouts.iter() {
+        match parent.kind() {
+            LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields } => fixed_fields.extend(fields.iter().copied()),
+            _ => {}
+        }
+        if let Some(element) = parent.kind().packed_element_layout() {
+            packed_elements.insert(element);
+        }
+    }
     layouts.iter().any(|(id, descriptor)| {
         match descriptor.kind() {
             LayoutKind::RuntimePointerBuffer { semantics: PointerSlot::OwnedNullable, .. } => true,
@@ -297,10 +310,7 @@ fn has_unadmitted_nullable_owned_slot(layouts: &crate::layout::LayoutInterner) -
                 // The first admitted carrier is a typed fixed field. A naked
                 // nullable slot, or a nullable collection element, is not a
                 // first-class reference or a supported range operation.
-                !layouts.iter().any(|(_, parent)| matches!(parent.kind(),
-                    LayoutKind::PackedRecord { fields } | LayoutKind::Tuple { fields }
-                        if fields.contains(&id)))
-                    || layouts.iter().any(|(_, parent)| parent.kind().packed_element_layout() == Some(id))
+                !fixed_fields.contains(&id) || packed_elements.contains(&id)
             }
             LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. } => false,
             _ => descriptor.fields().iter().any(|field| matches!(field.kind(),
@@ -492,16 +502,58 @@ fn index_signatures(
     Ok(result)
 }
 
+/// The candidate's functions by id, plus the same functions grouped by
+/// signature so an indirect call site finds its possible targets without
+/// scanning every function on every pass.
+pub(super) struct FunctionIndex<'a> {
+    by_id: BTreeMap<FunctionId, &'a Function>,
+    by_signature: BTreeMap<FunctionSignatureId, Vec<FunctionId>>,
+}
+
+impl<'a> FunctionIndex<'a> {
+    /// The functions declaring `signature`, in id order.
+    pub(super) fn with_signature(&self, signature: FunctionSignatureId) -> impl Iterator<Item = &'a Function> + '_ {
+        self.by_signature
+            .get(&signature)
+            .into_iter()
+            .flatten()
+            .filter_map(move |id| self.by_id.get(id).copied())
+    }
+}
+
+impl<'a> FromIterator<(FunctionId, &'a Function)> for FunctionIndex<'a> {
+    fn from_iter<I: IntoIterator<Item = (FunctionId, &'a Function)>>(iter: I) -> Self {
+        let mut by_id = BTreeMap::new();
+        let mut by_signature: BTreeMap<FunctionSignatureId, Vec<FunctionId>> = BTreeMap::new();
+        for (id, function) in iter {
+            if by_id.insert(id, function).is_none() {
+                by_signature.entry(function.signature).or_default().push(id);
+            }
+        }
+        Self { by_id, by_signature }
+    }
+}
+
+impl<'a> std::ops::Deref for FunctionIndex<'a> {
+    type Target = BTreeMap<FunctionId, &'a Function>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.by_id
+    }
+}
+
 fn index_functions(
     functions: &[Function],
-) -> Result<BTreeMap<FunctionId, &Function>, InitialCheckError> {
-    let mut result = BTreeMap::new();
+) -> Result<FunctionIndex<'_>, InitialCheckError> {
+    let mut by_id = BTreeMap::new();
+    let mut by_signature: BTreeMap<FunctionSignatureId, Vec<FunctionId>> = BTreeMap::new();
     for function in functions {
-        if result.insert(function.id, function).is_some() {
+        if by_id.insert(function.id, function).is_some() {
             return Err(InitialCheckError::DuplicateFunction(function.id));
         }
+        by_signature.entry(function.signature).or_default().push(function.id);
     }
-    Ok(result)
+    Ok(FunctionIndex { by_id, by_signature })
 }
 
 fn index_imports(
@@ -535,7 +587,7 @@ fn check_function(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     imports: &BTreeMap<ImportId, &ImportContract>,
     catalog: Option<&CanonicalAbiCatalog>,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
     layouts: &crate::layout::LayoutInterner,
@@ -597,7 +649,7 @@ fn check_memory_cfg(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     imports: &BTreeMap<ImportId, &ImportContract>,
     catalog: Option<&CanonicalAbiCatalog>,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     blocks: &BTreeMap<BlockId, &BasicBlock>,
     definition_sites: &BTreeMap<ValueId, DefinitionSite>,
     dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
@@ -666,7 +718,7 @@ fn check_block_flow(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     imports: &BTreeMap<ImportId, &ImportContract>,
     catalog: Option<&CanonicalAbiCatalog>,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     blocks: &BTreeMap<BlockId, &BasicBlock>,
     definition_sites: &BTreeMap<ValueId, DefinitionSite>,
     dominators: &BTreeMap<BlockId, BTreeSet<BlockId>>,
@@ -1163,7 +1215,7 @@ fn check_operation(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     imports: &BTreeMap<ImportId, &ImportContract>,
     catalog: Option<&CanonicalAbiCatalog>,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {
     if memory.check(operation)? {
@@ -1481,7 +1533,7 @@ fn check_terminator(
     terminator: &Terminator,
     current_signature: &FunctionSignature,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-    functions: &BTreeMap<FunctionId, &Function>,
+    functions: &FunctionIndex,
     blocks: &BTreeMap<BlockId, &BasicBlock>,
     memory: &mut MemoryChecker<'_>,
 ) -> Result<(), InitialCheckError> {

@@ -708,6 +708,12 @@ impl<'a> MemoryChecker<'a> {
         if !matches!(state.objects.get(&object)?.extent, Extent::HeaderPrefix { .. }) {
             return None;
         }
+        // Promotion needs the object's loaded length; without one it fails
+        // and the caller keeps the object as it was. Answer that before
+        // cloning the whole state into a scratch checker for one object.
+        if !state.header_values.contains_key(&(object, HeaderField::Length)) {
+            return None;
+        }
         let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
         scratch.promote_header_extent(object).ok()?;
         scratch.state.objects.get(&object).cloned()
@@ -3453,13 +3459,16 @@ impl<'a> MemoryChecker<'a> {
             });
         }
         self.require_owned_slots_initialized(object, "DropRef(uninitialized owned slot)")?;
-        let descriptor = self.layouts.get(state.layout).ok_or(
-            InitialCheckError::InvalidOwnership {
+        // The object's layout id is the interner key; re-deriving it from
+        // the descriptor would hash the descriptor bytes on every DropRef.
+        let layout = state.layout;
+        if self.layouts.get(layout).is_none() {
+            return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,
                 object,
-            },
-        )?;
-        if !drop_ref_layout_supported(self.layouts, descriptor.layout_id(), &mut BTreeSet::new()) {
+            });
+        }
+        if !drop_ref_layout_supported(self.layouts, layout, &mut BTreeSet::new()) {
             return self.unsupported("DropRef(pointer-bearing recursive destructor)");
         }
         self.state.objects
@@ -4997,7 +5006,7 @@ mod tests {
                 arguments: Vec::new(),
             };
             let signatures = BTreeMap::from([(signature.id, &signature)]);
-            let functions = BTreeMap::from([(function.id, function)]);
+            let functions: super::super::FunctionIndex = [(function.id, function)].into_iter().collect();
             assert!(matches!(
                 super::super::check_terminator(
                     function, &terminator, &signature, &signatures, &functions, &BTreeMap::new(), checker,
