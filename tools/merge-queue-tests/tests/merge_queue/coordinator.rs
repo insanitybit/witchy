@@ -1642,7 +1642,7 @@ fn submit_journals_whether_a_presubmit_receipt_covers_the_tip() {
     fs::write(
         receipts.join(format!("{tip}.json")),
         format!(
-            "{{\"sha\":\"{tip}\",\"shards\":[\"fast\",\"wasm\"],\"at\":\"2026-08-26T00:00:00Z\"}}"
+            "{{\"sha\":\"{tip}\",\"shards\":[\"fast\",\"wasm\"],\"durations_s\":{{\"edit\":37}},\"at\":\"2026-08-26T00:00:00Z\"}}"
         ),
     )
     .expect("write receipt");
@@ -1660,6 +1660,7 @@ fn submit_journals_whether_a_presubmit_receipt_covers_the_tip() {
         "every shard that covered the tip must survive, not just the last writer"
     );
     assert_eq!(resubmitted["presubmit_at"], "2026-08-26T00:00:00Z");
+    assert_eq!(resubmitted["presubmit_edit_elapsed_s"], "37");
 }
 
 /// A prose-only branch cannot obtain a receipt at all: `test-for-paths` reports

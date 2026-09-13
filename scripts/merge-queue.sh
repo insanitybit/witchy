@@ -1497,7 +1497,7 @@ cmd_submit() {
     # a protocol change for every agent, and a warning first tells us how often
     # this actually fires before anything starts blocking.
     local tip_sha receipt_dir receipt_file
-    local presubmit_shard="" presubmit_at="" presubmit_sha_match="false"
+    local presubmit_shard="" presubmit_at="" presubmit_edit_elapsed_s="" presubmit_sha_match="false"
     tip_sha="$(git -C "$root" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
     receipt_dir="$(witchy_merge_queue_state_dir "$root" 2>/dev/null || true)/receipts"
     receipt_file="$receipt_dir/$tip_sha.json"
@@ -1506,6 +1506,7 @@ cmd_submit() {
         presubmit_shard="$(jq -r '((.shards // [.shard]) | map(select(. != null)) | join(",")) // ""' \
             "$receipt_file" 2>/dev/null || true)"
         presubmit_at="$(jq -r '.at // ""' "$receipt_file" 2>/dev/null || true)"
+        presubmit_edit_elapsed_s="$(jq -r '.durations_s.edit // ""' "$receipt_file" 2>/dev/null || true)"
     fi
     # Suppress the warning where no shard is *possible*. A prose-only branch
     # cannot obtain a receipt -- test-for-paths reports no focused checks and a
@@ -1652,6 +1653,7 @@ cmd_submit() {
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
             presubmit_sha_match "$presubmit_sha_match" \
             presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at" \
+            presubmit_edit_elapsed_s "$presubmit_edit_elapsed_s" \
             actor "$actor" actor_hint "$actor_hint" session "$session" \
             trailer_present "$trailer_present" files_changed "$files_changed" \
             insertions "$insertions" deletions "$deletions" touches "$touches"
@@ -1676,6 +1678,7 @@ cmd_submit() {
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
             presubmit_sha_match "$presubmit_sha_match" \
             presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at" \
+            presubmit_edit_elapsed_s "$presubmit_edit_elapsed_s" \
             actor "$actor" actor_hint "$actor_hint" session "$session" \
             trailer_present "$trailer_present" files_changed "$files_changed" \
             insertions "$insertions" deletions "$deletions" touches "$touches"

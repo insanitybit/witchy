@@ -188,11 +188,11 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     let journal = format!(
         concat!(
             "{{\"ts\":\"2026-07-15T23:59:00Z\",\"event\":\"red\",\"branch\":\"a\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"gate_elapsed_s\":\"10\",\"log\":{old_red:?}}}\n",
-            "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a0\",\"submitted_sha\":\"sha-a0\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a0\",\"submitted_sha\":\"sha-a0\",\"presubmit_edit_elapsed_s\":\"12\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b0\",\"submitted_sha\":\"sha-b0\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:20Z\",\"event\":\"batch_red\",\"branch\":\"a\",\"members\":\"a b\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"gate_elapsed_s\":\"10\",\"log\":{batch_red:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:00:30Z\",\"event\":\"resubmitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:00:35Z\",\"event\":\"resubmitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:35Z\",\"event\":\"resubmitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\",\"presubmit_edit_elapsed_s\":\"30\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:40Z\",\"event\":\"coordinator_started\",\"branch\":\"a\",\"attempt_id\":\"attempt-a1\"}}\n",
             "{{\"ts\":\"2026-07-16T00:01:00Z\",\"event\":\"resubmitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a2\",\"submitted_sha\":\"sha-a2\"}}\n",
             "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
@@ -287,6 +287,9 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["outcomes"]["blocked"], 1);
     assert_eq!(report["outcomes"]["batch_red"], 1);
     assert_eq!(report["outcomes"]["automatic_retries"], 2);
+    assert_eq!(report["attribution"]["presubmit_edit_s"]["count"], 2);
+    assert_eq!(report["attribution"]["presubmit_edit_s"]["p50"], 12);
+    assert_eq!(report["attribution"]["presubmit_edit_s"]["p90"], 30);
     assert_eq!(report["phases_s"]["compile"]["p50"], 20);
     assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 21);
     assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);

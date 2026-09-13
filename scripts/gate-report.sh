@@ -349,6 +349,7 @@ jq -sn \
                                else (($subs|map(select(.trailer_present=="true"))|length)/($subs|length)) end),
              presubmit_receipt_rate:(if ($subs|length)==0 then null
                                      else (($subs|map(select(.presubmit_sha_match=="true"))|length)/($subs|length)) end),
+             presubmit_edit_s:($subs|map(numeric(.presubmit_edit_elapsed_s))|distribution),
              by_actor:($subs|group_by(.actor//"unset")
                        |map({actor:(.[0].actor//"unset"), submissions:length})|sort_by(-.submissions)),
              by_touches:($subs|map(select((.touches//"")!=""))|group_by(.touches)
@@ -455,6 +456,7 @@ jq -r '
     "",
     "Pre-submit evidence and attribution (n=\(.attribution.submissions) submissions)",
     "  green shard receipt:     \(if .attribution.presubmit_receipt_rate==null then "n/a" else ((.attribution.presubmit_receipt_rate*100|round|tostring)+"%") end)",
+    "  edit check p50 / p90:    \(value(.attribution.presubmit_edit_s.p50; "s")) / \(value(.attribution.presubmit_edit_s.p90; "s")) (\(.attribution.presubmit_edit_s.count) samples)",
     "  actor set (not \"unset\"): \(if .attribution.actor_adoption==null then "n/a" else ((.attribution.actor_adoption*100|round|tostring)+"%") end)",
     "  Co-Authored-By trailer:  \(if .attribution.trailer_adoption==null then "n/a" else ((.attribution.trailer_adoption*100|round|tostring)+"%") end)",
     (if (.red_causes|length)==0 then "" else
