@@ -1,6 +1,7 @@
 # Imported dynamic method plan loses its checked declaration
 
-Status: confirmed fail-closed coverage regression; repair pending.
+Status: confirmed fail-closed coverage regression; corrected in `d3ab874ca`,
+with focused evidence. Terminal landing remains pending.
 This finding does not demonstrate an admission or memory-safety bypass.
 
 ## Reproducer and evidence
@@ -70,3 +71,16 @@ landing after independent review identified this case. Queue change
 `2026-09-13T04:04:27Z` because its own test process group was cancelled.
 That event is not a failing workspace assertion or a completed validation run.
 The branch and all incomplete project CLI changes remain preserved.
+
+## Focused correction
+
+`d3ab874ca` retains the independently rebuilt dynamic plan's method declarations
+and transitive bodies for preparation; it does not make unrelated imported
+declarations executable roots. The focused scope shard passes 4/4 tests in
+9.188 seconds (`/private/tmp/witchy-dynamic-metadata-scope-focused.log`, nextest
+run `ad021ccf-d0a7-44ba-897c-424939ec3e6f`). Its metadata-only regression compares
+source interpretation, the independent canonical oracle, and admitted Wasm,
+including zero-leak checks. The original CLI reproducer now checks and agrees
+on output (`/private/tmp/witchy-scope-metadata.RG6MC9/fixed-parity.log`).
+Hello, wrap, jq, and dynamic reflection also agree using the same rebuilt
+binary (`/private/tmp/witchy-exec-scope-repair-compact-20260913.log`).
