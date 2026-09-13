@@ -30,7 +30,16 @@ landed. The combined native/root shard passed 53/53 tests (run
 stdout-then-stderr capture; `hello`/`wrap`/`jq` parity is green. Evidence:
 `/private/tmp/witchy-loop-prefix-integrated-r7.log` and
 `/private/tmp/witchy-loop-extents-compact-r7.log`. The bounds-replacement negative
-checks source and admitted Wasm, not the oracle. No new census or current-master
+checks source and admitted Wasm, not the oracle. On rebased code `7cdc6a849`,
+native WIR passed 721/721 (run `5a4aac66-98bf-4abe-8deb-962150665fb1`), lowerer
+passed 454/454 with the existing ten deferred cases excluded by the shared
+policy (run `08945061-cd87-4b7d-a0e9-10d6a6e19753`), and executable workflow
+probes passed 10/10 (run `4650d7f0-b841-4c9e-ae78-8a6f4c8ce1c1`). The unfiltered
+edit script exited 100 on exactly those ten existing AST-only deferred cases;
+it did not pass, and no green edit receipt is claimed. Logs are
+`/private/tmp/witchy-project-crypto-{presubmit,lower-filtered,wir-native,root}.log`;
+fresh `hello`/`wrap`/`jq` agreement is in
+`/private/tmp/witchy-project-crypto-compact-r2.log`. No new census or current-master
 completion is claimed. Remaining production workflows, full observation-trace evidence,
 current hosted CI, opt-contract conformance, and security/optimizer acceptance
 remain open. Compiler-wide memory safety and optimizer correctness are not
