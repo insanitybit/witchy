@@ -725,6 +725,13 @@ fn spec_freshness_script_runs_its_behavior_check() {
 }
 
 #[test]
+fn gate_cost_report_runs_its_log_segmentation_regression() {
+    for path in ["scripts/gate-test-cost.py", "scripts/test-gate-test-cost.py"] {
+        assert_eq!(selected(&[path]), ["python3 scripts/test-gate-test-cost.py"]);
+    }
+}
+
+#[test]
 fn staged_change_is_discovered_without_explicit_paths() {
     let repo = TempRepo::new();
     let root = repo.path();

@@ -171,7 +171,7 @@ case "$gate_fuzz" in
 esac
 
 # NIGHTLY-DEFERRED PERF/BUILD/COMPILE-BOUND TESTS ----------------------------
-# scripts/gate-test-cost.py --aggregate --runs 50 found EVERY test costing
+# scripts/gate-test-cost.py --runs 50 found every test costing
 # more than 2s that ran in essentially every gate (n=40-41 of 50 mined logs).
 # None gets to keep charging every merge just because it is correctness-
 # adjudicating; the policy is optimize, replace, remove, or defer -- there is
@@ -244,7 +244,7 @@ if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 # glamour, coven-web, grimoire and coven are applications built ON witchy, not
 # the language the merge gate exists to protect. Their tests were charging
 # every unrelated branch for projects the gate does not guard: together 163 of
-# ~2750 tests for ~45% of the whole suite's CPU, roughly two minutes of every
+# ~2750 tests for ~45% of summed per-test wall time, roughly two minutes of every
 # gate. Breaking one of them while nobody is working on it is an accepted
 # outcome, so the DEFAULT here is to skip them all.
 #
@@ -274,7 +274,7 @@ ungated_filter_glamour='binary(glamour) or test(/^commands::web::/) or test(/^ex
 # book_pages) serves a FAKE inline SUMMARY.md, `example_tests::glamour` uses
 # "/book/*slug" only as a route literal, and no `commands::web::` or
 # cli_subcommands web_/static_web_ test reads book/ at all. Measured cost of
-# getting this wrong in the permissive direction: 752s of gate CPU for 162s of
+# getting this wrong in the permissive direction: 752s of summed test time for 162s of
 # warranted work, on every branch that edits a markdown page.
 ungated_filter_glamour_book='test(/glamour_docs_bundle_renders_the_real_book/)'
 ungated_filter_glamour_nonbook="($ungated_filter_glamour) and not ($ungated_filter_glamour_book)"

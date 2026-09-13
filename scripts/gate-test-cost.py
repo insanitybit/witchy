@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Mine merge-queue gate logs for per-test cost, and flag the expensive tail.
 
-The gate's `tests (workspace)` stage is ~80% of every gate, and the suite is
-CPU-bound: wall time tracks total CPU-seconds, not scheduling. Each gate log
-already records a duration for every test, but nothing aggregated it, so a
-2.5x regression in suite execution time accumulated unnoticed over six weeks.
-This is that aggregation.
+Each gate log records wall duration for every test. Those durations overlap
+when nextest runs tests concurrently, and individual tests can spend time
+waiting or running subprocesses, so their sum is neither gate wall time nor
+CPU time. This report uses the sum only to rank expensive tests and binaries;
+the nextest summary remains the authoritative execution wall time.
 
 Usage:
     scripts/gate-test-cost.py                  # newest run: cost profile
@@ -64,13 +64,14 @@ def _log_dir():
 LOG_DIR = _log_dir()
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-# nextest result lines: `PASS [   1.234s] (123/456) <binary> <test::name>`
+# Terminal nextest result lines: `PASS [ 1.234s] (123/456) <binary> <test::name>`.
+# `SLOW` is a progress notification for a still-running test; counting it and
+# the later PASS would double-count one attempt.
 RESULT = re.compile(
-    r"^\s*(PASS|FAIL|SLOW|LEAK|TRY \d+ FAIL)\s*\[\s*([\d.]+)s\]"
+    r"^\s*(PASS|FAIL|LEAK|TRY \d+ FAIL)\s*\[\s*([\d.]+)s\]"
     r"\s*\(?\s*[\d/ ]*\)?\s*(\S+)\s+(\S+)",
-    re.M,
 )
-SUMMARY = re.compile(r"Summary \[\s*([\d.]+)s\]\s*(\d+) tests run")
+SUMMARY = re.compile(r"Summary \[\s*([\d.]+)s\]\s*(\d+) tests? run")
 LIST_DONE = re.compile(r"list progress: (\d+) test binaries started \(stage\+(\d+)s\)")
 
 
@@ -80,18 +81,31 @@ def parse(path):
         text = ANSI.sub("", open(path, errors="replace").read())
     except OSError:
         return None
-    summary = SUMMARY.search(text)
-    if not summary:
+    segments = []
+    tests = []
+    for line in text.splitlines():
+        result = RESULT.match(line)
+        if result:
+            tests.append((float(result.group(2)), result.group(3), result.group(4)))
+        summary = SUMMARY.search(line)
+        if summary:
+            if tests:
+                segments.append((float(summary.group(1)), int(summary.group(2)), tests))
+            tests = []
+    if not segments:
         return None
-    listed = LIST_DONE.search(text)
-    tests = [(float(m.group(2)), m.group(3), m.group(4)) for m in RESULT.finditer(text)]
+    selected_index, selected = max(enumerate(segments), key=lambda pair: pair[1][0])
+    wall, count, tests = selected
+    listed = LIST_DONE.search(text) if selected_index == 0 else None
     return {
         "path": path,
         "mtime": os.path.getmtime(path),
-        "wall": float(summary.group(1)),
-        "count": int(summary.group(2)),
+        "wall": wall,
+        "count": count,
         "startup": int(listed.group(2)) if listed else None,
         "tests": tests,
+        "segment": selected_index + 1,
+        "segments": len(segments),
     }
 
 
@@ -106,13 +120,6 @@ def load(limit):
             runs.append(run)
     runs.sort(key=lambda r: r["mtime"])
     return runs
-
-
-def cores():
-    try:
-        return os.cpu_count() or 1
-    except Exception:
-        return 1
 
 
 def load_exempt(path):
@@ -131,33 +138,32 @@ def load_exempt(path):
 
 def profile(run, top, budget, exempt=None):
     tests = sorted(run["tests"], reverse=True)
-    cpu = sum(d for d, _, _ in tests)
-    ncpu = cores()
+    test_seconds = sum(d for d, _, _ in tests)
     when = datetime.datetime.fromtimestamp(run["mtime"]).strftime("%Y-%m-%d %H:%M")
     print(f"gate log   {os.path.basename(run['path'])}")
     print(f"when       {when}")
+    if run["segments"] > 1:
+        print(f"nextest    {run['segment']}/{run['segments']} slowest completed invocation")
     print(f"tests      {run['count']}")
     if run["startup"] is not None:
         print(f"startup    {run['startup']}s  (build + binary discovery, before any test runs)")
     print(f"execution  {run['wall']:.0f}s wall")
-    print(f"cpu        {cpu:.0f}s total across all tests")
-    print(f"packing    {cpu / run['wall']:.1f}x parallel on {ncpu} cores "
-          f"({cpu / run['wall'] / ncpu * 100:.0f}% of theoretical)")
-    print(f"floors     {cpu / ncpu:.0f}s perfect-packing floor | "
-          f"{tests[0][0]:.0f}s longest-single-test floor")
+    print(f"test time  {test_seconds:.0f}s summed per-test wall (overlaps; not CPU)")
+    print(f"overlap    {test_seconds / run['wall']:.1f}x summed-test-time / execution wall")
+    print(f"longest    {tests[0][0]:.0f}s single test")
     print()
 
     # The tail is what matters: cutting the top few tests moves the whole gate.
     print(f"--- {top} costliest tests ---")
     for duration, binary, name in tests[:top]:
-        print(f"  {duration:7.1f}s  {duration / cpu * 100:4.1f}%  {binary:26} {name[:64]}")
+        print(f"  {duration:7.1f}s  {duration / test_seconds * 100:4.1f}%  {binary:26} {name[:64]}")
     print()
 
     running = 0.0
     for i, (duration, _, _) in enumerate(tests, 1):
         running += duration
-        if running > cpu * 0.5:
-            print(f"50% of suite CPU is in the slowest {i} tests "
+        if running > test_seconds * 0.5:
+            print(f"50% of summed test time is in the slowest {i} tests "
                   f"({i / len(tests) * 100:.1f}% of the suite)")
             break
 
@@ -182,7 +188,7 @@ def profile(run, top, budget, exempt=None):
         print()
         exempt_note = f", {skipped} exempted" if skipped else ""
         print(f"--- {len(over)} tests over the {budget:.1f}s budget{exempt_note} "
-              f"({excess:.0f}s CPU above budget, ~{excess / cores():.0f}s of wall) ---")
+              f"({excess:.0f}s summed test time above budget) ---")
         for duration, binary, name in over:
             print(f"  {duration:7.1f}s  {binary:26} {name[:64]}")
     return over
@@ -195,22 +201,22 @@ def trend(runs):
     weeks = collections.defaultdict(list)
     for run in runs:
         week = datetime.datetime.fromtimestamp(run["mtime"]).strftime("%Y-W%V")
-        cpu = sum(d for d, _, _ in run["tests"])
-        weeks[week].append((run["wall"], run["count"], cpu, run["startup"]))
+        test_seconds = sum(d for d, _, _ in run["tests"])
+        weeks[week].append((run["wall"], run["count"], test_seconds, run["startup"]))
 
-    print(f"{'week':10} {'runs':>5} {'exec':>8} {'tests':>7} {'cpu':>8} {'s/test':>8} {'startup':>8}")
+    print(f"{'week':10} {'runs':>5} {'exec':>8} {'tests':>7} {'test-s':>8} {'s/test':>8} {'startup':>8}")
     for week in sorted(weeks):
         rows = weeks[week]
         wall = statistics.median([r[0] for r in rows])
         count = statistics.median([r[1] for r in rows])
-        cpu = statistics.median([r[2] for r in rows])
+        test_seconds = statistics.median([r[2] for r in rows])
         starts = [r[3] for r in rows if r[3] is not None]
         startup = f"{statistics.median(starts):.0f}s" if starts else "-"
-        print(f"{week:10} {len(rows):5} {wall:7.0f}s {count:7.0f} {cpu:7.0f}s "
-              f"{cpu / count:7.3f}s {startup:>8}")
+        print(f"{week:10} {len(rows):5} {wall:7.0f}s {count:7.0f} {test_seconds:7.0f}s "
+              f"{test_seconds / count:7.3f}s {startup:>8}")
     print()
-    print("exec growing faster than the test count means new tests are unusually")
-    print("expensive, not merely numerous — read the s/test column.")
+    print("Summed per-test time growing faster than the test count means the")
+    print("observed tests are unusually expensive; read it beside execution wall.")
 
     # Which tests grew? Compare the oldest and newest halves we have.
     if len(runs) >= 6:

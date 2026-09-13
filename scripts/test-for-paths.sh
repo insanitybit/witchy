@@ -535,6 +535,8 @@ for p in "${paths[@]}"; do
         scripts/check-spec-freshness.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/check-spec-freshness.sh" ;;
+        scripts/gate-test-cost.py | scripts/test-gate-test-cost.py)
+            add "python3 scripts/test-gate-test-cost.py" ;;
         scripts/test-for-paths.sh | scripts/test-impact.py)
             add_gate_test test_for_paths
             add_gate_test merge_queue
