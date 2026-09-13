@@ -14,6 +14,10 @@ const RECEIVE_LIMIT: usize = 64 << 20;
 #[path = "net_buffered.rs"]
 mod buffered;
 pub use buffered::{OracleNetRead, ORACLE_NET_BUFFER_CAPACITY};
+#[path = "net_server_pool.rs"]
+mod server_pool;
+pub use server_pool::{OracleServerPoolFixture, OracleServerWorkerRun};
+pub(super) use server_pool::ServerState;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OracleNetGrant {
@@ -105,6 +109,8 @@ pub(super) struct NetState {
     observed: Vec<OracleNetEvent>,
     chunk_offset: usize,
     listeners: BTreeSet<u64>,
+    listener_addresses: BTreeMap<u64, String>,
+    shared_listener: Option<(u64, String)>,
     sockets: BTreeMap<u64, Socket>,
 }
 
@@ -114,7 +120,8 @@ enum Receive { Line, Bytes(usize), All }
 impl NetState {
     pub(super) fn new(fixture: OracleNetFixture) -> Self {
         Self { issuer: Arc::new(()), grants: fixture.grants, events: fixture.transcript.into(),
-            observed: Vec::new(), chunk_offset: 0, listeners: BTreeSet::new(), sockets: BTreeMap::new() }
+            observed: Vec::new(), chunk_offset: 0, listeners: BTreeSet::new(), sockets: BTreeMap::new(),
+            listener_addresses: BTreeMap::new(), shared_listener: None }
     }
 
     fn token(&self, resource: Resource) -> CapabilityToken {
@@ -145,6 +152,17 @@ impl NetState {
         let rights = &self.grants[grant];
         if !(if listen { rights.listen } else { rights.connect }) { return Err(refused(OracleNetError::RightsDenied)); }
         if !rights.addresses.contains(address) { return Err(refused(OracleNetError::AddressDenied)); }
+        if listen && let Some((listener, endpoint)) = &self.shared_listener {
+            // This bounded profile uses the exact numeric endpoint originally
+            // bound by the primary, not DNS equivalence or caller token ids.
+            if endpoint != address {
+                return Err(InterpretError::UnsupportedOperation("server worker listener rebinding"));
+            }
+            let listener = *listener;
+            self.listeners.insert(listener);
+            self.listener_addresses.insert(listener, address.to_owned());
+            return Ok(self.token(Resource::Listener(listener)));
+        }
         let id = match self.events.front() {
             Some(OracleNetEvent::Listen { grant: expected, address: endpoint, listener })
                 if listen && *expected == grant && endpoint == address => *listener,
@@ -154,6 +172,7 @@ impl NetState {
         };
         let resource = if listen {
             if !self.listeners.insert(id) { return Err(refused(OracleNetError::DuplicateResource)); }
+            self.listener_addresses.insert(id, address.to_owned());
             Resource::Listener(id)
         } else {
             if self.sockets.contains_key(&id) { return Err(refused(OracleNetError::DuplicateResource)); }
@@ -300,6 +319,7 @@ impl Engine<'_> {
     }
 
     pub(super) fn finish_net(&self) -> Result<Vec<OracleNetEvent>, InterpretError> {
+        self.server.finish()?;
         self.net.as_ref().map_or_else(|| Ok(Vec::new()), NetState::finish)
     }
 
@@ -358,6 +378,10 @@ impl Engine<'_> {
             ("net_close", [token], []) => {
                 let token = self.net_argument(token, SOCKET, values)?;
                 self.net.as_mut().unwrap().close(&token)?;
+            }
+            ("serve_pool", [token], []) => {
+                let token = self.net_argument(token, LISTENER, values)?;
+                self.serve_pool(&token)?;
             }
             _ => return Err(InterpretError::UnsupportedOperation("Net fixture host call")),
         }

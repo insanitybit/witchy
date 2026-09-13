@@ -51,6 +51,7 @@ pub(super) struct ServiceState<'a> {
 }
 
 impl<'a> ServiceState<'a> {
+    pub(super) fn workers_empty(&self) -> bool { self.workers.is_empty() }
     pub(super) fn new() -> Self {
         Self { issuer: Arc::new(()), next_id: 0, workers: BTreeMap::new() }
     }

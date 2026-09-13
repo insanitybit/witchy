@@ -23,15 +23,33 @@ pub fn interpret_entry_program(
             InterpreterValue::Capability(token) if token.kind == DIR_KIND && token.scope.is_empty())).count();
         if roots > grants { return Err(InterpretError::ExplicitTrap); }
     }
-    let (list_layout, string_layout) = crate::canonical_launch::argument_layouts()
-        .map_err(|_| InterpretError::TypeMismatch("launch argument layouts"))?;
     let program = module.module();
     let mut engine = Engine::new(program, config);
+    engine.server.retain_launch(function, &capabilities, arguments)?;
+    let values = engine.prepare_launch(&signature.parameters, capabilities, arguments)?;
+    let results = engine.execute(function, values)?;
+    let net_trace = engine.finish_net()?;
+    engine.finish_exec()?;
+    let leaked_objects = engine.objects.values().filter(|object|
+        matches!(object.storage, RuntimeStorage::Allocation(_))).count()
+        + engine.owners.len()
+        + engine.owner_lists.len();
+    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace,
+        build_trace: engine.build_out.writes, server_workers: engine.server.completed })
+}
+
+impl Engine<'_> {
+pub(super) fn prepare_launch(
+    &mut self, parameters: &[ValueType], capabilities: Vec<InterpreterValue>, arguments: &[String],
+) -> Result<Vec<InterpreterValue>, InterpretError> {
+    let (list_layout, string_layout) = crate::canonical_launch::argument_layouts()
+        .map_err(|_| InterpretError::TypeMismatch("launch argument layouts"))?;
+    let engine = self;
     let capabilities = engine.bind_net_entry(capabilities)?;
     let capabilities = engine.bind_build_entry(capabilities)?;
     let mut capabilities = engine.bind_exec_entry(capabilities)?.into_iter();
     let mut values = Vec::new();
-    for parameter in &signature.parameters {
+    for parameter in parameters {
         if *parameter == ValueType::Ref(list_layout) {
             let mut cells = BTreeMap::new();
             for (index, argument) in arguments.iter().enumerate() {
@@ -72,14 +90,8 @@ pub fn interpret_entry_program(
         }
     }
     if capabilities.next().is_some() { return Err(InterpretError::TypeMismatch("extra launch capability")); }
-    let results = engine.execute(function, values)?;
-    let net_trace = engine.finish_net()?;
-    engine.finish_exec()?;
-    let leaked_objects = engine.objects.values().filter(|object|
-        matches!(object.storage, RuntimeStorage::Allocation(_))).count()
-        + engine.owners.len()
-        + engine.owner_lists.len();
-    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace, build_trace: engine.build_out.writes })
+    Ok(values)
+}
 }
 
 #[cfg(test)]

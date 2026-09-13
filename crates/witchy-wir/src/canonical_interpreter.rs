@@ -34,6 +34,7 @@ mod regex;
 mod net;
 mod vm_service;
 pub use net::{OracleNetEvent, OracleNetFixture, OracleNetGrant, OracleNetError, OracleNetRead, ORACLE_NET_BUFFER_CAPACITY};
+pub use net::{OracleServerPoolFixture, OracleServerWorkerRun};
 pub use launch::interpret_entry_program;
 
 /// The canonical capability operations the oracle serves, by import name.
@@ -164,6 +165,8 @@ pub struct OracleFixture {
     /// Explicit rights, endpoints and an ordered deterministic socket script.
     /// No host networking, DNS, or native receive implementation is consulted.
     pub net: Option<OracleNetFixture>,
+    /// Bounded, independently executed server-worker scripts. No OS networking.
+    pub server_pool: Option<OracleServerPoolFixture>,
 }
 
 impl OracleFixture {
@@ -264,6 +267,7 @@ pub struct ProgramRun {
     pub leaked_objects: usize,
     /// Matched socket transcript, empty when no Net fixture was configured.
     pub net_trace: Vec<OracleNetEvent>,
+    pub server_workers: Vec<OracleServerWorkerRun>,
 }
 
 /// A precise failure of the executable SafeWIR semantics.
@@ -451,7 +455,7 @@ pub fn interpret_program(
         .count()
         + engine.owners.len()
         + engine.owner_lists.len();
-    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace, build_trace: engine.build_out.writes })
+    Ok(ProgramRun { results, output: engine.output, leaked_objects, net_trace, build_trace: engine.build_out.writes, server_workers: engine.server.completed })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -513,6 +517,7 @@ enum RuntimeStorage {
 }
 
 struct Engine<'a> {
+    server: net::ServerState,
     exec: exec::State,
     build_out: build_out::State,
     services: vm_service::ServiceState<'a>,
@@ -545,7 +550,9 @@ impl<'a> Engine<'a> {
         let layouts = LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
             .ok()
             .map(|(_, layouts)| std::sync::Arc::new(layouts));
+        let server = net::ServerState::new(config.fixture.server_pool.take());
         Self {
+            server,
             exec: exec::State::new(),
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
@@ -1391,6 +1398,7 @@ impl<'a> Engine<'a> {
         if contract.module != "witchy" {
             return Err(InterpretError::UnsupportedOperation("HostCall import"));
         }
+        self.server.before_host_call(&contract.name)?;
         if matches!(contract.name.as_str(), "__witchy_abort_at" | "__witchy_list_bounds_at") {
             let read = |place| -> Result<String, InterpretError> {
                 let (object, start, length) = self.slice_place(place, values)?;
