@@ -20,6 +20,8 @@ mod vm_service;
 mod abort;
 
 // RFC-0165 Net registration (Net track).
+#[path = "canonical_exec.rs"]
+mod exec;
 #[path = "canonical_net.rs"]
 mod net;
 
@@ -622,7 +624,8 @@ pub fn lower_typed_module(
     let regex_spans = regex::is_needed(typed.module());
     // RFC-0165 Net import registration (Net track).
     let net_imports = net::collect_imports(typed.module());
-    if prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
+    let exec_needed = exec::is_needed(typed.module());
+    if exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -759,6 +762,7 @@ if capability_imports.contains("build_out_write_at") {
         }
         // RFC-0165 Net catalog registration (Net track).
 
+        if exec_needed { catalog = exec::catalog(catalog, &mut signatures, string_layout)?; }
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
         if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
@@ -774,6 +778,7 @@ if capability_imports.contains("build_out_write_at") {
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
                     || (regex_spans && import.name == "regex_match_spans_into")
+                    || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
                     || net_imports.contains(import.name.as_str()) // Net track
                     || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
             })
@@ -785,6 +790,7 @@ if capability_imports.contains("build_out_write_at") {
             vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             // RFC-0165 Net import registration (Net track).
+            exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
             compiler: compiler_imports.iter()
@@ -2060,6 +2066,12 @@ impl FunctionLowerer<'_> {
                             return Ok(());
                         }
                         // RFC-0165 Net return-position dispatch (Net track).
+                        if name == "__capop.exec" {
+                            let value = self.lower_exec(args)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
+                            return Ok(());
+                        }
                         if net::is_operation(name) {
                             let value = self.lower_net(name, args)?;
                             let terminator = self.return_value(value, results)?;
@@ -2158,6 +2170,12 @@ impl FunctionLowerer<'_> {
                             return Ok(());
                         }
                         // RFC-0165 Net final-expression dispatch (Net track).
+                        if name == "__capop.exec" {
+                            let value = self.lower_exec(args)?;
+                            let terminator = self.return_value(Some(value), results)?;
+                            self.finish_current(terminator)?;
+                            return Ok(());
+                        }
                         if net::is_operation(name) {
                             let value = self.lower_net(name, args)?;
                             let terminator = self.return_value(value, results)?;
@@ -2279,6 +2297,7 @@ impl FunctionLowerer<'_> {
         match expression {
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args).map(|_| ()),
             // RFC-0165 Net dispatch (Net track).
+            Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args).map(|_| ()),
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args).map(|_| ()),
             Expr::While { cond, body } => self.lower_while(cond, body),
             Expr::WhileLet { pattern, scrutinee, body } => self.lower_while_let(pattern, scrutinee, body),
@@ -6287,6 +6306,7 @@ impl FunctionLowerer<'_> {
         match expression {
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args),
             // RFC-0165 Net dispatch (Net track).
+            Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args),
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("effect-only Net operation used as a value")),
             Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => self.push_zero(ValueType::Unit),
@@ -13339,6 +13359,7 @@ fn source_value_type(
             CapabilityKind::Net => witchy_wir::canonical_safewir::NET_CAPABILITY_KIND,
             CapabilityKind::Listener => witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND,
             CapabilityKind::Socket => witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND,
+            CapabilityKind::Exec => witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND,
             CapabilityKind::BuildOut => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
         };
         return Ok(match representation {
@@ -13639,6 +13660,7 @@ struct HostImports {
     vm_sites: HashMap<usize, u32>,
     // RFC-0165 Net import registration (Net track).
     net: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
+    exec: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
     compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,

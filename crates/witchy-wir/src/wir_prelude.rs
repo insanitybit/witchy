@@ -329,6 +329,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.__ed25519_verify_status" (func $crypto_ed25519_verify_status (param i32 i32 i32) (result i64)))
   (import "witchy" "mint_exec" (func $mint_exec_host (result externref)))
   (import "witchy" "exec_only" (func $exec_only_host (param externref i32) (result externref)))
+  (import "witchy" "exec_run_at" (func $exec_run_at_host (param externref externref i32 i32 i32 i32 i32 i32) (result externref)))
+  (import "witchy" "exec_response_size" (func $exec_response_size_host (param externref) (result i32)))
+  (import "witchy" "exec_response_into" (func $exec_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "exec_run" (func $exec_run_host (param externref externref i32 i32 i32) (result i32)))
   (import "witchy" "heap_register" (func $heap_register_host (param i32 i32)))
   (import "witchy" "heap_unregister" (func $heap_unregister_host (param i32)))
@@ -360,7 +363,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 137;
+pub const IMPORT_COUNT: usize = 140;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -464,6 +467,7 @@ const AUTH_FETCH_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::FetchGrant
 const AUTH_FETCH: &[AbiImportAuthority] = &[AbiImportAuthority::Fetch];
 const AUTH_CLOCK: &[AbiImportAuthority] = &[AbiImportAuthority::Clock];
 const AUTH_RAND: &[AbiImportAuthority] = &[AbiImportAuthority::Rand];
+const AUTH_EXEC_DIR: &[AbiImportAuthority] = &[AbiImportAuthority::Exec, AbiImportAuthority::DirRead];
 const AUTH_EXEC: &[AbiImportAuthority] = &[AbiImportAuthority::Exec];
 const AUTH_BUILD_READ: &[AbiImportAuthority] = &[AbiImportAuthority::BuildRead];
 const AUTH_BUILD_OUT: &[AbiImportAuthority] = &[AbiImportAuthority::BuildOut];
@@ -590,6 +594,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "rand_u64"
         | "mint_exec"
         | "exec_only"
+        | "exec_run_at"
         | "exec_run"
         // The canonical route's stateless `Dir`/`Env` operations. They take a
         // capability token and checked slices, never host-staged state.
@@ -620,6 +625,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_par_map_bytes_write"
         | "vm_with_dir_run"
         | "vm_serve_run"
+        | "exec_response_size" | "exec_response_into"
         | "vm_service_start" | "vm_service_step" | "vm_service_response_size"
         | "vm_service_response_into" | "vm_service_close"
         => C::InternalService,
@@ -674,6 +680,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
         "now" | "now_monotonic" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,
+        "exec_run_at" => AUTH_EXEC_DIR,
         "mint_exec" | "exec_only" | "exec_run" => AUTH_EXEC,
         "build_read_len" => AUTH_BUILD_READ,
         "build_out_write" | "build_out_write_at" => AUTH_BUILD_OUT,

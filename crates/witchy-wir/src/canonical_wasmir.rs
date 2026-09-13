@@ -1590,6 +1590,7 @@ pub struct AdmittedCanonicalArtifact {
 /// than launched with a token the host cannot mint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalEntryCapability {
+    Exec,
     Console,
     /// A recipe-only, write-only build output grant (kind 9).
     BuildOut,
@@ -1659,6 +1660,7 @@ impl CanonicalEntry {
                 CanonicalEntryCapability::Env => 2,
                 CanonicalEntryCapability::Net => 4,
                 CanonicalEntryCapability::BuildOut => 9,
+                CanonicalEntryCapability::Exec => 10,
             });
         }
         bytes.push(match self.result {
@@ -1698,6 +1700,7 @@ impl CanonicalEntry {
                 2 => Ok(CanonicalEntryCapability::Env),
                 4 => Ok(CanonicalEntryCapability::Net),
                 9 => Ok(CanonicalEntryCapability::BuildOut),
+                10 => Ok(CanonicalEntryCapability::Exec),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -6941,6 +6944,9 @@ fn derive_entry(
 ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND && source.is_build_recipe() => {
     capabilities.push(CanonicalEntryCapability::BuildOut);
 }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::EXEC_CAPABILITY_KIND => {
+                capabilities.push(CanonicalEntryCapability::Exec);
+            }
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Net);
             }

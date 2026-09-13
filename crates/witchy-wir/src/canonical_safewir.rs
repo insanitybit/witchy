@@ -58,6 +58,8 @@ id_type!(CapabilityKindId, u32);
 /// Staged opaque-owner ABI contract. Not yet admitted as executable operations.
 pub mod closure_owner_contract;
 mod owner_authority;
+mod exec;
+pub use exec::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND, EXEC_IMPORT_NAMES};
 mod vm_service;
 pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIND, VM_SERVICE_RESPONSE_KIND};
 

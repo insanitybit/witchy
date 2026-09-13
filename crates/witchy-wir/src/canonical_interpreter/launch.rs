@@ -28,7 +28,8 @@ pub fn interpret_entry_program(
     let program = module.module();
     let mut engine = Engine::new(program, config);
     let capabilities = engine.bind_net_entry(capabilities)?;
-    let mut capabilities = engine.bind_build_entry(capabilities)?.into_iter();
+    let capabilities = engine.bind_build_entry(capabilities)?;
+    let mut capabilities = engine.bind_exec_entry(capabilities)?.into_iter();
     let mut values = Vec::new();
     for parameter in &signature.parameters {
         if *parameter == ValueType::Ref(list_layout) {
@@ -73,6 +74,7 @@ pub fn interpret_entry_program(
     if capabilities.next().is_some() { return Err(InterpretError::TypeMismatch("extra launch capability")); }
     let results = engine.execute(function, values)?;
     let net_trace = engine.finish_net()?;
+    engine.finish_exec()?;
     let leaked_objects = engine.objects.values().filter(|object|
         matches!(object.storage, RuntimeStorage::Allocation(_))).count()
         + engine.owners.len()

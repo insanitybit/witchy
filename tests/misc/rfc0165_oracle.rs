@@ -12,6 +12,9 @@ use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
 use witchy_wir::canonical_safewir::{FunctionId, ValidatedSafeWir};
 
+#[path = "rfc0165_exec.rs"]
+mod exec;
+
 #[test]
 fn admitted_observer_preserves_exact_artifact_and_execution() {
     let source = r#"
@@ -42,7 +45,7 @@ fn main(console: Console):
 
 #[test]
 fn admitted_observer_is_not_called_on_refusal() {
-    let unsupported = witchy::resolve_std_only_checked("fn main(exec: Exec):\n    Nil\n")
+    let unsupported = witchy::resolve_std_only_checked("fn main(clock: Clock):\n    Nil\n")
         .expect("backend-unsupported source checks");
     let ast = witchy_syntax::parser::parse_module("fn main() -> Int:\n    1\n")
         .expect("AST-only source parses");

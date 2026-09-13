@@ -21,6 +21,8 @@ use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutKind, ScalarKind
 
 const SIZE_MAX: u64 = u32::MAX as u64;
 
+mod exec;
+pub use exec::{OracleExecFixture, OracleExecCall};
 mod build_out;
 pub use build_out::OracleBuildWrite;
 mod launch;
@@ -93,12 +95,13 @@ pub struct CapabilityToken {
     net: Option<net::Token>,
     service: Option<vm_service::Token>,
     build_out: Option<build_out::Token>,
+    exec: Option<exec::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new(), net: None, service: None, build_out: None }
+        Self { kind, scope: String::new(), net: None, service: None, build_out: None, exec: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -122,6 +125,7 @@ impl InterpreterValue {
     pub fn entry_capability(capability: crate::CanonicalEntryCapability) -> Self {
         Self::capability(match capability {
             crate::CanonicalEntryCapability::Console => 0,
+            crate::CanonicalEntryCapability::Exec => crate::canonical_safewir::EXEC_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::Dir => DIR_KIND,
             crate::CanonicalEntryCapability::Env => ENV_KIND,
@@ -135,6 +139,7 @@ impl InterpreterValue {
 /// `Dir` grant addresses its root.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OracleFixture {
+    pub exec: Option<OracleExecFixture>,
     /// Explicit write grant for a fresh virtual build output directory.
     pub build_out: bool,
     pub files: BTreeMap<String, Vec<u8>>,
@@ -296,6 +301,7 @@ pub enum InterpretError {
     UninitializedPlace,
     UnsupportedHostImport,
     BuildOut(String),
+    ExecFixture(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
 }
@@ -356,6 +362,7 @@ pub fn interpret_with_config(
     let mut engine = Engine::new(module.module(), config);
     let results = engine.execute(function, arguments)?;
     engine.finish_net()?;
+    engine.finish_exec()?;
     Ok(results)
 }
 
@@ -429,8 +436,10 @@ pub fn interpret_program(
     let mut engine = Engine::new(module.module(), config);
     let arguments = engine.bind_net_entry(arguments)?;
     let arguments = engine.bind_build_entry(arguments)?;
+    let arguments = engine.bind_exec_entry(arguments)?;
     let results = engine.execute(function, arguments)?;
     let net_trace = engine.finish_net()?;
+    engine.finish_exec()?;
     let leaked_objects = engine
         .objects
         .values()
@@ -500,6 +509,7 @@ enum RuntimeStorage {
 }
 
 struct Engine<'a> {
+    exec: exec::State,
     build_out: build_out::State,
     services: vm_service::ServiceState<'a>,
     isolated: bool,
@@ -526,6 +536,7 @@ impl<'a> Engine<'a> {
     fn new(module: &'a CanonicalModule<InitialValid>, mut config: InterpreterConfig) -> Self {
         let net = config.fixture.net.take().map(net::NetState::new);
         Self {
+            exec: exec::State::new(),
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
             isolated: false,
@@ -1433,6 +1444,9 @@ impl<'a> Engine<'a> {
         }
         if self.isolated && !vm_service::isolated_import_allowed(contract) {
             return Err(InterpretError::UnsupportedHostImport);
+        }
+        if exec::is_import(&contract.name) {
+            return self.exec_host_call(&contract.name, destinations, arguments, values);
         }
         if contract.name == "build_out_write_at" {
             return self.build_out_host_call(destinations, arguments, values);

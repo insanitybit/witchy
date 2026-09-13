@@ -78,6 +78,7 @@ impl<'a> SourceConstructor<'a> {
                     CapabilityKind::Net => super::NET_CAPABILITY_KIND,
                     CapabilityKind::Listener => super::LISTENER_CAPABILITY_KIND,
                     CapabilityKind::Socket => super::SOCKET_CAPABILITY_KIND,
+                    CapabilityKind::Exec => super::EXEC_CAPABILITY_KIND,
                     CapabilityKind::BuildOut => super::BUILD_OUT_CAPABILITY_KIND,
                 }))
             }
