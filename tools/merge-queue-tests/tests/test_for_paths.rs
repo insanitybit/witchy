@@ -758,6 +758,16 @@ fn integration_driver_edits_use_the_bounded_semantic_contracts() {
 }
 
 #[test]
+fn build_recipe_test_edits_run_their_executable_module() {
+    let commands = selected(&["--edit-loop", "src/source/build_recipe_tests.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert_eq!(
+        commands[0],
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::/)'",
+    );
+}
+
+#[test]
 fn integration_grants_edit_runs_only_its_misc_module() {
     let commands = selected(&[
         "--edit-loop",

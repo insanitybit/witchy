@@ -316,6 +316,9 @@ for p in "${paths[@]}"; do
         src/commands/project_resolver_tests.rs | \
         src/source.rs | src/source/package_inputs.rs)
             add_early "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'" ;;
+        src/source/build_recipe_tests.rs)
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::/)'"
+            path_has_early=1 ;;
         crates/witchy-types/src/pipeline/test_driver/integration.rs | \
         src/commands/test_runner/canonical_integration.rs)
             add_early "cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(=rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(/^commands::test_runner::canonical_integration_tests::/)'"
