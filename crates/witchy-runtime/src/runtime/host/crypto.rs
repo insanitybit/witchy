@@ -18,6 +18,7 @@ pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()>
 
 /// Register authority-free crypto operations.
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "crypto_ed25519_verify_slices", host_ed25519_verify_slices)?;
     linker.func_wrap(
         "witchy",
         intrinsics::CRYPTO_ED25519_VERIFY_STATUS,
@@ -79,19 +80,62 @@ fn host_ed25519_verify_status(
         Value::Str(read_wstr(data, msg)?),
         Value::Str(read_wstr(data, sig)?),
     ];
+    ed25519_status(&args)
+}
+
+/// Canonical authority-free verification: every input is a complete bounded
+/// read slice, not a guest object header. No guest state is changed or retained.
+fn host_ed25519_verify_slices(
+    mut caller: Caller<'_, VmState>,
+    pk_ptr: i32, pk_len: i32,
+    msg_ptr: i32, msg_len: i32,
+    sig_ptr: i32, sig_len: i32,
+) -> Result<i64> {
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    // Preflight all extents before decoding or invoking the verifier, including
+    // inputs the native verifier could otherwise skip after a malformed key.
+    let ranges = [
+        ed25519_slice_range(pk_ptr, pk_len, data.len())?,
+        ed25519_slice_range(msg_ptr, msg_len, data.len())?,
+        ed25519_slice_range(sig_ptr, sig_len, data.len())?,
+    ];
+    let args = ranges.into_iter().map(|range| {
+        std::str::from_utf8(&data[range])
+            .map(|text| Value::Str(text.to_owned()))
+            .map_err(|_| Error::msg("Ed25519 input slice is not valid UTF-8"))
+    }).collect::<Result<Vec<_>>>()?;
+    ed25519_status(&args)
+}
+
+fn ed25519_slice_range(ptr: i32, len: i32, limit: usize) -> Result<std::ops::Range<usize>> {
+    let start = ptr as u32 as usize;
+    let end = start.checked_add(len as u32 as usize)
+        .filter(|end| *end <= limit)
+        .ok_or_else(|| Error::msg("Ed25519 input slice lies outside guest memory"))?;
+    Ok(start..end)
+}
+
+// Both ABIs delegate status policy and cryptographic verification to the same
+// native primitive used by the source interpreter.
+fn ed25519_status(args: &[Value]) -> Result<i64> {
     let f = crate::native::lookup(intrinsics::CRYPTO_ED25519_VERIFY_STATUS).ok_or_else(|| {
         Error::msg(format!(
             "{} is not registered",
             intrinsics::CRYPTO_ED25519_VERIFY_STATUS
         ))
     })?;
-    match f(&args).map_err(|e| Error::msg(e.message))? {
+    match f(args).map_err(|e| Error::msg(e.message))? {
         Value::Int(n) => Ok(n),
         _ => Err(Error::msg(
             "crypto.__ed25519_verify_status did not return an Int",
         )),
     }
 }
+
+#[cfg(test)]
+#[path = "crypto_slices_tests.rs"]
+mod slices_tests;
 
 /// `crypto.sha256(in_header_ptr, out_data_ptr)`: read the input string, compute
 /// its SHA-256 (via the shared native registry), and write the 64 hex bytes into
