@@ -199,3 +199,9 @@ opt-level = 3
 opt-level = 2
 [profile.dev.package.blake3]
 opt-level = 2
+# Wasmtime otherwise namespaces its debug compilation cache by the test
+# executable's mtime. Every relink then recompiles unchanged admitted Wasm.
+# This crate's sole debug-assertions branch selects that namespace; its cache
+# key still binds the Wasm bytes, compiler revision, target, and configuration.
+[profile.dev.package.wasmtime-internal-cache]
+debug-assertions = false
