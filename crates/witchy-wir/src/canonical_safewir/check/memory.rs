@@ -199,21 +199,34 @@ impl<'a> MemoryChecker<'a> {
         // derives lazily from the header loads already in this state. Derive
         // it now from the same facts; a promotion the facts do not justify is
         // left alone and the extent rule below reports it.
+        let mut prefix_candidates = BTreeSet::new();
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
             if matches!(parameter.ownership, Some(Ownership::Shared | Ownership::Unique))
                 && self.state.objects.contains_key(argument)
             {
                 let _ = self.promote_header_extent(*argument);
-                // Preserve completeness of this predecessor's current logical
-                // value before phi renaming or extent demotion loses its count.
-                // This applies equally to unique call write-backs: a fresh
-                // complete value and an ABI-complete value must carry the
-                // same proven summary. Keep every slot/range obligation;
-                // missing evidence remains missing, and capacity is not proof.
-                if self.require_owned_slots_initialized(*argument, "managed phi(uninitialized owned slot)").is_ok() {
-                    self.state.objects.get_mut(argument).expect("object exists").initialized_owned_slots = true;
-                }
+                let outgoing = &self.state.objects[argument];
+                prefix_candidates.extend(self.state.objects.iter().filter_map(|(value, state)| {
+                    (state.identity == outgoing.identity
+                        && state.layout == outgoing.layout
+                        && state.allocation_class == outgoing.allocation_class
+                        && state.shared_immutable == outgoing.shared_immutable
+                        && matches!(state.ownership, Ownership::Unique | Ownership::Shared))
+                        .then_some(*value)
+                }));
             }
+        }
+        // A retained CloneRef is not renamed with its outgoing sibling, but
+        // its detailed prefix evidence can still be lost by the later meet.
+        // Identity only selects candidates: independently check each token's
+        // own extent and all slot/range obligations in this predecessor. Do
+        // not infer completeness from overlapping phi origins or another
+        // token's summary, and finish every check before publishing summaries.
+        let complete_prefixes = prefix_candidates.into_iter().filter(|value| {
+            self.require_owned_slots_initialized(*value, "managed phi(uninitialized owned slot)").is_ok()
+        }).collect::<Vec<_>>();
+        for value in complete_prefixes {
+            self.state.objects.get_mut(&value).expect("candidate exists").initialized_owned_slots = true;
         }
         let mut renames = BTreeMap::new();
         let mut unique_phi_rebases = BTreeMap::new();
@@ -4437,6 +4450,108 @@ mod tests {
                         "only scalar storage or a proved empty pointer prefix is complete");
                 });
             }
+        }
+    }
+
+    #[test]
+    fn owned_prefix_summary_preserves_retained_clone_through_header_meet() {
+        with_checker_capacity(true, 4, |checker, list| {
+            let element = checker.layouts.get(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState {
+                    element, ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    initialized: true, zero_width: false, zero_start: true,
+                },
+            );
+            checker.state.objects.remove(&DESTINATION);
+            checker.clone_ref(DESTINATION, SOURCE).expect("retained snapshot");
+            assert!(!checker.state.objects[&DESTINATION].initialized_owned_slots);
+            let target = shared_extent_target(list);
+            let left = checker.transfer_edge(&target, &[SOURCE, COUNT, CAPACITY]).expect("managed edge");
+            assert!(left.objects[&DESTINATION].initialized_owned_slots);
+            let mut right = left.clone();
+            let Extent::Counted { header_bytes, .. } = right.objects[&DESTINATION].extent else { unreachable!() };
+            right.objects.get_mut(&DESTINATION).unwrap().extent = Extent::HeaderPrefix { minimum_bytes: header_bytes };
+            right.header_values.retain(|(object, _), _| *object != DESTINATION);
+            right.range_states.clear();
+            let joined = checker.meet(&target, &left, &right).expect("header-only snapshot meet");
+            assert!(matches!(joined.objects[&DESTINATION].extent, Extent::HeaderPrefix { .. }));
+            for cleanup_edge in [false, true] {
+                checker.restore(joined.clone());
+                if cleanup_edge {
+                    let mut cleanup = target.clone();
+                    cleanup.parameters.clear();
+                    let edge = checker.transfer_edge(&cleanup, &[]).expect("cleanup edge");
+                    checker.restore(edge);
+                }
+                checker.drop_ref(DESTINATION).expect("complete retained snapshot can be dropped");
+            }
+            let mut incomplete = right;
+            incomplete.objects.get_mut(&DESTINATION).unwrap().initialized_owned_slots = false;
+            let joined = checker.meet(&target, &left, &incomplete).expect("one predecessor lacks completeness");
+            checker.restore(joined);
+            assert!(checker.drop_ref(DESTINATION).is_err(), "one complete predecessor is insufficient");
+        });
+    }
+
+    #[test]
+    fn owned_prefix_summary_preflights_each_alias_extent() {
+        for longer_alias in [false, true] {
+            with_checker_capacity(true, 4, |checker, list| {
+                let element = checker.layouts.get(list).unwrap().kind().packed_element_layout().unwrap();
+                checker.state.range_states.insert(
+                    RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                    RangeState {
+                        element, ownership: Ownership::Unique,
+                        allocation_class: Some(AllocationClass::ReferenceCounted),
+                        initialized: longer_alias, zero_width: false, zero_start: true,
+                    },
+                );
+                checker.state.objects.remove(&DESTINATION);
+                checker.clone_ref(DESTINATION, SOURCE).expect("snapshot");
+                if longer_alias {
+                    let Extent::Counted { count, .. } = &mut checker.state.objects.get_mut(&DESTINATION).unwrap().extent else { unreachable!() };
+                    *count = LONG_LENGTH;
+                    checker.state.header_values.insert((DESTINATION, HeaderField::Length), LONG_LENGTH);
+                }
+                let target = shared_extent_target(list);
+                let edge = checker.transfer_edge(&target, &[SOURCE, COUNT, CAPACITY]).expect("managed edge");
+                assert_eq!(edge.objects[&target.parameters[0].value].initialized_owned_slots, longer_alias);
+                assert!(!edge.objects[&DESTINATION].initialized_owned_slots,
+                    "another token's complete shorter prefix cannot initialize this token");
+                checker.restore(edge);
+                assert!(checker.drop_ref(DESTINATION).is_err());
+            });
+        }
+    }
+
+    #[test]
+    fn owned_prefix_summary_does_not_select_merely_overlapping_or_other_storage() {
+        for mismatch in 0..4 {
+            with_checker_capacity(true, 4, |checker, list| {
+                checker.update_count(SOURCE, START).expect("empty source");
+                checker.update_count(DESTINATION, START).expect("empty other allocation");
+                let mut alias = checker.state.objects[&SOURCE].clone();
+                alias.ownership = Ownership::Shared;
+                alias.initialized_owned_slots = false;
+                match mismatch {
+                    0 => {
+                        alias.identity = DESTINATION;
+                        checker.state.shared_phi_origins.insert(DESTINATION, BTreeSet::from([SOURCE, DESTINATION]));
+                    }
+                    1 => alias.layout = checker.layouts.get(list).unwrap().kind().packed_element_layout().unwrap(),
+                    2 => alias.allocation_class = Some(AllocationClass::Bump),
+                    3 => alias.ownership = Ownership::Consumed,
+                    _ => unreachable!(),
+                }
+                checker.state.objects.insert(DESTINATION, alias);
+                checker.state.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Shared;
+                let edge = checker.transfer_edge(&shared_extent_target(list), &[SOURCE, START, CAPACITY]).expect("shared edge");
+                assert!(!edge.objects[&DESTINATION].initialized_owned_slots,
+                    "candidate selection must not invent exact whole-object identity");
+            });
         }
     }
 
