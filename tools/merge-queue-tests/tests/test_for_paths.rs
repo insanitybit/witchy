@@ -764,6 +764,20 @@ fn router_changes_run_router_regressions() {
 }
 
 #[test]
+fn agent_check_changes_verify_utility_qos_without_a_rust_build() {
+    for path in ["scripts/agent-check.sh", "scripts/test-agent-check-qos.sh"] {
+        assert_eq!(
+            selected(&[path]),
+            [
+                "for f in scripts/*.sh; do bash -n \"$f\"; done",
+                "./scripts/test-agent-check-qos.sh",
+            ],
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn glamour_dom_harness_change_runs_its_structural_probe() {
     assert_eq!(
         selected_focused(&["tests/glamour/dom.rs"]),

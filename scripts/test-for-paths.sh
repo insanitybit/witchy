@@ -551,6 +551,9 @@ for p in "${paths[@]}"; do
         scripts/check-stage-dependencies.py | spec/stage-dependencies.json)
             add_early "python3 scripts/check-stage-dependencies.py"
             path_has_early=1 ;;
+        scripts/agent-check.sh | scripts/test-agent-check-qos.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/test-agent-check-qos.sh" ;;
         scripts/test-for-paths.sh | scripts/test-impact.py | \
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths

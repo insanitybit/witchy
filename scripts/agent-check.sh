@@ -24,12 +24,20 @@ usage() {
     exit "${1:-0}"
 }
 
+agent_priority=()
+if command -v taskpolicy >/dev/null 2>&1; then
+    agent_priority=(taskpolicy -c utility)
+elif command -v nice >/dev/null 2>&1; then
+    agent_priority=(nice -n 10)
+fi
+
 run_in_agent_env() {
-    env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_TARGET_DIR="$AGENT_TARGET_DIR" "$@"
+    env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
+        "${agent_priority[@]}" "$@"
 }
 
 run_paths_checks() {
-    ./scripts/test-for-paths.sh --run "$@"
+    "${agent_priority[@]}" ./scripts/test-for-paths.sh --run "$@"
 }
 
 run_edit_checks() {
