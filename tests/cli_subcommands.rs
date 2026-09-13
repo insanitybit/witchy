@@ -663,17 +663,29 @@ fn crypto_verify_malformed_inputs_are_result_errors() {
 // `check` rejects it; every other compile-ish path must too.
 const BAD_OPT: &str = "mode opt\n\nfn helper(xs: List(Int)) -> Int:\n    var acc = 0\n    for x in xs:\n        acc = acc + x\n    acc\n\nfn main(console: Console):\n    console.print(\"sum: ${helper([1, 2, 3])}\")\n";
 
-#[test]
-fn compile_accepts_complete_authenticated_package_owners() {
+fn authenticated_package_fixture() -> (TempDir, String, String) {
     let dir = workdir("authenticated-package-owners");
+    for path in ["app/src", "model/src"] {
+        std::fs::create_dir_all(dir.join(path)).unwrap();
+    }
+    write(&dir, "app/witchy.toml", "[rune]\nname = \"example/app\"\nversion = \"0.1.0\"\n[dependencies]\nmodel = { path = \"../model\" }\n");
+    write(&dir, "model/witchy.toml", "[rune]\nname = \"acme/model\"\nversion = \"1.2.3\"\n");
     let entry = write(
         &dir,
-        "app.witchy",
+        "app/src/app.witchy",
         "import model\n\nfn main(console: Console):\n    console.print(\"${model.answer()}\")\n",
     );
-    let dependency = write(&dir, "model.witchy", "pub fn answer() -> Int:\n    42\n");
-    let wasm = dir.join("app.wasm");
+    let dependency = write(&dir, "model/src/model.witchy", "pub fn answer() -> Int:\n    42\n");
     let dep_arg = format!("model={dependency}");
+    (dir, entry, dep_arg)
+}
+
+#[test]
+fn compile_accepts_complete_authenticated_package_owners() {
+    // Owner flags assert the identity derived from the captured manifests.
+    // They cannot manufacture registry provenance for arbitrary local files.
+    let (dir, entry, dep_arg) = authenticated_package_fixture();
+    let wasm = dir.join("app.wasm");
     let out = Command::new(BIN)
         .args([
             "compile",
@@ -687,7 +699,7 @@ fn compile_accepts_complete_authenticated_package_owners() {
             "src.app",
             "--dep-owner",
             "model",
-            "registry:test-root-key",
+            "workspace",
             "acme/model",
             "1.2.3",
             "src.model",
@@ -723,6 +735,41 @@ fn compile_accepts_complete_authenticated_package_owners() {
         "{}",
         String::from_utf8_lossy(&missing.stderr)
     );
+}
+
+#[test]
+fn compile_rejects_unproved_package_owner_assignments_before_emission() {
+    let (dir, entry, dep_arg) = authenticated_package_fixture();
+    for (index, (source, package, version, module)) in [
+        ("registry:test-root-key", "acme/model", "1.2.3", "src.model"),
+        ("toolchain", "acme/model", "1.2.3", "src.model"),
+        ("workspace", "acme/forged", "1.2.3", "src.model"),
+        ("workspace", "acme/model", "9.9.9", "src.model"),
+        ("workspace", "acme/model", "1.2.3", "src.forged"),
+    ].into_iter().enumerate() {
+        let wasm = dir.join(format!("refused-{index}.wasm"));
+        let output = Command::new(BIN).args([
+            "compile", &entry, "--dep", &dep_arg,
+            "--package-owner", "workspace", "example/app", "0.1.0", "src.app",
+            "--dep-owner", "model", source, package, version, module,
+            "--out", wasm.to_str().unwrap(),
+        ]).output().unwrap();
+        assert!(!output.status.success(), "unproved owner accepted: {source}/{package}/{version}/{module}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("custom/registry owner assignments") || error.contains("owner assertion"), "{error}");
+        assert!(!wasm.exists(), "a refused owner must not produce an artifact");
+    }
+    let wasm = dir.join("unselected-owner.wasm");
+    let output = Command::new(BIN).args([
+        "compile", &entry, "--dep", &dep_arg,
+        "--package-owner", "workspace", "example/app", "0.1.0", "src.app",
+        "--dep-owner", "model", "workspace", "acme/model", "1.2.3", "src.model",
+        "--dep-owner", "unselected", "workspace", "acme/model", "1.2.3", "src.model",
+        "--out", wasm.to_str().unwrap(),
+    ]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("owner assertions for unselected dependencies: unselected"));
+    assert!(!wasm.exists());
 }
 
 // ---- BUG-104 / BUG-106: compiled `.wasm` artifact launch ----

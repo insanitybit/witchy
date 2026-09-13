@@ -103,8 +103,17 @@ pub(crate) fn capture_project_source(
             return Err("source replay does not yet support custom/registry owner assignments; resolver provenance must be retained, not relabeled".into());
         }
     }
-    if claims.len() != dependencies.len() || dependencies.keys().any(|alias| !claims.contains_key(alias)) {
-        return Err("project source requires exactly one owner assertion per selected dependency".into());
+    let mut missing: Vec<_> = dependencies.keys().filter(|alias| !claims.contains_key(*alias))
+        .map(String::as_str).collect();
+    missing.sort_unstable();
+    if !missing.is_empty() {
+        return Err(format!("missing --dep-owner for selected dependencies: {}", missing.join(", ")));
+    }
+    let mut extra: Vec<_> = claims.keys().filter(|alias| !dependencies.contains_key(*alias))
+        .map(String::as_str).collect();
+    extra.sort_unstable();
+    if !extra.is_empty() {
+        return Err(format!("owner assertions for unselected dependencies: {}", extra.join(", ")));
     }
     let manifest = match manifest {
         Some(path) => PathBuf::from(path),
