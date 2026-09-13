@@ -612,6 +612,44 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
 }
 
 #[test]
+fn canonical_console_fixture_edit_loop_stays_on_its_three_contracts() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-interp/src/interpreter/runners.rs",
+        "crates/witchy-runtime/src/runtime/console_fixtures.rs",
+        "crates/witchy-test-host/src/lib.rs",
+        "crates/witchy-types/src/pipeline/test_driver/console_fixture.rs",
+        "crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs",
+        "scripts/rfc0165-deferred-tests.txt",
+        "src/commands/test_runner/canonical_console_fixture.rs",
+    ]);
+    assert_eq!(commands.len(), 3, "fixture edit loop was not bounded: {commands:?}");
+    assert!(
+        commands[0].contains("native_host_links_every_catalog_import_with_the_declared_signature"),
+        "fixture edit loop omitted the ABI linkage contract: {commands:?}",
+    );
+    assert!(
+        commands[1].contains("-p witchy-test-host -p witchy-runtime")
+            && commands[1].contains("runtime::console_fixtures::tests::"),
+        "fixture edit loop omitted host/runtime ownership and bounds contracts: {commands:?}",
+    );
+    assert!(
+        commands[2].starts_with("./scripts/nextest-admitted.sh witchy -- ")
+            && commands[2].contains("--bin witchy")
+            && commands[2].contains("canonical_console_fixture_tests::"),
+        "fixture edit loop omitted admitted source/native semantics: {commands:?}",
+    );
+    assert!(
+        !commands.iter().any(|command| {
+            command.contains("test(/^example_tests::/)")
+                || command.contains("test(/^commands::/)")
+                || command.contains("check.sh --wasm")
+        }),
+        "checkpoint work leaked into the fixture edit loop: {commands:?}",
+    );
+}
+
+#[test]
 fn broad_rfc0165_edit_checks_share_the_landing_admission_policy() {
     // Representative paths from impl/rfc0165-project-crypto-admission. Its
     // unfiltered edit check failed only the ten legacy lowerer tests that the

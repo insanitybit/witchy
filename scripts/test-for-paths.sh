@@ -254,6 +254,8 @@ any_rust=0
 all_paths_have_early=1
 canonical_rewrite=0
 canonical_rewrite_paths_only=1
+canonical_fixture_rewrite=0
+canonical_fixture_rewrite_paths_only=1
 for p in "${paths[@]}"; do
     path_has_early=0
     case "$p" in
@@ -285,6 +287,25 @@ for p in "${paths[@]}"; do
         scratch/* | \
         security-eval/*) ;;
         *) canonical_rewrite_paths_only=0 ;;
+    esac
+    case "$p" in
+        crates/witchy-interp/src/interpreter/runners.rs | \
+        crates/witchy-runtime/src/runtime/console_fixtures.rs | \
+        crates/witchy-test-host/src/lib.rs | \
+        crates/witchy-types/src/pipeline/test_driver/console_fixture.rs | \
+        crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs | \
+        src/commands/test_runner/canonical_console_fixture.rs)
+            canonical_fixture_rewrite=1 ;;
+    esac
+    case "$p" in
+        crates/witchy-interp/src/interpreter/runners.rs | \
+        crates/witchy-runtime/src/runtime/console_fixtures.rs | \
+        crates/witchy-test-host/src/lib.rs | \
+        crates/witchy-types/src/pipeline/test_driver/console_fixture.rs | \
+        crates/witchy-types/src/pipeline/test_driver/console_fixture/arguments.rs | \
+        scripts/rfc0165-deferred-tests.txt | \
+        src/commands/test_runner/canonical_console_fixture.rs) ;;
+        *) canonical_fixture_rewrite_paths_only=0 ;;
     esac
     case "$p" in
         web/witchy-runtime/*.mjs)
@@ -638,7 +659,19 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
+if [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
+    && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then
+    # Console-fixture plumbing spans the checked driver, interpreter, host,
+    # native runtime, and CLI. Combining those paths used to select seven
+    # commands, including every example, every command test, and the Wasm
+    # shard. Keep the edit loop on the three contracts the slice changes; the
+    # complete crate, example, command, and Wasm coverage remains in landing.
+    cmds=(
+        "cargo nextest run --test misc -E 'test(=wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature)'"
+        "cargo nextest run -p witchy-test-host -p witchy-runtime -E 'test(/^(tests::|runtime::console_fixtures::tests::)/)'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::test_runner::canonical_console_fixture_tests::/)'"
+    )
+elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     && [ "$canonical_rewrite_paths_only" -eq 1 ]; then
     # A cross-stage canonical compiler edit previously expanded to crate suites,
     # the complete example matrix twice, all misc tests, Wasm, check, and
