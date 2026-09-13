@@ -82,7 +82,7 @@ pub fn check_build_recipe_from_source_bundle(
     let parameter = target.params[0].clone();
     let ordinal = u64::try_from(*ordinal).map_err(|_| refused("build declaration ordinal overflow"))?;
     let declaration = format!("{entry}.build");
-    let original_digest = checked_source_digest(&sources);
+    let original_digest = checked_source_digest(&sources, entry);
     let mut hash = blake3::Hasher::new();
     hash.update(b"witchy.checked-build-recipe.production.build-out\0");
     hash.update(&VERSION.to_le_bytes());

@@ -679,9 +679,13 @@ fn link_checked_with(
     }, canonical_typed_source.into_inner()))
 }
 
-fn checked_source_digest(sources: &[(String, Vec<u8>)]) -> [u8; 32] {
+fn checked_source_digest(sources: &[(String, Vec<u8>)], entry: &str) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"witchy.checked-source-bundle.v1");
+    hasher.update(b"witchy.checked-source-bundle.v2");
+    // The loader's selected entry is semantic input too. Identical raw
+    // bundles selected at different roots must not share source authority.
+    hasher.update(&(entry.len() as u64).to_le_bytes());
+    hasher.update(entry.as_bytes());
     for (name, bytes) in sources {
         hasher.update(&(name.len() as u64).to_le_bytes());
         hasher.update(name.as_bytes());
@@ -785,16 +789,16 @@ fn canonicalize_callable_instances(
     Ok((typed, callable_witness))
 }
 
-/// Whether a linked declaration belongs to the checked program's entry module
-/// and is therefore a canonical runtime function.
+/// Whether a declaration claims a checked source-owned namespace. This is
+/// also used to reject forged specialization identities without bodies;
+/// membership alone does not make an imported declaration an execution root.
 ///
 /// The linker leaves the entry module's `main` unqualified and qualifies its
 /// other declarations with the entry module name (`app.helper`); every other
 /// module's declarations are qualified with their own name. An unlinked module
 /// (tests, direct binder callers) has no entry and everything is in scope.
-/// This is the single definition: the ABI manifest, the proper-tail ordinal
-/// map, layout derivation, and canonical lowering must all agree on it, or a
-/// program's own `main` can be admitted away (see
+/// Actual executable membership is the shared `canonical_scope` judgment
+/// below. A program's own `main` must never be admitted away (see
 /// `BUG-canonical-entry-scope-drops-bare-main.md`).
 pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bool {
     linked_entry.is_none_or(|entry| {
@@ -804,12 +808,12 @@ pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bo
     })
 }
 
-/// The canonical scope of a linked module: the entry scope (`main`, the entry
-/// module's declarations, user library modules) plus every function reachable
+/// The canonical scope of a linked module: the entry scope (`main` and the
+/// selected entry module's existing exported declarations) plus every function reachable
 /// from it by name, transitively, through standard-library bodies and
 /// monomorphized instances. Reachability is by exact declaration name after
 /// monomorphization has renamed call sites to their instances, so a program
-/// carries exactly the library code it calls and nothing it does not; a
+/// carries exactly the library code it references and nothing it does not; a
 /// reachable body outside the compact subset still refuses precisely at
 /// lowering. The scope is one judgment shared by the proper-tail manifest, the
 /// callable witness, the layouts, and the lowering, so their ordinals agree.
@@ -828,9 +832,16 @@ pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
         })
         .collect::<std::collections::HashMap<_, _>>();
     let mut scope = BTreeSet::new();
+    let entry_prefix = entry.map(|entry| format!("{entry}."));
     let mut pending = functions
         .keys()
-        .filter(|name| is_canonical_entry_function(entry, name))
+        // Imported declarations are dependencies, not additional entry roots.
+        // Keep the established entry-module export surface (including private
+        // compiler recipe entries), and keep unlinked/library checks closed
+        // over all their declarations. Neither types nor lowering support
+        // participate in this decision.
+        .filter(|name| entry_prefix.as_ref().is_none_or(|prefix|
+            **name == "main" || name.starts_with(prefix)))
         .map(|name| (*name).to_owned())
         .collect::<Vec<_>>();
     let seeds = pending.iter().cloned().collect::<BTreeSet<_>>();
@@ -1056,7 +1067,7 @@ fn link_checked_source_bundle_with(
     module_owners: Option<AuthenticatedModuleOwners>,
 ) -> Result<CheckedModule, PipelineError> {
     sources.sort_by(|left, right| left.0.cmp(&right.0));
-    let source_bundle_digest = checked_source_digest(&sources);
+    let source_bundle_digest = checked_source_digest(&sources, entry);
     let modules = sources
         .iter()
         .map(|(name, bytes)| {
@@ -1541,7 +1552,7 @@ impl Reflect for Counter:
         assert_eq!(&tails, canonical.proper_tail_manifest());
         assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&[
             ("main".into(), include_bytes!("../../../examples/dynamic_reflection/src/dynamic_reflection.witchy").to_vec()),
-        ]));
+        ], "main"));
     }
 
     #[test]
@@ -1659,7 +1670,7 @@ impl Reflect for Counter:
             .expect("existing fib/collatz generator source prepares");
         let canonical = checked.canonical_source().expect("sealed canonical product");
         let typed = canonical.typed_module();
-        assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&sources));
+        assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&sources, "main"));
         let functions = typed.module().items.iter().filter_map(|item| match item {
             Item::Function(function) => Some(function),
             _ => None,
@@ -1710,7 +1721,7 @@ impl Reflect for Counter:
             .for_canonical_functions(typed.module(), &canonical.callable_witness.runtime_functions);
         assert_eq!(&tails, canonical.proper_tail_manifest());
         let closures = typed.canonical_closure_witness().expect("prepared closure obligations")
-            .bind_source_bundle_digest(checked_source_digest(&sources));
+            .bind_source_bundle_digest(checked_source_digest(&sources, "main"));
         assert!(!closures.entries().is_empty(), "unfold's generated callable closures are included");
         assert_eq!(&closures, canonical.closure_witness());
         assert_eq!(bind_canonical_callable_witness(typed, canonical.callable_witness.generic_instances.clone())
@@ -1934,6 +1945,56 @@ impl Reflect for Counter:
             }
         }
         assert!(canonical_scope(&module).contains("task.__channel_send"));
+    }
+
+    #[test]
+    fn canonical_scope_imports_are_dependencies_not_roots() {
+        let sources = vec![
+            ("entry".into(), b"import library\nfn main() -> Int:\n    library.apply(library.make(4), 3)\n".to_vec()),
+            ("library".into(), b"fn add(a: Int, b: Int) -> Int:\n    a + b\npub fn make(offset: Int) -> fn(Int) -> Int:\n    fn(value: Int) -> Int: add(offset, value)\npub fn apply(operation: fn(Int) -> Int, value: Int) -> Int:\n    operation(value)\npub fn unused(fetch: Fetch) -> Int:\n    1\n".to_vec()),
+        ];
+        let checked = link_checked_from_source_bundle(sources, "entry", no_expand).unwrap();
+        let canonical = checked.canonical_source().unwrap();
+        let scope = canonical_scope(canonical.typed_module().module());
+        for name in ["main", "library.make", "library.apply", "library.add"] {
+            assert!(scope.contains(name), "reachable callable {name}");
+            assert!(canonical.closed_callable_abi(name).is_some(), "fresh ABI for {name}");
+        }
+        assert!(!scope.contains("library.unused"));
+        assert!(canonical.closed_callable_abi("library.unused").is_none());
+        let tails = canonical.typed_module().proper_tail_manifest().unwrap()
+            .for_canonical_functions(canonical.typed_module().module(), &canonical.callable_witness.runtime_functions);
+        assert_eq!(&tails, canonical.proper_tail_manifest());
+        assert!(!canonical.closure_witness().entries().is_empty());
+
+        let mut library = parse("fn unused(fetch: Fetch) -> Int:\n    1\n");
+        assert!(canonical_scope(&library).contains("unused"), "unlinked library declarations remain roots");
+        library.linked_entry = Some("entry".into());
+        if let witchy_syntax::ast::Item::Function(function) = &mut library.items[0] {
+            function.name = "entry.unused".into();
+        }
+        assert!(canonical_scope(&library).contains("entry.unused"), "selected module exports remain roots");
+    }
+
+    #[test]
+    fn canonical_source_identity_binds_the_selected_entry() {
+        let sources = vec![
+            ("left".into(), b"fn main() -> Int:\n    1\n".to_vec()),
+            ("right".into(), b"fn main() -> Int:\n    2\n".to_vec()),
+        ];
+        let left = link_checked_from_source_bundle(sources.clone(), "left", no_expand).unwrap();
+        let right = link_checked_from_source_bundle(sources, "right", no_expand).unwrap();
+        assert_ne!(left.canonical_source().unwrap().source_witness().source_bundle_digest(),
+            right.canonical_source().unwrap().source_witness().source_bundle_digest());
+    }
+
+    #[test]
+    fn canonical_scope_does_not_skip_source_checking_unused_imports() {
+        let sources = vec![
+            ("entry".into(), b"import library\nfn main() -> Int:\n    1\n".to_vec()),
+            ("library".into(), b"pub fn invalid() -> Int:\n    \"not an Int\"\n".to_vec()),
+        ];
+        assert!(link_checked_from_source_bundle(sources, "entry", no_expand).is_err());
     }
 
     /// A rights-qualified capability parameter is inside the canonical ABI

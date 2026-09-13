@@ -73,7 +73,7 @@ pub fn link_checked_test_suite_from_source_bundle(
     {
         return Err(refused("test source bundle requires unique module names and its entry"));
     }
-    let original_source_digest = checked_source_digest(&sources);
+    let original_source_digest = checked_source_digest(&sources, entry);
     let (checked, _) = link_checked_with(
         parse_sources(&sources)?, entry, expand, LinkMode::Test,
         Some(user_modules), false, Some(owners),
