@@ -370,7 +370,7 @@ mod tests {
         exports.export("memory", ExportKind::Memory, 0);
         exports.export("frontier", ExportKind::Global, 0);
         exports.export("free", ExportKind::Global, 1);
-        let local = LocalLayout {
+        let local = LocalLayout { memory_helpers: None,
             owner_scratch: None,
             owner_bridges: Vec::new(),
             indices: BTreeMap::new(),

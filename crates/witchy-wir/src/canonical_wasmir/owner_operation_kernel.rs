@@ -19,7 +19,7 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
         return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
     }
     let mut function = function.clone();
-    let mut local = LocalLayout {
+    let mut local = LocalLayout { memory_helpers: local.memory_helpers.clone(),
         owner_scratch: local.owner_scratch,
         owner_bridges: Vec::new(),
         indices: local.indices.clone(),
@@ -65,7 +65,7 @@ fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayou
         .collect(),
         blocks: Vec::new(),
     };
-    let local = LocalLayout {
+    let local = LocalLayout { memory_helpers: None,
         owner_scratch: None,
         owner_bridges: Vec::new(),
         indices: [(environment, 1), (index, 2)].into_iter().collect(),

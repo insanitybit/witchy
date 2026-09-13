@@ -18,6 +18,7 @@ use crate::layout::{LayoutBundle, LayoutId};
 mod check;
 pub mod manifest;
 pub use check::{InitialCheckError, check_initial};
+pub(crate) use check::{operation_uses, terminator_uses};
 mod authority;
 pub use authority::{
     CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, InitialWitnessError, ValidatedSafeWir,

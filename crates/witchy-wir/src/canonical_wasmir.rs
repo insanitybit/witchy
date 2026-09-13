@@ -43,6 +43,8 @@ use crate::layout::{
 // fixed linear-memory page and refuses an allocation before returning a
 // pointer when the checked extent does not fit.
 mod drop_worklist;
+mod outlined_memory;
+mod scalar_locals;
 mod closure_owner_kernel;
 mod owner_bridges;
 mod owner_operation_kernel;
@@ -1828,6 +1830,7 @@ fn wasm_value_type(
 
 #[derive(Clone)]
 struct LocalLayout<'a> {
+    memory_helpers: Option<std::sync::Arc<outlined_memory::Helpers>>,
     owner_scratch: Option<[u32; 3]>,
     // Immutable admitted recipes are module-wide, not per-function state.
     // Copy only references: cleanup recipes contain the complete owner family
@@ -1861,6 +1864,11 @@ fn local_layout<'a>(
         }
     }
     let mut extra_types = Vec::new();
+    let temporary_slots = scalar_locals::slots(function);
+    scalar_locals::verify(function, &temporary_slots).map_err(|_| EncodeError::UnsupportedLayout {
+        function: function.id, operation: "scalar local slot assignment",
+    })?;
+    let mut temporary_indices = BTreeMap::new();
     for (value, value_type) in &function.value_types {
         if indices.contains_key(value) {
             continue;
@@ -1868,9 +1876,19 @@ fn local_layout<'a>(
         if matches!(value_type, ValueType::InlineAggregate(_)) {
             continue;
         }
-        let index = entry.parameters.len() as u32 + extra_types.len() as u32;
+        let ty = wasm_value_type(function.id, *value, *value_type)?;
+        let index = if let Some(slot) = temporary_slots.get(value) {
+            *temporary_indices.entry(*slot).or_insert_with(|| {
+                let index = entry.parameters.len() as u32 + extra_types.len() as u32;
+                extra_types.push(ty);
+                index
+            })
+        } else {
+            let index = entry.parameters.len() as u32 + extra_types.len() as u32;
+            extra_types.push(ty);
+            index
+        };
         indices.insert(*value, index);
-        extra_types.push(wasm_value_type(function.id, *value, *value_type)?);
     }
 // Derive scratch space from the whole-function value table. The independent
 // operation planner retains that table when it plans one block at a time;
@@ -1891,6 +1909,7 @@ let mut scratch = vec![0; drop_worklist::SCRATCH];
         }
     }
     Ok(LocalLayout {
+        memory_helpers: None,
         owner_scratch, owner_bridges: Vec::new(),
         indices,
         extra_types,
@@ -1950,6 +1969,13 @@ fn emit_projected_address(
             function: function.id,
             operation: "address",
         })?;
+    if let Some(helpers) = &layout.memory_helpers {
+        emit_get(body, layout, function.id, access.object)?;
+        body.instruction(&wasm_encoder::Instruction::I32Const(access.offset as i32));
+        body.instruction(&wasm_encoder::Instruction::I32Const(maximum as i32));
+        body.instruction(&wasm_encoder::Instruction::Call(helpers.address));
+        return Ok(());
+    }
         emit_get(body, layout, function.id, access.object)?;
         body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
         body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(access.offset)));
@@ -2436,6 +2462,10 @@ fn emit_clone_ref(
     function: &Function,
 ) -> Result<(), EncodeError> {
     emit_get(body, layout, function.id, object)?;
+    if let Some(helpers) = &layout.memory_helpers {
+        body.instruction(&wasm_encoder::Instruction::Call(helpers.retain));
+        return emit_set(body, layout, function.id, destination);
+    }
     emit_set_index(body, scratch_index(layout, 1));
     emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::GlobalGet(2));
@@ -2532,6 +2562,10 @@ fn emit_release(body: &mut wasm_encoder::Function, layout: &LocalLayout, functio
         return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "DropRef object" });
     };
     emit_get(body, layout, function.id, object)?;
+    if let Some(index) = layout.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&object_layout)) {
+        body.instruction(&wasm_encoder::Instruction::Call(*index));
+        return Ok(());
+    }
     emit_set_index(body, scratch_index(layout, 0));
     drop_worklist::emit(body, layout, function.id, layouts, object_layout)
 }
@@ -3972,9 +4006,11 @@ fn encode_function(
     layouts: &LayoutInterner,
     owner_bridges: &[AdmittedOwnerBridge],
     owner_cleanup_function: Option<u32>,
+    memory_helpers: &std::sync::Arc<outlined_memory::Helpers>,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
     let mut layout = local_layout(source_function, signature, layouts)?;
     layout.owner_bridges = owner_bridges.iter().collect();
+    layout.memory_helpers = Some(memory_helpers.clone());
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
     if target_function.entry != source_function.entry {
@@ -4127,6 +4163,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     let owner_cleanup_bridge = owner_cleanup_bridge(&target.owner_bridges);
     let owner_cleanup_function = owner_cleanup_bridge
         .map(|_| import_count + target.functions.len() as u32);
+    let memory_helpers = outlined_memory::Helpers::new(source, import_count + target.functions.len() as u32 + u32::from(owner_cleanup_bridge.is_some()))?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, import_count + index as u32)).collect();
     let mut import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
     for (index, bridge) in target.owner_bridges.iter().enumerate() { import_indices.insert(bridge.id(), source.imports().len() as u32 + index as u32); }
@@ -4155,6 +4192,12 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
         types.ty().function([ValType::Ref(RefType::ANYREF)], []);
         index
     });
+    let address_type = types.len();
+    types.ty().function([ValType::I32; 3], [ValType::I32]);
+    let drop_type = types.len();
+    types.ty().function([ValType::I32], []);
+    let retain_type = types.len();
+    types.ty().function([ValType::I32], [ValType::I32]);
     let mut imports = ImportSection::new();
     for import in source.imports() {
         let type_index = import_type_indices.get(&import.id).copied().ok_or(
@@ -4227,12 +4270,20 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts, &target.owner_bridges, owner_cleanup_function)?);
+        code.function(&encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts, &target.owner_bridges, owner_cleanup_function, &memory_helpers)?);
     }
     if let (Some(bridge), Some(type_index)) = (owner_cleanup_bridge, owner_cleanup_type) {
         functions.function(type_index);
         code.function(&owner_operation_kernel::emit_cleanup_helper(&layouts, bridge)?);
     }
+    functions.function(address_type);
+    code.function(&outlined_memory::emit_address());
+    for root in memory_helpers.drops.keys() {
+        functions.function(drop_type);
+        code.function(&outlined_memory::emit_drop(&layouts, *root)?);
+    }
+    functions.function(retain_type);
+    code.function(&outlined_memory::emit_retain());
     let mut module = WasmModule::new();
     module
         .section(&types)
@@ -4591,6 +4642,11 @@ fn push_projected_address_plan(
         return Ok(());
     }
     let maximum = u32::MAX.checked_sub(access.width).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    if let Some(helpers) = &layout.memory_helpers {
+        push_get(plan, layout, access.object)?;
+        plan.extend([PlanToken::I32Const(access.offset as i32), PlanToken::I32Const(maximum as i32), PlanToken::Call(helpers.address)]);
+        return Ok(());
+    }
     push_get(plan, layout, access.object)?;
     plan.extend([
         PlanToken::I64ExtendI32U,
@@ -4700,6 +4756,10 @@ fn push_share_plan(
     object: ValueId,
 ) -> Result<(), CanonicalAdmissionError> {
     push_get(plan, layout, object)?;
+    if let Some(helpers) = &layout.memory_helpers {
+        plan.push(PlanToken::Call(helpers.retain));
+        return push_set(plan, layout, destination);
+    }
     plan.extend([
         PlanToken::LocalSet(layout.scratch[1]),
         PlanToken::LocalGet(layout.scratch[1]),
@@ -5169,6 +5229,10 @@ fn push_drop_ref_plan(
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     };
     push_get(plan, layout, object)?;
+    if let Some(index) = layout.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&object_layout)) {
+        plan.push(PlanToken::Call(*index));
+        return Ok(());
+    }
     plan.push(PlanToken::LocalSet(layout.scratch[0]));
     drop_worklist::plan(plan, function.id, layouts, layout, object_layout)
 }
@@ -6380,9 +6444,11 @@ fn expected_function_plan(
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     owner_cleanup_function: Option<u32>,
     owner_bridges: &[AdmittedOwnerBridge],
+    memory_helpers: &std::sync::Arc<outlined_memory::Helpers>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     layout.owner_bridges = owner_bridges.iter().collect();
+    layout.memory_helpers = Some(memory_helpers.clone());
     let successors_by_block: BTreeMap<_, _> = function
         .blocks
         .iter()
@@ -6486,6 +6552,15 @@ fn expected_metadata_prefix(
         types.ty().function([ValType::Ref(RefType::ANYREF)], []);
         index
     });
+    let address_type = types.len();
+    types.ty().function([ValType::I32; 3], [ValType::I32]);
+    let drop_type = types.len();
+    types.ty().function([ValType::I32], []);
+    let retain_type = types.len();
+    types.ty().function([ValType::I32], [ValType::I32]);
+    let memory_helpers = outlined_memory::Helpers::new(source,
+        (target.imports.len() + target.owner_bridges.len() + target.functions.len()) as u32 + u32::from(owner_cleanup_bridge.is_some()))
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let mut imports = ImportSection::new();
     for import in &target.imports {
         let type_index = import_type_indices.get(&import.id).copied()
@@ -6516,6 +6591,9 @@ fn expected_metadata_prefix(
     if let Some(type_index) = owner_cleanup_type {
         functions.function(type_index);
     }
+    functions.function(address_type);
+    for _ in memory_helpers.drops.keys() { functions.function(drop_type); }
+    functions.function(retain_type);
     if let Some(table) = &target.table {
         tables.table(TableType {
             element_type: RefType::FUNCREF,
@@ -6565,6 +6643,8 @@ fn decode_and_match_plan(
     let owner_cleanup_bridge = owner_cleanup_bridge(&target.owner_bridges);
     let owner_cleanup_function = owner_cleanup_bridge
         .map(|_| import_count + target.functions.len() as u32);
+    let memory_helpers = outlined_memory::Helpers::new(source, import_count + target.functions.len() as u32 + u32::from(owner_cleanup_bridge.is_some()))
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
         .map(|(index, function)| (function.id, import_count + index as u32))
         .collect();
@@ -6585,12 +6665,17 @@ fn decode_and_match_plan(
             let local = local_layout(function, signature, &layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
             let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges)?))
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(bridge) = owner_cleanup_bridge {
         expected.push(owner_operation_kernel::plan_cleanup_helper(&layouts, bridge)?);
     }
+    expected.push(outlined_memory::plan_address());
+    for root in memory_helpers.drops.keys() {
+        expected.push(outlined_memory::plan_drop(&layouts, *root)?);
+    }
+    expected.push(outlined_memory::plan_retain());
     let mut actual = Vec::new();
     let mut code_count = None;
     let mut section_order = Vec::new();
@@ -8944,6 +9029,232 @@ mod tests {
         }))
     }
 
+    // A wide, nullable owned record models the repeated inactive-field
+    // initialization and release pattern in the real task.run source body.
+    // It must not replicate a graph destructor at every release site.
+    fn checked_outlined_memory_fixture() -> ValidatedSafeWir {
+        let mut interner = LayoutInterner::new();
+        let scalar = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let slot = interner.intern_runtime_pointer_value_slot(scalar, PointerSlot::OwnedNullable).unwrap();
+        let record = interner.intern_packed_record(vec![slot; 128]).unwrap();
+        // Pointer value slots include their catalog-defined storage lane;
+        // their extent is not the width of the pointer stored in that lane.
+        let crate::layout::LayoutSize::Fixed(record_bytes) = interner.get(record).unwrap().size() else {
+            panic!("outlined fixture requires a fixed record layout");
+        };
+        let layouts = LayoutBundle::from_interner(&interner, [record]).unwrap();
+        let result = ValueId::new(0);
+        let mut value_types = BTreeMap::from([(result, ValueType::Size)]);
+        let mut operations = Vec::new();
+        for index in 0..64 {
+            let object = ValueId::new(index * 2 + 1);
+            let shared = ValueId::new(index * 2 + 2);
+            value_types.insert(object, ValueType::Ref(record));
+            value_types.insert(shared, ValueType::Ref(record));
+            operations.push(Operation::Alloc {
+                destination: object,
+                layout: record,
+                extent: Extent::FixedBytes(u64::from(record_bytes)),
+                class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+            });
+            for field in 0..128 {
+                operations.push(Operation::InitNullableOwned {
+                    place: Place::projected(object, Projection::Field { index: field }, ValueType::Ref(scalar), AccessMode::Write),
+                });
+            }
+            operations.push(Operation::CloneRef { destination: shared, source: object });
+            operations.push(Operation::DropRef { object: shared });
+        }
+        // Keep every allocation live until construction finishes, so the
+        // free-list assertion measures 64 distinct reclaimed containers even
+        // if the allocator reuses free blocks.
+        for index in 0..64 {
+            operations.push(Operation::DropRef { object: ValueId::new(index * 2 + 1) });
+        }
+        operations.push(Operation::ConstSize { destination: result, value: 7 });
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(141),
+            checked_source: CheckedSourceIdentity::from_digest([141; 32]),
+            layouts,
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(141), Vec::new(), vec![ValueType::Size])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(141),
+                signature: FunctionSignatureId::new(141),
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types,
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(0),
+                    parameters: Vec::new(),
+                    operations,
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn outlined_memory_bounds_body_size_and_executes_shared_nullable_drops() {
+        let checked = checked_outlined_memory_fixture();
+        let oracle = crate::canonical_interpreter::interpret_program(
+            &checked, FunctionId::new(141), Vec::new(), Default::default(),
+        ).expect("independent oracle executes the checked operations");
+        assert_eq!(oracle.results, vec![crate::canonical_interpreter::InterpreterValue::Size(7)]);
+        assert_eq!(oracle.leaked_objects, 0);
+        let artifact = admit_canonical(checked).expect("wide repeated memory operations admit");
+        let mut sizes = Vec::new();
+        let mut calls = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(artifact.wasm()) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                if sizes.is_empty() {
+                    let mut operators = body.get_operators_reader().unwrap();
+                    while !operators.eof() {
+                        if let wasmparser::Operator::Call { function_index } = operators.read().unwrap() {
+                            calls.push(function_index);
+                        }
+                    }
+                }
+                sizes.push(body.range().len());
+            }
+        }
+        assert_eq!(sizes.len(), 4, "one source body and address, drop, retain helpers");
+        assert!(sizes[0] < 64 * (128 * 16 + 1024), "repeated kernels expanded into the source body: {sizes:?}");
+        assert_eq!(calls.iter().filter(|index| **index == 1).count(), 64 * 128);
+        assert_eq!(calls.iter().filter(|index| **index == 2).count(), 64 * 2);
+        assert_eq!(calls.iter().filter(|index| **index == 3).count(), 64);
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        assert_eq!(instance.get_typed_func::<(), i32>(&mut store, "f141").unwrap().call(&mut store, ()).unwrap(), 7);
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let mut free = instance.get_global(&mut store, HEAP_FREE_EXPORT).unwrap().get(&mut store).i32().unwrap() as usize;
+        let mut seen = BTreeSet::new();
+        while free != 0 {
+            assert!(seen.insert(free), "free-list cycle or double release");
+            free = u32::from_le_bytes(memory.data(&store)[free..free + 4].try_into().unwrap()) as usize;
+        }
+        assert_eq!(seen.len(), 64, "every allocated container must be reclaimed exactly once");
+    }
+
+    #[test]
+    fn outlined_address_predicate_mutation_fails_independent_admission() {
+        let mut bytes = encode_validated(checked_outlined_memory_fixture()).unwrap();
+        let mut body_index = 0;
+        let mut comparison = None;
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                if body_index == 1 {
+                    let mut reader = body.get_operators_reader().unwrap();
+                    while !reader.eof() {
+                        let offset = reader.original_position();
+                        if matches!(reader.read().unwrap(), wasmparser::Operator::I64GtU) {
+                            comparison = Some(offset);
+                        }
+                    }
+                }
+                body_index += 1;
+            }
+        }
+        // i64.lt_u is structurally valid with the same stack signature, but
+        // reverses the address authority predicate. Only exact plan matching
+        // may authorize the helper, just as for an inlined memory operation.
+        bytes[comparison.expect("outlined unsigned overflow comparison")] = 0x54;
+        assert!(matches!(
+            admit_canonical_with_bytes_for_test(checked_outlined_memory_fixture(), bytes),
+            Err(CanonicalAdmissionError::PlanMismatch(_))
+        ));
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn scalar_local_storage_reuse_executes_above_fifty_thousand_ssa_values() {
+        use crate::canonical_interpreter::{interpret_program, InterpreterValue};
+        let mut interner = LayoutInterner::new();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let record = interner.intern_packed_record(vec![int]).unwrap();
+        let crate::layout::LayoutSize::Fixed(bytes) = interner.get(record).unwrap().size() else { panic!("fixed scalar record"); };
+        let captured = ValueId::new(0);
+        let object = ValueId::new(1);
+        let aggregate = ValueId::new(2);
+        let loaded = ValueId::new(55_003);
+        let extracted = ValueId::new(55_004);
+        let mut value_types = BTreeMap::from([
+            (captured, ValueType::Int), (object, ValueType::Ref(record)),
+            (aggregate, ValueType::InlineAggregate(record)),
+            (loaded, ValueType::Int), (extracted, ValueType::Int),
+        ]);
+        let mut operations = vec![
+            Operation::ConstInt { destination: captured, value: 42 },
+            Operation::MakeInlineAggregate { destination: aggregate, layout: record, fields: vec![captured] },
+            Operation::Alloc { destination: object, layout: record, extent: Extent::FixedBytes(u64::from(bytes)), class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+        ];
+        for index in 0..55_000 {
+            let value = ValueId::new(index + 3);
+            value_types.insert(value, ValueType::Int);
+            operations.push(Operation::ConstInt { destination: value, value: i64::from(index) });
+            operations.push(Operation::Store {
+                place: Place::projected(object, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Write),
+                value, transfer: StoreTransfer::CopyScalar,
+            });
+        }
+        operations.extend([
+            Operation::Load { destination: loaded, place: Place::projected(object, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+            Operation::ExtractInlineField { destination: extracted, aggregate, index: 0 },
+            Operation::DropRef { object },
+        ]);
+        let checked = finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(142), checked_source: CheckedSourceIdentity::from_digest([142; 32]),
+            layouts: LayoutBundle::from_interner(&interner, [record]).unwrap(),
+            signatures: vec![scalar_signature_with(FunctionSignatureId::new(142), Vec::new(), vec![ValueType::Int, ValueType::Int])],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(142), signature: FunctionSignatureId::new(142),
+                entry: crate::canonical_safewir::BlockId::new(0), value_types,
+                blocks: vec![BasicBlock { id: crate::canonical_safewir::BlockId::new(0), parameters: Vec::new(), operations, terminator: Terminator::Return { values: vec![loaded, extracted] } }],
+            }], proper_tail_sites: Vec::new(),
+        }));
+        let oracle = interpret_program(&checked, FunctionId::new(142), Vec::new(), Default::default()).unwrap();
+        assert_eq!(oracle.results, vec![InterpreterValue::Int(54_999), InterpreterValue::Int(42)]);
+        assert_eq!(oracle.leaked_objects, 0);
+        let artifact = admit_canonical(checked).expect("SSA value count is not Wasm local count");
+        let source_body = wasmparser::Parser::new(0).parse_all(artifact.wasm()).find_map(|payload| {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() { Some(body) } else { None }
+        }).unwrap();
+        let locals: u32 = source_body.get_locals_reader().unwrap().into_iter().map(|entry| entry.unwrap().0).sum();
+        assert!(locals < 64, "nonescaping scalars consumed {locals} Wasm locals");
+        assert!(source_body.range().len() < 2_000_000);
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let result = instance.get_typed_func::<(), (i64, i64)>(&mut store, "f142").unwrap().call(&mut store, ()).unwrap();
+        assert_eq!(result, (54_999, 42), "deferred inline field must retain its original scalar");
+    }
+
+    #[test]
+    fn outlined_retain_saturation_predicate_mutation_fails_admission() {
+        let mut bytes = encode_validated(checked_outlined_memory_fixture()).unwrap();
+        let mut body_index = 0;
+        let mut limit = None;
+        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                if body_index == 3 {
+                    let mut reader = body.get_operators_reader().unwrap();
+                    while !reader.eof() {
+                        let offset = reader.original_position();
+                        if matches!(reader.read().unwrap(), wasmparser::Operator::I32Const { value: -1 }) { limit = Some(offset + 1); }
+                    }
+                }
+                body_index += 1;
+            }
+        }
+        bytes[limit.expect("retain saturation limit")] = 0;
+        assert!(matches!(admit_canonical_with_bytes_for_test(checked_outlined_memory_fixture(), bytes), Err(CanonicalAdmissionError::PlanMismatch(_))));
+    }
+
     fn checked_share_fixture() -> ValidatedSafeWir {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
@@ -9070,6 +9381,7 @@ mod tests {
         // exactly the production destructor's scratch area.
         let local_count = scratch_count + 1;
         let layout = LocalLayout {
+            memory_helpers: None,
             owner_scratch: None,
             owner_bridges: Vec::new(),
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
