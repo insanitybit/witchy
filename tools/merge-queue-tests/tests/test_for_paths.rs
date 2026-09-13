@@ -586,6 +586,56 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
 }
 
 #[test]
+fn broad_rfc0165_edit_checks_share_the_landing_admission_policy() {
+    // Representative paths from impl/rfc0165-project-crypto-admission. Its
+    // unfiltered edit check failed only the ten legacy lowerer tests that the
+    // landing gate deliberately defers; the filtered suite passed 454 tests
+    // and skipped those ten in 25.3s.
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-lower/src/canonical_crypto.rs",
+        "crates/witchy-runtime/src/runtime/host/crypto.rs",
+        "crates/witchy-wir/src/canonical_safewir/crypto.rs",
+        "src/commands/compile.rs",
+        "tests/misc/rfc0165_crypto.rs",
+        "projects/grimoire/src/grimoire.witchy",
+        "Cargo.lock",
+    ]);
+    for command in &commands {
+        if command.contains("-p witchy-lower --features witchy-wir/native")
+            || command.contains("test(/^example_tests::/)")
+            || command.contains("test(/^commands::/)")
+            || command.ends_with("cargo nextest run --test misc")
+        {
+            assert!(
+                command.starts_with("./scripts/nextest-admitted.sh "),
+                "broad command bypassed the landing admission policy: {command}"
+            );
+        }
+    }
+
+    // Named authority/ABI/oracle probes must remain mandatory even when their
+    // package also has deferred legacy families.
+    let security = selected(&[
+        "--edit-loop",
+        "crates/witchy-wir/src/wir_prelude.rs",
+        "tests/misc/rfc0165_oracle.rs",
+    ]);
+    assert!(
+        security
+            .iter()
+            .all(|command| !command.starts_with("./scripts/nextest-admitted.sh ")),
+        "exact security probes were filtered: {security:?}"
+    );
+    assert!(
+        security
+            .iter()
+            .any(|command| command.contains("--ignore-default-filter")),
+        "oracle probe lost its mandatory override: {security:?}"
+    );
+}
+
+#[test]
 fn oracle_harness_edit_runs_only_the_filtered_production_oracle() {
     let commands = selected(&["--edit-loop", "tests/misc/rfc0165_oracle.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");
@@ -640,8 +690,8 @@ fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
     let expected = [
         "cargo check -p witchy --all-targets",
         "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use",
-        "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'",
-        "cargo nextest run --test cli_subcommands",
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'",
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands",
         "cargo nextest run -p witchy-syntax",
     ];
 
@@ -852,7 +902,7 @@ fn glamour_runtime_changes_get_javascript_and_integration_checks() {
         selected(&["web/witchy-runtime/glamour-dom.mjs"]),
         [
             "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;",
-            "cargo nextest run --test glamour -E 'test(/^dom::/)'",
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test glamour -E 'test(/^dom::/)'",
         ]
     );
 }
@@ -861,11 +911,11 @@ fn glamour_runtime_changes_get_javascript_and_integration_checks() {
 fn browser_runtime_modules_route_to_their_consolidated_binary_modules() {
     assert_eq!(
         selected(&["web/witchy-runtime/witchy-runnable.test.mjs"])[1],
-        "cargo nextest run --test browser -E 'test(/^shim::/)'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^shim::/)'"
     );
     assert_eq!(
         selected(&["web/witchy-runtime/encoding-abi.test.mjs"])[1],
-        "cargo nextest run --test browser -E 'test(/^encoding::/)'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^encoding::/)'"
     );
 }
 
@@ -876,7 +926,7 @@ fn shared_browser_host_runs_every_dependent_integration_binary() {
     assert!(commands[0].contains("node --check"), "{commands:?}");
     assert_eq!(
         commands[1],
-        "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'"
     );
 }
 
@@ -905,7 +955,7 @@ fn focused_mode_retains_crate_nextest_checks() {
         commands,
         [
             "cargo nextest run -p witchy-syntax",
-            "cargo nextest run -E 'test(/^example_tests::/)'",
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'",
         ]
     );
 }

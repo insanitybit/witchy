@@ -327,65 +327,65 @@ for p in "${paths[@]}"; do
             gate_need_conformance=1
             add_pkg witchy-types
             add "cargo nextest run -p witchy-types"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-lower/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-lower
-            add "cargo nextest run -p witchy-lower --features witchy-wir/native"
-            add "cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
+            add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower --features witchy-wir/native"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-wir/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-wir
             add "cargo nextest run -p witchy-wir --features witchy-wir/native"
-            add "cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-runtime/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-runtime
             add "cargo nextest run -p witchy-runtime"
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             add "./scripts/check.sh --wasm" ;;
         crates/witchy-syntax/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-syntax
             add "cargo nextest run -p witchy-syntax"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         crates/witchy-interp/* | crates/witchy-caps/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-interp
             add_pkg witchy-caps
             add "cargo nextest run -p witchy-interp -p witchy-caps"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/main.rs | src/cli.rs | src/source.rs)
             gate_workspace=1
             add "cargo check -p witchy --all-targets"
             add "cargo clippy -p witchy --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use"
-            add "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
-            add "cargo nextest run --test cli_subcommands"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands"
             add "cargo nextest run -p witchy-syntax" ;;
         src/example_tests.rs)
             any_rust=1
             gate_need_examples=1
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/example_tests/*)
             any_rust=1
             _et="${p##*/}"
             add_example_mod "${_et%.rs}"
-            add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
         src/commands/web.rs | src/commands/web/*)
             any_rust=1
             add_witchy_test 'commands::web'
-            add "cargo nextest run -E 'test(/^commands::web/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::web/)'" ;;
         src/commands/*)
             any_rust=1
             add_witchy_test 'commands::'
-            add "cargo nextest run -E 'test(/^commands::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::/)'" ;;
         src/lsp.rs | src/lsp_tests.rs)
             any_rust=1
             add_witchy_test 'lsp'
@@ -398,26 +398,26 @@ for p in "${paths[@]}"; do
         src/trusted_publisher.rs | src/capabilities_tests.rs)
             any_rust=1
             add_pkg witchy
-            add "cargo nextest run -p witchy --lib" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -p witchy --lib" ;;
         src/bin/*)
             any_rust=1
             add_gate_test misc
-            add "cargo nextest run --test misc" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc" ;;
         crates/* | src/*)
             any_rust=1
             gate_workspace=1 ;;
         std/*.witchy)
             gate_need_examples=1
             gate_need_stdlib_docs=1
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
             add "./target/debug/witchy fmt --check std/*.witchy" ;;
         README.md)
             corpus_impact=1
-            add "cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
         examples/* | book/*)
             corpus_impact=1
-            add "cargo nextest run -E 'test(/^example_tests::/)'"
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             # A book/example change can flip a block's browser-runnability (e.g.
             # add a Console-only-footprint program that uses std/vm's worker ops —
             # runnable on native, but the browser shim can't instantiate it). The
@@ -432,7 +432,7 @@ for p in "${paths[@]}"; do
         web/witchy-runtime/highlighter.test.mjs | \
         web/witchy-runtime/user-cap-export.test.mjs)
             add_gate_test glamour
-            add "cargo nextest run --test glamour -E 'test(/^dom::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test glamour -E 'test(/^dom::/)'" ;;
         web/witchy-runtime/abort-message.test.mjs | \
         web/witchy-runtime/playground-examples.test.mjs | \
         web/witchy-runtime/spike.mjs | \
@@ -443,10 +443,10 @@ for p in "${paths[@]}"; do
         web/witchy-cell-sandbox.js | \
         web/witchy-cell-frame.js)
             add_gate_test browser
-            add "cargo nextest run --test browser -E 'test(/^shim::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^shim::/)'" ;;
         web/witchy-runtime/encoding-abi.test.mjs)
             add_gate_test browser
-            add "cargo nextest run --test browser -E 'test(/^encoding::/)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser -E 'test(/^encoding::/)'" ;;
         web/witchy-runtime/import-catalog.test.mjs)
             add_gate_test misc
             add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
@@ -454,12 +454,12 @@ for p in "${paths[@]}"; do
             add_gate_test browser
             add_gate_test glamour
             add_gate_test misc
-            add "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
         web/*)
             # Playground / highlighter JS is not a Rust surface. Keep a
             # focused browser binary rather than fail-safe --workspace.
             add_gate_test browser
-            add "cargo nextest run --test browser" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser" ;;
         tools/merge-queue-tests/Cargo.toml | \
         tools/merge-queue-tests/tests/merge_queue.rs | \
         tools/merge-queue-tests/tests/test_for_paths.rs | \
@@ -486,7 +486,7 @@ for p in "${paths[@]}"; do
         tests/misc.rs | tests/misc/*)
             any_rust=1
             add_gate_test misc
-            add "cargo nextest run --test misc" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc" ;;
         tests/*.rs)
             any_rust=1
             test_name="${p#tests/}"
@@ -497,7 +497,7 @@ for p in "${paths[@]}"; do
             fi
             add_gate_test "$test_name"
             printf -v test_name_q '%q' "$test_name"
-            add "cargo nextest run --test $test_name_q" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test $test_name_q" ;;
         Cargo.toml | Cargo.lock | build.rs | .cargo/* | rust-toolchain | rust-toolchain.toml)
             gate_workspace=1
             add_early "python3 scripts/check-stage-dependencies.py"
@@ -547,10 +547,12 @@ for p in "${paths[@]}"; do
         scripts/check-stage-dependencies.py | spec/stage-dependencies.json)
             add_early "python3 scripts/check-stage-dependencies.py"
             path_has_early=1 ;;
-        scripts/test-for-paths.sh | scripts/test-impact.py)
+        scripts/test-for-paths.sh | scripts/test-impact.py | \
+        scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
             add_gate_test merge_queue
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/test-nextest-admitted.sh"
             add "cargo nextest run -p merge-queue-tests --test test_for_paths"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/*.sh)
@@ -566,7 +568,7 @@ for p in "${paths[@]}"; do
             # spec/, and book/src. A spec-only edit cannot change crate
             # tests; running the workspace would only re-prove master.
             add_witchy_test 'example_tests::example_sweeps::documentation_examples_are_valid'
-            add "cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
         *.md | rfcs/* | bugs/* | wiki/*)
             : ;; # prose only — but book/README witchy blocks are covered above
     esac
@@ -648,6 +650,11 @@ elif [ "$any_rust" -eq 1 ] && [ "$focused" -eq 0 ]; then
     remaining=()
     for c in ${cmds[0]+"${cmds[@]}"}; do
         case "$c" in
+            "./scripts/nextest-admitted.sh "*" -- cargo nextest run -p "* | \
+            "./scripts/nextest-admitted.sh "*" -- cargo nextest run --test "* | \
+            "./scripts/nextest-admitted.sh "*" -- cargo nextest run --bin "* | \
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" | \
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'" | \
             "cargo nextest run -p "* | \
             "cargo nextest run --test "* | \
             "cargo nextest run --bin "* | \
