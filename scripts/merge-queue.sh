@@ -291,7 +291,7 @@ failure_summary() {
     plain="$(strip_ansi <"$log" 2>/dev/null)" || return 0
     local stage; stage="$(echo "$plain" | grep -E '^==> \[' | tail -1 | sed 's/^==> //')"
     local fail_line=""
-    fail_line="$(echo "$plain" | grep -m1 -E '^ *(FAIL|TIMEOUT) \[' | sed 's/^ *//' || true)"
+    fail_line="$(echo "$plain" | grep -m1 -E '^ *(TRY [0-9]+ )?(FAIL|TIMEOUT) \[' | sed 's/^ *//' || true)"
     [ -z "$fail_line" ] && fail_line="$(echo "$plain" | grep -m1 '^error\[E\|^error:' | head -c120 || true)"
     [ -z "$fail_line" ] && fail_line="$(echo "$plain" | grep -m1 'could not compile' || true)"
     local summary="${stage:+$stage}"

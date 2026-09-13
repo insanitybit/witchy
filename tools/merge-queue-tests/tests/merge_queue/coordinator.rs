@@ -1996,8 +1996,10 @@ fn ready_queue_items_run_before_post_merge_worktree_sweep() {
 #[test]
 fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
     let fixture = QueueFixture::stack(&["a.txt"]);
-    // A gate that emits a nextest-shaped FAIL line and fails.
-    let gate = "printf '   FAIL [   1.0s] ( 1/10) witchy::misc some_module::the_broken_test\\n'; exit 1";
+    // A gate that fails on nextest's retry line, followed by its generic final
+    // error. Triage and replay must retain the specific test rather than the
+    // less useful trailing error.
+    let gate = "printf '==> [1] tests (workspace) (t+0s)\\n   TRY 2 FAIL [   1.0s] ( 1/10) witchy::misc some_module::the_broken_test\\nerror: test run failed\\n'; exit 1";
     fixture.mq_ok(&["submit", "a"], gate);
     let out = fixture.mq(&["run", "--once"], gate);
     let combined = format!(
@@ -2005,9 +2007,16 @@ fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    let journal = fixture.journal();
+    let red = journal
+        .iter()
+        .find(|event| event["event"] == "red")
+        .unwrap_or_else(|| panic!("expected a red:\n{combined}"));
     assert!(
-        fixture.journal().iter().any(|e| e["event"] == "red"),
-        "expected a red:\n{combined}"
+        red["failure_line"]
+            .as_str()
+            .is_some_and(|line| line.contains("the_broken_test")),
+        "journal replaced the specific retry failure with a generic error: {red}"
     );
 
     let recorded = fs::read_dir(fixture.state.join("changes"))
