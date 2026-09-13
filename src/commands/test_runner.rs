@@ -724,7 +724,7 @@ fn run_tests_in_module(
         })
         .collect();
     let mut result = TestModuleResult::default();
-    for (test, is_async, is_gen, params) in tests {
+    for (test, _is_async, is_gen, params) in tests {
         if policy
             .filter
             .is_some_and(|filter| !test.contains(filter))
@@ -754,7 +754,7 @@ fn run_tests_in_module(
             result.failed.push((test, e));
             continue;
         }
-        let driver_shape = if let Some(plan) = policy.fixture_plan {
+        if let Some(plan) = policy.fixture_plan {
             match fixture_driver_shape(
                 linked,
                 &test,
@@ -762,26 +762,15 @@ fn run_tests_in_module(
                 plan,
                 policy.fixture_record_authority,
             ) {
-                Ok(shape) => shape,
+                Ok(_) => {},
                 Err(error) => {
                     result.failed.push((test, error));
                     continue;
                 }
             }
-        } else {
-            FixtureDriverShape {
-                params: params.clone(),
-                args: params
-                    .iter()
-                    .map(|param| ast::Expr::Var(param.name.clone()))
-                    .collect(),
-            }
-        };
-        // Synthesize a `main` (replacing any real one) that runs the test, and run it.
-        // The test name is linker-qualified (`suite.test_x`), which the parser would
-        // read as a method call — so parse a placeholder and patch the call in the AST.
-        // `task.run` is in scope: async lowering imported `task` into a file with any
-        // `async fn`, which is exactly the case an async test needs it.
+        }
+        // Reparse retained sources and derive fresh entry/callable/tail witnesses.
+        // A post-link AST rewrite is not canonical source authority.
         let checked = if policy.fixture_plan.is_none() && !policy.integration {
             match witchy_interp::pipeline::check_bare_test_driver(suite, &test) {
                 Ok(driver) => driver,
@@ -799,28 +788,13 @@ fn run_tests_in_module(
                 }
             }
         } else {
-        // Legacy fixture/integration AST recipes remain interpreter-only or
-        // explicitly unsupported at canonical codegen; they gain no authority.
-        let mut m = linked.clone();
-        m.items
-            .retain(|it| !matches!(it, ast::Item::Function(f) if f.name == "main"));
-        let driver_src = if is_async {
-            "fn main():\n    task.run(witchy_test_target())\n"
-        } else {
-            "fn main():\n    witchy_test_target()\n"
-        };
-        let mut driver = parser::parse_module(driver_src).map_err(|e| e.to_string())?;
-        for it in &mut driver.items {
-            if let ast::Item::Function(f) = it {
-                f.params = driver_shape.params.clone();
-                if let Some(ast::Stmt::Expr(e)) = f.body.stmts.first_mut() {
-                    patch_test_target(e, &test, &driver_shape.args);
+            match witchy_interp::pipeline::check_integration_test_driver(suite, &test) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    result.failed.push((test, error.to_string()));
+                    continue;
                 }
             }
-        }
-        m.items.extend(driver.items);
-        witchy_types::pipeline::check_test_driver_module(checked, m)
-            .map_err(|error| error.to_string())?
         };
         // Run the test on the COMPILED WASM tier — the tier users ship — not the
         // interpreter oracle: a `witchy test` that passes must reflect the backend
@@ -1559,3 +1533,7 @@ mod canonical_bare_tests;
 #[cfg(test)]
 #[path = "test_runner/canonical_console_fixture.rs"]
 mod canonical_console_fixture_tests;
+
+#[cfg(test)]
+#[path = "test_runner/canonical_integration.rs"]
+mod canonical_integration_tests;

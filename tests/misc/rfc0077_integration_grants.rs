@@ -213,3 +213,53 @@ fn linked_library_capabilities_do_not_widen_a_nullary_test_entry() {
     ]);
     assert!(output.status.success(), "linked library widened or broke the entry grant: {}", text(&output));
 }
+
+#[test]
+fn source_integration_recipe_runs_selected_console_capture_and_reports_abort() {
+    let temp = TempDir::new("integration-recipe-console");
+    let suite = temp.write("suite.witchy", r#"import testing
+fn main(console: Console):
+    console.print("wrong production entry")
+fn test_capture(console: Console):
+    let emit = fn(): console.print("selected capture")
+    emit()
+fn test_abort(console: Console):
+    console.print("before integration abort")
+    testing.fail_with("integration recipe abort")
+"#);
+    let success = run([
+        "test".into(), "--integration".into(), "--show-output".into(),
+        "--filter".into(), "test_capture".into(), suite.clone().into_os_string(),
+    ]);
+    assert!(success.status.success(), "{}", text(&success));
+    assert!(text(&success).contains("selected capture"), "{}", text(&success));
+    assert!(!text(&success).contains("wrong production entry"), "{}", text(&success));
+    let failure = run([
+        "test".into(), "--integration".into(), "--filter".into(), "test_abort".into(),
+        suite.into_os_string(),
+    ]);
+    assert!(!failure.status.success(), "{}", text(&failure));
+    assert!(text(&failure).contains("integration recipe abort"), "{}", text(&failure));
+}
+
+#[test]
+fn source_integration_async_recipe_drives_body_instead_of_only_making_a_task() {
+    let temp = TempDir::new("integration-recipe-async");
+    let suite = temp.write("suite.witchy", r#"import testing
+async fn test_pass():
+    testing.assert_int_eq(2 + 2, 4)
+async fn test_abort():
+    testing.fail_with("async integration body ran")
+"#);
+    let success = run([
+        "test".into(), "--integration".into(), "--filter".into(), "test_pass".into(),
+        suite.clone().into_os_string(),
+    ]);
+    assert!(success.status.success(), "{}", text(&success));
+    let failure = run([
+        "test".into(), "--integration".into(), "--filter".into(), "test_abort".into(),
+        suite.into_os_string(),
+    ]);
+    assert!(!failure.status.success(), "{}", text(&failure));
+    assert!(text(&failure).contains("async integration body ran"), "{}", text(&failure));
+}

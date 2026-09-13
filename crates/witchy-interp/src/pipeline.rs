@@ -326,3 +326,13 @@ pub fn check_console_fixture_test_driver(
         suite, target, crate::comptime::expand_compile_time,
     )
 }
+
+/// Real-capability test recipe. Runtime grants and fixture providers cannot
+/// supply source or entry authority; the target comes from retained entry bytes.
+pub fn check_integration_test_driver(
+    suite: &witchy_types::pipeline::CheckedTestSuite, target: &str,
+) -> Result<witchy_types::pipeline::CheckedTestDriverModule, PipelineError> {
+    witchy_types::pipeline::check_integration_test_driver(
+        suite, target, crate::comptime::expand_compile_time,
+    )
+}
