@@ -299,6 +299,9 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | non-authority infrastructure | none | provided |
 | `mint_exec` | `() -> externref` | capability authority | Exec | omitted |
 | `exec_only` | `(externref, i32) -> externref` | capability authority | Exec | omitted |
+| `exec_run_at` | `(externref, externref, i32, i32, i32, i32, i32, i32) -> externref` | capability authority | Exec, Dir.Read | omitted |
+| `exec_response_size` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `exec_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `exec_run` | `(externref, externref, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
 | `heap_register` | `(i32, i32)` | runtime diagnostic | none | omitted |
 | `heap_unregister` | `(i32)` | runtime diagnostic | none | omitted |
