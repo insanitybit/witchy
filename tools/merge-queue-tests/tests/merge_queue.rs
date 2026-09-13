@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -533,8 +534,14 @@ impl QueueFixture {
         let gate_worktree = temp.path().join("gate");
         fs::create_dir(&root).expect("create queue fixture repository");
         run_git(&root, &["init", "-b", "master"]);
-        run_git(&root, &["config", "user.email", "queue-test@witchy.invalid"]);
-        run_git(&root, &["config", "user.name", "Witchy Queue Test"]);
+        writeln!(
+            fs::OpenOptions::new()
+                .append(true)
+                .open(root.join(".git/config"))
+                .expect("open queue fixture Git config"),
+            "\n[user]\n\temail = queue-test@witchy.invalid\n\tname = Witchy Queue Test"
+        )
+        .expect("write queue fixture Git identity");
         fs::write(root.join("base.txt"), "base\n").expect("write base commit");
         run_git(&root, &["add", "base.txt"]);
         run_git(&root, &["commit", "-m", "base"]);
