@@ -23,6 +23,8 @@ const SIZE_MAX: u64 = u32::MAX as u64;
 
 mod exec;
 pub use exec::{OracleExecFixture, OracleExecCall};
+mod crypto;
+mod crypto_hash;
 mod build_out;
 pub use build_out::OracleBuildWrite;
 mod launch;
@@ -1444,6 +1446,14 @@ impl<'a> Engine<'a> {
         }
         if self.isolated && !vm_service::isolated_import_allowed(contract) {
             return Err(InterpretError::UnsupportedHostImport);
+        }
+        if contract.name == crate::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT {
+            return self.ed25519_verify_host_call(destinations, arguments, values);
+        }
+        if contract.name == crate::canonical_safewir::CRYPTO_SHA256_IMPORT
+            || contract.name == crate::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT
+        {
+            return self.crypto_hash_host_call(&contract.name, destinations, arguments, values);
         }
         if exec::is_import(&contract.name) {
             return self.exec_host_call(&contract.name, destinations, arguments, values);

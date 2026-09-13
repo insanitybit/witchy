@@ -1,6 +1,9 @@
 //! Source-backed Exec admission and independent process transcript coverage.
 use crate::temp_dir::TempDir;
 
+#[path = "rfc0165_crypto.rs"]
+mod crypto;
+
 fn check_scoped_modules(entry: &[u8], library: &[u8]) -> witchy::pipeline::CheckedModule {
     use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
     // This fixture is the source loader: bind exact raw user modules to

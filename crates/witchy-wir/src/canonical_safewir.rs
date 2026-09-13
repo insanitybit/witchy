@@ -60,6 +60,8 @@ pub mod closure_owner_contract;
 mod owner_authority;
 mod exec;
 pub use exec::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND, EXEC_IMPORT_NAMES};
+mod crypto;
+pub use crypto::{CRYPTO_ED25519_VERIFY_IMPORT, CRYPTO_SHA256_IMPORT, CRYPTO_RUNE_HASH_IMPORT};
 mod vm_service;
 pub use vm_service::{CandidateVmService, VM_SERVICE_IMPORT_NAMES, VM_SERVICE_KIND, VM_SERVICE_RESPONSE_KIND};
 

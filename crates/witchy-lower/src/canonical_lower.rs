@@ -22,6 +22,8 @@ mod abort;
 // RFC-0165 Net registration (Net track).
 #[path = "canonical_exec.rs"]
 mod exec;
+#[path = "canonical_crypto.rs"]
+mod crypto;
 #[path = "canonical_net.rs"]
 mod net;
 
@@ -625,7 +627,8 @@ pub fn lower_typed_module(
     // RFC-0165 Net import registration (Net track).
     let net_imports = net::collect_imports(typed.module());
     let exec_needed = exec::is_needed(typed.module());
-    if exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
+    let crypto_needed = crypto::is_needed(typed.module());
+    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -763,6 +766,7 @@ if capability_imports.contains("build_out_write_at") {
         // RFC-0165 Net catalog registration (Net track).
 
         if exec_needed { catalog = exec::catalog(catalog, &mut signatures, string_layout)?; }
+        if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
         if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
         if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
         if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
@@ -779,6 +783,7 @@ if capability_imports.contains("build_out_write_at") {
                     || compiler_imports.contains(import.name.as_str())
                     || (regex_spans && import.name == "regex_match_spans_into")
                     || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
+                    || (crypto_needed && crypto::is_host_import(&import.name))
                     || net_imports.contains(import.name.as_str()) // Net track
                     || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
             })
@@ -791,6 +796,9 @@ if capability_imports.contains("build_out_write_at") {
             vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             // RFC-0165 Net import registration (Net track).
             exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
+            ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
+            sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
+            rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
             net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
             compiler: compiler_imports.iter()
@@ -2295,6 +2303,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args).map(|_| ()),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args).map(|_| ()),
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args).map(|_| ()),
@@ -6304,6 +6313,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args),
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args),
@@ -13661,6 +13671,9 @@ struct HostImports {
     // RFC-0165 Net import registration (Net track).
     net: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     exec: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
+    ed25519_verify: Option<witchy_wir::canonical_safewir::ImportId>,
+    sha256: Option<witchy_wir::canonical_safewir::ImportId>,
+    rune_hash: Option<witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
     compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,
