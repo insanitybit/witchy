@@ -254,6 +254,7 @@ any_rust=0
 all_paths_have_early=1
 canonical_rewrite=0
 canonical_rewrite_paths_only=1
+canonical_build_read=0
 canonical_fixture_rewrite=0
 canonical_fixture_rewrite_paths_only=1
 for p in "${paths[@]}"; do
@@ -267,6 +268,14 @@ for p in "${paths[@]}"; do
         tests/misc/rfc0165_build_read_project.rs) ;;
         tests/misc/rfc0165_*.rs)
             canonical_rewrite=1 ;;
+    esac
+    case "$p" in
+        crates/witchy-lower/src/canonical_build_read.rs | \
+        crates/witchy-runtime/src/runtime/host/build_read.rs | \
+        crates/witchy-types/src/pipeline/build_recipe.rs | \
+        crates/witchy-wir/src/canonical_interpreter/build_read.rs | \
+        crates/witchy-wir/src/canonical_safewir/build_read.rs)
+            canonical_build_read=1 ;;
     esac
     case "$p" in
         crates/witchy-interp/src/* | \
@@ -706,11 +715,18 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     # the edit loop to three feature-distinct invocations that retain the
     # load-bearing ABI, authority, ownership, bounds, admission, and independent
     # semantic assertions. The serialized landing selection is unchanged.
+    canonical_build_read_expr=""
+    if [ "$canonical_build_read" -eq 1 ]; then
+        canonical_build_read_expr=" or test(/^source::build_recipe_tests::/) or test(/^rfc0103_build_step_confinement::/) or test(/^rfc0165_build_read_project::/)"
+    fi
     cmds=(
         "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(boolean_reaches::) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(owned_tail_nonprefix_range_requires_a_checked_end_bound) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)'"
         "cargo nextest run -p witchy-lower --features witchy-wir/native --lib -E 'test(canonical_pipeline::tests::list_string_)'"
-        "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::) or test(/^commands::test_runner::canonical_integration_tests::/) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)'"
+        "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(/^commands::test_runner::canonical_integration_tests::/) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)${canonical_build_read_expr}'"
     )
+    if [ "$canonical_build_read" -eq 1 ]; then
+        cmds+=("cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_read_tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup)'")
+    fi
 elif [ "$edit_loop" -eq 1 ] && [ "$all_paths_have_early" -eq 1 ] \
     && [ "${#early_cmds[@]}" -gt 0 ]; then
     cmds=("${early_cmds[@]}")

@@ -724,7 +724,7 @@ fn server_pool_oracle_edit_keeps_its_authority_and_execution_probes() {
     ]);
     assert_eq!(commands.len(), 3, "{commands:?}");
     assert!(
-        commands[2].contains("test(rfc0165_owner_adapters::server_pool_oracle::)"),
+        commands[2].contains("test(rfc0165_owner_adapters::server_pool_oracle::/)"),
         "{commands:?}",
     );
 }
@@ -831,11 +831,25 @@ fn canonical_build_read_edit_keeps_its_catalog_contract() {
         "--edit-loop",
         "crates/witchy-wir/src/canonical_safewir/build_read.rs",
     ]);
-    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert_eq!(commands.len(), 4, "{commands:?}");
     assert!(
         commands[0].contains(
             "build_read_catalog_separates_root_authority_from_bounded_responses",
         ),
+        "{commands:?}",
+    );
+    for module in [
+        "source::build_recipe_tests::",
+        "rfc0103_build_step_confinement::",
+        "rfc0165_build_read_project::",
+    ] {
+        assert!(commands[2].contains(module), "{module}: {commands:?}");
+    }
+    assert!(
+        commands[3].contains("runtime::host::build_read_tests::")
+            && commands[3].contains(
+                "build_read_captures_authenticate_kind_session_projection_and_cleanup",
+            ),
         "{commands:?}",
     );
 }
