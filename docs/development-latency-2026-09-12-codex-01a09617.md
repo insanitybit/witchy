@@ -228,6 +228,48 @@ CI and release requirements stay unchanged. Avoid an extra local full suite
 solely to repeat the coordinator. Never replace semantic assertions with
 backend agreement alone or replace admission checks with structural Wasm checks.
 
+**Warm oracle phase ranking, 2026-09-13.** The landed example filter and phase
+timer were run from an already-built master `misc` binary, one example per
+process, serially, with utility QoS and the stable Wasmtime cache warm. Values
+are milliseconds. `Lower+admit` includes production lowering and admission:
+the public observer supplies the already validated module and cannot separate
+independent validation without compiler instrumentation. No compiler source was
+changed for this measurement. `Not admitted` examples are assigned to the shard
+but rejected before the three-leg oracle, so they add no execution phase.
+
+| Shard | Example | Check | Lower+admit | Canonical | Source | Runtime | Spawn/JIT | Wasm | Heap | Total |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3 | `async_tasks` | 916.407 | 10,417.418 | 3.244 | 535.092 | 0.594 | 15.318 | 5.095 | 0.020 | 11,894.639 |
+| 3 | `calc` | 119.151 | 74.254 | 6.709 | 85.203 | 0.577 | 76.372 | 0.254 | 0.040 | 362.741 |
+| 3 | `files` | 127.379 | 7.174 | 0.833 | 40.692 | 0.445 | 9.323 | 0.570 | 0.004 | 186.588 |
+| 3 | `guard` | 104.889 | 7.456 | 0.121 | 39.150 | 0.458 | 27.203 | 0.082 | 0.004 | 179.499 |
+| 3 | `option_std` | 110.195 | 7.250 | 0.101 | 46.500 | 0.549 | 24.666 | 0.075 | 0.004 | 189.467 |
+| 3 | `rle` | 105.579 | 31.743 | 3.676 | 38.544 | 0.516 | 34.159 | 0.218 | 0.026 | 214.619 |
+| 3 | `zip` | 108.871 | 25.855 | 0.469 | 46.771 | 0.466 | 70.091 | 0.113 | 0.008 | 252.785 |
+| 10 | `calculator` | 102.012 | 44.644 | 10.133 | 38.403 | 0.529 | 87.459 | 0.160 | 0.020 | 283.498 |
+| 10 | `carried_state` | Not admitted | | | | | | | | |
+| 10 | `data` | Not admitted | | | | | | | | |
+| 10 | `generators` | 253.676 | 44.089 | 5.946 | 86.376 | 0.460 | 47.624 | 0.290 | 0.088 | 438.711 |
+| 10 | `projects` | Not admitted | | | | | | | | |
+| 10 | `scope` | 1,451.167 | 13,916.943 | 49.832 | 975.142 | 0.547 | 91.829 | 101.454 | 0.325 | 16,613.814 |
+| 10 | `strings` | 99.860 | 2.566 | 0.050 | 38.421 | 0.448 | 8.225 | 0.072 | 0.004 | 149.781 |
+| 10 | `toposort` | 104.940 | 26.856 | 1.575 | 49.050 | 0.511 | 60.136 | 0.123 | 0.011 | 243.353 |
+| 10 | `wrap` | 106.205 | 56.478 | 2.352 | 47.558 | 0.519 | 92.812 | 0.149 | 0.012 | 306.235 |
+
+Shard 3 sums to 13.280s and shard 10 to 18.035s. Because landing runs them
+concurrently, their warm critical path is 18.035s, not their 31.316s sum.
+Lowering and admission account for 79.6% and 78.1% respectively. The latest
+cache-activation landing measured 88.409s and 101.116s for the whole shards;
+that gate overlapped compiler work, so the 70-83s gaps are contention or cold
+state candidates rather than recoverable intrinsic example work.
+
+An immutable binary containing the unlanded Boolean-reachability candidate cut
+warm lowering/admission from 10.417s to 9.756s for `async_tasks` and from
+13.917s to 13.133s for `scope`. Total time fell 4.9% and 4.5%. This is useful
+directional evidence, but attribution is only moderate because that binary also
+contains other unlanded integration work. Confirm against the eventual landed
+commit and a later uncontended gate before claiming a production improvement.
+
 **Evidence and reproduction of the analysis.** The source report is the local
 artifact `/private/tmp/witchy-development-latency-2026-09-12.md`, produced in
 Codex thread `01a09617-befb-7ad2-9ef1-e701722ee3a2`. These records are local and
