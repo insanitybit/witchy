@@ -811,8 +811,17 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
         }
         // Stable assignment is independent of read_dir order and process hash
         // seeds. The registered shards partition the original corpus exactly;
-        // no eligibility rule or execution assertion is relaxed.
-        let bucket = name.bytes().fold(0usize, |sum, byte| sum.wrapping_add(usize::from(byte))) % shards;
+        // no eligibility rule or execution assertion is relaxed. The task
+        // examples each cost one to three minutes of compile time, so two of
+        // them in one shard bound the whole suite's wall time; the byte-sum
+        // buckets put `for_await` with `channels` and `worker_pool` with
+        // `async_tasks`, and those two are pinned to otherwise light shards.
+        const PINNED: &[(&str, usize)] = &[("for_await", 1), ("worker_pool", 2)];
+        let bucket = PINNED
+            .iter()
+            .find(|(pinned, _)| *pinned == name)
+            .map(|(_, shard)| *shard % shards)
+            .unwrap_or_else(|| name.bytes().fold(0usize, |sum, byte| sum.wrapping_add(usize::from(byte))) % shards);
         if bucket != shard {
             continue;
         }
