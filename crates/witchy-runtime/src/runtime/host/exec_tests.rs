@@ -64,6 +64,26 @@ fn exec_slices_preserve_status_streams_arguments_and_effect_once() {
 }
 
 #[test]
+fn exec_slices_require_dir_read_before_invalid_buffers_or_effects() {
+    let (root, mut vm, exec, dir) = setup();
+    // Attenuate the real minted Dir token without changing its backing or
+    // policy. The host must reject its missing right before inspecting slices.
+    let mut authority = dir.unwrap().data(&vm.store).unwrap().unwrap()
+        .downcast_ref::<crate::runtime::DirAuthority>().unwrap().clone();
+    authority.rights.read = false;
+    let denied = Some(ExternRef::new(&mut vm.store, authority).unwrap());
+    let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
+    let before = memory.data(&vm.store).to_vec();
+    let invoke = vm.instance.get_typed_func::<(Token, Token, i32, i32, i32, i32, i32, i32), Token>(
+        &mut vm.store, "invoke").unwrap();
+    let error = invoke.call(&mut vm.store, (exec, denied, -1, -1, -1, -1, -1, -1)).unwrap_err();
+    assert_eq!(error.root_cause().to_string(), "this Dir capability does not grant Read");
+    assert_eq!(memory.data(&vm.store), before.as_slice());
+    assert!(vm.output().is_empty());
+    assert!(!root.path().join("effects").exists());
+}
+
+#[test]
 fn exec_slices_reject_wrong_authority_malformed_inputs_and_response_forgery() {
     let (root, mut vm, exec, dir) = setup();
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();

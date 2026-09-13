@@ -2,7 +2,7 @@
 //! these imports confer no grant beyond the existing exact Exec/Dir tokens.
 use std::sync::Arc;
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
-use super::{dir_authority_ref, exec_authority_ref, memory_of, run_exec, VmState};
+use super::{dir_authority_ref, dir_require_read, exec_authority_ref, memory_of, run_exec, VmState};
 
 /// Immutable process result, not an Exec grant or a caller-chosen token ID.
 struct ExecResponse(Arc<[u8]>);
@@ -40,6 +40,7 @@ fn run_at(
     // input before the one effect, using the std Exec ABI's NUL-joined argv.
     let exec = exec_authority_ref(&caller, exec)?;
     let dir = dir_authority_ref(&caller, dir)?;
+    dir_require_read(&dir)?;
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
     let path = text(data, path_ptr, path_len)?;
