@@ -673,17 +673,22 @@ set_queue_batch_limit() { # set_queue_batch_limit <queue-file> <change-id> <sha>
 }
 
 write_change_record() { # write_change_record <branch> <id> <sha> <after-json> <state> <attempt-id>
-    local branch="$1" id="$2" sha="$3" after="$4" state="$5" attempt="$6" cf tmp created
+    local branch="$1" id="$2" sha="$3" after="$4" state="$5" attempt="$6" cf tmp created preflight
     cf="$(change_file_for_branch "$branch")"
     created="$(jq -r '.created // empty' "$cf" 2>/dev/null || true)"
+    # A red records its exact failing tests on the logical change. Preserve
+    # that replay when submit creates the next attempt; replacing the record
+    # here used to discard it before the coordinator could run the preflight.
+    preflight="$(jq -r '.preflight // empty' "$cf" 2>/dev/null || true)"
     [ -n "$created" ] || created="$(now)"
     tmp="$cf.tmp.$$"
     jq -cn --arg branch "$branch" --arg id "$id" --arg sha "$sha" \
         --arg created "$created" --arg updated "$(now)" --arg state "$state" --arg attempt "$attempt" \
-        --argjson after "$after" \
+        --arg preflight "$preflight" --argjson after "$after" \
         '{schema:1, change_id:$id, branch:$branch, current_sha:$sha,
           current_attempt:$attempt, after:$after, state:$state,
-          created:$created, updated:$updated}' >"$tmp"
+          created:$created, updated:$updated}
+          | if $preflight == "" then . else .preflight=$preflight end' >"$tmp"
     mv "$tmp" "$cf"
 }
 

@@ -2019,6 +2019,15 @@ fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
         recorded.contains("test(/^"),
         "preflight is not a nextest filter expression: {recorded}"
     );
+
+    fixture.mq_ok(&["submit", "a"], gate);
+    let resubmitted = fixture.change("a");
+    assert!(
+        resubmitted["preflight"]
+            .as_str()
+            .is_some_and(|expr| expr.contains("the_broken_test")),
+        "resubmission discarded the focused replay: {resubmitted}"
+    );
 }
 
 /// One agent's ad-hoc `with-lock` suite blocks that agent; the coordinator
