@@ -19,6 +19,8 @@ pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()>
 /// Register authority-free crypto operations.
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "crypto_ed25519_verify_slices", host_ed25519_verify_slices)?;
+    linker.func_wrap("witchy", "crypto_sha256_slices", host_sha256_slices)?;
+    linker.func_wrap("witchy", "crypto_rune_hash_slices", host_rune_hash_slices)?;
     linker.func_wrap(
         "witchy",
         intrinsics::CRYPTO_ED25519_VERIFY_STATUS,
@@ -136,6 +138,114 @@ fn ed25519_status(args: &[Value]) -> Result<i64> {
 #[cfg(test)]
 #[path = "crypto_slices_tests.rs"]
 mod slices_tests;
+
+#[cfg(test)]
+#[path = "crypto_hash_slices_tests.rs"]
+mod hash_slices_tests;
+
+fn host_sha256_slices(caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32) -> Result<i32> {
+    hash_slices(caller, input, len, output, capacity, HashSlices::Sha256)
+}
+
+fn host_rune_hash_slices(caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32) -> Result<i32> {
+    hash_slices(caller, input, len, output, capacity, HashSlices::Rune)
+}
+
+enum HashSlices { Sha256, Rune }
+
+fn hash_slices(
+    mut caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32,
+    kind: HashSlices,
+) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let range = |ptr: i32, len: i32| {
+        let start = ptr as u32 as usize;
+        start.checked_add(len as u32 as usize).filter(|end| *end <= data.len())
+            .map(|end| start..end)
+            .ok_or_else(|| Error::msg("crypto hash slice lies outside guest memory"))
+    };
+    // Preflight both complete extents before allocating, decoding, or hashing.
+    let input = range(input, len)?;
+    let output = range(output, capacity)?;
+    let (name, args, required) = match kind {
+        HashSlices::Sha256 => (intrinsics::CRYPTO_SHA256_BYTES, vec![Value::Bytes(data[input].to_vec())], 64),
+        HashSlices::Rune => (intrinsics::CRYPTO_RUNE_HASH, decode_rune_transport(&data[input])?, 71),
+    };
+    let primitive = crate::native::lookup(name)
+        .ok_or_else(|| Error::msg(format!("{name} is not registered")))?;
+    let digest = match primitive(&args).map_err(|error| Error::msg(error.message))? {
+        Value::Str(digest) if digest.len() == required => digest,
+        _ => return Err(Error::msg(format!("{name} returned an invalid digest shape"))),
+    };
+    // All inputs are owned host values before an overlapping output is written.
+    // Short outputs still validate inputs, but never receive a partial digest.
+    if output.len() >= required {
+        memory.write(&mut caller, output.start, digest.as_bytes())
+            .map_err(|error| Error::msg(format!("writing crypto hash result: {error}")))?;
+    }
+    Ok(required as i32)
+}
+
+fn rune_transport_bytes<'a>(data: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8]> {
+    let end = cursor.checked_add(len).filter(|end| *end <= data.len())
+        .ok_or_else(|| Error::msg("rune hash transport is truncated"))?;
+    let bytes = &data[*cursor..end];
+    *cursor = end;
+    Ok(bytes)
+}
+
+fn rune_transport_word(data: &[u8], cursor: &mut usize) -> Result<usize> {
+    let word = rune_transport_bytes(data, cursor, 4)?;
+    Ok(u32::from_le_bytes(word.try_into().expect("four-byte transport word")) as usize)
+}
+
+fn walk_rune_array(
+    data: &[u8], cursor: &mut usize, mut string: impl FnMut(&str) -> Result<()>,
+) -> Result<usize> {
+    let count = rune_transport_word(data, cursor)?;
+    // Every remaining string needs at least its length word. Never allocate
+    // or iterate from a cardinality unsupported by the bounded input itself.
+    if count > (data.len() - *cursor) / 4 {
+        return Err(Error::msg("rune hash string count exceeds its transport"));
+    }
+    for _ in 0..count {
+        let len = rune_transport_word(data, cursor)?;
+        let bytes = rune_transport_bytes(data, cursor, len)?;
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| Error::msg("rune hash input string is not valid UTF-8"))?;
+        string(text)?;
+    }
+    Ok(count)
+}
+
+fn decode_rune_transport(data: &[u8]) -> Result<Vec<Value>> {
+    // Validate both arrays, all UTF-8 byte lengths, and the exact end before
+    // reserving space for any native list or copying any string.
+    let mut cursor = 0;
+    let paths = walk_rune_array(data, &mut cursor, |_| Ok(()))?;
+    let contents = walk_rune_array(data, &mut cursor, |_| Ok(()))?;
+    if cursor != data.len() {
+        return Err(Error::msg("rune hash transport has trailing bytes"));
+    }
+    cursor = 0;
+    let mut args = Vec::new();
+    for count in [paths, contents] {
+        let mut values = Vec::new();
+        values.try_reserve_exact(count).map_err(|error| Error::msg(error.to_string()))?;
+        walk_rune_array(data, &mut cursor, |text| {
+            let mut owned = String::new();
+            owned.try_reserve_exact(text.len()).map_err(|error| Error::msg(error.to_string()))?;
+            owned.push_str(text);
+            values.push(Value::Str(owned));
+            Ok(())
+        })?;
+        args.push(Value::List(values));
+    }
+    // This is transport, not the digest preimage. The native primitive retains
+    // list-length errors, stable sorting, normalization, and hashing policy.
+    Ok(args)
+}
 
 /// `crypto.sha256(in_header_ptr, out_data_ptr)`: read the input string, compute
 /// its SHA-256 (via the shared native registry), and write the 64 hex bytes into
