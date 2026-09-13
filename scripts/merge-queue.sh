@@ -345,23 +345,21 @@ remember_preflight() { # remember_preflight <change-id> <expr>
     local id="$1" expr="$2" cf tmp
     [ -n "$id" ] && [ -n "$expr" ] || return 0
     acquire_change_lock
-    for cf in "$changes_dir"/*.json; do
-        [ -f "$cf" ] || continue
+    while IFS= read -r cf; do
         jq -e --arg id "$id" 'select(.change_id==$id)' "$cf" >/dev/null 2>&1 || continue
         tmp="$cf.tmp.$$"
         jq --arg e "$expr" '.preflight=$e' "$cf" >"$tmp" && mv "$tmp" "$cf"
         break
-    done
+    done < <(change_files_for_id "$id")
     release_change_lock
 }
 
 preflight_expr_for() { # preflight_expr_for <change-id>
     local id="$1" cf
     [ -n "$id" ] || return 0
-    for cf in "$changes_dir"/*.json; do
-        [ -f "$cf" ] || continue
+    while IFS= read -r cf; do
         jq -er --arg id "$id" 'select(.change_id==$id) | .preflight // empty' "$cf" 2>/dev/null && return 0
-    done
+    done < <(change_files_for_id "$id")
     return 0
 }
 
@@ -474,6 +472,18 @@ front_stamp() {
 }
 change_file_for_branch() { printf '%s/%s.json\n' "$changes_dir" "$(branch_key "$1")"; }
 
+# Change IDs are random hashes, but records are named for branches or archived
+# history. A registry lookup used to fork jq once per record; at 2,106 records
+# that put 19-29 seconds of metadata scanning between the gate lock and the
+# first test. Let one grep process narrow the candidates, then retain jq as the
+# authoritative exact-field check at every caller. False textual matches are
+# harmless, and missing or corrupt records keep each caller's existing result.
+change_files_for_id() { # change_files_for_id <change-id>
+    [ -n "$1" ] || return 0
+    find "$changes_dir" -type f -name '*.json' \
+        -exec grep -lF -- "$1" {} + 2>/dev/null || true
+}
+
 new_change_id() { # new_change_id <branch>
     printf '%s\0%s\0%s\0%s\n' "$1" "$(date +%s)" "$$" "${RANDOM:-0}" \
         | git -C "$root" hash-object --stdin \
@@ -491,19 +501,17 @@ change_id_for_branch() { # change_id_for_branch <branch>
 
 change_state_for_id() { # change_state_for_id <change-id>
     local cf
-    for cf in "$changes_dir"/*.json; do
-        [ -f "$cf" ] || continue
+    while IFS= read -r cf; do
         jq -er --arg id "$1" 'select(.change_id==$id) | .state' "$cf" 2>/dev/null && return 0
-    done
+    done < <(change_files_for_id "$1")
     return 1
 }
 
 change_branch_for_id() { # change_branch_for_id <change-id>
     local cf
-    for cf in "$changes_dir"/*.json; do
-        [ -f "$cf" ] || continue
+    while IFS= read -r cf; do
         jq -er --arg id "$1" 'select(.change_id==$id) | .branch' "$cf" 2>/dev/null && return 0
-    done
+    done < <(change_files_for_id "$1")
     return 1
 }
 
@@ -511,8 +519,7 @@ set_change_state() { # set_change_state <change-id> <state> [current-sha] [curre
     local id="$1" state="$2" expected_sha="${3:-}" expected_attempt="${4:-}" cf tmp
     [ -n "$id" ] || return 0
     acquire_change_lock
-    for cf in "$changes_dir"/*.json; do
-        [ -f "$cf" ] || continue
+    while IFS= read -r cf; do
         jq -e --arg id "$id" 'select(.change_id==$id)' "$cf" >/dev/null 2>&1 || continue
         if [ -n "$expected_sha" ] \
             && [ "$(jq -r '.current_sha // empty' "$cf")" != "$expected_sha" ]; then
@@ -530,7 +537,7 @@ set_change_state() { # set_change_state <change-id> <state> [current-sha] [curre
         mv "$tmp" "$cf"
         release_change_lock
         return 0
-    done
+    done < <(change_files_for_id "$id")
     release_change_lock
     return 1
 }
@@ -557,8 +564,7 @@ claim_queue_entry_for_gate() { # claim_queue_entry_for_gate <queue-file> <change
         release_change_lock
         return 1
     fi
-    for cf in "$changes_dir"/*.json; do
-        [ -f "$cf" ] || continue
+    while IFS= read -r cf; do
         jq -e --arg id "$id" --arg sha "$sha" --arg attempt "$attempt" \
             'select(.change_id==$id and (.current_sha // "")==$sha and
               (.current_attempt // "")==$attempt and .state=="queued")' \
@@ -569,7 +575,7 @@ claim_queue_entry_for_gate() { # claim_queue_entry_for_gate <queue-file> <change
         mv "$tmp" "$cf"
         release_change_lock
         return 0
-    done
+    done < <(change_files_for_id "$id")
     release_change_lock
     return 1
 }
