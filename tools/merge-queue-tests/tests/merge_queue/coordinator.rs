@@ -1630,6 +1630,7 @@ fn submit_journals_whether_a_presubmit_receipt_covers_the_tip() {
         submitted["presubmit_sha_match"], "false",
         "absence must be recorded explicitly: {submitted}"
     );
+    assert_eq!(submitted["presubmit_eligible"], "true");
 
     // Now mint a receipt for the branch tip, exactly as a green shard would.
     let tip = String::from_utf8(
@@ -1698,6 +1699,10 @@ fn a_prose_only_submission_is_not_warned_about_a_missing_shard() {
         .next_back()
         .expect("a submitted event");
     assert_eq!(submitted["presubmit_sha_match"], "false");
+    assert_eq!(
+        submitted["presubmit_eligible"], "false",
+        "a branch with no possible focused shard must not dilute adoption"
+    );
 }
 
 /// A code change with no receipt must still warn — the suppression above is

@@ -342,13 +342,21 @@ jq -sn \
         # "unset" is a first-class value: it must stay visible so adoption is
         # measurable rather than silently defaulting to a wrong name.
         attribution:(($recent|map(select(.event=="submitted" or .event=="resubmitted"))) as $subs
+          | ($subs | map(select(
+              (.presubmit_eligible //
+               (if ((.touches//"")=="docs") then "false" else "true" end)) == "true"
+            ))) as $eligible
           | {submissions:($subs|length),
+             presubmit_eligible_submissions:($eligible|length),
+             presubmit_ineligible_submissions:(($subs|length)-($eligible|length)),
              actor_adoption:(if ($subs|length)==0 then null
                              else (($subs|map(select((.actor//"unset")!="unset"))|length)/($subs|length)) end),
              trailer_adoption:(if ($subs|length)==0 then null
                                else (($subs|map(select(.trailer_present=="true"))|length)/($subs|length)) end),
-             presubmit_receipt_rate:(if ($subs|length)==0 then null
-                                     else (($subs|map(select(.presubmit_sha_match=="true"))|length)/($subs|length)) end),
+             presubmit_receipt_rate:(if ($eligible|length)==0 then null
+                                     else (($eligible|map(select(.presubmit_sha_match=="true"))|length)/($eligible|length)) end),
+             presubmit_receipt_rate_all:(if ($subs|length)==0 then null
+                                         else (($subs|map(select(.presubmit_sha_match=="true"))|length)/($subs|length)) end),
              presubmit_edit_s:($subs|map(numeric(.presubmit_edit_elapsed_s))|distribution),
              by_actor:($subs|group_by(.actor//"unset")
                        |map({actor:(.[0].actor//"unset"), submissions:length})|sort_by(-.submissions)),
@@ -455,7 +463,7 @@ jq -r '
     "  coordinator uptime:      \(if .coordinator.uptime_ratio==null then "n/a" else ((.coordinator.uptime_ratio*100|round|tostring)+"% (\(.coordinator.heartbeats) heartbeats)") end)",
     "",
     "Pre-submit evidence and attribution (n=\(.attribution.submissions) submissions)",
-    "  green shard receipt:     \(if .attribution.presubmit_receipt_rate==null then "n/a" else ((.attribution.presubmit_receipt_rate*100|round|tostring)+"%") end)",
+    "  green shard receipt:     \(if .attribution.presubmit_receipt_rate==null then "n/a" else ((.attribution.presubmit_receipt_rate*100|round|tostring)+"%") end) (\(.attribution.presubmit_eligible_submissions) eligible; \(.attribution.presubmit_ineligible_submissions) no focused shard)",
     "  edit check p50 / p90:    \(value(.attribution.presubmit_edit_s.p50; "s")) / \(value(.attribution.presubmit_edit_s.p90; "s")) (\(.attribution.presubmit_edit_s.count) samples)",
     "  actor set (not \"unset\"): \(if .attribution.actor_adoption==null then "n/a" else ((.attribution.actor_adoption*100|round|tostring)+"%") end)",
     "  Co-Authored-By trailer:  \(if .attribution.trailer_adoption==null then "n/a" else ((.attribution.trailer_adoption*100|round|tostring)+"%") end)",

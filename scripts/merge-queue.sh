@@ -1525,7 +1525,7 @@ cmd_submit() {
     # trains submitters to ignore the warning, which costs exactly the branches
     # where it matters. Reuse the gate's own path classifier rather than a
     # second definition of "documentation".
-    local submit_changed="" submit_docs_safe=0
+    local submit_changed="" submit_docs_safe=0 presubmit_eligible="true"
     if [ -n "$tip_sha" ]; then
         local submit_base
         submit_base="$(git -C "$root" merge-base master "$tip_sha" 2>/dev/null || true)"
@@ -1533,6 +1533,7 @@ cmd_submit() {
             submit_changed="$(git -C "$root" diff --name-only "$submit_base" "$tip_sha" 2>/dev/null || true)"
             if [ -n "$submit_changed" ] && diff_is_docs_safe "$submit_changed"; then
                 submit_docs_safe=1
+                presubmit_eligible="false"
             fi
         fi
     fi
@@ -1663,6 +1664,7 @@ cmd_submit() {
         record resubmitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
             presubmit_sha_match "$presubmit_sha_match" \
+            presubmit_eligible "$presubmit_eligible" \
             presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at" \
             presubmit_edit_elapsed_s "$presubmit_edit_elapsed_s" \
             actor "$actor" actor_hint "$actor_hint" session "$session" \
@@ -1688,6 +1690,7 @@ cmd_submit() {
         record submitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}" \
             presubmit_sha_match "$presubmit_sha_match" \
+            presubmit_eligible "$presubmit_eligible" \
             presubmit_shard "$presubmit_shard" presubmit_at "$presubmit_at" \
             presubmit_edit_elapsed_s "$presubmit_edit_elapsed_s" \
             actor "$actor" actor_hint "$actor_hint" session "$session" \
