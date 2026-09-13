@@ -174,7 +174,7 @@ jq -sn \
     def distribution:
         {count:(map(select(. != null))|length),
          p50:(percentile(0.50)), p90:(percentile(0.90)), max:(map(select(. != null))|max//null)};
-    def numeric($value): if $value==null then null else ($value|tonumber) end;
+    def numeric($value): if $value==null or $value=="" then null else ($value|tonumber) end;
     # A successful batch writes one `merged` event per member. Those events
     # describe one physical coordinator attempt and share its gate log. Keep
     # branch throughput per member, but count attempt time only once. The
