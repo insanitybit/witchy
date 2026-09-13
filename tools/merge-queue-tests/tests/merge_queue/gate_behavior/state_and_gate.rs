@@ -521,11 +521,16 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     });
 
         let queue_selection = scope.spawn(|| {
+    let default_queue_prefix =
+        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 3";
+    let override_queue_prefix =
+        "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 4";
     let cargo_args_file = temp.path().join("cargo-args-queue-selection");
     let isolated = check_sh(&root, &["--fast"])
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
+        .env_remove("WITCHY_QUEUE_INFRA_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_FAILFAST_POLL", "0.05")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -557,11 +562,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         isolated_args
             .lines()
-            .any(|line| {
-                line.starts_with(
-                    "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 3",
-                )
-            }),
+            .any(|line| line.starts_with(default_queue_prefix)),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",
     );
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
@@ -570,6 +571,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("CARGO_TARGET_DIR", temp.path().join("target-queue-only"))
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
+        .env("WITCHY_QUEUE_INFRA_JOBS", "4")
         // This is the exact selector emitted for a queue-infrastructure-only
         // landing. Both test binaries live in the standalone package, so root
         // Cargo must not be asked to resolve either one.
@@ -596,12 +598,10 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         "root Cargo was asked to resolve the standalone queue target: {queue_only_args}",
     );
     assert!(
-        queue_only_args.lines().any(|line| {
-            line.starts_with(
-                "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 3",
-            )
-        }),
-        "queue-only selection did not run the owning package shard: {queue_only_args}",
+        queue_only_args
+            .lines()
+            .any(|line| line.starts_with(override_queue_prefix)),
+        "queue-only selection did not honor the configured bounded width: {queue_only_args}",
     );
     let invalid_width = check_sh(&root, &["--queue-infra"])
         .env("PATH", &path)
