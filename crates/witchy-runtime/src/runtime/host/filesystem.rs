@@ -32,6 +32,7 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_read_into", host_dir_read_into)?;
     linker.func_wrap("witchy", "dir_list_into", host_dir_list_into)?;
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
+    linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
     linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
     Ok(())
 }
@@ -552,6 +553,27 @@ fn host_dir_exists_at(
     let ok = visible_entry_kind(&dir, &rel).ok().flatten().is_some();
     Ok(ok as i32)
 }
+
+/// The legacy total directory predicate over one bounded UTF-8 slice. Invalid
+/// authority or transport traps; denied, missing, and inaccessible entries are
+/// false. Authenticate before touching memory, and preserve the exact existing
+/// handle-backed entry-policy semantics rather than interpreting paths here.
+fn host_dir_is_dir_at(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    path_ptr: i32,
+    path_len: i32,
+) -> Result<i32> {
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let mem = memory_of(&mut caller)?;
+    let rel = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
+    Ok((visible_entry_kind(&dir, &rel).ok().flatten() == Some(true)) as i32)
+}
+
+#[cfg(test)]
+#[path = "filesystem_metadata_tests.rs"]
+mod metadata_tests;
 
 /// `dir_write_at(dir, path, path_len, data, data_len)`: `dir_write`'s semantics
 /// over checked slices — the data is UTF-8 text, and the write needs `Dir[Write]`.
