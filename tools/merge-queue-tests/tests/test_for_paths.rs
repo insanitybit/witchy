@@ -759,12 +759,22 @@ fn integration_driver_edits_use_the_bounded_semantic_contracts() {
 
 #[test]
 fn build_recipe_test_edits_run_their_executable_module() {
-    let commands = selected(&["--edit-loop", "src/source/build_recipe_tests.rs"]);
-    assert_eq!(commands.len(), 1, "{commands:?}");
-    assert_eq!(
-        commands[0],
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::/)'",
-    );
+    for (path, module) in [
+        ("src/source/build_recipe_tests.rs", "build_recipe_tests"),
+        (
+            "src/source/build_env_recipe_tests.rs",
+            "build_env_recipe_tests",
+        ),
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert_eq!(
+            commands[0],
+            format!(
+                "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::{module}::/)'"
+            ),
+        );
+    }
 }
 
 #[test]
@@ -777,6 +787,10 @@ fn build_read_integration_edits_run_only_their_own_modules() {
         (
             "tests/misc/rfc0165_build_read_project.rs",
             "rfc0165_build_read_project",
+        ),
+        (
+            "tests/misc/rfc0165_build_env_project.rs",
+            "rfc0165_build_env_project",
         ),
     ] {
         let commands = selected(&["--edit-loop", path]);
@@ -826,32 +840,64 @@ fn build_read_host_edits_keep_authority_bounds_and_abi_probes() {
 }
 
 #[test]
-fn canonical_build_read_edit_keeps_its_catalog_contract() {
-    let commands = selected(&[
-        "--edit-loop",
-        "crates/witchy-wir/src/canonical_safewir/build_read.rs",
-    ]);
-    assert_eq!(commands.len(), 4, "{commands:?}");
-    assert!(
-        commands[0].contains(
-            "build_read_catalog_separates_root_authority_from_bounded_responses",
-        ),
-        "{commands:?}",
-    );
-    for module in [
-        "source::build_recipe_tests::",
-        "rfc0103_build_step_confinement::",
-        "rfc0165_build_read_project::",
+fn build_env_host_edits_keep_authority_bounds_and_abi_probes() {
+    for path in [
+        "crates/witchy-runtime/src/runtime/host/build_env.rs",
+        "crates/witchy-runtime/src/runtime/host/build_env_tests.rs",
     ] {
-        assert!(commands[2].contains(module), "{module}: {commands:?}");
-    }
-    assert!(
-        commands[3].contains("runtime::host::build_read_tests::")
-            && commands[3].contains(
-                "build_read_captures_authenticate_kind_session_projection_and_cleanup",
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 2, "{path}: {commands:?}");
+        assert!(
+            commands[0].contains("runtime::host::build_env_tests::")
+                && commands[0].contains(
+                    "build_env_captures_reauthenticate_root_and_optional_response_and_cleanup",
+                ),
+            "{path}: {commands:?}",
+        );
+        assert!(
+            commands[1].contains(
+                "wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature",
             ),
-        "{commands:?}",
-    );
+            "{path}: {commands:?}",
+        );
+    }
+}
+
+#[test]
+fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
+    for path in [
+        "crates/witchy-lower/src/canonical_build_read.rs",
+        "crates/witchy-types/src/pipeline/build_recipe.rs",
+        "crates/witchy-wir/src/canonical_interpreter/build_read.rs",
+        "crates/witchy-wir/src/canonical_safewir/build_read.rs",
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 4, "{path}: {commands:?}");
+        for contract in [
+            "build_read_catalog_separates_root_authority_from_bounded_responses",
+            "build_env_catalog_authenticates_root_and_keeps_presence_internal",
+            "build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct",
+        ] {
+            assert!(commands[0].contains(contract), "{path}: {contract}: {commands:?}");
+        }
+        for module in [
+            "source::build_recipe_tests::",
+            "source::build_env_recipe_tests::",
+            "rfc0103_build_step_confinement::",
+            "rfc0165_build_read_project::",
+            "rfc0165_build_env_project::",
+        ] {
+            assert!(commands[2].contains(module), "{path}: {module}: {commands:?}");
+        }
+        for contract in [
+            "runtime::host::build_read_tests::",
+            "runtime::host::build_env_tests::",
+            "build_read_captures_authenticate_kind_session_projection_and_cleanup",
+            "build_env_captures_reauthenticate_root_and_optional_response_and_cleanup",
+        ] {
+            assert!(commands[3].contains(contract), "{path}: {contract}: {commands:?}");
+        }
+    }
 }
 
 #[test]
