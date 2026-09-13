@@ -30,6 +30,15 @@ fn takes(function: &ItemFn, name: &str) -> bool {
     })
 }
 
+fn is_validated_artifact_admission(function: &ItemFn) -> bool {
+    let test_helper = function.sig.ident == "admit_canonical"
+        && cfg_text(function) == "test";
+    takes(function, "ValidatedSafeWir")
+        && (test_helper || (matches!(function.sig.ident.to_string().as_str(),
+            "admit_canonical" | "admit_canonical_with_observer")
+            && takes(function, "CanonicalCheckedSource")))
+}
+
 fn cfg_text(function: &ItemFn) -> String {
     function
         .attrs
@@ -530,15 +539,50 @@ fn canonical_wasm_encoding_is_private_and_requires_final_authority() {
     let encoder = named(&file, "encode_validated");
     assert!(matches!(encoder.vis, Visibility::Inherited));
     assert!(takes(encoder, "ValidatedSafeWir"));
-    let admission = named(&file, "admit_canonical");
-    assert!(is_public(admission));
-    assert!(takes(admission, "ValidatedSafeWir"));
+    for name in ["admit_canonical", "admit_canonical_with_observer"] {
+        let admission = named(&file, name);
+        assert!(is_public(admission));
+        assert!(is_validated_artifact_admission(admission), "{name}");
+    }
     assert!(
         functions(&file).all(|function| {
-            !is_public(function) || function.sig.ident == "admit_canonical"
+            !is_public(function) || is_validated_artifact_admission(function)
         }),
         "canonical WasmIR must expose only validated artifact admission"
     );
+}
+
+#[test]
+fn canonical_admission_surface_pin_rejects_unvalidated_and_raw_routes() {
+    for name in ["admit_canonical", "admit_canonical_with_observer"] {
+        let valid: ItemFn = syn::parse_str(&format!(
+            "pub fn {name}(module: ValidatedSafeWir, source: &CanonicalCheckedSource) {{}}"
+        )).unwrap();
+        assert!(is_validated_artifact_admission(&valid));
+        for parameters in [
+            "module: Candidate, source: &CanonicalCheckedSource",
+            "module: ValidatedSafeWir, source: SourceBundleDigest",
+            "module: WasmIr",
+        ] {
+            let invalid: ItemFn = syn::parse_str(&format!("pub fn {name}({parameters}) {{}}"))
+                .unwrap();
+            assert!(!is_validated_artifact_admission(&invalid), "{name}: {parameters}");
+        }
+    }
+    let raw: ItemFn = syn::parse_str(
+        "pub fn encode_raw(module: ValidatedSafeWir, source: &CanonicalCheckedSource) {}"
+    ).unwrap();
+    assert!(!is_validated_artifact_admission(&raw));
+    let test_helper: ItemFn = syn::parse_str(
+        "#[cfg(test)] pub fn admit_canonical(module: ValidatedSafeWir) {}"
+    ).unwrap();
+    assert!(is_validated_artifact_admission(&test_helper));
+    for configuration in ["not(test)", "any(test, feature = \"native\")"] {
+        let production: ItemFn = syn::parse_str(&format!(
+            "#[cfg({configuration})] pub fn admit_canonical(module: ValidatedSafeWir) {{}}"
+        )).unwrap();
+        assert!(!is_validated_artifact_admission(&production), "{configuration}");
+    }
 }
 
 #[test]
@@ -565,6 +609,11 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
     );
 
     let admission = named(&file, "admit_canonical");
+    let mut wrapper_calls = CalledFunctions::default();
+    wrapper_calls.visit_item_fn(admission);
+    assert_eq!(wrapper_calls.0, BTreeSet::from(["admit_canonical_with_observer".into()]),
+        "ordinary admission must use the same checked admission path as observation");
+    let admission = named(&file, "admit_canonical_with_observer");
     let mut calls = CalledFunctions::default();
     calls.visit_item_fn(admission);
     assert!(
@@ -575,6 +624,29 @@ fn production_encoding_requires_checked_wasm_ir_authority() {
         !calls.0.contains("encode_validated"),
         "canonical admission must not call the test-only SafeWIR encoder helper"
     );
+
+    #[derive(Default)]
+    struct AdmissionStages(Vec<String>);
+    impl Visit<'_> for AdmissionStages {
+        fn visit_expr_call(&mut self, expression: &syn::ExprCall) {
+            if let syn::Expr::Path(path) = expression.func.as_ref()
+                && let Some(segment) = path.path.segments.last()
+            {
+                let name = segment.ident.to_string();
+                if matches!(name.as_str(), "derive_entry" | "authorize_wasm_ir" |
+                    "encode_checked" | "decode_and_match_plan" | "admit_parts" | "observe")
+                {
+                    self.0.push(name);
+                }
+            }
+            syn::visit::visit_expr_call(self, expression);
+        }
+    }
+    let mut stages = AdmissionStages::default();
+    stages.visit_block(&admission.block);
+    assert_eq!(stages.0, ["derive_entry", "authorize_wasm_ir", "encode_checked",
+        "decode_and_match_plan", "admit_parts", "observe"],
+        "observation follows checked encoding, decoded-byte matching, and artifact admission");
 
     let direct_safe_wir_encoders = functions(&file)
         .filter(|function| function.sig.ident.to_string().contains("encode"))
