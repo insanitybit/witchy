@@ -714,6 +714,28 @@ fn oracle_harness_edit_runs_only_the_filtered_production_oracle() {
 }
 
 #[test]
+fn integration_grants_edit_runs_only_its_misc_module() {
+    let commands = selected(&[
+        "--edit-loop",
+        "tests/misc/rfc0077_integration_grants.rs",
+    ]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(
+        commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- ")
+            && commands[0].contains("test(/^rfc0077_integration_grants::/)")
+            && commands[0].contains(
+                "not test(/^rfc0077_integration_grants::source_integration_async_recipe_/)",
+            ),
+        "{commands:?}",
+    );
+    assert_ne!(
+        commands[0],
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
+        "the edit loop expanded to every misc test: {commands:?}",
+    );
+}
+
+#[test]
 fn canonical_type_edit_uses_the_bounded_semantic_sentinels() {
     let commands = selected(&[
         "--edit-loop",

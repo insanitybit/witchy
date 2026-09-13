@@ -325,6 +325,12 @@ for p in "${paths[@]}"; do
         tests/misc/rfc0165_oracle.rs)
             add_early "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)'"
             path_has_early=1 ;;
+        tests/misc/rfc0077_integration_grants.rs)
+            # The async source-integration cases each take about 166s and run
+            # in the complete landing selection. Keep the edit loop on the
+            # remaining grant, isolation, and synchronous recipe assertions.
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0077_integration_grants::/) and not test(/^rfc0077_integration_grants::source_integration_async_recipe_/)'"
+            path_has_early=1 ;;
         crates/witchy-wir/src/wir_prelude.rs | \
         crates/witchy-wir/examples/abi_catalog.rs | \
         tests/misc/wasm_abi_catalog.rs | \
