@@ -522,7 +522,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .lines()
             .any(|line| {
                 line.starts_with(
-                    "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 2",
+                    "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 3",
                 )
             }),
         "queue fixtures did not use the bounded hermetic width: {isolated_args}",
@@ -555,7 +555,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         queue_only_args.lines().any(|line| {
             line.starts_with(
-                "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 2",
+                "nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j 3",
             )
         }),
         "queue-only selection did not run the owning package shard: {queue_only_args}",

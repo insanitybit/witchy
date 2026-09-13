@@ -262,15 +262,17 @@ without treating synthetic log heartbeats as liveness.
 
 **Diff-scoped queue infrastructure.** `tools/merge-queue-tests` launches detached
 coordinators, process groups, lock holders, and nested Git repositories. It is
-excluded from the concurrent workspace test stage and runs first as an isolated,
-one-thread shard when the batch changes the queue substrate. The coordinator
+excluded from the concurrent workspace test stage and runs as an isolated shard
+with bounded concurrency when the batch changes the queue substrate. The coordinator
 sets `WITCHY_GATE_QUEUE_INFRA=1` for changes to the queue/check scripts, their
 nextest configuration, or their focused tests. A batch whose every path is
 queue-core (`merge-queue.sh`, `check.sh`, `test-for-paths.sh`, the queue
 fixtures, and riding documentation) is `queue_infra_only`: it runs that shard
-and does **not** launch unfiltered `--workspace` nextest. Operators can run the
-same shard directly with `./scripts/check.sh --queue-infra`, or force it into an
-exact-master baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`.
+and does **not** launch unfiltered `--workspace` nextest. The shard defaults to
+three concurrent fixtures; each owns its repository, state root, and process
+group. Operators can set `WITCHY_QUEUE_INFRA_JOBS` for reliability measurements,
+run the same shard directly with `./scripts/check.sh --queue-infra`, or force it
+into an exact-master baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`.
 
 **Gate fail-fast (check.sh).** The merge-gate profile runs the tests as the
 only foreground stage with three background legs — `cargo check --workspace
