@@ -123,6 +123,14 @@ queue-concurrency-serial = { max-threads = 1 }
 filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
 test-group = 'queue-concurrency-serial'
 
+# This hermetic attribution fixture takes 7-8s and sorted last in five recent
+# queue-infrastructure gates, leaving the other queue workers idle. Start it
+# with the other known stragglers so its Git/process work overlaps the shard;
+# its existing gate-cold-heavy group and every assertion remain unchanged.
+[[profile.default.overrides]]
+filter = 'binary_id(merge-queue-tests::merge_queue) & test(/^gate_behavior::state_and_gate::unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest$/)'
+priority = 90
+
 # Corpus shards retain every admission and execution assertion. Each drives the
 # multi-core compiler; use the existing two-wide group rather than multiplying
 # compiler contention inside the broader misc group. Keep the existing timeout.
