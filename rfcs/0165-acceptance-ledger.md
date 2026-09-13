@@ -24,8 +24,22 @@ This is not a fresh master three-legged execution census.
 
 Exec and preparation-scope admission landed at `a71c5432e`. Ordinary project
 execution, its reachable Ed25519/SHA-256/Rune operations, Dir metadata, and the
-nested-loop extent/prefix corrections are reviewed and focused-green, not yet
-landed. The combined native/root shard passed 53/53 tests (run
+nested-loop extent/prefix corrections landed at `21fa5edbb` on 2026-09-13,
+queue change `mq-34eaf820d09b78d14c7a8d062f6b6e6933b3a641`. Package-owner
+assertions remain bound to captured workspace provenance; registry relabeling
+and custom/registry replay remain unsupported. The terminal gate passed 4337
+workspace tests (337 skipped), all remaining selected stages, and 129 queue
+infrastructure tests, with no recorded flakes.
+
+The 2026-09-13 census reports **162/163 checks, 91 runnable parity agreements,
+zero disagreements**. Its pinned previously built binary has compiler/runtime
+source contents matching master `30655ea9c`; this is not a fresh master build
+or a complete three-legged workflow census. The only check refusal is
+`opt_mode`'s withdrawn `unique` type. Evidence:
+`/private/tmp/witchy-workflow-census-20260913.log` and the isolated integration
+worktree's `scripts/rfc0165-dev/status/census-{fail,parity}.txt`.
+
+The earlier combined native/root shard passed 53/53 tests (run
 `914ef1f0-e2c0-4172-82cd-4a842a52f5c6`), including project exit 7 and exact
 stdout-then-stderr capture; `hello`/`wrap`/`jq` parity is green. Evidence:
 `/private/tmp/witchy-loop-prefix-integrated-r7.log` and
@@ -39,8 +53,10 @@ edit script exited 100 on exactly those ten existing AST-only deferred cases;
 it did not pass, and no green edit receipt is claimed. Logs are
 `/private/tmp/witchy-project-crypto-{presubmit,lower-filtered,wir-native,root}.log`;
 fresh `hello`/`wrap`/`jq` agreement is in
-`/private/tmp/witchy-project-crypto-compact-r2.log`. No new census or current-master
-completion is claimed. Remaining production workflows, full observation-trace evidence,
+`/private/tmp/witchy-project-crypto-compact-r2.log`. Those focused runs did not
+establish current-master completion. Remaining production workflows
+include source-backed test fixtures and async admission, build recipes, package
+replay, and server-oracle coverage. Full observation-trace evidence,
 current hosted CI, opt-contract conformance, and security/optimizer acceptance
 remain open. Compiler-wide memory safety and optimizer correctness are not
 established. Pending descriptions in the older checkpoints below are historical;

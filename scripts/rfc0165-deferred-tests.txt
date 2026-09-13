@@ -77,10 +77,6 @@ witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_bu
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_exec_runs_only_allow_listed_tools
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_net_fetches_only_allow_listed_hosts
 witchy::bin/witchy commands::execution::runtime_parity_tests::parity_authenticates_user_dynamic_declarations
-witchy::bin/witchy commands::test_runner::test_mode_link_tests::fixture_test_runs_real_witchy_source_with_identical_backend_evidence
-witchy::bin/witchy commands::test_runner::test_mode_link_tests::witchy_test_allows_entry_to_construct_foreign_sealed_data
-witchy::bin/witchy commands::test_runner::test_mode_link_tests::witchy_test_prunes_unused_effectful_main_under_zero_grant
-witchy::bin/witchy commands::test_runner::test_mode_link_tests::witchy_test_zero_grant_keeps_abort_diagnostics
 witchy::bin/witchy commands::web::dev::tests::compiler_invalidation_follows_the_loaded_local_source_graph
 witchy::bin/witchy commands::web::dev::tests::failed_rebuild_keeps_last_good_artifacts
 witchy::bin/witchy commands::web::dev::tests::rebuild_swaps_only_for_matching_compiler_contracts
@@ -273,10 +269,6 @@ witchy::misc examples_index::committed_project_locks_match_their_path_dependenci
 witchy::misc region_copyout::dict_region_result_recursively_copies_keys_and_values
 witchy::misc region_copyout::recursive_adt_region_result_is_copied_out
 witchy::misc rendering_protocol::interpolation_is_show_driven_with_or_without_import
-witchy::misc rfc0077_integration_grants::linked_library_capabilities_do_not_widen_a_nullary_test_entry
-witchy::misc rfc0077_integration_grants::net_parameters_require_an_explicit_allowlist
-witchy::misc rfc0077_integration_grants::real_dir_access_requires_integration_and_an_explicit_grant
-witchy::misc rfc0077_integration_grants::resolved_dependency_tests_receive_zero_real_grants
 witchy::misc rfc0102_console::console_rights_gate_io_and_native_input_is_line_based
 witchy::misc rfc0103_build_step_confinement::production_build_step_runs_in_a_confined_child
 witchy::misc rfc0105_fixture_cli::failed_fixture_json_retains_partial_output_and_transcript
