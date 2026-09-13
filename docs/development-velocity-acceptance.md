@@ -113,6 +113,25 @@ parallel to 30.968s sequential: 6.150s slower (24.8%). This package-scoped
 result has limited authority over whole-workspace CPU effects, but it provides
 no wall-latency basis for changing the current parallel gate.
 
+## Open focused-probe gaps
+
+An unlanded RFC-0165 source-integration slice ran a custom selection of 777
+tests from a cold, one-job target. Cargo compilation took 789s. The test stage
+then took 271.482s, of which one async integration test occupied 270.083s and
+timed out; the other 776 tests overlapped and added at most 1.399s to the stage
+wall. The resulting failure-driven command work was about 1,060s. This run was
+outside the merge queue and is not counted as a landing-gate failure.
+
+The exact failing test is the smallest known reproducer, but its current 270s
+timeout is too expensive for the 30-60s edit budget. Existing structural checks
+already prove that the generated async driver passes the selected invocation to
+`task.run`; they passed and therefore cannot detect the later backend hang.
+Until the compiler work supplies a bounded regression that fails at the same
+point, keep the broad landing coverage and do not add this 270s reproducer to
+the edit route. The eventual router scope is only the seven source-integration
+paths from commit `337e749a7`; selection must retain source identity, admission,
+grant confinement, independent validation, execution, and heap cleanup.
+
 ## Change ledger
 
 | Date | Change | Local evidence | Landing evidence | Measured result |
@@ -138,6 +157,9 @@ no wall-latency basis for changing the current parallel gate.
 | 2026-09-12 | Shorten prewarm cancellation fixture polling | Three warm exact runs took 8.432s, 8.509s, and 8.493s after the change. The recent landing-log median was 18.205s. Cancellation, serialized-lock, clean-profile environment, and eventual landing assertions are unchanged; only test coordinator intervals changed. | `55c22c965`, attempt `mqa-a21135e788f4ca16e001429bcb2939f9a70fd70e`; the exact test took 7.221s and all 121 tests passed in 113.247s, 121s gate wall | Warm exact median saving is 9.712s (53.3%). The complete shard improved by 5.268s (4.4%) versus the immediately preceding 118.515s run because other fixtures overlap. Production polling and termination grace are unchanged. |
 | 2026-09-12 | Run isolated queue fixtures at width three | The unchanged 15-test edit selection passed at width three in 32.153s versus 37.118s in the immediately preceding width-two run. Every fixture retains its own repository, state root, and process group; the operator override remains. | `a9f9a5813`, attempt `mqa-fb7a5fd124cf749e46f6ce40b6b1c204420182bd`; the same 121 tests fell from 113.247s to 85.504s and the shard from 117s to 90s. The next landing passed 121/121 in 83.765s, 88s shard wall. | First matched landing saving is 27.743s (24.5%) for execution and 27s (23.1%) for the shard. Two width-three landing samples are green. Confidence is medium until more ordinary queue changes exercise timing-sensitive fixtures; do not increase width again on these two samples alone. |
 | 2026-09-12 | Measure edit-loop latency in exact-tip receipts | The clean post-commit `agent-check edit` passed 15/15 and recorded `durations_s.edit=41` alongside the existing commit and shard identity. Legacy receipts remain readable, and missing durations remain absent rather than zero. | `914cb8f10`, attempt `mqa-7fa413b7c9ea6b878c9bc696ad0f605eab5a690a`; submission journaled `presubmit_edit_elapsed_s=41`, then 121/121 passed in 83.765s, 90s gate wall | The existing report now exposes edit-check p50/p90; a live two-hour report found one 41s sample and 94.4% exact-tip receipt coverage. This measures selected validation time, not first-edit-to-submit time or agent idleness. Confidence is high in the measurement path and low in distribution claims until the sample grows. |
+| 2026-09-13 | Focus gate-report edits | The old route took 37-40s. The exact report syntax and end-to-end route took 5.3s cold and 1.36s warm; five report edits in the preceding 48 hours imply 80-98s/day recoverable at that frequency. | `45351be8d`, exact-tip edit receipt 41s; attempt `mqa-9fff026b15e11b60fc9ac605117eb99056eb2b98` landed in a 90s gate | Saving is 32-39s per report edit with high confidence for the selected route. Full landing selection remains WORKSPACE. Scope is the router and its regression fixture. |
+| 2026-09-13 | Bound canonical console-fixture edits | A representative compiler edit selected seven commands and failed after 288s. The exact canonical fixture cohort now selects three groups covering ABI linkage, fixture ownership/runtime behavior, and admitted CLI semantics. Router tests passed 61/61; the queue edit shard passed 16/16; the exact-tip receipt was 47s. | `3e1e92727`, attempt `mqa-00bf2e9db29ade41274c90d2e19414a1fe59b39e` landed in an 81s gate | Command-count reduction and retained assertions have high confidence. Wall saving is uncertain because the old run ended on a disk-full link failure and included unrelated paths. Full landing selection remains WORKSPACE. Scope is the router and its regression fixture. |
+| 2026-09-13 | Keep Wasmtime's test cache stable across relinks | In a controlled candidate, changing only the test executable mtime reduced `calc` admitted spawn from 207.790ms to 3.961ms and total time from 570.603ms to 364.630ms, saving 203.829ms. The cache key still binds Wasm bytes, compiler revision, target, and configuration. | `5fa72666a`, exact-tip edit receipt 1s; attempt `mqa-0e625b8eee2c81c7d6e91bb48eb9050b9223c5d8` landed in a 565s gate | The activation gate populated the new cache and overlapped a foreign compiler/test run, so it is not steady-state evidence. A measured `async_tasks` spawn cost of 47.807s is an upper-bound candidate saving, not a demonstrated result. Risk is a future `wasmtime-internal-cache` release adding semantic debug assertions; `Cargo.lock` currently pins 45.0.0. Scope is one package profile entry in `Cargo.toml`; assertions and landing selection are unchanged. |
 
 Update this table only after terminal queue evidence. Record proposals and
 failed experiments in the criterion state or accompanying change, without
