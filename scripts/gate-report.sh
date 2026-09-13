@@ -175,6 +175,11 @@ jq -sn \
         {count:(map(select(. != null))|length),
          p50:(percentile(0.50)), p90:(percentile(0.90)), max:(map(select(. != null))|max//null)};
     def numeric($value): if $value==null or $value=="" then null else ($value|tonumber) end;
+    def attempt_elapsed: numeric(.attempt_elapsed_s // .elapsed_s);
+    def attempt_lock_wait: (numeric(.lock_wait_s) // 0);
+    def attempt_work:
+        (attempt_elapsed - attempt_lock_wait) as $work
+        | if $work < 0 then 0 else $work end;
     # A successful batch writes one `merged` event per member. Those events
     # describe one physical coordinator attempt and share its gate log. Keep
     # branch throughput per member, but count attempt time only once. The
@@ -258,7 +263,9 @@ jq -sn \
                ] | unique_by(attempt_key)
              end) as $prior_failures
           | {branch:$landed.branch, failures:($prior_failures|length),
-             failed_attempt_s:($prior_failures|map(numeric(.attempt_elapsed_s // .elapsed_s))|add//0)}
+             failed_attempt_s:($prior_failures|map(attempt_elapsed)|add//0),
+             failed_work_s:($prior_failures|map(attempt_work)|add//0),
+             failed_lock_wait_s:($prior_failures|map(attempt_lock_wait)|add//0)}
        ]) as $rework_rows
     | {
         schema:3, generated_at:$generated, since:$since, state_dir:$state_dir,
@@ -312,8 +319,12 @@ jq -sn \
                   affected_changes:($rework_rows|map(select(.failures>0))|length),
                   failed_attempts_per_affected_change:($rework_rows|map(select(.failures>0)|.failures)|distribution),
                   failed_attempt_s_per_affected_change:($rework_rows|map(select(.failures>0)|.failed_attempt_s)|distribution),
+                  failed_work_s_per_affected_change:($rework_rows|map(select(.failures>0)|.failed_work_s)|distribution),
+                  failed_lock_wait_s_per_affected_change:($rework_rows|map(select(.failures>0)|.failed_lock_wait_s)|distribution),
                   unique_failed_attempts:($failed|length),
-                  unique_failed_attempt_s_total:($failed|map(numeric(.attempt_elapsed_s // .elapsed_s))|add//0),
+                  unique_failed_attempt_s_total:($failed|map(attempt_elapsed)|add//0),
+                  unique_failed_work_s_total:($failed|map(attempt_work)|add//0),
+                  unique_failed_lock_wait_s_total:($failed|map(attempt_lock_wait)|add//0),
                   attribution:"batch failures affect every branch named in members; aggregate attempt cost remains deduplicated",
                   lineage:"change_id when present; otherwise submissions after the previous merge on the branch"}},
         phases_s:{compile:($phases|map(.compile_s)|distribution),
@@ -419,6 +430,7 @@ jq -r '
     "  scheduling/idle (n=\(.development_latency.scheduling_wait_s.count)): \(value(.development_latency.scheduling_wait_s.p50; "s")) / \(value(.development_latency.scheduling_wait_s.p90; "s")) / \(value(.development_latency.scheduling_wait_s.max; "s"))",
     "  terminal events / unique attempts / duplicate batch members: \(.development_latency.shared_batch_dedup.terminal_events) / \(.development_latency.shared_batch_dedup.unique_attempts) / \(.development_latency.shared_batch_dedup.duplicate_member_events)",
     "  landed changes with failure-driven rework: \(.development_latency.rework.affected_changes)/\(.development_latency.rework.landed_changes)",
+    "  failed attempt work / lock wait: \(value(.development_latency.rework.unique_failed_work_s_total; "s")) / \(value(.development_latency.rework.unique_failed_lock_wait_s_total; "s"))",
     "",
     "Coordinator attempt phases (p50 / p90; exact where instrumented)",
     "  lock wait (n=\(.attempt_phases_s.lock_wait.count)): \(value(.attempt_phases_s.lock_wait.p50; "s")) / \(value(.attempt_phases_s.lock_wait.p90; "s"))",

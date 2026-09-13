@@ -190,7 +190,7 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
             "{{\"ts\":\"2026-07-15T23:59:00Z\",\"event\":\"red\",\"branch\":\"a\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"gate_elapsed_s\":\"10\",\"log\":{old_red:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a0\",\"submitted_sha\":\"sha-a0\",\"presubmit_sha_match\":\"true\",\"presubmit_edit_elapsed_s\":\"12\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b0\",\"submitted_sha\":\"sha-b0\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:00:20Z\",\"event\":\"batch_red\",\"branch\":\"a\",\"members\":\"a b\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"gate_elapsed_s\":\"10\",\"log\":{batch_red:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:20Z\",\"event\":\"batch_red\",\"branch\":\"a\",\"members\":\"a b\",\"elapsed_s\":\"10\",\"attempt_elapsed_s\":\"10\",\"lock_wait_s\":\"4\",\"gate_elapsed_s\":\"10\",\"log\":{batch_red:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:00:30Z\",\"event\":\"resubmitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:35Z\",\"event\":\"resubmitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\",\"presubmit_edit_elapsed_s\":\"30\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:40Z\",\"event\":\"coordinator_started\",\"branch\":\"a\",\"attempt_id\":\"attempt-a1\"}}\n",
@@ -249,8 +249,9 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["attempt_s"]["p90"], 302);
     assert_eq!(report["gate_s"]["p50"], 40);
     assert_eq!(report["gate_s"]["p90"], 111);
-    assert_eq!(report["attempt_phases_s"]["lock_wait"]["count"], 1);
-    assert_eq!(report["attempt_phases_s"]["lock_wait"]["p50"], 181);
+    assert_eq!(report["attempt_phases_s"]["lock_wait"]["count"], 2);
+    assert_eq!(report["attempt_phases_s"]["lock_wait"]["p50"], 4);
+    assert_eq!(report["attempt_phases_s"]["lock_wait"]["p90"], 181);
     assert_eq!(report["attempt_phases_s"]["prepare"]["p50"], 5);
     assert_eq!(report["attempt_phases_s"]["preflight"]["p50"], 0);
     assert_eq!(report["attempt_phases_s"]["gate"]["count"], 5);
@@ -265,9 +266,13 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["development_latency"]["rework"]["affected_changes"], 2);
     assert_eq!(report["development_latency"]["rework"]["unique_failed_attempts"], 4);
     assert_eq!(report["development_latency"]["rework"]["unique_failed_attempt_s_total"], 120);
+    assert_eq!(report["development_latency"]["rework"]["unique_failed_work_s_total"], 116);
+    assert_eq!(report["development_latency"]["rework"]["unique_failed_lock_wait_s_total"], 4);
     assert_eq!(report["development_latency"]["rework"]["failed_attempts_per_affected_change"]["p50"], 1);
     assert_eq!(report["development_latency"]["rework"]["failed_attempts_per_affected_change"]["max"], 1);
     assert_eq!(report["development_latency"]["rework"]["failed_attempt_s_per_affected_change"]["max"], 10);
+    assert_eq!(report["development_latency"]["rework"]["failed_work_s_per_affected_change"]["max"], 6);
+    assert_eq!(report["development_latency"]["rework"]["failed_lock_wait_s_per_affected_change"]["max"], 4);
     assert_eq!(report["outcomes"]["requeued"], 1);
     assert_eq!(report["outcomes"]["conflict"], 1);
     assert_eq!(report["throughput"]["failed_attempts"], 4, "conflict is not a failed gate");
