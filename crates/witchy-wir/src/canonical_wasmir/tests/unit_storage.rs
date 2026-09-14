@@ -99,7 +99,7 @@ fn unit_storage_rejects_type_layout_initialization_and_bounds() {
         assert!(check_initial_with_test_witness(candidate(fault)).is_err());
     }
     let error = crate::canonical_safewir::check_initial(candidate(Fault::Uninitialized)).unwrap_err();
-    assert!(matches!(error, InitialCheckError::UnsupportedMemoryOperation { operation: "Load(uninitialized Unit)", .. }));
+    assert!(matches!(error, InitialCheckError::UnsupportedMemoryOperation { operation: "Load(uninitialized scalar)", .. }));
 }
 
 #[test]

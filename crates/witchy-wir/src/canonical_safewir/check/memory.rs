@@ -1531,7 +1531,7 @@ impl<'a> MemoryChecker<'a> {
     fn checked_scalar_slot_initialized(&self, place: &Place) -> Result<bool, InitialCheckError> {
         let (object, slot) = self.reference_slot(place)?;
         let state = self.live_object(object)?;
-        if state.initialized_owned_slots {
+        if state.initialized_owned_slots || self.state.static_data_objects.contains(&object) {
             return Ok(true);
         }
         if self.checked_scalar_slot_stored(object, slot) {
@@ -2890,6 +2890,21 @@ impl<'a> MemoryChecker<'a> {
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     initialized: true, zero_width: self.is_zero(*index), zero_start: true },
             );
+        } else {
+            // Taking the tail transfers only that scalar lane. Every slot
+            // below the new count remains initialized and may be republished
+            // after the caller initializes a replacement tail.
+            self.state.range_states.insert(
+                RangeIdentity { object, start: *index, length: *index },
+                RangeState {
+                    element,
+                    ownership: state.ownership,
+                    allocation_class: state.allocation_class,
+                    initialized: true,
+                    zero_width: self.is_zero(*index),
+                    zero_start: true,
+                },
+            );
         }
         self.state.header_values.retain(|(container, field), _| !containers.contains(container) || *field != HeaderField::Length);
         self.state.header_values.insert((object, HeaderField::Length), *index);
@@ -4174,7 +4189,12 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         if self.state.range_states.iter().any(|(range, state)| {
-            range.object == object && state.initialized && !self.is_zero(range.length)
+            range.object == object
+                && state.initialized
+                && !self.is_zero(range.length)
+                && self
+                    .value_type_for_layout(state.element)
+                    .is_ok_and(|value_type| value_type.is_memory_bearing())
         }) {
             return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,

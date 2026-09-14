@@ -93,12 +93,17 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
     }
     if mutation == Some(8) {
         assert!(!pointer);
-        make.retain(|op| !matches!(op, Operation::Store { .. }));
+        for operation in &mut make {
+            if let Operation::Store { value, .. } = operation {
+                *value = v(0);
+            }
+        }
     }
     if mutation == Some(9) {
         assert!(!pointer);
         make.extend([
             Operation::Load { destination: v(7), place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Read), transfer: LoadTransfer::TakeLast },
+            Operation::Store { place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Write), value: v(7), transfer: StoreTransfer::CopyScalar },
             Operation::UpdateCount { object: v(3), count: v(2) },
         ]);
     }

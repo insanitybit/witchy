@@ -8809,6 +8809,9 @@ mod tests {
         let object = ValueId::new(42);
         let parameter = ValueId::new(43);
         let clone = ValueId::new(44);
+        let index = ValueId::new(45);
+        let value = ValueId::new(46);
+        let within_capacity = ValueId::new(47);
         let caller_signature = FunctionSignature {
             id: FunctionSignatureId::new(40),
             parameters: Vec::new(),
@@ -8839,7 +8842,17 @@ mod tests {
                     id: FunctionId::new(40),
                     signature: FunctionSignatureId::new(40),
                     entry: crate::canonical_safewir::BlockId::new(40),
-                    value_types: [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout)), (clone, ValueType::Ref(layout))].into_iter().collect(),
+                    value_types: [
+                        (count, ValueType::Size),
+                        (capacity, ValueType::Size),
+                        (object, ValueType::Ref(layout)),
+                        (clone, ValueType::Ref(layout)),
+                        (index, ValueType::Size),
+                        (value, ValueType::Size),
+                        (within_capacity, ValueType::Bool),
+                    ]
+                    .into_iter()
+                    .collect(),
                     blocks: vec![BasicBlock {
                         id: crate::canonical_safewir::BlockId::new(40),
                         parameters: Vec::new(),
@@ -8851,6 +8864,20 @@ mod tests {
                                 layout,
                                 extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 },
                                 class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                            },
+                            Operation::ConstSize { destination: index, value: 0 },
+                            Operation::ConstSize { destination: value, value: 0 },
+                            Operation::Compare {
+                                destination: within_capacity,
+                                operator: ComparisonOperator::LessUnsigned,
+                                left: index,
+                                right: capacity,
+                            },
+                            Operation::Guard { condition: within_capacity, kind: GuardKind::Bounds },
+                            Operation::Store {
+                                place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Write),
+                                value,
+                                transfer: StoreTransfer::CopyScalar,
                             },
                             Operation::CloneRef { destination: clone, source: object },
                             Operation::Call {
@@ -9174,12 +9201,17 @@ mod tests {
                 vec![
                     Operation::ConstSize { destination: count, value: 1 },
                     Operation::ConstSize { destination: capacity, value: 1 },
+                    Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
+                    Operation::ConstSize { destination: second_index, value: 0 },
+                    Operation::Compare { destination: second_capacity_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: capacity },
+                    Operation::Guard { condition: second_capacity_condition, kind: GuardKind::Bounds },
+                    Operation::ConstSize { destination: value, value: 0 },
+                    Operation::Store { place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
                     Operation::ConstSize { destination: index, value: 1 },
                     Operation::Compare { destination: condition, operator: ComparisonOperator::LessUnsigned, left: index, right: count },
                     Operation::Guard { condition, kind: GuardKind::Bounds },
                     Operation::Compare { destination: capacity_condition, operator: ComparisonOperator::LessUnsigned, left: index, right: capacity },
                     Operation::Guard { condition: capacity_condition, kind: GuardKind::Bounds },
-                    Operation::Alloc { destination: object, layout: list, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
                     Operation::Load { destination: element_loaded, place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                     Operation::Reclaim { object },
                 ],
@@ -9199,15 +9231,15 @@ mod tests {
                     Operation::ConstSize { destination: value, value: 7 },
                     Operation::Store { place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Write), value, transfer: StoreTransfer::CopyScalar },
                     Operation::ConstSize { destination: new_count, value: 2 },
-                    Operation::UpdateCount { object, count: new_count },
-                    Operation::Load { destination: capacity_loaded, place: Place::projected(object, Projection::Header(HeaderField::Capacity), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                     Operation::ConstSize { destination: second_index, value: 1 },
-                    Operation::Compare { destination: second_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: new_count },
-                    Operation::Guard { condition: second_condition, kind: GuardKind::Bounds },
                     Operation::Compare { destination: second_capacity_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: capacity },
                     Operation::Guard { condition: second_capacity_condition, kind: GuardKind::Bounds },
                     Operation::ConstSize { destination: second_value, value: 42 },
                     Operation::Store { place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Write), value: second_value, transfer: StoreTransfer::CopyScalar },
+                    Operation::UpdateCount { object, count: new_count },
+                    Operation::Load { destination: capacity_loaded, place: Place::projected(object, Projection::Header(HeaderField::Capacity), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
+                    Operation::Compare { destination: second_condition, operator: ComparisonOperator::LessUnsigned, left: second_index, right: new_count },
+                    Operation::Guard { condition: second_condition, kind: GuardKind::Bounds },
                     Operation::Load { destination: length_loaded, place: Place::projected(object, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                     Operation::Load { destination: element_loaded, place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                     Operation::Reclaim { object },
@@ -9223,12 +9255,14 @@ mod tests {
         value_types.insert(capacity_condition, ValueType::Bool);
         value_types.insert(object, ValueType::Ref(list));
         value_types.insert(element_loaded, ValueType::Size);
+        value_types.insert(value, ValueType::Size);
+        value_types.insert(second_index, ValueType::Size);
+        value_types.insert(second_capacity_condition, ValueType::Bool);
         if !oob {
-            for value in [capacity_loaded, new_count, second_index, value, second_value, length_loaded] {
+            for value in [capacity_loaded, new_count, second_value, length_loaded] {
                 value_types.insert(value, ValueType::Size);
             }
             value_types.insert(second_condition, ValueType::Bool);
-            value_types.insert(second_capacity_condition, ValueType::Bool);
         }
         let result_types = results.iter().map(|_| ValueType::Size).collect::<Vec<_>>();
         finalize(CanonicalModule::from_lowering(LoweredModuleParts {
