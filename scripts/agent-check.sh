@@ -32,8 +32,14 @@ elif command -v nice >/dev/null 2>&1; then
 fi
 
 run_in_agent_env() {
-    env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
-        "${agent_priority[@]}" "$@"
+    if [ "$agent_target_from_gate" -eq 1 ] && [ -z "${CARGO_PROFILE_TEST_STRIP+x}" ]; then
+        env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
+            CARGO_PROFILE_TEST_STRIP=symbols CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
+            "${agent_priority[@]}" "$@"
+    else
+        env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
+            "${agent_priority[@]}" "$@"
+    fi
 }
 
 run_paths_checks() {
@@ -42,7 +48,11 @@ run_paths_checks() {
 
 run_edit_checks() {
     local explicit_paths="$#" started_at="$SECONDS"
-    ensure_agent_target
+    local edit_plan
+    edit_plan="$(./scripts/test-for-paths.sh --edit-loop "$@")"
+    if printf '%s\n' "$edit_plan" | grep -Eq '^  .*(cargo|check[.]sh)'; then
+        ensure_agent_target
+    fi
     run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
     # With no explicit paths, test-for-paths derived its selection from the
     # entire branch diff. Record that exact clean commit even when the cheapest
@@ -53,11 +63,20 @@ run_edit_checks() {
 }
 
 ensure_agent_target() {
-    [ -d "$AGENT_TARGET_DIR" ] || [ ! -d target ] || \
+    [ -d "$AGENT_TARGET_DIR" ] && return 0
+    if [ -d target ]; then
         ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"
+    elif ./scripts/worktree-warm.sh --target-dir "$AGENT_TARGET_DIR"; then
+        # With no checkout-local target, worktree-warm uses the coordinator's
+        # active generation. Match its test profile so Cargo can reuse it.
+        agent_target_from_gate=1
+    else
+        echo "agent-check: warm target unavailable; continuing with a cold isolated target" >&2
+    fi
 }
 
 AGENT_TARGET_DIR="${CARGO_TARGET_DIR:-target-codex}"
+agent_target_from_gate=0
 command="${1:-}"
 shift || true
 
