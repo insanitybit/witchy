@@ -677,6 +677,10 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("admitted_guard_near_misses_trap_exactly_at_the_boundary"), "{mixed:?}");
     assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_owner_adapters::server_pool_oracle::"), "{mixed:?}");
+    assert!(
+        mixed[2].contains("rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata"),
+        "{mixed:?}"
+    );
     assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
     assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
