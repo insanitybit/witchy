@@ -266,7 +266,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "build_env_len" (func $build_env_len_host (param i32) (result i32)))
   (import "witchy" "build_env_fill" (func $build_env_fill_host (param i32 i32)))
   (import "witchy" "build_fetch_len" (func $build_fetch_len_host (param i32 i32) (result i32)))
-  (import "witchy" "build_exec_run" (func $build_exec_run_host (param i32 i32) (result i32)))
+  (import "witchy" "build_exec_run" (func $build_exec_run_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "net_recv_line_len" (func $net_recv_line_len_host (param externref) (result i32)))
   (import "witchy" "net_recv_all_len" (func $net_recv_all_len_host (param externref) (result i32)))
   (import "witchy" "net_recv_bytes_len" (func $net_recv_bytes_len_host (param externref i64) (result i32)))

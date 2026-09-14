@@ -1395,3 +1395,91 @@ This is focused-ready evidence, not a merged/full-gate claim. Queue state and
 terminal landing remain authoritative in the merge-queue journal. BuildExec,
 BuildNet, other remaining workflows, and optimizer/security acceptance remain
 open. The full SafeWIR goal is not complete.
+
+#### BuildEnv gate refusal and follow-on integration
+
+Submitted BuildEnv commit `0939047386173b4505bee90a702617f809f430b1`
+(change `mq-c17b6bfd12a8c40c250079274e066c00db47a0ce`) did not land: the
+workspace gate timed out after 270 seconds on
+`rfc0077_integration_grants::source_integration_async_recipe_drives_body_instead_of_only_making_a_task`.
+The other async recipe was terminated when the gate cancelled. This is not a
+BuildEnv assertion failure; it is still a red gate and must not be called merged.
+
+Both async assertions passed outside the gate with the existing compiled test
+binary, taking 692.05 seconds combined. Logs and live-process samples are in
+`/private/tmp/witchy-build-env-async-gate-repro.log` and
+`/private/tmp/witchy-build-env-async-sample.txt`. A reference-liveness projection
+experiment was reviewed but not retained: a subsequent paired run changed wall
+time without establishing a material CPU improvement. Its new unit test also
+had an incorrect scalar-type API and was not compiled successfully. The entire
+experiment is preserved in `/private/tmp/witchy-build-env-owned-liveness.patch`,
+not in the production candidate. No security assertion or timeout was relaxed.
+The later sample `/private/tmp/witchy-build-env-async-after-sample.txt` locates
+substantial remaining work in `PlanEmitter::all_paths_reach_or_terminate`.
+
+BuildExec implementation and runtime/core reviews are complete, but integrated
+execution evidence is pending on `impl/rfc0165-build-exec-next`. The prior work
+is recoverable from stash `af4e2d068f4ecc0f7d853efcf7011e851d8e203a` and runtime
+patch `/private/tmp/witchy-build-exec-runtime-review.patch`. The stash also
+contains the rejected liveness experiment; it must not be reapplied blindly.
+
+#### BuildExec focused execution checkpoint
+
+Native run `038ed828-f303-4c19-9628-ad3f23c26279` completed with 70 passed and
+3 failed in 178.049 seconds after a 14m08s build. Log:
+`/private/tmp/witchy-build-exec-integrated-focused.log`. The selected new
+BuildExec source/runtime/oracle and confined pipe/cleanup probes passed. The
+three refusals remain explicit: the package-manager child-path shell exits 1
+under confinement; the generated-source audit fixture cannot relock; and an
+older BuildExec unit test still entered the test-only raw AST build route.
+File-based build tests are now being unified with production checked-recipe
+admission, without arming process confinement inside the unit-test runner.
+That correction has not yet been rebuilt. No deferred test was removed.
+
+A reviewed exact-stop-key storage change is integrated in the encoder and its
+independent plan implementation, but execution/timing evidence is pending.
+The proposed cross-stop-set success shortcut was withdrawn after memo-history
+counterexamples; it was never integrated. Both checker passes and exact-byte
+plan matching remain mandatory. BuildEnv has not landed, BuildExec is not
+submitted, and compiler-wide memory safety remains unestablished.
+
+#### BuildExec and exact-query integration: focused green
+
+Run `fcf8cff4-94cc-4b18-b9f4-202b71ceb334` passed 84/84 selected native tests
+in 128.619 seconds after a 5m51s warmed build. Log:
+`/private/tmp/witchy-build-exec-graph-integrated-focused.log`. This covers
+BuildExec source/native/oracle agreement, root/response/capture authorization,
+allowed/denied tools, checked buffers, pipe backpressure/cleanup, BuildEnv and
+BuildRead regressions, the generated ABI catalog, build workflows, and the
+encoder/planner exact-query regression module. The three prior failures are
+resolved without changing the confinement policy: the child-path fixture
+explicitly grants `bash` rather than macOS's `sh` dispatch shim; file tests use
+the same checked-recipe admission as the production child; and `pm lock` has a
+fresh checked source entry calling the existing Grimoire lock handler.
+Independent source reviews cleared these changes before submission.
+
+Run `9f7751bd-ed12-469c-8722-05107265e336` passed both
+`rfc0077_integration_grants::source_integration_async_recipe` probes in 353.884
+seconds combined with the existing default-profile timeouts (no retries or
+relaxed deadline). Log: `/private/tmp/witchy-build-exec-graph-async-gate-probes.log`.
+This is a passing reproduction of the prior gate blocker, not a general
+benchmark or a full-gate result. The same binary passed interpreter/compiled
+Wasm parity for `hello`, `wrap`, and `jq` (3/5/7 lines), recorded in
+`/private/tmp/witchy-build-exec-graph-compact-parity.log`.
+
+Reproduce with the absolute warmed target and the same package/feature union:
+
+```sh
+export CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+export CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc
+common=(taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy --features native --lib --bin witchy --test misc --test e2e --ignore-default-filter --no-fail-fast)
+"${common[@]}" --profile ci --test-threads 2 -E 'test(build_exec) | test(build_env) | test(build_read) | test(build_recipe) | test(rfc0103_build_step_confinement) | test(wasm_abi_catalog) | test(confined_cat_roundtrips) | test(confined_stdin_failure) | test(build_step_generated_deps_link_and_run) | test(build_steps_are_default_deny_even_when_safe) | test(build_steps_auto_run_and_generated_source_is_gated) | test(deterministic_build_output_is_cached) | test(boolean_reaches)'
+"${common[@]}" --profile default --test-threads 1 -E 'test(rfc0077_integration_grants::source_integration_async_recipe)'
+for name in hello wrap jq; do "$CARGO_TARGET_DIR/debug/witchy" parity "examples/$name/src/$name.witchy"; done
+```
+
+Six passing build tests were removed from the deferred list. No unsupported
+family was reclassified as passing. BuildNet, remaining workflows, and the
+optimizer/security acceptance obligations stay open. These are focused-green
+slices awaiting the serialized merge queue; compiler-wide memory safety is not
+established.

@@ -652,12 +652,7 @@ impl ConfinedFile {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .take_fds(fds);
-        let mut child = command.spawn()?;
-        if let Some(mut input) = child.stdin.take() {
-            use std::io::Write;
-            input.write_all(stdin.as_bytes())?;
-        }
-        child.wait_with_output()
+        Self::collect_output_with_input(command.spawn()?, stdin)
     }
 
     /// macOS and the other supported Unix hosts lack a public descriptor-exec
@@ -686,16 +681,13 @@ impl ConfinedFile {
         }
         #[cfg(target_os = "macos")]
         if let Some(path) = self.immutable_system_exec_path(&source) {
-            let mut child = Command::new(path)
+            let child = Command::new(path)
                 .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
-            if let Some(mut input) = child.stdin.take() {
-                input.write_all(stdin.as_bytes())?;
-            }
-            return child.wait_with_output();
+            return Self::collect_output_with_input(child, stdin);
         }
         let temp = tempfile::Builder::new()
             .prefix("witchy-confined-exec-")
@@ -709,18 +701,53 @@ impl ConfinedFile {
         executable.set_permissions(std::fs::Permissions::from_mode(0o700))?;
         drop(executable);
 
-        let mut child = Command::new(&executable_path)
+        let child = Command::new(&executable_path)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        if let Some(mut input) = child.stdin.take() {
-            input.write_all(stdin.as_bytes())?;
-        }
-        let output = child.wait_with_output();
+        let output = Self::collect_output_with_input(child, stdin);
         drop(temp);
         output
+    }
+
+    /// Feed stdin while wait_with_output concurrently drains both output pipes.
+    /// In particular, a child echoing more than a pipe's capacity must not block
+    /// our stdin writer while we wait to begin reading its stdout. Even when
+    /// writing fails, finish collecting/reaping before reporting that error.
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    fn collect_output_with_input(
+        mut child: std::process::Child, stdin: &str,
+    ) -> std::io::Result<std::process::Output> {
+        use std::io::Write;
+        let input = child.stdin.take();
+        std::thread::scope(|scope| {
+            let writer = match std::thread::Builder::new()
+                .name("witchy-tool-stdin".into())
+                .spawn_scoped(scope, move || -> std::io::Result<()> {
+                    if let Some(mut input) = input {
+                        input.write_all(stdin.as_bytes())?;
+                    }
+                    // Dropping the pipe signals EOF on success and failure.
+                    Ok(())
+                })
+            {
+                Ok(writer) => writer,
+                Err(error) => {
+                    // No writer exists to drive the child. Do not leave a
+                    // subprocess behind if the host cannot create the thread.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            };
+            let output = child.wait_with_output();
+            let written = writer.join()
+                .map_err(|_| std::io::Error::other("confined executable stdin writer panicked"))?;
+            written?;
+            output
+        })
     }
 
     #[cfg(any(not(unix), target_arch = "wasm32"))]
@@ -757,6 +784,45 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn confined_cat_roundtrips_input_larger_than_pipe_capacity() {
+        let cat = ConfinedFile::open_ambient(Path::new("/bin/cat")).unwrap();
+        let input = "pipe roundtrip caf\u{e9}\0\n".repeat(256 * 1024);
+        let output = cat.run(&[], &input).expect("feed and drain concurrently");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, input.as_bytes());
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn confined_stdin_failure_finishes_child_and_preserves_nonzero_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let complete = scratch.join("complete");
+        let location = scratch.join("location");
+        let quote = |path: &Path| path.to_str().unwrap().replace('\'', "'\\''");
+        let script = scratch.join("reject-input");
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nprintf '%s' \"$0\" > '{}'\nexec 0<&-\nprintf stdout\nprintf stderr >&2\nprintf done > '{}'\nexit 7\n",
+            quote(&location), quote(&complete),
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = ConfinedFile::open_ambient(&script).unwrap();
+        let error = executable.run(&[], &"input".repeat(1024 * 1024)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(std::fs::read_to_string(&complete).unwrap(), "done",
+            "the stdin error must not return before collecting the child");
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        assert!(!Path::new(&std::fs::read_to_string(&location).unwrap()).exists(),
+            "the temporary executable must be removed after the failed run");
+        // An empty stdin has no write failure: preserve the child's actual
+        // nonzero status and both output streams instead of manufacturing success.
+        let output = executable.run(&[], "").unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"stdout");
+        assert_eq!(output.stderr, b"stderr");
     }
 
     #[test]

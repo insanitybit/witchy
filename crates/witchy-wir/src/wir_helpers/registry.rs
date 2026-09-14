@@ -1148,13 +1148,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        "build_exec" => Some(WirHelperSpec {
-            func: staged_string_helper("build_exec", &["tool", "input"], "build_exec_run"),
-            helper_deps: &["rc_alloc"],
-            import_deps: &["build_exec_run", "fill_pending"],
-            uses_heap: true,
-            uses_table: false,
-        }),
         "dir_list" => Some(WirHelperSpec {
             func: dir_list_helper(),
             helper_deps: &["rc_alloc"],

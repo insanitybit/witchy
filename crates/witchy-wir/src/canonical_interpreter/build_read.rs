@@ -2,7 +2,7 @@
 //! No interpreter fallback consults the host filesystem or process environment.
 use super::*;
 use std::sync::Arc;
-use crate::canonical_safewir::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES, BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};
+use crate::canonical_safewir::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES, BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES, BUILD_EXEC_CAPABILITY_KIND};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleBuildReadFixture {
@@ -12,7 +12,7 @@ pub struct OracleBuildReadFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Resource { Grant, EnvGrant, Response(Option<Arc<[u8]>>) }
+enum Resource { Grant, EnvGrant, ExecGrant, Response(Option<Arc<[u8]>>) }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleBuildEnvFixture {
@@ -36,6 +36,7 @@ impl State {
         let kind = match &resource {
             Resource::Grant => BUILD_READ_CAPABILITY_KIND.get(),
             Resource::EnvGrant => BUILD_ENV_CAPABILITY_KIND.get(),
+            Resource::ExecGrant => BUILD_EXEC_CAPABILITY_KIND.get(),
             Resource::Response(_) => BUILD_READ_RESPONSE_KIND.get(),
         };
         CapabilityToken {
@@ -49,12 +50,24 @@ impl State {
         let actual_kind = match &token.resource {
             Resource::Grant => BUILD_READ_CAPABILITY_KIND.get(),
             Resource::EnvGrant => BUILD_ENV_CAPABILITY_KIND.get(),
+            Resource::ExecGrant => BUILD_EXEC_CAPABILITY_KIND.get(),
             Resource::Response(_) => BUILD_READ_RESPONSE_KIND.get(),
         };
         if capability.kind != kind || actual_kind != kind || !Arc::ptr_eq(&token.issuer, &self.issuer) {
             return Err(refusal("BuildRead wrong kind or session"));
         }
         Ok(token.resource.clone())
+    }
+
+    pub(super) fn authenticate_exec(&self, capability: &CapabilityToken) -> Result<(), InterpretError> {
+        if self.authenticate(capability, BUILD_EXEC_CAPABILITY_KIND.get())? != Resource::ExecGrant {
+            return Err(InterpretError::BuildExec("BuildExec resource is not a tool grant".into()));
+        }
+        Ok(())
+    }
+
+    pub(super) fn some_response(&self, bytes: Arc<[u8]>) -> CapabilityToken {
+        self.mint(Resource::Response(Some(bytes)))
     }
 }
 
@@ -104,9 +117,15 @@ impl Engine<'_> {
     pub(super) fn bind_build_read_entry(&self, mut arguments: Vec<InterpreterValue>) -> Result<Vec<InterpreterValue>, InterpretError> {
         for argument in &mut arguments {
             if let InterpreterValue::Capability(token) = argument
-                && (token.kind == BUILD_READ_CAPABILITY_KIND.get() || token.kind == BUILD_ENV_CAPABILITY_KIND.get())
+                && (token.kind == BUILD_READ_CAPABILITY_KIND.get() || token.kind == BUILD_ENV_CAPABILITY_KIND.get()
+                    || token.kind == BUILD_EXEC_CAPABILITY_KIND.get())
             {
-                let resource = if token.kind == BUILD_ENV_CAPABILITY_KIND.get() {
+                let resource = if token.kind == BUILD_EXEC_CAPABILITY_KIND.get() {
+                    if self.isolated || self.config.fixture.build_exec.is_none() {
+                        return Err(InterpretError::BuildExec("BuildExec entry was not granted".into()));
+                    }
+                    Resource::ExecGrant
+                } else if token.kind == BUILD_ENV_CAPABILITY_KIND.get() {
                     if self.isolated || self.config.fixture.build_env.is_none() {
                         return Err(InterpretError::BuildEnv("BuildEnv entry was not granted".into()));
                     }
@@ -189,6 +208,24 @@ impl Engine<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_exec_oracle_resources_require_session_and_keep_responses_independent() {
+        let state = State::new();
+        let other = State::new();
+        let grant = state.mint(Resource::ExecGrant);
+        assert!(state.authenticate_exec(&grant).is_ok());
+        assert!(other.authenticate_exec(&grant).is_err());
+        assert!(state.authenticate_exec(&CapabilityToken::root(BUILD_EXEC_CAPABILITY_KIND.get())).is_err());
+        assert!(state.authenticate_exec(&state.mint(Resource::Grant)).is_err());
+        assert!(state.authenticate_exec(&state.mint(Resource::EnvGrant)).is_err());
+        let first = state.some_response(Arc::from(&b"first"[..]));
+        let second = state.some_response(Arc::from(&b"second"[..]));
+        assert!(state.authenticate_exec(&first).is_err());
+        assert!(other.authenticate(&first, BUILD_READ_RESPONSE_KIND.get()).is_err());
+        assert_eq!(response_bytes(state.authenticate(&first, BUILD_READ_RESPONSE_KIND.get()).unwrap()).unwrap().as_ref(), b"first");
+        assert_eq!(response_bytes(state.authenticate(&second, BUILD_READ_RESPONSE_KIND.get()).unwrap()).unwrap().as_ref(), b"second");
+    }
 
     #[test]
     fn build_env_oracle_keeps_denied_unset_empty_and_private_sessions_distinct() {

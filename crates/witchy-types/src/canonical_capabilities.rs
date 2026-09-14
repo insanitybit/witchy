@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CapabilityKind { Console, Dir, Env, File, Net, Listener, Socket, BuildOut, BuildRead, BuildEnv, Exec }
+pub enum CapabilityKind { Console, Dir, Env, File, Net, Listener, Socket, BuildOut, BuildRead, BuildEnv, BuildExec, Exec }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityRepresentation {
@@ -60,6 +60,7 @@ fn direct_kind(
         "BuildOut" if arguments.is_empty() => return Some(CapabilityKind::BuildOut),
         "BuildRead" if arguments.is_empty() => return Some(CapabilityKind::BuildRead),
         "BuildEnv" if arguments.is_empty() => return Some(CapabilityKind::BuildEnv),
+        "BuildExec" if arguments.is_empty() => return Some(CapabilityKind::BuildExec),
         "Console" if arguments.is_empty() => return Some(CapabilityKind::Console),
         "Dir" => return Some(CapabilityKind::Dir),
         "Env" if arguments.is_empty() => return Some(CapabilityKind::Env),

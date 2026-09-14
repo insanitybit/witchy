@@ -1047,8 +1047,9 @@ impl Codegen<'_> {
                 call("build_fetch", self.lower_args(&[&args[1], &args[2]])?)
             }
             ("run_tool", 3) => {
-                self.used_build_ops.insert("run_tool");
-                call("build_exec", self.lower_args(&[&args[1], &args[2]])?)
+                // The authenticated ABI carries a real BuildExec token and
+                // checked slices. The legacy ghost/staged route cannot supply it.
+                return None;
             }
             ("recv_line", 1) => {
                 self.used_net_ops.insert("recv_line");

@@ -1366,6 +1366,7 @@ pub struct VmState {
     build_read_roots: Vec<crate::confine::ConfinedDir>,
     build_read_issuer: Arc<()>,
     build_env_issuer: Arc<()>,
+    build_exec_issuer: Arc<()>,
     build_exec_tools:
         std::collections::BTreeMap<String, crate::confine::ConfinedFile>,
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
@@ -1529,6 +1530,10 @@ CanonicalEntryCapability::BuildOut => {
                 }
                 CanonicalEntryCapability::BuildEnv => {
                     let authority = host::build_env::mint(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::BuildExec => {
+                    let authority = host::build_exec::mint(self.store.data())?;
                     ExternRef::new(&mut self.store, authority)?
                 }
                 CanonicalEntryCapability::Exec => {
@@ -2570,6 +2575,7 @@ pub(crate) fn link_capability_imports(
     host::build_out::link(linker)?;
     host::build_read::link(linker)?;
     host::build_env::link(linker)?;
+    host::build_exec::link(linker)?;
     if caps.build_out.is_some() {
         host::build::link_out(linker)?;
     }
@@ -2582,9 +2588,8 @@ pub(crate) fn link_capability_imports(
     if caps.build_net_allow.is_some() {
         host::build::link_fetch(linker)?;
     }
-    if caps.exec_allow.is_some() {
-        host::build::link_exec(linker)?;
-    }
+    // build_exec_run now has the authenticated token/slice ABI. Do not also
+    // register the old zero-representation staging ABI under the same name.
     host::staging::link_staging(linker)?;
     host::vm_worker::link_vm(linker)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
@@ -2713,6 +2718,7 @@ fn vmstate_from_caps(
         build_read_roots,
         build_read_issuer: Arc::new(()),
         build_env_issuer: Arc::new(()),
+        build_exec_issuer: Arc::new(()),
         build_exec_tools,
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),

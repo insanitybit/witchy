@@ -30,6 +30,8 @@ mod build_out;
 pub use build_out::OracleBuildWrite;
 mod build_read;
 pub use build_read::{OracleBuildReadFixture, OracleBuildEnvFixture};
+mod build_exec;
+pub use build_exec::{OracleBuildExecFixture, OracleBuildExecCall};
 mod launch;
 mod nullable;
 mod regex;
@@ -137,6 +139,7 @@ impl InterpreterValue {
             crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildRead => crate::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildEnv => crate::canonical_safewir::BUILD_ENV_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::BuildExec => crate::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::Dir => DIR_KIND,
             crate::CanonicalEntryCapability::Env => ENV_KIND,
             crate::CanonicalEntryCapability::Net => crate::canonical_safewir::NET_CAPABILITY_KIND.get(),
@@ -155,6 +158,8 @@ pub struct OracleFixture {
     pub build_read: Option<OracleBuildReadFixture>,
     /// Only this explicit snapshot grants BuildEnv; never consult ambient Env.
     pub build_env: Option<OracleBuildEnvFixture>,
+    /// Exact ordered tool invocations; no subprocess or PATH lookup is available.
+    pub build_exec: Option<OracleBuildExecFixture>,
     pub files: BTreeMap<String, Vec<u8>>,
     pub environment: BTreeMap<String, String>,
     /// A directory the oracle reads when a path is not in `files` (the
@@ -319,6 +324,7 @@ pub enum InterpretError {
     BuildOut(String),
     BuildRead(String),
     BuildEnv(String),
+    BuildExec(String),
     ExecFixture(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
@@ -381,6 +387,7 @@ pub fn interpret_with_config(
     let results = engine.execute(function, arguments)?;
     engine.finish_net()?;
     engine.finish_exec()?;
+    engine.finish_build_exec()?;
     Ok(results)
 }
 
@@ -459,6 +466,7 @@ pub fn interpret_program(
     let results = engine.execute(function, arguments)?;
     let net_trace = engine.finish_net()?;
     engine.finish_exec()?;
+    engine.finish_build_exec()?;
     let leaked_objects = engine
         .objects
         .values()
@@ -532,6 +540,7 @@ struct Engine<'a> {
     exec: exec::State,
     build_out: build_out::State,
     build_read: build_read::State,
+    build_exec: build_exec::State,
     services: vm_service::ServiceState<'a>,
     isolated: bool,
     module: &'a CanonicalModule<InitialValid>,
@@ -569,6 +578,7 @@ impl<'a> Engine<'a> {
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
             build_read: build_read::State::new(),
+            build_exec: build_exec::State::new(),
             isolated: false,
             module,
             layouts,
@@ -1489,6 +1499,9 @@ impl<'a> Engine<'a> {
         }
         if build_read::is_import(&contract.name) {
             return self.build_read_host_call(&contract.name, destinations, arguments, values);
+        }
+        if contract.name == "build_exec_run" {
+            return self.build_exec_host_call(destinations, arguments, values);
         }
         if contract.name == "build_out_write_at" {
             return self.build_out_host_call(destinations, arguments, values);

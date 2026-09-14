@@ -63,6 +63,24 @@ impl FunctionLowerer<'_> {
         Ok(value)
     }
 
+    pub(super) fn lower_build_exec(&mut self, token: ValueId, tool: &Expr, input: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let tool = self.lower_string_argument(tool)?;
+        // The second argument may var-write the first argument's binding.
+        // Retain its evaluated value, not merely its soon-to-be-consumed SSA id.
+        let tool = self.clone_reference_token(tool)?;
+        let input = self.lower_string_argument(input)?;
+        let tool = self.string_slice_argument(tool, layout)?;
+        let input = self.string_slice_argument(input, layout)?;
+        let run = self.capability_import("build_exec_run")?;
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND))?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import: run,
+            arguments: vec![HostCallArgument::Capability(token), tool, input],
+        });
+        self.lower_build_response_string(response)
+    }
+
     fn lower_build_response_string(&mut self, response: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let size = self.capability_import("build_read_response_size")?;

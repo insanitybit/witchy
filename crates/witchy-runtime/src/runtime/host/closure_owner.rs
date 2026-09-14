@@ -253,6 +253,9 @@ trait CaptureAuthority: 'static {
     fn require_build_env(&self, _data: &dyn std::any::Any) -> Result<()> {
         bail!("BuildEnv capture has no instance authority");
     }
+    fn require_build_exec(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("BuildExec capture has no instance authority");
+    }
 }
 
 fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
@@ -274,6 +277,9 @@ impl CaptureAuthority for super::super::VmState {
     }
     fn require_build_env(&self, data: &dyn std::any::Any) -> Result<()> {
         super::build_env::authenticate_capture(self, data)
+    }
+    fn require_build_exec(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::build_exec::authenticate_capture(self, data)
     }
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
         #[cfg(feature = "test-fixtures")]
@@ -307,6 +313,8 @@ fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::
             return state.require_build_read_response(data),
         id if id == witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND.get() =>
             return state.require_build_env(data),
+        id if id == witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND.get() =>
+            return state.require_build_exec(data),
         1 => data.is::<super::super::DirAuthority>(),
         2 => data.is::<super::super::EnvAuthority>(),
         3 => data.is::<super::super::FileAuthority>(),
@@ -1147,6 +1155,64 @@ mod tests {
             assert!(binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0).is_err(),
                 "projection must reauthenticate the captured session, including None responses");
             if root { vm.store.data_mut().build_env_issuer = issuer; }
+            else { vm.store.data_mut().build_read_issuer = issuer; }
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            binding.family_retain(&vm.store, owner)?;
+            assert!(binding.release_owner_cleanup_items(&mut vm.store, owner)?.is_empty());
+            let cleanup = binding.release_owner_cleanup_items(&mut vm.store, owner)?;
+            assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [91]);
+            assert!(binding.family_retain(&vm.store, owner).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn build_exec_captures_reauthenticate_root_response_and_release_owner() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        use witchy_wir::canonical_safewir::{BUILD_EXEC_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND};
+        let (mut vm, grant) = super::super::build_exec::tests::empty_grant_fixture();
+        let response = super::super::build_read::new_response(&mut vm.store, Some("retained output"))?;
+        let grant = grant.unwrap();
+        for (kind, token, wrong_kind, root) in [
+            (BUILD_EXEC_CAPABILITY_KIND, grant, response, true),
+            (BUILD_READ_RESPONSE_KIND, response, grant, false),
+        ] {
+            let (mut binding, _) = list_capture_bindings(vm.store.engine())?;
+            binding.payload_type = StructType::new(vm.store.engine(), [
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+            ])?;
+            binding.capture_fields = vec![CaptureField {
+                capture: 0, field: 2, kind: CaptureFieldKind::Capability(kind),
+            }].into_boxed_slice();
+            let pre = StructRefPre::new(&mut vm.store, binding.payload_type.clone());
+            for invalid in [wrong_kind, ExternRef::new(&mut vm.store, kind.get())?] {
+                let payload = StructRef::new(&mut vm.store, &pre,
+                    &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(invalid))])?;
+                assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            }
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            let owner = binding.seal_gc(&mut vm.store, payload)?;
+            assert!(require_capability(&vm.store, owner, kind).is_err(), "a wrapper is not its captured authority");
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            let issuer = if root {
+                std::mem::replace(&mut vm.store.data_mut().build_exec_issuer, Arc::new(()))
+            } else {
+                std::mem::replace(&mut vm.store.data_mut().build_read_issuer, Arc::new(()))
+            };
+            assert!(require_capability(&vm.store, token, kind).is_err());
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            assert!(binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0).is_err(),
+                "projection must reauthenticate the captured session");
+            if root { vm.store.data_mut().build_exec_issuer = issuer; }
             else { vm.store.data_mut().build_read_issuer = issuer; }
             let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
             assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);

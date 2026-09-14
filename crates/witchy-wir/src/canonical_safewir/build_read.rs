@@ -4,12 +4,16 @@ use super::*;
 pub const BUILD_READ_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(12);
 pub const BUILD_READ_RESPONSE_KIND: CapabilityKindId = CapabilityKindId::new(13);
 pub const BUILD_ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(14);
+pub const BUILD_EXEC_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(15);
 pub const BUILD_READ_IMPORT_NAMES: [&str; 3] = [
     "build_read_at", "build_read_response_size", "build_read_response_into",
 ];
 /// Env shares the immutable response protocol; only the first two imports are new.
 pub const BUILD_ENV_IMPORT_NAMES: [&str; 4] = [
     "build_env_at", "build_response_is_some", "build_read_response_size", "build_read_response_into",
+];
+pub const BUILD_EXEC_IMPORT_NAMES: [&str; 3] = [
+    "build_exec_run", "build_read_response_size", "build_read_response_into",
 ];
 
 impl CanonicalAbiCatalog {
@@ -51,6 +55,25 @@ impl CanonicalAbiCatalog {
         self.with_build_response_imports([signatures[2], signatures[3]], string_layout)
     }
 
+    pub fn with_build_exec_imports(
+        mut self, signatures: [FunctionSignatureId; 3], string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        let buffer = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
+        };
+        let run = authenticated_capability_import(
+            BUILD_EXEC_IMPORT_NAMES[0],
+            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::ExternRef], signatures[0],
+            vec![HostParameterRole::Capability(BUILD_EXEC_CAPABILITY_KIND), buffer.clone(), buffer],
+            vec![HostResultRole::Capability(BUILD_READ_RESPONSE_KIND)],
+            HostMutation::ReadOnly, &[AbiImportAuthority::BuildExec],
+        )?;
+        self.imports.insert(run.id, run);
+        self.with_build_response_imports([signatures[1], signatures[2]], string_layout)
+    }
+
     fn with_build_response_imports(
         mut self, signatures: [FunctionSignatureId; 2], string_layout: LayoutId,
     ) -> Result<Self, String> {
@@ -76,6 +99,35 @@ impl CanonicalAbiCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_exec_catalog_requires_token_and_two_complete_read_slices() {
+        use crate::wir_prelude::WasmTy;
+        let layout = LayoutId::from_bytes([33; 32]);
+        let signatures = [0, 1, 2].map(FunctionSignatureId::new);
+        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
+            .with_build_exec_imports(signatures, layout).unwrap();
+        assert_eq!(catalog.imports.len(), 3);
+        let run = catalog.imports.values().find(|import| import.name == "build_exec_run").unwrap();
+        assert_eq!(run.signature, signatures[0]);
+        let buffer = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
+        };
+        assert_eq!(run.parameter_roles, vec![HostParameterRole::Capability(BUILD_EXEC_CAPABILITY_KIND), buffer.clone(), buffer]);
+        assert_eq!(run.result_roles, vec![HostResultRole::Capability(BUILD_READ_RESPONSE_KIND)]);
+        assert_eq!(run.mutation, HostMutation::ReadOnly);
+        assert_eq!(run.reentrancy, HostReentrancy::Forbidden);
+        assert!(matches!(run.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+        assert!(authenticated_internal_service_import(
+            "build_exec_run", &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::ExternRef], signatures[0], run.parameter_roles.clone(), run.result_roles.clone(), HostMutation::ReadOnly,
+        ).is_err(), "a service classification must not grant tool execution");
+        assert!(authenticated_capability_import(
+            "build_exec_run", &[WasmTy::I32, WasmTy::I32], &[WasmTy::I32], signatures[0],
+            run.parameter_roles.clone(), run.result_roles.clone(), HostMutation::ReadOnly,
+            &[crate::wir_prelude::AbiImportAuthority::BuildExec],
+        ).is_err(), "the old pointer-only ABI must not authenticate");
+    }
 
     #[test]
     fn build_env_catalog_authenticates_root_and_keeps_presence_internal() {

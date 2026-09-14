@@ -241,7 +241,9 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
     let app = &fixture.app;
     let lib = &fixture.lib;
     std::fs::create_dir_all(work.join("child-config")).unwrap();
-    std::fs::write(work.join("child-config/tool.conf"), "tool-only").unwrap();
+    let generated_source = "pub fn value() -> Int:\n    42\n";
+    let child_source = work.join("child-config/tool.conf");
+    std::fs::write(&child_source, generated_source).unwrap();
 
     std::fs::write(
         app.join("witchy.toml"),
@@ -249,7 +251,7 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
          [capabilities]\nruntime = [\"Console\"]\n\n\
          [dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n\
          [build.grants.\"genlib\"]\n\
-         exec = { programs = [\"cat\"], child-paths = [\"../child-config\"] }\n",
+         exec = { programs = [\"bash\"], child-paths = [\"../child-config\"] }\n",
     )
     .unwrap();
     std::fs::write(
@@ -267,9 +269,17 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
         "pub fn placeholder() -> Int:\n    0\n",
     )
     .unwrap();
+    // Shell builtins read the granted child-only path. Echoing stdin would not
+    // exercise that grant, and spawning another tool would obscure this one.
+    // Grant the actual shell: macOS /bin/sh dispatches to /bin/bash, which is
+    // correctly refused when only the shim has an execution grant.
+    let shell_path = child_source.to_string_lossy().replace('\'', "'\\''");
+    let script = format!(
+        "while IFS= read -r line; do printf '%s\\n' \"$line\"; done < '{shell_path}'\n"
+    );
     std::fs::write(
         lib.join("src/build.witchy"),
-        "fn build(out: BuildOut, tool: BuildExec):\n    out.write_out(\"genmod.witchy\", tool.run_tool(\"cat\", \"pub fn value() -> Int:\\n    42\\n\"))\n",
+        format!("fn build(out: BuildOut, tool: BuildExec):\n    out.write_out(\"genmod.witchy\", tool.run_tool(\"bash\", {script:?}))\n"),
     )
     .unwrap();
 
@@ -279,11 +289,16 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
         .output()
         .expect("spawn witchy run");
     assert!(
-        out.status.success() && stdout(&out).contains("42"),
+        out.status.success() && stdout(&out).lines().any(|line| line.trim() == "42"),
         "richer BuildExec grant must build and run: status {:?} stdout {} stderr {}",
         out.status.code(),
         stdout(&out),
         stderr(&out),
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.join("build-out/genlib/genmod.witchy")).unwrap(),
+        generated_source,
+        "the tool must read and publish the child-only file exactly",
     );
     fixture.finish();
 }

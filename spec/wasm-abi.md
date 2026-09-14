@@ -235,7 +235,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `build_env_len` | `(i32) -> i32` | capability authority | Build.Env | omitted |
 | `build_env_fill` | `(i32, i32)` | capability authority | Build.Env | omitted |
 | `build_fetch_len` | `(i32, i32) -> i32` | capability authority | Build.Fetch | omitted |
-| `build_exec_run` | `(i32, i32) -> i32` | capability authority | Build.Exec | omitted |
+| `build_exec_run` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Build.Exec | omitted |
 | `net_recv_line_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_all_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_bytes_len` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
@@ -337,6 +337,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `build_read_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `build_env_at` | `(externref, i32, i32) -> externref` | capability authority | Build.Env | omitted |
 | `build_response_is_some` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+
 <!-- END GENERATED WASM ABI IMPORTS -->
 
 ### Encoding sub-ABI

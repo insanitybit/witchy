@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 use crate::ast;
-use crate::{codegen, link_file_checked, runtime};
+use crate::{codegen, runtime};
 
 pub(crate) const BUILD_CHILD_COMMAND: &str = "@compiler:build-child";
 const BUILD_CHILD_REQUEST_VERSION: u32 = 3;
@@ -199,22 +199,7 @@ fn run_build_step_file_with_env(
     child_paths: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    #[cfg(test)]
-    let (checked, _) = link_file_checked(path)?;
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
-    #[cfg(test)]
-    {
-        run_build_step_compiled_with_env(
-            checked.module().clone(),
-            out,
-            read_roots,
-            env,
-            exec_tools,
-            child_paths,
-            net_hosts,
-        )
-    }
-    #[cfg(not(test))]
     {
         std::fs::create_dir_all(&out).map_err(|e| format!("build: output dir: {e}"))?;
 // The child loads and authenticates its own immutable source snapshot;
@@ -237,6 +222,15 @@ let source = std::fs::canonicalize(path)
                 net_hosts,
             },
         };
+        #[cfg(test)]
+        {
+            run_build_recipe(
+                &request.source,
+                request.grants,
+                witchy_confinement::EnforcementMode::Disabled,
+            )
+        }
+        #[cfg(not(test))]
         run_build_step_child_process(&request)
     }
 }
@@ -250,13 +244,25 @@ pub(crate) fn run_build_step_child() -> Result<Vec<String>, String> {
             request.version
         ));
     }
-let grants = request.grants;
-if !grants.exec_tools.is_empty()
-    || !grants.child_paths.is_empty() || !grants.net_hosts.is_empty()
-{
-    return Err("build recipe: BuildExec and BuildNet grants are unsupported".into());
+    run_build_recipe(
+        &request.source,
+        request.grants,
+        witchy_confinement::EnforcementMode::BestEffort,
+    )
 }
-let source = request.source.to_str().ok_or_else(|| "build source path is not UTF-8".to_string())?;
+
+// File-based tests and the isolated production child use the same checked
+// recipe admission and execution. Only the child arms a process-wide fence.
+fn run_build_recipe(
+    source: &std::path::Path,
+    grants: BuildRuntimeGrants,
+    confinement: witchy_confinement::EnforcementMode,
+) -> Result<Vec<String>, String> {
+if !grants.net_hosts.is_empty()
+{
+    return Err("build recipe: BuildNet grants are unsupported".into());
+}
+let source = source.to_str().ok_or_else(|| "build source path is not UTF-8".to_string())?;
 let recipe = crate::source::link_build_file(source)?;
 let artifact = match codegen::compile_checked_build_recipe_artifact(&recipe) {
     codegen::LoweringOutcome::Lowered(artifact) => artifact,
@@ -264,13 +270,21 @@ let artifact = match codegen::compile_checked_build_recipe_artifact(&recipe) {
     codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
 };
 std::fs::create_dir_all(&grants.out_dir).map_err(|error| format!("build: output dir: {error}"))?;
+// These tools were host-selected before the child was spawned. Child paths
+// widen only the process fence, never the guest's BuildRead or Dir grants.
+let exec_allow = grants.exec_tools.iter().map(|tool| tool.name.clone()).collect();
+let build_exec_tools = grants.exec_tools.into_iter().map(|tool| (tool.name, tool.path)).collect();
 let caps = runtime::Capabilities {
     build_out: Some(grants.out_dir.clone()),
     build_read_roots: grants.read_roots,
     build_env: Some(grants.env),
+    exec_allow: Some(exec_allow),
+    build_exec_tools,
+    build_exec_runtime_roots: build_exec_runtime_roots(),
+    exec_child_paths: grants.child_paths,
     ..runtime::Capabilities::none()
 };
-super::confinement::arm(&caps, witchy_confinement::EnforcementMode::BestEffort)?;
+super::confinement::arm(&caps, confinement)?;
 let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;
 let mut vm = runtime.spawn_admitted(&artifact, caps, crate::RUN_MEMORY_PAGES)
     .map_err(|error| error.to_string())?;

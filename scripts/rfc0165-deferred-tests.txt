@@ -73,7 +73,6 @@ witchy-lower codegen::assembly::checked_codegen_boundary_tests::ready_int_channe
 witchy-lower codegen::assembly::checked_codegen_boundary_tests::scalar_channel_region_preserves_an_effectful_eager_prologue
 witchy-lower::codegen tests::dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter
 witchy-lower::codegen tests::forced_copy_dict_update_does_not_reference_an_ownership_token
-witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_exec_runs_only_allow_listed_tools
 witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_net_fetches_only_allow_listed_hosts
 witchy::bin/witchy commands::execution::runtime_parity_tests::parity_authenticates_user_dynamic_declarations
 witchy::bin/witchy commands::web::dev::tests::compiler_invalidation_follows_the_loaded_local_source_graph
@@ -131,11 +130,6 @@ witchy::cli_subcommands secretstore_main_runs_without_a_secret
 witchy::cli_subcommands test_imported_module_tests_are_not_double_counted
 witchy::cli_subcommands wasm_preserves_an_unused_root_secret_contract
 witchy::cli_subcommands web_commands_route_natively_and_complete_clean_clone_flow
-witchy::e2e build_steps::build_exec_child_paths_flow_through_the_package_manager
-witchy::e2e build_steps::build_step_generated_deps_link_and_run
-witchy::e2e build_steps::build_steps_are_default_deny_even_when_safe
-witchy::e2e build_steps::build_steps_auto_run_and_generated_source_is_gated
-witchy::e2e build_steps::deterministic_build_output_is_cached
 witchy::e2e capability_widening::diamond_dependency_resolves_shared_base_once
 witchy::e2e capability_widening::gate_blocks_capability_widening_then_allows_with_consent
 witchy::e2e capability_widening::transitive_capability_widening_is_gated
