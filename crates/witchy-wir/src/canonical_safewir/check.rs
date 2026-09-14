@@ -466,28 +466,28 @@ fn static_data_extent_matches(
             super::Extent::Counted { header_bytes, count, capacity, stride_bytes },
             crate::layout::LayoutSize::Dynamic { base, stride },
         ) => {
-            if matches!(
-                layouts.get(layout).map(|descriptor| descriptor.kind()),
-                Some(crate::layout::LayoutKind::RuntimeBuffer { element })
-                    if layouts.resolve_nominal(*element).ok().and_then(|element| layouts.get(element)).is_some_and(|element| {
-                        element.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::RawByte)
-                    })
-            ) {
+            if let crate::layout::LayoutKind::RuntimeBuffer { element } = descriptor.kind() {
+                let Some((length_offset, data_offset)) = runtime_buffer_offsets(descriptor, *element) else { return false };
+                let Ok(element) = layouts.resolve_nominal(*element) else { return false };
+                let Some(element) = layouts.get(element) else { return false };
+                let crate::layout::LayoutKind::Scalar(kind) = element.kind() else { return false };
                 let Some(count) = constants.get(count) else { return false; };
                 let Some(capacity) = constants.get(capacity) else { return false; };
-                let Some(total) = usize::try_from(base)
+                let Some(total) = usize::try_from(data_offset)
                     .ok()
-                    .and_then(|base| usize::try_from(*count).ok().and_then(|count| base.checked_add(count)))
+                    .and_then(|base| capacity.checked_mul(u64::from(*stride_bytes)).and_then(|body| usize::try_from(body).ok()).and_then(|body| base.checked_add(body)))
                 else {
                     return false;
                 };
-                return *header_bytes == base
+                let Some(length_end) = (length_offset as usize).checked_add(4) else { return false };
+            return base == data_offset
+                && *header_bytes == data_offset
                     && *stride_bytes == stride
-                    && stride == 1
+                    && *stride_bytes == kind.size()
                     && *count == *capacity
                     && *count <= u64::from(u32::MAX)
                     && bytes.len() == total
-                    && bytes.get(..4).is_some_and(|header| header == (*count as u32).to_le_bytes().as_slice());
+                    && bytes.get(length_offset as usize..length_end).is_some_and(|header| header == (*count as u32).to_le_bytes().as_slice());
             }
             let crate::layout::HeaderLayout::PackedList { length_offset, capacity_offset, data_offset, .. } = descriptor.header() else {
                 return false;
@@ -520,6 +520,20 @@ fn static_data_extent_matches(
     }
 }
 
+fn runtime_buffer_offsets(
+    descriptor: &crate::layout::LayoutDescriptor,
+    element: crate::layout::LayoutId,
+) -> Option<(u32, u32)> {
+    let [length, payload] = descriptor.fields() else { return None };
+    if length.offset() != 0
+        || length.kind() != crate::layout::FieldKind::Scalar(crate::layout::ScalarKind::U32)
+        || payload.kind() != crate::layout::FieldKind::Inline(element)
+    {
+        return None;
+    }
+    Some((length.offset(), payload.offset()))
+}
+
 fn static_data_payload_is_canonical(
     layout: crate::layout::LayoutId,
     extent: &super::Extent,
@@ -534,7 +548,13 @@ fn static_data_payload_is_canonical(
         super::Extent::Counted { header_bytes, count, stride_bytes, .. } => {
             let Some(count) = constants.get(count).copied() else { return false };
             let (element, data_offset) = match descriptor.kind() {
-                crate::layout::LayoutKind::RuntimeBuffer { element } => (*element, *header_bytes),
+                crate::layout::LayoutKind::RuntimeBuffer { element } => {
+                    let Some((_, data_offset)) = runtime_buffer_offsets(descriptor, *element) else { return false };
+                    if data_offset != *header_bytes {
+                        return false;
+                    }
+                    (*element, data_offset)
+                }
                 crate::layout::LayoutKind::PackedList { element, .. } => {
                     let crate::layout::HeaderLayout::PackedList { data_offset, .. } = descriptor.header() else { return false };
                     (*element, data_offset)
@@ -4000,6 +4020,26 @@ mod tests {
             vec![StaticDataSegment::new(data, bytes)],
         );
         assert!(matches!(check_initial(candidate), Err(InitialCheckError::InvalidStaticDataEncoding { object: invalid, .. }) if invalid == object));
+    }
+
+    #[test]
+    fn static_runtime_buffer_header_must_match_declared_count() {
+        let (layouts, layout) = dynamic_byte_layout();
+        let count = ValueId::new(40);
+        let capacity = ValueId::new(41);
+        let object = ValueId::new(42);
+        let data = StaticDataId::new(0);
+        let candidate = static_candidate(
+            layouts,
+            [(count, ValueType::Size), (capacity, ValueType::Size), (object, ValueType::Ref(layout))].into_iter().collect(),
+            vec![
+                Operation::ConstSize { destination: count, value: 1 },
+                Operation::ConstSize { destination: capacity, value: 1 },
+                Operation::StaticData { destination: object, layout, extent: Extent::Counted { header_bytes: 4, count, capacity, stride_bytes: 1 }, data },
+            ],
+            vec![StaticDataSegment::new(data, vec![0, 0, 0, 0, 7])],
+        );
+        assert!(matches!(check_initial(candidate), Err(InitialCheckError::StaticDataExtentMismatch { object: invalid, .. }) if invalid == object));
     }
 
     fn scalar_binary_candidate(
