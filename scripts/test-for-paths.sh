@@ -412,6 +412,9 @@ for p in "${paths[@]}"; do
             # remaining grant, isolation, and synchronous recipe assertions.
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0077_integration_grants::/) and not test(/^rfc0077_integration_grants::source_integration_async_recipe_/)'"
             path_has_early=1 ;;
+        src/commands/embedded_pm.rs)
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::embedded_pm::tests::/)'"
+            path_has_early=1 ;;
         crates/witchy-wir/src/wir_prelude.rs | \
         crates/witchy-wir/examples/abi_catalog.rs | \
         tests/misc/wasm_abi_catalog.rs | \

@@ -942,6 +942,16 @@ fn url_component_edits_run_only_the_url_component_module() {
 }
 
 #[test]
+fn embedded_pm_edits_run_only_the_embedded_pm_module() {
+    let commands = selected(&["--edit-loop", "src/commands/embedded_pm.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert_eq!(
+        commands[0],
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::embedded_pm::tests::/)'"
+    );
+}
+
+#[test]
 fn network_misc_edits_run_only_their_modules() {
     for (path, module) in [
         ("tests/misc/canonical_net_fixture.rs", "canonical_net_fixture"),
