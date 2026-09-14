@@ -99,10 +99,14 @@ clone_deps() { # clone_deps <src-deps> <dest-deps>
     find "$src" -mindepth 1 -maxdepth 1 ! -name '*.rcgu.o' \
         -exec sh -c '
             mode="$1"; dst="$2"; shift 2
+            # The gate target can still be compiling while it is cloned. A
+            # dependency object may disappear between find and cp; retain the
+            # rest of the warm cache instead of failing the whole seed and
+            # forcing the caller onto a cold target.
             case "$mode" in
-                apfs) cp -Rc "$@" "$dst/" ;;
-                reflink) cp -R --reflink=auto "$@" "$dst/" ;;
-                copy) cp -R "$@" "$dst/" ;;
+                apfs) cp -Rc "$@" "$dst/" 2>/dev/null || true ;;
+                reflink) cp -R --reflink=auto "$@" "$dst/" 2>/dev/null || true ;;
+                copy) cp -R "$@" "$dst/" 2>/dev/null || true ;;
             esac
         ' sh "$copy_mode" "$dst" {} +
 }
