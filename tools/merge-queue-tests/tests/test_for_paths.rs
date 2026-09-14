@@ -655,6 +655,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{mixed:?}");
     assert!(mixed[0].contains("scalar_clone_range_is_ownership_safe_and_admitted"), "{mixed:?}");
     assert!(mixed[0].contains("owned_tail_nonprefix_range_requires_a_checked_end_bound"), "{mixed:?}");
+    assert!(mixed[0].contains("canonical_capabilities_lower_only_to_externref"), "{mixed:?}");
     assert!(mixed[1].contains("canonical_pipeline::tests::list_string_"), "{mixed:?}");
     assert!(mixed[2].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{mixed:?}");
     assert!(mixed[2].contains("list_pop_projected_coordinates_and_nested_payloads_on_three_legs"), "{mixed:?}");
