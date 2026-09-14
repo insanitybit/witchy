@@ -2251,7 +2251,9 @@ impl Runtime {
     ///
     /// This is the compatibility entry point for externally supplied Wasm and
     /// tests. It may apply the configured Binaryen policy before Wasmtime
-    /// instantiation. Canonical compiler output must use
+    /// instantiation. A raw module carrying canonical entry metadata is
+    /// rejected: metadata inside caller-supplied bytes is not an admission
+    /// receipt. Canonical compiler output must use
     /// [`Self::spawn_admitted`], whose artifact-typed API cannot be confused
     /// with this raw-byte path and never performs a post-admission rewrite.
     ///
@@ -2265,23 +2267,21 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let wasm = wasm.as_ref();
-        // An admitted canonical artifact carries its launch entry in a custom
-        // section (RFC-0165 B11); its bytes are instantiated exactly, never
-        // optimized or cached, and entered through that entry.
-        let entry = if wasm.starts_with(b"\0asm") {
+        let claimed_entry = if wasm.starts_with(b"\0asm") {
             witchy_wir::canonical_entry_from_wasm(wasm).map_err(Error::msg)?
         } else {
             None
         };
-        let module = if entry.is_some() {
-            build_admitted_module(&self.engine, wasm)?
-        } else {
-            // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
-            // every hit and miss still enters Wasmtime through safe `Module::new`.
-            build_module(&self.engine, wasm, self.executable_cache)?
-        };
+        if claimed_entry.is_some() {
+            return Err(Error::msg(
+                "raw Wasm cannot claim canonical admission; launch an AdmittedCanonicalArtifact",
+            ));
+        }
+        // `wasm-opt` runs inside `build_module` only on an optimized-wasm cache miss;
+        // every hit and miss still enters Wasmtime through safe `Module::new`.
+        let module = build_module(&self.engine, wasm, self.executable_cache)?;
 
-        self.instantiate_module(WorkerModule::Unadmitted(module), caps, memory_pages_max, entry)
+        self.instantiate_module(WorkerModule::Unadmitted(module), caps, memory_pages_max, None)
     }
 
     /// Spawn a VM from an admitted canonical SafeWIR artifact.

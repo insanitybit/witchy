@@ -486,10 +486,10 @@ fn admitted_list_patterns_run() {
 }
 
 #[test]
-fn admitted_bytes_launch_from_their_entry_section_without_the_artifact() {
-    // RFC-0165 B11: the admitted bytes carry `witchy.entry`; a launcher that
-    // only has the `.wasm` file enters through it, and the artifact's exact
-    // byte identity covers the section.
+fn detached_bytes_cannot_claim_canonical_admission() {
+    // RFC-0165 B11: the admitted bytes carry `witchy.entry`, but the section
+    // is not an admission receipt. Only the artifact-typed path may use it to
+    // mint and pass capability tokens.
     let checked = witchy::resolve_std_only_checked("fn main(console: Console) -> Int:\n    console.print(\"hi\")\n    40 + 2\n")
         .expect("fixture checks");
     let artifact = codegen::compile_checked_module_artifact(&checked)
@@ -499,15 +499,15 @@ fn admitted_bytes_launch_from_their_entry_section_without_the_artifact() {
         .expect("a program carries an entry");
     assert_eq!(Some(&from_bytes), artifact.entry());
     let mut runtime = Runtime::batch().expect("runtime");
-    let mut vm = runtime
-        .spawn(
+    let error = match runtime.spawn(
             artifact.wasm(),
             Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
             256,
-        )
-        .expect("spawn admitted bytes");
-    vm.run().expect("run from the entry section");
-    assert_eq!(vm.output(), vec!["hi".to_string(), "42".to_string()]);
+        ) {
+        Ok(_) => panic!("detached bytes have no admission authority"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("raw Wasm cannot claim canonical admission"));
     let mut mutated = artifact.wasm().to_vec();
     let last = mutated.len() - 1;
     mutated[last] ^= 2;
