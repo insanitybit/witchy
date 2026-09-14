@@ -119,7 +119,10 @@ fn packaged_source_rejects_custom_owner_and_unsafe_input_paths() {
         .args(["--package-owner", "registry:unverified", "some/package", "1", "src.main"])
         .output().unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("custom/registry owner assignments"));
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(error.contains("project owner assertion")
+        && error.contains("differs from captured source/manifest ownership"), "{error}");
+    assert!(!folder.join("app").exists(), "a forged owner must not produce an artifact");
     for path in ["/absolute", "../escape", "a/../b", "a//b", "a\\b", "a\0b", "C:drive"] {
         assert!(trusted_publisher::source_inputs::validate_path(path).is_err(), "{path:?}");
     }

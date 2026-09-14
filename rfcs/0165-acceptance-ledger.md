@@ -1634,3 +1634,18 @@ if [ -n "$excluded" ]; then filter="($filter) & not ($excluded)"; fi
 This slice is focused-green, not merged evidence. Online registry operations,
 remaining workflows, and optimizer/security acceptance are still incomplete.
 Compiler-wide memory safety is not established.
+
+Registry replay gate follow-up: the first gate rejected the stale CLI test
+expectation that all custom/registry owner assignments are unsupported. The
+forged assignment still fails with `project owner assertion` and
+`differs from captured source/manifest ownership`. The test now checks that
+refusal and that no output artifact exists; unsafe-path negatives are unchanged.
+Independent source review found no weakened rejection or production change.
+
+The expanded focused selector adds `test(rfc0165_packaged_source::)` to
+`test(source::package_inputs::) | test(trusted_publisher::)`, using the existing
+shared deferred-test filter and the absolute warmed target above. Result:
+31/31 passed, 77.236 seconds after a 17.41-second build, no retries; nextest run
+`4738ac76-14dc-4a40-83c7-733bb019bf97`. Log:
+`/private/tmp/witchy-pinned-vendor-cli-gate-fix.log`. This repairs the gate fixture;
+it does not constitute terminal merge evidence.
