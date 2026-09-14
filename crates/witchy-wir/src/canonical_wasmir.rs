@@ -3161,7 +3161,7 @@ struct StructuredEmitter<'a> {
     /// avoids every merge and terminal, independent of which caller first
     /// encountered it. Caching refusal is essential for diamond graphs with
     /// a shared cyclic suffix.
-    path_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>), bool>>,
+    path_facts: RefCell<BTreeMap<Vec<crate::canonical_safewir::BlockId>, std::rc::Rc<RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>>>>,
 }
 
 impl StructuredEmitter<'_> {
@@ -3348,9 +3348,39 @@ impl StructuredEmitter<'_> {
         if merges.contains(&start) || self.is_terminal(start)? {
             return Ok(true);
         }
-        let mut merge_key = merges.to_vec();
-        merge_key.sort();
-        if let Some(result) = self.path_facts.borrow().get(&(start, merge_key.clone())) {
+        let mut stops = merges.to_vec();
+        stops.sort();
+        let facts = self.path_query_facts(&stops);
+        self.all_paths_with_facts(start, &stops, active, &facts)
+    }
+
+    fn path_query_facts(
+        &self,
+        sorted_stops: &[crate::canonical_safewir::BlockId],
+    ) -> std::rc::Rc<RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>> {
+        // Intern only the old exact sorted key, including duplicates. The
+        // query borrows this group's node memo throughout recursion; no
+        // ancestor-set judgment or success for another stop set is reused.
+        let mut groups = self.path_facts.borrow_mut();
+        if let Some(facts) = groups.get(sorted_stops) {
+            return std::rc::Rc::clone(facts);
+        }
+        let facts = std::rc::Rc::new(RefCell::new(BTreeMap::new()));
+        groups.insert(sorted_stops.to_vec(), std::rc::Rc::clone(&facts));
+        facts
+    }
+
+    fn all_paths_with_facts(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        merges: &[crate::canonical_safewir::BlockId],
+        active: &mut BTreeSet<crate::canonical_safewir::BlockId>,
+        facts: &RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
+    ) -> Result<bool, EncodeError> {
+        if merges.contains(&start) || self.is_terminal(start)? {
+            return Ok(true);
+        }
+        if let Some(result) = facts.borrow().get(&start) {
             return Ok(*result);
         }
         if !active.insert(start) {
@@ -3360,26 +3390,28 @@ impl StructuredEmitter<'_> {
             let exit = self.loop_exit(start)?;
             let mut body_merges = vec![start];
             body_merges.extend(exit);
+            body_merges.sort();
+            let body_facts = self.path_query_facts(&body_merges);
             // The body walk keeps the caller's active set: body blocks are
             // dominated by the header, so an active ancestor is reachable
             // only by leaving the loop somewhere other than its exit, which
             // must fail rather than walk the enclosing loop again.
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, &body_merges, active)? {
+                if !self.all_paths_with_facts(successor, &body_merges, active, &body_facts)? {
                     result = false;
                     break;
                 }
             }
             result
                 && match exit {
-                    Some(exit) => self.all_paths_reach_or_terminate(exit, merges, active)?,
+                    Some(exit) => self.all_paths_with_facts(exit, merges, active, facts)?,
                     None => true,
                 }
         } else {
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, merges, active)? {
+                if !self.all_paths_with_facts(successor, merges, active, facts)? {
                     result = false;
                     break;
                 }
@@ -3387,7 +3419,7 @@ impl StructuredEmitter<'_> {
             result
         };
         active.remove(&start);
-        self.path_facts.borrow_mut().insert((start, merge_key), result);
+        facts.borrow_mut().insert(start, result);
         Ok(result)
     }
 
@@ -5723,7 +5755,7 @@ struct PlanEmitter<'a> {
     /// Memoized path judgments keyed by the exact normalized merge set. This
     /// mirrors the encoder's bounded graph decision, including cached cyclic
     /// refusals, without weakening the independent plan comparison.
-    path_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>), bool>>,
+    path_facts: RefCell<BTreeMap<Vec<crate::canonical_safewir::BlockId>, std::rc::Rc<RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>>>>,
 }
 
 impl<'a> PlanEmitter<'a> {
@@ -5855,9 +5887,39 @@ impl<'a> PlanEmitter<'a> {
         if merges.contains(&start) || self.is_terminal(start)? {
             return Ok(true);
         }
-        let mut merge_key = merges.to_vec();
-        merge_key.sort();
-        if let Some(result) = self.path_facts.borrow().get(&(start, merge_key.clone())) {
+        let mut region = merges.to_vec();
+        region.sort_unstable();
+        let facts = self.path_query_facts(&region);
+        self.all_paths_with_facts(start, &region, active, &facts)
+    }
+
+    fn path_query_facts(
+        &self,
+        sorted_stops: &[crate::canonical_safewir::BlockId],
+    ) -> std::rc::Rc<RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>> {
+        // Independent plan-side storage for the same exact query keys. A
+        // group stays live across nested queries without holding a borrow of
+        // the outer table, and its results never come from encoder decisions.
+        let mut table = self.path_facts.borrow_mut();
+        if let Some(existing) = table.get(sorted_stops) {
+            return std::rc::Rc::clone(existing);
+        }
+        let nodes = std::rc::Rc::new(RefCell::new(BTreeMap::new()));
+        table.insert(sorted_stops.to_vec(), std::rc::Rc::clone(&nodes));
+        nodes
+    }
+
+    fn all_paths_with_facts(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        merges: &[crate::canonical_safewir::BlockId],
+        active: &mut BTreeSet<crate::canonical_safewir::BlockId>,
+        facts: &RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>,
+    ) -> Result<bool, CanonicalAdmissionError> {
+        if merges.contains(&start) || self.is_terminal(start)? {
+            return Ok(true);
+        }
+        if let Some(result) = facts.borrow().get(&start) {
             return Ok(*result);
         }
         if !active.insert(start) {
@@ -5867,26 +5929,28 @@ impl<'a> PlanEmitter<'a> {
             let exit = self.loop_exit(start)?;
             let mut body_merges = vec![start];
             body_merges.extend(exit);
+            body_merges.sort_unstable();
+            let body_facts = self.path_query_facts(&body_merges);
             // The body walk keeps the caller's active set: body blocks are
             // dominated by the header, so an active ancestor is reachable
             // only by leaving the loop somewhere other than its exit, which
             // must fail rather than walk the enclosing loop again.
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, &body_merges, active)? {
+                if !self.all_paths_with_facts(successor, &body_merges, active, &body_facts)? {
                     result = false;
                     break;
                 }
             }
             result
                 && match exit {
-                    Some(exit) => self.all_paths_reach_or_terminate(exit, merges, active)?,
+                    Some(exit) => self.all_paths_with_facts(exit, merges, active, facts)?,
                     None => true,
                 }
         } else {
             let mut result = true;
             for successor in self.successors(start)? {
-                if !self.all_paths_reach_or_terminate(successor, merges, active)? {
+                if !self.all_paths_with_facts(successor, merges, active, facts)? {
                     result = false;
                     break;
                 }
@@ -5894,7 +5958,7 @@ impl<'a> PlanEmitter<'a> {
             result
         };
         active.remove(&start);
-        self.path_facts.borrow_mut().insert((start, merge_key), result);
+        facts.borrow_mut().insert(start, result);
         Ok(result)
     }
 

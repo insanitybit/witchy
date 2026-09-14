@@ -41,7 +41,14 @@ fn candidate(function: Function) -> CanonicalModule<LoweredCandidate> {
 // own unchanged full-distance implementation. No production helper or cache
 // is introduced for testing. Arbitrary closed graphs need not be structured.
 fn with_graph(edges: &[&[u32]], test: impl FnOnce(&StructuredEmitter<'_>, &PlanEmitter<'_>)) {
-    let function = graph(edges);
+    with_graph_terminal(edges, Terminator::Return { values: Vec::new() }, test);
+}
+
+fn with_graph_terminal(edges: &[&[u32]], terminal: Terminator, test: impl FnOnce(&StructuredEmitter<'_>, &PlanEmitter<'_>)) {
+    let mut function = graph(edges);
+    for block in &mut function.blocks {
+        if edges[block.id.get() as usize].is_empty() { block.terminator = terminal.clone(); }
+    }
     let signature = signature();
     let layouts = LayoutInterner::new();
     let imports = BTreeMap::new();
@@ -175,5 +182,308 @@ fn cached_natural_loop_membership_matches_full_sets_for_nested_loops() {
             Err(EncodeError::MissingBlock { .. })));
         assert_eq!(planner.in_natural_loop(BlockId::new(99), BlockId::new(0)),
             Err(CanonicalAdmissionError::UnsupportedPlan));
+    });
+}
+
+// Saved pre-change predicate, including its exact-key memo and active-path
+// ordering. It deliberately does not call either new query implementation.
+trait OldPathGraph {
+    type Error: std::fmt::Debug + PartialEq;
+    fn terminal(&self, block: BlockId) -> Result<bool, Self::Error>;
+    fn header(&self, block: BlockId) -> Result<bool, Self::Error>;
+    fn exit(&self, block: BlockId) -> Result<Option<BlockId>, Self::Error>;
+    fn next(&self, block: BlockId) -> Result<Vec<BlockId>, Self::Error>;
+}
+
+impl OldPathGraph for StructuredEmitter<'_> {
+    type Error = EncodeError;
+    fn terminal(&self, block: BlockId) -> Result<bool, Self::Error> { self.is_terminal(block) }
+    fn header(&self, block: BlockId) -> Result<bool, Self::Error> { self.is_loop_header(block) }
+    fn exit(&self, block: BlockId) -> Result<Option<BlockId>, Self::Error> { self.loop_exit(block) }
+    fn next(&self, block: BlockId) -> Result<Vec<BlockId>, Self::Error> { self.successors(block) }
+}
+
+impl OldPathGraph for PlanEmitter<'_> {
+    type Error = CanonicalAdmissionError;
+    fn terminal(&self, block: BlockId) -> Result<bool, Self::Error> { self.is_terminal(block) }
+    fn header(&self, block: BlockId) -> Result<bool, Self::Error> { self.is_loop_header(block) }
+    fn exit(&self, block: BlockId) -> Result<Option<BlockId>, Self::Error> { self.loop_exit(block) }
+    fn next(&self, block: BlockId) -> Result<Vec<BlockId>, Self::Error> { self.successors(block) }
+}
+
+fn old_paths<G: OldPathGraph>(
+    graph: &G,
+    start: BlockId,
+    merges: &[BlockId],
+    active: &mut BTreeSet<BlockId>,
+    facts: &mut BTreeMap<(BlockId, Vec<BlockId>), bool>,
+    visits: &mut usize,
+) -> Result<bool, G::Error> {
+    *visits += 1;
+    if merges.contains(&start) || graph.terminal(start)? { return Ok(true); }
+    let mut merge_key = merges.to_vec();
+    merge_key.sort();
+    if let Some(result) = facts.get(&(start, merge_key.clone())) { return Ok(*result); }
+    if !active.insert(start) { return Ok(false); }
+    let result = if graph.header(start)? {
+        let exit = graph.exit(start)?;
+        let mut body_merges = vec![start];
+        body_merges.extend(exit);
+        let mut result = true;
+        for successor in graph.next(start)? {
+            if !old_paths(graph, successor, &body_merges, active, facts, visits)? {
+                result = false;
+                break;
+            }
+        }
+        result && match exit {
+            Some(exit) => old_paths(graph, exit, merges, active, facts, visits)?,
+            None => true,
+        }
+    } else {
+        let mut result = true;
+        for successor in graph.next(start)? {
+            if !old_paths(graph, successor, merges, active, facts, visits)? {
+                result = false;
+                break;
+            }
+        }
+        result
+    };
+    active.remove(&start);
+    facts.insert((start, merge_key), result);
+    Ok(result)
+}
+
+#[test]
+fn exact_paths_match_old_predicate_for_reconvergence_loops_and_stop_contexts() {
+    let graphs: &[&[&[u32]]] = &[
+        &[&[1, 2], &[3], &[3], &[4, 5], &[6], &[6], &[]],
+        &[&[1], &[2, 3], &[1], &[]],
+        &[&[1], &[2, 5], &[3], &[4, 1], &[3], &[]],
+        &[&[1, 2], &[2], &[1]], // Irreducible cycle, not a natural-loop shortcut.
+        &[&[1, 2], &[], &[], &[3]], // Disconnected closed loop and terminal exits.
+    ];
+    for edges in graphs {
+        with_graph(edges, |encoder, planner| {
+            let mut encoded_facts = BTreeMap::new();
+            let mut planned_facts = BTreeMap::new();
+            let mut visits = 0;
+            // Keep the old and new caches alive through the same sequence,
+            // including smaller, incomparable, reordered and duplicate stops.
+            for raw_stops in [vec![1], vec![1, 2], vec![2, 1, 1], vec![], vec![2], vec![99], vec![0]] {
+                let stops: Vec<_> = raw_stops.into_iter().map(BlockId::new).collect();
+                for raw_start in 0..edges.len() as u32 {
+                    let start = BlockId::new(raw_start);
+                    let mut old_active = BTreeSet::new();
+                    let mut new_active = BTreeSet::new();
+                    let expected = old_paths(encoder, start, &stops, &mut old_active, &mut encoded_facts, &mut visits);
+                    let actual = encoder.all_paths_reach_or_terminate(start, &stops, &mut new_active);
+                    assert_eq!(actual, expected, "encoder edges={edges:?}, start={start:?}, stops={stops:?}");
+                    assert_eq!(new_active, old_active);
+                    let mut old_active = BTreeSet::new();
+                    let mut new_active = BTreeSet::new();
+                    let expected = old_paths(planner, start, &stops, &mut old_active, &mut planned_facts, &mut visits);
+                    let actual = planner.all_paths_reach_or_terminate(start, &stops, &mut new_active);
+                    assert_eq!(actual, expected, "planner edges={edges:?}, start={start:?}, stops={stops:?}");
+                    assert_eq!(new_active, old_active);
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn exact_paths_preserve_active_and_distinct_stop_contexts() {
+    with_graph(&[&[1], &[2], &[]], |encoder, planner| {
+        let root = BlockId::new(0);
+        let end = BlockId::new(2);
+        assert!(encoder.all_paths_reach_or_terminate(root, &[end], &mut BTreeSet::new()).unwrap());
+        assert!(planner.all_paths_reach_or_terminate(root, &[end], &mut BTreeSet::new()).unwrap());
+        // Warming one stop key must not override an active-path refusal for
+        // another key. Keep the original exact memo's lookup order.
+        for (ancestor, extra) in [(0, 98), (1, 99)] {
+            let stops = [end, BlockId::new(extra)];
+            let initial = BTreeSet::from([BlockId::new(ancestor)]);
+            let mut encoded_active = initial.clone();
+            let mut planned_active = initial.clone();
+            assert!(!encoder.all_paths_reach_or_terminate(root, &stops, &mut encoded_active).unwrap());
+            assert!(!planner.all_paths_reach_or_terminate(root, &stops, &mut planned_active).unwrap());
+            assert_eq!(encoded_active, initial);
+            assert_eq!(planned_active, initial);
+            assert_eq!(old_paths(encoder, root, &stops, &mut initial.clone(), &mut BTreeMap::new(), &mut 0).unwrap(), false);
+            assert_eq!(old_paths(planner, root, &stops, &mut initial.clone(), &mut BTreeMap::new(), &mut 0).unwrap(), false);
+        }
+    });
+    with_graph(&[&[1, 2], &[2], &[1]], |encoder, planner| {
+        for (stops, expected) in [(vec![1], true), (vec![], false), (vec![99], false), (vec![2], true)] {
+            let stops: Vec<_> = stops.into_iter().map(BlockId::new).collect();
+            assert_eq!(encoder.all_paths_reach_or_terminate(BlockId::new(0), &stops, &mut BTreeSet::new()).unwrap(), expected);
+            assert_eq!(planner.all_paths_reach_or_terminate(BlockId::new(0), &stops, &mut BTreeSet::new()).unwrap(), expected);
+        }
+    });
+}
+
+#[test]
+fn exact_paths_preserve_exact_refusal_after_active_query() {
+    for (active_stops, repeated_stops) in [
+        (vec![2, 3], vec![3, 2]),
+        (vec![3, 2, 2], vec![2, 3, 2]),
+    ] {
+        with_graph(&[&[1], &[2], &[3], &[]], |encoder, planner| {
+            let root = BlockId::new(0);
+            let mut encoded_facts = BTreeMap::new();
+            let mut planned_facts = BTreeMap::new();
+            let mut visits = 0;
+            // Keep all three queries in the same memo history. The final
+            // empty-active query must retain the exact false from step two,
+            // even though step one succeeded with fewer stopping points.
+            for (raw_stops, initial_active, expected) in [
+                (vec![3], BTreeSet::new(), true),
+                (active_stops, BTreeSet::from([BlockId::new(1)]), false),
+                (repeated_stops, BTreeSet::new(), false),
+            ] {
+                let stops: Vec<_> = raw_stops.into_iter().map(BlockId::new).collect();
+                let mut old_active = initial_active.clone();
+                let mut encoded_active = initial_active.clone();
+                let old_encoded = old_paths(encoder, root, &stops, &mut old_active, &mut encoded_facts, &mut visits);
+                assert_eq!(old_encoded, Ok(expected));
+                assert_eq!(encoder.all_paths_reach_or_terminate(root, &stops, &mut encoded_active), old_encoded);
+                assert_eq!(encoded_active, old_active);
+                let mut old_active = initial_active.clone();
+                let mut planned_active = initial_active;
+                let old_planned = old_paths(planner, root, &stops, &mut old_active, &mut planned_facts, &mut visits);
+                assert_eq!(old_planned, Ok(expected));
+                assert_eq!(planner.all_paths_reach_or_terminate(root, &stops, &mut planned_active), old_planned);
+                assert_eq!(planned_active, old_active);
+            }
+            // Pin terminal/stop precedence separately from exact-cache
+            // precedence. These deliberately seeded entries are not claims
+            // that a normal query can cache a refusal for a terminal block.
+            for (start, stops) in [(BlockId::new(3), vec![]), (root, vec![root])] {
+                let key = (start, stops.clone());
+                encoder.path_query_facts(&stops).borrow_mut().insert(start, false);
+                planner.path_query_facts(&stops).borrow_mut().insert(start, false);
+                encoded_facts.insert(key.clone(), false);
+                planned_facts.insert(key, false);
+                assert_eq!(old_paths(encoder, start, &stops, &mut BTreeSet::new(), &mut encoded_facts, &mut visits), Ok(true));
+                assert_eq!(old_paths(planner, start, &stops, &mut BTreeSet::new(), &mut planned_facts, &mut visits), Ok(true));
+                assert_eq!(encoder.all_paths_reach_or_terminate(start, &stops, &mut BTreeSet::new()), Ok(true));
+                assert_eq!(planner.all_paths_reach_or_terminate(start, &stops, &mut BTreeSet::new()), Ok(true));
+            }
+        });
+    }
+}
+
+#[test]
+fn exact_paths_preserve_terminal_and_missing_block_behavior() {
+    for terminal in [Terminator::Return { values: Vec::new() }, Terminator::Trap, Terminator::Unreachable] {
+        with_graph_terminal(&[&[1, 2], &[], &[]], terminal, |encoder, planner| {
+            for start in [0, 1, 2, 99].map(BlockId::new) {
+                for stops in [vec![], vec![BlockId::new(1)], vec![BlockId::new(99)]] {
+                    let encoded = old_paths(encoder, start, &stops, &mut BTreeSet::new(), &mut BTreeMap::new(), &mut 0);
+                    let planned = old_paths(planner, start, &stops, &mut BTreeSet::new(), &mut BTreeMap::new(), &mut 0);
+                    assert_eq!(encoder.all_paths_reach_or_terminate(start, &stops, &mut BTreeSet::new()), encoded);
+                    assert_eq!(planner.all_paths_reach_or_terminate(start, &stops, &mut BTreeSet::new()), planned);
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn exact_paths_share_stop_keys_but_preserve_every_node_fact() {
+    let mut edges = Vec::new();
+    for diamond in 0..32 {
+        let base = diamond * 3;
+        edges.push(vec![base + 1, base + 2]);
+        edges.push(vec![base + 3]);
+        edges.push(vec![base + 3]);
+    }
+    edges.push(Vec::new());
+    with_graph(&edges.iter().map(Vec::as_slice).collect::<Vec<_>>(), |encoder, planner| {
+        let start = BlockId::new(0);
+        let end = BlockId::new(96);
+        let mut encoded_facts = BTreeMap::new();
+        let mut planned_facts = BTreeMap::new();
+        let mut encoded_visits = 0;
+        let mut planned_visits = 0;
+        // The duplicate-heavy key was previously cloned and sorted at every
+        // nonterminal node. It is now retained once per exact memo group.
+        let stops = vec![end; 64];
+        for _ in 0..2 {
+            assert_eq!(encoder.all_paths_reach_or_terminate(start, &stops, &mut BTreeSet::new()),
+                old_paths(encoder, start, &stops, &mut BTreeSet::new(), &mut encoded_facts, &mut encoded_visits));
+            assert_eq!(planner.all_paths_reach_or_terminate(start, &stops, &mut BTreeSet::new()),
+                old_paths(planner, start, &stops, &mut BTreeSet::new(), &mut planned_facts, &mut planned_visits));
+        }
+        assert_eq!(encoder.path_facts.borrow().len(), 1);
+        assert_eq!(planner.path_facts.borrow().len(), 1);
+        assert_eq!(encoder.path_query_facts(&stops).borrow().len(), 96);
+        assert_eq!(planner.path_query_facts(&stops).borrow().len(), 96);
+        assert_eq!(flatten_path_facts(&encoder.path_facts.borrow()), encoded_facts);
+        assert_eq!(flatten_path_facts(&planner.path_facts.borrow()), planned_facts);
+        assert!(std::rc::Rc::ptr_eq(&encoder.path_query_facts(&stops), &encoder.path_query_facts(&stops)));
+        assert!(std::rc::Rc::ptr_eq(&planner.path_query_facts(&stops), &planner.path_query_facts(&stops)));
+        assert!(!std::rc::Rc::ptr_eq(&encoder.path_query_facts(&stops), &planner.path_query_facts(&stops)));
+        // Equal stop membership is not equal memo identity: duplicate keys
+        // remain distinct, and the same suffix is still traversed under each.
+        let distinct = vec![end];
+        assert_eq!(encoder.all_paths_reach_or_terminate(start, &distinct, &mut BTreeSet::new()),
+            old_paths(encoder, start, &distinct, &mut BTreeSet::new(), &mut encoded_facts, &mut encoded_visits));
+        assert_eq!(planner.all_paths_reach_or_terminate(start, &distinct, &mut BTreeSet::new()),
+            old_paths(planner, start, &distinct, &mut BTreeSet::new(), &mut planned_facts, &mut planned_visits));
+        assert_eq!(encoder.path_facts.borrow().len(), 2);
+        assert_eq!(planner.path_facts.borrow().len(), 2);
+        assert!(!std::rc::Rc::ptr_eq(&encoder.path_query_facts(&stops), &encoder.path_query_facts(&distinct)));
+        assert!(!std::rc::Rc::ptr_eq(&planner.path_query_facts(&stops), &planner.path_query_facts(&distinct)));
+        assert_eq!(flatten_path_facts(&encoder.path_facts.borrow()), encoded_facts);
+        assert_eq!(flatten_path_facts(&planner.path_facts.borrow()), planned_facts);
+    });
+}
+
+fn flatten_path_facts(
+    groups: &BTreeMap<Vec<BlockId>, std::rc::Rc<RefCell<BTreeMap<BlockId, bool>>>>,
+) -> BTreeMap<(BlockId, Vec<BlockId>), bool> {
+    groups.iter().flat_map(|(stops, nodes)| {
+        nodes.borrow().iter().map(|(block, result)| ((*block, stops.clone()), *result)).collect::<Vec<_>>()
+    }).collect()
+}
+
+#[test]
+fn exact_paths_preserve_descendant_refusals_and_positive_memo_population() {
+    with_graph(&[&[1], &[2], &[3], &[]], |encoder, planner| {
+        let mut encoded_facts = BTreeMap::new();
+        let mut planned_facts = BTreeMap::new();
+        let mut visits = 0;
+        for (raw_start, raw_stops, raw_active, expected) in [
+            (0, vec![3], vec![], true),
+            (1, vec![3, 99], vec![2], false),
+            (0, vec![3, 99], vec![], false),
+            // This successful query must populate the exact node memo, not
+            // merely return a positive answer from a different stop key.
+            (0, vec![2, 3], vec![], true),
+            // The old memo is checked before active insertion, so that same
+            // exact success must survive even with the root already active.
+            (0, vec![3, 2], vec![0], true),
+        ] {
+            let start = BlockId::new(raw_start);
+            let stops: Vec<_> = raw_stops.into_iter().map(BlockId::new).collect();
+            let initial: BTreeSet<_> = raw_active.into_iter().map(BlockId::new).collect();
+            let mut old_active = initial.clone();
+            let mut new_active = initial.clone();
+            let old = old_paths(encoder, start, &stops, &mut old_active, &mut encoded_facts, &mut visits);
+            assert_eq!(old, Ok(expected));
+            assert_eq!(encoder.all_paths_reach_or_terminate(start, &stops, &mut new_active), old);
+            assert_eq!(new_active, old_active);
+            assert_eq!(flatten_path_facts(&encoder.path_facts.borrow()), encoded_facts);
+            let mut old_active = initial.clone();
+            let mut new_active = initial;
+            let old = old_paths(planner, start, &stops, &mut old_active, &mut planned_facts, &mut visits);
+            assert_eq!(old, Ok(expected));
+            assert_eq!(planner.all_paths_reach_or_terminate(start, &stops, &mut new_active), old);
+            assert_eq!(new_active, old_active);
+            assert_eq!(flatten_path_facts(&planner.path_facts.borrow()), planned_facts);
+        }
     });
 }
