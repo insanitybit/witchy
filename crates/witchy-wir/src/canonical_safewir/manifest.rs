@@ -288,6 +288,7 @@ pub const RULES: &[RuleEntry] = &[
         refuses: &[
             t(Check, "dynamic_element_load_without_guard_is_refused"),
             t(Check, "bounds_guard_without_a_comparison_is_refused"),
+            t(Check, "bounds_guard_requires_unsigned_size_operands"),
             t(Check, "logical_length_guard_is_not_satisfied_by_capacity_guard"),
             t(Interpreter, "validated_false_guard_traps"),
             t(Backend, "packed_scalar_collection_oob_guard_traps_in_wasmtime"),
@@ -405,11 +406,13 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::MoveRange,
         judgment: "check/memory.rs::MemoryChecker::move_range (require_initialized_range, require_destination_range_empty)",
-        predicate: "a scalar prefix copies; a pointer prefix moves every stored token from a complete initialized source into an empty destination of the same element, distinct storage, both unique and reference counted; the source prefix is consumed",
+        predicate: "an initialized scalar prefix moves to the destination and leaves the source uninitialized; a pointer prefix moves every stored token from a complete initialized source into an empty destination of the same element, distinct storage, both unique and reference counted; the source prefix is consumed",
         interpreter: "copy_range(Move): moves cells out of the source",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[
             t(Memory, "scalar_move_range_is_bounds_checked_and_admitted"),
+            t(Interpreter, "scalar_move_range_transfers_cells_and_uninitializes_the_source"),
+            t(Backend, "scalar_move_range_admits_and_executes_destination_value"),
             t(Memory, "dynamic_pointer_move_range_transfers_initialized_ownership_once"),
             t(Backend, "admitted_pointer_list_move_and_clone_execute_with_retained_child"),
         ],
@@ -571,6 +574,7 @@ pub const RULES: &[RuleEntry] = &[
             t(Check, "memory_value_call_is_fail_closed"),
             t(Check, "shared_move_into_unique_parameter_is_rejected"),
             t(Check, "declared_callable_result_must_match_checked_signature"),
+            t(Check, "checked_value_memory_result_is_refused"),
             t(Backend, "mutated_direct_call_callee_index_fails_admission"),
         ],
     },

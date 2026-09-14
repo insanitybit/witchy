@@ -199,20 +199,13 @@ fn install_body_derived_result_contracts(
                             signature: signature.id,
                         });
                     }
-                    super::ResultContract::CheckedValue { layout } => {
-                        let compatible = match derived {
-                            super::ResultContract::Fresh { layout: actual, .. }
-                            | super::ResultContract::Shared { layout: actual }
-                            | super::ResultContract::StaticData { layout: actual } => {
-                                layout == actual
-                            }
-                            _ => false,
-                        };
-                        if !compatible {
-                            return Err(InitialCheckError::CallableContractMismatch {
-                                signature: signature.id,
-                            });
-                        }
+                    // CheckedValue erases whether a returned reference owns
+                    // a fresh/shared token or names immutable storage. That
+                    // ambiguity can hide the caller's release obligation.
+                    super::ResultContract::CheckedValue { .. } => {
+                        return Err(InitialCheckError::CallableContractMismatch {
+                            signature: signature.id,
+                        });
                     }
                     explicit if explicit != derived => {
                         if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
@@ -4526,6 +4519,101 @@ mod tests {
                 condition,
                 kind: GuardKind::Bounds,
             }
+        );
+    }
+
+    #[test]
+    fn bounds_guard_requires_unsigned_size_operands() {
+        let left = ValueId::new(1);
+        let right = ValueId::new(2);
+        let condition = ValueId::new(3);
+        let module = lowered(
+            [
+                (left, ValueType::Int),
+                (right, ValueType::Int),
+                (condition, ValueType::Bool),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::ConstInt { destination: left, value: 0 },
+                Operation::ConstInt { destination: right, value: 1 },
+                Operation::Compare {
+                    destination: condition,
+                    operator: ComparisonOperator::LessUnsigned,
+                    left,
+                    right,
+                },
+                Operation::Guard { condition, kind: GuardKind::Bounds },
+            ],
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::InvalidGuard {
+                function: FUNCTION,
+                condition,
+                kind: GuardKind::Bounds,
+            }
+        );
+    }
+
+    #[test]
+    fn checked_value_memory_result_is_refused() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let count = ValueId::new(0);
+        let capacity = ValueId::new(1);
+        let object = ValueId::new(2);
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: vec![ValueType::Ref(layout)],
+                contract: contract(vec![ResultContract::CheckedValue { layout }]),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (capacity, ValueType::Size),
+                    (object, ValueType::Ref(layout)),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: count, value: 0 },
+                        Operation::ConstSize { destination: capacity, value: 0 },
+                        Operation::Alloc {
+                            destination: object,
+                            layout,
+                            extent: Extent::Counted {
+                                header_bytes: 4,
+                                count,
+                                capacity,
+                                stride_bytes: 4,
+                            },
+                            class: AllocationClass::ReferenceCounted,
+                        },
+                    ],
+                    terminator: Terminator::Return { values: vec![object] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::CallableContractMismatch { signature: SIGNATURE }
         );
     }
 

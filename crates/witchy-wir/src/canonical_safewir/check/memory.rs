@@ -1313,6 +1313,7 @@ impl<'a> MemoryChecker<'a> {
         } else {
             self.require_scalar_range_element(destination.element, "MoveRange")?;
             self.require_initialized_scalar_range(source, "MoveRange(uninitialized scalar source)")?;
+            self.forget_scalar_initialization(source.object);
             self.mark_initialized_scalar_range(destination);
         }
         if destination.ownership != Ownership::Unique
@@ -1478,7 +1479,29 @@ impl<'a> MemoryChecker<'a> {
         if self.live_object(object)?.initialized_owned_slots {
             return Ok(true);
         }
-        Ok(self.checked_scalar_slot_stored(object, slot))
+        if self.checked_scalar_slot_stored(object, slot) {
+            return Ok(true);
+        }
+        Ok(self.state.range_states.iter().any(|(identity, range)| {
+            if !self.same_allocation(object, identity.object) || !range.initialized {
+                return false;
+            }
+            match slot {
+                SlotIdentity::Dynamic(index) => {
+                    (self.same_scalar(index, identity.start)
+                        && self.state.constants.get(&identity.length) == Some(&1))
+                        || (range.zero_start && self.strict_less(index, identity.length))
+                }
+                SlotIdentity::Constant(index) => self
+                    .state
+                    .constants
+                    .get(&identity.start)
+                    .zip(self.state.constants.get(&identity.length))
+                    .is_some_and(|(start, length)| {
+                        index >= *start && index - *start < *length
+                    }),
+            }
+        }))
     }
 
     /// A stored slot fact of `object`'s allocation under any alias.
@@ -1641,6 +1664,29 @@ impl<'a> MemoryChecker<'a> {
                 zero_start: self.is_zero(range.start),
             },
         );
+    }
+
+    fn forget_scalar_initialization(&mut self, object: ValueId) {
+        let Some(identity) = self.state.objects.get(&object).map(|state| state.identity) else {
+            return;
+        };
+        let aliases = self
+            .state
+            .objects
+            .iter()
+            .filter_map(|(value, state)| (state.identity == identity).then_some(*value))
+            .collect::<BTreeSet<_>>();
+        self.state
+            .initialized_scalar_slots
+            .retain(|(container, _)| !aliases.contains(container));
+        self.state
+            .range_states
+            .retain(|range, _| !aliases.contains(&range.object));
+        for state in self.state.objects.values_mut() {
+            if state.identity == identity {
+                state.initialized_owned_slots = false;
+            }
+        }
     }
 
     /// Completeness describes the logical prefix, not arbitrary capacity-tail
@@ -2281,6 +2327,16 @@ impl<'a> MemoryChecker<'a> {
                         ComparisonOperator::LessUnsigned
                             | ComparisonOperator::LessEqualUnsigned
                     ) {
+                        return Err(InitialCheckError::InvalidGuard {
+                            function: self.function.id,
+                            condition: *condition,
+                            kind: *kind,
+                        });
+                    }
+                    if *kind == GuardKind::Bounds
+                        && (value_type(self.function, comparison.left)? != ValueType::Size
+                            || value_type(self.function, comparison.right)? != ValueType::Size)
+                    {
                         return Err(InitialCheckError::InvalidGuard {
                             function: self.function.id,
                             condition: *condition,
@@ -4687,6 +4743,8 @@ mod tests {
                 (END, ValueType::Size),
                 (SOURCE, ValueType::Ref(list)),
                 (DESTINATION, ValueType::Ref(list)),
+                (LOADED, ValueType::Size),
+                (CONDITION, ValueType::Bool),
             ]
             .into_iter()
             .collect(),
@@ -5951,6 +6009,38 @@ mod tests {
     #[test]
     fn scalar_move_range_is_bounds_checked_and_admitted() {
         with_checker(false, |checker, list| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            let value_type = checker.value_type_for_layout(element).unwrap();
+            let source = Place::projected(
+                SOURCE,
+                Projection::Element { index: START },
+                value_type,
+                AccessMode::Read,
+            );
+            checker
+                .check(&Operation::ConstSize { destination: LOADED, value: 23 })
+                .expect("scalar fixture value is accepted");
+            checker
+                .check(&Operation::Compare {
+                    destination: CONDITION,
+                    operator: ComparisonOperator::LessUnsigned,
+                    left: START,
+                    right: COUNT,
+                })
+                .expect("scalar fixture comparison is accepted");
+            checker
+                .check(&Operation::Guard {
+                    condition: CONDITION,
+                    kind: GuardKind::Bounds,
+                })
+                .expect("scalar fixture guard is accepted");
+            checker
+                .check(&Operation::Store {
+                    place: Place { access: AccessMode::Write, ..source.clone() },
+                    value: LOADED,
+                    transfer: StoreTransfer::CopyScalar,
+                })
+                .expect("scalar source initialization is accepted");
             assert_eq!(
                 checker.check(&Operation::MoveRange {
                     destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
@@ -5959,6 +6049,25 @@ mod tests {
                 }),
                 Ok(true)
             );
+            let destination = Place::projected(
+                DESTINATION,
+                Projection::Element { index: START },
+                value_type,
+                AccessMode::Read,
+            );
+            assert!(!checker.checked_scalar_slot_initialized(&source).unwrap());
+            assert!(checker.checked_scalar_slot_initialized(&destination).unwrap());
+            assert!(matches!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: source,
+                    transfer: LoadTransfer::CopyScalar,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Load(uninitialized scalar)",
+                    ..
+                })
+            ));
         });
     }
 

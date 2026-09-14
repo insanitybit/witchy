@@ -3555,6 +3555,59 @@ mod tests {
     }
 
     #[test]
+    fn scalar_move_range_transfers_cells_and_uninitializes_the_source() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let layout = LayoutId::from_bytes([14; 32]);
+        let extent = || RuntimeExtent::Counted {
+            header_bytes: 0,
+            count: 1,
+            capacity: 1,
+            stride_bytes: 4,
+        };
+        let source_object = engine.allocate(layout, AllocationClass::ReferenceCounted, extent(), false).unwrap();
+        let destination_object = engine.allocate(layout, AllocationClass::ReferenceCounted, extent(), false).unwrap();
+        engine.object_mut(source_object).unwrap().cells.insert(CellKey::Element(0), InterpreterValue::Size(77));
+        let source = ValueId::new(100);
+        let destination = ValueId::new(101);
+        let zero = ValueId::new(102);
+        let one = ValueId::new(103);
+        let values = BTreeMap::from([
+            (source, InterpreterValue::ObjectRef(source_object)),
+            (destination, InterpreterValue::ObjectRef(destination_object)),
+            (zero, InterpreterValue::Size(0)),
+            (one, InterpreterValue::Size(1)),
+        ]);
+        let range = |object, access| Place::projected(
+            object,
+            Projection::Slice { start: zero, length: one },
+            ValueType::Ref(layout),
+            access,
+        );
+        engine.copy_range(
+            &range(destination, crate::canonical_safewir::AccessMode::Write),
+            &range(source, crate::canonical_safewir::AccessMode::Read),
+            one,
+            RangeTransfer::Move,
+            &values,
+        ).unwrap();
+        let element = |object| Place::projected(
+            object,
+            Projection::Element { index: zero },
+            ValueType::Size,
+            crate::canonical_safewir::AccessMode::Read,
+        );
+        assert_eq!(
+            engine.load(&element(destination), LoadTransfer::CopyScalar, &values),
+            Ok(InterpreterValue::Size(77))
+        );
+        assert_eq!(
+            engine.load(&element(source), LoadTransfer::CopyScalar, &values),
+            Err(InterpretError::UninitializedPlace)
+        );
+    }
+
+    #[test]
     fn nullable_owned_oracle_absence_drops_without_a_child_and_requires_uniqueness() {
         let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
         let mut engine = Engine::new(module.module(), InterpreterConfig::default());

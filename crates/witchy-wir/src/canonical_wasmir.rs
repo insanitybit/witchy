@@ -1080,8 +1080,7 @@ fn lower_operation(
         Operation::MoveRange { destination, source, count } => {
             let destination_layout = resolve_collection_layout_for_values(function, value_types, layouts, destination.object())?;
             let source_layout = resolve_collection_layout_for_values(function, value_types, layouts, source.object())?;
-            if destination_layout.pointer_layout.is_none()
-                || destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+            if destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
                 || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
                 || destination_layout != source_layout
                 || !matches!(destination.projection(), Projection::Slice { length, .. } if *length == *count)
@@ -2878,12 +2877,17 @@ fn emit_move_range(
 ) -> Result<(), EncodeError> {
     let destination_layout = resolve_collection_layout(function, layouts, destination.object()).map_err(EncodeError::Lowering)?;
     let source_layout = resolve_collection_layout(function, layouts, source.object()).map_err(EncodeError::Lowering)?;
-    if destination_layout.pointer_layout.is_none()
-        || destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
+    if destination_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
         || source_layout.pointer_slot == Some(PointerSlot::OwnedNullable)
         || destination_layout != source_layout
     {
         return Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { function: function.id, operation: "MoveRange" }));
+    }
+    if destination_layout.pointer_layout.is_none() {
+        // Scalar movement is logical ownership transfer. The checked source
+        // becomes unreadable, so the backend may leave its physical bytes in
+        // place and use the same overlap-safe copy sequence as CloneRange.
+        return emit_clone_range(body, function, layout, destination, source, count, layouts);
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
         (Projection::Slice { start: destination_start, length: destination_length }, Projection::Slice { start: source_start, length: source_length })
@@ -5211,8 +5215,19 @@ fn push_move_range_plan(
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let source_layout = resolve_collection_layout(function, layouts, source.object())
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    if destination_layout.pointer_layout.is_none() || destination_layout != source_layout {
+    if destination_layout != source_layout {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    if destination_layout.pointer_layout.is_none() {
+        return push_clone_range_plan(
+            plan,
+            function,
+            layout,
+            layouts,
+            destination,
+            source,
+            count,
+        );
     }
     let (destination_start, source_start) = match (destination.projection(), source.projection()) {
         (Projection::Slice { start: destination_start, length: destination_length }, Projection::Slice { start: source_start, length: source_length })
@@ -9310,7 +9325,12 @@ mod tests {
         }))
     }
 
-    fn checked_scalar_clone_range(range_count: u64, source_start: u64, destination_start: u64) -> ValidatedSafeWir {
+    fn checked_scalar_range(
+        range_count: u64,
+        source_start: u64,
+        destination_start: u64,
+        move_cells: bool,
+    ) -> ValidatedSafeWir {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::Int).unwrap();
         let list = interner.intern_packed_list(element, RcHeader::Required).unwrap();
@@ -9425,18 +9445,26 @@ mod tests {
                             right: allocation_count,
                         },
                         Operation::Guard { condition: destination_start_in_bounds, kind: GuardKind::Bounds },
-                        Operation::CloneRange {
-                            destination: destination_place,
-                            source: source_place,
-                            count: range_count_value,
+                        if move_cells {
+                            Operation::MoveRange {
+                                destination: destination_place,
+                                source: source_place,
+                                count: range_count_value,
+                            }
+                        } else {
+                            Operation::CloneRange {
+                                destination: destination_place,
+                                source: source_place,
+                                count: range_count_value,
+                            }
                         },
                         Operation::Load {
                             destination: loaded,
                             place: Place::projected(destination, Projection::Element { index }, ValueType::Int, AccessMode::Read),
                             transfer: LoadTransfer::CopyScalar,
                         },
-                        Operation::Reclaim { object: source },
-                        Operation::Reclaim { object: destination },
+                        Operation::DropRef { object: source },
+                        Operation::DropRef { object: destination },
                     ],
                     terminator: Terminator::Return { values: vec![loaded] },
                 }],
@@ -10482,9 +10510,19 @@ mod tests {
     }
 
     #[cfg(feature = "native")]
-    fn run_scalar_clone_range(range_count: u64, source_start: u64, destination_start: u64) -> Result<i64, wasmtime::Error> {
-        let artifact = admit_canonical(checked_scalar_clone_range(range_count, source_start, destination_start))
-            .expect("scalar CloneRange fixture admits before execution");
+    fn run_scalar_range(
+        range_count: u64,
+        source_start: u64,
+        destination_start: u64,
+        move_cells: bool,
+    ) -> Result<i64, wasmtime::Error> {
+        let artifact = admit_canonical(checked_scalar_range(
+            range_count,
+            source_start,
+            destination_start,
+            move_cells,
+        ))
+        .expect("scalar range fixture admits before execution");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())?;
         let mut store = wasmtime::Store::new(&engine, ());
@@ -10580,7 +10618,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn scalar_clone_range_admits_emits_and_matches_exact_correspondence() {
-        let validated = checked_scalar_clone_range(1, 0, 0);
+        let validated = checked_scalar_range(1, 0, 0, false);
         let target = lower_validated(&validated).expect("scalar CloneRange lowers");
         assert!(target.functions.iter().flat_map(|function| function.blocks.iter()).flat_map(|block| block.instructions.iter()).any(
             |instruction| matches!(instruction.operation, ScalarInstruction::CloneRange { .. })
@@ -10591,7 +10629,31 @@ mod tests {
         let artifact = admit_canonical(validated).expect("scalar CloneRange admits with its exact plan");
         wasmparser::validate(artifact.wasm()).expect("admitted scalar CloneRange is valid Wasm");
         assert!(artifact.wasm().windows(2).any(|window| window == [0xfc, 0x0a]));
-        assert_eq!(run_scalar_clone_range(1, 0, 0).unwrap(), 42);
+        assert_eq!(run_scalar_range(1, 0, 0, false).unwrap(), 42);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn scalar_move_range_admits_and_executes_destination_value() {
+        let validated = checked_scalar_range(1, 0, 0, true);
+        let target = lower_validated(&validated).expect("scalar MoveRange lowers");
+        assert!(target
+            .functions
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .flat_map(|block| block.instructions.iter())
+            .any(|instruction| matches!(instruction.operation, ScalarInstruction::MoveRange { .. })));
+        let receipt = check_correspondence(validated.module(), &target)
+            .expect("MoveRange correspondence is exact");
+        assert!(receipt
+            .mappings
+            .iter()
+            .any(|mapping| mapping.rule == CorrespondenceRule::MemoryOwnership));
+
+        let artifact = admit_canonical(validated).expect("scalar MoveRange admits with its exact plan");
+        wasmparser::validate(artifact.wasm()).expect("admitted scalar MoveRange is valid Wasm");
+        assert!(artifact.wasm().windows(2).any(|window| window == [0xfc, 0x0a]));
+        assert_eq!(run_scalar_range(1, 0, 0, true).unwrap(), 42);
     }
 
     #[test]
