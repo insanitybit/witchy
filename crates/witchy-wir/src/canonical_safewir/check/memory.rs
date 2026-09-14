@@ -6074,6 +6074,37 @@ mod tests {
     #[test]
     fn scalar_clone_range_is_ownership_safe_and_admitted() {
         with_checker(false, |checker, list| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            let value_type = checker.value_type_for_layout(element).unwrap();
+            checker
+                .check(&Operation::ConstSize { destination: LOADED, value: 23 })
+                .expect("scalar fixture value is accepted");
+            checker
+                .check(&Operation::Compare {
+                    destination: CONDITION,
+                    operator: ComparisonOperator::LessUnsigned,
+                    left: START,
+                    right: COUNT,
+                })
+                .expect("scalar fixture comparison is accepted");
+            checker
+                .check(&Operation::Guard {
+                    condition: CONDITION,
+                    kind: GuardKind::Bounds,
+                })
+                .expect("scalar fixture guard is accepted");
+            checker
+                .check(&Operation::Store {
+                    place: Place::projected(
+                        SOURCE,
+                        Projection::Element { index: START },
+                        value_type,
+                        AccessMode::Write,
+                    ),
+                    value: LOADED,
+                    transfer: StoreTransfer::CopyScalar,
+                })
+                .expect("scalar source initialization is accepted");
             assert_eq!(
                 checker.check(&Operation::CloneRange {
                     destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
