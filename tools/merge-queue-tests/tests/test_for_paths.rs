@@ -664,6 +664,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("rfc0165_owner_adapters::server_pool_oracle::"), "{mixed:?}");
     assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
     assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
+    assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
     assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
 }
