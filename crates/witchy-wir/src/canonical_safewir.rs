@@ -16,6 +16,7 @@ use std::marker::PhantomData;
 use crate::layout::{LayoutBundle, LayoutId};
 
 mod check;
+pub mod optimize;
 pub mod manifest;
 pub use check::{InitialCheckError, check_initial};
 pub(crate) use check::{operation_uses, terminator_uses};
@@ -1429,6 +1430,13 @@ pub enum InitialValid {}
 impl stage::Sealed for InitialValid {}
 impl ModuleStage for InitialValid {}
 
+/// A transformed graph that carries no validation or encoder authority.
+/// Only the canonical checker can promote it back to `InitialValid`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum OptimizationCandidate {}
+impl stage::Sealed for OptimizationCandidate {}
+impl ModuleStage for OptimizationCandidate {}
+
 /// One representation with typestate authority. Its fields are private so a
 /// validated module cannot be assembled or retagged outside this module.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1556,6 +1564,12 @@ impl CanonicalModule<LoweredCandidate> {
     }
 
     fn into_initial_valid(self) -> CanonicalModule<InitialValid> {
+        self.into_stage()
+    }
+}
+
+impl<S: ModuleStage> CanonicalModule<S> {
+    fn into_stage<T: ModuleStage>(self) -> CanonicalModule<T> {
         CanonicalModule {
             revision: self.revision,
             checked_source: self.checked_source,
@@ -1576,9 +1590,7 @@ impl CanonicalModule<LoweredCandidate> {
             stage: PhantomData,
         }
     }
-}
 
-impl<S: ModuleStage> CanonicalModule<S> {
     pub const fn revision(&self) -> Revision {
         self.revision
     }

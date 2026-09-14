@@ -5,7 +5,7 @@ use std::fmt;
 use super::{
     BasicBlock, BlockId, CallArgument, CanonicalAbiCatalog, CanonicalModule, Function, FunctionId,
     FunctionSignature, FunctionSignatureId, GuardKind, HostCallArgument, ImportContract, ImportId, InitialValid,
-    LoweredCandidate, ModuleStage, Operation,
+    LoweredCandidate, ModuleStage, Operation, OptimizationCandidate,
     ParameterOwnership, ProperTailSite, TailSiteId, Terminator, ValueId,
     ValueType,
 };
@@ -237,6 +237,15 @@ pub(crate) fn recheck_final(
     candidate: &CanonicalModule<InitialValid>,
 ) -> Result<(), InitialCheckError> {
     check_candidate(candidate, candidate.abi_catalog())
+}
+
+/// Re-establish every canonical invariant over an optimizer-produced graph.
+/// The candidate has no authority until this traversal succeeds.
+pub(super) fn check_optimization_candidate(
+    candidate: CanonicalModule<OptimizationCandidate>,
+) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
+    check_candidate(&candidate, candidate.abi_catalog())?;
+    Ok(candidate.into_stage())
 }
 
 fn check_candidate<S: ModuleStage>(
