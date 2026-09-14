@@ -26,6 +26,8 @@ mod example_workspaces;
 mod coven_web;
 #[path = "e2e/pm_coven_lifecycle.rs"]
 mod pm_coven_lifecycle;
+#[path = "e2e/offline_pm.rs"]
+mod offline_pm;
 #[path = "e2e/sandbox_grants.rs"]
 mod sandbox_grants;
 

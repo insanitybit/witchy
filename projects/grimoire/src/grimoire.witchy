@@ -197,7 +197,7 @@ pub fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, 
     else:
         run_compiler(console, runner, bin, "build", ["compile", dir])
 
-fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(String)) -> Int:
+pub fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(String)) -> Int:
     if list.at(argv, list.length(argv) - 1).is_empty():
         console.print("usage: grimoire ${verb} <file>")
         1
@@ -255,7 +255,7 @@ fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
                     0
 
 // --- deps: list a rune's dependencies ---------------------------------------
-fn cmd_deps(console: Console, root: Dir, dir: String):
+pub fn cmd_deps(console: Console, root: Dir, dir: String):
     if dir.is_empty():
         console.print("usage: grimoire deps <dir>")
     else:
@@ -271,7 +271,7 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
 // path dependencies (the transitive closure), not just the direct line; a registry
 // dependency is a leaf (its own subtree lives in the registry, not on disk). A
 // diamond/cycle terminates via the visited set.
-fn cmd_tree(console: Console, root: Dir, dir: String):
+pub fn cmd_tree(console: Console, root: Dir, dir: String):
     if dir.is_empty():
         console.print("usage: grimoire tree <dir>")
     else:

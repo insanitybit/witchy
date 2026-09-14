@@ -26,6 +26,41 @@ fn main(console: Console, args: List(String), root: Dir) -> Int:
         cmd_lock(console, root, "")
 "#;
 
+// Keep the unused project Dir before bin: its position preserves the existing
+// grant ordinal (cwd = 0, compiler directory = 1). Argument selection remains
+// identical to grimoire.main; pm test does not forward extra grant flags.
+const PROJECT_TEST_ENTRY: &str = r#"from grimoire import cmd_drive
+from gm_core import arg
+fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec) -> Int:
+    cmd_drive(console, runner, bin, "test", ["test", arg(args, 1)])
+"#;
+
+const PROJECT_DEPS_ENTRY: &str = r#"from grimoire import cmd_deps
+from gm_core import arg
+fn main(console: Console, args: List(String), root: Dir) -> Int:
+    cmd_deps(console, root, arg(args, 1))
+    0
+"#;
+
+const PROJECT_TREE_ENTRY: &str = r#"from grimoire import cmd_tree
+from gm_core import arg
+fn main(console: Console, args: List(String), root: Dir) -> Int:
+    cmd_tree(console, root, arg(args, 1))
+    0
+"#;
+
+fn embedded_pm_entry(verb: Option<&str>) -> (&'static str, &'static str) {
+    match verb {
+        Some("run") => ("__witchy_project_run", PROJECT_RUN_ENTRY),
+        Some("build") => ("__witchy_project_build", PROJECT_BUILD_ENTRY),
+        Some("lock") => ("__witchy_project_lock", PROJECT_LOCK_ENTRY),
+        Some("test") => ("__witchy_project_test", PROJECT_TEST_ENTRY),
+        Some("deps") => ("__witchy_project_deps", PROJECT_DEPS_ENTRY),
+        Some("tree") => ("__witchy_project_tree", PROJECT_TREE_ENTRY),
+        _ => ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy")),
+    }
+}
+
 /// Run the EMBEDDED witchy package-manager front-end (`projects/grimoire/src/grimoire.witchy`)
 /// — the cargo-equivalent CLI, itself written in witchy and bundled into the
 /// toolchain like std (rfcs/0004-self-hosted-cli.md). `raw` is the front-end's
@@ -90,15 +125,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
         let mut modules: Vec<(String, Vec<u8>)> = Vec::new();
         let mut loaded: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
-        let (entry, source) = if pm_args.first().map(String::as_str) == Some("run") {
-            ("__witchy_project_run", PROJECT_RUN_ENTRY)
-        } else if pm_args.first().map(String::as_str) == Some("build") {
-            ("__witchy_project_build", PROJECT_BUILD_ENTRY)
-        } else if pm_args.first().map(String::as_str) == Some("lock") {
-            ("__witchy_project_lock", PROJECT_LOCK_ENTRY)
-        } else {
-            ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"))
-        };
+        let (entry, source) = embedded_pm_entry(pm_args.first().map(String::as_str));
         queue.push_back((entry.to_string(), source.to_string()));
         while let Some((name, source)) = queue.pop_front() {
             if !loaded.insert(name.clone()) {
@@ -222,6 +249,24 @@ fn coven_url_net_grant(u: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::coven_url_net_grant;
+
+    #[test]
+    fn offline_pm_entries_leave_online_and_unknown_dispatch_unchanged() {
+        for (verb, expected) in [
+            ("test", ("__witchy_project_test", super::PROJECT_TEST_ENTRY)),
+            ("deps", ("__witchy_project_deps", super::PROJECT_DEPS_ENTRY)),
+            ("tree", ("__witchy_project_tree", super::PROJECT_TREE_ENTRY)),
+        ] {
+            assert_eq!(super::embedded_pm_entry(Some(verb)), expected);
+        }
+        let original = ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"));
+        for verb in ["verify", "add", "install", "publish", "promote", "yank",
+            "list", "outdated", "update", "help", "not-a-verb", "test --integration"]
+        {
+            assert_eq!(super::embedded_pm_entry(Some(verb)), original, "{verb}");
+        }
+        assert_eq!(super::embedded_pm_entry(None), original);
+    }
 
     #[test]
     fn internal_admitted_launch_preserves_embedded_owner_capture_and_args() {

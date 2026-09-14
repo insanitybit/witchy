@@ -1520,8 +1520,10 @@ unverified slice; the full SafeWIR goal and compiler-wide safety claim remain op
 #### BuildExec landed; BuildNet execution checkpoint
 
 The coordinator subsequently merged the BuildExec repair and its stack at
-`47a51bb86099d50e6ddadfce8cb8b7c9b1192bd9`. BuildNet is a separate focused-green
-slice on `impl/rfc0165-build-network-next`, awaiting serialized queue landing.
+`47a51bb86099d50e6ddadfce8cb8b7c9b1192bd9`. BuildNet subsequently landed through
+the coordinator at `a10a5d5309549c2eaa83700fca0755abffd6e9fc` (submitted
+`c2864a934324d4f1e96c54c0d1f50eae034c7519`, change
+`mq-c7b96e547995b704aa40dddc5c15572e8f4f9bbd`).
 
 BuildNet uses an authenticated externref root and immutable response handles,
 with exact host allow-list matching and complete strict-UTF8 argument snapshots
@@ -1562,3 +1564,26 @@ test(build_net) | test(build_exec) | test(build_env) | test(build_read) | test(b
 
 The full SafeWIR goal remains incomplete. Compiler-wide memory safety is not
 established.
+
+#### Offline package-manager entries: focused green
+
+`pm test`, `pm deps`, and `pm tree` now select compiler-owned checked source
+entries calling the existing Grimoire handlers. Handler bodies, argument
+selection, and online/unknown dispatch remain unchanged. The test wrapper keeps
+the existing cwd/bin grant ordinals and does not forward implicit authority to
+the test child. Source capture/replay APIs are unchanged.
+
+Run `37d5e13e-cc9b-4d55-b008-4a374f9c30d1` passed 54/54 selected tests in
+59.527 seconds after a 23.81-second warmed build. Log:
+`/private/tmp/witchy-offline-pm-integrated-focused.log`. Five executable CLI tests
+cover a checked test body, child failure, absent integration grants, dependency
+output, and transitive tree output. A unit test pins online/unknown entry
+selection; the shard also runs BuildNet, BuildExec, and checked-recipe regressions.
+Independent integration review preceded execution and submission.
+
+```sh
+env CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower --features native --lib --bin witchy --test misc --test e2e --test codegen --ignore-default-filter --profile ci -E 'test(offline_pm::) | test(offline_pm_entries_leave_online_and_unknown_dispatch_unchanged) | test(build_net) | test(build_exec) | test(build_recipe)' --test-threads 2 --no-fail-fast
+```
+
+This slice is not yet merged. Authenticated registry source replay and actual
+online registry operations remain separate incomplete obligations.
