@@ -340,6 +340,7 @@ fn load_file_modules_with_files(
         }
         let (source, owner, user_source) = match files.read(&module_path)? {
             Some(source) => {
+                files.authenticate_module(&module_path, &proposed_owner, &source)?;
                 if bundled_module(&name) == Some(source.as_str()) {
                     (source, bundled_module_owner(&name)?, false)
                 } else {

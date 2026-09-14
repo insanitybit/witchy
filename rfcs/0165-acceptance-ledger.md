@@ -1585,5 +1585,52 @@ Independent integration review preceded execution and submission.
 env CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower --features native --lib --bin witchy --test misc --test e2e --test codegen --ignore-default-filter --profile ci -E 'test(offline_pm::) | test(offline_pm_entries_leave_online_and_unknown_dispatch_unchanged) | test(build_net) | test(build_exec) | test(build_recipe)' --test-threads 2 --no-fail-fast
 ```
 
-This slice is not yet merged. Authenticated registry source replay and actual
-online registry operations remain separate incomplete obligations.
+Offline PM subsequently merged at `65daac53c4ce775bf72dc21df83a64e514d790ba`.
+Its first gate hit the existing async-recipe 270-second deadline under host load
+53.36 on 10 CPUs. The unchanged test passed in isolation at 117.62 seconds wall
+(115.40 user, 0.73 system), retaining the 270-second process-group deadline;
+the unchanged candidate then passed the coordinator. Reproduction and cleanup:
+`/private/tmp/witchy-offline-pm-async-success-repro.log` and
+`/private/tmp/witchy-offline-pm-async-success-cleanup.txt`.
+
+#### Pinned vendored registry source replay: focused green
+
+Closed capture/replay retains the raw lock, signed record, package manifest,
+and complete signed source tree. Compiler-fixed authenticated verifier sources
+reuse Grimoire's offline signature and rune-hash rules; untrusted inputs enter
+only as data. Each loaded registry module must match verified source membership.
+Caller owner labels remain assertions, and explicit workspace path overrides
+under `vendor/` retain their existing semantics. Replay reproduces supplied
+alias/path bindings; it does not rerun default PM dependency selection.
+
+Trust is relative to the retained pin. Consistent key-B contents identify
+`Registry(B)` and cannot satisfy an unchanged `Registry(A)` assertion. This
+does not establish an independent external trust anchor or online freshness.
+Locked versions are not re-resolved against current manifest requirements.
+
+Run `46342f9f-3f5c-4cc9-8366-ec7fdb0aa1f2` passed 9/9 focused probes in
+46.208 seconds after a 12.33-second warmed build. Run
+`b70f24d7-1ca5-4206-80ae-e78ac4d9a001` passed 29/29 package/source regressions
+in 51.903 seconds after a 1.65-second build. Both used zero retries. Logs:
+`/private/tmp/witchy-pinned-vendor-authenticated-focused.log` and
+`/private/tmp/witchy-pinned-vendor-package-regressions.log`.
+The probes include execution after deleting original sources, zero guest leaks,
+pin/record/source/owner substitutions, and valid source-B paired with Wasm-A
+after recomputing public envelope hashes. Independent review cleared the final
+verifier linkage. The same binary passes hello/wrap/jq interpreter-Wasm parity;
+log: `/private/tmp/witchy-pinned-vendor-compact-parity.log`.
+
+```sh
+export CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+export CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc
+common=(taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower --features native --lib --bin witchy --test misc --test e2e --test codegen --ignore-default-filter --profile ci --retries 0 --test-threads 2 --no-fail-fast)
+"${common[@]}" -E 'test(pinned_vendor_) | test(generated_replay_tests)'
+excluded=$(awk 'NF == 2 && $1 !~ /^#/ { if (n++) printf " | "; printf "(binary_id(=%s) & test(=%s))", $1, $2 }' scripts/rfc0165-deferred-tests.txt)
+filter='test(source::package_inputs::) | test(trusted_publisher::)'
+if [ -n "$excluded" ]; then filter="($filter) & not ($excluded)"; fi
+"${common[@]}" -E "$filter"
+```
+
+This slice is focused-green, not merged evidence. Online registry operations,
+remaining workflows, and optimizer/security acceptance are still incomplete.
+Compiler-wide memory safety is not established.

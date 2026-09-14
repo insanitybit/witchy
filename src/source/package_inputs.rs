@@ -8,6 +8,11 @@ use witchy::trusted_publisher::source_inputs::{SourceDependency, SourceFile, Sou
 #[path = "package_inputs/generated.rs"]
 mod generated;
 
+mod registry;
+
+#[cfg(test)]
+mod registry_replay_tests;
+
 #[cfg(test)]
 #[path = "package_inputs/generated_replay_tests.rs"]
 mod generated_replay_tests;
@@ -15,6 +20,15 @@ mod generated_replay_tests;
 pub(super) trait SourceFiles {
     fn read(&self, path: &Path) -> Result<Option<String>, String>;
     fn closed_package(&self) -> bool { false }
+    fn registry_source_paths(&self, _root: &Path) -> Result<Vec<PathBuf>, String> {
+        Err("registry source census requires closed capture/replay".into())
+    }
+    fn authenticate_module(&self, _path: &Path, owner: &ModuleLoadIdentity, _source: &str) -> Result<(), String> {
+        if self.closed_package() && matches!(owner.package().source(), PackageSource::Registry(_)) {
+            return Err("registry module lacks independently verified source membership".into());
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct AmbientFiles;
@@ -66,6 +80,35 @@ impl SourceFiles for CaptureFiles {
         Ok(contents)
     }
     fn closed_package(&self) -> bool { true }
+    fn registry_source_paths(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+        fn collect(files: &CaptureFiles, directory: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+            let metadata = std::fs::symlink_metadata(directory).map_err(|error| error.to_string())?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err("registry source tree requires real directories, not symlinks".into());
+            }
+            let mut entries = std::fs::read_dir(directory).map_err(|error| error.to_string())?
+                .map(|entry| entry.map(|entry| entry.path()).map_err(|error| error.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            entries.sort();
+            for path in entries {
+                let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+                if metadata.file_type().is_symlink() {
+                    return Err("registry source symlink cannot be replayed as signed file membership".into());
+                }
+                if metadata.is_dir() { collect(files, &path, out)?; }
+                else if path.extension().and_then(|extension| extension.to_str()) == Some("witchy") {
+                    if !metadata.is_file() { return Err("registry source is not a regular file".into()); }
+                    files.read(&path)?.ok_or("registry source disappeared during capture")?;
+                    out.push(path);
+                }
+            }
+            Ok(())
+        }
+        let mut paths = Vec::new();
+        collect(self, &root.join("src"), &mut paths)?;
+        paths.sort();
+        Ok(paths)
+    }
 }
 
 struct ReplayFiles<'a>(&'a SourceInputs);
@@ -77,6 +120,9 @@ impl SourceFiles for ReplayFiles<'_> {
             .ok_or_else(|| format!("closed package omitted loader lookup `{name}`"))
     }
     fn closed_package(&self) -> bool { true }
+    fn registry_source_paths(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+        self.0.registry_source_paths(&key(root)?).map(|paths| paths.into_iter().map(PathBuf::from).collect())
+    }
 }
 
 fn load(
@@ -84,11 +130,12 @@ fn load(
 ) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
     let entry_path = path;
     let stem = path.file_stem().and_then(|stem| stem.to_str()).ok_or("invalid package entry")?;
-    let owner = generated::module_owner(path, stem, path, files)?;
+    let mut verified = registry::Files::new(files);
+    let owner = verified.module_owner(path, stem, path)?;
     let owners = dependencies.iter().map(|(alias, path)| {
-        Ok((alias.clone(), generated::module_owner(path, alias, entry_path, files)?))
+        Ok((alias.clone(), verified.module_owner(path, alias, entry_path)?))
     }).collect::<Result<HashMap<_, _>, String>>()?;
-    load_file_modules_with_files(path.to_str().ok_or("non-UTF-8 package entry")?, dependencies, owner, &owners, files)
+    load_file_modules_with_files(path.to_str().ok_or("non-UTF-8 package entry")?, dependencies, owner, &owners, &verified)
 }
 
 pub(crate) fn capture_packaged_source(
@@ -100,14 +147,14 @@ pub(crate) fn capture_packaged_source(
 }
 
 /// Public owner flags are assertions about loader-selected inputs, never
-/// assignments passed to the checker. Registry replay needs resolver evidence
-/// that this workspace-only protocol deliberately does not manufacture.
+/// assignments passed to the checker. Registry ownership must be independently
+/// recovered from the captured lock, signed record and complete source tree.
 pub(crate) fn capture_project_source(
     entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: Option<&str>,
     entry_claim: &ModuleLoadIdentity, claims: &HashMap<String, ModuleLoadIdentity>,
 ) -> Result<(pipeline::CheckedModule, String, SourceInputs), String> {
     for claim in std::iter::once(entry_claim).chain(claims.values()) {
-        if claim.package().source() != &PackageSource::Workspace {
+        if !matches!(claim.package().source(), PackageSource::Workspace | PackageSource::Registry(_)) {
             return Err("source replay does not yet support custom/registry owner assignments; resolver provenance must be retained, not relabeled".into());
         }
     }
@@ -132,8 +179,9 @@ pub(crate) fn capture_project_source(
     let inputs = capture_source_inputs(entry, dependencies,
         manifest.to_str().ok_or("non-UTF-8 project manifest")?)?;
     let files = ReplayFiles(&inputs);
-    let assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
-        let actual = generated::module_owner(Path::new(path), alias, Path::new(&inputs.entry), &files)?;
+    let mut verified = registry::Files::new(&files);
+    let mut assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
+        let actual = verified.module_owner(Path::new(path), alias, Path::new(&inputs.entry))?;
         // The existing project resolver spells a root module `foo`, whereas
         // the native loader records its package-relative path as `src.foo`.
         // Accept that spelling only as an assertion; always retain `actual`.
@@ -151,21 +199,8 @@ pub(crate) fn capture_project_source(
     for dependency in &inputs.dependencies {
         assert_owner(&dependency.path, &dependency.alias, &claims[&dependency.alias])?;
     }
-    // Do not turn a registry dependency into workspace ownership merely because
-    // its source happens to be on disk or its caller labels it `workspace`.
-    for file in &inputs.files {
-        if !file.path.ends_with("/witchy.toml") { continue; }
-        let Some(contents) = &file.contents else { continue; };
-        let manifest: toml::Value = toml::from_str(contents).map_err(|error| format!("project manifest: {error}"))?;
-        if let Some(dependencies) = manifest.get("dependencies") {
-            let dependencies = dependencies.as_table().ok_or("project dependencies must be a table")?;
-            for (alias, dependency) in dependencies {
-                if dependency.get("path").and_then(toml::Value::as_str).is_none() {
-                    return Err(format!("project registry dependency `{alias}` requires authenticated resolver replay; workspace relabeling is forbidden"));
-                }
-            }
-        }
-    }
+    // load() checks non-path manifest dependencies against verified registry
+    // selections, including when the caller tries to label them workspace.
     let (checked, entry) = recheck_packaged_source(&inputs)?;
     Ok((checked, entry, inputs))
 }

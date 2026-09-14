@@ -62,6 +62,21 @@ pub fn validate_path(path: &str) -> Result<(), String> {
 }
 
 impl SourceInputs {
+    /// Untrusted census only. The registry replay verifier hashes these raw
+    /// files against the signed, locked source digest before assigning owners.
+    pub fn registry_source_paths(&self, root: &str) -> Result<Vec<String>, String> {
+        validate_path(root)?;
+        let prefix = format!("{root}/src/");
+        let mut paths = self.files.iter().filter(|file| file.contents.is_some()
+            && file.path.starts_with(&prefix) && file.path.ends_with(".witchy"))
+            .map(|file| file.path.clone()).collect::<Vec<_>>();
+        paths.sort();
+        if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("duplicate registry source in closed package".into());
+        }
+        Ok(paths)
+    }
+
     pub fn captured(entry: String, dependencies: Vec<SourceDependency>, files: Vec<SourceFile>, target_manifest: String) -> Self {
         let options = witchy_syntax::opt::active_schema_key();
         Self {
