@@ -272,8 +272,11 @@ fn validated_safewir_has_one_checker_owned_construction_surface() {
 
     assert_eq!(
         constructions,
-        vec![(authority, "validate_final_inner".to_string())],
-        "only final checking may construct ValidatedSafeWir"
+        vec![
+            (authority.clone(), "validate_final_inner".to_string()),
+            (authority, "validate_optimized_final_inner".to_string()),
+        ],
+        "only zero-pass and relation-bound final checking may construct ValidatedSafeWir"
     );
 }
 
@@ -284,10 +287,12 @@ fn a3_witness_and_digest_types_have_no_public_minting_surface() {
     let protected_public_types = [
         "CheckedLoweringWitness",
         "CheckedInitialSafeWir",
+        "CheckedOptimizedSafeWir",
         "ValidatedSafeWir",
     ];
     let protected_private_types = [
         "CheckedSourceWitness",
+        "CheckedOptimizationWitness",
         "FinalSafeWirWitness",
         "ExactModuleWitness",
     ];

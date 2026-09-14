@@ -8,13 +8,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::{
-    CanonicalModule, ComparisonOperator, Function, GuardKind, InitialCheckError, InitialValid,
-    Operation, OptimizationCandidate, Revision, ValueId,
+    CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, ComparisonOperator, Function,
+    GuardKind, InitialCheckError, InitialValid, Operation, OptimizationAuthorityError,
+    OptimizationCandidate, Revision, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundsGuardEliminationError {
     RevisionOverflow { revision: Revision },
+    Authority(OptimizationAuthorityError),
     RewriteRelation(RewriteRelationError),
     Safety(InitialCheckError),
 }
@@ -25,6 +27,7 @@ impl fmt::Display for BoundsGuardEliminationError {
             Self::RevisionOverflow { revision } => {
                 write!(formatter, "cannot advance SafeWIR revision {revision:?}")
             }
+            Self::Authority(error) => error.fmt(formatter),
             Self::RewriteRelation(error) => {
                 write!(formatter, "bounds-guard rewrite relation failed: {error}")
             }
@@ -37,6 +40,16 @@ impl fmt::Display for BoundsGuardEliminationError {
 }
 
 impl std::error::Error for BoundsGuardEliminationError {}
+
+/// Apply the pass to checked initial authority and bind the exact revalidated
+/// output to a private optimization witness for independent final validation.
+pub fn eliminate_same_block_redundant_bounds_guards_checked(
+    before: CheckedInitialSafeWir,
+) -> Result<CheckedOptimizedSafeWir, BoundsGuardEliminationError> {
+    let optimized = eliminate_same_block_redundant_bounds_guards(before.module().clone())?;
+    super::authority::bind_checked_same_block_bounds_guard_optimization(before, optimized)
+        .map_err(BoundsGuardEliminationError::Authority)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteRelationError {
@@ -130,7 +143,7 @@ fn rewrite(candidate: &mut CanonicalModule<OptimizationCandidate>) -> bool {
 
 /// Independently recognize the one allowed rewrite. This intentionally does
 /// not call `rewrite` or compare against a regenerated candidate.
-fn check_rewrite_relation(
+pub(super) fn check_rewrite_relation(
     before: &CanonicalModule<InitialValid>,
     after: &CanonicalModule<OptimizationCandidate>,
 ) -> Result<(), RewriteRelationError> {

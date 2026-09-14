@@ -1804,6 +1804,18 @@ impl AdmittedCanonicalArtifact {
         &self.bytes
     }
 
+    /// Digest of the exact final SafeWIR graph from which this artifact was
+    /// admitted. This is audit metadata and grants no construction authority.
+    pub fn safe_wir_digest(&self) -> [u8; 32] {
+        self.final_module_digest.bytes()
+    }
+
+    /// Digest of the private validation lineage that authorized this artifact.
+    /// Exposing the digest does not expose a way to mint that authority.
+    pub fn authority_digest(&self) -> [u8; 32] {
+        self.authority_digest.bytes()
+    }
+
     /// The validated program entry, or `None` for a library artifact without
     /// a checked `main`.
     pub fn entry(&self) -> Option<&CanonicalEntry> {

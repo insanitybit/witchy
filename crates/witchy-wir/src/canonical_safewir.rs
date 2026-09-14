@@ -22,11 +22,15 @@ pub use check::{InitialCheckError, check_initial};
 pub(crate) use check::{operation_uses, terminator_uses};
 mod authority;
 pub use authority::{
-    CheckedInitialSafeWir, CheckedLoweringWitness, FinalValidationError, InitialWitnessError, ValidatedSafeWir,
-    check_initial_with_witness, validate_final,
+    CheckedInitialSafeWir, CheckedLoweringWitness, CheckedOptimizedSafeWir,
+    FinalValidationError, InitialWitnessError, OptimizationAuthorityError, ValidatedSafeWir,
+    check_initial_with_witness, validate_final, validate_optimized_final,
 };
 #[cfg(test)]
-pub(crate) use authority::{check_initial_with_test_witness, validate_final_for_test};
+pub(crate) use authority::{
+    check_initial_with_test_witness, validate_final_for_test,
+    validate_optimized_final_for_test,
+};
 #[path = "canonical_safewir/history.rs"]
 mod identity;
 pub(crate) use identity::ModuleDigest;
@@ -1518,6 +1522,13 @@ impl CanonicalModule<LoweredCandidate> {
 
     pub fn with_vm_services(mut self, services: Vec<CandidateVmService>) -> Self {
         self.vm_services = services;
+        self
+    }
+
+    /// Apply a construction-time transformation to an authority-free lowered
+    /// candidate. The initial checker still re-establishes every invariant.
+    pub fn transform_functions(mut self, transform: impl FnOnce(&mut [Function])) -> Self {
+        transform(&mut self.functions);
         self
     }
 

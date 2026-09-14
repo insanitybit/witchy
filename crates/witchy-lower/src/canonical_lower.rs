@@ -49,6 +49,10 @@ use write_back::{PreparedWriteBack, source_place_root};
 #[path = "canonical_owned_tests.rs"]
 mod owned_tests;
 
+#[cfg(test)]
+#[path = "canonical_optimizer_tests.rs"]
+mod optimizer_tests;
+
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_types::canonical_aggregates::{concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::pipeline::CanonicalCheckedSource;
