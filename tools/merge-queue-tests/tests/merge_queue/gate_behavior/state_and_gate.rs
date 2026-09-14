@@ -907,13 +907,13 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         "#!/bin/sh\n\
          if [ \"$1\" = check ]; then sleep \"${FAKE_CARGO_CHECK_SECS:-0}\"; exit 0; fi\n\
          if [ \"$1\" = clippy ]; then\n\
-           sleep 1\n\
+           sleep 0.2\n\
            if [ \"${FAKE_CARGO_FAIL_CLIPPY:-0}\" = 1 ]; then echo 'error: fake lint failure'; exit 5; fi\n\
            exit 0\n\
          fi\n\
          if [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
            if [ -n \"${FAKE_NEXTEST_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_NEXTEST_PID_FILE\"; fi\n\
-           exec sleep \"${FAKE_CARGO_NEXTEST_SECS:-3}\"\n\
+           exec sleep \"${FAKE_CARGO_NEXTEST_SECS:-0.25}\"\n\
          fi\n\
          exit 0\n",
     )
@@ -1005,7 +1005,7 @@ fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
         "full-gate stage/timing order changed: {stdout}",
     );
 
-    // Red leg: clippy fails at ~1s while the tests would run 60s. Fail-fast
+    // Red leg: clippy fails while the tests would run 60s. Fail-fast
     // must abort the foreground stage, surface clippy's output, and exit red
     // in seconds, not after the test stage.
     let target_red = temp.path().join("target-full-red");

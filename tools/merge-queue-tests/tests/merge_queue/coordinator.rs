@@ -6,7 +6,7 @@ fn zero_whole_gate_timeout_does_not_kill_a_progressing_gate() {
     fixture.mq_ok(&["submit", "a"], "true");
 
     let output = fixture
-        .mq_command(&["run", "--once"], "printf 'gate started\\n'; sleep 2")
+        .mq_command(&["run", "--once"], "printf 'gate started\\n'; sleep 0.2")
         .env("MERGE_QUEUE_GATE_TIMEOUT", "0")
         .output()
         .expect("run gate with the whole-gate ceiling disabled");
@@ -123,7 +123,7 @@ fn zero_workspace_test_budget_does_not_kill_a_progressing_test_stage() {
     let output = fixture
         .mq_command(
             &["run", "--once"],
-            "printf '==> [1] tests (workspace) (t+0s)\\n'; sleep 2; printf '    [1] tests (workspace) took 2s\\n'",
+            "printf '==> [1] tests (workspace) (t+0s)\\n'; sleep 0.2; printf '    [1] tests (workspace) took 0s\\n'",
         )
         .env("MERGE_QUEUE_WORKSPACE_TEST_BUDGET", "0")
         .output()
@@ -239,15 +239,17 @@ fn docs_only_master_move_does_not_regate_a_green_code_candidate() {
     fixture.mq_ok(&["submit", "a"], "true");
 
     let started = fixture._temp.path().join("gate-started");
+    let release = fixture._temp.path().join("gate-release");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
         "printf 'scope=%s skip_book=%s nextest=[%s]\\n' \
          \"${{WITCHY_GATE_SCOPE:-}}\" \"${{WITCHY_GATE_SKIP_BOOK:-}}\" \"${{WITCHY_GATE_NEXTEST:-}}\" >{env}\n\
          printf started >{started}\n\
-         sleep 2\n\
+         while [ ! -e {release} ]; do sleep 0.01; done\n\
          exit 0\n",
         env = env_log.display(),
         started = started.display(),
+        release = release.display(),
     );
 
     let mut coordinator = fixture
@@ -265,6 +267,7 @@ fn docs_only_master_move_does_not_regate_a_green_code_candidate() {
     fs::write(fixture.root.join("rfcs/other.md"), "docs\n").expect("write docs-only master commit");
     run_git(&fixture.root, &["add", "rfcs/other.md"]);
     run_git(&fixture.root, &["commit", "-m", "docs only"]);
+    fs::write(&release, "release\n").expect("release code gate after master moves");
 
     let status = coordinator.wait().expect("reap coordinator");
     assert!(
