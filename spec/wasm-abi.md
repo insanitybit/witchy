@@ -186,7 +186,6 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
-
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -333,6 +332,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `console_print_at` | `(externref, i32, i32, i32, i32, i32)` | non-authority infrastructure | none | omitted |
 | `build_out_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Build.Out | omitted |
 | `crypto_ed25519_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
+| `crypto_rsa_pkcs1_sha256_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
 | `crypto_sha256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_rune_hash_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `dir_is_dir_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |

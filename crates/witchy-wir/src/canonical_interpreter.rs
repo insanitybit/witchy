@@ -1541,6 +1541,9 @@ impl<'a> Engine<'a> {
         if contract.name == crate::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT {
             return self.ed25519_verify_host_call(destinations, arguments, values);
         }
+        if contract.name == crate::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT {
+            return self.rsa_verify_host_call(destinations, arguments, values);
+        }
         if contract.name == crate::canonical_safewir::CRYPTO_SHA256_IMPORT
             || contract.name == crate::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT
         {

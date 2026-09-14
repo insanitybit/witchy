@@ -51,3 +51,6 @@ fn main(console: Console):
 
 #[path = "rfc0165_crypto_hash.rs"]
 mod hash;
+
+#[path = "rfc0165_crypto_rsa.rs"]
+mod rsa;

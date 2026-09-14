@@ -1,14 +1,14 @@
 //! Catalog-selected pure crypto over bounded byte slices. Managed list storage
 //! never crosses this ABI: RuneHash constructs a checked, pointer-free frame.
 use super::*;
-use witchy_syntax::intrinsics::{CRYPTO_ED25519_VERIFY_STATUS, CRYPTO_SHA256, CRYPTO_RUNE_HASH};
-use witchy_wir::canonical_safewir::{CRYPTO_ED25519_VERIFY_IMPORT, CRYPTO_SHA256_IMPORT, CRYPTO_RUNE_HASH_IMPORT};
+use witchy_syntax::intrinsics::{CRYPTO_ED25519_VERIFY_STATUS, CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, CRYPTO_SHA256, CRYPTO_SHA256_BYTES, CRYPTO_RUNE_HASH};
+use witchy_wir::canonical_safewir::{CRYPTO_ED25519_VERIFY_IMPORT, CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT, CRYPTO_SHA256_IMPORT, CRYPTO_RUNE_HASH_IMPORT};
 
 pub(super) fn is_intrinsic(name: &str) -> bool {
-    matches!(name, CRYPTO_ED25519_VERIFY_STATUS | CRYPTO_SHA256 | CRYPTO_RUNE_HASH)
+    matches!(name, CRYPTO_ED25519_VERIFY_STATUS | CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS | CRYPTO_SHA256 | CRYPTO_SHA256_BYTES | CRYPTO_RUNE_HASH)
 }
 pub(super) fn is_host_import(name: &str) -> bool {
-    matches!(name, CRYPTO_ED25519_VERIFY_IMPORT | CRYPTO_SHA256_IMPORT | CRYPTO_RUNE_HASH_IMPORT)
+    matches!(name, CRYPTO_ED25519_VERIFY_IMPORT | CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT | CRYPTO_SHA256_IMPORT | CRYPTO_RUNE_HASH_IMPORT)
 }
 pub(super) fn is_needed(module: &witchy_syntax::ast::Module) -> bool {
     let scope = witchy_types::pipeline::canonical_scope(module);
@@ -44,20 +44,29 @@ pub(super) fn catalog(mut catalog: CanonicalAbiCatalog, signatures: &mut Vec<Fun
     }
     catalog = catalog.with_ed25519_verify_import(ids[0], bytes)
         .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    // Both verifiers have the same three-read-slice signature; their separately
+    // authenticated import identities select the cryptographic implementation.
+    catalog = catalog.with_rsa_pkcs1_sha256_verify_import(ids[0], bytes)
+        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
     catalog.with_crypto_hash_imports([ids[1], ids[2]], bytes)
         .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)
 }
 
 impl FunctionLowerer<'_> {
     pub(super) fn lower_crypto(&mut self, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
-        let arity = match name { CRYPTO_ED25519_VERIFY_STATUS => 3, CRYPTO_SHA256 => 1, CRYPTO_RUNE_HASH => 2,
+        let arity = match name { CRYPTO_ED25519_VERIFY_STATUS | CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS => 3,
+            CRYPTO_SHA256 | CRYPTO_SHA256_BYTES => 1, CRYPTO_RUNE_HASH => 2,
             _ => return Err(CanonicalLoweringError::MissingBinding(name.to_owned())) };
         if args.len() != arity {
             return Err(CanonicalLoweringError::CallArityMismatch { callee: name.to_owned(), expected: arity, actual: args.len() });
         }
         let layout = self.string_layout_id()?;
-        if name == CRYPTO_ED25519_VERIFY_STATUS {
-            let import = self.host_imports.ed25519_verify.ok_or(CanonicalLoweringError::UnsupportedExpression("missing authenticated Ed25519 import"))?;
+        if matches!(name, CRYPTO_ED25519_VERIFY_STATUS | CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS) {
+            let import = if name == CRYPTO_ED25519_VERIFY_STATUS {
+                self.host_imports.ed25519_verify
+            } else {
+                self.host_imports.rsa_pkcs1_sha256_verify
+            }.ok_or(CanonicalLoweringError::UnsupportedExpression("missing authenticated crypto verification import"))?;
             let mut inputs = Vec::new();
             for argument in args {
                 let value = self.lower_string_argument(argument)?;
@@ -68,8 +77,18 @@ impl FunctionLowerer<'_> {
             self.push_operation(Operation::HostCall { destinations: vec![result], import, arguments: inputs });
             return Ok(result);
         }
-        let (input, import, length) = if name == CRYPTO_SHA256 {
-            let value = self.lower_string_argument(&args[0])?;
+        let (input, import, length) = if matches!(name, CRYPTO_SHA256 | CRYPTO_SHA256_BYTES) {
+            let value = if name == CRYPTO_SHA256_BYTES {
+                // Bytes share the counted buffer layout, not String's UTF-8
+                // semantics. Do not decode or materialize text before hashing.
+                let value = self.lower_expr(&args[0])?;
+                if self.values.get(&value).copied() != Some(ValueType::Ref(layout)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("crypto byte buffer representation"));
+                }
+                value
+            } else {
+                self.lower_string_argument(&args[0])?
+            };
             let input = self.clone_reference_token(value)?;
             (input, self.host_imports.sha256, 64)
         } else {

@@ -363,6 +363,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "console_print_at" (func $console_print_at_host (param externref i32 i32 i32 i32 i32)))
   (import "witchy" "build_out_write_at" (func $build_out_write_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "crypto_ed25519_verify_slices" (func $crypto_ed25519_verify_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
+  (import "witchy" "crypto_rsa_pkcs1_sha256_verify_slices" (func $crypto_rsa_pkcs1_sha256_verify_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
   (import "witchy" "crypto_sha256_slices" (func $crypto_sha256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_rune_hash_slices" (func $crypto_rune_hash_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "dir_is_dir_at" (func $dir_is_dir_at_host (param externref i32 i32) (result i32)))
@@ -545,6 +546,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "crypto.__rsa_pkcs1_sha256_verify_status"
         | "crypto.__ed25519_verify_status"
         | "crypto_ed25519_verify_slices"
+        | "crypto_rsa_pkcs1_sha256_verify_slices"
         | "crypto_sha256_slices"
         | "crypto_rune_hash_slices"
         | "crypto.__shake128"

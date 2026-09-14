@@ -2,8 +2,25 @@
 use super::*;
 
 pub const CRYPTO_ED25519_VERIFY_IMPORT: &str = "crypto_ed25519_verify_slices";
+pub const CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT: &str = "crypto_rsa_pkcs1_sha256_verify_slices";
 
 impl CanonicalAbiCatalog {
+    /// RSA verification receives three initialized read-only UTF-8 slices, not
+    /// legacy header addresses. Its status result carries no memory authority.
+    pub fn with_rsa_pkcs1_sha256_verify_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy::{I32, I64};
+        let read = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_prelude_import(
+            CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT, &[I32; 6], &[I64], signature,
+            vec![read; 3], vec![HostResultRole::Value(ValueType::Int)], HostMutation::ReadOnly,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
+
     pub fn with_ed25519_verify_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
         use crate::wir_prelude::WasmTy::{I32, I64};
         let read = HostParameterRole::Buffer {
@@ -23,6 +40,39 @@ impl CanonicalAbiCatalog {
 mod tests {
     use super::*;
     use crate::wir_prelude::{abi_import_info, AbiImportClass, WasmTy::{I32, I64}};
+
+    #[test]
+    fn crypto_rsa_catalog_requires_three_initialized_read_slices() {
+        let layout = LayoutId::from_bytes([55; 32]);
+        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
+            .with_rsa_pkcs1_sha256_verify_import(FunctionSignatureId::new(0), layout).unwrap();
+        let imports = catalog.imports();
+        assert_eq!(imports.len(), 1);
+        let import = &imports[0];
+        assert_eq!(import.name, CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT);
+        assert_eq!(import.parameter_roles, vec![HostParameterRole::Buffer {
+            value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
+        }; 3]);
+        assert_eq!(import.result_roles, vec![HostResultRole::Value(ValueType::Int)]);
+        assert_eq!(import.mutation, HostMutation::ReadOnly);
+        assert_eq!(import.reentrancy, HostReentrancy::Forbidden);
+        let info = abi_import_info(import.name.as_str()).unwrap();
+        assert_eq!(info.class, AbiImportClass::PureInfrastructure);
+        assert!(info.authorities.is_empty());
+        assert!(!info.browser);
+    }
+
+    #[test]
+    fn crypto_rsa_catalog_refuses_legacy_and_result_carrier_shapes() {
+        for (name, parameters, results) in [
+            (CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT, vec![I32; 3], vec![I64]),
+            (CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT, vec![I32; 6], vec![I32]),
+            (witchy_syntax::intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, vec![I32; 6], vec![I64]),
+        ] {
+            assert!(authenticated_prelude_import(name, &parameters, &results,
+                FunctionSignatureId::new(0), vec![], vec![], HostMutation::ReadOnly).is_err());
+        }
+    }
 
     #[test]
     fn crypto_ed25519_catalog_requires_three_initialized_read_slices() {

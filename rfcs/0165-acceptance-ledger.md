@@ -1974,3 +1974,49 @@ test(=pm_coven_lifecycle::witchy_pm_add_resolves_and_fetches_from_coven)`.
 Log: `/private/tmp/witchy-enum-equality-integrated-4.log`.
 No package-manager success, fresh census, optimizer assurance, or compiler-wide
 memory-safety completion is claimed. No deferred test was removed.
+
+### 2026-09-14: bounded RSA verification and binary SHA256
+
+The nullary-enum comparison slice landed at `e06774f11299f4fbb495ddde8d49e27b10bbcfe9`
+(queue change `mq-5a40d9ab30289acbab7be817209191fc2ec60837`, merged
+`2026-09-14T12:29:03Z`). Its coordinator gate was green with zero retries.
+
+The next Coven-reachable crypto slice adds the authority-free
+`crypto_rsa_pkcs1_sha256_verify_slices` import: three initialized, bounded UTF-8
+read slices, six physical i32 parameters, and one i64 status. All native ranges
+and UTF-8 inputs are checked before the existing provider can short-circuit on
+malformed key material. The independent oracle implements its own hex/DER/status
+semantics. Earlier arguments are snapshotted before later var writeback.
+`crypto.sha256_bytes` reuses the checked SHA256 byte-slice ABI without decoding
+binary input as text. No checker rule, raw fallback, or capability authority was
+relaxed. The generated ABI catalog includes the new bounded import.
+
+Focused evidence (absolute warmed target
+`/private/tmp/witchy-rfc0165-net-half-close-target`):
+- Nextest `86837272-b23e-46e8-bb97-a8ddb49abcf2`: 53/53 passed, zero retries,
+  6.669 seconds of tests. Log: `/private/tmp/witchy-coven-rsa-focused.log`.
+- Selectors: `test(canonical_crypto_) | test(crypto_rsa_) | test(rsa_slices_) |
+  test(canonical_ed25519_) | test(crypto_ed25519_) | test(crypto_hash_) |
+  test(enum_equality_) | test(rfc0165_range_bounds::) |
+  test(checked_entry_scope_) | binary_id(=witchy-wir::rfc0165_route_gate)`.
+- Valid and malformed RSA signatures, argument mutation, and raw SHA256 bytes
+  containing NUL and invalid UTF-8 agree across source interpreter, independent
+  canonical oracle, and admitted Wasm. Successful source probes report no leaked
+  canonical objects. Native/oracle negatives cover transport bounds, UTF-8,
+  initialization, status precedence, and arithmetic versus bounds refusal.
+- Existing CLI binary: `witchy parity examples/hello/src/hello.witchy`,
+  `witchy parity examples/wrap/src/wrap.witchy`, and
+  `witchy parity examples/jq/src/jq.witchy` agree at 3/5/7 output lines.
+  Log: `/private/tmp/witchy-coven-rsa-compact-parity.log`.
+- Independent review found no production defect; its test-only overflow-coverage
+  finding was corrected and reviewed before submission.
+
+The real package-manager lifecycle is NOT yet green. Run
+`cargo nextest run` with the same warmed target and
+`binary_id(=witchy::e2e) &
+ test(=pm_coven_lifecycle::witchy_pm_add_resolves_and_fetches_from_coven)`;
+nextest run `f46af213-b485-4607-9ca8-a4bb476918d5` reached the next refusal:
+`MissingBinding("compiler.doc")` before Coven bound its listening socket.
+Log: `/private/tmp/witchy-coven-rsa-integrated-3.log`.
+No fresh census, complete workflow, optimizer assurance, or compiler-wide memory
+safety claim follows from this focused slice. Landing of this slice is pending.

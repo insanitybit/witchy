@@ -69,6 +69,7 @@ pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()>
 /// Register authority-free crypto operations.
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "crypto_ed25519_verify_slices", host_ed25519_verify_slices)?;
+    linker.func_wrap("witchy", "crypto_rsa_pkcs1_sha256_verify_slices", host_rsa_pkcs1_sha256_verify_slices)?;
     linker.func_wrap("witchy", "crypto_sha256_slices", host_sha256_slices)?;
     linker.func_wrap("witchy", "crypto_rune_hash_slices", host_rune_hash_slices)?;
     linker.func_wrap(
@@ -192,6 +193,43 @@ mod slices_tests;
 #[cfg(test)]
 #[path = "crypto_hash_slices_tests.rs"]
 mod hash_slices_tests;
+
+#[cfg(test)]
+#[path = "crypto_rsa_slices_tests.rs"]
+mod rsa_slices_tests;
+
+/// Authority-free RSA verification over three initialized read slices. Validate
+/// every range before decoding, and every string before the native provider can
+/// short-circuit on a malformed public key. No guest writes or retained state.
+fn host_rsa_pkcs1_sha256_verify_slices(
+    mut caller: Caller<'_, VmState>,
+    pk_ptr: i32, pk_len: i32,
+    msg_ptr: i32, msg_len: i32,
+    sig_ptr: i32, sig_len: i32,
+) -> Result<i64> {
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let range = |ptr: i32, len: i32| {
+        let start = ptr as u32 as usize;
+        start.checked_add(len as u32 as usize)
+            .filter(|end| *end <= data.len())
+            .map(|end| start..end)
+            .ok_or_else(|| Error::msg("RSA input slice lies outside guest memory"))
+    };
+    let ranges = [range(pk_ptr, pk_len)?, range(msg_ptr, msg_len)?, range(sig_ptr, sig_len)?];
+    let args = ranges.into_iter().map(|range| {
+        std::str::from_utf8(&data[range])
+            .map(|text| Value::Str(text.to_owned()))
+            .map_err(|_| Error::msg("RSA input slice is not valid UTF-8"))
+    }).collect::<Result<Vec<_>>>()?;
+    let native = intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS;
+    let provider = crate::native::lookup(native)
+        .ok_or_else(|| Error::msg(format!("{native} is not registered")))?;
+    match provider(&args).map_err(|error| Error::msg(error.message))? {
+        Value::Int(status) => Ok(status),
+        _ => Err(Error::msg(format!("{native} did not return an Int"))),
+    }
+}
 
 fn host_sha256_slices(caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32) -> Result<i32> {
     hash_slices(caller, input, len, output, capacity, HashSlices::Sha256)

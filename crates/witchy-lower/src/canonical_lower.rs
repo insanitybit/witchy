@@ -905,6 +905,7 @@ if capability_imports.contains("build_out_write_at") {
             // RFC-0165 Net import registration (Net track).
             exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
             ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
+            rsa_pkcs1_sha256_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT).map(|import| import.id),
             sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
             rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
             net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
@@ -13993,6 +13994,7 @@ struct HostImports {
     net: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     exec: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     ed25519_verify: Option<witchy_wir::canonical_safewir::ImportId>,
+    rsa_pkcs1_sha256_verify: Option<witchy_wir::canonical_safewir::ImportId>,
     sha256: Option<witchy_wir::canonical_safewir::ImportId>,
     rune_hash: Option<witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
