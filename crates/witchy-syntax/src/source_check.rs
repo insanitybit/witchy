@@ -568,6 +568,7 @@ mod tests {
             &std::collections::HashSet::new(),
             "main",
             crate::linker::LinkMode::Production,
+            true,
         )
         .expect_err("expanded source must re-enter the generator contract");
         assert_eq!(
@@ -640,6 +641,7 @@ mod tests {
             &std::collections::HashSet::new(),
             "main",
             crate::linker::LinkMode::Production,
+            true,
         )
         .expect("linked source resolves");
         let resolved = &proof.modules()[0].1;
