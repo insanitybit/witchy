@@ -1924,3 +1924,53 @@ on two output lines, so Bytes comparison is not being changed speculatively.
 Diagnostic log: `/private/tmp/witchy-dir-storage-next-blocker.log`.
 No deferred test was removed, no broad census was rerun, and neither the whole
 package-manager workflow nor compiler-wide memory safety is established here.
+
+### Registry and directory-storage landings (2026-09-14)
+
+Registry integration, including its observer/scope/nullable-capability gate
+repairs, merged at `2026-09-14T11:24:26Z` as
+`1c0520449548a3f353b474f1aeb912a24c6f3cef` (502-second gate, zero flaky retries).
+Directory storage merged at `2026-09-14T11:33:06Z` as
+`9bb3b4faa6c51e8669fba756292da10d57a73864` (443-second gate, zero flaky retries).
+These are terminal coordinator events, not inferred from branch cleanliness.
+
+### Payload-free enum equality (2026-09-14)
+
+The next Coven refusal was isolated to
+`coven_store.latest_released_footprint`: comparing `state_of(rec.state)` with
+`Released` reached generic reference comparison. Canonical lowering now uses
+checked field-zero discriminant loads for Eq/NotEq only when the operand
+identities resolve and agree and their source-derived shape is a non-packed,
+payload-free tagged enum with exactly one Int field. It snapshots the left
+scalar tag before evaluating the right expression. It does not compare pointer
+addresses, access inactive payloads, admit opaque owners, or relax validation.
+Existing debug-mode refusals now include the function and comparison types.
+
+Final focused evidence: 10/10 passed, no retries, nextest run
+`4e0d3503-6340-47b3-92d8-afcf63eaaa8c`, 1.683 seconds after a 4.05-second build.
+The shard includes all enum-pair comparisons, RHS var writeback and single
+ordered evaluation, payload/record sensitivity, custom PartialEq overriding
+discriminant equality, range-bound regressions, and retained-source scope.
+Accepted enum probes agree between source interpreter, canonical oracle and
+admitted Wasm, with zero successful-run heap leaks on the latter two.
+Command: `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run
+-p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower
+--features native --lib --bin witchy --test misc --test e2e --test codegen
+--test cli_subcommands --test rfc0165_route_gate --ignore-default-filter
+--profile ci --retries 0 -E 'test(enum_equality_) |
+test(rfc0165_range_bounds::) | test(checked_entry_scope_)'
+--test-threads 2 --no-fail-fast`.
+Log: `/private/tmp/witchy-enum-equality-final-focused.log`.
+`hello`, `wrap`, and `jq` still agree (3/5/7 output lines), recorded in
+`/private/tmp/witchy-enum-equality-compact-parity.log`.
+
+The real package-manager lifecycle probe gets past enum comparison and now
+refuses before Coven binds at
+`MissingBinding("crypto.__rsa_pkcs1_sha256_verify_status")`.
+Reproducer: the preceding nextest command selecting
+`binary_id(=witchy::e2e) &
+test(=pm_coven_lifecycle::witchy_pm_add_resolves_and_fetches_from_coven)`.
+Log: `/private/tmp/witchy-enum-equality-integrated-4.log`.
+No package-manager success, fresh census, optimizer assurance, or compiler-wide
+memory-safety completion is claimed. No deferred test was removed.

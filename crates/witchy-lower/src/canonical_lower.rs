@@ -1734,7 +1734,11 @@ fn lower_function(
     }
 
     let ordinary_results = &signature.results[..signature.results.len() - write_back_count(signature)];
-    lowerer.lower_body(&body.stmts, ordinary_results)?;
+    lowerer.lower_body(&body.stmts, ordinary_results).inspect_err(|error| {
+        if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+            eprintln!("canonical refused body `{}`: {error:?}", function.name);
+        }
+    })?;
     let blocks = lowerer
         .blocks
         .into_iter()
@@ -9831,6 +9835,40 @@ impl FunctionLowerer<'_> {
         left: &Expr,
         right: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if matches!(operator, BinOp::Eq | BinOp::NotEq) {
+            let left_source = self.expression_type(left)?;
+            let right_source = self.expression_type(right)?;
+            let same_identity = concrete_aggregate_identity(&left_source, self.definitions)
+                .zip(concrete_aggregate_identity(&right_source, self.definitions))
+                .is_some_and(|(left, right)| left == right);
+            let nullary_enum = same_identity
+                && scalar_aggregate_shape(&left_source, self.definitions).is_some_and(|shape| {
+                    shape.tagged && !shape.packed && !shape.variants.is_empty()
+                        && shape.variants.iter().all(|variant| variant.arity == 0)
+                        && shape.fields == [Type::Named("Int".into(), Vec::new())]
+                });
+            if nullary_enum {
+                let left = self.lower_expr(left)?;
+                let left_type = self.values[&left];
+                if !matches!(left_type, ValueType::Ref(_)) {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("nullary enum representation"));
+                }
+                // Copy the discriminator before RHS evaluation: a var call on
+                // the right may replace or retire the left source binding.
+                let left_tag = self.load_record_field(left, 0, ValueType::Int)?;
+                let right = self.lower_expr(right)?;
+                if self.values[&right] != left_type {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("nullary enum representation"));
+                }
+                let right_tag = self.load_record_field(right, 0, ValueType::Int)?;
+                let comparison = if operator == BinOp::Eq {
+                    ComparisonOperator::Equal
+                } else {
+                    ComparisonOperator::NotEqual
+                };
+                return self.push_compare(comparison, left_tag, right_tag);
+            }
+        }
         let string_operands = matches!(
             self.expression_type(left)?.unqualified(),
             Type::Named(name, arguments) if name == "String" && arguments.is_empty()
@@ -9879,6 +9917,9 @@ impl FunctionLowerer<'_> {
                 };
             }
             if !matches!(left_type, ValueType::Int | ValueType::Bool | ValueType::Float) {
+                if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+                    eprintln!("canonical comparison refused: {left_type:?} {operator:?} {right_type:?}");
+                }
                 return Err(CanonicalLoweringError::UnsupportedExpression("comparison type"));
             }
             if left_type == ValueType::Bool
