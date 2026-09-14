@@ -173,6 +173,15 @@ def profile(run, top, budget, exempt=None):
     print(f"longest    {tests[0][0]:.0f}s single test")
     print()
 
+    # Nextest's `(N/total)` progress count is completion order. These are the
+    # tests that actually finish nearest the stage boundary; their durations
+    # must not be summed as a gate duration because other tests overlap them.
+    print(f"--- final completion tail ({min(top, len(tests))} tests) ---")
+    completion = run["tests"]
+    for offset, (duration, binary, name) in enumerate(reversed(completion[-top:]), 1):
+        print(f"  {offset:2d} from end  {duration:7.1f}s  {binary:26} {name[:64]}")
+    print()
+
     # The tail is what matters: cutting the top few tests moves the whole gate.
     print(f"--- {top} costliest tests ---")
     for duration, binary, name in tests[:top]:

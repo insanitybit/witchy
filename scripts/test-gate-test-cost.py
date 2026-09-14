@@ -47,6 +47,8 @@ def main():
         assert "execution  102s wall" in output, output
         assert "test time  102s summed per-test wall (overlaps; not CPU)" in output, output
         assert "overlap    1.0x summed-test-time / execution wall" in output, output
+        assert "--- final completion tail (2 tests) ---" in output, output
+        assert "1 from end" in output and "fixture::bin" in output and "slow" in output, output
         assert "90.0s" not in output, output
         assert "50s summed test time above budget" in output, output
         assert "CPU above budget" not in output, output
