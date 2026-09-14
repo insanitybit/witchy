@@ -663,6 +663,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("admitted_aggregates_render_structurally_as_the_interpreter_prints_them"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_owner_adapters::server_pool_oracle::"), "{mixed:?}");
     assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
+    assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
     assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
 }
@@ -676,6 +677,7 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
         "crates/witchy-wir/src/canonical_safewir.rs",
         "crates/witchy-runtime/src/runtime/host/console.rs",
         "src/commands/execution.rs",
+        "src/commands/embedded_pm.rs",
         "tests/misc/rfc0165_oracle.rs",
         "spec/wasm-abi.md",
         "rfcs/0165-rule-manifest.md",
