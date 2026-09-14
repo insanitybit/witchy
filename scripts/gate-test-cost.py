@@ -71,7 +71,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # the later PASS would double-count one attempt.
 RESULT = re.compile(
     r"^\s*(PASS|FAIL|LEAK|TRY \d+ FAIL)\s*\[\s*([\d.]+)s\]"
-    r"\s*\(?\s*[\d/ ]*\)?\s*(\S+)\s+(\S+)",
+    r"\s*\(?\s*[^)]*\)?\s*(\S+)\s+(\S+)",
 )
 SUMMARY = re.compile(r"Summary \[\s*([\d.]+)s\]\s*(\d+) tests? run")
 ALL_BINARIES_STARTED = re.compile(
@@ -88,6 +88,7 @@ def parse(path):
         return None
     segments = []
     tests = []
+    failures = []
     current_stage = None
     for line in text.splitlines():
         stage = STAGE.match(line)
@@ -95,14 +96,37 @@ def parse(path):
             current_stage = stage.group(1)
         result = RESULT.match(line)
         if result:
-            tests.append((float(result.group(2)), result.group(3), result.group(4)))
+            duration, binary, name = float(result.group(2)), result.group(3), result.group(4)
+            tests.append((duration, binary, name))
+            if result.group(1) != "PASS":
+                failures.append((result.group(1), duration, binary, name))
         summary = SUMMARY.search(line)
         if summary:
             if tests:
                 segments.append((float(summary.group(1)), int(summary.group(2)), tests, current_stage))
             tests = []
     if not segments:
-        return None
+        # A red nextest invocation may stop before printing Summary. Keep it
+        # available for failure-to-probe analysis, but mark its wall time as
+        # unavailable rather than inventing a gate duration.
+        if not failures:
+            return None
+        return {
+            "path": path,
+            "mtime": os.path.getmtime(path),
+            "wall": 0.0,
+            "count": len(tests),
+            "binaries_started": None,
+            "all_binaries_started_stage_s": None,
+            "tests": tests,
+            "failures": failures,
+            "segment": 1,
+            "segments": 0,
+            "scoped": "check.sh: serialized nextest selection:" in text,
+            "stage": current_stage,
+            "workspace": False,
+            "incomplete": True,
+        }
     selected_index, selected = max(enumerate(segments), key=lambda pair: pair[1][0])
     wall, count, tests, selected_stage = selected
     listed = ALL_BINARIES_STARTED.search(text) if selected_index == 0 else None
@@ -114,6 +138,7 @@ def parse(path):
         "binaries_started": int(listed.group(1)) if listed else None,
         "all_binaries_started_stage_s": int(listed.group(2)) if listed else None,
         "tests": tests,
+        "failures": failures,
         "segment": selected_index + 1,
         "segments": len(segments),
         "scoped": "check.sh: serialized nextest selection:" in text,
@@ -122,6 +147,7 @@ def parse(path):
             selected_stage == "tests (workspace)"
             and "check.sh: serialized nextest selection:" not in text
         ) or (selected_stage is None and "check.sh: serialized nextest selection:" not in text),
+        "incomplete": False,
     }
 
 
@@ -170,9 +196,14 @@ def profile(run, top, budget, exempt=None):
         )
     print(f"execution  {run['wall']:.0f}s wall")
     print(f"test time  {test_seconds:.0f}s summed per-test wall (overlaps; not CPU)")
-    print(f"overlap    {test_seconds / run['wall']:.1f}x summed-test-time / execution wall")
+    if run["wall"]:
+        print(f"overlap    {test_seconds / run['wall']:.1f}x summed-test-time / execution wall")
+    else:
+        print("overlap    unavailable (incomplete failed invocation)")
     print(f"longest    {tests[0][0]:.0f}s single test")
     print()
+
+    print_failures(run)
 
     # Nextest's `(N/total)` progress count is completion order. These are the
     # tests that actually finish nearest the stage boundary; their durations
@@ -222,6 +253,26 @@ def profile(run, top, budget, exempt=None):
         for duration, binary, name in over:
             print(f"  {duration:7.1f}s  {binary:26} {name[:64]}")
     return over
+
+
+def print_failures(run):
+    if not run["failures"]:
+        print("no failed tests recorded in this log")
+        return
+    print("--- failed tests and focused reproduction selectors ---")
+    seen = set()
+    for status, duration, binary, name in run["failures"]:
+        if (binary, name) in seen:
+            continue
+        seen.add((binary, name))
+        # binary_id keeps the selector tied to the observed test binary;
+        # test(=...) avoids rerunning its neighboring module cases.
+        print(f"  {status:10} {duration:7.1f}s  {binary:26} {name}")
+        print(
+            "    cargo nextest run -E "
+            f"'binary_id(/^{binary}$/) and test(={name})'"
+        )
+    print()
 
 
 def trend(runs):
@@ -291,6 +342,8 @@ def main():
                     help="ignore path-scoped nextest selections and mine full workspace stages")
     ap.add_argument("--log", type=str, default="",
                     help="inspect exactly one existing gate log instead of selecting the newest")
+    ap.add_argument("--failures", action="store_true",
+                    help="list failed tests and focused selectors from the selected log")
     ap.add_argument("--budget", type=float, default=0.0,
                     help="list every test slower than this many seconds")
     ap.add_argument("--assert-budget", type=float, default=0.0,
@@ -321,6 +374,15 @@ def main():
     if not runs:
         print("no gate log with a completed test stage found", file=sys.stderr)
         return 1
+    if runs[-1].get("incomplete") and not args.failures:
+        print("selected log has no completed test stage; use --failures to inspect its failures", file=sys.stderr)
+        return 1
+    if args.failures:
+        print(f"gate log   {os.path.basename(runs[-1]['path'])}")
+        if runs[-1].get("incomplete"):
+            print("note       failed invocation ended before a nextest Summary line")
+        print_failures(runs[-1])
+        return 0
     budget = args.assert_budget or args.budget
     exempt = load_exempt(args.exempt_file)
     over = profile(runs[-1], args.top, budget, exempt)

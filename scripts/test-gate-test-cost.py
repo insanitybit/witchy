@@ -15,7 +15,7 @@ def main():
         log = Path(directory) / "fixture.log"
         log.write_text(
             """\
-        PASS [   2.000s] (1/2) fixture::bin first
+        TRY 1 FAIL [   2.000s] (1/2) fixture::bin first
 [1] tests list progress: 2 test binaries started (stage+90s)
         SLOW [  90.000s] (───────) fixture::bin slow
         PASS [ 100.000s] (2/2) fixture::bin slow
@@ -50,6 +50,8 @@ def main():
         assert "--- final completion tail (2 tests) ---" in output, output
         assert "1 from end" in output and "fixture::bin" in output and "slow" in output, output
         assert "90.0s" not in output, output
+        assert "failed tests and focused reproduction selectors" in output, output
+        assert "binary_id(/^fixture::bin$/) and test(=first)" in output, output
         assert "50s summed test time above budget" in output, output
         assert "CPU above budget" not in output, output
 
