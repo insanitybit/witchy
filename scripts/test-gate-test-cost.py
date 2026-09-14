@@ -51,6 +51,53 @@ def main():
         assert "50s summed test time above budget" in output, output
         assert "CPU above budget" not in output, output
 
+        scoped = Path(directory) / "newer-scoped.log"
+        scoped.write_text(
+            """\
+check.sh: serialized nextest selection: --test merge_queue
+==> [1] tests (workspace) (t+0s)
+        PASS [   1.000s] (1/1) fixture::scoped tiny
+     Summary [   1.000s] 1 test run: 1 passed, 0 skipped
+"""
+        )
+        workspace_mtime = log.stat().st_mtime
+        os.utime(scoped, (workspace_mtime + 10, workspace_mtime + 10))
+
+        newest = subprocess.run(
+            ["python3", str(ROOT / "scripts/gate-test-cost.py"), "--top", "1"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert "gate log   newer-scoped.log" in newest, newest
+
+        preflight = Path(directory) / "newest-preflight.log"
+        preflight.write_text(
+            """\
+==> [1] preflight (tests that red the last attempt) (t+0s)
+        PASS [   0.500s] (1/1) fixture::preflight exact_red
+     Summary [   0.500s] 1 test run: 1 passed, 0 skipped
+"""
+        )
+        os.utime(preflight, (workspace_mtime + 20, workspace_mtime + 20))
+
+        workspace = subprocess.run(
+            [
+                "python3",
+                str(ROOT / "scripts/gate-test-cost.py"),
+                "--workspace-only",
+                "--top",
+                "1",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert "gate log   fixture.log" in workspace, workspace
+        assert "execution  102s wall" in workspace, workspace
+
 
 if __name__ == "__main__":
     main()

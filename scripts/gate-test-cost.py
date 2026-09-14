@@ -11,6 +11,7 @@ Usage:
     scripts/gate-test-cost.py                  # newest run: cost profile
     scripts/gate-test-cost.py --top 40         # deeper tail
     scripts/gate-test-cost.py --trend          # week-over-week regression
+    scripts/gate-test-cost.py --workspace-only # ignore scoped landing shards
     scripts/gate-test-cost.py --budget 5.0     # list tests over a budget
     scripts/gate-test-cost.py --assert-budget 2 # fail if any ordinary test exceeds 2s
     scripts/gate-test-cost.py --assert-budget 2 --exempt-file scripts/nightly-deferred-tests.txt
@@ -75,6 +76,7 @@ SUMMARY = re.compile(r"Summary \[\s*([\d.]+)s\]\s*(\d+) tests? run")
 ALL_BINARIES_STARTED = re.compile(
     r"list progress: (\d+) test binaries started \(stage\+(\d+)s\)"
 )
+STAGE = re.compile(r"^==> \[\d+\] (.+?)(?: \(t\+\d+s\))?$")
 
 
 def parse(path):
@@ -85,19 +87,23 @@ def parse(path):
         return None
     segments = []
     tests = []
+    current_stage = None
     for line in text.splitlines():
+        stage = STAGE.match(line)
+        if stage:
+            current_stage = stage.group(1)
         result = RESULT.match(line)
         if result:
             tests.append((float(result.group(2)), result.group(3), result.group(4)))
         summary = SUMMARY.search(line)
         if summary:
             if tests:
-                segments.append((float(summary.group(1)), int(summary.group(2)), tests))
+                segments.append((float(summary.group(1)), int(summary.group(2)), tests, current_stage))
             tests = []
     if not segments:
         return None
     selected_index, selected = max(enumerate(segments), key=lambda pair: pair[1][0])
-    wall, count, tests = selected
+    wall, count, tests, selected_stage = selected
     listed = ALL_BINARIES_STARTED.search(text) if selected_index == 0 else None
     return {
         "path": path,
@@ -109,17 +115,23 @@ def parse(path):
         "tests": tests,
         "segment": selected_index + 1,
         "segments": len(segments),
+        "scoped": "check.sh: serialized nextest selection:" in text,
+        "stage": selected_stage,
+        "workspace": (
+            selected_stage == "tests (workspace)"
+            and "check.sh: serialized nextest selection:" not in text
+        ) or (selected_stage is None and "check.sh: serialized nextest selection:" not in text),
     }
 
 
-def load(limit):
+def load(limit, workspace_only=False):
     logs = sorted(glob.glob(os.path.join(LOG_DIR, "*.log")), key=os.path.getmtime)
     runs = []
     for path in reversed(logs):
         if len(runs) >= limit:
             break
         run = parse(path)
-        if run and run["tests"]:
+        if run and run["tests"] and (not workspace_only or run["workspace"]):
             runs.append(run)
     runs.sort(key=lambda r: r["mtime"])
     return runs
@@ -145,6 +157,8 @@ def profile(run, top, budget, exempt=None):
     when = datetime.datetime.fromtimestamp(run["mtime"]).strftime("%Y-%m-%d %H:%M")
     print(f"gate log   {os.path.basename(run['path'])}")
     print(f"when       {when}")
+    if run["stage"]:
+        print(f"stage      {run['stage']}")
     if run["segments"] > 1:
         print(f"nextest    {run['segment']}/{run['segments']} slowest completed invocation")
     print(f"tests      {run['count']}")
@@ -263,6 +277,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--top", type=int, default=25, help="how many costliest tests to list")
     ap.add_argument("--trend", action="store_true", help="week-over-week suite cost")
+    ap.add_argument("--workspace-only", action="store_true",
+                    help="ignore path-scoped nextest selections and mine full workspace stages")
     ap.add_argument("--budget", type=float, default=0.0,
                     help="list every test slower than this many seconds")
     ap.add_argument("--assert-budget", type=float, default=0.0,
@@ -279,10 +295,10 @@ def main():
         return 1
 
     if args.trend:
-        trend(load(args.runs))
+        trend(load(args.runs, args.workspace_only))
         return 0
 
-    runs = load(1)
+    runs = load(1, args.workspace_only)
     if not runs:
         print("no gate log with a completed test stage found", file=sys.stderr)
         return 1
