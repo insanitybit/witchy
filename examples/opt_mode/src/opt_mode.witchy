@@ -24,9 +24,10 @@ fn main(console: Console):
     console.print("squares: ${xs}")
     console.print("sum:     ${sum(xs)}")
 
-    // This owner-threaded recursive state machine is checked as an RFC-0089
-    // functional-in-place kernel. Ten thousand transitions add no allocator,
-    // reclaimer, arena-rewind, or control-stack work.
+    // This owner-threaded recursive state machine transfers one owned value
+    // through a proper tail call. Constant-stack execution is language
+    // semantics; allocation-free RFC-0089 `own unique` kernels remain deferred
+    // until canonical SafeWIR can authenticate their complete resource contract.
     let scanned = scan(ScanState(0, 0), 10000)
     console.print("scanned: ${scanned.offset}, checksum: ${scanned.checksum}")
 
@@ -43,7 +44,7 @@ type ScanState:
     offset: Int
     checksum: Int
 
-fn scan(own state: unique ScanState, remaining: Int) -> unique ScanState:
+fn scan(own state: ScanState, remaining: Int) -> ScanState:
     if remaining == 0:
         return state
     state.checksum = (state.checksum * 33 + remaining) % 65521

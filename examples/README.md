@@ -113,7 +113,7 @@ maturity labels in [Witchy product status](../PRODUCT-STATUS.md).
 
 | Example | Shows |
 |---|---|
-| [opt_mode](opt_mode/) | `mode opt`: explicit ownership, checked in-place accumulation, and an allocation-free constant-stack functional state kernel |
+| [opt_mode](opt_mode/) | `mode opt`: explicit ownership, checked in-place accumulation, and owner-threaded constant-stack state recursion |
 | [projects/opt_pipeline](projects/opt_pipeline/) | `mode opt` is **transitive** — an `opt` module may only import other `opt` modules (std is exempt), so the discipline covers the whole program |
 
 ### Algorithms & programs

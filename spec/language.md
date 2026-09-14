@@ -735,6 +735,14 @@ contract, not a semantic restriction in normal mode and not a promise for every
 function returning `unique`. No `fip` keyword or attribute exists; the ownership
 signature, direct recursion, and `mode opt` state the contract.
 
+The canonical SafeWIR route currently defers this stronger `own unique`
+resource contract and rejects it rather than erasing the qualifier. Ordinary
+`own T -> T` remains supported: it transfers ownership through the call, and a
+proper tail edge forwards that owned value with no residual caller cleanup. An
+outer `var unique T` parameter remains supported only through its separately
+authenticated write-back convention. These supported forms do not imply the
+allocation-free RFC-0089 theorem.
+
 **Parameter conventions** (Hylo-style value semantics):
 
 | Convention | Meaning |

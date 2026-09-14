@@ -52,7 +52,7 @@ there is no interval in which a guarantee is accepted and ignored.
 | `let`, `var`, `own` | Preserve source behavior; lower to an owned reference ABI |
 | Normal calling `opt` | Permit checked boundary preparation; no lifetime syntax required in normal code |
 | Read-only string/collection views | Managed owner reference plus validated projection/range; no dangling interior pointer |
-| Source `unique` | Withdraw from the initial supported surface; update stdlib declarations, diagnostics, docs, and fixtures explicitly |
+| Source `unique` | Retain only the authenticated outer `var unique` write-back convention; defer `own unique`, unique results, locals, and nested qualifiers with a fail-closed diagnostic |
 | Internal uniqueness | Retain for safe runtime in-place mutation and later static optimization |
 | Escaping mutable references | Deferred; reject rather than replace write-through semantics with copying |
 | Region-backed public interfaces | Deferred; do not pretend an RC retain pins rewound region storage |

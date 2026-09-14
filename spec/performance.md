@@ -152,6 +152,13 @@ returns, calls to helpers, effects, suspension, indexed input, and region/loop
 machinery. These restrictions keep the theorem inspectable in generated WIR;
 normal mode remains copy-correct for programs outside the class.
 
+The canonical SafeWIR compiler currently rejects the `own unique T -> unique T`
+contract fail-closed. It supports ordinary owned proper-tail state transfer and
+the separately authenticated outer `var unique` write-back convention, but
+neither is evidence for this section's allocation-free resource theorem. The
+theorem remains a deferred optimization contract until canonical lowering and
+validation transport its full ownership envelope.
+
 ## Phase 0 - Measure first
 
 A `bench/` suite of paired programs (witchy / Go / C#) run via `hyperfine`,
