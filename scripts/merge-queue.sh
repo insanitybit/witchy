@@ -1600,6 +1600,36 @@ cmd_submit() {
             fi
         fi
     fi
+    # Clean linked worktrees can run the focused edit shard before admission,
+    # removing the most common path to a full-gate rediscovery. Never run this
+    # from a dirty checkout: the shared master checkout may contain another
+    # agent's compiler rewrite, and a dirty tree cannot mint an exact receipt.
+    # The ordinary warning remains for branch submissions made elsewhere or
+    # when the focused checks fail.
+    if [ -n "$tip_sha" ] && [ "$presubmit_sha_match" = "false" ] \
+        && [ "$submit_docs_safe" -eq 0 ] \
+        && [ "${MERGE_QUEUE_AUTO_PRESUBMIT:-1}" != "0" ]; then
+        local submit_current_branch=""
+        submit_current_branch="$(git -C "$here" branch --show-current 2>/dev/null || true)"
+        if [ "$submit_current_branch" = "$branch" ] \
+            && [ -x "$here/scripts/agent-check.sh" ] \
+            && git -C "$here" diff --quiet --ignore-submodules -- \
+            && git -C "$here" diff --cached --quiet --ignore-submodules --; then
+            note "no exact receipt for $branch@${tip_sha:0:9}; running focused pre-submit checks"
+            if "$here/scripts/agent-check.sh" edit; then
+                if [ -f "$receipt_file" ]; then
+                    presubmit_sha_match="true"
+                    presubmit_shard="$(jq -r '((.shards // [.shard]) | map(select(. != null)) | join(",")) // ""' \
+                        "$receipt_file" 2>/dev/null || true)"
+                    presubmit_at="$(jq -r '.at // ""' "$receipt_file" 2>/dev/null || true)"
+                    presubmit_edit_elapsed_s="$(jq -r '.durations_s.edit // ""' \
+                        "$receipt_file" 2>/dev/null || true)"
+                fi
+            else
+                note "focused pre-submit checks failed; preserving advisory submission behavior"
+            fi
+        fi
+    fi
     # RFC-0159 A. Actor identity. Recorded verbatim and never inferred; "unset"
     # is a first-class value so adoption is measurable rather than silently
     # defaulting to a wrong name. `by` stays $USER -- the machine account, not
