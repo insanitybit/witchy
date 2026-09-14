@@ -352,6 +352,17 @@ stage, so the recoverable saving is the avoided full-gate discovery delay when
 one of these semantic checks fails. The estimate excludes command startup and
 compile reuse; the full gate remains authoritative.
 
+**Post-route adoption boundary, 2026-09-14 12:36Z.** After the enum-equality
+route landed, the read-only report covered 146 submissions and 119 eligible
+submissions. Seventy-three eligible tips had exact receipts (61.3%). The
+linked-worktree cohort had 5 receipts among 7 eligible submissions (71.4%),
+but it still includes investigation-owned queue and documentation changes.
+Missing compiler-surface receipts remain concentrated in the historical
+`unknown/typeck,codegen,wasm-abi,docs` cohort (9 submissions). No new red gate
+was present after the compiler change landed green, so this boundary measures
+adoption rather than a new failure-driven saving. Gate policy and exclusions
+remain unchanged.
+
 **Evidence and reproduction of the analysis.** The source report is the local
 artifact `/private/tmp/witchy-development-latency-2026-09-12.md`, produced in
 Codex thread `01a09617-befb-7ad2-9ef1-e701722ee3a2`. These records are local and
