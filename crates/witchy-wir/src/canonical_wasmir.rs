@@ -10780,6 +10780,232 @@ mod tests {
         );
     }
 
+    fn checked_pointer_clone_range_execution() -> (ValidatedSafeWir, BTreeSet<usize>) {
+        let mut interner = LayoutInterner::new();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let child_list = interner.intern_packed_list(int, RcHeader::Required).unwrap();
+        let slot = interner
+            .intern_runtime_pointer_value_slot(child_list, PointerSlot::Owned)
+            .unwrap();
+        let list = interner.intern_packed_list(slot, RcHeader::Required).unwrap();
+        let LayoutSize::Dynamic { base: child_header, stride: child_stride } =
+            interner.get(child_list).unwrap().size()
+        else {
+            panic!("child list layout is dynamic")
+        };
+        let LayoutSize::Dynamic { base: list_header, stride: list_stride } =
+            interner.get(list).unwrap().size()
+        else {
+            panic!("list layout is dynamic")
+        };
+        let child_root = 24usize;
+        let source_root = child_root
+            + usize::try_from(child_header + child_stride + RC_PREFIX_BYTES).unwrap();
+        let destination_root = source_root
+            + usize::try_from(list_header + list_stride + RC_PREFIX_BYTES).unwrap();
+        let expected_reclaimed = [child_root, source_root, destination_root]
+            .into_iter()
+            .collect();
+        let zero = ValueId::new(0);
+        let one = ValueId::new(1);
+        let in_capacity = ValueId::new(2);
+        let child = ValueId::new(3);
+        let source = ValueId::new(4);
+        let destination = ValueId::new(5);
+        let loaded = ValueId::new(6);
+        let result = ValueId::new(7);
+        let element = ValueId::new(8);
+        let signature = scalar_signature_with(
+            FunctionSignatureId::new(166),
+            Vec::new(),
+            vec![ValueType::Size],
+        );
+        let validated = finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(166),
+            checked_source: CheckedSourceIdentity::from_digest([0xa6; 32]),
+            layouts: LayoutBundle::from_interner(&interner, [list]).unwrap(),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FunctionId::new(166),
+                signature: FunctionSignatureId::new(166),
+                entry: BlockId::new(166),
+                value_types: [
+                    (zero, ValueType::Size),
+                    (one, ValueType::Size),
+                    (in_capacity, ValueType::Bool),
+                    (child, ValueType::Ref(child_list)),
+                    (source, ValueType::Ref(list)),
+                    (destination, ValueType::Ref(list)),
+                    (loaded, ValueType::Ref(child_list)),
+                    (result, ValueType::Size),
+                    (element, ValueType::Int),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: BlockId::new(166),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstSize { destination: zero, value: 0 },
+                        Operation::ConstSize { destination: one, value: 1 },
+                        Operation::Compare {
+                            destination: in_capacity,
+                            operator: ComparisonOperator::LessUnsigned,
+                            left: zero,
+                            right: one,
+                        },
+                        Operation::Guard { condition: in_capacity, kind: GuardKind::Bounds },
+                        Operation::ConstInt { destination: element, value: 73 },
+                        Operation::Alloc {
+                            destination: child,
+                            layout: child_list,
+                            extent: Extent::Counted {
+                                header_bytes: child_header,
+                                count: zero,
+                                capacity: one,
+                                stride_bytes: child_stride,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Store {
+                            place: Place::projected(
+                                child,
+                                Projection::Element { index: zero },
+                                ValueType::Int,
+                                AccessMode::Write,
+                            ),
+                            value: element,
+                            transfer: StoreTransfer::CopyScalar,
+                        },
+                        Operation::UpdateCount { object: child, count: one },
+                        Operation::Alloc {
+                            destination: source,
+                            layout: list,
+                            extent: Extent::Counted {
+                                header_bytes: list_header,
+                                count: zero,
+                                capacity: one,
+                                stride_bytes: list_stride,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::Store {
+                            place: Place::projected(
+                                source,
+                                Projection::Element { index: zero },
+                                ValueType::Ref(child_list),
+                                AccessMode::Write,
+                            ),
+                            value: child,
+                            transfer: StoreTransfer::MoveUnique,
+                        },
+                        Operation::UpdateCount { object: source, count: one },
+                        Operation::Alloc {
+                            destination,
+                            layout: list,
+                            extent: Extent::Counted {
+                                header_bytes: list_header,
+                                count: zero,
+                                capacity: one,
+                                stride_bytes: list_stride,
+                            },
+                            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+                        },
+                        Operation::CloneRange {
+                            destination: Place::projected(
+                                destination,
+                                Projection::Slice { start: zero, length: one },
+                                ValueType::Ref(list),
+                                AccessMode::Write,
+                            ),
+                            source: Place::projected(
+                                source,
+                                Projection::Slice { start: zero, length: one },
+                                ValueType::Ref(list),
+                                AccessMode::Read,
+                            ),
+                            count: one,
+                        },
+                        Operation::UpdateCount { object: destination, count: one },
+                        Operation::DropRef { object: source },
+                        Operation::Load {
+                            destination: loaded,
+                            place: Place::projected(
+                                destination,
+                                Projection::Element { index: zero },
+                                ValueType::Ref(child_list),
+                                AccessMode::Read,
+                            ),
+                            transfer: LoadTransfer::CloneShared,
+                        },
+                        Operation::Load {
+                            destination: result,
+                            place: Place::projected(
+                                loaded,
+                                Projection::Header(crate::canonical_safewir::HeaderField::Length),
+                                ValueType::Size,
+                                AccessMode::Read,
+                            ),
+                            transfer: LoadTransfer::CopyScalar,
+                        },
+                        Operation::DropRef { object: loaded },
+                        Operation::DropRef { object: destination },
+                    ],
+                    terminator: Terminator::Return { values: vec![result] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }));
+        (validated, expected_reclaimed)
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn pointer_clone_range_retains_executes_and_recursively_releases() {
+        let (validated, expected_reclaimed) = checked_pointer_clone_range_execution();
+        let interpreted = crate::canonical_interpreter::interpret_program(
+            &validated,
+            FunctionId::new(166),
+            Vec::new(),
+            Default::default(),
+        )
+        .expect("pointer CloneRange executes in the independent interpreter");
+        assert_eq!(
+            interpreted.results,
+            vec![crate::canonical_interpreter::InterpreterValue::Size(1)]
+        );
+        assert_eq!(interpreted.leaked_objects, 0);
+
+        let artifact = admit_canonical(validated)
+            .expect("pointer CloneRange admits through exact-byte matching");
+        wasmparser::validate(artifact.wasm()).expect("admitted pointer CloneRange is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let run = instance
+            .get_typed_func::<(), i32>(&mut store, "f166")
+            .unwrap();
+        assert_eq!(run.call(&mut store, ()).unwrap(), 1);
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let mut free = instance
+            .get_global(&mut store, HEAP_FREE_EXPORT)
+            .unwrap()
+            .get(&mut store)
+            .i32()
+            .unwrap() as usize;
+        let mut reclaimed = BTreeSet::new();
+        while free != 0 {
+            assert!(reclaimed.insert(free), "free-list cycle or double release");
+            free = u32::from_le_bytes(memory.data(&store)[free..free + 4].try_into().unwrap()) as usize;
+        }
+        assert_eq!(
+            reclaimed, expected_reclaimed,
+            "child, source, and destination must each be reclaimed exactly once",
+        );
+    }
+
     #[test]
     fn malformed_clone_range_places_are_refused_by_canonical_backend() {
         let mut interner = LayoutInterner::new();

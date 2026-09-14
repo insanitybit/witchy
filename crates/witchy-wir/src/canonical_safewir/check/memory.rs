@@ -1327,7 +1327,11 @@ impl<'a> MemoryChecker<'a> {
 
         if self.value_type_for_layout(destination.element)?.is_memory_bearing() {
             self.require_source_range_complete(source)?;
-            let moved = self.require_initialized_range(source, destination.element)?;
+            let moved = self.require_initialized_range(
+                source,
+                destination.element,
+                "MoveRange(uninitialized-source)",
+            )?;
             self.require_destination_range_empty(destination)?;
             let source_object = source.object;
             let consumed = self.state.stored_objects.keys()
@@ -1430,6 +1434,7 @@ impl<'a> MemoryChecker<'a> {
         &self,
         range: CheckedRange,
         element: crate::layout::LayoutId,
+        operation: &'static str,
     ) -> Result<RangeState, InitialCheckError> {
         if let Some(state) = self.state.range_states.iter().find_map(|(identity, state)| {
             (self.same_allocation(range.object, identity.object)
@@ -1471,18 +1476,18 @@ impl<'a> MemoryChecker<'a> {
         if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
             let ranges = self.state.range_states.iter().filter(|(identity, _)| identity.object == range.object).collect::<Vec<_>>();
             let stored = self.state.stored_objects.keys().filter(|(object, _)| *object == range.object).collect::<Vec<_>>();
-            eprintln!("MoveRange(uninitialized-source) object={:?} start={:?} length={:?} object_state={:#?} ranges={ranges:#?} stored={stored:?}", range.object, range.start, range.length, self.state.objects.get(&range.object));
+            eprintln!("{operation} object={:?} start={:?} length={:?} object_state={:#?} ranges={ranges:#?} stored={stored:?}", range.object, range.start, range.length, self.state.objects.get(&range.object));
         }
         let Some(start) = self.state.constants.get(&range.start).copied() else {
-            return self.unsupported("MoveRange(uninitialized-source)");
+            return self.unsupported(operation);
         };
         let Some(length) = self.state.constants.get(&range.length).copied() else {
-            return self.unsupported("MoveRange(uninitialized-source)");
+            return self.unsupported(operation);
         };
         let pointee = self.owned_pointer_slot_pointee(element)?;
         let end = start.checked_add(length).ok_or(InitialCheckError::UnsupportedMemoryOperation {
             function: self.function.id,
-            operation: "MoveRange(uninitialized-source)",
+            operation,
         })?;
         let mut allocation_class = None;
         let mut ownership = Ownership::Unique;
@@ -1490,10 +1495,10 @@ impl<'a> MemoryChecker<'a> {
             // A slot fact may be keyed by an alias of this object (a clone
             // of the same allocation); resolve it through the identity.
             let Some(stored) = self.stored_slot_by_identity(range.object, SlotIdentity::Constant(index)) else {
-                return self.unsupported("MoveRange(uninitialized-source)");
+                return self.unsupported(operation);
             };
             if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared) || stored.layout != pointee {
-                return self.unsupported("MoveRange(uninitialized-source)");
+                return self.unsupported(operation);
             }
             if stored.ownership == Ownership::Shared {
                 ownership = Ownership::Shared;
@@ -2151,7 +2156,11 @@ impl<'a> MemoryChecker<'a> {
             // Cloning a pointer-bearing prefix retains every element (the
             // backend traps on a zero or saturated count, so a partial clone
             // never survives). Both prefixes then share their elements.
-            let cloned = self.require_initialized_range(source, destination.element)?;
+            let cloned = self.require_initialized_range(
+                source,
+                destination.element,
+                "CloneRange(uninitialized-source)",
+            )?;
             self.require_destination_range_empty(destination)?;
             // A zero-width prefix fact carries no class of its own. The
             // destination is a fresh reference-counted list; the source is
@@ -6944,7 +6953,10 @@ mod tests {
             // whose elements it can retain; without one it fails closed.
             assert!(matches!(
                 result,
-                Err(InitialCheckError::UnsupportedMemoryOperation { .. })
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "CloneRange(uninitialized-source)",
+                    ..
+                })
             ));
         });
     }
@@ -7055,6 +7067,156 @@ mod tests {
                 checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
                 RangeState { element: pointer_element, ownership: Ownership::Shared, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true }
             );
+        });
+    }
+
+    #[test]
+    fn pointer_clone_range_rejects_same_allocation_overlap() {
+        with_pointer_slot_checker(|checker, list, _| {
+            let element = checker
+                .descriptor(list)
+                .unwrap()
+                .kind()
+                .packed_element_layout()
+                .unwrap();
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    initialized: true,
+                    zero_width: false,
+                    zero_start: true,
+                },
+            );
+            assert!(matches!(
+                checker.check(&Operation::CloneRange {
+                    destination: pointer_range_place(SOURCE, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "CloneRange(overlap)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_clone_range_rejects_partially_initialized_source() {
+        with_pointer_slot_checker(|checker, list, _| {
+            let element = checker
+                .descriptor(list)
+                .unwrap()
+                .kind()
+                .packed_element_layout()
+                .unwrap();
+            let Extent::Counted { header_bytes, stride_bytes, .. } =
+                checker.state.objects[&SOURCE].extent.clone()
+            else {
+                panic!("pointer list extent is counted")
+            };
+            checker.state.constants.insert(COUNT, 2);
+            checker.state.objects.get_mut(&SOURCE).unwrap().extent = Extent::Counted {
+                header_bytes,
+                count: COUNT,
+                capacity: COUNT,
+                stride_bytes,
+            };
+            checker.state.objects.get_mut(&DESTINATION).unwrap().extent = Extent::Counted {
+                header_bytes,
+                count: ZERO,
+                capacity: COUNT,
+                stride_bytes,
+            };
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: LENGTH },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    initialized: true,
+                    zero_width: false,
+                    zero_start: true,
+                },
+            );
+            checker.state.range_states.insert(
+                RangeIdentity { object: DESTINATION, start: START, length: ZERO },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: None,
+                    initialized: true,
+                    zero_width: true,
+                    zero_start: true,
+                },
+            );
+            assert!(matches!(
+                checker.check(&Operation::CloneRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "CloneRange(uninitialized-source)",
+                    ..
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn pointer_clone_range_rejects_destination_past_capacity() {
+        with_pointer_slot_checker(|checker, list, _| {
+            let element = checker
+                .descriptor(list)
+                .unwrap()
+                .kind()
+                .packed_element_layout()
+                .unwrap();
+            let Extent::Counted { header_bytes, stride_bytes, .. } =
+                checker.state.objects[&SOURCE].extent.clone()
+            else {
+                panic!("pointer list extent is counted")
+            };
+            checker.state.constants.insert(COUNT, 2);
+            checker.state.objects.get_mut(&SOURCE).unwrap().extent = Extent::Counted {
+                header_bytes,
+                count: COUNT,
+                capacity: COUNT,
+                stride_bytes,
+            };
+            checker.state.objects.get_mut(&DESTINATION).unwrap().extent = Extent::Counted {
+                header_bytes,
+                count: ZERO,
+                capacity: CAPACITY,
+                stride_bytes,
+            };
+            checker.state.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: COUNT },
+                RangeState {
+                    element,
+                    ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted),
+                    initialized: true,
+                    zero_width: false,
+                    zero_start: true,
+                },
+            );
+            assert!(matches!(
+                checker.check(&Operation::CloneRange {
+                    destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
+                    source: pointer_range_place(SOURCE, list, COUNT, AccessMode::Read),
+                    count: COUNT,
+                }),
+                Err(InitialCheckError::MissingBoundsGuard {
+                    index: START,
+                    count: ZERO,
+                    ..
+                })
+            ));
         });
     }
 
