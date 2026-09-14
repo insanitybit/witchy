@@ -1017,7 +1017,20 @@ fn represented_child_does_not_wait_for_an_obsolete_red_parent() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
     submit_stack(&fixture, &["a", "b", "c"]);
 
-    fixture.mq_ok(&["run", "--once"], "false");
+    // This assertion owns stale dependency representation, not red-batch
+    // attribution. Keep the initial red to the parent; prefix splitting has a
+    // dedicated fixture below.
+    let red = fixture
+        .mq_command(&["run", "--once"], "false")
+        .env("MERGE_QUEUE_BATCH_MAX", "1")
+        .output()
+        .expect("run isolated obsolete parent");
+    assert!(
+        red.status.success(),
+        "isolated obsolete-parent run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&red.stdout),
+        String::from_utf8_lossy(&red.stderr),
+    );
     assert_eq!(fixture.change("a")["state"], "red");
     assert_eq!(fixture.change("b")["state"], "queued");
 
