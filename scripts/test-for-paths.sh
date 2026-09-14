@@ -613,6 +613,10 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_uniform_var::/)'"
             path_has_early=1 ;;
+        tests/misc/rfc0087_migration_census.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_migration_census::/)'"
+            path_has_early=1 ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1
