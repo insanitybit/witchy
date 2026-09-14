@@ -83,13 +83,15 @@ fn main(console: Console, net: Net):
         "interpreter URL behavior",
     );
 
-    let wasm = codegen::compile_module_binary(&linked)
-
-        .expect_lowered("program supports compiled execution");
+    let checked = witchy::resolve_std_only_checked(&source).expect("checked URL/HTTP source");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("canonical URL/HTTP execution admits");
+    assert!(matches!(codegen::compile_module_binary(&linked),
+        codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,

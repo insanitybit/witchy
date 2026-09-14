@@ -1726,3 +1726,27 @@ Use the preceding warmed-target command with filter
 `test(example_tests::network::) | test(http_url_fallible::) | test(rfc0165_oracle::exec::fetch::)`
 and the shared deferred exclusions. This repairs the observed gate failure;
 it is not evidence of a terminal green landing or compiler-wide memory safety.
+
+##### Remaining URL/OAuth fixture repair (2026-09-14)
+
+The second Fetch gate passed the two preflight regressions and 2,634 workspace
+checks before finding the same retired raw route in
+`url_components_round_trip_and_http_omits_fragments` (candidate
+`2ab1145e0a8314b0c1dc43fd15d40388af86173a`). A bounded inventory and focused
+HTTP/OAuth run also found both TLS OAuth client fixtures still using the raw
+shared helper. All three now retain checked-source artifact authority through
+`spawn_admitted`. URL output and both captured request-target lines remain
+pinned; OAuth retains its TLS roots, interpreter runs, server behavior,
+expected token and bearer-header assertions. OAuth grants are narrowed to
+Console and Net Connect for the exact fixture address. No production rule
+changed; independent review found no blocking issue.
+
+**46/46 focused tests passed**, no retries, 17.184 seconds after an 8.06-second
+build. Run `11a08337-e3f0-4714-ab11-9f13e4610278`; log
+`/private/tmp/witchy-fetch-url-http-oauth-green.log`. Use the preceding warmed
+command and shared deferred exclusions with filter
+`test(example_tests::network::) | test(http_url_fallible::) | test(url_components::) | test(example_tests::crypto_jwt_oauth::) | test(rfc0165_oracle::exec::fetch::)`.
+The generic edit-loop attempt was deliberately stopped after its two ABI probes
+passed: its feature-changing broad routes were redundant with the 119-test
+integration shard and these focused reruns. No completed edit-loop receipt is
+claimed. The coordinator still owns the full gate and terminal landing.

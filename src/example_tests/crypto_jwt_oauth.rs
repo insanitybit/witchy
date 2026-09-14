@@ -657,6 +657,20 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_admitted_oauth_net(source: &str, address: &str) -> Vec<String> {
+        let checked = witchy::resolve_std_only_checked(source).expect("checked OAuth source");
+        let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("canonical OAuth client admits");
+        let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+        let mut actor = runtime.spawn_admitted(&artifact, witchy::runtime::Capabilities {
+            print: true, quiet: true, net_connect: true,
+            net_allow: Some(vec![address.to_owned()]), ..Default::default()
+        }, 64).expect("admitted OAuth client");
+        actor.run().expect("compiled OAuth execution");
+        actor.output().to_vec()
+    }
+
     /// `oauth.exchange_code` POSTs to a token endpoint over HTTPS and reads the
     /// `access_token` — exercised HERMETICALLY against a local rustls server that
     /// returns the GitHub/Google JSON token shape, identical on BOTH backends. This is
@@ -705,7 +719,7 @@ fn main(console: Console):
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["gho_test_token".to_string()], "interp exchange");
         assert_eq!(
-            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            run_admitted_oauth_net(&src, &allow),
             vec!["gho_test_token".to_string()],
             "wasm exchange"
         );
@@ -769,7 +783,7 @@ fn main(console: Console):
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["octocat".to_string()], "interp bearer get");
         assert_eq!(
-            run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
+            run_admitted_oauth_net(&src, &allow),
             vec!["octocat".to_string()],
             "wasm bearer get"
         );
