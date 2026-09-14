@@ -667,6 +667,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
     assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
+    assert!(mixed[2].contains("rfc0165_enum_equality::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
 }
 
@@ -701,6 +702,10 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
             && commands[0]
                 .contains("canonical_wasm_encoding_is_private_and_requires_final_authority"),
         "the focused route omitted the final-authority admission boundary: {commands:?}",
+    );
+    assert!(
+        commands[2].contains("rfc0165_enum_equality::"),
+        "the focused route omitted the enum equality semantic regression: {commands:?}",
     );
     assert!(
         !commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission"),
