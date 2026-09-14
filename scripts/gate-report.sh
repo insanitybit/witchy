@@ -391,6 +391,8 @@ jq -sn \
                | sort_by(-.submissions, .touches)),
              by_actor:($subs|group_by(.actor//"unset")
                        |map({actor:(.[0].actor//"unset"), submissions:length})|sort_by(-.submissions)),
+             by_actor_hint:($subs|group_by(.actor_hint//"unknown")
+                            |map({actor_hint:(.[0].actor_hint//"unknown"), submissions:length})|sort_by(-.submissions)),
              by_touches:($subs|map(select((.touches//"")!=""))|group_by(.touches)
                          |map({touches:.[0].touches, submissions:length})|sort_by(-.submissions))}),
         red_causes:($failed|group_by(.red_class//"unclassified")
@@ -505,6 +507,7 @@ jq -r '
      end),
     "  edit check p50 / p90:    \(value(.attribution.presubmit_edit_s.p50; "s")) / \(value(.attribution.presubmit_edit_s.p90; "s")) (\(.attribution.presubmit_edit_s.count) samples)",
     "  actor set (not \"unset\"): \(if .attribution.actor_adoption==null then "n/a" else ((.attribution.actor_adoption*100|round|tostring)+"%") end)",
+    ("  actor hints:              " + (.attribution.by_actor_hint | map("\(.actor_hint)=\(.submissions)") | join(", "))),
     "  Co-Authored-By trailer:  \(if .attribution.trailer_adoption==null then "n/a" else ((.attribution.trailer_adoption*100|round|tostring)+"%") end)",
     (if (.red_causes|length)==0 then "" else
         ("\nFailed gate time by cause\n"

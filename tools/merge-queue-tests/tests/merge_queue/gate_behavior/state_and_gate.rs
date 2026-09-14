@@ -297,6 +297,10 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["attribution"]["presubmit_edit_s"]["p90"], 30);
     assert_eq!(report["attribution"]["presubmit_eligible_submissions"], 6);
     assert_eq!(report["attribution"]["presubmit_ineligible_submissions"], 1);
+    assert_eq!(
+        report["attribution"]["by_actor_hint"],
+        serde_json::json!([{"actor_hint": "unknown", "submissions": 7}])
+    );
     let eligible_receipt_rate = report["attribution"]["presubmit_receipt_rate"]
         .as_f64()
         .expect("eligible receipt rate is numeric");
