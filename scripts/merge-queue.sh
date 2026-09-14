@@ -475,6 +475,16 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
                         *)
                             case "$failing_stage" in
                                 tests*)                 red_class="test" ;;
+                                preflight*)
+                                    # A replayed nextest failure carries the
+                                    # failing test in its TRY/FAIL line, while
+                                    # the stage name is preflight. Attribute
+                                    # only those explicit test failures here;
+                                    # missing output and other preflight
+                                    # failures remain unknown/infra below.
+                                    case "$failure_line" in
+                                        *TRY*FAIL* | *TIMEOUT*) red_class="test" ;;
+                                    esac ;;
                                 *compile*)              red_class="compile" ;;
                                 *clippy*)               red_class="clippy" ;;
                                 *fmt*)                  red_class="fmt" ;;

@@ -2258,6 +2258,33 @@ fn a_linker_failure_during_test_build_is_classified_as_compile() {
     );
 }
 
+#[test]
+fn a_replayed_preflight_test_failure_is_classified_as_test() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let first_gate = "printf '==> [1] tests (workspace) (t+0s)\\n   TRY 1 FAIL [ 0.8s] ( 1/1) witchy::misc some_module::the_broken_test\\nerror: test run failed\\n'; exit 1";
+    fixture.mq_ok(&["submit", "a"], first_gate);
+    fixture.mq_ok(&["run", "--once"], first_gate);
+
+    let preflight_gate = "printf '==> [1] preflight (tests that red the last attempt) (t+0s)\\nTRY 1 FAIL [ 0.8s] ( 1/1) witchy::cli_subcommands fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm\\n'; exit 1";
+    fixture.mq_ok(&["submit", "a"], preflight_gate);
+    let out = fixture.mq_ok(&["run", "--once"], preflight_gate);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let journal = fixture.journal();
+    let red = journal
+        .iter()
+        .filter(|event| event["event"] == "red")
+        .last()
+        .unwrap_or_else(|| panic!("expected a red:\n{combined}"));
+
+    assert_eq!(red["failing_stage"], "preflight (tests that red the last attempt)");
+    assert_eq!(red["red_class"], "test");
+    assert!(red["failure_line"].as_str().is_some_and(|line| line.contains("fetch_root_requires_an_explicit_valid_origin")));
+}
+
 /// One agent's ad-hoc `with-lock` suite blocks that agent; the coordinator
 /// blocks EVERY queued branch. The gate lock had no fairness, so measured
 /// 2026-08-27 the coordinator's lock wait went p50 0s -> 75s and p90 221s ->
