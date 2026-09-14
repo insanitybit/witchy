@@ -63,6 +63,9 @@ impl ServerState {
     }
 
     pub(in super::super) fn before_host_call(&self, name: &str) -> Result<(), InterpretError> {
+        if (self.fixture.is_some() || self.worker) && crate::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.contains(&name) {
+            return Err(InterpretError::UnsupportedOperation("server pool directory storage effect ordering"));
+        }
         if (self.fixture.is_some() || self.worker) && super::super::registry_host::IMPORTS.contains(&name) {
             return Err(InterpretError::UnsupportedOperation("server pool registry host effect ordering"));
         }
@@ -155,6 +158,22 @@ impl<'a> Engine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_pool_dir_storage_refuses_before_and_after_rendezvous() {
+        for worker in [false, true] {
+            let mut server = ServerState::new((!worker).then(OracleServerPoolFixture::default));
+            server.worker = worker;
+            for rendezvous in [false, true] {
+                server.rendezvous = rendezvous;
+                assert_eq!(server.before_host_call("dir_read_into").is_ok(), !worker || rendezvous);
+                for name in crate::canonical_safewir::DIR_STORAGE_IMPORT_NAMES {
+                    assert_eq!(server.before_host_call(name),
+                        Err(InterpretError::UnsupportedOperation("server pool directory storage effect ordering")));
+                }
+            }
+        }
+    }
 
     #[test]
     fn server_pool_registry_hosts_refuse_before_and_after_rendezvous() {

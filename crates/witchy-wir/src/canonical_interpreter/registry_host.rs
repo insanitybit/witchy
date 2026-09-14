@@ -50,11 +50,13 @@ enum Resource {
     Dir(String),
     Store(Arc<OracleSecretStoreFixture>),
     Secret(Arc<OracleSecretFixture>),
+    DirBytes(Arc<[u8]>),
 }
 
 impl Resource {
     fn kind(&self) -> u32 {
-        match self { Self::Clock(_) => CLOCK, Self::Dir(_) => DIR_KIND, Self::Store(_) => STORE, Self::Secret(_) => SECRET }
+        match self { Self::Clock(_) => CLOCK, Self::Dir(_) => DIR_KIND, Self::Store(_) => STORE, Self::Secret(_) => SECRET,
+            Self::DirBytes(_) => crate::canonical_safewir::DIR_BYTES_RESPONSE_KIND.get() }
     }
 }
 
@@ -102,6 +104,20 @@ impl State {
         }
         Ok(self.mint(Resource::Dir(scope)))
     }
+
+    pub(super) fn storage_scope(&self, token: &CapabilityToken) -> Result<String, InterpretError> {
+        let Resource::Dir(scope) = self.authenticate(token, DIR_KIND)? else { unreachable!() };
+        Ok(scope)
+    }
+
+    pub(super) fn mint_dir_bytes(&self, bytes: Vec<u8>) -> CapabilityToken {
+        self.mint(Resource::DirBytes(Arc::from(bytes)))
+    }
+
+    pub(super) fn dir_bytes(&self, token: &CapabilityToken) -> Result<Arc<[u8]>, InterpretError> {
+        let Resource::DirBytes(bytes) = self.authenticate(token, crate::canonical_safewir::DIR_BYTES_RESPONSE_KIND.get())? else { unreachable!() };
+        Ok(bytes)
+    }
 }
 
 impl Engine<'_> {
@@ -109,6 +125,12 @@ impl Engine<'_> {
         let mut clocks = 0;
         let mut directories = 0;
         for argument in &mut arguments {
+            if matches!(argument,
+                InterpreterValue::Capability(token) | InterpreterValue::NullableCapability(Some(token))
+                    if token.kind == crate::canonical_safewir::DIR_BYTES_RESPONSE_KIND.get())
+            {
+                return Err(refusal("directory byte responses are not entry grants"));
+            }
             if let InterpreterValue::NullableCapability(Some(token)) = argument
                 && matches!(token.kind, CLOCK | STORE | SECRET | DIR_KIND)
             {
@@ -215,7 +237,7 @@ impl Engine<'_> {
         Ok(())
     }
 
-    fn registry_output(&self, place: &Place, values: &BTreeMap<ValueId, InterpreterValue>) -> Result<(u64, u64, u64), InterpretError> {
+    pub(super) fn registry_output(&self, place: &Place, values: &BTreeMap<ValueId, InterpreterValue>) -> Result<(u64, u64, u64), InterpretError> {
         if place.access() != AccessMode::Write { return Err(refusal("registry output requires a write slice")); }
         let range @ (object, start, capacity) = self.slice_place(place, values)?;
         self.check_range(object, start, capacity, true)?;
@@ -226,7 +248,7 @@ impl Engine<'_> {
         Ok(range)
     }
 
-    fn registry_write(&mut self, (object, start, capacity): (u64, u64, u64), bytes: &[u8]) -> Result<(), InterpretError> {
+    pub(super) fn registry_write(&mut self, (object, start, capacity): (u64, u64, u64), bytes: &[u8]) -> Result<(), InterpretError> {
         if capacity >= bytes.len() as u64 {
             let cells = &mut self.object_mut(object)?.cells;
             for (offset, byte) in bytes.iter().enumerate() {

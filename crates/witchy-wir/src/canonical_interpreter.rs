@@ -28,6 +28,7 @@ pub use fetch::{OracleFetchFixture, OracleFetchCall, OracleFetchSource, OracleFe
 mod registry_host;
 pub use registry_host::{OracleClockFixture, OracleSecretFixture, OracleSecretStoreFixture};
 mod dir_create;
+mod dir_storage;
 mod crypto;
 mod crypto_hash;
 mod dir_metadata;
@@ -1553,6 +1554,9 @@ impl<'a> Engine<'a> {
         }
         if registry_host::IMPORTS.contains(&contract.name.as_str()) {
             return self.registry_host_call(&contract.name, destinations, arguments, values);
+        }
+        if crate::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.contains(&contract.name.as_str()) {
+            return self.dir_storage_host_call(&contract.name, destinations, arguments, values);
         }
         if build_read::is_import(&contract.name) {
             return self.build_read_host_call(&contract.name, destinations, arguments, values);

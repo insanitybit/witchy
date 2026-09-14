@@ -7,6 +7,9 @@ use crate::canonical_safewir::{
     ParameterContract, ParameterOwnership, Revision,
 };
 
+#[path = "dir_storage_tests.rs"]
+mod storage_tests;
+
 const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 const KEY: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 const SIGNATURE: &str = concat!("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155",
