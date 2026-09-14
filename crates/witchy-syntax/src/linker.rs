@@ -1796,6 +1796,48 @@ pub fn link_with_mode_and_origins_and_source_check<F>(
 where
     F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
 {
+    link_with_mode_and_origins_and_source_check_fold_policy(
+        modules,
+        entry,
+        expand,
+        mode,
+        check_source,
+        true,
+    )
+}
+
+/// Link a canonical production source graph without running configured AST
+/// optimizations before its checked-source witness is created.
+pub fn link_canonical_with_origins_and_source_check<F>(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    check_source: F,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
+    link_with_mode_and_origins_and_source_check_fold_policy(
+        modules,
+        entry,
+        expand,
+        LinkMode::Production,
+        check_source,
+        false,
+    )
+}
+
+fn link_with_mode_and_origins_and_source_check_fold_policy<F>(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    mode: LinkMode,
+    check_source: F,
+    allow_ast_fold: bool,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
     // Safe by default for in-memory callers that have no source-provenance map:
     // a supplied reserved module is canonical only when its parsed AST matches
     // the compiler-bundled source. Loaders with exact source identity should use
@@ -1818,13 +1860,14 @@ where
             user_modules.insert(name.clone());
         }
     }
-    link_with_user_modules_with_mode_and_origins_and_source_check(
+    link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy(
         modules,
         entry,
         expand,
         &user_modules,
         mode,
         check_source,
+        allow_ast_fold,
     )
 }
 
@@ -1895,7 +1938,53 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check<F>(
 where
     F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
 {
-    link_with_user_modules_with_mode_and_origins_and_source_check_stage(
+    link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        mode,
+        check_source,
+        true,
+    )
+}
+
+/// Link a loader-authenticated canonical production source graph without
+/// applying configured AST optimizations before SafeWIR lowering.
+pub fn link_canonical_with_user_modules_and_origins_and_source_check<F>(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+    check_source: F,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
+    link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        LinkMode::Production,
+        check_source,
+        false,
+    )
+}
+
+fn link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy<F>(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
+    check_source: F,
+    allow_ast_fold: bool,
+) -> Result<LinkedModule, SourceLinkError>
+where
+    F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
+{
+    link_with_user_modules_with_mode_and_origins_and_source_check_stage_fold_policy(
         modules,
         entry,
         expand,
@@ -1903,10 +1992,11 @@ where
         mode,
         check_source,
         AsyncLoweringStage::Runtime,
+        allow_ast_fold,
     )
 }
 
-pub(crate) fn link_with_user_modules_with_mode_and_origins_and_source_check_stage<F>(
+pub(crate) fn link_with_user_modules_with_mode_and_origins_and_source_check_stage_fold_policy<F>(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
@@ -1914,6 +2004,7 @@ pub(crate) fn link_with_user_modules_with_mode_and_origins_and_source_check_stag
     mode: LinkMode,
     check_source: F,
     async_stage: AsyncLoweringStage,
+    allow_ast_fold: bool,
 ) -> Result<LinkedModule, SourceLinkError>
 where
     F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
@@ -2112,7 +2203,13 @@ where
     for (_, module) in &mut modules {
         reclassify_parsed_module_members(module);
     }
-    let resolved = crate::source_check::resolve_linked_source(modules, user_modules, entry, mode)?;
+    let resolved = crate::source_check::resolve_linked_source(
+        modules,
+        user_modules,
+        entry,
+        mode,
+        allow_ast_fold,
+    )?;
     check_source(&resolved)?;
     let checked = resolved.after_semantic_check();
     let (mut modules, declarations, mut async_surface) =
@@ -2537,7 +2634,7 @@ where
     // backends consume (parity-free by construction). See src/optimize.rs. Gated
     // on the `fold` lever (RFC-0030) so the differential de-opt sweep covers it:
     // `WITCHY_OPT=-fold` leaves constant expressions unfolded.
-    if crate::opt::enabled(crate::opt::Opt::Fold) {
+    if allow_ast_fold && crate::opt::enabled(crate::opt::Opt::Fold) {
         crate::optimize::optimize(&mut module);
     }
     // (RFC-0043) Statement-position mutating-method write-back is NO LONGER a

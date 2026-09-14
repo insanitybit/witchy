@@ -649,24 +649,31 @@ fn link_checked_with(
         }
         Ok(())
     };
-    let linked = match user_modules {
-        Some(user_modules) => {
-            linker::link_with_user_modules_with_mode_and_origins_and_source_check(
+    let linked = if capture_canonical_typed_source {
+        match user_modules {
+            Some(user_modules) => linker::link_canonical_with_user_modules_and_origins_and_source_check(
                 modules,
                 entry,
                 expand,
                 user_modules,
-                mode,
                 check_source,
-            )
+            ),
+            None => linker::link_canonical_with_origins_and_source_check(
+                modules,
+                entry,
+                expand,
+                check_source,
+            ),
         }
-        None => linker::link_with_mode_and_origins_and_source_check(
-            modules,
-            entry,
-            expand,
-            mode,
-            check_source,
-        ),
+    } else {
+        match user_modules {
+            Some(user_modules) => linker::link_with_user_modules_with_mode_and_origins_and_source_check(
+                modules, entry, expand, user_modules, mode, check_source,
+            ),
+            None => linker::link_with_mode_and_origins_and_source_check(
+                modules, entry, expand, mode, check_source,
+            ),
+        }
     }?;
     if let Some(module_owners) = &module_owners {
         module_owners.validate_module_names(linked.module_names.iter().cloned())?;
@@ -1287,6 +1294,55 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn canonical_source_excludes_ast_fold_while_legacy_link_keeps_it() {
+        struct ResetOptimizationOverride;
+        impl Drop for ResetOptimizationOverride {
+            fn drop(&mut self) {
+                witchy_syntax::opt::set_for_tests(None);
+            }
+        }
+
+        fn result_expression(module: &witchy_syntax::ast::Module) -> &witchy_syntax::ast::Expr {
+            let function = module.items.iter().find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function)
+                    if function.name == "main.main" || function.name == "main" => Some(function),
+                _ => None,
+            }).expect("linked main function");
+            match function.body.stmts.last().expect("main result") {
+                witchy_syntax::ast::Stmt::Expr(expression) => expression,
+                statement => panic!("expected expression result, got {statement:?}"),
+            }
+        }
+
+        let _reset = ResetOptimizationOverride;
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+        let source = b"fn main() -> Int:\n    2 + 3\n";
+
+        let canonical = link_checked_from_source_bundle(
+            vec![("main".into(), source.to_vec())],
+            "main",
+            no_expand,
+        ).expect("canonical source links without pre-SafeWIR folding");
+        assert!(matches!(
+            result_expression(canonical.module()),
+            witchy_syntax::ast::Expr::Binary {
+                op: witchy_syntax::ast::BinOp::Add,
+                lhs,
+                rhs,
+            } if matches!(lhs.as_ref(), witchy_syntax::ast::Expr::Int(2))
+                && matches!(rhs.as_ref(), witchy_syntax::ast::Expr::Int(3))
+        ));
+
+        let legacy = link_checked(
+            vec![("main".into(), parse(std::str::from_utf8(source).unwrap()))],
+            "main",
+            no_expand,
+        ).expect("legacy checked link retains configured folding");
+        assert_eq!(result_expression(legacy.module()), &witchy_syntax::ast::Expr::Int(5));
+    }
+
     use crate::runtime_type::{
         DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
         RuntimeTypeError,

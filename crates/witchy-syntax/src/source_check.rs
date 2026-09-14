@@ -104,6 +104,7 @@ pub struct ResolvedSource {
     method_owners: crate::type_resolve::MethodOwnerCandidates,
     entry: String,
     mode: crate::linker::LinkMode,
+    allow_ast_fold: bool,
     user_modules: std::collections::HashSet<String>,
 }
 
@@ -218,13 +219,24 @@ impl ResolvedSource {
                 module.import_lines.push(0);
             }
         }
-        crate::linker::link_with_user_modules_with_mode(
+        crate::linker::link_with_user_modules_with_mode_and_origins_and_source_check_stage_fold_policy(
             modules,
             &self.entry,
             no_expand,
             &self.user_modules,
             self.mode,
+            |_| Ok(()),
+            crate::linker::AsyncLoweringStage::Runtime,
+            self.allow_ast_fold,
         )
+        .map(|linked| linked.module)
+        .map_err(|error| match error {
+            crate::linker::SourceLinkError::Link(error) => error,
+            crate::linker::SourceLinkError::Source(error) => crate::linker::LinkError {
+                location: error.link_location(),
+                message: error.message,
+            },
+        })
     }
 
     /// Build the compiler-only linked projection that preserves `async` source
@@ -335,7 +347,7 @@ impl ResolvedSource {
                 }
             }
         }
-        crate::linker::link_with_user_modules_with_mode_and_origins_and_source_check_stage(
+        crate::linker::link_with_user_modules_with_mode_and_origins_and_source_check_stage_fold_policy(
             modules,
             &self.entry,
             no_expand,
@@ -343,6 +355,7 @@ impl ResolvedSource {
             self.mode,
             |_| Ok(()),
             crate::linker::AsyncLoweringStage::TypedSource,
+            self.allow_ast_fold,
         )
         .map_err(|error| match error {
             crate::linker::SourceLinkError::Link(error) => error,
@@ -473,6 +486,7 @@ pub(crate) fn resolve_linked_source(
     user_modules: &std::collections::HashSet<String>,
     entry: &str,
     mode: crate::linker::LinkMode,
+    allow_ast_fold: bool,
 ) -> Result<ResolvedSource, crate::linker::LinkError> {
     for (name, module) in &modules {
         if let Some(constant) = crate::consts::find_cycle(module) {
@@ -504,6 +518,7 @@ pub(crate) fn resolve_linked_source(
         method_owners: namespace.method_owners,
         entry: entry.to_string(),
         mode,
+        allow_ast_fold,
         user_modules: user_modules.clone(),
     })
 }
