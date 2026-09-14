@@ -1642,7 +1642,7 @@ fn scalar_arithmetic_is_backend_total(
             A::DivideSigned | A::DivideUnsigned | A::RemainderSigned | A::RemainderUnsigned,
             O::Trap,
         ) => true,
-        (ValueType::Size, A::Add, O::Trap) => true,
+        (ValueType::Int | ValueType::Size, A::Add, O::Trap) => true,
         (
             ValueType::Float,
             A::Add | A::Subtract | A::Multiply | A::DivideSigned | A::DivideUnsigned,

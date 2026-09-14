@@ -2177,6 +2177,35 @@ fn emit_checked_arithmetic(
         overflow,
     ) {
         (
+            Some(ValueType::Int),
+            ArithmeticOperator::Add,
+            crate::canonical_safewir::OverflowBehavior::Trap,
+        ) => {
+            // Signed addition overflows exactly when both operands have the
+            // same sign and the sum has the opposite sign:
+            // `((sum ^ left) & (sum ^ right)) < 0`.
+            emit_get(body, layout, function.id, left)?;
+            emit_get(body, layout, function.id, right)?;
+            body.instruction(&wasm_encoder::Instruction::I64Add);
+            body.instruction(&wasm_encoder::Instruction::LocalTee(local_index(
+                layout,
+                function.id,
+                destination,
+            )?));
+            emit_get(body, layout, function.id, left)?;
+            body.instruction(&wasm_encoder::Instruction::I64Xor);
+            emit_get(body, layout, function.id, destination)?;
+            emit_get(body, layout, function.id, right)?;
+            body.instruction(&wasm_encoder::Instruction::I64Xor);
+            body.instruction(&wasm_encoder::Instruction::I64And);
+            body.instruction(&wasm_encoder::Instruction::I64Const(0));
+            body.instruction(&wasm_encoder::Instruction::I64LtS);
+            body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+            body.instruction(&wasm_encoder::Instruction::Unreachable);
+            body.instruction(&wasm_encoder::Instruction::End);
+            return Ok(());
+        }
+        (
             Some(ValueType::Size),
             ArithmeticOperator::Add,
             crate::canonical_safewir::OverflowBehavior::Trap,
@@ -5630,6 +5659,34 @@ fn expected_block_operations_plan(
                 if matches!(
                     (function.value_types.get(destination), operator, overflow),
                     (
+                        Some(ValueType::Int),
+                        ArithmeticOperator::Add,
+                        crate::canonical_safewir::OverflowBehavior::Trap,
+                    )
+                ) {
+                    push_get(&mut plan, &layout, *left)?;
+                    push_get(&mut plan, &layout, *right)?;
+                    plan.extend([
+                        PlanToken::I64Add,
+                        PlanToken::LocalTee(plan_local(&layout, *destination)?),
+                    ]);
+                    push_get(&mut plan, &layout, *left)?;
+                    plan.push(PlanToken::I64Xor);
+                    push_get(&mut plan, &layout, *destination)?;
+                    push_get(&mut plan, &layout, *right)?;
+                    plan.extend([
+                        PlanToken::I64Xor,
+                        PlanToken::I64And,
+                        PlanToken::I64Const(0),
+                        PlanToken::I64LtS,
+                        PlanToken::If("Empty".to_owned()),
+                        PlanToken::Unreachable,
+                        PlanToken::End,
+                    ]);
+                    continue;
+                } else if matches!(
+                    (function.value_types.get(destination), operator, overflow),
+                    (
                         Some(ValueType::Size),
                         ArithmeticOperator::Add,
                         crate::canonical_safewir::OverflowBehavior::Trap,
@@ -7778,6 +7835,60 @@ mod tests {
         }))
     }
 
+    fn checked_int_add(left_value: i64, right_value: i64) -> ValidatedSafeWir {
+        let left = ValueId::new(0);
+        let right = ValueId::new(1);
+        let result = ValueId::new(2);
+        let signature_id = FunctionSignatureId::new(71);
+        let function_id = FunctionId::new(71);
+        let signature = scalar_signature_with(signature_id, Vec::new(), vec![ValueType::Int]);
+        finalize(CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(71),
+            checked_source: CheckedSourceIdentity::from_digest([71; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), [])
+                .expect("empty layout bundle is valid"),
+            signatures: vec![signature],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: function_id,
+                signature: signature_id,
+                entry: crate::canonical_safewir::BlockId::new(0),
+                value_types: [
+                    (left, ValueType::Int),
+                    (right, ValueType::Int),
+                    (result, ValueType::Int),
+                ]
+                .into_iter()
+                .collect(),
+                blocks: vec![BasicBlock {
+                    id: crate::canonical_safewir::BlockId::new(0),
+                    parameters: Vec::new(),
+                    operations: vec![
+                        Operation::ConstInt {
+                            destination: left,
+                            value: left_value,
+                        },
+                        Operation::ConstInt {
+                            destination: right,
+                            value: right_value,
+                        },
+                        Operation::Arithmetic {
+                            destination: result,
+                            operator: ArithmeticOperator::Add,
+                            left,
+                            right,
+                            overflow: crate::canonical_safewir::OverflowBehavior::Trap,
+                        },
+                    ],
+                    terminator: Terminator::Return {
+                        values: vec![result],
+                    },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        }))
+    }
+
     #[cfg(feature = "native")]
     fn run_size_add(module: ValidatedSafeWir) -> Result<u32, wasmtime::Error> {
         let wasm = encode_validated(module).expect("validated size addition encodes");
@@ -7787,6 +7898,57 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
         let run = instance.get_typed_func::<(), i32>(&mut store, "f70")?;
         run.call(&mut store, ()).map(|value| value as u32)
+    }
+
+    #[cfg(feature = "native")]
+    fn run_int_add(module: ValidatedSafeWir) -> Result<i64, wasmtime::Error> {
+        let artifact = admit_canonical(module).expect("validated int addition admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())?;
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
+        let run = instance.get_typed_func::<(), i64>(&mut store, "f71")?;
+        run.call(&mut store, ())
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn trapping_int_add_accepts_signed_boundaries() {
+        for (left, right, expected) in [
+            (i64::MAX - 1, 1, i64::MAX),
+            (i64::MIN + 1, -1, i64::MIN),
+            (-20, 62, 42),
+        ] {
+            let validated = checked_int_add(left, right);
+            assert_eq!(
+                crate::canonical_interpreter::interpret(
+                    &validated,
+                    FunctionId::new(71),
+                    Vec::new(),
+                ),
+                Ok(vec![crate::canonical_interpreter::InterpreterValue::Int(
+                    expected,
+                )]),
+            );
+            assert_eq!(run_int_add(validated).unwrap(), expected);
+        }
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn trapping_int_add_overflow_matches_interpreter() {
+        for (left, right) in [(i64::MAX, 1), (i64::MIN, -1)] {
+            let validated = checked_int_add(left, right);
+            assert_eq!(
+                crate::canonical_interpreter::interpret(
+                    &validated,
+                    FunctionId::new(71),
+                    Vec::new(),
+                ),
+                Err(crate::canonical_interpreter::InterpretError::ArithmeticTrap),
+            );
+            assert!(run_int_add(validated).is_err());
+        }
     }
 
     #[cfg(feature = "native")]

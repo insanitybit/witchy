@@ -225,19 +225,21 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Arithmetic,
         judgment: "check.rs::check_operation; check/memory.rs::MemoryChecker (exact-addition facts)",
-        predicate: "operands and destination share one scalar type; `Size` overflow policy is `Trap` or `Wrap`; a trapping `Size` add records an exact relation for bounds",
+        predicate: "operands and destination share one scalar type; `Int` and `Size` addition traps or wraps exactly as declared; a trapping `Size` add records an exact relation for bounds",
         interpreter: "int_arithmetic/size_arithmetic/float_arithmetic: wraps or traps exactly as declared; `/0` and signed `MIN % -1` trap or define",
         backend: RuleBackend::Receipt(CorrespondenceRule::ScalarArithmetic),
         admits: &[
             t(Interpreter, "validated_scalar_arithmetic_executes"),
             t(Interpreter, "validated_size_arithmetic_uses_i32_width_and_signed_bits"),
             t(Backend, "int_subtraction_matches_the_exact_encoded_plan"),
+            t(Backend, "trapping_int_add_accepts_signed_boundaries"),
             t(Backend, "trapping_size_add_accepts_the_unsigned_boundary"),
             t(Memory, "guarded_wrapping_size_add_records_an_exact_relation"),
         ],
         refuses: &[
             t(Interpreter, "validated_size_arithmetic_traps_at_i32_boundary"),
             t(Interpreter, "signed_remainder_by_zero_traps"),
+            t(Backend, "trapping_int_add_overflow_matches_interpreter"),
             t(Backend, "size_add_overflow_traps_or_wraps_exactly_as_declared"),
             t(Memory, "unchecked_wrapping_size_add_does_not_record_an_exact_relation"),
         ],
