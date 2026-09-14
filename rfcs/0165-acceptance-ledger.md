@@ -1483,3 +1483,36 @@ family was reclassified as passing. BuildNet, remaining workflows, and the
 optimizer/security acceptance obligations stay open. These are focused-green
 slices awaiting the serialized merge queue; compiler-wide memory safety is not
 established.
+
+#### BuildExec gate repair: checked build-import isolation
+
+BuildExec submission `5d9159a554d8fa23ddcc03f927ecf36bdbc3793f` was red at
+queue attempt `mqa-ce4bd23609e0b463dbce76f5bce11893363b6a54`: the codegen
+build-import fixture still expected the retired raw AST route and receiver-erased
+BuildExec ABI. The two running async probes were cancelled after that failure;
+this attempt does not establish their gate result.
+
+The fixture now admits BuildEnv/BuildExec through a freshly checked source recipe,
+asserts externref capability receivers and checked pointer/length lanes, refuses
+both raw source variants, and excludes ordinary environment/process imports.
+Review added the modern ordinary-import names to that exclusion. No production
+validation rule, timeout, or deferred-list entry changed.
+
+Run `8403aab3-d1ef-4bae-aaf6-71840ce21f43` passed 152/152 codegen tests in
+13.610 seconds after a 20.17-second warmed build. Its two exclusions are derived
+from the existing shared deferred list. An earlier unfiltered run passed 152/154;
+only the already-deferred Dynamic and forced-copy raw-source fixtures refused
+with `MissingCheckedSourceWitness`. Log:
+`/private/tmp/witchy-build-import-gate-fix-reviewed.log`.
+
+```sh
+export CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+export CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc
+excluded=$(awk '$1 == "witchy-lower::codegen" { if (n++) printf " | "; printf "test(=%s)", $2 }' scripts/rfc0165-deferred-tests.txt)
+filter='binary_id(=witchy-lower::codegen)'
+if [ -n "$excluded" ]; then filter="$filter & not ($excluded)"; fi
+taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower --features native --lib --bin witchy --test misc --test e2e --test codegen --ignore-default-filter --profile ci -E "$filter" --test-threads 2 --no-fail-fast
+```
+
+This repair is focused-green, not merged evidence. BuildNet remains a separate
+unverified slice; the full SafeWIR goal and compiler-wide safety claim remain open.

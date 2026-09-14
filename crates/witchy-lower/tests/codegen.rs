@@ -174,7 +174,12 @@ mod tests {
     }
 
     fn import_param_counts(wasm: &[u8]) -> std::collections::BTreeMap<String, usize> {
-        let mut func_param_counts = Vec::new();
+        import_param_types(wasm).into_iter()
+            .map(|(name, params)| (name, params.len())).collect()
+    }
+
+    fn import_param_types(wasm: &[u8]) -> std::collections::BTreeMap<String, Vec<wasmparser::ValType>> {
+        let mut func_param_types = Vec::new();
         let mut imports = Vec::new();
         for payload in gc_wasm_payloads(wasm) {
             match payload.expect("valid wasm") {
@@ -183,11 +188,11 @@ mod tests {
                         for ty in group.expect("recursive type group").into_types() {
                             let params = match ty.composite_type.inner {
                                 wasmparser::CompositeInnerType::Func(func) => {
-                                    Some(func.params().len())
+                                    Some(func.params().to_vec())
                                 }
                                 _ => None,
                             };
-                            func_param_counts.push(params);
+                            func_param_types.push(params);
                         }
                     }
                 }
@@ -205,11 +210,11 @@ mod tests {
         imports
             .into_iter()
             .map(|(name, idx)| {
-                let params = func_param_counts
+                let params = func_param_types
                     .get(idx)
-                    .and_then(|params| *params)
+                    .and_then(|params| params.as_ref())
                     .unwrap_or_else(|| panic!("missing function type {idx} for import {name}"));
-                (name, params)
+                (name, params.clone())
             })
             .collect()
     }
@@ -348,11 +353,51 @@ mod tests {
 
     #[test]
     fn grantful_build_primitives_compile_to_build_imports_only() {
+        use witchy_types::runtime_type::{
+            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        };
+        use witchy_wir::CanonicalEntryCapability::{BuildEnv, BuildExec, BuildOut};
+
         let module = parse_module(
             "import option\nfn build(out: BuildOut, env: BuildEnv, dl: BuildNet, cc: BuildExec):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"x.witchy\", v + dl.fetch_build(\"127.0.0.1:9\", \"/schema\") + cc.run_tool(\"cat\", \"input\"))\n",
         )
         .expect("parse");
-        let wasm = compile_build_module(&module).expect_lowered("compile build module");
+        // The old fixture erased capability receivers and used global staging.
+        // It must not regain authority through the raw test-only entry point.
+        compile_build_module(&module).expect_unsupported("grantful raw build route is retired");
+
+        // BuildNet is still unsupported by this production baseline. Prove the
+        // admitted BuildEnv/BuildExec family through the real source recipe;
+        // do not revive its raw ABI merely to keep the old fixture green.
+        let source = "import option\nfn build(out: BuildOut, env: BuildEnv, cc: BuildExec):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"x.witchy\", v + cc.run_tool(\"cat\", \"input\"))\n";
+        let raw_supported = parse_module(source).expect("parse supported build recipe source");
+        compile_build_module(&raw_supported)
+            .expect_unsupported("supported BuildEnv/BuildExec source must still reject the retired raw route");
+        let workspace = PackageCoordinate::new(
+            PackageSource::Workspace, "example/build-import-test", "0.1.0",
+        ).expect("workspace coordinate");
+        let toolchain = PackageCoordinate::new(
+            PackageSource::Toolchain, "witchy/stdlib", "0.1.0",
+        ).expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "main".to_owned(),
+            ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
+        )];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|name| (
+            (*name).to_owned(),
+            ModuleLoadIdentity::new(toolchain.clone(), ["std", *name]).expect("std owner"),
+        )));
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+            .expect("authenticated fixture ownership");
+        let users = std::collections::HashSet::from(["main".to_owned()]);
+        let recipe = witchy_types::pipeline::check_build_recipe_from_source_bundle(
+            vec![("main".to_owned(), source.as_bytes().to_vec())],
+            "main", no_comptime_expansion, &users, owners,
+        ).expect("check original build source and generated recipe");
+        let artifact = witchy_lower::codegen::compile_checked_build_recipe_artifact(&recipe)
+            .expect_lowered("admit grantful build recipe");
+        assert_eq!(artifact.entry().expect("build entry").capabilities(), &[BuildOut, BuildEnv, BuildExec]);
+        let wasm = artifact.wasm();
         let mut imports = Vec::new();
         for payload in gc_wasm_payloads(&wasm) {
             if let wasmparser::Payload::ImportSection(reader) = payload.expect("valid wasm") {
@@ -363,25 +408,34 @@ mod tests {
         }
 
         for needed in [
-            "build_out_write",
-            "build_env_len",
-            "build_env_fill",
-            "build_fetch_len",
+            "build_out_write_at",
+            "build_env_at",
+            "build_response_is_some",
+            "build_read_response_size",
+            "build_read_response_into",
             "build_exec_run",
         ] {
             assert!(imports.iter().any(|i| i == needed), "build import `{needed}` missing: {imports:?}");
         }
-        for forbidden in ["env_len", "env_fill", "exec_run", "net_connect", "net_try_connect"] {
+        for forbidden in [
+            "env_len", "env_fill", "exec_run", "exec_run_at", "env_has_var", "env_get_into",
+            "net_connect", "net_try_connect",
+            "build_out_write", "build_env_len", "build_env_fill", "build_fetch_len",
+        ] {
             assert!(
                 !imports.iter().any(|i| i == forbidden),
                 "build primitive must not lower to runtime import `{forbidden}`: {imports:?}"
             );
         }
-        let params = import_param_counts(&wasm);
-        assert_eq!(params.get("build_env_len"), Some(&1), "BuildEnv receiver must not cross the host ABI");
-        assert_eq!(params.get("build_env_fill"), Some(&2), "BuildEnv receiver must not cross the host ABI");
-        assert_eq!(params.get("build_fetch_len"), Some(&2), "BuildNet receiver must not cross the host ABI");
-        assert_eq!(params.get("build_exec_run"), Some(&2), "BuildExec receiver must not cross the host ABI");
+        let params = import_param_types(wasm);
+        for (name, count) in [("build_out_write_at", 5), ("build_env_at", 3), ("build_exec_run", 5)] {
+            let types = params.get(name).expect("required capability import");
+            assert_eq!(types.len(), count, "checked slice ABI for {name}");
+            assert_eq!(types.first(), Some(&wasmparser::ValType::EXTERNREF),
+                "{name} must carry a capability reference, not an integer");
+            assert!(types[1..].iter().all(|ty| *ty == wasmparser::ValType::I32),
+                "{name} must use explicit pointer/length lanes after its capability");
+        }
     }
 
     fn run_int(src: &str) -> i64 {
