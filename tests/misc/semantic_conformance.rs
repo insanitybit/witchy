@@ -67,12 +67,12 @@ fn checked(source: &str) -> witchy::pipeline::CheckedModule {
 }
 
 fn compiled_output(module: &witchy::pipeline::CheckedModule) -> Vec<String> {
-    let wasm = codegen::compile_checked_module_binary(module)
+    let artifact = codegen::compile_checked_module_artifact(module)
         .expect_lowered("compile conformance program");
     let mut runtime = Runtime::batch().expect("create conformance runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 print_int: true,
