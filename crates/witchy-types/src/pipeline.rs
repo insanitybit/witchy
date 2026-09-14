@@ -656,12 +656,14 @@ fn link_checked_with(
                 entry,
                 expand,
                 user_modules,
+                mode,
                 check_source,
             ),
             None => linker::link_canonical_with_origins_and_source_check(
                 modules,
                 entry,
                 expand,
+                mode,
                 check_source,
             ),
         }
@@ -1341,6 +1343,83 @@ mod tests {
             no_expand,
         ).expect("legacy checked link retains configured folding");
         assert_eq!(result_expression(legacy.module()), &witchy_syntax::ast::Expr::Int(5));
+    }
+
+    #[test]
+    fn canonical_test_driver_link_retains_test_mode() {
+        let library = parse(
+            "sealed type Version:\n    Version(Int)\n\npub fn value(version: Version) -> Int:\n    match version:\n        Version(value) -> value\n",
+        );
+        let test_driver = parse(
+            "import sealed_lib\n\nfn test_construct() -> Int:\n    sealed_lib.value(sealed_lib.Version(7))\n\nfn main() -> Int:\n    test_construct()\n",
+        );
+        let user_modules = std::collections::HashSet::from([
+            "sealed_lib".to_string(),
+            "test_entry".to_string(),
+        ]);
+
+        let (_, typed) = link_checked_with(
+            vec![("sealed_lib".into(), library), ("test_entry".into(), test_driver)],
+            "test_entry",
+            no_expand,
+            LinkMode::Test,
+            Some(&user_modules),
+            true,
+            None,
+        ).expect("canonical test-driver linking retains entry test privileges");
+        assert!(typed.is_some(), "canonical test-driver source remains captured");
+    }
+
+    #[test]
+    fn canonical_comptime_expansion_suppresses_nested_ast_fold() {
+        struct ResetOptimizationOverride;
+        impl Drop for ResetOptimizationOverride {
+            fn drop(&mut self) {
+                witchy_syntax::opt::set_for_tests(None);
+            }
+        }
+
+        fn nested_link_probe(
+            name: &str,
+            _: &mut witchy_syntax::ast::Module,
+            _: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            if name == "main" {
+                let nested = witchy_syntax::parser::parse_module(
+                    "fn main() -> Int:\n    2 + 3\n",
+                ).map_err(|error| error.to_string())?;
+                let linked = witchy_syntax::linker::link(
+                    vec![("comptime".into(), nested)],
+                    "comptime",
+                    no_expand,
+                ).map_err(|error| error.message)?;
+                let expression = linked.items.iter().find_map(|item| match item {
+                    witchy_syntax::ast::Item::Function(function)
+                        if function.name == "comptime.main" || function.name == "main" => {
+                            function.body.stmts.last()
+                        }
+                    _ => None,
+                }).and_then(|statement| match statement {
+                    witchy_syntax::ast::Stmt::Expr(expression) => Some(expression),
+                    _ => None,
+                }).ok_or_else(|| "nested comptime result expression missing".to_string())?;
+                if !matches!(expression, witchy_syntax::ast::Expr::Binary {
+                    op: witchy_syntax::ast::BinOp::Add,
+                    ..
+                }) {
+                    return Err(format!("canonical comptime nested link ran Fold: {expression:?}"));
+                }
+            }
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let _reset = ResetOptimizationOverride;
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+        link_checked_from_source_bundle(
+            vec![("main".into(), b"fn main() -> Int:\n    0\n".to_vec())],
+            "main",
+            nested_link_probe,
+        ).expect("canonical expansion suppresses Fold in nested comptime links");
     }
 
     use crate::runtime_type::{

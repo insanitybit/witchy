@@ -1080,6 +1080,32 @@ pub enum LinkMode {
     Test,
 }
 
+thread_local! {
+    static AST_FOLD_SUPPRESSION_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+struct AstFoldSuppression;
+
+impl Drop for AstFoldSuppression {
+    fn drop(&mut self) {
+        AST_FOLD_SUPPRESSION_DEPTH.with(|depth| {
+            depth.set(depth.get().checked_sub(1).expect("AST fold suppression depth"));
+        });
+    }
+}
+
+fn without_ast_fold<R>(operation: impl FnOnce() -> R) -> R {
+    AST_FOLD_SUPPRESSION_DEPTH.with(|depth| {
+        depth.set(depth.get().checked_add(1).expect("AST fold suppression depth"));
+    });
+    let _suppression = AstFoldSuppression;
+    operation()
+}
+
+fn ast_fold_is_suppressed() -> bool {
+    AST_FOLD_SUPPRESSION_DEPTH.with(|depth| depth.get() != 0)
+}
+
 fn returns_borrowed_view(ty: Option<&Type>) -> bool {
     ty.is_some_and(|ty| {
         matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _))
@@ -1812,19 +1838,22 @@ pub fn link_canonical_with_origins_and_source_check<F>(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
+    mode: LinkMode,
     check_source: F,
 ) -> Result<LinkedModule, SourceLinkError>
 where
     F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
 {
-    link_with_mode_and_origins_and_source_check_fold_policy(
-        modules,
-        entry,
-        expand,
-        LinkMode::Production,
-        check_source,
-        false,
-    )
+    without_ast_fold(|| {
+        link_with_mode_and_origins_and_source_check_fold_policy(
+            modules,
+            entry,
+            expand,
+            mode,
+            check_source,
+            false,
+        )
+    })
 }
 
 fn link_with_mode_and_origins_and_source_check_fold_policy<F>(
@@ -1956,20 +1985,23 @@ pub fn link_canonical_with_user_modules_and_origins_and_source_check<F>(
     entry: &str,
     expand: ComptimeExpander,
     user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
     check_source: F,
 ) -> Result<LinkedModule, SourceLinkError>
 where
     F: Fn(&crate::source_check::ResolvedSource) -> Result<(), SourceLinkError>,
 {
-    link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy(
-        modules,
-        entry,
-        expand,
-        user_modules,
-        LinkMode::Production,
-        check_source,
-        false,
-    )
+    without_ast_fold(|| {
+        link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy(
+            modules,
+            entry,
+            expand,
+            user_modules,
+            mode,
+            check_source,
+            false,
+        )
+    })
 }
 
 fn link_with_user_modules_with_mode_and_origins_and_source_check_fold_policy<F>(
@@ -2634,7 +2666,10 @@ where
     // backends consume (parity-free by construction). See src/optimize.rs. Gated
     // on the `fold` lever (RFC-0030) so the differential de-opt sweep covers it:
     // `WITCHY_OPT=-fold` leaves constant expressions unfolded.
-    if allow_ast_fold && crate::opt::enabled(crate::opt::Opt::Fold) {
+    if allow_ast_fold
+        && !ast_fold_is_suppressed()
+        && crate::opt::enabled(crate::opt::Opt::Fold)
+    {
         crate::optimize::optimize(&mut module);
     }
     // (RFC-0043) Statement-position mutating-method write-back is NO LONGER a
