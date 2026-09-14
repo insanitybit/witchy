@@ -263,6 +263,23 @@ cache-activation landing measured 88.409s and 101.116s for the whole shards;
 that gate overlapped compiler work, so the 70-83s gaps are contention or cold
 state candidates rather than recoverable intrinsic example work.
 
+**Warm oracle phase refresh, 2026-09-14.** A second serial sample used the
+same landed timing hooks, `target-codex`, utility QoS, and one process per
+example. Twelve requested examples admitted and completed; `worker_pool` was
+assigned to another shard and `carried_state` was refused before the oracle,
+so neither is treated as a test failure. Shard 3 summed to 10.174s and shard
+10 to 15.109s, making 15.109s the concurrent warm critical path. Production
+lowering plus admission accounted for 76.4% of shard 3 and 75.0% of shard 10.
+The two dominant examples were `scope` (13.921s total, 11.154s lowering and
+admission) and `async_tasks` (9.184s total, 7.669s lowering and admission).
+Across all twelve examples, lowering and admission were 19.096s of 25.283s
+(75.5%); source interpretation was 2.012s (8.0%), while runtime setup,
+Wasmtime execution, and heap audits were each substantially smaller. This
+supports profiling the shared production lowering/admission path first. It
+does not justify changing the ordinary source interpreter or adding `scope`
+and `async_tasks` to the edit route: the sample is warm, serial, and excludes
+the full-shard overlap and compile setup.
+
 An immutable binary containing the unlanded Boolean-reachability candidate cut
 warm lowering/admission from 10.417s to 9.756s for `async_tasks` and from
 13.917s to 13.133s for `scope`. Total time fell 4.9% and 4.5%. This is useful
