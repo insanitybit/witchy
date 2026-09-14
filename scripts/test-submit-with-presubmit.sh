@@ -32,6 +32,11 @@ git -C "$root" commit -qm base
 grep -Fx 'agent-check edit' "$root/agent-check-called"
 printf '%s\n' demo 'latency note' | cmp -s - "$root/merge-queue-args"
 
+rm -f "$root/agent-check-called" "$root/merge-queue-args"
+"$root/scripts/submit-with-presubmit.sh"
+grep -Fx 'agent-check edit' "$root/agent-check-called"
+printf '%s\n' demo | cmp -s - "$root/merge-queue-args"
+
 if "$root/scripts/submit-with-presubmit.sh" wrong >/dev/null 2>&1; then
     echo "branch mismatch was accepted" >&2
     exit 1

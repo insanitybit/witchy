@@ -188,10 +188,11 @@ merge-queue.sh submit [--front] [--after <parent>]... <branch> [note]
                                                  MERGE_QUEUE_SKIP_PRECHECK=1 overrides;
                                                  warns on file overlap with queued
                                                  branches and if no coordinator runs)
-scripts/submit-with-presubmit.sh <current-branch> [note]
+scripts/submit-with-presubmit.sh [current-branch] [note]
                                                  run `agent-check.sh edit` in the
                                                  current branch worktree, then submit
-                                                 the same tip; opt-in convenience only
+                                                 the same tip; omitted branch uses the
+                                                 current checkout; opt-in convenience only
 merge-queue.sh wait <branch> [secs]              block until terminal journal event
                                                  (default 3600s); prints it as JSON;
                                                  exit 0 iff merged. submit && wait

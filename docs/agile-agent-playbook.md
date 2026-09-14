@@ -134,13 +134,16 @@ When the branch is ready to queue, use the combined command from its own
 worktree:
 
 ```sh
-./scripts/submit-with-presubmit.sh <branch> [note]
+./scripts/submit-with-presubmit.sh [branch] [note]
 ```
 
 It runs the exact-tip edit checks and submits that same tip, preserving the
 receipt join used to measure and prevent failure-driven rework. Use the
 separate `agent-check.sh edit` then `merge-queue.sh submit` commands only when
 you need to inspect or stage those steps independently.
+
+When run without arguments from the branch worktree, it infers the current
+branch and submits it without a note.
 
 Defaults:
 
