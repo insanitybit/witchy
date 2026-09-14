@@ -324,7 +324,9 @@ for p in "${paths[@]}"; do
         *) registry_replay_paths_only=0 ;;
     esac
     case "$p" in
-        tests/misc/rfc0165_packaged_source.rs) registry_replay_contract_surface=1 ;;
+        src/source/package_inputs/registry_replay_tests.rs | \
+        tests/misc/rfc0165_packaged_source.rs)
+            registry_replay_contract_surface=1 ;;
     esac
     case "$p" in
         crates/witchy-interp/src/interpreter/runners.rs | \

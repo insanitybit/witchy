@@ -588,6 +588,19 @@ fn registry_replay_edit_loop_stays_on_its_three_contracts() {
 }
 
 #[test]
+fn standalone_registry_replay_tests_run_their_own_contract() {
+    let commands = selected(&[
+        "--edit-loop",
+        "src/source/package_inputs/registry_replay_tests.rs",
+    ]);
+    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert!(
+        commands.iter().any(|command| command.contains("source::package_inputs::registry_replay_tests::")),
+        "standalone registry replay edits skipped their test family: {commands:?}",
+    );
+}
+
+#[test]
 fn edit_loop_stops_after_named_cheap_probes_when_available() {
     let commands = selected(&["--edit-loop", "crates/witchy-wir/src/wir_prelude.rs"]);
     assert_eq!(commands.len(), 2, "{commands:?}");
