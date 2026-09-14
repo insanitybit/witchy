@@ -670,6 +670,8 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[0].contains("scalar_clone_range_is_ownership_safe_and_admitted"), "{mixed:?}");
     assert!(mixed[0].contains("owned_tail_nonprefix_range_requires_a_checked_end_bound"), "{mixed:?}");
     assert!(mixed[0].contains("canonical_capabilities_lower_only_to_externref"), "{mixed:?}");
+    assert!(mixed[0].contains("a_token_of_another_kind_cannot_serve_a_dir_operation"), "{mixed:?}");
+    assert!(mixed[0].contains("validated_safewir_has_one_checker_owned_construction_surface"), "{mixed:?}");
     assert!(mixed[1].contains("canonical_pipeline::tests::list_string_"), "{mixed:?}");
     assert!(mixed[2].contains("native_host_links_every_catalog_import_with_the_declared_signature"), "{mixed:?}");
     assert!(mixed[2].contains("list_pop_projected_coordinates_and_nested_payloads_on_three_legs"), "{mixed:?}");
@@ -688,6 +690,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
     assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
+    assert!(mixed[2].contains("fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm"), "{mixed:?}");
     assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_enum_equality::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");

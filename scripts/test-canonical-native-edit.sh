@@ -37,7 +37,8 @@ elif a[:2] == ["nextest", "list"]:
         sys.exit(0)
     rows = [("witchy-wir", "lib", "witchy_wir"), ("witchy-wir", "test", "rfc0165_route_gate"),
             ("witchy-lower", "lib", "witchy_lower"), ("witchy", "bin", "witchy"),
-            ("witchy", "test", "misc"), ("witchy", "lib", "witchy")]
+            ("witchy", "test", "misc"), ("witchy", "test", "cli_subcommands"),
+            ("witchy", "lib", "witchy")]
     if "codegen" in a: rows.append(("witchy-lower", "test", "codegen"))
     binaries = {}
     for package, kind, name in rows:
@@ -94,16 +95,16 @@ jq -e --arg sha "$sha" '.sha == $sha and (.shards | index("edit") != null)' "$re
 python3 - "$MOCK_LOG" <<'PY'
 import json, os, pathlib, sys
 rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
-assert len(rows) == 5, rows
+assert len(rows) == 6, rows
 assert rows[0]["args"][0] == "metadata"
 assert rows[1]["args"][:2] == ["nextest", "list"]
 assert rows[1]["args"].count("-p") == 3
-assert all(p in rows[1]["args"] for p in ["witchy-wir", "witchy-lower", "witchy", "misc", "rfc0165_route_gate"])
+assert all(p in rows[1]["args"] for p in ["witchy-wir", "witchy-lower", "witchy", "misc", "cli_subcommands", "rfc0165_route_gate"])
 for row in rows:
     assert row["utility"] == "1", row
     assert row["target"] == os.environ["CARGO_TARGET_DIR"], row
     assert row["strip"] == "none", row
-assert [r["oracle"] for r in rows] == [None, None, None, None, "calc"]
+assert [r["oracle"] for r in rows] == [None, None, None, None, "calc", None]
 for row in rows[2:]:
     a = row["args"]
     assert a[:2] == ["nextest", "run"] and "--binaries-metadata" in a and "--cargo-metadata" in a
@@ -116,8 +117,10 @@ expected_scopes = [
     "package(=witchy-lower) and kind(lib)",
     "package(=witchy) and ((kind(bin) and binary(=witchy)) or (kind(test) and binary(=misc)))",
 ]
-for row, scope in zip(rows[2:], expected_scopes):
+for row, scope in zip(rows[2:5], expected_scopes):
     assert row["args"][row["args"].index("-E") + 1].startswith(scope + " and (")
+assert "binary(=cli_subcommands)" in rows[5]["args"][rows[5]["args"].index("-E") + 1]
+assert "fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm" in rows[5]["args"][rows[5]["args"].index("-E") + 1]
 # Metadata belongs only to this run; no stale reusable success cache remains.
 assert not pathlib.Path(rows[2]["args"][rows[2]["args"].index("--binaries-metadata") + 1]).exists()
 PY
@@ -129,8 +132,8 @@ python3 - "$tmp/plan" "$MOCK_LOG" <<'PY'
 import json, pathlib, shlex, sys
 commands = [shlex.split(line.strip()) for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.startswith("  ")]
 rows = [json.loads(line) for line in pathlib.Path(sys.argv[2]).read_text().splitlines()][2:]
-assert len(commands) == len(rows) == 3
-for command, row in zip(commands, rows):
+assert len(commands) == 3
+for command, row in zip(commands, rows[:3]):
     original = command[command.index("-E") + 1]
     actual = row["args"][row["args"].index("-E") + 1]
     assert actual.endswith(" and (" + original + ")"), (original, actual)
@@ -163,7 +166,7 @@ for path in crates/witchy-lower/src/canonical_build_read.rs crates/witchy-wir/sr
     python3 - "$MOCK_LOG" <<'PY'
 import json, pathlib, sys
 rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
-assert len(rows) == 6, rows
+assert len(rows) == 7, rows
 assert sum(r["args"][:2] == ["nextest", "list"] for r in rows) == 1
 last = rows[-1]["args"]
 assert last[:2] == ["nextest", "run"] and "witchy-runtime" in last

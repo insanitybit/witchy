@@ -24,7 +24,7 @@ temporary="$(mktemp -d "${TMPDIR:-/tmp}/witchy-canonical-edit.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 cargo_metadata="$temporary/cargo.json"
 binaries_metadata="$temporary/binaries.json"
-targets=(--lib --bin witchy --test rfc0165_route_gate --test misc)
+targets=(--lib --bin witchy --test rfc0165_route_gate --test misc --test cli_subcommands)
 lower_scope='package(=witchy-lower) and kind(lib)'
 if [ "$recipe" -eq 1 ]; then
     targets+=(--test codegen)
@@ -64,6 +64,7 @@ require_binary witchy-wir test rfc0165_route_gate
 require_binary witchy-lower lib ''
 require_binary witchy bin witchy
 require_binary witchy test misc
+require_binary witchy test cli_subcommands
 if [ "$recipe" -eq 1 ]; then require_binary witchy-lower test codegen; fi
 
 reuse=(--cargo-metadata "$cargo_metadata" --binaries-metadata "$binaries_metadata")
@@ -75,6 +76,9 @@ env -u WITCHY_ORACLE_EXAMPLE cargo nextest run "${reuse[@]}" \
     -E "$lower_scope and ($lower_filter)"
 WITCHY_ORACLE_EXAMPLE=calc cargo nextest run "${reuse[@]}" --ignore-default-filter \
     -E "package(=witchy) and ((kind(bin) and binary(=witchy)) or (kind(test) and binary(=misc))) and ($root_filter)"
+echo "canonical native: app group also probes fetch-root origin admission"
+env -u WITCHY_ORACLE_EXAMPLE cargo nextest run "${reuse[@]}" \
+    -E "package(=witchy) and kind(test) and binary(=cli_subcommands) and test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)"
 if [ "$(git rev-parse HEAD)" != "$start_sha" ]; then
     echo "canonical native: HEAD changed during build/run; no receipt" >&2
     exit 1
