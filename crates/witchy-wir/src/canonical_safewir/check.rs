@@ -4165,7 +4165,6 @@ mod tests {
             Operation::Arithmetic { destination: ValueId::new(42), operator, left: ValueId::new(40), right: ValueId::new(41), overflow },
         );
         for candidate in [
-            arithmetic(ValueType::Int, ArithmeticOperator::Add, OverflowBehavior::Trap),
             arithmetic(ValueType::Size, ArithmeticOperator::Subtract, OverflowBehavior::Trap),
             arithmetic(ValueType::Float, ArithmeticOperator::RemainderSigned, OverflowBehavior::Wrap),
             arithmetic(ValueType::Float, ArithmeticOperator::Add, OverflowBehavior::Trap),
@@ -4250,8 +4249,10 @@ mod tests {
         );
         for candidate in [
             arithmetic(ValueType::Int, ArithmeticOperator::BitXor, OverflowBehavior::Wrap),
+            arithmetic(ValueType::Int, ArithmeticOperator::Add, OverflowBehavior::Trap),
             arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, OverflowBehavior::Trap),
             arithmetic(ValueType::Size, ArithmeticOperator::Add, OverflowBehavior::Trap),
+            arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, OverflowBehavior::Trap),
             arithmetic(ValueType::Float, ArithmeticOperator::DivideUnsigned, OverflowBehavior::Wrap),
             scalar_binary_candidate(ValueType::Bool, Operation::Compare { destination: ValueId::new(42), operator: ComparisonOperator::NotEqual, left: ValueId::new(40), right: ValueId::new(41) }),
         ] {
