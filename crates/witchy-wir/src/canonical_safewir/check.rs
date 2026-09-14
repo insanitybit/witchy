@@ -1336,6 +1336,7 @@ fn check_operation(
                     function: function.id,
                     import: *import,
                 })?;
+            let mut write_buffer = None;
             for (parameter, (argument, role)) in arguments
                 .iter()
                 .zip(&contract.parameter_roles)
@@ -1343,11 +1344,24 @@ fn check_operation(
             {
                 if let (
                     HostCallArgument::Buffer { place, extent },
-                    super::HostParameterRole::Buffer { .. },
+                    super::HostParameterRole::Buffer { access, .. },
                 ) = (argument, role)
                 {
                     memory.check_host_buffer(place, extent, *import, parameter)?;
+                    if *access == super::AccessMode::Write && write_buffer.replace(place).is_some() {
+                        return unsupported_memory(function, "HostCall(multiple write buffers)");
+                    }
                 }
+            }
+            if contract.mutation == super::HostMutation::WriteBuffers {
+                let mut written = contract.result_roles.iter().zip(destinations).filter_map(|(role, value)| {
+                    matches!(role, super::HostResultRole::Value(ValueType::Size)).then_some(*value)
+                });
+                let published = written.next();
+                if written.next().is_some() || write_buffer.is_none() || published.is_none() {
+                    return unsupported_memory(function, "HostCall(write prefix contract)");
+                }
+                memory.record_host_written_prefix(write_buffer.expect("checked"), published.expect("checked"))?;
             }
             Ok(())
         }
@@ -2504,6 +2518,84 @@ mod tests {
             mutation: HostMutation::ReadOnly,
             reentrancy: HostReentrancy::Forbidden,
         };
+        let mut value_types: BTreeMap<ValueId, ValueType> = [
+            (start, ValueType::Size),
+            (length, ValueType::Size),
+            (count, ValueType::Size),
+            (capacity, ValueType::Size),
+            (capacity_ok, ValueType::Bool),
+            (object, ValueType::Ref(layout)),
+            (result, ValueType::Int),
+        ]
+        .into_iter()
+        .collect();
+        let mut operations = vec![
+            Operation::ConstSize { destination: start, value: start_value },
+            Operation::ConstSize { destination: length, value: length_value },
+            Operation::ConstSize { destination: count, value: count_value },
+            Operation::ConstSize { destination: capacity, value: count_value },
+            Operation::Compare {
+                destination: capacity_ok,
+                operator: ComparisonOperator::LessEqualUnsigned,
+                left: count,
+                right: capacity,
+            },
+            Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
+            Operation::Alloc {
+                destination: object,
+                layout,
+                extent: Extent::Counted {
+                    header_bytes: 4,
+                    count,
+                    capacity,
+                    stride_bytes: if raw_bytes { 1 } else { 4 },
+                },
+                class: AllocationClass::ReferenceCounted,
+            },
+        ];
+        for index_value in 0..count_value {
+            let index = ValueId::new(100 + index_value as u32 * 2);
+            let stored = ValueId::new(101 + index_value as u32 * 2);
+            let in_capacity = ValueId::new(200 + index_value as u32);
+            value_types.insert(index, ValueType::Size);
+            value_types.insert(stored, ValueType::Size);
+            value_types.insert(in_capacity, ValueType::Bool);
+            operations.push(Operation::ConstSize { destination: index, value: index_value });
+            operations.push(Operation::ConstSize { destination: stored, value: 0 });
+            operations.push(Operation::Compare {
+                destination: in_capacity,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: capacity,
+            });
+            operations.push(Operation::Guard { condition: in_capacity, kind: GuardKind::Bounds });
+            operations.push(Operation::Store {
+                place: Place::projected(
+                    object,
+                    Projection::Element { index },
+                    ValueType::Size,
+                    AccessMode::Write,
+                ),
+                value: stored,
+                transfer: StoreTransfer::CopyScalar,
+            });
+        }
+        operations.extend([
+            Operation::HostCall {
+                destinations: vec![result],
+                import: ImportId::new(0),
+                arguments: vec![HostCallArgument::Buffer {
+                    place: Place::projected(
+                        object,
+                        Projection::Slice { start, length },
+                        ValueType::Ref(layout),
+                        AccessMode::Read,
+                    ),
+                    extent: supplied_extent,
+                }],
+            },
+            Operation::DropRef { object },
+        ]);
         let module = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([7; 32]),
@@ -2534,59 +2626,11 @@ mod tests {
                 id: FUNCTION,
                 signature: SIGNATURE,
                 entry: ENTRY,
-                value_types: [
-                    (start, ValueType::Size),
-                    (length, ValueType::Size),
-                    (count, ValueType::Size),
-                    (capacity, ValueType::Size),
-                    (capacity_ok, ValueType::Bool),
-                    (object, ValueType::Ref(layout)),
-                    (result, ValueType::Int),
-                ]
-                .into_iter()
-                .collect(),
+                value_types,
                 blocks: vec![BasicBlock {
                     id: ENTRY,
                     parameters: Vec::new(),
-                    operations: vec![
-                        Operation::ConstSize { destination: start, value: start_value },
-                        Operation::ConstSize { destination: length, value: length_value },
-                        Operation::ConstSize { destination: count, value: count_value },
-                        Operation::ConstSize { destination: capacity, value: count_value },
-                        Operation::Compare {
-                            destination: capacity_ok,
-                            operator: ComparisonOperator::LessEqualUnsigned,
-                            left: count,
-                            right: capacity,
-                        },
-                        Operation::Guard { condition: capacity_ok, kind: GuardKind::Bounds },
-                        Operation::Alloc {
-                            destination: object,
-                            layout,
-                            extent: Extent::Counted {
-                                header_bytes: 4,
-                                count,
-                                capacity,
-                                stride_bytes: if raw_bytes { 1 } else { 4 },
-                            },
-                            class: AllocationClass::ReferenceCounted,
-                        },
-                        Operation::HostCall {
-                            destinations: vec![result],
-                            import: ImportId::new(0),
-                            arguments: vec![HostCallArgument::Buffer {
-                                place: Place::projected(
-                                    object,
-                                    Projection::Slice { start, length },
-                                    ValueType::Ref(layout),
-                                    AccessMode::Read,
-                                ),
-                                extent: supplied_extent,
-                            }],
-                        },
-                        // Callee-drops: the buffer is released after the host read.
-                        Operation::DropRef { object },
-                    ],
+                    operations,
                     terminator: Terminator::Return { values: vec![result] },
                 }],
             }],
@@ -3040,6 +3084,48 @@ mod tests {
     }
 
     #[test]
+    fn host_write_does_not_initialize_unspecified_capacity() {
+        let (mut module, catalog) = write_slice_host_module(WriteSliceLength::Constant(16));
+        let index = ValueId::new(8);
+        let loaded = ValueId::new(9);
+        let in_bounds = ValueId::new(10);
+        let function = &mut module.functions[0];
+        function.value_types.insert(index, ValueType::Size);
+        function.value_types.insert(loaded, ValueType::Size);
+        function.value_types.insert(in_bounds, ValueType::Bool);
+        let operations = &mut function.blocks[0].operations;
+        let host_call = operations.iter()
+            .position(|operation| matches!(operation, Operation::HostCall { .. }))
+            .expect("host call");
+        operations.splice(host_call + 1..host_call + 1, [
+            Operation::ConstSize { destination: index, value: 31 },
+            Operation::Compare {
+                destination: in_bounds,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index,
+                right: ValueId::new(1),
+            },
+            Operation::Guard { condition: in_bounds, kind: GuardKind::Bounds },
+            Operation::Load {
+                destination: loaded,
+                place: Place::projected(
+                    ValueId::new(4),
+                    Projection::Element { index },
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            },
+        ]);
+        assert!(matches!(
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::UnsupportedMemoryOperation {
+                operation: "Load(uninitialized scalar)", ..
+            })
+        ));
+    }
+
+    #[test]
     fn write_slice_host_call_refuses_a_lane_beyond_capacity() {
         let (module, catalog) = write_slice_host_module(WriteSliceLength::Constant(64));
         let result = super::check_initial_with_catalog(module, &catalog);
@@ -3094,6 +3180,14 @@ mod tests {
         let capacity_ok = ValueId::new(3);
         let source = ValueId::new(4);
         let destination = ValueId::new(5);
+        let index_1 = ValueId::new(6);
+        let index_2 = ValueId::new(7);
+        let index_3 = ValueId::new(8);
+        let stored = ValueId::new(9);
+        let check_0 = ValueId::new(10);
+        let check_1 = ValueId::new(11);
+        let check_2 = ValueId::new(12);
+        let check_3 = ValueId::new(13);
         let stride_bytes = if raw_bytes { 1 } else { 4 };
         CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
@@ -3117,6 +3211,14 @@ mod tests {
                     (capacity_ok, ValueType::Bool),
                     (source, ValueType::Ref(layout)),
                     (destination, ValueType::Ref(layout)),
+                    (index_1, ValueType::Size),
+                    (index_2, ValueType::Size),
+                    (index_3, ValueType::Size),
+                    (stored, ValueType::Size),
+                    (check_0, ValueType::Bool),
+                    (check_1, ValueType::Bool),
+                    (check_2, ValueType::Bool),
+                    (check_3, ValueType::Bool),
                 ]
                 .into_iter()
                 .collect(),
@@ -3155,6 +3257,38 @@ mod tests {
                                 stride_bytes,
                             },
                             class: AllocationClass::ReferenceCounted,
+                        },
+                        Operation::ConstSize { destination: index_1, value: 1 },
+                        Operation::ConstSize { destination: index_2, value: 2 },
+                        Operation::ConstSize { destination: index_3, value: 3 },
+                        Operation::ConstSize { destination: stored, value: 0 },
+                        Operation::Compare { destination: check_0, operator: ComparisonOperator::LessUnsigned, left: start, right: capacity },
+                        Operation::Guard { condition: check_0, kind: GuardKind::Bounds },
+                        Operation::Compare { destination: check_1, operator: ComparisonOperator::LessUnsigned, left: index_1, right: capacity },
+                        Operation::Guard { condition: check_1, kind: GuardKind::Bounds },
+                        Operation::Compare { destination: check_2, operator: ComparisonOperator::LessUnsigned, left: index_2, right: capacity },
+                        Operation::Guard { condition: check_2, kind: GuardKind::Bounds },
+                        Operation::Compare { destination: check_3, operator: ComparisonOperator::LessUnsigned, left: index_3, right: capacity },
+                        Operation::Guard { condition: check_3, kind: GuardKind::Bounds },
+                        Operation::Store {
+                            place: Place::projected(source, Projection::Element { index: start }, ValueType::Size, AccessMode::Write),
+                            value: stored,
+                            transfer: StoreTransfer::CopyScalar,
+                        },
+                        Operation::Store {
+                            place: Place::projected(source, Projection::Element { index: index_1 }, ValueType::Size, AccessMode::Write),
+                            value: stored,
+                            transfer: StoreTransfer::CopyScalar,
+                        },
+                        Operation::Store {
+                            place: Place::projected(source, Projection::Element { index: index_2 }, ValueType::Size, AccessMode::Write),
+                            value: stored,
+                            transfer: StoreTransfer::CopyScalar,
+                        },
+                        Operation::Store {
+                            place: Place::projected(source, Projection::Element { index: index_3 }, ValueType::Size, AccessMode::Write),
+                            value: stored,
+                            transfer: StoreTransfer::CopyScalar,
                         },
                         Operation::CopyBytes {
                             destination: Place::projected(
@@ -3396,6 +3530,21 @@ mod tests {
         );
         let result = super::check_initial_with_catalog(module, &catalog);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn authenticated_host_read_refuses_uninitialized_guest_bytes() {
+        let (mut module, catalog) = allocated_host_buffer_module(
+            true, 0, 4, 4, HostBufferExtent::Slice, HostBufferExtent::Slice,
+        );
+        module.functions[0].blocks[0].operations
+            .retain(|operation| !matches!(operation, Operation::Store { .. }));
+        assert!(matches!(
+            super::check_initial_with_catalog(module, &catalog),
+            Err(InitialCheckError::UnsupportedMemoryOperation {
+                operation: "HostCall(read uninitialized scalar range)", ..
+            })
+        ));
     }
 
     #[test]
@@ -4085,7 +4234,7 @@ mod tests {
     #[test]
     fn dynamic_element_load_without_guard_is_refused() {
         assert_eq!(
-            check_initial(dynamic_load_module(false, 1, true)).unwrap_err(),
+            check_initial(dynamic_load_module(false, 1, false)).unwrap_err(),
             InitialCheckError::MissingBoundsGuard {
                 function: FUNCTION,
                 index: ValueId::new(2),
@@ -4334,6 +4483,10 @@ mod tests {
         let index_condition = ValueId::new(5);
         let object = ValueId::new(6);
         let loaded = ValueId::new(7);
+        let zero = ValueId::new(8);
+        let stored = ValueId::new(9);
+        let zero_in_capacity = ValueId::new(10);
+        let index_in_capacity = ValueId::new(11);
         let (layouts, layout) = dynamic_u32_layout();
         let operations = vec![
             Operation::ConstSize { destination: count, value: 1 },
@@ -4357,6 +4510,22 @@ mod tests {
                     stride_bytes: 4,
                 },
                 class: AllocationClass::ReferenceCounted,
+            },
+            Operation::ConstSize { destination: zero, value: 0 },
+            Operation::ConstSize { destination: stored, value: 7 },
+            Operation::Compare { destination: zero_in_capacity, operator: ComparisonOperator::LessUnsigned, left: zero, right: capacity },
+            Operation::Guard { condition: zero_in_capacity, kind: GuardKind::Bounds },
+            Operation::Compare { destination: index_in_capacity, operator: ComparisonOperator::LessUnsigned, left: index, right: capacity },
+            Operation::Guard { condition: index_in_capacity, kind: GuardKind::Bounds },
+            Operation::Store {
+                place: Place::projected(object, Projection::Element { index: zero }, ValueType::Size, AccessMode::Write),
+                value: stored,
+                transfer: StoreTransfer::CopyScalar,
+            },
+            Operation::Store {
+                place: Place::projected(object, Projection::Element { index }, ValueType::Size, AccessMode::Write),
+                value: stored,
+                transfer: StoreTransfer::CopyScalar,
             },
             Operation::UpdateCount { object, count: new_count },
             Operation::Compare {
@@ -4402,6 +4571,10 @@ mod tests {
                     (index_condition, ValueType::Bool),
                     (object, ValueType::Ref(layout)),
                     (loaded, ValueType::Size),
+                    (zero, ValueType::Size),
+                    (stored, ValueType::Size),
+                    (zero_in_capacity, ValueType::Bool),
+                    (index_in_capacity, ValueType::Bool),
                 ]
                 .into_iter()
                 .collect(),
@@ -4615,6 +4788,36 @@ mod tests {
             check_initial(module).unwrap_err(),
             InitialCheckError::CallableContractMismatch { signature: SIGNATURE }
         );
+    }
+
+    #[test]
+    fn checked_value_memory_result_is_refused_in_auxiliary_signature() {
+        let (layouts, layout) = dynamic_u32_layout();
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![
+                FunctionSignature {
+                    id: SIGNATURE, parameters: Vec::new(), results: Vec::new(),
+                    contract: contract(Vec::new()),
+                },
+                FunctionSignature {
+                    id: CALLEE_SIGNATURE, parameters: Vec::new(), results: vec![ValueType::Ref(layout)],
+                    contract: contract(vec![ResultContract::CheckedValue { layout }]),
+                },
+            ],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION, signature: SIGNATURE, entry: ENTRY,
+                value_types: BTreeMap::new(),
+                blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: Vec::new(),
+                    terminator: Terminator::Return { values: Vec::new() } }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert_eq!(check_initial(module).unwrap_err(),
+            InitialCheckError::CallableContractMismatch { signature: CALLEE_SIGNATURE });
     }
 
     #[test]

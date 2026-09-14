@@ -308,7 +308,7 @@ impl<'a> MemoryChecker<'a> {
         // not infer completeness from overlapping phi origins or another
         // token's summary, and finish every check before publishing summaries.
         let complete_prefixes = prefix_candidates.into_iter().filter(|value| {
-            self.require_owned_slots_initialized(*value, "managed phi(uninitialized owned slot)").is_ok()
+            self.require_complete_value_initialized(*value, "managed phi(uninitialized owned slot)").is_ok()
         }).collect::<Vec<_>>();
         for value in complete_prefixes {
             self.state.objects.get_mut(&value).expect("candidate exists").initialized_owned_slots = true;
@@ -928,7 +928,7 @@ impl<'a> MemoryChecker<'a> {
             match argument {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
-                    self.require_owned_slots_initialized(*value, "Call(uninitialized owned slot)")?;
+                    self.require_complete_value_initialized(*value, "Call(uninitialized owned slot)")?;
                     self.consume_call_move(*value, parameter.ownership)?;
                 }
             }
@@ -1058,7 +1058,6 @@ impl<'a> MemoryChecker<'a> {
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
                 ResultContract::CheckedValue { layout } => {
-                    self.require_owned_slots_initialized(*value, "Return(uninitialized owned slot)")?;
                     let state = self.live_object(*value)?;
                     if state.layout != *layout
                         || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
@@ -1068,9 +1067,9 @@ impl<'a> MemoryChecker<'a> {
                             object: *value,
                         });
                     }
+                    self.require_complete_value_initialized(*value, "Return(uninitialized owned slot)")?;
                 }
                 ResultContract::Fresh { layout, class, extent } => {
-                    self.require_owned_slots_initialized(*value, "Return(uninitialized owned slot)")?;
                     let state = self.live_object(*value)?;
                     if state.layout != *layout
                         || state.ownership != Ownership::Unique
@@ -1083,6 +1082,7 @@ impl<'a> MemoryChecker<'a> {
                             object: *value,
                         });
                     }
+                    self.require_complete_value_initialized(*value, "Return(uninitialized owned slot)")?;
                 }
                 ResultContract::StaticData { layout } => {
                     let state = self.live_object(*value)?;
@@ -1097,7 +1097,6 @@ impl<'a> MemoryChecker<'a> {
                     }
                 }
                 ResultContract::Unique { layout } => {
-                    self.require_owned_slots_initialized(*value, "Return(uninitialized unique write-back)")?;
                     let state = self.live_object(*value)?;
                     if state.layout != *layout || state.ownership != Ownership::Unique
                         || state.allocation_class != Some(AllocationClass::ReferenceCounted)
@@ -1105,9 +1104,9 @@ impl<'a> MemoryChecker<'a> {
                     {
                         return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: *value });
                     }
+                    self.require_complete_value_initialized(*value, "Return(uninitialized unique write-back)")?;
                 }
                 ResultContract::Shared { layout } => {
-                    self.require_owned_slots_initialized(*value, "Return(uninitialized owned slot)")?;
                     let state = self.live_object(*value)?;
                     // Shared owns either an RC token or immutable static data.
                     // The union never grants mutation or reclamation authority.
@@ -1125,6 +1124,7 @@ impl<'a> MemoryChecker<'a> {
                             object: *value,
                         });
                     }
+                    self.require_complete_value_initialized(*value, "Return(uninitialized owned slot)")?;
                 }
                 _ => return self.unsupported("Return(memory result contract)"),
             }
@@ -1237,6 +1237,58 @@ impl<'a> MemoryChecker<'a> {
                 });
             }
         }
+        if place.access() == AccessMode::Read {
+            let element = self.descriptor(object.layout)?.kind().packed_element_layout()
+                .ok_or(InitialCheckError::UnsupportedHostBuffer {
+                    function: self.function.id,
+                    import,
+                    parameter,
+                })?;
+            self.require_initialized_scalar_range(
+                CheckedRange {
+                    object: place.object(), start: *start, length: *length,
+                    layout: object.layout, element, identity: object.identity,
+                    ownership: object.ownership, allocation_class: object.allocation_class,
+                },
+                "HostCall(read uninitialized scalar range)",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A write buffer grants bounded mutation, not initialized capacity. The
+    /// authenticated size result names the exact initialized prefix; a later
+    /// checked UpdateCount publishes it to guest reads.
+    pub(super) fn record_host_written_prefix(
+        &mut self,
+        place: &Place,
+        written: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        self.require_type(written, ValueType::Size)?;
+        let Projection::Slice { start, length: _ } = place.projection() else {
+            return self.unsupported("HostCall(write prefix projection)");
+        };
+        let object = self.live_object(place.object())?.clone();
+        let Extent::Counted { .. } = object.extent else {
+            return self.unsupported("HostCall(write prefix extent)");
+        };
+        if !self.is_raw_byte_buffer(object.layout)? {
+            return self.unsupported("HostCall(write prefix contract)");
+        }
+        let element = self.descriptor(object.layout)?.kind().packed_element_layout()
+            .ok_or(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: place.object(),
+            })?;
+        // The authenticated write contract defines its sole Size result as
+        // the number of bytes initialized from the supplied slice's start.
+        // Do not turn the slice length or backing capacity into initialized
+        // storage: only the host-published result receives that authority.
+        self.mark_initialized_scalar_range(CheckedRange {
+            object: place.object(), start: *start, length: written,
+            layout: object.layout, element, identity: object.identity,
+            ownership: object.ownership, allocation_class: object.allocation_class,
+        });
         Ok(())
     }
 
@@ -1313,11 +1365,13 @@ impl<'a> MemoryChecker<'a> {
         } else {
             self.require_scalar_range_element(destination.element, "MoveRange")?;
             self.require_initialized_scalar_range(source, "MoveRange(uninitialized scalar source)")?;
-            self.forget_scalar_initialization(source.object);
+            self.move_scalar_initialization(source)?;
             self.mark_initialized_scalar_range(destination);
         }
         if destination.ownership != Ownership::Unique
             || source.ownership != Ownership::Unique
+            || !self.is_sole_live_token(destination.object, destination.identity)
+            || !self.is_sole_live_token(source.object, source.identity)
             || destination.allocation_class != Some(AllocationClass::ReferenceCounted)
             || source.allocation_class != Some(AllocationClass::ReferenceCounted)
             || self.state.static_data_objects.contains(&destination.object)
@@ -1666,27 +1720,60 @@ impl<'a> MemoryChecker<'a> {
         );
     }
 
-    fn forget_scalar_initialization(&mut self, object: ValueId) {
-        let Some(identity) = self.state.objects.get(&object).map(|state| state.identity) else {
-            return;
-        };
-        let aliases = self
-            .state
-            .objects
-            .iter()
-            .filter_map(|(value, state)| (state.identity == identity).then_some(*value))
-            .collect::<BTreeSet<_>>();
-        self.state
-            .initialized_scalar_slots
-            .retain(|(container, _)| !aliases.contains(container));
-        self.state
-            .range_states
-            .retain(|range, _| !aliases.contains(&range.object));
-        for state in self.state.objects.values_mut() {
-            if state.identity == identity {
-                state.initialized_owned_slots = false;
+    fn move_scalar_initialization(&mut self, moved: CheckedRange) -> Result<(), InitialCheckError> {
+        let state = self.live_object(moved.object)?.clone();
+        let full_prefix = self.is_zero(moved.start)
+            && matches!(state.extent, Extent::Counted { count, .. } if self.same_scalar(count, moved.length));
+        if state.initialized_owned_slots && !full_prefix {
+            return self.unsupported("MoveRange(partial scalar summary)");
+        }
+        let moved_constants = self.state.constants.get(&moved.start).copied()
+            .zip(self.state.constants.get(&moved.length).copied());
+        let ranges = self.state.range_states.iter()
+            .filter(|(identity, range)| self.same_allocation(moved.object, identity.object)
+                && range.initialized && !range.zero_width)
+            .map(|(identity, range)| (*identity, *range)).collect::<Vec<_>>();
+        let mut remove_ranges = Vec::new();
+        for (identity, _) in ranges {
+            if self.same_scalar(identity.start, moved.start)
+                && self.same_scalar(identity.length, moved.length)
+            {
+                remove_ranges.push(identity);
+                continue;
+            }
+            let disjoint = moved_constants.zip(
+                self.state.constants.get(&identity.start).copied()
+                    .zip(self.state.constants.get(&identity.length).copied()),
+            ).is_some_and(|((moved_start, moved_len), (start, len))| {
+                moved_start.checked_add(moved_len).zip(start.checked_add(len))
+                    .is_some_and(|(moved_end, end)| moved_end <= start || end <= moved_start)
+            });
+            if !disjoint {
+                return self.unsupported("MoveRange(partial scalar range fact)");
             }
         }
+        let slots = self.state.initialized_scalar_slots.iter()
+            .filter(|(object, _)| self.same_allocation(moved.object, *object))
+            .copied().collect::<Vec<_>>();
+        let mut remove_slots = Vec::new();
+        for slot in slots {
+            let inside = match (slot.1, moved_constants) {
+                (SlotIdentity::Constant(index), Some((start, length))) => {
+                    index >= start && index.checked_sub(start).is_some_and(|offset| offset < length)
+                }
+                (SlotIdentity::Dynamic(index), _) if self.same_scalar(index, moved.start)
+                    && self.state.constants.get(&moved.length) == Some(&1) => true,
+                (SlotIdentity::Dynamic(_), _) => return self.unsupported("MoveRange(partial dynamic scalar slot)"),
+                (SlotIdentity::Constant(_), None) => return self.unsupported("MoveRange(partial dynamic scalar range)"),
+            };
+            if inside { remove_slots.push(slot); }
+        }
+        for identity in remove_ranges { self.state.range_states.remove(&identity); }
+        for slot in remove_slots { self.state.initialized_scalar_slots.remove(&slot); }
+        for object in self.state.objects.values_mut() {
+            if object.identity == state.identity { object.initialized_owned_slots = false; }
+        }
+        Ok(())
     }
 
     /// Completeness describes the logical prefix, not arbitrary capacity-tail
@@ -1799,6 +1886,10 @@ impl<'a> MemoryChecker<'a> {
             return if self.scalar_prefix_initialized(object, count, element) { Ok(()) } else { self.unsupported(operation) };
         }
         if matches!(self.descriptor(element)?.kind(), LayoutKind::Scalar(_)) {
+            // Scalar storage has no child ownership to release. Partially
+            // initialized scalar allocations may therefore be destroyed, but
+            // they may not cross an ABI or ownership-transfer boundary. Those
+            // boundaries use require_complete_value_initialized below.
             return Ok(());
         }
         let Extent::Counted { count, .. } = state.extent else {
@@ -1854,6 +1945,36 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
+    /// Require a complete logical value at an ABI publication or owned-value
+    /// transfer. This is deliberately stronger than the destruction check:
+    /// scalar storage has no children to clean up, but every byte in its
+    /// logical prefix must be initialized before another context may read it.
+    fn require_complete_value_initialized(
+        &self,
+        object: ValueId,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        self.require_owned_slots_initialized(object, operation)?;
+        if self.state.static_data_objects.contains(&object) {
+            return Ok(());
+        }
+        let state = self.live_object(object)?;
+        let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout() else {
+            return Ok(());
+        };
+        if !matches!(self.descriptor(element)?.kind(), LayoutKind::Scalar(_)) {
+            return Ok(());
+        }
+        let Extent::Counted { count, .. } = state.extent else {
+            return self.unsupported(operation);
+        };
+        if self.scalar_prefix_initialized(object, count, element) {
+            Ok(())
+        } else {
+            self.unsupported(operation)
+        }
+    }
+
     fn require_destination_range_empty(&self, range: CheckedRange) -> Result<(), InitialCheckError> {
         if !self.is_zero(range.start)
             || self.state.stored_objects.keys().any(|(object, _)| *object == range.object)
@@ -1886,6 +2007,7 @@ impl<'a> MemoryChecker<'a> {
         self.check_range_pair(destination, source, count, "CloneRange")?;
 
         if destination.ownership != Ownership::Unique
+            || !self.is_sole_live_token(destination.object, destination.identity)
             || self.state.static_data_objects.contains(&destination.object)
         {
             return Err(InitialCheckError::InvalidOwnership {
@@ -2073,6 +2195,11 @@ impl<'a> MemoryChecker<'a> {
         element: crate::layout::LayoutId,
         operation: &'static str,
     ) -> Result<(), InitialCheckError> {
+        if matches!(self.descriptor(element)?.kind(),
+            LayoutKind::Scalar(ScalarKind::RawByte | ScalarKind::BoolValueSlot))
+        {
+            return Ok(());
+        }
         let element_type = self.value_type_for_layout(element)?;
         if element_type.is_memory_bearing() {
             return self.unsupported(match operation {
@@ -2228,8 +2355,9 @@ impl<'a> MemoryChecker<'a> {
                     OwnerOperation::Construct { captures, .. } => {
                         for capture in captures {
                             if matches!(value_type(self.function, *capture)?, ValueType::Ref(_)) {
-                                self.require_owned_slots_initialized(*capture, "Construct(uninitialized managed capture)")?;
+                                self.require_complete_value_initialized(*capture, "Construct(uninitialized managed capture)")?;
                                 self.live_object(*capture)?;
+                                self.share_allocation_tokens(*capture)?;
                             }
                         }
                     }
@@ -2590,7 +2718,7 @@ impl<'a> MemoryChecker<'a> {
                     if destination == index && self.same_scalar(*left, count) && self.state.constants.get(right) == Some(&1))
             });
         if !last { return self.unsupported("TakeLast(not-last)"); }
-        self.require_owned_slots_initialized(object, "TakeLast(uninitialized prefix)")?;
+        self.require_complete_value_initialized(object, "TakeLast(uninitialized prefix)")?;
         if !matches!(expected, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Size | ValueType::Unit | ValueType::Ref(_)) {
             return self.unsupported("TakeLast(element type)");
         }
@@ -2931,7 +3059,7 @@ impl<'a> MemoryChecker<'a> {
         self.require_ref_type(value, layout)?;
         // A stored reference is complete: its own owned slots are initialized,
         // so a later load or drop of it needs no per-slot facts.
-        self.require_owned_slots_initialized(value, "Store(uninitialized owned slot)")?;
+        self.require_complete_value_initialized(value, "Store(uninitialized owned slot)")?;
         let key = self.reference_slot(place)?;
         if self.stored_slot_by_identity(key.0, key.1).is_some()
             || (matches!(place.projection(), Projection::Field { .. })
@@ -3707,10 +3835,31 @@ impl<'a> MemoryChecker<'a> {
         if source_is_static {
             self.state.static_data_objects.insert(destination);
         }
-        self.state.objects
-            .get_mut(&source)
-            .expect("live object exists")
-            .ownership = Ownership::Shared;
+        self.share_allocation_tokens(source)?;
+        Ok(())
+    }
+
+    /// A physical retain creates another token even when that token is hidden
+    /// inside an opaque owner. Every checker-visible token for the same
+    /// allocation loses Unique authority together.
+    fn share_allocation_tokens(&mut self, source: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(source)?.clone();
+        if !matches!(state.ownership, Ownership::Unique | Ownership::Shared) {
+            return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object: source });
+        }
+        if !self.is_shared_immutable_storage(source, &state) {
+            return Err(InitialCheckError::InvalidAllocationClass { function: self.function.id, object: source });
+        }
+        for candidate in self.state.objects.values_mut() {
+            if candidate.identity == state.identity && candidate.ownership != Ownership::Consumed {
+                candidate.ownership = Ownership::Shared;
+            }
+        }
+        for candidate in self.state.stored_objects.values_mut() {
+            if candidate.identity == state.identity && candidate.ownership != Ownership::Consumed {
+                candidate.ownership = Ownership::Shared;
+            }
+        }
         Ok(())
     }
 
@@ -4311,31 +4460,20 @@ fn meet_range_states(
                     // Two zero-start prefixes match by that fact alone: a
                     // start constant defined inside a loop body is renamed
                     // away by the time the prefix reaches the next header.
-                    && (current.zero_width
-                        || next.zero_width
-                        || (((current.zero_start && next.zero_start)
-                            || same_scalar_across(
-                                existing,
-                                identity.start,
-                                incoming,
-                                candidate.start,
-                            ))
-                            && same_scalar_across(
-                                existing,
-                                identity.length,
-                                incoming,
-                                candidate.length,
-                            )))
+                    && if current.zero_width || next.zero_width {
+                        current.zero_width
+                            && next.zero_width
+                            && current.zero_start == next.zero_start
+                            && same_scalar_across(existing, identity.length, incoming, candidate.length)
+                    } else {
+                        ((current.zero_start && next.zero_start)
+                            || same_scalar_across(existing, identity.start, incoming, candidate.start))
+                            && same_scalar_across(existing, identity.length, incoming, candidate.length)
+                    }
             });
-            let (next_identity, next) = candidates.next()?;
+            let (_next_identity, next) = candidates.next()?;
             if candidates.next().is_some() {
                 return None;
-            }
-            if current.zero_width && !next.zero_width {
-                return next.initialized.then_some((*next_identity, *next));
-            }
-            if next.zero_width && !current.zero_width {
-                return current.initialized.then_some((*identity, *current));
             }
             if current.zero_width && next.zero_width {
                 return Some((
@@ -4790,6 +4928,10 @@ mod tests {
                     class: AllocationClass::ReferenceCounted,
                 })
                 .expect("allocation is accepted");
+            if !pointer_element {
+                checker.state.initialized_scalar_slots
+                    .insert((object, SlotIdentity::Constant(0)));
+            }
         }
         test(&mut checker, list);
     }
@@ -4964,9 +5106,9 @@ mod tests {
             let source = range_place(SOURCE, *pointee, COUNT, AccessMode::Read);
             let destination = range_place(DESTINATION, *pointee, COUNT, AccessMode::Write);
             checker.move_range(&destination, &source, COUNT).expect("move initialized prefix");
-            assert!(checker.require_owned_slots_initialized(SOURCE, "moved source").is_err());
+            assert!(checker.require_complete_value_initialized(SOURCE, "moved source").is_err());
             checker.update_count(DESTINATION, COUNT).expect("moved destination is initialized");
-            checker.require_owned_slots_initialized(DESTINATION, "moved destination").expect("complete destination");
+            checker.require_complete_value_initialized(DESTINATION, "moved destination").expect("complete destination");
         });
     }
 
@@ -6117,6 +6259,97 @@ mod tests {
     }
 
     #[test]
+    fn scalar_abi_publication_requires_the_complete_initialized_prefix() {
+        with_checker(false, |checker, list| {
+            checker.state.initialized_scalar_slots
+                .remove(&(SOURCE, SlotIdentity::Constant(0)));
+            assert!(matches!(
+                checker.require_complete_value_initialized(SOURCE, "test scalar ABI"),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "test scalar ABI", .. })
+            ));
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.initialized_scalar_slots.insert((SOURCE, SlotIdentity::Constant(0)));
+            assert!(checker.scalar_prefix_initialized(SOURCE, COUNT, element));
+            checker.require_complete_value_initialized(SOURCE, "test scalar ABI").unwrap();
+        });
+    }
+
+    #[test]
+    fn scalar_clone_range_requires_a_sole_unique_destination_token() {
+        with_checker(false, |checker, list| {
+            let hidden_alias = ValueId::new(99);
+            let mut alias = checker.state.objects[&DESTINATION].clone();
+            alias.ownership = Ownership::Shared;
+            checker.state.objects.insert(hidden_alias, alias);
+            assert!(matches!(
+                checker.check(&Operation::CloneRange {
+                    destination: range_place(DESTINATION, list, LENGTH, AccessMode::Write),
+                    source: range_place(SOURCE, list, LENGTH, AccessMode::Read),
+                    count: LENGTH,
+                }),
+                Err(InitialCheckError::InvalidOwnership { object, .. }) if object == DESTINATION
+            ));
+        });
+    }
+
+    #[test]
+    fn scalar_move_range_preserves_unmoved_initialized_slots() {
+        with_checker(false, |checker, list| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            checker.state.initialized_scalar_slots.extend([
+                (SOURCE, SlotIdentity::Constant(0)),
+                (SOURCE, SlotIdentity::Constant(1)),
+            ]);
+            let state = checker.state.objects[&SOURCE].clone();
+            checker.move_scalar_initialization(CheckedRange {
+                object: SOURCE, start: START, length: LENGTH, layout: list, element,
+                identity: state.identity, ownership: state.ownership,
+                allocation_class: state.allocation_class,
+            }).unwrap();
+            assert!(!checker.state.initialized_scalar_slots.contains(&(SOURCE, SlotIdentity::Constant(0))));
+            assert!(checker.state.initialized_scalar_slots.contains(&(SOURCE, SlotIdentity::Constant(1))));
+        });
+    }
+
+    #[test]
+    fn zero_width_range_meet_cannot_manufacture_nonempty_initialization() {
+        with_checker(false, |checker, list| {
+            let element = checker.descriptor(list).unwrap().kind().packed_element_layout().unwrap();
+            let mut empty = checker.snapshot();
+            let mut nonempty = checker.snapshot();
+            empty.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: ZERO },
+                RangeState { element, ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true,
+                    zero_width: true, zero_start: true },
+            );
+            nonempty.range_states.insert(
+                RangeIdentity { object: SOURCE, start: START, length: LENGTH },
+                RangeState { element, ownership: Ownership::Unique,
+                    allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true,
+                    zero_width: false, zero_start: true },
+            );
+            assert!(meet_range_states(&empty, &nonempty).is_empty());
+        });
+    }
+
+    #[test]
+    fn closure_construct_managed_clone_shares_capture_and_refuses_reclaim() {
+        with_nullable_checker(|checker, _| {
+            checker.check(&Operation::ClosureOwner(
+                crate::canonical_safewir::closure_owner_contract::OwnerOperation::Construct {
+                    destination: ValueId::new(99),
+                    constructor: crate::canonical_safewir::closure_owner_contract::ConstructorId(0),
+                    captures: vec![CHILD],
+                },
+            )).unwrap();
+            assert_eq!(checker.state.objects[&CHILD].ownership, Ownership::Shared);
+            assert!(matches!(checker.check(&Operation::Reclaim { object: CHILD }),
+                Err(InitialCheckError::InvalidOwnership { object, .. }) if object == CHILD));
+        });
+    }
+
+    #[test]
     fn range_transfer_rejects_a_slice_past_logical_length() {
         with_checker(false, |checker, list| {
             assert!(matches!(
@@ -6927,14 +7160,39 @@ mod tests {
             length: LENGTH,
         };
 
+        let before_refusal = checker.snapshot();
         assert!(matches!(
             checker.check(&operation),
             Err(InitialCheckError::MissingBoundsGuard { index: START, count: COUNT, .. })
         ));
+        checker.restore(before_refusal);
         checker
             .state
             .guards
             .insert((ComparisonOperator::LessEqualUnsigned, END, COUNT));
+        checker
+            .state
+            .guards
+            .insert((ComparisonOperator::LessUnsigned, START, COUNT));
+        checker.state.constants.insert(START, 0);
+        checker.state.constants.insert(LENGTH, 1);
+        checker.state.constants.insert(COUNT, 1);
+        checker.state.constants.insert(CAPACITY, 1);
+        checker
+            .state
+            .guards
+            .insert((ComparisonOperator::LessEqualUnsigned, LENGTH, COUNT));
+        checker.state.range_states.insert(
+            RangeIdentity { object: SOURCE, start: START, length: LENGTH },
+            RangeState {
+                element: byte,
+                ownership: Ownership::Unique,
+                allocation_class: Some(AllocationClass::ReferenceCounted),
+                initialized: true,
+                zero_width: false,
+                zero_start: false,
+            },
+        );
         assert_eq!(checker.check(&operation), Ok(true));
     }
 }

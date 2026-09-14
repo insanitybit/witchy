@@ -2970,7 +2970,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_oracle_preserves_console_capture_and_list_rc_identity() {
+    fn owner_oracle_clone_managed_capture_releases_exactly_once() {
         use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, OwnerCapture, OwnerConstructor};
 
         let mut layouts = LayoutInterner::new();
@@ -3169,6 +3169,7 @@ mod tests {
             constructor: ConstructorId(0),
             captures: vec![cap, child],
         }, &mut values).expect("construct owner");
+        assert_eq!(engine.object(captured_object).expect("retained capture").references, 2);
         engine.execute_owner_operation(&OwnerOperation::ReadCapability {
             destination: capability_value,
             owner,
@@ -3301,8 +3302,11 @@ mod tests {
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: nested_read, family: SIGNATURE }, &mut values).expect("drop retained nested owner");
         engine.execute_owner_operation(&OwnerOperation::Drop { owner: zero_capture_owner, family: SIGNATURE }, &mut values).expect("drop zero-capture owner");
         let environment_object = engine.object_value(environment_value, &values).expect("environment token");
+        assert_eq!(engine.object(captured_object).expect("original plus environment clone").references, 2);
         engine.release(environment_object).expect("drop environment clone");
+        assert_eq!(engine.object(captured_object).expect("original capture token").references, 1);
         engine.release(0).expect("drop original captured object token");
+        assert!(engine.object(captured_object).is_err(), "managed capture must be reclaimed exactly once");
         assert!(engine.owners.is_empty());
         assert!(engine.owner_lists.is_empty());
         assert!(engine.objects.is_empty());

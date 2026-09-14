@@ -143,6 +143,11 @@ pub(super) fn check_all(
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
 ) -> Result<(), InitialCheckError> {
+    for signature in signatures.values() {
+        if signature.contract.results.iter().any(|result| matches!(result, ResultContract::CheckedValue { .. })) {
+            return Err(contract_mismatch(signature.id, "CheckedValue memory result"));
+        }
+    }
     let summaries = derive_all(functions, signatures)?;
     for function in functions.values() {
         let signature = signatures

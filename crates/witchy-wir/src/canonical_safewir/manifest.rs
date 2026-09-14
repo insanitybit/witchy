@@ -709,11 +709,11 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::ClosureOwner,
         judgment: "check/owners.rs::Registry::new and check_owner_operation",
-        predicate: "an authenticated owner family binds every constructor to a function with the body signature (leading Shared Gc owner plus declaration lanes), validates capture kind/storage/transfer, and requires registered owner/list tokens for linear clone, call, list, and drop operations",
+        predicate: "an authenticated owner family binds every constructor to a function with the body signature (leading Shared Gc owner plus declaration lanes), validates capture kind/storage/transfer, demotes every live token of a CloneManaged Ref capture to Shared, and requires registered owner/list tokens for linear clone, call, list, and drop operations",
         interpreter: "execute_owner_operation: constructs and authenticates opaque owners/lists, preserves actual capability and managed-reference captures, and releases final owner/list tokens",
         backend: RuleBackend::Receipt(CorrespondenceRule::ClosureOwner),
         admits: &[
-            t(Interpreter, "owner_oracle_preserves_console_capture_and_list_rc_identity"),
+            t(Interpreter, "owner_oracle_clone_managed_capture_releases_exactly_once"),
             t(OwnerBackend, "opaque_owner_cleanup_reclaims_once_and_rejects_unknown_family"),
             t(OwnerLaunch, "opaque_closure_plugin_host_expected_three_legs"),
             t(OwnerLaunch, "opaque_closure_mixed_string_console_list_after_original_cleanup_three_legs"),
