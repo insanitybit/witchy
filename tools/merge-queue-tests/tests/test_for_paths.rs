@@ -101,6 +101,21 @@ fn selected_focused(paths: &[&str]) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn whole_diff_runs_record_only_clean_successful_receipts() {
+    let output = Command::new("bash")
+        .current_dir(workspace_root())
+        .arg("scripts/test-path-receipts.sh")
+        .output()
+        .expect("run path receipt fixture");
+    assert!(
+        output.status.success(),
+        "path receipt fixture failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 fn gate_nextest(paths: &[&str]) -> String {
     let script = workspace_root().join("scripts/test-for-paths.sh");
     let output = Command::new("bash")

@@ -27,19 +27,20 @@ git commit -qm change
 sha="$(git rev-parse HEAD)"
 receipt="$root/state/receipts/$sha.json"
 
-PATH="$root/bin:$PATH" MERGE_QUEUE_STATE_DIR="$root/state" \
+env -u WITCHY_GATE_SCOPE PATH="$root/bin:$PATH" MERGE_QUEUE_STATE_DIR="$root/state" \
     bash scripts/test-for-paths.sh --run >/dev/null
 jq -e --arg sha "$sha" \
     '.sha == $sha and (.shards | index("paths") != null) and (.durations_s.paths | type == "number")' \
     "$receipt" >/dev/null
 
 rm -f "$receipt"
-PATH="$root/bin:$PATH" MERGE_QUEUE_STATE_DIR="$root/state" \
+env -u WITCHY_GATE_SCOPE PATH="$root/bin:$PATH" MERGE_QUEUE_STATE_DIR="$root/state" \
     bash scripts/test-for-paths.sh --run scripts/test-gate-test-cost.py >/dev/null
 [ ! -e "$receipt" ] || { echo "explicit path wrote a whole-diff receipt" >&2; exit 1; }
 
-if PATH="$root/bin:$PATH" FAKE_PYTHON_FAIL=1 MERGE_QUEUE_STATE_DIR="$root/state" \
-    bash scripts/test-for-paths.sh --run >/dev/null 2>&1; then
+if env -u WITCHY_GATE_SCOPE PATH="$root/bin:$PATH" FAKE_PYTHON_FAIL=1 \
+    MERGE_QUEUE_STATE_DIR="$root/state" bash scripts/test-for-paths.sh --run \
+    >/dev/null 2>&1; then
     echo "failing focused command unexpectedly succeeded" >&2
     exit 1
 fi
