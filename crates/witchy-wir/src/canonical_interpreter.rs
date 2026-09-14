@@ -3522,6 +3522,39 @@ mod tests {
     }
 
     #[test]
+    fn reclaimed_scalar_storage_does_not_initialize_a_reused_object() {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let layout = LayoutId::from_bytes([13; 32]);
+        let extent = || RuntimeExtent::Counted {
+            header_bytes: 0,
+            count: 1,
+            capacity: 1,
+            stride_bytes: 4,
+        };
+        let old = engine.allocate(layout, AllocationClass::ReferenceCounted, extent(), false).unwrap();
+        engine.object_mut(old).unwrap().cells.insert(CellKey::Element(0), InterpreterValue::Size(0xdead_beef));
+        engine.reclaim(old).unwrap();
+        let reused = engine.allocate(layout, AllocationClass::ReferenceCounted, extent(), false).unwrap();
+        let object = ValueId::new(100);
+        let index = ValueId::new(101);
+        let values = BTreeMap::from([
+            (object, InterpreterValue::ObjectRef(reused)),
+            (index, InterpreterValue::Size(0)),
+        ]);
+        let place = Place::projected(
+            object,
+            Projection::Element { index },
+            ValueType::Size,
+            crate::canonical_safewir::AccessMode::Read,
+        );
+        assert_eq!(
+            engine.load(&place, LoadTransfer::CopyScalar, &values),
+            Err(InterpretError::UninitializedPlace)
+        );
+    }
+
+    #[test]
     fn nullable_owned_oracle_absence_drops_without_a_child_and_requires_uniqueness() {
         let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
         let mut engine = Engine::new(module.module(), InterpreterConfig::default());

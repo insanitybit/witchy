@@ -345,6 +345,8 @@ pub const RULES: &[RuleEntry] = &[
             t(Authority, "unique_pop_source_abi_requires_checked_unique_input_and_output"),
             t(Check, "header_projection_cannot_claim_non_scalar_type"),
             t(Memory, "pointer_bearing_ranges_fail_closed_without_element_transfer_state"),
+            t(Check, "uninitialized_scalar_load_is_refused"),
+            t(Interpreter, "reclaimed_scalar_storage_does_not_initialize_a_reused_object"),
         ],
     },
     RuleEntry {
@@ -398,7 +400,7 @@ pub const RULES: &[RuleEntry] = &[
         interpreter: "copy_range(Copy): copies scalar cells",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryCopy),
         admits: &[t(Check, "raw_byte_slice_copy_is_accepted"), t(Launch, "admitted_string_equality_and_char_count_scan_bytes")],
-        refuses: &[t(Check, "typed_element_slice_cannot_use_copy_bytes"), t(Memory, "byte_copy_requires_a_dominating_dynamic_end_guard")],
+        refuses: &[t(Check, "typed_element_slice_cannot_use_copy_bytes"), t(Memory, "byte_copy_requires_a_dominating_dynamic_end_guard"), t(Check, "uninitialized_scalar_load_is_refused")],
     },
     RuleEntry {
         rule: CanonicalRuleId::MoveRange,
@@ -419,6 +421,7 @@ pub const RULES: &[RuleEntry] = &[
             t(Memory, "pointer_move_range_rejects_container_as_element_type"),
             t(Memory, "range_transfer_rejects_a_slice_past_logical_length"),
             t(Memory, "range_transfer_rejects_same_storage_without_overlap_policy"),
+            t(Check, "uninitialized_scalar_load_is_refused"),
         ],
     },
     RuleEntry {
@@ -438,6 +441,7 @@ pub const RULES: &[RuleEntry] = &[
             t(Backend, "malformed_clone_range_places_are_refused_by_canonical_backend"),
             t(Backend, "scalar_clone_range_count_stride_overflow_traps_before_copy"),
             t(Backend, "scalar_clone_range_start_stride_overflow_traps_before_copy"),
+            t(Check, "uninitialized_scalar_load_is_refused"),
         ],
     },
     RuleEntry {
@@ -447,7 +451,7 @@ pub const RULES: &[RuleEntry] = &[
         interpreter: "update_count: sets the logical length",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryUpdateCount),
         admits: &[t(Check, "update_count_grows_logical_length_only_after_capacity_guard"), t(Launch, "admitted_lists_of_strings_are_read_iterated_and_pushed")],
-        refuses: &[t(Check, "logical_length_guard_is_not_satisfied_by_capacity_guard"), t(Memory, "dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot")],
+        refuses: &[t(Check, "logical_length_guard_is_not_satisfied_by_capacity_guard"), t(Memory, "dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot"), t(Check, "uninitialized_scalar_load_is_refused")],
     },
     RuleEntry {
         rule: CanonicalRuleId::MoveValue,
@@ -666,6 +670,7 @@ pub const RULES: &[RuleEntry] = &[
         refuses: &[
             t(Check, "proper_tail_site_is_matched_exactly_once"),
             t(Check, "duplicate_tail_terminators_cannot_discharge_one_obligation"),
+            t(Check, "unreachable_tail_decoy_cannot_discharge_an_obligation"),
             t(Check, "tail_call_after_release_is_rejected"),
             t(Memory, "affine_boundary_tail_call_requires_no_untransferred_tokens"),
         ],

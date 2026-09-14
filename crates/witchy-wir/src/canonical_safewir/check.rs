@@ -629,14 +629,6 @@ fn check_function(
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
     let memory = MemoryChecker::new(function, layouts, signature, closure_layouts)?;
-    for block in &function.blocks {
-        match &block.terminator {
-            Terminator::TailCall { site, .. } | Terminator::VarTailCall { site, .. } => {
-                observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
-            }
-            _ => {}
-        }
-    }
     check_memory_cfg(
         function,
         signature,
@@ -648,6 +640,8 @@ fn check_function(
         &definition_sites,
         &dominators,
         memory,
+        tail_obligations,
+        observed_tail_sites,
     )
 }
 
@@ -663,6 +657,8 @@ fn check_memory_cfg(
     definition_sites: &BTreeMap<ValueId, DefinitionSite>,
     dominators: &Dominators,
     mut memory: MemoryChecker<'_>,
+    tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
+    observed_tail_sites: &mut BTreeSet<TailSiteId>,
 ) -> Result<(), InitialCheckError> {
     let mut incoming = BTreeMap::new();
     incoming.insert(function.entry, memory.snapshot());
@@ -711,10 +707,21 @@ fn check_memory_cfg(
             }
         }
     }
-    match failures.into_iter().next() {
-        Some((_, error)) => Err(error),
-        None => Ok(()),
+    if let Some((_, error)) = failures.into_iter().next() {
+        return Err(error);
     }
+    // Only blocks reached by the converged memory dataflow can discharge a
+    // checked-source proper-tail obligation. Scanning the raw block list
+    // would let an unreachable decoy hide a reachable Call; Return lowering.
+    for block_id in incoming.keys() {
+        match &blocks[block_id].terminator {
+            Terminator::TailCall { site, .. } | Terminator::VarTailCall { site, .. } => {
+                observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Check one block against its incoming state and compute the states its
@@ -3708,6 +3715,50 @@ mod tests {
                 function: FUNCTION, discharged_by: None,
             }],
         );
+        let condition = ValueId::new(99);
+        module.functions[0].value_types.insert(condition, ValueType::Bool);
+        module.functions[0].blocks[0].operations = vec![Operation::ConstBool {
+            destination: condition,
+            value: true,
+        }];
+        module.functions[0].blocks[0].terminator = Terminator::BranchIf {
+            condition,
+            then_target: BlockId::new(1),
+            then_arguments: Vec::new(),
+            else_target: BlockId::new(2),
+            else_arguments: Vec::new(),
+        };
+        for id in [BlockId::new(1), BlockId::new(2)] {
+            module.functions[0].blocks.push(BasicBlock {
+                id,
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: Terminator::TailCall {
+                    site: TAIL_SITE,
+                    callee: FUNCTION,
+                    arguments: Vec::new(),
+                },
+            });
+        }
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::DuplicateTailObligation(TAIL_SITE)
+        );
+    }
+
+    #[test]
+    fn unreachable_tail_decoy_cannot_discharge_an_obligation() {
+        let mut module = lowered(
+            BTreeMap::new(),
+            Vec::new(),
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION, discharged_by: None,
+            }],
+        );
         module.functions[0].blocks.push(BasicBlock {
             id: BlockId::new(1),
             parameters: Vec::new(),
@@ -3718,10 +3769,9 @@ mod tests {
                 arguments: Vec::new(),
             },
         });
-
         assert_eq!(
             check_initial(module).unwrap_err(),
-            InitialCheckError::DuplicateTailObligation(TAIL_SITE)
+            InitialCheckError::MissingTailObligation(TAIL_SITE)
         );
     }
 
@@ -3911,6 +3961,7 @@ mod tests {
     fn dynamic_load_module(
         with_guard: bool,
         capacity_value: u64,
+        initialize: bool,
     ) -> CanonicalModule<super::super::LoweredCandidate> {
         let count = ValueId::new(0);
         let capacity = ValueId::new(1);
@@ -3918,6 +3969,7 @@ mod tests {
         let condition = ValueId::new(3);
         let object = ValueId::new(4);
         let loaded = ValueId::new(5);
+        let stored = ValueId::new(6);
         let (layouts, layout) = dynamic_u32_layout();
         let mut operations = vec![
             Operation::ConstSize {
@@ -3945,8 +3997,8 @@ mod tests {
                 kind: GuardKind::Bounds,
             });
         }
-        operations.extend([
-            Operation::Alloc {
+        operations.push(Operation::ConstSize { destination: stored, value: 7 });
+        operations.push(Operation::Alloc {
                 destination: object,
                 layout,
                 extent: Extent::Counted {
@@ -3956,7 +4008,22 @@ mod tests {
                     stride_bytes: 4,
                 },
                 class: AllocationClass::ReferenceCounted,
-            },
+        });
+        if initialize {
+            operations.push(
+                Operation::Store {
+                    place: Place::projected(
+                        object,
+                        Projection::Element { index },
+                        ValueType::Size,
+                        AccessMode::Write,
+                    ),
+                    value: stored,
+                    transfer: StoreTransfer::CopyScalar,
+                },
+            );
+        }
+        operations.extend([
             Operation::Load {
                 destination: loaded,
                 place: Place::projected(
@@ -3992,6 +4059,7 @@ mod tests {
                     (condition, ValueType::Bool),
                     (object, ValueType::Ref(layout)),
                     (loaded, ValueType::Size),
+                    (stored, ValueType::Size),
                 ]
                 .into_iter()
                 .collect(),
@@ -4008,13 +4076,23 @@ mod tests {
 
     #[test]
     fn guarded_dynamic_element_load_is_admitted() {
-        assert!(check_initial(dynamic_load_module(true, 1)).is_ok());
+        assert!(check_initial(dynamic_load_module(true, 1, true)).is_ok());
+    }
+
+    #[test]
+    fn uninitialized_scalar_load_is_refused() {
+        assert!(matches!(
+            check_initial(dynamic_load_module(true, 1, false)),
+            Err(InitialCheckError::UnsupportedMemoryOperation {
+                operation: "Load(uninitialized scalar)", ..
+            })
+        ));
     }
 
     #[test]
     fn dynamic_element_load_without_guard_is_refused() {
         assert_eq!(
-            check_initial(dynamic_load_module(false, 1)).unwrap_err(),
+            check_initial(dynamic_load_module(false, 1, true)).unwrap_err(),
             InitialCheckError::MissingBoundsGuard {
                 function: FUNCTION,
                 index: ValueId::new(2),
@@ -4026,7 +4104,7 @@ mod tests {
     #[test]
     fn dynamic_allocation_extent_must_fit_wasm_address_space() {
         assert_eq!(
-            check_initial(dynamic_load_module(true, u64::MAX)).unwrap_err(),
+            check_initial(dynamic_load_module(true, u64::MAX, true)).unwrap_err(),
             InitialCheckError::MissingAllocationSizeGuard {
                 function: FUNCTION,
                 capacity: ValueId::new(1),

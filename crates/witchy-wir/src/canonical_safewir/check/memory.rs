@@ -182,10 +182,9 @@ pub(super) struct MemoryState {
     guards: CowFacts<BTreeSet<(ComparisonOperator, ValueId, ValueId)>>,
     header_values: CowFacts<BTreeMap<(ValueId, HeaderField), ValueId>>,
     static_data_objects: CowFacts<BTreeSet<ValueId>>,
-    /// The callable and Unit lanes a `Store` has initialized, by container value and
-    /// slot. A fresh closure record's code slot is unreadable until then;
-    /// a record that arrived from outside (a parameter, a loaded child) is
-    /// summarized complete by `initialized_owned_slots` like its owned slots.
+    /// Scalar lanes a Store has initialized, by container value and slot.
+    /// Fresh storage has no entries. A record or collection that arrived from
+    /// outside is summarized complete by initialized_owned_slots.
     initialized_scalar_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
 }
 
@@ -1256,6 +1255,10 @@ impl<'a> MemoryChecker<'a> {
                 object: destination.object(),
             });
         }
+        let destination = self.check_typed_range(destination, AccessMode::Write, "CopyBytes")?;
+        let source = self.check_typed_range(source, AccessMode::Read, "CopyBytes")?;
+        self.require_initialized_scalar_range(source, "CopyBytes(uninitialized source)")?;
+        self.mark_initialized_scalar_range(destination);
         Ok(())
     }
 
@@ -1309,6 +1312,8 @@ impl<'a> MemoryChecker<'a> {
             );
         } else {
             self.require_scalar_range_element(destination.element, "MoveRange")?;
+            self.require_initialized_scalar_range(source, "MoveRange(uninitialized scalar source)")?;
+            self.mark_initialized_scalar_range(destination);
         }
         if destination.ownership != Ownership::Unique
             || source.ownership != Ownership::Unique
@@ -1491,11 +1496,23 @@ impl<'a> MemoryChecker<'a> {
         })
     }
 
-    /// Unit initialization is dataflow evidence, never implied by its width.
-    fn unit_prefix_initialized(&self, object: ValueId, mut count: ValueId) -> bool {
+    /// Scalar-prefix initialization is dataflow evidence, never implied by a
+    /// physical allocation or by the scalar's width.
+    fn scalar_prefix_initialized(
+        &self,
+        object: ValueId,
+        mut count: ValueId,
+        element: crate::layout::LayoutId,
+    ) -> bool {
         let Ok(state) = self.live_object(object) else { return false };
-        if state.initialized_owned_slots && (matches!(state.extent, Extent::Counted { count: current, .. } if self.same_scalar(current, count))
-            || matches!(state.extent, Extent::HeaderPrefix { .. }) && self.state.header_values.get(&(object, HeaderField::Length)).is_some_and(|current| self.same_scalar(*current, count))) {
+        let complete_count = match state.extent {
+            Extent::Counted { count, .. } => Some(count),
+            Extent::HeaderPrefix { .. } => self.state.header_values.get(&(object, HeaderField::Length)).copied(),
+            Extent::FixedBytes(_) => None,
+        };
+        if (state.initialized_owned_slots || self.state.static_data_objects.contains(&object))
+            && complete_count.is_some_and(|current| self.less_equal(count, current))
+        {
             return true;
         }
         for _ in 0..=self.state.exact_additions.len() {
@@ -1503,7 +1520,7 @@ impl<'a> MemoryChecker<'a> {
             if self.state.range_states.iter().any(|(identity, range)| {
                 self.same_allocation(object, identity.object) && range.initialized && range.zero_start
                     && self.same_scalar(identity.length, count)
-                    && self.layouts.get(range.element).is_some_and(|d| d.kind() == &LayoutKind::Scalar(ScalarKind::Unit))
+                    && range.element == element
             }) { return true; }
             if let Some(length) = self.state.constants.get(&count) {
                 let initialized = self.state.initialized_scalar_slots.iter().filter_map(|(container, slot)| match slot {
@@ -1513,7 +1530,7 @@ impl<'a> MemoryChecker<'a> {
                 if initialized.len() as u64 == *length { return true; }
                 let mut end = self.state.range_states.iter().filter_map(|(identity, range)| {
                     (self.same_allocation(object, identity.object) && range.initialized && range.zero_start
-                        && self.layouts.get(range.element).is_some_and(|d| d.kind() == &LayoutKind::Scalar(ScalarKind::Unit)))
+                        && range.element == element)
                         .then(|| self.state.constants.get(&identity.length).copied()).flatten()
                 }).max().unwrap_or(0);
                 for index in initialized { if index == end { end += 1; } }
@@ -1528,6 +1545,102 @@ impl<'a> MemoryChecker<'a> {
             count = prefix;
         }
         false
+    }
+
+    fn scalar_slot_initialized(
+        &self,
+        object: ValueId,
+        slot: SlotIdentity,
+        element: crate::layout::LayoutId,
+    ) -> bool {
+        if self.checked_scalar_slot_stored(object, slot) {
+            return true;
+        }
+        self.state.range_states.iter().any(|(identity, range)| {
+            if !self.same_allocation(object, identity.object)
+                || !range.initialized
+                || range.element != element
+            {
+                return false;
+            }
+            match slot {
+                SlotIdentity::Dynamic(index) => {
+                    (self.same_scalar(index, identity.start)
+                        && self.state.constants.get(&identity.length) == Some(&1))
+                        || (range.zero_start && self.strict_less(index, identity.length))
+                }
+                SlotIdentity::Constant(index) => self
+                    .state
+                    .constants
+                    .get(&identity.start)
+                    .zip(self.state.constants.get(&identity.length))
+                    .is_some_and(|(start, length)| {
+                        index >= *start && index - *start < *length
+                    }),
+            }
+        })
+    }
+
+    fn require_initialized_scalar_range(
+        &self,
+        range: CheckedRange,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        self.require_scalar_range_element(range.element, operation)?;
+        if self.is_zero(range.length)
+            || self.live_object(range.object)?.initialized_owned_slots
+            || self.state.static_data_objects.contains(&range.object)
+            || self.state.range_states.iter().any(|(identity, state)| {
+                self.same_allocation(range.object, identity.object)
+                    && self.same_scalar(range.start, identity.start)
+                    && self.same_scalar(range.length, identity.length)
+                    && state.element == range.element
+                    && state.initialized
+            })
+            || (self.is_zero(range.start)
+                && self.scalar_prefix_initialized(range.object, range.length, range.element))
+        {
+            return Ok(());
+        }
+        if let Some((start, length)) = self
+            .state
+            .constants
+            .get(&range.start)
+            .zip(self.state.constants.get(&range.length))
+        {
+            let end = start.checked_add(*length).ok_or(InitialCheckError::InvalidExtent {
+                function: self.function.id,
+                object: range.object,
+            })?;
+            if (*start..end).all(|index| {
+                self.scalar_slot_initialized(
+                    range.object,
+                    SlotIdentity::Constant(index),
+                    range.element,
+                )
+            }) {
+                return Ok(());
+            }
+        }
+        self.unsupported(operation)
+    }
+
+    fn mark_initialized_scalar_range(&mut self, range: CheckedRange) {
+        self.state.range_states.insert(
+            RangeIdentity {
+                object: range.object,
+                start: range.start,
+                length: range.length,
+            },
+            RangeState {
+                element: range.element,
+                ownership: range.ownership,
+                allocation_class: range.allocation_class,
+                initialized: true,
+                zero_width: self.is_zero(range.length),
+                zero_start: self.is_zero(range.start),
+            },
+        );
     }
 
     /// Completeness describes the logical prefix, not arbitrary capacity-tail
@@ -1637,7 +1750,7 @@ impl<'a> MemoryChecker<'a> {
         // first-class SafeWIR scalar values. Do not interpret them as values.
         if self.descriptor(element)?.kind() == &LayoutKind::Scalar(ScalarKind::Unit) {
             let Extent::Counted { count, .. } = state.extent else { return self.unsupported(operation) };
-            return if self.unit_prefix_initialized(object, count) { Ok(()) } else { self.unsupported(operation) };
+            return if self.scalar_prefix_initialized(object, count, element) { Ok(()) } else { self.unsupported(operation) };
         }
         if matches!(self.descriptor(element)?.kind(), LayoutKind::Scalar(_)) {
             return Ok(());
@@ -1788,24 +1901,9 @@ impl<'a> MemoryChecker<'a> {
             );
             return Ok(());
         }
-                if self.descriptor(destination.element)?.kind() == &LayoutKind::Scalar(ScalarKind::Unit) {
-            let state = self.live_object(source.object)?;
-            let complete = match state.extent {
-                Extent::Counted { count, .. } => self.unit_prefix_initialized(source.object, count),
-                _ => false,
-            };
-            if !complete && !(self.is_zero(source.start) && self.unit_prefix_initialized(source.object, count)) {
-                return self.unsupported("CloneRange(uninitialized Unit)");
-            }
-            self.state.range_states.insert(
-                RangeIdentity { object: destination.object, start: destination.start, length: count },
-                RangeState { element: destination.element, ownership: Ownership::Unique, allocation_class: None,
-                    initialized: true, zero_width: self.is_zero(count), zero_start: self.is_zero(destination.start) },
-            );
-        }
-        // Scalar cloning is an ordinary value copy.
-
         self.require_scalar_range_element(destination.element, "CloneRange")?;
+        self.require_initialized_scalar_range(source, "CloneRange(uninitialized scalar source)")?;
+        self.mark_initialized_scalar_range(destination);
         Ok(())
     }
 
@@ -2484,10 +2582,6 @@ impl<'a> MemoryChecker<'a> {
         if transfer == LoadTransfer::TakeLast {
             return self.take_last(destination, place, expected);
         }
-        if expected == ValueType::Unit && !self.checked_scalar_slot_initialized(place)?
-            && self.require_owned_slots_initialized(place.object(), "Load(uninitialized Unit)").is_err() {
-            return self.unsupported("Load(uninitialized Unit)");
-        }
         // A callable lane is memory-bearing in the ABI sense (it is not an
         // ordinary scalar at a call boundary) but it holds a table index, so
         // its load is a plain scalar copy like any other four-byte lane.
@@ -2515,6 +2609,8 @@ impl<'a> MemoryChecker<'a> {
                 self.state
                     .header_values
                     .insert((place.object(), *field), destination);
+            } else if !self.checked_scalar_slot_initialized(place)? {
+                return self.unsupported("Load(uninitialized scalar)");
             }
             return Ok(());
         }
@@ -2760,10 +2856,8 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Store(scalar transfer)");
             }
             self.require_type(value, expected)?;
-            if expected == ValueType::Unit {
-                let slot = self.reference_slot(place)?;
-                self.state.initialized_scalar_slots.insert(slot);
-            }
+            let slot = self.reference_slot(place)?;
+            self.state.initialized_scalar_slots.insert(slot);
             // A byte slot takes the low byte of a `Size`; the path must
             // prove the value fits so no bits are silently dropped.
             if self.is_raw_byte_element_place(place)? && !self.proven_at_most(value, 255) {
@@ -3236,10 +3330,15 @@ impl<'a> MemoryChecker<'a> {
             // A complete value proves only its old logical prefix. Materialize
             // that prefix before invalidating the summary; newly added slots
             // must be justified by the ordinary store/range rules below.
-            if let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout()
-                && matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. } | LayoutKind::Scalar(ScalarKind::Unit))
-            {
-                self.seed_managed_prefix(object, old_count, element)?;
+            if let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout() {
+                if matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. } | LayoutKind::Scalar(ScalarKind::Unit)) {
+                    self.seed_managed_prefix(object, old_count, element)?;
+                } else {
+                    self.require_scalar_range_element(element, "UpdateCount(uninitialized scalar prefix)")?;
+                    if !self.scalar_prefix_initialized(object, count, element) {
+                        return self.unsupported("UpdateCount(uninitialized scalar prefix)");
+                    }
+                }
             }
             for candidate in self.state.objects.values_mut() {
                 if candidate.identity == state.identity {
@@ -3314,7 +3413,7 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         if self.descriptor(element)?.kind() == &LayoutKind::Scalar(ScalarKind::Unit) {
-            if !self.unit_prefix_initialized(object, count) { return self.unsupported("UpdateCount(uninitialized Unit)"); }
+            if !self.scalar_prefix_initialized(object, count, element) { return self.unsupported("UpdateCount(uninitialized Unit)"); }
             self.state.objects.get_mut(&object).expect("live object exists").initialized_owned_slots = true;
             return Ok(());
         }
