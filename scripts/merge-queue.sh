@@ -3529,6 +3529,39 @@ cmd_sweep() {
     # Intersect the two sorted sets once instead of starting `git show-ref` for
     # every historical merge. The measured journal named 2,464 merged branch
     # rows, while most refs had already been deleted.
+    #
+    # A rebased landing leaves the original submitted ref outside master's
+    # ancestry, so `branch -d` correctly refuses it. Once this same ref has
+    # already passed the worktree sweep, retrying that unchanged refusal after
+    # every unrelated merge is pure overhead. Derive the latest branch
+    # lifecycle from the existing journal and skip only an exact submitted tip
+    # that was superseded by a different landed SHA and then swept. A newer
+    # submission resets the lifecycle; an advanced or unmatched ref misses the
+    # exact branch+OID intersection and keeps the normal safe deletion check.
+    local local_branch_refs processed_superseded processed_superseded_count
+    local_branch_refs="$(git -C "$root" for-each-ref \
+        --format='%(refname:lstrip=2)%09%(objectname)' refs/heads | sort -u)"
+    processed_superseded="$(comm -12 \
+        <(jq -sr '
+            reduce .[] as $e ({};
+                ($e.branch // "") as $branch |
+                if $branch == "" then .
+                elif $e.event == "submitted" then del(.[$branch])
+                elif (($e.event == "merged" or $e.event == "already_merged")
+                      and ($e.submitted_sha // "") != ""
+                      and ($e.sha // "") != "") then
+                    .[$branch] = {submitted:$e.submitted_sha, landed:$e.sha, swept:false}
+                elif ($e.event == "swept" and .[$branch] != null) then
+                    .[$branch].swept = true
+                else . end)
+            | to_entries[]
+            | select(.value.swept and .value.submitted != .value.landed)
+            | [.key, .value.submitted] | @tsv
+        ' "$journal" | sort -u) \
+        <(printf '%s\n' "$local_branch_refs") | cut -f1)"
+    processed_superseded_count="$(printf '%s\n' "$processed_superseded" | grep -c . || true)"
+    [ "$processed_superseded_count" -eq 0 ] \
+        || note "sweep: skipped $processed_superseded_count unchanged superseded branch ref(s) already swept"
     local b branch_batches=0 branch_candidates=0
     local branch_batch=()
     while IFS= read -r b; do
@@ -3549,7 +3582,9 @@ cmd_sweep() {
         fi
     done < <(comm -12 \
         <(printf '%s\n' "$merged_branches") \
-        <(git -C "$root" for-each-ref --format='%(refname:lstrip=2)' refs/heads | sort -u))
+        <(printf '%s\n' "$local_branch_refs" | cut -f1) \
+        | awk 'NR==FNR { skip[$0]=1; next } !($0 in skip)' \
+            <(printf '%s\n' "$processed_superseded") -)
     if [ "${#branch_batch[@]}" -gt 0 ]; then
         git -C "$root" branch -d -- "${branch_batch[@]}" >/dev/null 2>&1 || true
         branch_batches=$((branch_batches + 1))

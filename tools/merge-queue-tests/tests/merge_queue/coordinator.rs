@@ -1975,6 +1975,61 @@ fn sweep_batches_historical_branch_pruning() {
 }
 
 #[test]
+fn sweep_skips_only_unchanged_superseded_refs_already_swept() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["status"], "true");
+    let submitted = git(&fixture.root, &["rev-parse", "a"]);
+    let landed = git(&fixture.root, &["rev-parse", "master"]);
+    assert_ne!(submitted, landed, "fixture needs a rebased-style original tip");
+    for branch in ["unchanged", "advanced", "resubmitted"] {
+        run_git(&fixture.root, &["branch", branch, &submitted]);
+    }
+    run_git(&fixture.root, &["checkout", "advanced"]);
+    fs::write(fixture.root.join("advanced.txt"), "advanced\n").expect("advance branch");
+    run_git(&fixture.root, &["add", "advanced.txt"]);
+    run_git(&fixture.root, &["commit", "-m", "advance branch"]);
+    run_git(&fixture.root, &["checkout", "master"]);
+
+    let mut journal = String::new();
+    for branch in ["unchanged", "advanced", "resubmitted"] {
+        journal.push_str(&format!(
+            "{{\"event\":\"submitted\",\"branch\":\"{branch}\"}}\n\
+             {{\"event\":\"merged\",\"branch\":\"{branch}\",\"submitted_sha\":\"{submitted}\",\"sha\":\"{landed}\"}}\n\
+             {{\"event\":\"swept\",\"branch\":\"{branch}\"}}\n"
+        ));
+    }
+    journal.push_str("{\"event\":\"submitted\",\"branch\":\"resubmitted\"}\n");
+    fs::write(fixture.state.join("journal.jsonl"), journal)
+        .expect("write branch lifecycles");
+
+    let output = fixture.mq_ok(&["sweep"], "true");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains("skipped 1 unchanged superseded branch ref(s) already swept"),
+        "sweep did not skip only the exact unchanged lifecycle: {combined}",
+    );
+    assert!(
+        combined.contains("checked 2 historical branch candidate(s) in 1 batch(es)"),
+        "advanced and resubmitted refs did not keep safe deletion checks: {combined}",
+    );
+    for branch in ["unchanged", "advanced", "resubmitted"] {
+        assert!(
+            git_output(
+                &fixture.root,
+                &["show-ref", "--verify", &format!("refs/heads/{branch}")],
+            )
+            .status
+            .success(),
+            "sweep unexpectedly deleted unmerged branch {branch}",
+        );
+    }
+}
+
+#[test]
 fn sweep_yields_when_ready_work_arrives_during_branch_pruning() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["status"], "true");
