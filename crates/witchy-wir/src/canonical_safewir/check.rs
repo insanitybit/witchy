@@ -4020,7 +4020,7 @@ mod tests {
             },
             vec![ValueType::Int],
             Vec::new(),
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
+        );
 
         assert!(check_initial(module).is_ok());
     }
@@ -4305,7 +4305,7 @@ mod tests {
             Terminator::Return { values: Vec::new() },
             Vec::new(),
             Vec::new(),
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
+        );
 
         assert!(check_initial(module).is_ok());
     }
@@ -5178,7 +5178,7 @@ mod tests {
                 ),
                 transfer: LoadTransfer::CopyScalar,
             },
-            Operation::Reclaim { object },
+            Operation::DropRef { object },
         ];
         let module = CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
@@ -5220,7 +5220,8 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         });
-        assert!(check_initial(module).is_ok());
+        let result = check_initial(module);
+        assert!(result.is_ok(), "UpdateCount fixture rejected: {result:?}");
     }
 
     fn header_load_module(length_type: ValueType) -> CanonicalModule<super::super::LoweredCandidate> {
@@ -5728,7 +5729,7 @@ mod tests {
                 ownership: Some(super::super::Ownership::Shared),
             }],
             Vec::new(),
-        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
+        );
         assert_eq!(
             check_initial(module).unwrap_err(),
             InitialCheckError::UnconsumedReference {

@@ -8727,25 +8727,21 @@ impl FunctionLowerer<'_> {
             condition: fits,
             kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
         });
+        let zero = self.push_const_size(0)?;
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: object,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes: 4,
-                count: length,
+                count: zero,
                 capacity: length,
                 stride_bytes: 1,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
-        self.push_operation(Operation::UpdateCount { object, count: length });
-        let zero = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::ConstSize {
-            destination: zero,
-            value: 0,
-        });
         self.push_string_copy(object, source, zero, length, length, layout)?;
+        self.push_operation(Operation::UpdateCount { object, count: length });
         self.string_lengths.insert(object, length);
         self.string_capacities.insert(object, length);
         Ok(object)
@@ -8986,7 +8982,7 @@ impl FunctionLowerer<'_> {
             ArithmeticOperator::Add,
             left_length,
             right_length,
-            OverflowBehavior::Wrap,
+            OverflowBehavior::Trap,
         )?;
         let capacity_fits = self.push_compare(
             ComparisonOperator::LessEqualUnsigned,
@@ -8996,7 +8992,7 @@ impl FunctionLowerer<'_> {
         self.push_guard(capacity_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let zero = self.push_const_size(0)?;
         let pointer_elements = matches!(element_type, ValueType::Ref(_));
-        let allocation_count = if pointer_elements { zero } else { total };
+        let allocation_count = zero;
         let allocation_fits = self.push_compare(
             ComparisonOperator::LessEqualUnsigned,
             allocation_count,
@@ -9036,26 +9032,37 @@ impl FunctionLowerer<'_> {
             return Ok(object);
         }
 
-        self.lower_list_concat_copy_loop(
-            object,
-            left,
-            left_length,
-            zero,
-            total,
-            maximum_count,
-            element_type,
-            element_source_type,
-        )?;
-        self.lower_list_concat_copy_loop(
-            object,
-            right,
-            right_length,
-            left_length,
-            total,
-            maximum_count,
-            element_type,
-            element_source_type,
-        )?;
+        self.push_operation(Operation::CloneRange {
+            destination: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Slice { start: zero, length: left_length },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            source: witchy_wir::canonical_safewir::Place::projected(
+                left,
+                Projection::Slice { start: zero, length: left_length },
+                ValueType::Ref(layout),
+                AccessMode::Read,
+            ),
+            count: left_length,
+        });
+        self.push_operation(Operation::CloneRange {
+            destination: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Slice { start: left_length, length: right_length },
+                ValueType::Ref(layout),
+                AccessMode::Write,
+            ),
+            source: witchy_wir::canonical_safewir::Place::projected(
+                right,
+                Projection::Slice { start: zero, length: right_length },
+                ValueType::Ref(layout),
+                AccessMode::Read,
+            ),
+            count: right_length,
+        });
+        self.push_operation(Operation::UpdateCount { object, count: total });
         self.list_counts.insert(object, total);
         Ok(object)
     }
@@ -9245,28 +9252,26 @@ impl FunctionLowerer<'_> {
                 witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
             },
         });
-        if matches!(element_type, ValueType::Ref(_)) {
-            let count_fits = self.push_compare(
-                ComparisonOperator::LessUnsigned,
-                destination_index,
-                maximum_count,
-            )?;
-            self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
-            let initialized = self.push_arithmetic(
-                ValueType::Size,
-                ArithmeticOperator::Add,
-                destination_index,
-                one,
-                OverflowBehavior::Wrap,
-            )?;
-            let initialized_fits = self.push_compare(
-                ComparisonOperator::LessEqualUnsigned,
-                initialized,
-                capacity,
-            )?;
-            self.push_guard(initialized_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-            self.push_operation(Operation::UpdateCount { object: destination, count: initialized });
-        }
+        let count_fits = self.push_compare(
+            ComparisonOperator::LessUnsigned,
+            destination_index,
+            maximum_count,
+        )?;
+        self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let initialized = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            destination_index,
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        let initialized_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            initialized,
+            capacity,
+        )?;
+        self.push_guard(initialized_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::UpdateCount { object: destination, count: initialized });
         let cursor_fits = self.push_compare(
             ComparisonOperator::LessUnsigned,
             cursor,
@@ -10167,23 +10172,22 @@ impl FunctionLowerer<'_> {
             kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
         });
 
+        let zero = self.push_const_size(0)?;
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: object,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes: 4,
-                count: total,
+                count: zero,
                 capacity: total,
                 stride_bytes: 1,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
-        self.push_operation(Operation::UpdateCount { object, count: total });
-        let zero = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
         self.push_string_copy(object, left, zero, left_length, total, layout)?;
         self.push_string_copy(object, right, left_length, right_length, total, layout)?;
+        self.push_operation(Operation::UpdateCount { object, count: total });
         self.string_lengths.insert(object, total);
         self.string_capacities.insert(object, total);
         Ok(object)
@@ -11025,13 +11029,18 @@ impl FunctionLowerer<'_> {
         let count_two_or_more = self.lower_size_select(two_bytes, two, count_three_or_four)?;
         let count = self.lower_size_select(one_byte, one, count_two_or_more)?;
 
-        // Capacity four lets all branch arms share one owned result; count is
-        // still the exact UTF-8 length exposed to String consumers.
-        let output = self.alloc_bytes(count, four)?;
         let index_zero = self.push_const_size(0)?;
         let index_one = self.push_const_size(1)?;
         let index_two = self.push_const_size(2)?;
         let index_three = self.push_const_size(3)?;
+        // Capacity four lets all branch arms share one owned result. Initialize
+        // the complete physical prefix before dispatch so the join cannot make
+        // branch-local stores appear to initialize bytes that another branch
+        // skipped; only the selected UTF-8 prefix becomes logically visible.
+        let output = self.alloc_bytes(index_zero, four)?;
+        for index in [index_zero, index_one, index_two, index_three] {
+            self.push_byte_store(output, index, index_zero)?;
+        }
         let one_block = self.new_block(&[])?;
         let two_block = self.new_block(&[])?;
         let three_block = self.new_block(&[])?;
@@ -11136,6 +11145,15 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Branch { target: exit, arguments: Vec::new() })?;
 
         self.current = exit;
+        let capacity_fits =
+            self.push_compare(ComparisonOperator::LessEqualUnsigned, count, four)?;
+        self.push_guard(capacity_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let publish_capacity = self.push_const_size(4)?;
+        let count_fits =
+            self.push_compare(ComparisonOperator::LessEqualUnsigned, count, publish_capacity)?;
+        self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::UpdateCount { object: output, count });
+        self.string_lengths.insert(output, count);
         Ok(output)
     }
 
@@ -12280,6 +12298,37 @@ impl FunctionLowerer<'_> {
         let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
         let total_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, maximum)?;
         self.push_guard(total_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        // Decimal rendering fills digits from the end, so its loop does not
+        // establish a monotonically growing initialized prefix. Seed the
+        // entire bounded result from immutable zero bytes first; subsequent
+        // sign and digit copies only overwrite already initialized storage.
+        const MAX_RENDERED_INT_BYTES: u64 = 20;
+        let render_limit = self.push_const_size(MAX_RENDERED_INT_BYTES)?;
+        let render_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            total,
+            render_limit,
+        )?;
+        self.push_guard(render_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let first_seed_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            digit_table_count,
+            render_limit,
+        )?;
+        self.push_guard(first_seed_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let seeded = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            digit_table_count,
+            digit_table_count,
+            OverflowBehavior::Trap,
+        )?;
+        let seed_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            seeded,
+            render_limit,
+        )?;
+        self.push_guard(seed_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: object,
@@ -12287,12 +12336,21 @@ impl FunctionLowerer<'_> {
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes: 4,
                 count: total,
-                capacity: total,
+                capacity: render_limit,
                 stride_bytes: 1,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
         self.push_operation(Operation::UpdateCount { object, count: total });
+        self.push_byte_copy(object, zero, digits, zero, digit_table_count, layout);
+        self.push_byte_copy(
+            object,
+            digit_table_count,
+            digits,
+            zero,
+            digit_table_count,
+            layout,
+        );
 
         // Sign: copy `sign_len` bytes (zero or one) of `-` to the front.
         let sign_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, sign_len, total)?;
@@ -12338,7 +12396,7 @@ impl FunctionLowerer<'_> {
         self.current = write_exit;
 
         self.string_lengths.insert(object, total);
-        self.string_capacities.insert(object, total);
+        self.string_capacities.insert(object, render_limit);
         Ok(object)
     }
 
@@ -13388,23 +13446,32 @@ impl FunctionLowerer<'_> {
         let maximum = self.push_const_size(u64::from(u32::MAX - 4))?;
         let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, extent, maximum)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let zero = self.push_const_size(0)?;
         let object = self.fresh(ValueType::Ref(layout))?;
         self.push_operation(Operation::Alloc {
             destination: object,
             layout,
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes: 4,
-                count: extent,
+                count: zero,
                 capacity: extent,
                 stride_bytes: 1,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
+        let source_count = self.string_length_of(source)?;
+        let source_end = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Add,
+            start,
+            extent,
+            OverflowBehavior::Trap,
+        )?;
+        let source_fits =
+            self.push_compare(ComparisonOperator::LessEqualUnsigned, source_end, source_count)?;
+        self.push_guard(source_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, zero, source, start, extent, layout);
         self.push_operation(Operation::UpdateCount { object, count: extent });
-        let zero = self.push_const_size(0)?;
-        let destination_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, extent)?;
-        self.push_guard(destination_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.push_byte_copy(object, zero, source, start, length, layout);
         self.string_lengths.insert(object, extent);
         self.string_capacities.insert(object, extent);
         Ok(object)

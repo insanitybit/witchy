@@ -1199,7 +1199,7 @@ impl<'a> MemoryChecker<'a> {
                 .unwrap_or(count)
         };
         let starts_at_zero = self.state.constants.get(start) == Some(&0);
-        let whole_logical_body = starts_at_zero && *length == logical_count;
+        let whole_logical_body = starts_at_zero && self.same_scalar(*length, logical_count);
         let constant_range = self
             .state
             .constants
@@ -1530,10 +1530,22 @@ impl<'a> MemoryChecker<'a> {
     /// parameter, a loaded child).
     fn checked_scalar_slot_initialized(&self, place: &Place) -> Result<bool, InitialCheckError> {
         let (object, slot) = self.reference_slot(place)?;
-        if self.live_object(object)?.initialized_owned_slots {
+        let state = self.live_object(object)?;
+        if state.initialized_owned_slots {
             return Ok(true);
         }
         if self.checked_scalar_slot_stored(object, slot) {
+            return Ok(true);
+        }
+        if let (Projection::Element { index }, Extent::Counted { count, .. }) =
+            (place.projection(), &state.extent)
+            && self.strict_less(*index, *count)
+            && self.descriptor(state.layout)?.kind().packed_element_layout()
+                .is_some_and(|element| {
+                    self.require_scalar_range_element(element, "Load(scalar element)").is_ok()
+                        && self.scalar_prefix_initialized(object, *count, element)
+                })
+        {
             return Ok(true);
         }
         Ok(self.state.range_states.iter().any(|(identity, range)| {
@@ -1578,9 +1590,27 @@ impl<'a> MemoryChecker<'a> {
     fn scalar_prefix_initialized(
         &self,
         object: ValueId,
-        mut count: ValueId,
+        count: ValueId,
         element: crate::layout::LayoutId,
     ) -> bool {
+        self.scalar_prefix_initialized_with_budget(
+            object,
+            count,
+            element,
+            self.state.exact_additions.len().saturating_add(1),
+        )
+    }
+
+    fn scalar_prefix_initialized_with_budget(
+        &self,
+        object: ValueId,
+        count: ValueId,
+        element: crate::layout::LayoutId,
+        budget: usize,
+    ) -> bool {
+        if budget == 0 {
+            return false;
+        }
         let Ok(state) = self.live_object(object) else { return false };
         let complete_count = match state.extent {
             Extent::Counted { count, .. } => Some(count),
@@ -1592,34 +1622,113 @@ impl<'a> MemoryChecker<'a> {
         {
             return true;
         }
-        for _ in 0..=self.state.exact_additions.len() {
-            if self.is_zero(count) { return true; }
-            if self.state.range_states.iter().any(|(identity, range)| {
-                self.same_allocation(object, identity.object) && range.initialized && range.zero_start
-                    && self.same_scalar(identity.length, count)
-                    && range.element == element
-            }) { return true; }
-            if let Some(length) = self.state.constants.get(&count) {
-                let initialized = self.state.initialized_scalar_slots.iter().filter_map(|(container, slot)| match slot {
-                    SlotIdentity::Constant(index) if index < length && self.same_allocation(object, *container) => Some(*index),
-                    _ => None,
-                }).collect::<BTreeSet<_>>();
-                if initialized.len() as u64 == *length { return true; }
-                let mut end = self.state.range_states.iter().filter_map(|(identity, range)| {
-                    (self.same_allocation(object, identity.object) && range.initialized && range.zero_start
-                        && range.element == element)
-                        .then(|| self.state.constants.get(&identity.length).copied()).flatten()
-                }).max().unwrap_or(0);
-                for index in initialized { if index == end { end += 1; } }
-                if end >= *length { return true; }
-
+        if self.is_zero(count) {
+            return true;
+        }
+        if self.state.range_states.iter().any(|(identity, range)| {
+            self.same_allocation(object, identity.object) && range.initialized && range.zero_start
+                && (self.same_scalar(identity.length, count)
+                    || self.less_equal(count, identity.length))
+                && range.element == element
+        }) {
+            return true;
+        }
+        if let Some(length) = self.state.constants.get(&count) {
+            let initialized = self.state.initialized_scalar_slots.iter().filter_map(|(container, slot)| match slot {
+                SlotIdentity::Constant(index) if index < length && self.same_allocation(object, *container) => Some(*index),
+                _ => None,
+            }).collect::<BTreeSet<_>>();
+            if initialized.len() as u64 == *length {
+                return true;
             }
-            let Some(&(left, right)) = self.state.exact_additions.get(&count) else { return false };
-            let prefix = if self.state.constants.get(&right) == Some(&1) { left }
-                else if self.state.constants.get(&left) == Some(&1) { right } else { return false };
+            let mut end = self.state.range_states.iter().filter_map(|(identity, range)| {
+                (self.same_allocation(object, identity.object) && range.initialized && range.zero_start
+                    && range.element == element)
+                    .then(|| self.state.constants.get(&identity.length).copied()).flatten()
+            }).max().unwrap_or(0);
+            for index in initialized {
+                if index == end {
+                    end += 1;
+                }
+            }
+            if end >= *length {
+                return true;
+            }
+        }
+        let mut initialized_constants = self.state.initialized_scalar_slots.iter().filter_map(
+            |(container, slot)| match slot {
+                SlotIdentity::Constant(index) if self.same_allocation(object, *container) => {
+                    Some(*index)
+                }
+                _ => None,
+            },
+        ).collect::<BTreeSet<_>>();
+        let mut prefix = 0;
+        while initialized_constants.remove(&prefix) {
+            prefix += 1;
+        }
+        if prefix > 0 && self.proven_at_most(count, prefix) {
+            return true;
+        }
+        for (sum, (left, right)) in &self.state.exact_additions {
+            if !self.less_equal(count, *sum) {
+                continue;
+            }
+            for (prefix_length, suffix_length) in [(*left, *right), (*right, *left)] {
+                let prefix_initialized = self.state.range_states.iter().any(|(identity, range)| {
+                    self.same_allocation(object, identity.object)
+                        && range.initialized
+                        && range.zero_start
+                        && range.element == element
+                        && self.same_scalar(identity.length, prefix_length)
+                });
+                let suffix_initialized = self.state.range_states.iter().any(|(identity, range)| {
+                    self.same_allocation(object, identity.object)
+                        && range.initialized
+                        && range.element == element
+                        && self.same_scalar(identity.start, prefix_length)
+                        && self.same_scalar(identity.length, suffix_length)
+                });
+                if prefix_initialized && suffix_initialized {
+                    return true;
+                }
+            }
+        }
+        let Some(&(left, right)) = self.state.exact_additions.get(&count) else {
+            return false;
+        };
+        for (prefix, suffix) in [(left, right), (right, left)] {
+            let initialized_suffix = self.state.range_states.iter().any(|(identity, range)| {
+                self.same_allocation(object, identity.object)
+                    && range.initialized
+                    && range.element == element
+                    && self.same_scalar(identity.start, prefix)
+                    && self.same_scalar(identity.length, suffix)
+            });
+            if initialized_suffix
+                && self.scalar_prefix_initialized_with_budget(
+                    object,
+                    prefix,
+                    element,
+                    budget - 1,
+                )
+            {
+                return true;
+            }
+            if self.state.constants.get(&suffix) != Some(&1) {
+                continue;
+            }
             let slot = self.state.constants.get(&prefix).map_or(SlotIdentity::Dynamic(prefix), |n| SlotIdentity::Constant(*n));
-            if !self.checked_scalar_slot_stored(object, slot) { return false; }
-            count = prefix;
+            if self.checked_scalar_slot_stored(object, slot)
+                && self.scalar_prefix_initialized_with_budget(
+                    object,
+                    prefix,
+                    element,
+                    budget - 1,
+                )
+            {
+                return true;
+            }
         }
         false
     }
@@ -1718,6 +1827,19 @@ impl<'a> MemoryChecker<'a> {
                 zero_start: self.is_zero(range.start),
             },
         );
+        let complete_prefix = self.is_zero(range.start)
+            && self.state.objects.get(&range.object).is_some_and(|object| {
+                matches!(object.extent, Extent::Counted { count, .. }
+                    if self.same_scalar(count, range.length))
+            });
+        if complete_prefix {
+            let identity = self.state.objects[&range.object].identity;
+            for object in self.state.objects.values_mut() {
+                if object.identity == identity {
+                    object.initialized_owned_slots = true;
+                }
+            }
+        }
     }
 
     fn move_scalar_initialization(&mut self, moved: CheckedRange) -> Result<(), InitialCheckError> {
@@ -1959,6 +2081,9 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         }
         let state = self.live_object(object)?;
+        if state.initialized_owned_slots {
+            return Ok(());
+        }
         let descriptor = self.descriptor(state.layout)?;
         let Some(element) = descriptor.kind().packed_element_layout() else {
             if matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
@@ -2219,6 +2344,7 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn range_within(&self, start: ValueId, length: ValueId, count: ValueId) -> bool {
+        let empty_at_or_before_end = self.is_zero(length) && self.less_equal(start, count);
         let from_body_start = self.state.constants.get(&start) == Some(&0)
             && self.less_equal(length, count);
         let guarded_exact_end = self.state.exact_additions.iter().any(
@@ -2236,7 +2362,7 @@ impl<'a> MemoryChecker<'a> {
             .is_some_and(|((start, length), count)| {
                 start.checked_add(*length).is_some_and(|end| end <= *count)
             });
-        from_body_start || guarded_exact_end || constant_range
+        empty_at_or_before_end || from_body_start || guarded_exact_end || constant_range
     }
 
     fn check_byte_slice(
@@ -2269,23 +2395,24 @@ impl<'a> MemoryChecker<'a> {
         }
         self.require_type(*start, ValueType::Size)?;
         self.require_type(*length, ValueType::Size)?;
-        let Extent::Counted { count, stride_bytes: 1, .. } = object.extent else {
+        let Extent::Counted { count, capacity, stride_bytes: 1, .. } = object.extent else {
             return Err(InitialCheckError::InvalidExtent {
                 function: self.function.id,
                 object: place.object(),
             });
         };
-        let logical_count = self
-            .state
-            .header_values
-            .get(&(place.object(), HeaderField::Length))
-            .copied()
-            .unwrap_or(count);
-        if !self.range_within(*start, *length, logical_count) {
+        let bound = if required_access == AccessMode::Write {
+            self.state.header_values.get(&(place.object(), HeaderField::Capacity))
+                .copied().unwrap_or(capacity)
+        } else {
+            self.state.header_values.get(&(place.object(), HeaderField::Length))
+                .copied().unwrap_or(count)
+        };
+        if !self.range_within(*start, *length, bound) {
             return Err(InitialCheckError::MissingBoundsGuard {
                 function: self.function.id,
                 index: *start,
-                count: logical_count,
+                count: bound,
             });
         }
         Ok(*length)
@@ -2423,6 +2550,13 @@ impl<'a> MemoryChecker<'a> {
                 overflow: OverflowBehavior::Trap,
             } => {
                 self.state.exact_additions.insert(*destination, (*left, *right));
+                if let Some(sum) = self.state.constants.get(left).copied()
+                    .zip(self.state.constants.get(right).copied())
+                    .and_then(|(left, right)| left.checked_add(right))
+                    .filter(|sum| *sum <= u64::from(u32::MAX))
+                {
+                    self.state.constants.insert(*destination, sum);
+                }
                 Ok(false)
             }
             Operation::Arithmetic {
@@ -2572,6 +2706,15 @@ impl<'a> MemoryChecker<'a> {
                 self.value_type_for_layout(*element)
                     .is_ok_and(|value_type| value_type.is_memory_bearing())
             });
+        let initialized_empty_scalar_prefix = descriptor
+            .kind()
+            .packed_element_layout()
+            .is_some_and(|element| {
+                matches!(
+                    self.descriptor(element).map(|descriptor| descriptor.kind()),
+                    Ok(LayoutKind::Scalar(_))
+                ) && matches!(extent, Extent::Counted { count, .. } if self.is_zero(*count))
+            });
         self.state.objects.insert(
             destination,
             ObjectState {
@@ -2581,7 +2724,7 @@ impl<'a> MemoryChecker<'a> {
                 ownership: Ownership::Unique,
                 allocation_class: Some(class),
                 shared_immutable: false,
-                initialized_owned_slots: false,
+                initialized_owned_slots: initialized_empty_scalar_prefix,
             },
         );
         if let Some(element) = pointer_element {
@@ -3568,6 +3711,7 @@ impl<'a> MemoryChecker<'a> {
                 capacity,
             });
         }
+        let mut complete_scalar_prefix = None;
         if !self.same_scalar(old_count, count) {
             // A complete value proves only its old logical prefix. Materialize
             // that prefix before invalidating the summary; newly added slots
@@ -3580,6 +3724,7 @@ impl<'a> MemoryChecker<'a> {
                     if !self.scalar_prefix_initialized(object, count, element) {
                         return self.unsupported("UpdateCount(uninitialized scalar prefix)");
                     }
+                    complete_scalar_prefix = Some(element);
                 }
             }
             for candidate in self.state.objects.values_mut() {
@@ -3589,6 +3734,13 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         self.consolidate_pointer_prefix(object, count)?;
+        if complete_scalar_prefix.is_some() {
+            for candidate in self.state.objects.values_mut() {
+                if candidate.identity == state.identity {
+                    candidate.initialized_owned_slots = true;
+                }
+            }
+        }
         self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
             header_bytes,
             count,
@@ -3596,6 +3748,31 @@ impl<'a> MemoryChecker<'a> {
             stride_bytes,
         };
         self.state.header_values.insert((object, HeaderField::Length), count);
+        if let Some(element) = complete_scalar_prefix {
+            let aliases = self
+                .state
+                .objects
+                .iter()
+                .filter_map(|(value, candidate)| (candidate.identity == state.identity).then_some(*value))
+                .collect::<BTreeSet<_>>();
+            self.state
+                .initialized_scalar_slots
+                .retain(|(container, _)| !aliases.contains(container));
+            self.state
+                .range_states
+                .retain(|identity, _| !aliases.contains(&identity.object));
+            self.state.range_states.insert(
+                RangeIdentity { object, start: count, length: count },
+                RangeState {
+                    element,
+                    ownership: state.ownership,
+                    allocation_class: state.allocation_class,
+                    initialized: true,
+                    zero_width: self.is_zero(count),
+                    zero_start: true,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -4106,16 +4283,35 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn less_equal_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
-        Self::constant_relation_in(facts, left, right, |left, right| left <= right)
-            || facts.constants.get(&left) == Some(&0)
-            || facts.guards
-                .iter()
-                .any(|(operator, guarded_left, guarded_right)| {
-                    *operator == ComparisonOperator::LessEqualUnsigned
-                        && Self::same_scalar_in(facts, left, *guarded_left)
-                        && Self::same_scalar_in(facts, right, *guarded_right)
-                })
-            || Self::same_scalar_in(facts, left, right)
+        let mut pending = vec![left];
+        let mut visited = BTreeSet::new();
+        while let Some(value) = pending.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            if Self::same_scalar_in(facts, value, right)
+                || Self::constant_relation_in(facts, value, right, |left, right| left <= right)
+                || facts.constants.get(&value) == Some(&0)
+            {
+                return true;
+            }
+            for (operator, guarded_left, guarded_right) in &facts.guards {
+                if matches!(operator,
+                    ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
+                    && Self::same_scalar_in(facts, value, *guarded_left)
+                {
+                    pending.push(*guarded_right);
+                }
+            }
+            for (sum, (addend_left, addend_right)) in &facts.exact_additions {
+                if Self::same_scalar_in(facts, value, *addend_left)
+                    || Self::same_scalar_in(facts, value, *addend_right)
+                {
+                    pending.push(*sum);
+                }
+            }
+        }
+        false
     }
 
     /// A wrapping addition is exact only when the current path proves that its
@@ -5001,6 +5197,45 @@ mod tests {
             ValueType::Ref(list),
             access,
         )
+    }
+
+    #[test]
+    fn scalar_prefix_shrink_requires_reinitialization_before_regrowth() {
+        with_checker_capacity(false, 3, |checker, list| {
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: COUNT,
+                right: CAPACITY,
+            }).expect("second slot fits capacity");
+            checker.check(&Operation::Guard {
+                condition: CONDITION,
+                kind: GuardKind::Bounds,
+            }).expect("store bound is established");
+            checker.check(&Operation::Store {
+                place: Place::projected(
+                    SOURCE,
+                    Projection::Element { index: COUNT },
+                    ValueType::Size,
+                    AccessMode::Write,
+                ),
+                value: LOADED,
+                transfer: StoreTransfer::CopyScalar,
+            }).expect("second scalar slot is initialized");
+            checker.check(&Operation::UpdateCount { object: SOURCE, count: LONG_LENGTH })
+                .expect("initialized second slot may be published");
+            checker.check(&Operation::UpdateCount { object: SOURCE, count: COUNT })
+                .expect("shrinking preserves the retained initialized prefix");
+            assert!(matches!(
+                checker.check(&Operation::UpdateCount { object: SOURCE, count: LONG_LENGTH }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "UpdateCount(uninitialized scalar prefix)",
+                    ..
+                })
+            ), "a removed scalar slot must be written again before regrowth");
+
+            let _ = list;
+        });
     }
 
     fn unique_phi_target(value: ValueId, layout: crate::layout::LayoutId) -> BasicBlock {
@@ -7460,9 +7695,19 @@ mod tests {
         let before_refusal = checker.snapshot();
         assert!(matches!(
             checker.check(&operation),
-            Err(InitialCheckError::MissingBoundsGuard { index: START, count: COUNT, .. })
+            Err(InitialCheckError::MissingBoundsGuard { index: START, count: CAPACITY, .. })
         ));
         checker.restore(before_refusal);
+        checker
+            .state
+            .guards
+            .insert((ComparisonOperator::LessEqualUnsigned, END, CAPACITY));
+        let destination_only = checker.snapshot();
+        assert!(matches!(
+            checker.check(&operation),
+            Err(InitialCheckError::MissingBoundsGuard { index: START, count: COUNT, .. })
+        ));
+        checker.restore(destination_only);
         checker
             .state
             .guards
