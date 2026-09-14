@@ -71,9 +71,9 @@ fn code(body: &mut WasmFunctionEncoder, instructions: impl IntoIterator<Item = I
 fn load() -> I<'static> { I::I32Load(memarg(4)) }
 fn store() -> I<'static> { I::I32Store(memarg(4)) }
 
-/// Push OBJECT/TAG/INDEX, checking address arithmetic before any write. The
-/// high-water reservation is published only to the private allocator global.
-fn push(body: &mut WasmFunctionEncoder, s: &[u32]) {
+/// Reserve one frame before transferring ownership into it. Every instruction
+/// that can trap runs here, while the parent still owns its child edge.
+fn reserve(body: &mut WasmFunctionEncoder, s: &[u32]) {
     code(body, [
         I::LocalGet(s[TOP]), I::I32Const((u32::MAX - FRAME_BYTES as u32) as i32), I::I32GtU,
         I::If(BlockType::Empty), I::Unreachable, I::End,
@@ -83,6 +83,13 @@ fn push(body: &mut WasmFunctionEncoder, s: &[u32]) {
         I::LocalGet(s[PAGES]), I::MemorySize(0), I::I32GtU, I::If(BlockType::Empty),
         I::LocalGet(s[PAGES]), I::MemorySize(0), I::I32Sub, I::MemoryGrow(0),
         I::I32Const(-1), I::I32Eq, I::If(BlockType::Empty), I::Unreachable, I::End, I::End,
+    ]);
+}
+
+/// Publish OBJECT/TAG/INDEX into space already reserved by `reserve`. This is
+/// deliberately non-trapping so ownership transfer is failure-atomic.
+fn commit_push(body: &mut WasmFunctionEncoder, s: &[u32]) {
+    code(body, [
         I::LocalGet(s[TOP]), I::LocalGet(s[OBJECT]), store(),
         I::LocalGet(s[TOP]), I::I32Const(4), I::I32Add, I::LocalGet(s[TAG]), store(),
         I::LocalGet(s[TOP]), I::I32Const(8), I::I32Add, I::LocalGet(s[INDEX]), store(),
@@ -90,6 +97,11 @@ fn push(body: &mut WasmFunctionEncoder, s: &[u32]) {
         I::LocalGet(s[TOP]), I::LocalGet(s[HIGH]), I::I32GtU, I::If(BlockType::Empty),
         I::LocalGet(s[TOP]), I::LocalTee(s[HIGH]), I::GlobalSet(0), I::End,
     ]);
+}
+
+fn push(body: &mut WasmFunctionEncoder, s: &[u32]) {
+    reserve(body, s);
+    commit_push(body, s);
 }
 
 fn reclaim(body: &mut WasmFunctionEncoder, s: &[u32]) {
@@ -181,15 +193,19 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
             }
             // Transfer exactly one child to a new frame. The parent resumes
             // at its next slot only after this child has finished.
+            code(body, [I::LocalGet(s[ADDRESS]), load(), I::LocalSet(s[OBJECT]),
+                I::LocalGet(s[OBJECT]), I::I32Eqz, I::LocalGet(s[PAGES]), I::I32And,
+                I::If(BlockType::Empty),
+                I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add,
+                I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
+                I::Br(2), I::End,
+                I::LocalGet(s[OBJECT]), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End]);
+            reserve(body, s);
             code(body, [I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add,
                 I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
-                I::LocalGet(s[ADDRESS]), load(), I::LocalSet(s[OBJECT]),
-                I::LocalGet(s[OBJECT]), I::I32Eqz, I::LocalGet(s[PAGES]), I::I32And,
-                I::If(BlockType::Empty), I::Br(2), I::End,
-                I::LocalGet(s[OBJECT]), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End,
                 I::LocalGet(s[ADDRESS]), I::I32Const(0), store(),
                 I::LocalGet(s[CHILD_TAG]), I::LocalSet(s[TAG]), I::I32Const(-1), I::LocalSet(s[INDEX])]);
-            push(body, s);
+            commit_push(body, s);
             code(body, [I::Br(1), I::End]);
         }
         code(body, [I::Unreachable, I::End, I::End,
@@ -206,7 +222,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
 
 // Expected instruction mapping is authored separately from `emit`; it never
 // invokes the encoder or decodes its output to invent an expected plan.
-fn plan_push(p: &mut Vec<PlanToken>, s: &[u32]) {
+fn plan_reserve(p: &mut Vec<PlanToken>, s: &[u32]) {
     use PlanToken as P;
     p.extend([
         P::LocalGet(s[TOP]), P::I32Const((u32::MAX - 12) as i32), P::I32GtU,
@@ -217,6 +233,12 @@ fn plan_push(p: &mut Vec<PlanToken>, s: &[u32]) {
         P::LocalGet(s[PAGES]), P::MemorySize, P::I32GtU, P::If("Empty".into()),
         P::LocalGet(s[PAGES]), P::MemorySize, P::I32Sub, P::MemoryGrow,
         P::I32Const(-1), P::I32Eq, P::If("Empty".into()), P::Unreachable, P::End, P::End,
+    ]);
+}
+
+fn plan_commit_push(p: &mut Vec<PlanToken>, s: &[u32]) {
+    use PlanToken as P;
+    p.extend([
         P::LocalGet(s[TOP]), P::LocalGet(s[OBJECT]), pstore(),
         P::LocalGet(s[TOP]), P::I32Const(4), P::I32Add, P::LocalGet(s[TAG]), pstore(),
         P::LocalGet(s[TOP]), P::I32Const(8), P::I32Add, P::LocalGet(s[INDEX]), pstore(),
@@ -224,6 +246,11 @@ fn plan_push(p: &mut Vec<PlanToken>, s: &[u32]) {
         P::LocalGet(s[TOP]), P::LocalGet(s[HIGH]), P::I32GtU, P::If("Empty".into()),
         P::LocalGet(s[TOP]), P::LocalTee(s[HIGH]), P::GlobalSet(0), P::End,
     ]);
+}
+
+fn plan_push(p: &mut Vec<PlanToken>, s: &[u32]) {
+    plan_reserve(p, s);
+    plan_commit_push(p, s);
 }
 
 fn pload() -> PlanToken { PlanToken::I32Load { offset: 0, align: 2, memory: 0 } }
@@ -312,15 +339,19 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
                         P::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), P::LocalSet(s[PAGES])]);
                 }
             }
+            p.extend([P::LocalGet(s[ADDRESS]), pload(), P::LocalSet(s[OBJECT]),
+                P::LocalGet(s[OBJECT]), P::I32Eqz, P::LocalGet(s[PAGES]), P::I32And,
+                P::If("Empty".into()),
+                P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add,
+                P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
+                P::Br(2), P::End,
+                P::LocalGet(s[OBJECT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End]);
+            plan_reserve(p, s);
             p.extend([P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add,
                 P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
-                P::LocalGet(s[ADDRESS]), pload(), P::LocalSet(s[OBJECT]),
-                P::LocalGet(s[OBJECT]), P::I32Eqz, P::LocalGet(s[PAGES]), P::I32And,
-                P::If("Empty".into()), P::Br(2), P::End,
-                P::LocalGet(s[OBJECT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,
                 P::LocalGet(s[ADDRESS]), P::I32Const(0), pstore(),
                 P::LocalGet(s[CHILD_TAG]), P::LocalSet(s[TAG]), P::I32Const(-1), P::LocalSet(s[INDEX])]);
-            plan_push(p, s);
+            plan_commit_push(p, s);
             p.extend([P::Br(1), P::End]);
         }
         p.extend([P::Unreachable, P::End, P::End,
@@ -506,5 +537,22 @@ mod tests {
 
         let (mut store, instance, _) = fixture_with_slot(&absent, PointerSlot::Owned);
         assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
+    }
+
+    #[test]
+    fn failed_child_frame_reservation_preserves_the_owned_parent_edge() {
+        let maximum_bytes = 64 * 65_536usize;
+        let mut heap = vec![0; maximum_bytes - 32 - FRAME_BYTES as usize];
+        for (at, value) in [
+            (0, 1), (4, 16), (8, 1), (12, 1),
+            (24, 1), (28, 16), (32, 0), (36, 0),
+        ] {
+            put(&mut heap, at, value);
+        }
+        put(&mut heap, 16, 64);
+        let (mut store, instance, memory) = fixture(&heap);
+        assert!(instance.get_typed_func::<i32, ()>(&mut store, "drop").unwrap().call(&mut store, 40).is_err());
+        assert_eq!(word(memory.data(&store), 48), 64, "a failed worklist growth must not consume the parent's owned edge");
+        assert_eq!(global(&instance, &mut store, "free"), 0, "neither live object may be reclaimed after the failed transfer");
     }
 }
