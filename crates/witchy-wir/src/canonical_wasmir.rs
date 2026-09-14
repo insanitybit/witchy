@@ -2467,6 +2467,12 @@ fn emit_alloc(
         body.instruction(&wasm_encoder::Instruction::I64Add);
     };
     emit_end(body);
+    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Unreachable);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_end(body);
     body.instruction(&wasm_encoder::Instruction::MemorySize(0));
     body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
@@ -2987,8 +2993,6 @@ fn emit_clone_range(
     };
     emit_move_range_base(body, function, layout, source.object(), source_start, source_layout, 1)?;
     emit_move_range_base(body, function, layout, destination.object(), destination_start, destination_layout, 2)?;
-    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 2)));
-    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 1)));
     emit_get(body, layout, function.id, count)?;
     body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(destination_layout.stride)));
@@ -2998,14 +3002,10 @@ fn emit_clone_range(
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
-    emit_get(body, layout, function.id, count)?;
-    body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
-    body.instruction(&wasm_encoder::Instruction::I32Mul);
-    body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     if destination_layout.pointer_layout.is_some() {
-        // The copied prefix now holds a second owner of every element:
-        // retain each one, mirroring `CloneRef` (static objects below the
-        // heap boundary carry no count; a zero or saturated count traps).
+        // Retain every source element before publishing the copied prefix.
+        // A zero or saturated child count may trap; until the whole loop
+        // succeeds, the destination remains untouched.
         if layout.scratch.len() < 5 {
             return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "CloneRange scratch depth" });
         }
@@ -3020,7 +3020,7 @@ fn emit_clone_range(
         body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         body.instruction(&wasm_encoder::Instruction::Br(2));
         body.instruction(&wasm_encoder::Instruction::End);
-        emit_get_index(body, scratch_index(layout, 2));
+        emit_get_index(body, scratch_index(layout, 1));
         emit_get_index(body, scratch_index(layout, 0));
         body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
         body.instruction(&wasm_encoder::Instruction::I32Mul);
@@ -3064,6 +3064,12 @@ fn emit_clone_range(
         body.instruction(&wasm_encoder::Instruction::End);
         body.instruction(&wasm_encoder::Instruction::End);
     }
+    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 2)));
+    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 1)));
+    emit_get(body, layout, function.id, count)?;
+    body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Mul);
+    body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     Ok(())
 }
 
@@ -5330,10 +5336,6 @@ fn push_clone_range_plan(
     };
     push_move_range_base_plan(plan, layout, source.object(), source_start, source_layout, 1)?;
     push_move_range_base_plan(plan, layout, destination.object(), destination_start, destination_layout, 2)?;
-    plan.extend([
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::LocalGet(layout.scratch[1]),
-    ]);
     push_get(plan, layout, count)?;
     plan.extend([
         PlanToken::I64ExtendI32U,
@@ -5344,12 +5346,6 @@ fn push_clone_range_plan(
         PlanToken::If("Empty".to_owned()),
         PlanToken::Unreachable,
         PlanToken::End,
-    ]);
-    push_get(plan, layout, count)?;
-    plan.extend([
-        PlanToken::I32Const(destination_layout.stride as i32),
-        PlanToken::I32Mul,
-        PlanToken::MemoryCopy { source: 0, destination: 0 },
     ]);
     if destination_layout.pointer_layout.is_some() {
         if layout.scratch.len() < 5 {
@@ -5370,7 +5366,7 @@ fn push_clone_range_plan(
             PlanToken::If("Empty".to_owned()),
             PlanToken::Br(2),
             PlanToken::End,
-            PlanToken::LocalGet(layout.scratch[2]),
+            PlanToken::LocalGet(layout.scratch[1]),
             PlanToken::LocalGet(layout.scratch[0]),
             PlanToken::I32Const(destination_layout.stride as i32),
             PlanToken::I32Mul,
@@ -5415,6 +5411,16 @@ fn push_clone_range_plan(
             PlanToken::End,
         ]);
     }
+    plan.extend([
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalGet(layout.scratch[1]),
+    ]);
+    push_get(plan, layout, count)?;
+    plan.extend([
+        PlanToken::I32Const(destination_layout.stride as i32),
+        PlanToken::I32Mul,
+        PlanToken::MemoryCopy { source: 0, destination: 0 },
+    ]);
     Ok(())
 }
 
@@ -5527,6 +5533,14 @@ fn expected_alloc_plan(
         PlanToken::I64ExtendI32U,
         PlanToken::I64Add,
     ];
+    plan.extend(end.iter().cloned());
+    plan.extend([
+        PlanToken::I64Const(i64::from(u32::MAX)),
+        PlanToken::I64GtU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::Unreachable,
+        PlanToken::End,
+    ]);
     plan.extend(end.iter().cloned());
     plan.extend([
         PlanToken::MemorySize,
