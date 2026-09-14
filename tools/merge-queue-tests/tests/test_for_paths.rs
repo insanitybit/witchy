@@ -149,6 +149,22 @@ fn gate_nextest_example_tests_only_is_not_workspace() {
     );
 }
 
+#[test]
+fn network_example_edits_run_only_the_network_module() {
+    let commands = selected(&["--edit-loop", "src/example_tests/network.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(
+        commands[0].contains("test(/^example_tests::network::/)")
+            && commands[0].contains("--bin witchy"),
+        "network edit did not select the focused bin probe: {commands:?}"
+    );
+    assert!(
+        !commands[0].contains("test(/^example_tests::/)")
+            || commands[0].contains("test(/^example_tests::network::/)"),
+        "network edit expanded to the full example matrix: {commands:?}"
+    );
+}
+
 /// `-p witchy` makes cargo BUILD all 24 of the package's test binaries even
 /// when the run is one test from one of them. Measured 2026-08-27: a docs gate
 /// spent 7m14s compiling to reach "Starting 1 test across 24 binaries" while

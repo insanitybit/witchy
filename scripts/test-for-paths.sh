@@ -479,6 +479,10 @@ for p in "${paths[@]}"; do
             any_rust=1
             gate_need_examples=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'" ;;
+        src/example_tests/network.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^example_tests::network::/)'"
+            path_has_early=1 ;;
         src/example_tests/*)
             any_rust=1
             _et="${p##*/}"
