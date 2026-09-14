@@ -336,6 +336,17 @@ automatically via the `WorktreeCreate` hook, but for a manual
 `target/`, so dependencies come up warm). Don't point `CARGO_TARGET_DIR` at
 a shared dir — cargo's build lock would serialize concurrent agents.
 
+**Do not build a fresh `CARGO_TARGET_DIR` under `/private/tmp` per task.** A
+cold target is 30-60 GB, and abandoned ones filled the disk twice in one
+week (117 MB free). If a worktree's own `target` is not enough, CoW-clone a
+warm one (`cp -c -R .claude/worktrees/merge-gate/target-prewarm
+/private/tmp/witchy-<task>-target`; it shares blocks until you build), keep the
+`witchy-<task>-target` name so it is recognisable, and delete it when your
+branch lands. `scripts/reclaim-build-caches.sh` (dry run by default) reclaims
+what gets left behind: worktree caches by branch state, and standalone
+`/private/tmp/witchy-*` caches once they are 48 hours idle with no open
+handle. Judge by `df`, never `du` — a clone reports its full size.
+
 ## 4. Landing work: the merge queue
 
 `./scripts/check.sh` is the local green gate (build + clippy + `nextest

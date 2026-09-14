@@ -16,6 +16,16 @@
 #   * A cache with an open file handle is a LIVE build. Removing it corrupts
 #     another agent's in-flight compile.
 #
+# Two classes of cache are considered:
+#
+#   * `target*` dirs inside registered worktrees (in the repo or under
+#     /private/tmp/witchy-*), judged by the worktree's branch state.
+#   * Standalone `/private/tmp/witchy-*` caches that no worktree references
+#     and that are not checkouts (no `.git`): the `CARGO_TARGET_DIR`s agents
+#     create per task and abandon. Nothing can vouch for those, so they are
+#     reclaimable only after --orphan-min-age-hours (default 48) with no open
+#     handle. They are the bulk of the disk on a busy day.
+#
 # Default is a dry run. Nothing is deleted without --apply.
 set -euo pipefail
 
@@ -25,6 +35,7 @@ main="$(dirname "$main")"
 
 apply=0
 min_age_hours="${RECLAIM_MIN_AGE_HOURS:-6}"
+orphan_min_age_hours="${RECLAIM_ORPHAN_MIN_AGE_HOURS:-48}"
 include_unlanded=0
 include_clones=0
 include_queued=0
@@ -36,7 +47,11 @@ usage() {
 Usage: scripts/reclaim-build-caches.sh [options]
 
   --apply                 actually delete (default: dry run)
-  --min-age-hours N       skip caches touched within N hours (default 6)
+  --min-age-hours N       skip worktree caches touched within N hours (default 6)
+  --orphan-min-age-hours N
+                          skip standalone /private/tmp/witchy-* caches touched
+                          within N hours (default 48; no worktree can vouch for
+                          them, so the bar is higher)
   --include-unlanded      also consider worktrees whose branch has not landed
                           (safe -- costs a rebuild -- but disruptive to an
                           agent who is mid-task, so it is opt-in)
@@ -53,6 +68,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --apply) apply=1 ;;
         --min-age-hours) min_age_hours="$2"; shift ;;
+        --orphan-min-age-hours) orphan_min_age_hours="$2"; shift ;;
         --include-unlanded) include_unlanded=1 ;;
         --include-clones) include_clones=1 ;;
         --include-queued) include_queued=1 ;;
@@ -67,7 +83,11 @@ free_mb() { df -m / | tail -1 | awk '{print $4}'; }
 
 # One lsof sweep: repeating it per candidate would be slow enough to race a
 # build that starts midway through.
-open_paths="$(lsof -n 2>/dev/null | grep -o "$main/[^ ]*target[^/ ]*" | sort -u || true)"
+# Both prefixes in one sweep: an out-of-tree cache with an open handle is just
+# as live as an in-tree one.
+open_paths="$(lsof -n 2>/dev/null \
+    | grep -oE "$main/[^ ]*target[^/ ]*|/private/tmp/witchy-[^/ ]+(/target[^/ ]*)?" \
+    | sort -u || true)"
 if [ -z "$open_paths" ]; then
     echo "reclaim: WARNING: lsof returned no open build paths at all." >&2
     echo "reclaim: that is unlikely on a busy machine -- treating every cache as LIVE." >&2
@@ -155,6 +175,38 @@ while IFS= read -r wt; do
     done
 done < <(git -C "$main" worktree list --porcelain | awk '/^worktree /{print $2}')
 
+# Standalone caches: a `CARGO_TARGET_DIR` under /private/tmp/witchy-* that no
+# registered worktree contains and that is not itself a checkout. No branch
+# state can vouch for one, so the only evidence is age and open handles.
+registered="$(git -C "$main" worktree list --porcelain | awk '/^worktree /{print $2}')"
+for t in /private/tmp/witchy-*; do
+    [ -d "$t" ] || continue
+    [ -e "$t/.git" ] && continue
+    # Only build caches: a cargo target has a profile dir (or the CACHEDIR
+    # marker); anything else under the prefix (probe scratch, logs) is not
+    # ours to judge and is skipped.
+    if [ ! -d "$t/debug" ] && [ ! -d "$t/release" ] && [ ! -e "$t/CACHEDIR.TAG" ]; then
+        continue
+    fi
+    grep -qxF -- "$t" <<<"$registered" && continue
+    state=""
+    if grep -qF -- "$t" <<<"$open_paths"; then
+        state=LIVE
+    elif [ "$(( (now - $(stat -f %m "$t")) / 3600 ))" -lt "$orphan_min_age_hours" ]; then
+        state=RECENT
+    else
+        state=ORPHAN
+    fi
+    if [ "$state" = ORPHAN ]; then
+        size="$(du -sm "$t" 2>/dev/null | cut -f1 || echo 0)"
+        printf '%9s  %-8s  %s\n' "$size" "$state" "$t"
+        doomed+=("$(stat -f %m "$t")	$t")
+        freed_candidates=$((freed_candidates + size))
+    else
+        printf '%9s  %-8s  %s\n' "-" "$state" "$t"
+    fi
+done
+
 printf '\nreclaim: %d cache(s) reclaimable, %d MB apparent\n' "${#doomed[@]}" "$freed_candidates"
 
 if [ "$apply" -eq 0 ]; then
@@ -176,7 +228,13 @@ while IFS=$'\t' read -r _mtime t; do
     esac
     case "$t" in
         "$main"/*/target|"$main"/*/target-*) ;;
-        *) echo "reclaim: refusing to remove out-of-tree path: $t" >&2; exit 3 ;;
+        /private/tmp/witchy-*/target|/private/tmp/witchy-*/target-*) ;;
+        /private/tmp/witchy-*)
+            # A standalone cache: never a registered worktree, never a checkout.
+            if grep -qxF -- "$t" <<<"$registered" || [ -e "$t/.git" ]; then
+                echo "reclaim: refusing to remove a checkout: $t" >&2; exit 3
+            fi ;;
+        *) echo "reclaim: refusing to remove unrecognised path: $t" >&2; exit 3 ;;
     esac
     rm -rf "$t"
     printf 'reclaim: removed %-58s  free now %s MB\n' "${t#"$main"/}" "$(free_mb)"

@@ -29,7 +29,12 @@ repeat the rules; consult it when you're working inside one of these areas.
   `df`) -- the freshly built `target-<agent>` dirs are the ones that pay; and a
   cache with an open file handle is a **live build** belonging to another agent.
   It also skips the `merge-gate` worktree, whose prewarm caches every queued
-  branch depends on. Judge reclaim by `df`, never `du`.
+  branch depends on. It covers two classes: `target*` dirs in registered
+  worktrees (in the repo or under `/private/tmp/witchy-*`), judged by branch
+  state, and standalone `/private/tmp/witchy-*` caches (a `CACHEDIR.TAG`, no
+  `.git`, no worktree) that nothing can vouch for, reclaimable only after
+  `--orphan-min-age-hours` (48) with no open handle. Judge reclaim by `df`,
+  never `du`.
 - **The stale-binary check.** If results look stale, compare `which witchy`
   against your build output path.
 - **`spec/stdlib.md` drift** is caught by the `stdlib_docs_are_current` test.
