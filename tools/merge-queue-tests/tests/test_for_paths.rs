@@ -735,14 +735,27 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
 }
 
 #[test]
-fn canonical_wasmir_edit_keeps_the_expensive_admission_sentinel() {
+fn canonical_wasmir_edit_keeps_bounds_and_defers_mutation_stress() {
     let commands = selected(&["--edit-loop", "crates/witchy-wir/src/canonical_wasmir.rs"]);
     assert_eq!(commands.len(), 3, "canonical WasmIR route changed shape: {commands:?}");
     assert!(
-        commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
-            && commands[0].contains("outlined_retain_saturation_predicate_mutation_fails_admission")
-            && commands[0].contains("outlined_memory_bounds_body_size_and_executes_shared_nullable_drops"),
-        "direct WasmIR edits lost a canonical tail sentinel: {commands:?}",
+        commands[0].contains("outlined_memory_bounds_body_size_and_executes_shared_nullable_drops")
+            && !commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
+            && !commands[0].contains("outlined_retain_saturation_predicate_mutation_fails_admission"),
+        "direct WasmIR edits did not defer the measured mutation stress tests: {commands:?}",
+    );
+}
+
+#[test]
+fn canonical_wasmir_landing_keeps_the_deferred_mutation_tests() {
+    let output = gate_nextest(&["crates/witchy-wir/src/canonical_wasmir.rs"]);
+    assert!(
+        output.lines().next().is_some_and(|line| line.contains("-p witchy-wir")),
+        "canonical WasmIR landing did not retain the full WIR package: {output}",
+    );
+    assert!(
+        !output.contains("--test rfc0165_route_gate") && !output.contains("--lib"),
+        "canonical WasmIR landing was narrowed away from the package-wide assertions: {output}",
     );
 }
 

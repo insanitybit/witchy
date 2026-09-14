@@ -912,7 +912,12 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     fi
     canonical_wasmir_tail_expr=""
     if [ "$canonical_wasmir_tail" -eq 1 ]; then
-        canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::outlined_address_predicate_mutation_fails_independent_admission) or test(=canonical_wasmir::tests::outlined_retain_saturation_predicate_mutation_fails_admission) or test(=canonical_wasmir::tests::outlined_memory_bounds_body_size_and_executes_shared_nullable_drops)"
+        # The two mutation stress tests are 25.8s and 25.6s last finishers in
+        # the current scoped gate. Keep their admission assertions in the
+        # package-wide landing selection, but run the cheaper bounds/nullable
+        # semantic sentinel in the edit loop alongside the other admission
+        # probes. This changes frequency, never coverage at landing.
+        canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::outlined_memory_bounds_body_size_and_executes_shared_nullable_drops)"
     fi
     if [ "$canonical_crypto" -eq 1 ]; then
         canonical_crypto_wir_expr=" or test(canonical_interpreter::crypto_rsa_tests::)"
