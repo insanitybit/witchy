@@ -9,6 +9,8 @@ use crate::canonical_safewir::{
 
 #[path = "dir_storage_tests.rs"]
 mod storage_tests;
+#[path = "dir_installer_tests.rs"]
+mod installer_tests;
 
 const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 const KEY: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";

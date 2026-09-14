@@ -385,11 +385,14 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_bytes_response_size" (func $dir_bytes_response_size_host (param externref) (result i32)))
   (import "witchy" "dir_bytes_response_into" (func $dir_bytes_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_bytes_at" (func $dir_write_bytes_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_append_bytes_at" (func $dir_append_bytes_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_set_executable_at" (func $dir_set_executable_at_host (param externref i32 i32)))
+  (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 166;
+pub const IMPORT_COUNT: usize = 169;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -566,6 +569,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_bytes_response_size"
         | "dir_bytes_response_into"
         | "dir_write_bytes_at"
+        | "dir_append_bytes_at"
+        | "dir_set_executable_at"
+        | "dir_rename_at"
         | "crypto.sign"
         | "crypto.public_key"
         | "secretstore_lookup"
@@ -712,7 +718,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
         | "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"
-        | "dir_replace_at" | "dir_write_bytes_at" => AUTH_DIR_WRITE,
+        | "dir_replace_at" | "dir_write_bytes_at" | "dir_append_bytes_at"
+        | "dir_set_executable_at" | "dir_rename_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" | "file_read_into" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,

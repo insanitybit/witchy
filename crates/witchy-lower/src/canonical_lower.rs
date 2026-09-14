@@ -822,6 +822,9 @@ if capability_imports.contains("build_out_write_at") {
                     push_import_signature(vec![response], vec![ValueType::Size], None)?,
                     push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
                     push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
                 ];
                 catalog = catalog.with_dir_storage_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
@@ -14011,8 +14014,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 34] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at"];
+const CAPABILITY_IMPORTS: [&str; 37] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -14080,6 +14083,9 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                         needed.extend(["dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into"]);
                     }
                     ("__capop.write_bytes", "Dir") => { needed.insert("dir_write_bytes_at"); }
+                    ("__capop.append_bytes", "Dir") => { needed.insert("dir_append_bytes_at"); }
+                    ("__capop.set_executable", "Dir") => { needed.insert("dir_set_executable_at"); }
+                    ("__capop.rename", "Dir") => { needed.insert("dir_rename_at"); }
                     ("__capop.only", "Fetch") => { needed.insert("fetch_only_at"); }
                     ("__capop.fetch", "Net") => { needed.insert("net_fetch_at"); }
                     ("__capop.send_raw", "Fetch") => {

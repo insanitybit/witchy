@@ -55,6 +55,9 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
     linker.func_wrap("witchy", "dir_append_bytes", host_dir_append_bytes)?;
     linker.func_wrap("witchy", "dir_set_executable", host_dir_set_executable)?;
+    linker.func_wrap("witchy", "dir_append_bytes_at", host_dir_append_bytes_at)?;
+    linker.func_wrap("witchy", "dir_set_executable_at", host_dir_set_executable_at)?;
+    linker.func_wrap("witchy", "dir_rename_at", host_dir_rename_at)?;
     // (RFC-0165 slice 42) The canonical route's write op, under the same
     // `Dir[Write]` gate as its frozen siblings.
     linker.func_wrap("witchy", "dir_write_at", host_dir_write_at)?;
@@ -967,6 +970,64 @@ fn host_dir_append(
     }
 }
 
+/// Bounded installer writes authenticate the existing Dir Write authority before
+/// memory access, and snapshot all arguments before any filesystem operation.
+fn host_dir_append_bytes_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<()> {
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    dir_storage_range(path_ptr, path_len, data.len())?;
+    let payload = dir_storage_range(data_ptr, data_len, data.len())?;
+    let path = read_slice_str(data, path_ptr, path_len)?;
+    let bytes = data[payload].to_vec();
+    dir_guard(&dir, &path, false)?;
+    match dir_file_backing(&dir, &path, true)? {
+        FileBacking::Fs(file) => file.append_all(&bytes).map_err(|e| {
+            Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
+        }),
+    }
+}
+
+fn host_dir_set_executable_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32,
+) -> Result<()> {
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    dir_storage_range(path_ptr, path_len, memory.data_size(&caller))?;
+    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
+    dir_guard(&dir, &path, false)?;
+    match dir_file_backing(&dir, &path, false)? {
+        FileBacking::Fs(file) => file.set_executable().map_err(|e| {
+            Error::msg(format!("set_executable failed for `{}`: {e}", file.display_path().display()))
+        }),
+    }
+}
+
+fn host_dir_rename_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    from_ptr: i32, from_len: i32, to_ptr: i32, to_len: i32,
+) -> Result<()> {
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    dir_storage_range(from_ptr, from_len, data.len())?;
+    dir_storage_range(to_ptr, to_len, data.len())?;
+    let from = read_slice_str(data, from_ptr, from_len)?;
+    let to = read_slice_str(data, to_ptr, to_len)?;
+    rename_dir_entries(&dir, &from, &to)
+}
+
+#[cfg(test)]
+#[path = "dir_installer_tests.rs"]
+mod dir_installer_tests;
+
 /// (RFC-0095) `dir_append_bytes(h, rel, data)`: append RAW bytes to a confined file,
 /// creating it if absent — `dir_append`'s confinement/rights with `dir_write_bytes`'
 /// binary marshalling. Streaming a large artifact chunk by chunk this way keeps the
@@ -1116,11 +1177,17 @@ fn host_dir_rename(
     let to = read_wstr(data, to_ptr)?;
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
+    rename_dir_entries(&dir, &from, &to)
+}
+
+// Shared only after authentication and input marshalling. Preserve the legacy
+// source/destination entry-kind policy and descriptor-anchored atomic rename.
+fn rename_dir_entries(dir: &DirAuthority, from: &str, to: &str) -> Result<()> {
     let source_is_dir = if dir.policy.is_empty() {
         false
     } else {
         let DirBacking::Fs(base) = &dir.backing;
-        match confine(base.entry_kind_exact(&from))? {
+        match confine(base.entry_kind_exact(from))? {
             Some(crate::confine::ConfinedEntryKind::File) => false,
             Some(crate::confine::ConfinedEntryKind::Directory) => true,
             Some(crate::confine::ConfinedEntryKind::Other) => {
@@ -1131,11 +1198,11 @@ fn host_dir_rename(
             None => return Err(Error::msg(format!("rename source `{from}` does not exist"))),
         }
     };
-    dir_guard(&dir, &from, source_is_dir)?;
-    dir_guard(&dir, &to, source_is_dir)?;
+    dir_guard(dir, from, source_is_dir)?;
+    dir_guard(dir, to, source_is_dir)?;
     if !dir.policy.is_empty() {
         let DirBacking::Fs(base) = &dir.backing;
-        if let Some(kind) = confine(base.entry_kind_exact(&to))? {
+        if let Some(kind) = confine(base.entry_kind_exact(to))? {
             let destination_is_dir = match kind {
                 crate::confine::ConfinedEntryKind::File => false,
                 crate::confine::ConfinedEntryKind::Directory => true,
@@ -1145,11 +1212,11 @@ fn host_dir_rename(
                     )));
                 }
             };
-            dir_guard(&dir, &to, destination_is_dir)?;
+            dir_guard(dir, to, destination_is_dir)?;
         }
     }
     match &dir.backing {
-        DirBacking::Fs(base) => base.rename(&from, &to).map_err(|e| {
+        DirBacking::Fs(base) => base.rename(from, to).map_err(|e| {
             Error::msg(format!("rename failed (`{from}` -> `{to}`): {}", e.0))
         }),
     }

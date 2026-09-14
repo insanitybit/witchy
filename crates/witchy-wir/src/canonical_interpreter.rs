@@ -29,6 +29,8 @@ mod registry_host;
 pub use registry_host::{OracleClockFixture, OracleSecretFixture, OracleSecretStoreFixture};
 mod dir_create;
 mod dir_storage;
+mod dir_handles;
+pub use dir_storage::OracleDirMutations;
 mod crypto;
 mod crypto_hash;
 mod dir_metadata;
@@ -189,6 +191,9 @@ pub struct OracleFixture {
     /// Explicit empty directories as well as parents created by virtual mkdir.
     /// Like `files`, these are normalized relative paths under the granted root.
     pub directories: BTreeSet<String>,
+    /// Virtual installer changes. Deleted backing entries never reappear;
+    /// these observations do not grant permission to mutate the fallback root.
+    pub dir_mutations: OracleDirMutations,
     pub environment: BTreeMap<String, String>,
     /// A directory the oracle reads when a path is not in `files` (the
     /// parity third leg runs against the same root the backend was granted);
@@ -218,9 +223,14 @@ impl OracleFixture {
     /// link anywhere along it: the runtime's confined directory refuses a
     /// link that leads out of the root, and the oracle must be no weaker.
     fn root_entry(&self, path: &str) -> Option<std::path::PathBuf> {
+        if self.backing_hidden(path) { return None; }
         let root = self.root.as_ref()?;
         let mut resolved = root.clone();
+        let mut prefix = String::new();
         for component in path.split('/').filter(|component| !component.is_empty()) {
+            if !prefix.is_empty() { prefix.push('/'); }
+            prefix.push_str(component);
+            if self.dir_mutations.links.contains_key(&prefix) { return None; }
             resolved.push(component);
             let metadata = std::fs::symlink_metadata(&resolved).ok()?;
             if metadata.file_type().is_symlink() {
@@ -243,13 +253,7 @@ impl OracleFixture {
     }
 
     fn exists(&self, path: &str) -> bool {
-        let prefix = format!("{path}/");
-        path.is_empty()
-            || self.files.contains_key(path)
-            || self.directories.contains(path)
-            || self.directories.iter().any(|name| name.starts_with(&prefix))
-            || self.files.keys().any(|name| name.starts_with(&prefix))
-            || self.root_entry(path).is_some()
+        self.metadata_exists("", path)
     }
 
     /// The entry names directly under `scope` (the fixture map's, then the
@@ -257,7 +261,7 @@ impl OracleFixture {
     fn entry_names(&self, scope: &str) -> Vec<String> {
         let prefix = if scope.is_empty() { String::new() } else { format!("{scope}/") };
         let mut names = std::collections::BTreeSet::new();
-        for key in self.files.keys().chain(self.directories.iter()) {
+        for key in self.files.keys().chain(self.directories.iter()).chain(self.dir_mutations.links.keys()) {
             if let Some(rest) = key.strip_prefix(&prefix)
                 && let Some(first) = rest.split('/').next()
                 && !first.is_empty()
@@ -271,7 +275,7 @@ impl OracleFixture {
         {
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
-                    names.insert(name);
+                    if !self.backing_hidden(&format!("{prefix}{name}")) { names.insert(name); }
                 }
             }
         }
@@ -280,10 +284,11 @@ impl OracleFixture {
 
     fn is_directory(&self, path: &str) -> bool {
         let prefix = format!("{path}/");
-        !self.files.contains_key(path) && (path.is_empty()
+        !self.files.contains_key(path) && !self.dir_mutations.links.contains_key(path) && (path.is_empty()
             || self.directories.contains(path)
             || self.directories.iter().any(|name| name.starts_with(&prefix))
             || self.files.keys().any(|name| name.starts_with(&prefix))
+            || self.dir_mutations.links.keys().any(|name| name.starts_with(&prefix))
             || self
                 .root_entry(path)
                 .and_then(|entry| std::fs::symlink_metadata(entry).ok())
@@ -1564,7 +1569,7 @@ impl<'a> Engine<'a> {
         if registry_host::IMPORTS.contains(&contract.name.as_str()) {
             return self.registry_host_call(&contract.name, destinations, arguments, values);
         }
-        if crate::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.contains(&contract.name.as_str()) {
+        if dir_storage::is_import(&contract.name) {
             return self.dir_storage_host_call(&contract.name, destinations, arguments, values);
         }
         if build_read::is_import(&contract.name) {
@@ -1686,6 +1691,7 @@ impl<'a> Engine<'a> {
         arguments: &[HostCallArgument],
         values: &mut BTreeMap<ValueId, InterpreterValue>,
     ) -> Result<(), InterpretError> {
+        if self.detached_dir_host_call(name, destinations, arguments, values)? { return Ok(()); }
         match (name, arguments, destinations) {
             (
                 "dir_read_into",
@@ -1713,8 +1719,9 @@ impl<'a> Engine<'a> {
             }
             ("dir_exists_at", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {
                 let scope = self.capability_scope(token, DIR_KIND, values)?;
-                let path = self.host_path(&scope, &self.host_string(path, values)?)?;
-                let exists = self.config.fixture.exists(&path);
+                let path = self.host_string(path, values)?;
+                self.host_path(&scope, &path)?;
+                let exists = self.config.fixture.metadata_exists(&scope, &path);
                 values.insert(*destination, InterpreterValue::Size(u64::from(exists)));
                 Ok(())
             }
@@ -1766,7 +1773,11 @@ impl<'a> Engine<'a> {
                 if self.config.fixture.file(&path).is_none() {
                     return Err(InterpretError::ExplicitTrap);
                 }
-                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { scope: path, ..CapabilityToken::root(FILE_KIND) }));
+                let HostCallArgument::Capability(source) = token else { unreachable!() };
+                let InterpreterValue::Capability(source) = self.value(*source, values)? else { unreachable!() };
+                let file = if source.registry.is_some() { self.registry.mint_file(source, path)? }
+                    else { CapabilityToken { scope: path, ..CapabilityToken::root(FILE_KIND) } };
+                values.insert(*destination, InterpreterValue::Capability(file));
                 Ok(())
             }
             ("file_read_into", [token, HostCallArgument::Buffer { place: out, .. }], [destination]) => {
@@ -1817,6 +1828,10 @@ impl<'a> Engine<'a> {
         };
         if token.kind != kind {
             return Err(InterpretError::TypeMismatch("capability kind"));
+        }
+        if token.registry.is_some() {
+            if kind == DIR_KIND { return self.registry.storage_scope(token); }
+            if kind == FILE_KIND { return self.registry.file_scope(token); }
         }
         Ok(token.scope.clone())
     }

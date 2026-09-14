@@ -354,6 +354,9 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_bytes_response_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_bytes_response_into` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_write_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_append_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_set_executable_at` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_rename_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 

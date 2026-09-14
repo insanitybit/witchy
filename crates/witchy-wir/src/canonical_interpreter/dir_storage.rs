@@ -5,8 +5,31 @@ use super::*;
 use crate::canonical_safewir::AccessMode;
 use std::path::PathBuf;
 
+/// Execution-local overlay on a stable, explicit backing fixture. A tombstone
+/// hides only the backing tree: later virtual creation at that name is visible.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OracleDirMutations {
+    pub removed: BTreeSet<String>,
+    /// Leaf links moved by rename, never followed by file read/write/chmod.
+    pub links: BTreeMap<String, PathBuf>,
+    /// The +x operation adds execute bits without rewriting other mode bits.
+    /// No source operation in this family exposes a complete permission mode.
+    pub executable: BTreeSet<String>,
+}
+
+pub(super) const INSTALLER_IMPORTS: [&str; 3] = [
+    "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at",
+];
+
+pub(super) fn is_import(name: &str) -> bool {
+    crate::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.contains(&name)
+        || INSTALLER_IMPORTS.contains(&name)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind { Missing, File, Directory, LeafSymlink }
+
+enum MovedEntry { File(Vec<u8>), Directory, Link(PathBuf) }
 
 fn refused(message: &str) -> InterpretError { InterpretError::RegistryFixture(message.into()) }
 
@@ -18,6 +41,11 @@ pub(super) fn response_length(length: usize) -> Result<u64, InterpretError> {
 }
 
 impl OracleFixture {
+    pub(super) fn backing_hidden(&self, path: &str) -> bool {
+        self.dir_mutations.removed.iter().any(|removed|
+            path == removed || path.strip_prefix(removed).is_some_and(|rest| rest.starts_with('/')))
+    }
+
     /// Resolve every prefix before deciding that an existing leaf is the
     /// create-new race-loser case. Only NotFound denotes absence. Leaf links
     /// are classified without following them; intermediate links, non-file
@@ -39,10 +67,15 @@ impl OracleFixture {
             prefix.push_str(part);
             let children = format!("{prefix}/");
             let virtual_file = self.files.contains_key(&prefix);
+            let virtual_link = self.dir_mutations.links.contains_key(&prefix);
             let virtual_dir = self.directories.contains(&prefix)
                 || self.directories.iter().any(|name| name.starts_with(&children))
-                || self.files.keys().any(|name| name.starts_with(&children));
-            if virtual_file && virtual_dir { return Err(refused("directory storage fixture has a file/directory collision")); }
+                || self.files.keys().any(|name| name.starts_with(&children))
+                || self.dir_mutations.links.keys().any(|name| name.starts_with(&children));
+            if (virtual_file && (virtual_dir || virtual_link)) || (virtual_dir && virtual_link) {
+                return Err(refused("directory storage fixture has a file/directory collision"));
+            }
+            if self.backing_hidden(&prefix) { fallback = None; }
             let physical = if let Some(parent) = &fallback {
                 let candidate = parent.join(part);
                 match std::fs::symlink_metadata(&candidate) {
@@ -67,7 +100,8 @@ impl OracleFixture {
             }
             // A fixture replacement shadows the old leaf link as a regular
             // file. It does not change or traverse that ambient link's target.
-            let kind = if virtual_file { EntryKind::File } else if virtual_dir { EntryKind::Directory } else { physical };
+            let kind = if virtual_file { EntryKind::File } else if virtual_link { EntryKind::LeafSymlink }
+                else if virtual_dir { EntryKind::Directory } else { physical };
             if parts.peek().is_none() { return Ok((kind, fallback)); }
             if kind != EntryKind::Directory { return Err(refused("directory storage parent does not exist or is not a directory")); }
         }
@@ -81,6 +115,10 @@ impl OracleFixture {
         if create_new && kind != EntryKind::Missing { return Ok(false); }
         if kind == EntryKind::Directory { return Err(refused("directory storage cannot replace a directory")); }
         if kind == EntryKind::LeafSymlink && !replace { return Err(refused("directory storage write refuses a leaf symlink")); }
+        if replace {
+            self.dir_mutations.links.remove(path);
+            self.dir_mutations.executable.remove(path);
+        }
         self.files.insert(path.to_owned(), bytes);
         Ok(true)
     }
@@ -91,6 +129,114 @@ impl OracleFixture {
         if let Some(bytes) = self.files.get(path) { return Ok(bytes.clone()); }
         let path = fallback.ok_or_else(|| refused("directory storage lost its file"))?;
         std::fs::read(path).map_err(|_| refused("directory storage file read failed"))
+    }
+
+    fn storage_append(&mut self, path: &str, bytes: &[u8]) -> Result<(), InterpretError> {
+        let (kind, _) = self.storage_entry(path)?;
+        let mut contents = match kind {
+            EntryKind::Missing => Vec::new(),
+            EntryKind::File => self.storage_read(path)?,
+            _ => return Err(refused("directory append requires a regular file")),
+        };
+        contents.try_reserve(bytes.len()).map_err(|_| refused("directory append size overflow"))?;
+        contents.extend_from_slice(bytes);
+        self.files.insert(path.to_owned(), contents);
+        Ok(())
+    }
+
+    fn storage_set_executable(&mut self, path: &str) -> Result<(), InterpretError> {
+        let (kind, _) = self.storage_entry(path)?;
+        // The provider opens without following the leaf and ORs mode with 0111.
+        // Existing directories may also be opened; missing nodes and links fail.
+        if !matches!(kind, EntryKind::File | EntryKind::Directory) {
+            return Err(refused("directory set_executable requires an existing non-link entry"));
+        }
+        self.dir_mutations.executable.insert(path.to_owned());
+        Ok(())
+    }
+
+    fn storage_children(&self, path: &str, fallback: Option<PathBuf>) -> Result<BTreeSet<String>, InterpretError> {
+        let prefix = format!("{path}/");
+        let mut children = BTreeSet::new();
+        for key in self.files.keys().chain(self.directories.iter()).chain(self.dir_mutations.links.keys()) {
+            if let Some(rest) = key.strip_prefix(&prefix) {
+                if let Some(first) = rest.split('/').next().filter(|name| !name.is_empty()) {
+                    children.insert(first.to_owned());
+                }
+            }
+        }
+        if let Some(directory) = fallback {
+            for entry in std::fs::read_dir(directory).map_err(|_| refused("directory rename listing failed"))? {
+                let entry = entry.map_err(|_| refused("directory rename entry failed"))?;
+                let name = entry.file_name().into_string().map_err(|_| refused("directory rename fixture name is not UTF-8"))?;
+                if !self.backing_hidden(&format!("{prefix}{name}")) { children.insert(name); }
+            }
+        }
+        Ok(children)
+    }
+
+    fn storage_rename(&mut self, from: &str, to: &str) -> Result<(), InterpretError> {
+        let (source_kind, _) = self.storage_entry(from)?;
+        let (target_kind, target_backing) = self.storage_entry(to)?;
+        if source_kind == EntryKind::Missing { return Err(refused("directory rename source does not exist")); }
+        if from == to { return Ok(()); }
+        if to.starts_with(&format!("{from}/")) { return Err(refused("directory rename destination is inside source")); }
+        if target_kind != EntryKind::Missing && (source_kind == EntryKind::Directory) != (target_kind == EntryKind::Directory) {
+            return Err(refused("directory rename file/directory mismatch"));
+        }
+        if target_kind == EntryKind::Directory && !self.storage_children(to, target_backing)?.is_empty() {
+            return Err(refused("directory rename destination is not empty"));
+        }
+        // Snapshot the complete subtree before publishing anything. Unlike the
+        // ordinary listing convenience API, failed backing reads/listings are
+        // errors, not an empty successful move. Leaf links move as links.
+        let mut pending = vec![from.to_owned()];
+        let mut moved = Vec::new();
+        while let Some(path) = pending.pop() {
+            let (kind, backing) = self.storage_entry(&path)?;
+            let entry = match kind {
+                EntryKind::File => MovedEntry::File(self.storage_read(&path)?),
+                EntryKind::Directory => {
+                    for child in self.storage_children(&path, backing)? { pending.push(format!("{path}/{child}")); }
+                    MovedEntry::Directory
+                }
+                EntryKind::LeafSymlink => {
+                    let target = if let Some(target) = self.dir_mutations.links.get(&path) { target.clone() }
+                        else { std::fs::read_link(backing.ok_or_else(|| refused("directory rename lost link"))?)
+                            .map_err(|_| refused("directory rename link read failed"))? };
+                    MovedEntry::Link(target)
+                }
+                EntryKind::Missing => return Err(refused("directory rename fixture changed during snapshot")),
+            };
+            let destination = format!("{to}{}", &path[from.len()..]);
+            moved.push((destination, entry, self.dir_mutations.executable.contains(&path)));
+        }
+        let in_tree = |path: &str, root: &str| path == root || path.strip_prefix(root).is_some_and(|suffix| suffix.starts_with('/'));
+        self.files.retain(|path, _| !in_tree(path, from) && !in_tree(path, to));
+        self.directories.retain(|path| !in_tree(path, from) && !in_tree(path, to));
+        self.dir_mutations.links.retain(|path, _| !in_tree(path, from) && !in_tree(path, to));
+        self.dir_mutations.executable.retain(|path| !in_tree(path, from) && !in_tree(path, to));
+        // Both replaced backing names stay hidden even after a later virtual
+        // rename or recreation. Do not resurrect destination leftovers either.
+        self.dir_mutations.removed.extend([from.to_owned(), to.to_owned()]);
+        for (path, entry, executable) in moved {
+            match entry {
+                MovedEntry::File(bytes) => { self.files.insert(path.clone(), bytes); }
+                MovedEntry::Directory => { self.directories.insert(path.clone()); }
+                MovedEntry::Link(target) => { self.dir_mutations.links.insert(path.clone(), target); }
+            }
+            if executable { self.dir_mutations.executable.insert(path); }
+        }
+        // Parents inferred from fixture children are real directories, not
+        // records to disappear when their final child is moved elsewhere.
+        for path in [from, to] {
+            let mut parent = path;
+            while let Some((next, _)) = parent.rsplit_once('/') {
+                self.directories.insert(next.to_owned());
+                parent = next;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -121,7 +267,25 @@ impl Engine<'_> {
     {
         if self.isolated { return Err(InterpretError::UnsupportedHostImport); }
         self.server.before_host_call(name)?;
+        if self.detached_dir_host_call(name, destinations, arguments, values)? { return Ok(()); }
         match (name, arguments, destinations) {
+            ("dir_append_bytes_at", [HostCallArgument::Capability(dir), HostCallArgument::Buffer { place: path, .. },
+                HostCallArgument::Buffer { place: data, .. }], []) => {
+                let path = self.storage_path(*dir, path, values)?;
+                let bytes = self.storage_input(data, values)?;
+                self.config.fixture.storage_append(&path, &bytes)?;
+            }
+            ("dir_set_executable_at", [HostCallArgument::Capability(dir), HostCallArgument::Buffer { place: path, .. }], []) => {
+                let path = self.storage_path(*dir, path, values)?;
+                self.config.fixture.storage_set_executable(&path)?;
+            }
+            ("dir_rename_at", [HostCallArgument::Capability(dir), HostCallArgument::Buffer { place: from, .. },
+                HostCallArgument::Buffer { place: to, .. }], []) => {
+                let from = self.storage_path(*dir, from, values)?;
+                let to = self.storage_path(*dir, to, values)?;
+                self.config.fixture.storage_rename(&from, &to)?;
+                self.registry.relocate_directories(&from, &to);
+            }
             ("dir_create_new_at" | "dir_replace_at" | "dir_write_bytes_at",
                 [HostCallArgument::Capability(dir), HostCallArgument::Buffer { place: path, .. }, HostCallArgument::Buffer { place: data, .. }], results)
             => {

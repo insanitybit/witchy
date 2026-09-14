@@ -3,6 +3,7 @@
 //! marshalling, provider, keychain, environment, or clock is consulted here.
 use super::*;
 use std::sync::Arc;
+use std::cell::RefCell;
 use crate::canonical_safewir::{AccessMode, CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND};
 
 pub(super) const IMPORTS: [&str; 5] = [
@@ -48,6 +49,8 @@ pub struct OracleSecretStoreFixture {
 enum Resource {
     Clock(usize),
     Dir(String),
+    /// An opened parent directory and a leaf, not a snapshot of a file inode.
+    File { provenance: String, parent: usize, leaf: String },
     Store(Arc<OracleSecretStoreFixture>),
     Secret(Arc<OracleSecretFixture>),
     DirBytes(Arc<[u8]>),
@@ -55,35 +58,51 @@ enum Resource {
 
 impl Resource {
     fn kind(&self) -> u32 {
-        match self { Self::Clock(_) => CLOCK, Self::Dir(_) => DIR_KIND, Self::Store(_) => STORE, Self::Secret(_) => SECRET,
+        match self { Self::Clock(_) => CLOCK, Self::Dir(_) => DIR_KIND, Self::File { .. } => FILE_KIND,
+            Self::Store(_) => STORE, Self::Secret(_) => SECRET,
             Self::DirBytes(_) => crate::canonical_safewir::DIR_BYTES_RESPONSE_KIND.get() }
     }
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Token { issuer: Arc<()>, resource: Resource }
+pub(super) struct Token { issuer: Arc<()>, resource: Resource, directory: Option<usize> }
 impl PartialEq for Token {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.issuer, &other.issuer) && self.resource == other.resource
+        Arc::ptr_eq(&self.issuer, &other.issuer) && self.resource == other.resource && self.directory == other.directory
     }
 }
 impl Eq for Token {}
 
-pub(super) struct State { issuer: Arc<()>, consumed_clock: usize }
+pub(super) struct State {
+    issuer: Arc<()>, consumed_clock: usize,
+    // IDs are private to this issuer. A rename changes a location, not a
+    // capability's identity. None denotes an unlinked empty directory whose
+    // retained handle must never address a replacement at its former name.
+    directories: RefCell<Vec<Option<String>>>,
+}
 fn refusal(message: impl Into<String>) -> InterpretError { InterpretError::RegistryFixture(message.into()) }
 
 impl State {
-    pub(super) fn new() -> Self { Self { issuer: Arc::new(()), consumed_clock: 0 } }
+    pub(super) fn new() -> Self { Self { issuer: Arc::new(()), consumed_clock: 0, directories: RefCell::new(Vec::new()) } }
+
+    fn directory_id(&self, path: &str) -> usize {
+        let mut directories = self.directories.borrow_mut();
+        if let Some(id) = directories.iter().position(|entry| entry.as_deref() == Some(path)) { return id; }
+        let id = directories.len();
+        directories.push(Some(path.to_owned()));
+        id
+    }
 
     fn mint(&self, resource: Resource) -> CapabilityToken {
-        let scope = match &resource { Resource::Dir(scope) => scope.clone(), _ => String::new() };
-        CapabilityToken { scope, registry: Some(Token { issuer: self.issuer.clone(), resource: resource.clone() }),
+        let scope = match &resource { Resource::Dir(scope) => scope.clone(), Resource::File { provenance, .. } => provenance.clone(), _ => String::new() };
+        let directory = if matches!(&resource, Resource::Dir(_)) { Some(self.directory_id(&scope)) } else { None };
+        CapabilityToken { scope, registry: Some(Token { issuer: self.issuer.clone(), resource: resource.clone(), directory }),
             ..CapabilityToken::root(resource.kind()) }
     }
 
     fn authenticate(&self, token: &CapabilityToken, kind: u32) -> Result<Resource, InterpretError> {
         let handle = token.registry.as_ref().ok_or_else(|| refusal("registry unauthenticated resource"))?;
-        let scope = match &handle.resource { Resource::Dir(scope) => scope.as_str(), _ => "" };
+        let scope = match &handle.resource { Resource::Dir(scope) => scope.as_str(), Resource::File { provenance, .. } => provenance.as_str(), _ => "" };
         if token.kind != kind || handle.resource.kind() != kind || token.scope != scope
             || !Arc::ptr_eq(&self.issuer, &handle.issuer)
         {
@@ -98,7 +117,7 @@ impl State {
         if source.registry.is_none() {
             return Ok(CapabilityToken { scope, ..CapabilityToken::root(DIR_KIND) });
         }
-        let Resource::Dir(parent) = self.authenticate(source, DIR_KIND)? else { unreachable!() };
+        let parent = self.storage_scope(source)?;
         if !parent.is_empty() && scope != parent && !scope.starts_with(&format!("{parent}/")) {
             return Err(refusal("directory narrowing escaped its grant"));
         }
@@ -106,8 +125,44 @@ impl State {
     }
 
     pub(super) fn storage_scope(&self, token: &CapabilityToken) -> Result<String, InterpretError> {
-        let Resource::Dir(scope) = self.authenticate(token, DIR_KIND)? else { unreachable!() };
-        Ok(scope)
+        self.directory_location(token)?.ok_or(InterpretError::ExplicitTrap)
+    }
+
+    pub(super) fn directory_location(&self, token: &CapabilityToken) -> Result<Option<String>, InterpretError> {
+        self.authenticate(token, DIR_KIND)?;
+        let id = token.registry.as_ref().and_then(|handle| handle.directory)
+            .ok_or_else(|| refusal("registry missing directory identity"))?;
+        self.directories.borrow().get(id).cloned().ok_or_else(|| refusal("registry unknown directory identity"))
+    }
+
+    pub(super) fn relocate_directories(&self, from: &str, to: &str) {
+        if from == to { return; }
+        for location in self.directories.borrow_mut().iter_mut() {
+            let Some(path) = location.as_deref() else { continue; };
+            if path == from || path.strip_prefix(from).is_some_and(|suffix| suffix.starts_with('/')) {
+                *location = Some(format!("{to}{}", &path[from.len()..]));
+            } else if path == to || path.strip_prefix(to).is_some_and(|suffix| suffix.starts_with('/')) {
+                *location = None;
+            }
+        }
+    }
+
+    pub(super) fn mint_file(&self, source: &CapabilityToken, path: String) -> Result<CapabilityToken, InterpretError> {
+        let scope = self.storage_scope(source)?;
+        if !scope.is_empty() && !path.starts_with(&format!("{scope}/")) {
+            return Err(refusal("file escaped its parent directory grant"));
+        }
+        let (parent, leaf) = path.rsplit_once('/').unwrap_or(("", &path));
+        let parent = self.directory_id(parent);
+        let leaf = leaf.to_owned();
+        Ok(self.mint(Resource::File { provenance: path, parent, leaf }))
+    }
+
+    pub(super) fn file_scope(&self, token: &CapabilityToken) -> Result<String, InterpretError> {
+        let Resource::File { parent, leaf, .. } = self.authenticate(token, FILE_KIND)? else { unreachable!() };
+        let directories = self.directories.borrow();
+        let parent = directories.get(parent).and_then(Option::as_deref).ok_or(InterpretError::ExplicitTrap)?;
+        Ok(if parent.is_empty() { leaf } else { format!("{parent}/{leaf}") })
     }
 
     pub(super) fn mint_dir_bytes(&self, bytes: Vec<u8>) -> CapabilityToken {
@@ -192,6 +247,7 @@ impl Engine<'_> {
     {
         if self.isolated { return Err(InterpretError::UnsupportedHostImport); }
         self.server.before_host_call(name)?;
+        if self.detached_dir_host_call(name, destinations, arguments, values)? { return Ok(()); }
         match (name, arguments, destinations) {
             ("clock_now", [HostCallArgument::Capability(clock)], [destination]) => {
                 self.registry_resource(*clock, CLOCK, values)?;
@@ -202,7 +258,11 @@ impl Engine<'_> {
                 values.insert(*destination, InterpreterValue::Int(observation));
             }
             ("dir_make_dir_at", [HostCallArgument::Capability(dir), HostCallArgument::Buffer { place, .. }], []) => {
-                let Resource::Dir(scope) = self.registry_resource(*dir, DIR_KIND, values)? else { unreachable!() };
+                // Legacy read-only fixture tokens may have a scope string but
+                // no issuer. Authenticate before resolving the retained handle
+                // and before reading any guest input or mutating the namespace.
+                self.registry_resource(*dir, DIR_KIND, values)?;
+                let scope = self.capability_scope(&HostCallArgument::Capability(*dir), DIR_KIND, values)?;
                 let path = self.host_string(place, values)?;
                 let path = dir_create::normalize_path(&path)?;
                 let path = self.host_path(&scope, &path)?;

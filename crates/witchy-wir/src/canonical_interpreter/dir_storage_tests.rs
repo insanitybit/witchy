@@ -24,7 +24,8 @@ fn snapshot(engine: &mut Engine<'_>, layout: LayoutId, values: &mut BTreeMap<Val
 fn dir_storage_oracle_frozen_abi_and_response_issuer_refusals() {
     assert_eq!(DIR_BYTES_RESPONSE_KIND.get(), 22);
     assert_eq!(DIR_STORAGE_IMPORT_NAMES, ["dir_create_new_at", "dir_replace_at", "dir_read_bytes_at",
-        "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at"]);
+        "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at",
+        "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at"]);
     let owner = State::new();
     let other = State::new();
     let token = owner.mint_dir_bytes(vec![0, 255]);

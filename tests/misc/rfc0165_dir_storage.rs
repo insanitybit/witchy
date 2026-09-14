@@ -39,10 +39,18 @@ fn main(console: Console, root: Dir):
     console.print("${bytes.at(snapshot, 1)}")
     root.write_bytes("copy.bin", snapshot)
     console.print(bytes.to_string(root.read_bytes("binary.bin")))
+    root.append_bytes("staged.bin", bytes.repeat(255, 1))
+    root.append_bytes("staged.bin", bytes.repeat(0, 1))
+    root.set_executable("staged.bin")
+    console.print(bytes.to_string(root.read_bytes("binary.bin")))
+    root.rename("staged.bin", "binary.bin")
+    console.print("${root.exists("staged.bin")}")
+    let installed = root.read_bytes("binary.bin")
+    console.print("${bytes.length(installed)}:${bytes.at(installed, 0)}:${bytes.at(installed, 1)}")
 "#;
     let expected = [
         "true", "false", "first", "first", "complete replacement",
-        "2", "255", "0", "later",
+        "2", "255", "0", "later", "later", "false", "2:255:0",
     ];
     let checked = witchy::resolve_std_only_checked(source).expect("checked Dir storage source");
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
@@ -78,7 +86,12 @@ fn main(console: Console, root: Dir):
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
     assert_eq!(std::fs::read(root.join("state.txt")).unwrap(), b"complete replacement");
-    assert_eq!(std::fs::read(root.join("binary.bin")).unwrap(), b"later");
+    assert_eq!(std::fs::read(root.join("binary.bin")).unwrap(), [255, 0]);
+    assert!(!root.join("staged.bin").exists());
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(root.join("binary.bin")).unwrap().permissions().mode() & 0o111, 0o111);
+    }
     assert_eq!(std::fs::read(root.join("copy.bin")).unwrap(), [255, 0]);
     assert_eq!(std::fs::read(root.join("sentinel.txt")).unwrap(), b"untouched");
 }

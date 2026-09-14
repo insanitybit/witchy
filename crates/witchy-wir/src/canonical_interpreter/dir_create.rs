@@ -27,7 +27,10 @@ impl OracleFixture {
         for part in path.split('/').filter(|part| !part.is_empty()) {
             if !prefix.is_empty() { prefix.push('/'); }
             prefix.push_str(part);
-            if self.files.contains_key(&prefix) { return Err(InterpretError::ExplicitTrap); }
+            if self.files.contains_key(&prefix) || self.dir_mutations.links.contains_key(&prefix) {
+                return Err(InterpretError::ExplicitTrap);
+            }
+            if self.backing_hidden(&prefix) { fallback = None; }
             if let Some(parent) = &fallback {
                 let candidate = parent.join(part);
                 match std::fs::symlink_metadata(&candidate) {

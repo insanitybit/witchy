@@ -63,7 +63,7 @@ impl ServerState {
     }
 
     pub(in super::super) fn before_host_call(&self, name: &str) -> Result<(), InterpretError> {
-        if (self.fixture.is_some() || self.worker) && crate::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.contains(&name) {
+        if (self.fixture.is_some() || self.worker) && super::super::dir_storage::is_import(name) {
             return Err(InterpretError::UnsupportedOperation("server pool directory storage effect ordering"));
         }
         if (self.fixture.is_some() || self.worker) && super::super::registry_host::IMPORTS.contains(&name) {

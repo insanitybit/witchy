@@ -2058,3 +2058,62 @@ Coven still in source/comptime preparation after 60 seconds (sample stack:
 `/private/tmp/witchy-coven-warm-diagnosis.JEbVVz/`. These do not prove a cause
 for the combined setup timeout. No full workflow or compiler-wide memory-safety
 claim follows from this slice; landing is pending behind the RSA queue change.
+
+### 2026-09-14: Coven lifecycle and RSA landing
+
+The unchanged real package-manager lifecycle now passes on the documentation
+candidate: publish versions, resolve/fetch the released package, verify signed
+provenance offline, and reject tampering. Direct execution of the warmed `e2e`
+test binary selected
+`pm_coven_lifecycle::witchy_pm_add_resolves_and_fetches_from_coven`: 1 passed,
+0 failed, 223.96 seconds. Log:
+`/private/tmp/witchy-coven-doc-direct-lifecycle.log`. This omitted only the
+optional nextest cache-warming hook, not the test assertions or admission path.
+It supersedes the earlier `compiler.doc` workflow refusal; it does not prove
+the separate package installer or every package-manager command.
+
+The RSA slice landed at `dd1cd3d1df5e79320ce5fbe9067923ccd4f574d0`, queue
+change `mq-b1ace623f0d409aec7fdf2f04239fd7507f6fd95`, terminal `merged`
+event `2026-09-14T13:53:27Z`. Its isolated gate passed in 635 seconds with
+zero retries after the combined RSA/documentation attempt timed out in an
+async integration test. Documentation landing remains pending. No fresh
+census or compiler-wide memory-safety claim follows from these results.
+
+### 2026-09-14: bounded installer storage and callable lookup
+
+Canonical Dir Write now admits `append_bytes`, `set_executable`, and `rename`
+through three bounded, authenticated imports. Native providers retain their
+confinement and collision rules. The independent oracle retains directory
+identity across rename/name replacement, prevents deleted backing entries
+from resurfacing, and resolves renamed links consistently for metadata.
+Review corrections preserve issuer authentication for mkdir and existence
+of special filesystem entries without reading them. No new authority kind,
+memory judgment, or raw fallback was added. Generated ABI import count: 169.
+
+Focused run `46e9fe73-e6e1-4210-8b90-70f489356ad8`: 128/128 passed,
+zero retries, 14.247 seconds. Log:
+`/private/tmp/witchy-dir-installer-reviewed-focused.log`. Selectors extend the
+previous documentation/crypto set with `dir_installer_`, `dir_storage_`,
+`dir_metadata_`, `registry_oracle_dir_`, and `callable_definition_index`.
+Tests cover the admitted binary append/chmod/replacement-rename workflow,
+retained and displaced directory handles, links, issuer/rights/path/buffer
+refusals, exact payloads and executable permissions, and zero leaked objects
+on successful source execution. Independent review is complete.
+
+The rebuilt CLI agrees on hello/wrap/jq at 3/5/7 output lines; log:
+`/private/tmp/witchy-dir-installer-compact.log`. With a fresh `WITCHY_HOME`,
+`witchy pm list` now reaches `usage: grimoire list <name> [host:port]` and
+exits 1 for the missing argument, rather than refusing `__capop.append_bytes`.
+Log: `/private/tmp/witchy-dir-installer-pm-list.log`. This proves compilation
+and execution to the usage path, not a complete executable-artifact install.
+
+A separately reviewed callable-definition index replaces repeated operation
+scans during contract derivation. It is rebuilt within each derivation and
+preserves order, duplicates, exact signature/transfer checks, and recursive
+visited-set behavior. Five differential tests compare results and visited
+sets with the former scan. Initial and final validation remain unchanged;
+no evolving summaries or positive authority conclusions are cached. The
+motivating late async-compilation sample is
+`/private/tmp/witchy-async-abort-late.2emJu7/sample-180.txt`; it is a sampling
+window, not a whole-run percentage or measured speedup. Landing and the
+remaining workflow/optimizer obligations are still pending.
