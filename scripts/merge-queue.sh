@@ -1638,6 +1638,7 @@ cmd_submit() {
         && [ "$submit_docs_safe" -eq 0 ]; then
         note "WARNING: no green shard recorded for $branch@${tip_sha:0:9}."
         note "         From that clean branch, run './scripts/agent-check.sh edit',"
+        note "         or './scripts/submit-with-presubmit.sh' (current branch),"
         note "         or './scripts/submit-with-presubmit.sh $branch',"
         note "         then resubmit the same tip (its queue position is preserved):"
         note "         a red gate here costs every queued branch a full serialized cycle."

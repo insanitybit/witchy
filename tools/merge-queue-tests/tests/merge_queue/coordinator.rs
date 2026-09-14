@@ -1756,6 +1756,7 @@ fn a_code_submission_without_a_receipt_still_warns() {
     );
     assert!(
         stderr.contains("./scripts/agent-check.sh edit")
+            && stderr.contains("./scripts/submit-with-presubmit.sh' (current branch)")
             && stderr.contains("resubmit the same tip")
             && stderr.contains("queue position is preserved"),
         "warning did not give the exact-tip recovery workflow:\n{stderr}"
