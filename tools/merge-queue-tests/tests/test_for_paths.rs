@@ -821,6 +821,31 @@ fn broad_rfc0165_edit_checks_share_the_landing_admission_policy() {
 }
 
 #[test]
+fn canonical_crypto_edit_loop_keeps_rsa_contracts() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-lower/src/canonical_crypto.rs",
+        "crates/witchy-runtime/src/runtime/host/crypto_rsa_slices_tests.rs",
+        "crates/witchy-wir/src/canonical_interpreter/crypto_rsa_tests.rs",
+        "tests/misc/rfc0165_crypto_rsa.rs",
+        "spec/wasm-abi.md",
+    ]);
+    assert_eq!(commands.len(), 4, "RSA edit route changed shape: {commands:?}");
+    assert!(
+        commands[0].contains("canonical_interpreter::crypto_rsa_tests::"),
+        "RSA interpreter coverage was omitted: {commands:?}",
+    );
+    assert!(
+        commands[2].contains("rfc0165_crypto(_rsa)?::"),
+        "RSA admitted misc coverage was omitted: {commands:?}",
+    );
+    assert!(
+        commands[3].contains("runtime::host::crypto_rsa_slices_tests::"),
+        "RSA host-slice coverage was omitted: {commands:?}",
+    );
+}
+
+#[test]
 fn oracle_harness_edit_runs_only_the_filtered_production_oracle() {
     let commands = selected(&["--edit-loop", "tests/misc/rfc0165_oracle.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");
