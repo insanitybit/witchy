@@ -325,6 +325,13 @@ for p in "${paths[@]}"; do
             add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
     esac
     case "$p" in
+        src/source.rs | \
+        src/source/package_inputs* | \
+        src/trusted_publisher/source_inputs.rs | \
+        tests/misc/rfc0165_packaged_source.rs)
+            add_early "cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'" ;;
+    esac
+    case "$p" in
         src/commands/compile.rs | \
         src/commands/project_resolver_tests.rs | \
         src/source.rs | src/source/package_inputs.rs)

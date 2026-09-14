@@ -515,7 +515,7 @@ fn wir_abi_surfaces_run_the_catalog_contracts_first() {
 }
 
 #[test]
-fn authenticated_owner_surfaces_run_the_cli_contract_first() {
+fn authenticated_owner_surfaces_keep_the_cli_contract_probe() {
     for path in [
         "src/commands/compile.rs",
         "src/commands/project_resolver_tests.rs",
@@ -523,8 +523,13 @@ fn authenticated_owner_surfaces_run_the_cli_contract_first() {
         "src/source/package_inputs.rs",
     ] {
         let commands = selected(&["--edit-loop", path]);
+        let owner_probe = if path == "src/source.rs" || path == "src/source/package_inputs.rs" {
+            &commands[1]
+        } else {
+            &commands[0]
+        };
         assert_eq!(
-            commands[0],
+            owner_probe,
             "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'",
             "{path}: {commands:?}"
         );
@@ -538,6 +543,27 @@ fn authenticated_owner_surfaces_run_the_cli_contract_first() {
             );
         }
     }
+}
+
+#[test]
+fn packaged_source_surfaces_run_the_unsafe_input_probe_first() {
+    let commands = selected(&[
+        "--edit-loop",
+        "rfcs/0165-acceptance-ledger.md",
+        "src/source.rs",
+        "src/source/package_inputs.rs",
+        "src/source/package_inputs/registry.rs",
+        "src/source/package_inputs/registry_replay_tests.rs",
+        "src/source/package_inputs/registry_verify.witchy",
+        "src/trusted_publisher/source_inputs.rs",
+    ]);
+    assert_eq!(
+        commands[0],
+        "cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'",
+        "{commands:?}"
+    );
+    assert!(commands.iter().any(|command| command.contains("source::tests")), "{commands:?}");
+    assert!(commands.iter().any(|command| command.contains("cli_subcommands")), "{commands:?}");
 }
 
 #[test]
@@ -997,9 +1023,13 @@ fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
     let source = selected(&["src/source.rs"]);
     assert_eq!(
         source.first().map(String::as_str),
+        Some("cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'")
+    );
+    assert_eq!(
+        source.get(1).map(String::as_str),
         Some("cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'")
     );
-    assert_eq!(&source[1..], expected, "focused route for src/source.rs");
+    assert_eq!(&source[2..], expected, "focused route for src/source.rs");
 }
 
 #[test]
