@@ -157,6 +157,7 @@ mkdir -p "$queue_dir" "$changes_dir" "$logs"
 deferred_sweep=0
 active_gate_pgid=""
 gate_preflight_expr=""
+gate_preflight_nextest=""
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
@@ -340,18 +341,58 @@ EOF
     printf '%s' "$expr"
 }
 
+# The Cargo package/target shared by every failed nextest test. A single
+# validated target lets the next attempt compile only the binary needed for
+# its failure-first replay. Mixed or unparseable targets deliberately return
+# nothing so check.sh keeps the existing landing selection.
+failing_test_nextest() { # failing_test_nextest <log>
+    local log="$1" targets target package binary
+    targets="$(strip_ansi <"$log" 2>/dev/null \
+        | grep -aE '^[[:space:]]*(TRY [0-9]+ )?(FAIL|TIMEOUT|TMT) \[' \
+        | sed -E 's/^[[:space:]]*(TRY [0-9]+ )?[A-Z]+ \[[^]]*\][[:space:]]*(\([[:space:]]*[0-9]+[[:space:]]*\/[[:space:]]*[0-9]+[[:space:]]*\)[[:space:]]*)?//' \
+        | awk '{print $1}' | grep -aE '^[A-Za-z0-9_-]+(::[A-Za-z0-9_\/-]+)?$' \
+        | sort -u | head -2)"
+    [ -n "$targets" ] || return 0
+    [ "$(printf '%s\n' "$targets" | wc -l | tr -d ' ')" = 1 ] || return 0
+    target="$targets"
+    case "$target" in
+        *::*)
+            package="${target%%::*}"
+            binary="${target#*::}"
+            case "$binary" in
+                bin/*) printf '%s\n' "-p $package --bin ${binary#bin/}" ;;
+                */*) return 0 ;;
+                *) printf '%s\n' "-p $package --test $binary" ;;
+            esac
+            ;;
+        *) printf '%s\n' "-p $target --lib" ;;
+    esac
+}
+
 # Remember them on the change so the NEXT attempt replays them first.
-remember_preflight() { # remember_preflight <change-id> <expr>
-    local id="$1" expr="$2" cf tmp
+remember_preflight() { # remember_preflight <change-id> <expr> [nextest-selector]
+    local id="$1" expr="$2" nextest="${3:-}" cf tmp
     [ -n "$id" ] && [ -n "$expr" ] || return 0
     acquire_change_lock
     while IFS= read -r cf; do
         jq -e --arg id "$id" 'select(.change_id==$id)' "$cf" >/dev/null 2>&1 || continue
         tmp="$cf.tmp.$$"
-        jq --arg e "$expr" '.preflight=$e' "$cf" >"$tmp" && mv "$tmp" "$cf"
+        jq --arg e "$expr" --arg n "$nextest" \
+            '.preflight=$e | if $n == "" then del(.preflight_nextest) else .preflight_nextest=$n end' \
+            "$cf" >"$tmp" && mv "$tmp" "$cf"
         break
     done < <(change_files_for_id "$id")
     release_change_lock
+}
+
+preflight_nextest_for() { # preflight_nextest_for <change-id>
+    local id="$1" cf
+    [ -n "$id" ] || return 0
+    while IFS= read -r cf; do
+        jq -er --arg id "$id" 'select(.change_id==$id) | .preflight_nextest // empty' \
+            "$cf" 2>/dev/null && return 0
+    done < <(change_files_for_id "$id")
+    return 0
 }
 
 preflight_expr_for() { # preflight_expr_for <change-id>
@@ -683,22 +724,24 @@ set_queue_batch_limit() { # set_queue_batch_limit <queue-file> <change-id> <sha>
 }
 
 write_change_record() { # write_change_record <branch> <id> <sha> <after-json> <state> <attempt-id>
-    local branch="$1" id="$2" sha="$3" after="$4" state="$5" attempt="$6" cf tmp created preflight
+    local branch="$1" id="$2" sha="$3" after="$4" state="$5" attempt="$6" cf tmp created preflight preflight_nextest
     cf="$(change_file_for_branch "$branch")"
     created="$(jq -r '.created // empty' "$cf" 2>/dev/null || true)"
     # A red records its exact failing tests on the logical change. Preserve
     # that replay when submit creates the next attempt; replacing the record
     # here used to discard it before the coordinator could run the preflight.
     preflight="$(jq -r '.preflight // empty' "$cf" 2>/dev/null || true)"
+    preflight_nextest="$(jq -r '.preflight_nextest // empty' "$cf" 2>/dev/null || true)"
     [ -n "$created" ] || created="$(now)"
     tmp="$cf.tmp.$$"
     jq -cn --arg branch "$branch" --arg id "$id" --arg sha "$sha" \
         --arg created "$created" --arg updated "$(now)" --arg state "$state" --arg attempt "$attempt" \
-        --arg preflight "$preflight" --argjson after "$after" \
+        --arg preflight "$preflight" --arg preflight_nextest "$preflight_nextest" --argjson after "$after" \
         '{schema:1, change_id:$id, branch:$branch, current_sha:$sha,
           current_attempt:$attempt, after:$after, state:$state,
           created:$created, updated:$updated}
-          | if $preflight == "" then . else .preflight=$preflight end' >"$tmp"
+          | if $preflight == "" then . else .preflight=$preflight end
+          | if $preflight_nextest == "" then . else .preflight_nextest=$preflight_nextest end' >"$tmp"
     mv "$tmp" "$cf"
 }
 
@@ -1308,7 +1351,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -2223,6 +2266,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_load_start=""
     gate_load_end=""
     gate_preflight_expr=""
+    gate_preflight_nextest=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
     change_id="$(jq -r '.change_id // empty' "$f")"
@@ -2764,8 +2808,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # preflight optimization.
     if [ "$queue_infra_only" -eq 1 ]; then
         gate_preflight_expr=""
+        gate_preflight_nextest=""
     else
         gate_preflight_expr="$(preflight_expr_for "$change_id" || true)"
+        gate_preflight_nextest="$(preflight_nextest_for "$change_id" || true)"
     fi
     [ -n "$gate_preflight_expr" ] && note "preflight: replaying last attempt's failures first"
     note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]); log: $log"
@@ -2792,8 +2838,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             # test execution to rediscover the same failures. A batch head is
             # only the scheduling representative, so do not attach its failure
             # to that change until attribution below identifies the owner.
-            local failed_preflight
+            local failed_preflight failed_preflight_nextest
             failed_preflight="$(failing_test_expr "$log" || true)"
+            failed_preflight_nextest="$(failing_test_nextest "$log" || true)"
             if [ "${#batch_branches[@]}" -gt 1 ]; then
                 # A red batch indicts no one member. Keep every queue file;
                 # ordered dependency stacks bisect by prefix, while unrelated
@@ -2833,7 +2880,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                     # A dependency stack is one ordered candidate. Preserve
                     # the existing replay on its representative while the
                     # prefix splitter finds the failing boundary.
-                    remember_preflight "$change_id" "$failed_preflight"
+                    remember_preflight "$change_id" "$failed_preflight" "$failed_preflight_nextest"
                     # A dependency stack has an ordered failure boundary. Gate
                     # the first half as one prefix next; green lands that prefix
                     # and exposes the remaining suffix, while another red halves
@@ -2846,7 +2893,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                     # The failure-to-diff match gives this replay a concrete
                     # owner. Innocent members re-gate without compiling or
                     # executing a product preflight learned from another diff.
-                    remember_preflight "${batch_ids[$evict_index]}" "$failed_preflight"
+                    remember_preflight "${batch_ids[$evict_index]}" "$failed_preflight" "$failed_preflight_nextest"
                     # Only the evicted member gates alone; everyone else keeps
                     # batching eligibility and re-gates together next loop.
                     mark_queue_entry "${batch_files[$evict_index]}" "${batch_ids[$evict_index]}" \
@@ -2872,7 +2919,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 done
                 return 1
             fi
-            remember_preflight "$change_id" "$failed_preflight"
+            remember_preflight "$change_id" "$failed_preflight" "$failed_preflight_nextest"
             [ "$why" = "red" ] && extra="$(failure_summary "$log")"
             note "$branch is $(echo "$why" | tr a-z A-Z) after ${gate_took}s — $extra"
             note "  log: $log"

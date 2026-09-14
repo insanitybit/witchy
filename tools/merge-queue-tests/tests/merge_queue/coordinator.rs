@@ -2071,6 +2071,13 @@ fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
         recorded.contains("test(/^"),
         "preflight is not a nextest filter expression: {recorded}"
     );
+    let recorded_json: serde_json::Value =
+        serde_json::from_str(&recorded).expect("change record is JSON");
+    assert_eq!(
+        recorded_json["preflight_nextest"],
+        "-p witchy --test misc",
+        "preflight did not retain the single failing Cargo target: {recorded}",
+    );
 
     fixture.mq_ok(&["submit", "a"], gate);
     let resubmitted = fixture.change("a");
@@ -2079,6 +2086,27 @@ fn a_red_remembers_its_failing_tests_for_the_next_attempt() {
             .as_str()
             .is_some_and(|expr| expr.contains("the_broken_test")),
         "resubmission discarded the focused replay: {resubmitted}"
+    );
+    assert_eq!(resubmitted["preflight_nextest"], "-p witchy --test misc");
+}
+
+#[test]
+fn mixed_failure_targets_keep_the_broad_preflight_build_scope() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let gate = "printf 'FAIL [ 0.1s] ( 1/2) witchy-lower::codegen tests::first_red\nFAIL [ 0.1s] ( 2/2) witchy::misc tests::second_red\n'; exit 1";
+    fixture.mq_ok(&["submit", "a"], gate);
+    fixture.mq_ok(&["run", "--once"], gate);
+
+    let change = fixture.change("a");
+    assert!(
+        change["preflight"]
+            .as_str()
+            .is_some_and(|expr| expr.contains("first_red") && expr.contains("second_red")),
+        "both failures must remain in the replay expression: {change}",
+    );
+    assert!(
+        change.get("preflight_nextest").is_none(),
+        "mixed Cargo targets must not narrow the next preflight: {change}",
     );
 }
 

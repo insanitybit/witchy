@@ -623,7 +623,62 @@ if cargo nextest --version >/dev/null 2>&1; then
         # to fall through to the full run. `warn` over `pass` so the empty
         # replay still shows up in the log.
         preflight_expr="($excl) and (${WITCHY_GATE_PREFLIGHT_EXPR})"
-        preflight_cmd=("${nextest_cmd[@]}" --no-tests=warn -E "$preflight_expr")
+        preflight_base_cmd=("${nextest_cmd[@]}")
+        preflight_target=()
+        if [ "${#nextest_sel[@]}" -eq 1 ] \
+            && [ "${nextest_sel[0]}" = "--workspace" ] \
+            && [ -n "${WITCHY_GATE_PREFLIGHT_NEXTEST:-}" ]; then
+            # The coordinator emits one bounded form only when every failed
+            # test names the same nextest package/target. Validate it again
+            # before word splitting so corrupted local state cannot add Cargo
+            # arguments. `read -a` splits without pathname expansion.
+            read -r -a preflight_target <<<"${WITCHY_GATE_PREFLIGHT_NEXTEST}"
+            preflight_target_valid=0
+            if [ "${#preflight_target[@]}" -eq 3 ] \
+                && [ "${preflight_target[0]}" = "-p" ] \
+                && [[ "${preflight_target[1]}" =~ ^[A-Za-z0-9_-]+$ ]] \
+                && [ "${preflight_target[2]}" = "--lib" ]; then
+                preflight_target_valid=1
+            elif [ "${#preflight_target[@]}" -eq 4 ] \
+                && [ "${preflight_target[0]}" = "-p" ] \
+                && [[ "${preflight_target[1]}" =~ ^[A-Za-z0-9_-]+$ ]] \
+                && { [ "${preflight_target[2]}" = "--test" ] \
+                    || [ "${preflight_target[2]}" = "--bin" ]; } \
+                && [[ "${preflight_target[3]}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+                preflight_target_valid=1
+            fi
+            if [ "$preflight_target_valid" -eq 1 ]; then
+                preflight_package="${preflight_target[1]}"
+                preflight_kind="${preflight_target[2]#--}"
+                preflight_name=""
+                [ "$preflight_kind" = "lib" ] \
+                    || preflight_name="${preflight_target[3]}"
+                preflight_metadata="$(cargo metadata --no-deps --format-version 1 2>/dev/null || true)"
+                if ! printf '%s\n' "$preflight_metadata" | jq -e \
+                    --arg package "$preflight_package" --arg kind "$preflight_kind" \
+                    --arg name "$preflight_name" '
+                        any(.packages[]?;
+                            .name == $package and
+                            any(.targets[]?;
+                                (.kind | index($kind)) != null and
+                                ($kind == "lib" or .name == $name)))
+                    ' >/dev/null 2>&1; then
+                    preflight_target_valid=0
+                fi
+            fi
+            if [ "$preflight_target_valid" -eq 1 ]; then
+                preflight_base_cmd=(cargo nextest run "$max_fail")
+                [ -z "$gate_test_jobs" ] || preflight_base_cmd+=(-j "$gate_test_jobs")
+                preflight_base_cmd+=("${preflight_target[@]}")
+                case "$preflight_package" in
+                    witchy | witchy-lower | witchy-wir)
+                        preflight_base_cmd+=(--features witchy-wir/native) ;;
+                esac
+                printf 'check.sh: failure preflight target: %s\n' \
+                    "${WITCHY_GATE_PREFLIGHT_NEXTEST}"
+            fi
+        fi
+        preflight_cmd=("${preflight_base_cmd[@]}" --no-tests=warn -E "$preflight_expr")
         if [ "${#nextest_sel[@]}" -eq 1 ] \
             && [ "${nextest_sel[0]}" = "--workspace" ]; then
             main_expr="($excl) and not (${WITCHY_GATE_PREFLIGHT_EXPR})"
@@ -651,7 +706,7 @@ if cargo nextest --version >/dev/null 2>&1; then
     queue_infra_cmd=(cargo nextest run -p merge-queue-tests --test merge_queue --test test_for_paths -j "$queue_infra_jobs" \
         --ignore-default-filter --profile nightly)
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}" -E \
-        'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|a_red_remembers_its_failing_tests_for_the_next_attempt|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|coordinator_reexecs_committed_script_between_attempts_without_losing_singleton|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|sweep_caches_merged_history_but_keeps_queue_admission_live|sweep_defers_branch_pruning_while_ready_work_waits|sweep_yields_when_ready_work_arrives_during_branch_pruning)|gate_behavior::state_and_gate::(fast_gate_emits_structured_foreground_and_background_timings|gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover|unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest))$/)')
+        'test(/^(coordinator::(a_code_submission_without_a_receipt_still_warns|a_red_remembers_its_failing_tests_for_the_next_attempt|mixed_failure_targets_keep_the_broad_preflight_build_scope|concurrent_daemon_starts_create_exactly_one_coordinator|concurrent_dependency_updates_cannot_commit_opposite_cycle_edges|coordinator_reexecs_committed_script_between_attempts_without_losing_singleton|queue_substrate_change_requests_the_isolated_fixture_shard|ready_queue_items_run_before_post_merge_worktree_sweep|submit_journals_whether_a_presubmit_receipt_covers_the_tip|sweep_caches_merged_history_but_keeps_queue_admission_live|sweep_defers_branch_pruning_while_ready_work_waits|sweep_yields_when_ready_work_arrives_during_branch_pruning)|gate_behavior::preflight_reuse::(workspace_preflight_narrows_its_target_and_partitions_the_main_run|invalid_or_missing_preflight_target_fails_safe_to_the_workspace|scoped_preflight_keeps_the_complete_main_selection)|gate_behavior::state_and_gate::(fast_gate_emits_structured_foreground_and_background_timings|gate_report_is_read_only_and_aggregates_batches_failures_and_phases|state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover|unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest))$/)')
 else
     preflight_cmd=()
     # Plain cargo test runs integration binaries sequentially, so the queue
