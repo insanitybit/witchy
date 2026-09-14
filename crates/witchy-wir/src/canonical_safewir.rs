@@ -57,6 +57,14 @@ id_type!(StaticDataId, u32);
 id_type!(GcTypeId, u32);
 id_type!(CapabilityKindId, u32);
 
+impl Revision {
+    /// Return the identity for a transformed module, or refuse rather than
+    /// wrapping into an earlier analysis epoch.
+    pub fn checked_next(self) -> Option<Self> {
+        self.get().checked_add(1).map(Self::new)
+    }
+}
+
 /// Staged opaque-owner ABI contract. Not yet admitted as executable operations.
 pub mod closure_owner_contract;
 mod owner_authority;

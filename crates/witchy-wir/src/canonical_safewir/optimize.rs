@@ -9,11 +9,12 @@ use std::fmt;
 
 use super::{
     CanonicalModule, ComparisonOperator, Function, GuardKind, InitialCheckError, InitialValid,
-    Operation, OptimizationCandidate, ValueId,
+    Operation, OptimizationCandidate, Revision, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundsGuardEliminationError {
+    RevisionOverflow { revision: Revision },
     RewriteRelation(RewriteRelationError),
     Safety(InitialCheckError),
 }
@@ -21,6 +22,9 @@ pub enum BoundsGuardEliminationError {
 impl fmt::Display for BoundsGuardEliminationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RevisionOverflow { revision } => {
+                write!(formatter, "cannot advance SafeWIR revision {revision:?}")
+            }
             Self::RewriteRelation(error) => {
                 write!(formatter, "bounds-guard rewrite relation failed: {error}")
             }
@@ -36,6 +40,7 @@ impl std::error::Error for BoundsGuardEliminationError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteRelationError {
+    RevisionMismatch,
     ModuleMetadataChanged,
     FunctionShapeChanged,
     BlockShapeChanged,
@@ -66,18 +71,26 @@ pub fn eliminate_same_block_redundant_bounds_guards(
     before: CanonicalModule<InitialValid>,
 ) -> Result<CanonicalModule<InitialValid>, BoundsGuardEliminationError> {
     let mut candidate: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
-    rewrite(&mut candidate);
+    if rewrite(&mut candidate) {
+        candidate.revision = before.revision.checked_next().ok_or(
+            BoundsGuardEliminationError::RevisionOverflow {
+                revision: before.revision,
+            },
+        )?;
+    }
     check_rewrite_relation(&before, &candidate)
         .map_err(BoundsGuardEliminationError::RewriteRelation)?;
     super::check::check_optimization_candidate(candidate)
         .map_err(BoundsGuardEliminationError::Safety)
 }
 
-fn rewrite(candidate: &mut CanonicalModule<OptimizationCandidate>) {
+fn rewrite(candidate: &mut CanonicalModule<OptimizationCandidate>) -> bool {
+    let mut changed = false;
     for function in &mut candidate.functions {
         for block in &mut function.blocks {
             let mut comparisons = BTreeMap::new();
             let mut surviving = BTreeSet::new();
+            let before_len = block.operations.len();
             block.operations.retain(|operation| {
                 match operation {
                     Operation::Compare {
@@ -109,8 +122,10 @@ fn rewrite(candidate: &mut CanonicalModule<OptimizationCandidate>) {
                 }
                 true
             });
+            changed |= block.operations.len() != before_len;
         }
     }
+    changed
 }
 
 /// Independently recognize the one allowed rewrite. This intentionally does
@@ -119,8 +134,7 @@ fn check_rewrite_relation(
     before: &CanonicalModule<InitialValid>,
     after: &CanonicalModule<OptimizationCandidate>,
 ) -> Result<(), RewriteRelationError> {
-    if before.revision != after.revision
-        || before.checked_source != after.checked_source
+    if before.checked_source != after.checked_source
         || before.launch_contract_payload != after.launch_contract_payload
         || before.layouts != after.layouts
         || before.signatures != after.signatures
@@ -140,8 +154,20 @@ fn check_rewrite_relation(
     if before.functions.len() != after.functions.len() {
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
+    let mut changed = false;
     for (before, after) in before.functions.iter().zip(&after.functions) {
-        check_function_relation(before, after)?;
+        changed |= check_function_relation(before, after)?;
+    }
+    let expected_revision = if changed {
+        before
+            .revision
+            .checked_next()
+            .ok_or(RewriteRelationError::RevisionMismatch)?
+    } else {
+        before.revision
+    };
+    if after.revision != expected_revision {
+        return Err(RewriteRelationError::RevisionMismatch);
     }
     Ok(())
 }
@@ -149,7 +175,7 @@ fn check_rewrite_relation(
 fn check_function_relation(
     before: &Function,
     after: &Function,
-) -> Result<(), RewriteRelationError> {
+) -> Result<bool, RewriteRelationError> {
     if before.id != after.id
         || before.signature != after.signature
         || before.entry != after.entry
@@ -158,6 +184,7 @@ fn check_function_relation(
     {
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
+    let mut changed = false;
     for (before, after) in before.blocks.iter().zip(&after.blocks) {
         if before.id != after.id
             || before.parameters != after.parameters
@@ -212,8 +239,9 @@ fn check_function_relation(
         if after_index != after.operations.len() {
             return Err(RewriteRelationError::OperationChanged);
         }
+        changed |= before.operations.len() != after.operations.len();
     }
-    Ok(())
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -349,6 +377,7 @@ mod tests {
         let optimized =
             eliminate_same_block_redundant_bounds_guards(validated(duplicate_operations()))
                 .expect("rewrite relation and full revalidation");
+        assert_eq!(optimized.revision(), Revision::new(2));
         let operations = &optimized.functions()[0].blocks[0].operations;
         assert_eq!(operations.len(), 6);
         assert!(operations.contains(&bounds(FIRST_CONDITION)));
@@ -359,6 +388,57 @@ mod tests {
             LEFT,
             RIGHT,
         )));
+    }
+
+    #[test]
+    fn no_op_keeps_the_existing_revision() {
+        let operations = vec![
+            Operation::ConstSize {
+                destination: LEFT,
+                value: 1,
+            },
+            Operation::ConstSize {
+                destination: RIGHT,
+                value: 2,
+            },
+            comparison(
+                FIRST_CONDITION,
+                ComparisonOperator::LessUnsigned,
+                LEFT,
+                RIGHT,
+            ),
+            bounds(FIRST_CONDITION),
+            comparison(
+                SECOND_CONDITION,
+                ComparisonOperator::LessEqualUnsigned,
+                LEFT,
+                RIGHT,
+            ),
+            Operation::ConstInt {
+                destination: MARKER,
+                value: 0,
+            },
+        ];
+        let optimized = eliminate_same_block_redundant_bounds_guards(validated(operations))
+            .expect("unchanged graph is revalidated");
+        assert_eq!(optimized.revision(), Revision::new(1));
+    }
+
+    #[test]
+    fn changed_graph_refuses_revision_overflow() {
+        let mut lowered = candidate(vec![block(
+            0,
+            duplicate_operations(),
+            Terminator::Return { values: Vec::new() },
+        )]);
+        lowered.revision = Revision::new(u64::MAX);
+        let initial = super::super::check_initial(lowered).expect("initial graph is valid");
+        assert_eq!(
+            eliminate_same_block_redundant_bounds_guards(initial).unwrap_err(),
+            BoundsGuardEliminationError::RevisionOverflow {
+                revision: Revision::new(u64::MAX),
+            },
+        );
     }
 
     #[test]
