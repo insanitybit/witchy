@@ -567,6 +567,27 @@ fn packaged_source_surfaces_run_the_unsafe_input_probe_first() {
 }
 
 #[test]
+fn registry_replay_edit_loop_stays_on_its_three_contracts() {
+    let commands = selected(&[
+        "--edit-loop",
+        "rfcs/0165-acceptance-ledger.md",
+        "src/source.rs",
+        "src/source/package_inputs.rs",
+        "src/source/package_inputs/registry.rs",
+        "src/source/package_inputs/registry_replay_tests.rs",
+        "src/source/package_inputs/registry_verify.witchy",
+        "src/trusted_publisher/source_inputs.rs",
+        "tests/misc/rfc0165_packaged_source.rs",
+    ]);
+    assert_eq!(commands.len(), 3, "{commands:?}");
+    assert!(commands[0].contains("packaged_source_rejects_custom_owner_and_unsafe_input_paths"), "{commands:?}");
+    assert!(commands[1].contains("compile_accepts_complete_authenticated_package_owners"), "{commands:?}");
+    assert!(commands[2].contains("nextest-admitted.sh"), "{commands:?}");
+    assert!(commands[2].contains("source::package_inputs::registry_replay_tests::"), "{commands:?}");
+    assert!(!commands.iter().any(|command| command.contains("rfc0165_oracle")), "{commands:?}");
+}
+
+#[test]
 fn edit_loop_stops_after_named_cheap_probes_when_available() {
     let commands = selected(&["--edit-loop", "crates/witchy-wir/src/wir_prelude.rs"]);
     assert_eq!(commands.len(), 2, "{commands:?}");

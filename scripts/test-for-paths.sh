@@ -259,6 +259,9 @@ canonical_rewrite_paths_only=1
 canonical_build_recipe=0
 canonical_fixture_rewrite=0
 canonical_fixture_rewrite_paths_only=1
+registry_replay=0
+registry_replay_paths_only=1
+registry_replay_contract_surface=0
 for p in "${paths[@]}"; do
     path_has_early=0
     case "$p" in
@@ -300,6 +303,23 @@ for p in "${paths[@]}"; do
         scratch/* | \
         security-eval/*) ;;
         *) canonical_rewrite_paths_only=0 ;;
+    esac
+    case "$p" in
+        src/source/package_inputs/registry.rs | \
+        src/source/package_inputs/registry_replay_tests.rs | \
+        src/source/package_inputs/registry_verify.witchy)
+            registry_replay=1 ;;
+    esac
+    case "$p" in
+        rfcs/0165-acceptance-ledger.md | \
+        src/source.rs | \
+        src/source/package_inputs* | \
+        src/trusted_publisher/source_inputs.rs | \
+        tests/misc/rfc0165_packaged_source.rs) ;;
+        *) registry_replay_paths_only=0 ;;
+    esac
+    case "$p" in
+        tests/misc/rfc0165_packaged_source.rs) registry_replay_contract_surface=1 ;;
     esac
     case "$p" in
         crates/witchy-interp/src/interpreter/runners.rs | \
@@ -746,7 +766,19 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
+if [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
+    && [ "$registry_replay_paths_only" -eq 1 ] \
+    && [ "$registry_replay_contract_surface" -eq 1 ]; then
+    # Closed registry replay spans source capture, signature verification,
+    # restored ownership, and execution. Keep the edit loop on those three
+    # executable contracts; compile, clippy, syntax, and the complete
+    # integration corpus remain in the serialized landing selection.
+    cmds=(
+        "cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'"
+        "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::package_inputs::registry_replay_tests::/)'"
+    )
+elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
     && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then
     # Console-fixture plumbing spans the checked driver, interpreter, host,
     # native runtime, and CLI. Combining those paths used to select seven
