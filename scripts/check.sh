@@ -625,9 +625,7 @@ if cargo nextest --version >/dev/null 2>&1; then
         preflight_expr="($excl) and (${WITCHY_GATE_PREFLIGHT_EXPR})"
         preflight_base_cmd=("${nextest_cmd[@]}")
         preflight_target=()
-        if [ "${#nextest_sel[@]}" -eq 1 ] \
-            && [ "${nextest_sel[0]}" = "--workspace" ] \
-            && [ -n "${WITCHY_GATE_PREFLIGHT_NEXTEST:-}" ]; then
+        if [ -n "${WITCHY_GATE_PREFLIGHT_NEXTEST:-}" ]; then
             # The coordinator emits one bounded form only when every failed
             # test names the same nextest package/target. Validate it again
             # before word splitting so corrupted local state cannot add Cargo
@@ -647,8 +645,21 @@ if cargo nextest --version >/dev/null 2>&1; then
                 && [[ "${preflight_target[3]}" =~ ^[A-Za-z0-9_-]+$ ]]; then
                 preflight_target_valid=1
             fi
+            # A scoped landing selection can still name the failed package.
+            # Narrow its replay target in that case too; otherwise a one-test
+            # retry rebuilds every selected package before running the probe.
+            # Keep an unselected target broad so stale queue state cannot add a
+            # package outside the branch's current admission surface.
+            preflight_package="${preflight_target[1]}"
             if [ "$preflight_target_valid" -eq 1 ]; then
-                preflight_package="${preflight_target[1]}"
+                if ! { { [ "${#nextest_sel[@]}" -eq 1 ] \
+                    && [ "${nextest_sel[0]}" = "--workspace" ]; } \
+                    || printf ' %s ' "$gate_nextest" \
+                        | grep -Fq " -p $preflight_package "; }; then
+                    preflight_target_valid=0
+                fi
+            fi
+            if [ "$preflight_target_valid" -eq 1 ]; then
                 preflight_kind="${preflight_target[2]#--}"
                 preflight_name=""
                 [ "$preflight_kind" = "lib" ] \

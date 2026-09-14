@@ -206,7 +206,11 @@ fn scoped_preflight_keeps_the_complete_main_selection() {
         .env("WITCHY_GATE_PREFLIGHT_EXPR", replay)
         .env(
             "WITCHY_GATE_PREFLIGHT_NEXTEST",
-            "-p unrelated --test must_be_ignored",
+            "-p witchy-lower --test codegen",
+        )
+        .env(
+            "FAKE_CARGO_METADATA",
+            r#"{"packages":[{"name":"witchy-lower","targets":[{"name":"codegen","kind":["test"]}]}]}"#,
         )
         .env("FAKE_CARGO_ARGV_FILE", &argv)
         .env("FAKE_RUN_COUNT_FILE", &count)
@@ -223,6 +227,9 @@ fn scoped_preflight_keeps_the_complete_main_selection() {
     assert_eq!(runs.len(), 2, "{runs:?}");
     let preflight = option_value(runs[0], "-E");
     let main = option_value(runs[1], "-E");
+    assert_eq!(runs[0].iter().filter(|arg| *arg == "-p").count(), 1);
+    assert_eq!(option_value(runs[0], "-p"), "witchy-lower");
+    assert_eq!(option_value(runs[0], "--test"), "codegen");
     assert!(
         preflight.contains(&format!("and ({replay})")),
         "{preflight}"
@@ -233,12 +240,56 @@ fn scoped_preflight_keeps_the_complete_main_selection() {
     );
     for args in &runs {
         assert_eq!(option_value(args, "--features"), "witchy-wir/native");
-        assert_eq!(
-            args.iter().filter(|arg| *arg == "-p").count(),
-            2,
-            "{args:?}"
-        );
     }
+    assert_eq!(runs[1].iter().filter(|arg| *arg == "-p").count(), 2);
+}
+
+#[test]
+fn scoped_preflight_ignores_a_valid_but_unselected_target() {
+    let root = workspace_root();
+    let temp = TempDir::new();
+    let (bin, argv) = fake_gate_tools(&temp);
+    let count = temp.path().join("run-count");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = check_sh(&root, &["--fast"])
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_NEXTEST", "-p witchy-lower -p witchy")
+        .env("WITCHY_GATE_NEXTEST_EXPR", "package(witchy-lower)")
+        .env("WITCHY_GATE_PREFLIGHT_EXPR", "test(stale_probe)")
+        .env(
+            "WITCHY_GATE_PREFLIGHT_NEXTEST",
+            "-p unrelated --test stale",
+        )
+        .env(
+            "FAKE_CARGO_METADATA",
+            r#"{"packages":[{"name":"unrelated","targets":[{"name":"stale","kind":["test"]}]}]}"#,
+        )
+        .env("FAKE_CARGO_ARGV_FILE", &argv)
+        .env("FAKE_RUN_COUNT_FILE", &count)
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run fake scoped gate");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let invocations = cargo_invocations(&argv);
+    let runs = nextest_runs(&invocations);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert!(
+        runs.iter().all(|args| {
+            args.iter().filter(|arg| *arg == "-p").count() == 2
+                && !args.iter().any(|arg| arg == "unrelated")
+        }),
+        "unselected target changed the scoped Cargo selection: {runs:?}"
+    );
 }
 
 #[test]
