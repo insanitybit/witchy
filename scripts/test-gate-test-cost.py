@@ -51,7 +51,7 @@ def main():
         assert "1 from end" in output and "fixture::bin" in output and "slow" in output, output
         assert "90.0s" not in output, output
         assert "failed tests and focused reproduction selectors" in output, output
-        assert "binary_id(/^fixture::bin$/) and test(=first)" in output, output
+        assert "cargo nextest run -p fixture --test bin -E 'test(=first)'" in output, output
         assert "50s summed test time above budget" in output, output
         assert "CPU above budget" not in output, output
 

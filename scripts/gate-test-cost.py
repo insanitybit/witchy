@@ -265,14 +265,33 @@ def print_failures(run):
         if (binary, name) in seen:
             continue
         seen.add((binary, name))
-        # binary_id keeps the selector tied to the observed test binary;
-        # test(=...) avoids rerunning its neighboring module cases.
+        # The observed binary selects the narrow Cargo target; test(=...) then
+        # avoids rerunning its neighboring module cases.
         print(f"  {status:10} {duration:7.1f}s  {binary:26} {name}")
-        print(
-            "    cargo nextest run -E "
-            f"'binary_id(/^{binary}$/) and test(={name})'"
-        )
+        print(f"    {focused_command(binary, name)}")
     print()
+
+
+def focused_command(binary, name):
+    """Return the smallest Cargo target implied by nextest's binary id."""
+    if "::" in binary:
+        package, target = binary.split("::", 1)
+        if package == "witchy":
+            if target == "misc":
+                scope = "--test misc"
+            elif target.startswith("bin/"):
+                scope = f"--bin {target[4:]}"
+            else:
+                scope = f"--test {target}"
+        elif target.startswith("bin/"):
+            scope = f"-p {package} --bin {target[4:]}"
+        elif target == "lib":
+            scope = f"-p {package} --lib"
+        else:
+            scope = f"-p {package} --test {target}"
+    else:
+        scope = f"-p {binary} --lib"
+    return f"cargo nextest run {scope} -E 'test(={name})'"
 
 
 def trend(runs):
