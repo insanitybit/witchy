@@ -2391,6 +2391,19 @@ fn emit_alloc(
             return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
         }
     };
+    // Search reclaimed storage first. Scratch 2 is the current free-list
+    // handle and scratch 3 is its predecessor. A fitting block may be larger
+    // than requested; rewriting its extent header makes the unused suffix
+    // inaccessible rather than granting the new object stale authority.
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
+    emit_set_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(0));
+    emit_set_index(body, scratch_index(layout, 3));
+    body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::GlobalGet(0));
     emit_set_index(body, scratch_index(layout, 1));
     // The object's end in bytes (64-bit, so the sum cannot wrap). When it
@@ -2436,6 +2449,41 @@ fn emit_alloc(
     emit_get_index(body, scratch_index(layout, 0));
     body.instruction(&wasm_encoder::Instruction::I32Add);
     body.instruction(&wasm_encoder::Instruction::GlobalSet(0));
+    body.instruction(&wasm_encoder::Instruction::Br(2));
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_get_index(body, scratch_index(layout, 0));
+    body.instruction(&wasm_encoder::Instruction::I32GeU);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_get_index(body, scratch_index(layout, 3));
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
+    body.instruction(&wasm_encoder::Instruction::Else);
+    emit_get_index(body, scratch_index(layout, 3));
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_set_index(body, scratch_index(layout, 1));
+    body.instruction(&wasm_encoder::Instruction::Br(2));
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, scratch_index(layout, 2));
+    emit_set_index(body, scratch_index(layout, 3));
+    emit_get_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_set_index(body, scratch_index(layout, 2));
+    body.instruction(&wasm_encoder::Instruction::Br(0));
+    body.instruction(&wasm_encoder::Instruction::End);
+    body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
@@ -5378,6 +5426,15 @@ fn expected_alloc_plan(
         Extent::HeaderPrefix { .. } => return Err(CanonicalAdmissionError::UnsupportedPlan),
     };
     plan.extend([
+        PlanToken::GlobalGet(1),
+        PlanToken::LocalSet(layout.scratch[2]),
+        PlanToken::I32Const(0),
+        PlanToken::LocalSet(layout.scratch[3]),
+        PlanToken::Block("Empty".to_owned()),
+        PlanToken::Loop("Empty".to_owned()),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Eqz,
+        PlanToken::If("Empty".to_owned()),
         PlanToken::GlobalGet(0),
         PlanToken::LocalSet(layout.scratch[1]),
     ]);
@@ -5424,6 +5481,41 @@ fn expected_alloc_plan(
         PlanToken::LocalGet(layout.scratch[0]),
         PlanToken::I32Add,
         PlanToken::GlobalSet(0),
+        PlanToken::Br(2),
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(4),
+        PlanToken::I32Sub,
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::LocalGet(layout.scratch[0]),
+        PlanToken::I32GeU,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::LocalGet(layout.scratch[3]),
+        PlanToken::I32Eqz,
+        PlanToken::If("Empty".to_owned()),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::GlobalSet(1),
+        PlanToken::Else,
+        PlanToken::LocalGet(layout.scratch[3]),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Const(RC_PREFIX_BYTES as i32),
+        PlanToken::I32Sub,
+        PlanToken::LocalSet(layout.scratch[1]),
+        PlanToken::Br(2),
+        PlanToken::End,
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::LocalSet(layout.scratch[3]),
+        PlanToken::LocalGet(layout.scratch[2]),
+        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        PlanToken::LocalSet(layout.scratch[2]),
+        PlanToken::Br(0),
+        PlanToken::End,
+        PlanToken::End,
         PlanToken::LocalGet(layout.scratch[1]),
         PlanToken::I32Const(1),
     ]);
@@ -9492,6 +9584,22 @@ mod tests {
         for index in 0..64 {
             operations.push(Operation::DropRef { object: ValueId::new(index * 2 + 1) });
         }
+        // Reuse one of the reclaimed blocks. A bump-only allocator would add
+        // a 65th node to the free list when this object is dropped below.
+        let reused = ValueId::new(129);
+        value_types.insert(reused, ValueType::Ref(record));
+        operations.push(Operation::Alloc {
+            destination: reused,
+            layout: record,
+            extent: Extent::FixedBytes(u64::from(record_bytes)),
+            class: crate::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        for field in 0..128 {
+            operations.push(Operation::InitNullableOwned {
+                place: Place::projected(reused, Projection::Field { index: field }, ValueType::Ref(scalar), AccessMode::Write),
+            });
+        }
+        operations.push(Operation::DropRef { object: reused });
         operations.push(Operation::ConstSize { destination: result, value: 7 });
         finalize(CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(141),
@@ -9542,8 +9650,8 @@ mod tests {
         }
         assert_eq!(sizes.len(), 4, "one source body and address, drop, retain helpers");
         assert!(sizes[0] < 64 * (128 * 16 + 1024), "repeated kernels expanded into the source body: {sizes:?}");
-        assert_eq!(calls.iter().filter(|index| **index == 1).count(), 64 * 128);
-        assert_eq!(calls.iter().filter(|index| **index == 2).count(), 64 * 2);
+        assert_eq!(calls.iter().filter(|index| **index == 1).count(), 65 * 128);
+        assert_eq!(calls.iter().filter(|index| **index == 2).count(), 64 * 2 + 1);
         assert_eq!(calls.iter().filter(|index| **index == 3).count(), 64);
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
