@@ -5920,6 +5920,9 @@ fn expected_block_operations_plan(
             Operation::Reclaim { object } => {
                 push_reclaim_plan(&mut plan, &layout, *object)?;
             }
+            Operation::Release { object } => {
+                push_drop_ref_plan(&mut plan, function, layouts, &layout, *object)?;
+            }
             Operation::DropRef { object } => {
                 push_drop_ref_plan(&mut plan, function, layouts, &layout, *object)?;
             }
@@ -10115,7 +10118,7 @@ mod tests {
                         Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
                         Operation::CloneRef { destination: shared, source: object },
                         Operation::Load { destination: loaded, place: Place::projected(shared, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
-                        Operation::DropRef { object: shared },
+                        Operation::Release { object: shared },
                         Operation::DropRef { object },
                     ],
                     terminator: Terminator::Return { values: vec![loaded] },
@@ -10642,7 +10645,7 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
-    fn shared_destination_preserves_root_for_use() {
+    fn shared_release_preserves_root_for_use() {
         let source = checked_share_fixture();
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();

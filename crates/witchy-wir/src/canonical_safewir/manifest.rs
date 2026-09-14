@@ -521,7 +521,10 @@ pub const RULES: &[RuleEntry] = &[
         predicate: "drops one shared token of a reference-counted object whose owned slots are initialized; a zero count traps at runtime",
         interpreter: "release: decrements, reclaiming at zero and trapping below",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
-        admits: &[t(Interpreter, "validated_clone_and_two_drops_execute")],
+        admits: &[
+            t(Interpreter, "validated_clone_and_two_drops_execute"),
+            t(Backend, "shared_release_preserves_root_for_use"),
+        ],
         refuses: &[
             t(Memory, "release_rejects_shared_value_without_refcount_authority"),
             t(Backend, "release_at_zero_refcount_traps_before_decrement"),
