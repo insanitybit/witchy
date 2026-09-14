@@ -1704,3 +1704,22 @@ Canonical `Net.only` remains unsupported; this slice does not claim it was
 implemented. Full online package-manager workflows, remaining coverage and
 optimizer/security acceptance still need their own evidence. Compiler-wide
 memory safety is not established.
+
+##### Fetch gate fixture repair (2026-09-14)
+
+The first Fetch queue attempt was red at candidate
+`4a33c6a03e3834f30d33d34deacc901cf330ec15`: two HTTP tests still used
+raw-WIR encoding after Fetch's raw production helpers were retired.
+`http_rejects_non_http_schemes_on_both_backends`,
+`get_url_returns_connect_error_on_both_backends`, and the adjacent
+`std_http_client_runs_in_the_wasm_backend` now execute checked artifacts with
+`spawn_admitted` and assert that raw encoding refuses. Their Witchy source,
+grants, and semantic assertions are unchanged. No production rule changed.
+
+Focused HTTP/Fetch rerun: **24/24 passed**, no retries, 8.888 seconds after a
+9.07-second build. Nextest run `c44c64d1-be29-4ba3-b896-fa7672f784e7`;
+log `/private/tmp/witchy-fetch-gate-network-fixtures.log`.
+Use the preceding warmed-target command with filter
+`test(example_tests::network::) | test(http_url_fallible::) | test(rfc0165_oracle::exec::fetch::)`
+and the shared deferred exclusions. This repairs the observed gate failure;
+it is not evidence of a terminal green landing or compiler-wide memory safety.

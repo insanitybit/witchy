@@ -409,6 +409,8 @@ fn main(console: Console):
     /// http client speaks only HTTP/1.1. Same rejection on both backends.
     #[test]
     fn http_rejects_non_http_schemes_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+
         let src = "import http\n\n\
                    fn main(net: Net, console: Console):\n\
                    \x20   let fetch = net.fetch(\"\")\n\
@@ -420,11 +422,29 @@ fn main(console: Console):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interp"),
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp"),
             want,
             "interpreter"
         );
-        assert_eq!(run_linked_on_wasm_net(&[("main", src)], "main", &[]), want, "wasm");
+        let checked = witchy::resolve_std_only_checked(src).expect("checked HTTP scheme source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical path lowers HTTP scheme rejection");
+        assert!(matches!(codegen::compile_module_binary(&linked),
+            codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime.spawn_admitted(
+            &artifact,
+            Capabilities {
+                print: true,
+                quiet: true,
+                net_allow: Some(Vec::new()),
+                net_connect: true,
+                ..Default::default()
+            },
+            64,
+        ).expect("spawn with an empty Net allow-list");
+        actor.run().expect("compiled scheme rejection");
+        assert_eq!(actor.output(), want, "wasm");
     }
 
     /// (BUG-364 / BUG-255) The request-line validator rejects a SPACE (it would split
@@ -626,12 +646,15 @@ fn main(console: Console):
             want,
             "interpreter"
         );
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
+        let checked = witchy::resolve_std_only_checked(&src).expect("checked HTTP client source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical path lowers the HTTP GET and POST client");
+        assert!(matches!(codegen::compile_module_binary(&linked),
+            codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
-                &bytes,
+            .spawn_admitted(
+                &artifact,
                 Capabilities {
                     print: true,
                     quiet: true,
