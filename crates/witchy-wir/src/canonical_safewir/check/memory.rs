@@ -2611,9 +2611,8 @@ impl<'a> MemoryChecker<'a> {
                             kind: *kind,
                         });
                     }
-                    if *kind == GuardKind::Bounds
-                        && (value_type(self.function, comparison.left)? != ValueType::Size
-                            || value_type(self.function, comparison.right)? != ValueType::Size)
+                    if value_type(self.function, comparison.left)? != ValueType::Size
+                        || value_type(self.function, comparison.right)? != ValueType::Size
                     {
                         return Err(InitialCheckError::InvalidGuard {
                             function: self.function.id,
@@ -6146,14 +6145,16 @@ mod tests {
             let functions: super::super::FunctionIndex = [(function.id, function)].into_iter().collect();
             assert!(matches!(
                 super::super::check_terminator(
-                    function, &terminator, &signature, &signatures, &functions, &BTreeMap::new(), checker,
+                    function, function.entry, &terminator, &signature, &signatures, &functions,
+                    &BTreeMap::new(), checker,
                 ),
                 Err(InitialCheckError::UnconsumedReference { .. })
             ));
             checker.drop_ref(SOURCE).unwrap();
             checker.drop_ref(DESTINATION).unwrap();
             super::super::check_terminator(
-                function, &terminator, &signature, &signatures, &functions, &BTreeMap::new(), checker,
+                function, function.entry, &terminator, &signature, &signatures, &functions,
+                &BTreeMap::new(), checker,
             ).unwrap();
         });
     }

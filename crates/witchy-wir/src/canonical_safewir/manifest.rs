@@ -283,7 +283,7 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Guard,
         judgment: "check/memory.rs::MemoryChecker (guard kinds); check.rs::check_operation",
-        predicate: "the condition is a `Bool` from an unsigned `Size` comparison; a `Bounds` guard proves an index below a logical length, never a capacity; a false guard traps",
+        predicate: "the condition is a `Bool` produced by a checked comparison and false traps; only unsigned `Size` Bounds/Arithmetic guards enter the range-fact domain, and a Bounds fact proves an index below logical length, never capacity; DynamicType guards authenticate only the separately matched closure shape",
         interpreter: "execute_operation: a false condition traps",
         backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
         admits: &[t(Check, "guarded_dynamic_element_load_is_admitted"), t(Check, "update_count_grows_logical_length_only_after_capacity_guard")],
@@ -709,11 +709,11 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Unreachable,
         judgment: "check.rs::check_terminator",
-        predicate: "always admitted; the block must be unreachable, which the backend's structuring verifies",
+        predicate: "admitted only in a block unreachable from the function entry; reaching an `Unreachable` terminator is rejected during the checker's reachable-block traversal",
         interpreter: "execute_frame: a trap if ever reached",
         backend: RuleBackend::Receipt(CorrespondenceRule::Control),
         admits: &[t(Check, "valid_unreachable_block_is_available_to_pruning")],
-        refuses: &[t(Backend, "common_reachable_join_with_non_terminating_bypass_is_refused")],
+        refuses: &[t(Check, "reachable_unreachable_terminator_is_refused")],
     },
     RuleEntry {
         rule: CanonicalRuleId::ClosureOwner,

@@ -135,6 +135,7 @@ pub enum InitialCheckError {
     UnknownCallableContract { function: FunctionId },
     UnsupportedInlineAggregateAbi { signature: FunctionSignatureId },
     UnsupportedInlineAggregateControlFlow { function: FunctionId },
+    ReachableUnreachable { function: FunctionId, block: BlockId },
     InvalidInlineAggregateLayout { function: FunctionId, layout: crate::layout::LayoutId },
     /// A callable lane was reached on an object whose layout the module's
     /// closure registry does not name, or with a value type other than the
@@ -999,6 +1000,7 @@ fn check_block_flow(
     )?;
     check_terminator(
         function,
+        block.id,
         &block.terminator,
         signature,
         signatures,
@@ -1807,6 +1809,7 @@ fn check_indirect_reference_arguments(
 #[allow(clippy::too_many_arguments)]
 fn check_terminator(
     function: &Function,
+    block: BlockId,
     terminator: &Terminator,
     current_signature: &FunctionSignature,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
@@ -1862,7 +1865,11 @@ fn check_terminator(
             check_branch(function, *then_target, then_arguments, blocks)?;
             check_branch(function, *else_target, else_arguments, blocks)
         }
-        Terminator::Trap | Terminator::Unreachable => Ok(()),
+        Terminator::Trap => Ok(()),
+        Terminator::Unreachable => Err(InitialCheckError::ReachableUnreachable {
+            function: function.id,
+            block,
+        }),
     }
 }
 
@@ -4996,7 +5003,7 @@ mod tests {
                         id: dead,
                         parameters: Vec::new(),
                         operations: Vec::new(),
-                        terminator: Terminator::Return { values: Vec::new() },
+                        terminator: Terminator::Unreachable,
                     },
                 ],
             }],
@@ -5004,6 +5011,43 @@ mod tests {
         });
 
         assert!(check_initial(module).is_ok());
+    }
+
+    #[test]
+    fn reachable_unreachable_terminator_is_refused() {
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([8; 32]),
+            layouts: empty_layouts(),
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: BTreeMap::new(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: Vec::new(),
+                    terminator: Terminator::Unreachable,
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+
+        assert!(matches!(
+            check_initial(module),
+            Err(InitialCheckError::ReachableUnreachable {
+                function: FUNCTION,
+                block: ENTRY,
+            })
+        ));
     }
 
     fn counted_access_module(
@@ -5335,37 +5379,39 @@ mod tests {
         let left = ValueId::new(1);
         let right = ValueId::new(2);
         let condition = ValueId::new(3);
-        let module = lowered(
-            [
-                (left, ValueType::Int),
-                (right, ValueType::Int),
-                (condition, ValueType::Bool),
-            ]
-            .into_iter()
-            .collect(),
-            vec![
-                Operation::ConstInt { destination: left, value: 0 },
-                Operation::ConstInt { destination: right, value: 1 },
-                Operation::Compare {
-                    destination: condition,
-                    operator: ComparisonOperator::LessUnsigned,
-                    left,
-                    right,
-                },
-                Operation::Guard { condition, kind: GuardKind::Bounds },
-            ],
-            Terminator::Return { values: Vec::new() },
-            Vec::new(),
-            Vec::new(),
-        );
-        assert_eq!(
-            check_initial(module).unwrap_err(),
-            InitialCheckError::InvalidGuard {
-                function: FUNCTION,
-                condition,
-                kind: GuardKind::Bounds,
-            }
-        );
+        for kind in [GuardKind::Bounds, GuardKind::Arithmetic] {
+            let module = lowered(
+                [
+                    (left, ValueType::Int),
+                    (right, ValueType::Int),
+                    (condition, ValueType::Bool),
+                ]
+                .into_iter()
+                .collect(),
+                vec![
+                    Operation::ConstInt { destination: left, value: 0 },
+                    Operation::ConstInt { destination: right, value: 1 },
+                    Operation::Compare {
+                        destination: condition,
+                        operator: ComparisonOperator::LessUnsigned,
+                        left,
+                        right,
+                    },
+                    Operation::Guard { condition, kind },
+                ],
+                Terminator::Return { values: Vec::new() },
+                Vec::new(),
+                Vec::new(),
+            );
+            assert_eq!(
+                check_initial(module).unwrap_err(),
+                InitialCheckError::InvalidGuard {
+                    function: FUNCTION,
+                    condition,
+                    kind,
+                }
+            );
+        }
     }
 
     #[test]
