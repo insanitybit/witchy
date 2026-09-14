@@ -322,6 +322,35 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["structured_phases_s"]["fmt"]["p50"], 3);
     assert_eq!(report["structured_phases_s"]["clippy"]["p50"], 50);
 
+    let absolute_report_path = temp.path().join("report-absolute.json");
+    let absolute_error_path = temp.path().join("report-absolute.stderr");
+    let absolute_report_file = fs::File::create(&absolute_report_path).expect("create absolute report output");
+    let absolute_error_file = fs::File::create(&absolute_error_path).expect("create absolute report stderr");
+    let absolute_status = Command::new("bash")
+        .arg(root.join("scripts/gate-report.sh"))
+        .args([
+            "--state-dir",
+            state.to_str().unwrap(),
+            "--since",
+            "2026-07-16T00:00:10Z",
+            "--json",
+        ])
+        .stdout(Stdio::from(absolute_report_file))
+        .stderr(Stdio::from(absolute_error_file))
+        .status()
+        .expect("run gate report with an absolute cutoff");
+    assert!(
+        absolute_status.success(),
+        "absolute gate report failed: {}",
+        fs::read_to_string(absolute_error_path).expect("read absolute report stderr")
+    );
+    let absolute_report: serde_json::Value = serde_json::from_slice(
+        &fs::read(absolute_report_path).expect("read absolute report output"),
+    )
+    .expect("absolute gate report emits JSON");
+    assert_eq!(absolute_report["attribution"]["submissions"], 6);
+    assert_eq!(absolute_report["throughput"]["merged_branches"], 2);
+
     let after = fs::read_to_string(state.join("journal.jsonl")).expect("read journal after");
     assert_eq!(before, after, "reporting must not mutate queue state");
 }

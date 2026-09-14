@@ -4,7 +4,7 @@
 # coordinator state, so it is safe to run while a gate is live.
 #
 # Usage:
-#   ./scripts/gate-report.sh [--since 24h|7d|all] [--state-dir PATH] [--json]
+#   ./scripts/gate-report.sh [--since 24h|7d|all|UTC-ISO-8601] [--state-dir PATH] [--json]
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,7 +17,7 @@ json=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --since)
-            [ "$#" -ge 2 ] || { echo "gate-report: --since needs 24h, 7d, or all" >&2; exit 2; }
+            [ "$#" -ge 2 ] || { echo "gate-report: --since needs 24h, 7d, all, or UTC ISO-8601" >&2; exit 2; }
             since="$2"
             shift 2
             ;;
@@ -41,7 +41,21 @@ case "$since" in
         cutoff=$(( $(date +%s) - hours * 3600 )) ;;
     *d) days="${since%d}"; case "$days" in ''|*[!0-9]*) echo "gate-report: invalid --since '$since'" >&2; exit 2;; esac
         cutoff=$(( $(date +%s) - days * 86400 )) ;;
-    *) echo "gate-report: invalid --since '$since' (want Nh, Nd, or all)" >&2; exit 2 ;;
+    *)
+        case "$since" in
+            ????-??-??T??:??:??Z)
+                if [[ "$(uname -s)" == "Darwin" ]]; then
+                    cutoff="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$since" '+%s' 2>/dev/null || true)"
+                else
+                    cutoff="$(date -u -d "$since" '+%s' 2>/dev/null || true)"
+                fi
+                case "$cutoff" in
+                    ''|*[!0-9]*) echo "gate-report: invalid --since '$since' (want UTC ISO-8601, for example 2026-09-14T03:39:55Z)" >&2; exit 2 ;;
+                esac
+                ;;
+            *) echo "gate-report: invalid --since '$since' (want Nh, Nd, all, or UTC ISO-8601)" >&2; exit 2 ;;
+        esac
+        ;;
 esac
 
 journal="$state_dir/journal.jsonl"
