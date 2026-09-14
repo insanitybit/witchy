@@ -11192,11 +11192,11 @@ impl FunctionLowerer<'_> {
     fn lower_hex_decode(&mut self, source: ValueId, _bytes_result: bool) -> Result<ValueId, CanonicalLoweringError> {
         let total = self.string_length_of(source)?;
         let two = self.push_const_size(2)?;
-        let remainder = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, total, two, OverflowBehavior::Wrap)?;
+        let remainder = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, total, two, OverflowBehavior::Trap)?;
         let zero = self.push_const_size(0)?;
         let even = self.push_compare(ComparisonOperator::Equal, remainder, zero)?;
         self.push_trap_unless(even)?;
-        let output_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, total, two, OverflowBehavior::Wrap)?;
+        let output_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, total, two, OverflowBehavior::Trap)?;
         let output = self.alloc_bytes(output_length, output_length)?;
         let one = self.push_const_size(1)?;
         let four = self.push_const_int(4)?;
@@ -11248,7 +11248,7 @@ impl FunctionLowerer<'_> {
         let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, limit)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
         let rounded = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, two, OverflowBehavior::Wrap)?;
-        let groups = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, rounded, three, OverflowBehavior::Wrap)?;
+        let groups = self.push_arithmetic(ValueType::Size, ArithmeticOperator::DivideUnsigned, rounded, three, OverflowBehavior::Trap)?;
         let output_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Multiply, groups, four, OverflowBehavior::Wrap)?;
         let output_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, output_length, maximum)?;
         self.push_guard(output_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
@@ -11324,7 +11324,7 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::Branch { target: header, arguments: vec![next_input, next_output] })?;
         self.current = exit;
         if url {
-            let remainder = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, total, three, OverflowBehavior::Wrap)?;
+            let remainder = self.push_arithmetic(ValueType::Size, ArithmeticOperator::RemainderUnsigned, total, three, OverflowBehavior::Trap)?;
             let one_remainder = self.push_compare(ComparisonOperator::Equal, remainder, one)?;
             let two_remainder = self.push_compare(ComparisonOperator::Equal, remainder, two)?;
             let two_pad = self.push_const_size(2)?;
@@ -13075,7 +13075,7 @@ impl FunctionLowerer<'_> {
         // before the wrapping arithmetic.
         let minimum = self.push_const_int(i64::MIN)?;
         let bound_numerator = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, minimum, digit_int, OverflowBehavior::Wrap)?;
-        let bound = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, bound_numerator, ten, OverflowBehavior::Wrap)?;
+        let bound = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, bound_numerator, ten, OverflowBehavior::Trap)?;
         let in_range = self.push_compare(ComparisonOperator::GreaterEqualSigned, accumulator, bound)?;
         self.push_trap_unless(in_range)?;
         let scaled = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, accumulator, ten, OverflowBehavior::Wrap)?;
