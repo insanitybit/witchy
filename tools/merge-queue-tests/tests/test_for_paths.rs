@@ -600,6 +600,18 @@ fn registry_replay_edit_loop_stays_on_its_three_contracts() {
     assert!(commands[1].contains("compile_accepts_complete_authenticated_package_owners"), "{commands:?}");
     assert!(commands[2].contains("nextest-admitted.sh"), "{commands:?}");
     assert!(commands[2].contains("source::package_inputs::registry_replay_tests::"), "{commands:?}");
+    for probe in [
+        "pinned_vendor_package_replays_and_executes_after_original_sources_are_removed",
+        "pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate",
+        "pinned_vendor_project_owner_flags_are_assertions_not_registry_authority",
+        "pinned_vendor_valid_source_b_with_wasm_a_rejects_rehashed_envelope_before_execution",
+        "pinned_vendor_explicit_path_dependency_wins_over_registry_lock_and_directory_name",
+        "pinned_vendor_offline_replay_uses_locked_version_without_manifest_reresolution",
+    ] {
+        assert!(commands[2].contains(probe), "missing focused registry probe {probe}: {commands:?}");
+    }
+    assert!(!commands[2].contains("pinned_vendor_unsigned_sibling_cannot_inherit_registry_owner"), "{commands:?}");
+    assert!(!commands[2].contains("pinned_vendor_consistent_key_b_cannot_satisfy_unchanged_registry_a_assertion"), "{commands:?}");
     assert!(!commands.iter().any(|command| command.contains("rfc0165_oracle")), "{commands:?}");
 }
 
@@ -614,6 +626,8 @@ fn standalone_registry_replay_tests_run_their_own_contract() {
         commands.iter().any(|command| command.contains("source::package_inputs::registry_replay_tests::")),
         "standalone registry replay edits skipped their test family: {commands:?}",
     );
+    assert!(commands[2].contains("pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate"), "{commands:?}");
+    assert!(!commands[2].contains("pinned_vendor_consistent_key_b_cannot_satisfy_unchanged_registry_a_assertion"), "{commands:?}");
 }
 
 #[test]

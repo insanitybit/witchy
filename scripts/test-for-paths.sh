@@ -866,13 +866,14 @@ elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
     && [ "$registry_replay_paths_only" -eq 1 ] \
     && [ "$registry_replay_contract_surface" -eq 1 ]; then
     # Closed registry replay spans source capture, signature verification,
-    # restored ownership, and execution. Keep the edit loop on those three
-    # executable contracts; compile, clippy, syntax, and the complete
-    # integration corpus remain in the serialized landing selection.
+    # restored ownership, and execution. Keep the standalone edit loop on
+    # representative replay, substitution, ownership, admission, path, and
+    # locked-replay contracts. The two additional authority variants remain in
+    # the complete serialized landing selection.
     cmds=(
         "cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'"
         "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'"
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::package_inputs::registry_replay_tests::/)'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(=source::package_inputs::registry_replay_tests::pinned_vendor_package_replays_and_executes_after_original_sources_are_removed) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_project_owner_flags_are_assertions_not_registry_authority) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_valid_source_b_with_wasm_a_rejects_rehashed_envelope_before_execution) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_explicit_path_dependency_wins_over_registry_lock_and_directory_name) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_offline_replay_uses_locked_version_without_manifest_reresolution)'"
     )
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
     && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then
