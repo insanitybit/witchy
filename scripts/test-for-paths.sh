@@ -597,6 +597,10 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_gate_test glamour
             add "cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'" ;;
+        tests/misc/url_components.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^url_components::/)'"
+            path_has_early=1 ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1

@@ -925,6 +925,23 @@ fn build_read_integration_edits_run_only_their_own_modules() {
 }
 
 #[test]
+fn url_component_edits_run_only_the_url_component_module() {
+    let commands = selected(&["--edit-loop", "tests/misc/url_components.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(
+        commands[0].contains("cargo nextest run --test misc")
+            && commands[0].contains("test(/^url_components::/)")
+            && commands[0].starts_with("./scripts/nextest-admitted.sh witchy -- "),
+        "{commands:?}"
+    );
+    assert_ne!(
+        commands[0],
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
+        "URL component edit expanded to every misc test: {commands:?}"
+    );
+}
+
+#[test]
 fn build_read_host_edits_keep_authority_bounds_and_abi_probes() {
     for path in [
         "crates/witchy-runtime/src/runtime/host/build_read.rs",
