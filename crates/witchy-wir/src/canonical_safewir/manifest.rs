@@ -399,8 +399,8 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::CopyBytes,
         judgment: "check/memory.rs::MemoryChecker::copy_bytes (check_byte_slice)",
-        predicate: "both slices are raw-byte buffers within their logical lengths, proven by a dominating end guard; typed or pointer elements never copy as bytes",
-        interpreter: "copy_range(Copy): copies scalar cells",
+        predicate: "both slices are raw-byte buffers; the initialized source lies within logical length and the unique destination lies within capacity, each proven by a dominating end guard; copied initialized bytes remain unpublished until a checked UpdateCount advances logical length; typed or pointer elements never copy as bytes",
+        interpreter: "copy_bytes: snapshots and copies raw scalar byte cells with memmove semantics, including same-object overlap",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryCopy),
         admits: &[t(Check, "raw_byte_slice_copy_is_accepted"), t(Launch, "admitted_string_equality_and_char_count_scan_bytes")],
         refuses: &[t(Check, "typed_element_slice_cannot_use_copy_bytes"), t(Memory, "byte_copy_requires_a_dominating_dynamic_end_guard"), t(Check, "uninitialized_scalar_load_is_refused")],
