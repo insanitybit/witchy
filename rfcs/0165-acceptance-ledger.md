@@ -1713,8 +1713,11 @@ raw-WIR encoding after Fetch's raw production helpers were retired.
 `http_rejects_non_http_schemes_on_both_backends`,
 `get_url_returns_connect_error_on_both_backends`, and the adjacent
 `std_http_client_runs_in_the_wasm_backend` now execute checked artifacts with
-`spawn_admitted` and assert that raw encoding refuses. Their Witchy source,
-grants, and semantic assertions are unchanged. No production rule changed.
+`spawn_admitted` and assert that raw encoding refuses. Their Witchy source
+and semantic assertions are unchanged. Grants are unchanged except the scheme
+test now grants only Console and empty-allowlist Net Connect, instead of the
+old shared helper's broader authority. Independent review found no blocking
+issue. No production rule changed.
 
 Focused HTTP/Fetch rerun: **24/24 passed**, no retries, 8.888 seconds after a
 9.07-second build. Nextest run `c44c64d1-be29-4ba3-b896-fa7672f784e7`;
