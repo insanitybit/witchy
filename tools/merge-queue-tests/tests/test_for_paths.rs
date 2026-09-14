@@ -665,6 +665,7 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
     assert!(
         commands[0].contains("--test rfc0165_route_gate")
             && commands[0].contains("test(boolean_reaches::)")
+            && commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
             && commands[0]
                 .contains("canonical_wasm_encoding_is_private_and_requires_final_authority"),
         "the focused route omitted the final-authority admission boundary: {commands:?}",
