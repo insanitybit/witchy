@@ -112,19 +112,20 @@ perf-serial = { max-threads = 1 }
 wasm-heavy = { max-threads = 2 }
 gate-cold-heavy = { max-threads = 4 }
 queue-concurrency-serial = { max-threads = 1 }
+integration-async-serial = { max-threads = 1 }
 
 # The async source-integration recipes launch a complete compiler subprocess
 # from each test.  They passed in 167--248s in recent gates but one run hit the
 # default 270s ceiling under load and red the whole workspace stage.  Keep both
 # assertions in the landing suite, start them with other cold-heavy work, and
-# give the measured workload 360s of uninterrupted headroom.  This changes
-# scheduling and timeout margin only; it does not remove coverage or alter the
-# edit-loop route.
+# run them one at a time and give the measured workload 480s of uninterrupted
+# headroom. This changes scheduling and timeout margin only; it does not remove
+# coverage or alter the edit-loop route.
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::misc) & test(/^rfc0077_integration_grants::source_integration_async_recipe_/)'
-test-group = 'gate-cold-heavy'
+test-group = 'integration-async-serial'
 retries = 0
-slow-timeout = { period = "120s", terminate-after = 3 }
+slow-timeout = { period = "120s", terminate-after = 4 }
 priority = 90
 
 # These two hermetic fixtures each create concurrent coordinator/metadata
