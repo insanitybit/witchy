@@ -845,6 +845,8 @@ if capability_imports.contains("build_out_write_at") {
                 let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
                     footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
                     diff_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                    doc_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                    doc_result_json_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
                 };
                 catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
@@ -8315,7 +8317,10 @@ impl FunctionLowerer<'_> {
         let mut inputs = Vec::with_capacity(args.len());
         for argument in args {
             let value = self.lower_string_argument(argument)?;
-            inputs.push(self.string_slice_argument(value, layout)?);
+            // A later var argument may rebind or mutate the original. Retain
+            // this argument's value now; both bounded service calls use it.
+            let snapshot = self.clone_reference_token(value)?;
+            inputs.push(self.string_slice_argument(snapshot, layout)?);
         }
         self.lower_bounded_host_result(import, inputs)
     }
@@ -14017,6 +14022,8 @@ fn compiler_service_import(name: &str) -> Option<(&'static str, usize)> {
     match name {
         witchy_syntax::intrinsics::COMPILER_FOOTPRINT => Some(("compiler_footprint_into", 1)),
         witchy_syntax::intrinsics::COMPILER_DIFF => Some(("compiler_diff_into", 2)),
+        witchy_syntax::intrinsics::COMPILER_DOC => Some(("compiler_doc_into", 2)),
+        witchy_syntax::intrinsics::COMPILER_DOC_RESULT_JSON => Some(("compiler_doc_result_json_into", 2)),
         _ => None,
     }
 }
@@ -14623,6 +14630,16 @@ mod tests {
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ResolvedNamed, ScalarKind};
 
     struct ListResolver;
+
+    #[test]
+    fn compiler_doc_dispatch_uses_exact_registered_intrinsics() {
+        use witchy_syntax::intrinsics::{COMPILER_DOC, COMPILER_DOC_RESULT_JSON};
+        assert_eq!(super::compiler_service_import(COMPILER_DOC), Some(("compiler_doc_into", 2)));
+        assert_eq!(super::compiler_service_import(COMPILER_DOC_RESULT_JSON), Some(("compiler_doc_result_json_into", 2)));
+        for name in ["doc", "user.doc", "user.compiler.doc", "compiler.try_doc", "compiler_doc_into"] {
+            assert_eq!(super::compiler_service_import(name), None, "not a registered intrinsic: {name}");
+        }
+    }
 
     impl ClosedTypeResolver for ListResolver {
         fn resolve_named<'a>(

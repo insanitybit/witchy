@@ -1,5 +1,8 @@
 //! Stateless compiler-service buffers preserve expected JSON on every route.
 
+#[path = "rfc0165_compiler_docs.rs"]
+mod docs;
+
 #[test]
 fn compiler_services_agree_across_source_oracle_and_admitted_wasm() {
     let source = r#"

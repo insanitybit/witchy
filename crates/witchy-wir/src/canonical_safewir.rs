@@ -499,6 +499,8 @@ pub struct CapabilityImportSignatures {
 pub struct CompilerImportSignatures {
     pub footprint_into: FunctionSignatureId,
     pub diff_into: FunctionSignatureId,
+    pub doc_into: FunctionSignatureId,
+    pub doc_result_json_into: FunctionSignatureId,
 }
 
 /// One prelude import as an authenticated contract: the generated ABI must
@@ -943,6 +945,14 @@ impl CanonicalAbiCatalog {
             authenticated_internal_service_import(
                 "compiler_diff_into", &[WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
                 &[WasmTy::I32], signatures.diff_into, vec![read(), read(), write()], result(), HostMutation::WriteBuffers,
+            )?,
+            authenticated_internal_service_import(
+                "compiler_doc_into", &[WasmTy::I32; 6], &[WasmTy::I32],
+                signatures.doc_into, vec![read(), read(), write()], result(), HostMutation::WriteBuffers,
+            )?,
+            authenticated_internal_service_import(
+                "compiler_doc_result_json_into", &[WasmTy::I32; 6], &[WasmTy::I32],
+                signatures.doc_result_json_into, vec![read(), read(), write()], result(), HostMutation::WriteBuffers,
             )?,
         ];
         for import in imports { self.imports.insert(import.id, import); }
@@ -1795,6 +1805,8 @@ mod catalog_tests {
                 CompilerImportSignatures {
                     footprint_into: FunctionSignatureId::new(8),
                     diff_into: FunctionSignatureId::new(9),
+                    doc_into: FunctionSignatureId::new(10),
+                    doc_result_json_into: FunctionSignatureId::new(11),
                 },
                 STRING_LAYOUT,
             )
@@ -1818,5 +1830,37 @@ mod catalog_tests {
         assert!(matches!(diff.parameter_roles[0], HostParameterRole::Buffer { access: AccessMode::Read, .. }));
         assert!(matches!(diff.parameter_roles[1], HostParameterRole::Buffer { access: AccessMode::Read, .. }));
         assert!(matches!(diff.parameter_roles[2], HostParameterRole::Buffer { access: AccessMode::Write, .. }));
+        for (name, signature) in [
+            ("compiler_doc_into", FunctionSignatureId::new(10)),
+            ("compiler_doc_result_json_into", FunctionSignatureId::new(11)),
+        ] {
+            let doc = imports.iter().find(|import| import.name == name).expect("doc import");
+            assert_eq!(doc.signature, signature);
+            assert!(matches!(doc.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+            assert_eq!(doc.reentrancy, HostReentrancy::Forbidden);
+            assert_eq!(doc.mutation, HostMutation::WriteBuffers);
+            assert_eq!(doc.parameter_roles, [AccessMode::Read, AccessMode::Read, AccessMode::Write]
+                .into_iter().map(|access| HostParameterRole::Buffer {
+                    value_type: ValueType::Ref(STRING_LAYOUT), access, extent: HostBufferExtent::Slice,
+                }).collect::<Vec<_>>());
+            assert_eq!(doc.result_roles, vec![HostResultRole::Value(ValueType::Size)]);
+        }
+    }
+
+    #[test]
+    fn compiler_doc_catalog_rejects_wrong_physical_signature_and_infrastructure_class() {
+        use crate::wir_prelude::WasmTy::{I32, I64};
+        for name in ["compiler_doc_into", "compiler_doc_result_json_into"] {
+            for (parameters, results) in [(vec![I32; 5], vec![I32]), (vec![I32; 6], vec![I64])] {
+                assert!(authenticated_internal_service_import(
+                    name, &parameters, &results, FunctionSignatureId::new(10),
+                    Vec::new(), Vec::new(), HostMutation::WriteBuffers,
+                ).is_err());
+            }
+            assert!(authenticated_prelude_import(
+                name, &[I32; 6], &[I32], FunctionSignatureId::new(10),
+                Vec::new(), Vec::new(), HostMutation::WriteBuffers,
+            ).is_err(), "toolchain service is not generic prelude infrastructure");
+        }
     }
 }

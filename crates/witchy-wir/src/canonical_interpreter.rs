@@ -396,7 +396,13 @@ impl Default for InterpreterConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompilerServiceKind { Footprint, Diff }
+pub enum CompilerServiceKind { Footprint, Diff, Doc, DocResultJson }
+
+// The physical i32 result carries an unsigned wasm32 byte count. Match the
+// native compiler service without allocating a payload to test its boundary.
+fn compiler_result_size(byte_len: usize) -> Result<u64, InterpretError> {
+    u32::try_from(byte_len).map(u64::from).map_err(|_| InterpretError::ArithmeticTrap)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleConsoleEvent {
@@ -1529,7 +1535,7 @@ impl<'a> Engine<'a> {
             values.insert(*destination, InterpreterValue::Size(written));
             return Ok(());
         }
-        if matches!(contract.name.as_str(), "compiler_footprint_into" | "compiler_diff_into") {
+        if matches!(contract.name.as_str(), "compiler_footprint_into" | "compiler_diff_into" | "compiler_doc_into" | "compiler_doc_result_json_into") {
             return self.compiler_host_call(&contract.name, destinations, arguments, values);
         }
         if contract.name == "regex_match_spans_into" {
@@ -1646,14 +1652,19 @@ impl<'a> Engine<'a> {
                 (CompilerServiceKind::Footprint, vec![self.host_string(source, values)?], output),
             ("compiler_diff_into", [HostCallArgument::Buffer { place: old, .. }, HostCallArgument::Buffer { place: new, .. }, HostCallArgument::Buffer { place: output, .. }]) =>
                 (CompilerServiceKind::Diff, vec![self.host_string(old, values)?, self.host_string(new, values)?], output),
+            ("compiler_doc_into", [HostCallArgument::Buffer { place: name, .. }, HostCallArgument::Buffer { place: source, .. }, HostCallArgument::Buffer { place: output, .. }]) =>
+                (CompilerServiceKind::Doc, vec![self.host_string(name, values)?, self.host_string(source, values)?], output),
+            ("compiler_doc_result_json_into", [HostCallArgument::Buffer { place: name, .. }, HostCallArgument::Buffer { place: source, .. }, HostCallArgument::Buffer { place: output, .. }]) =>
+                (CompilerServiceKind::DocResultJson, vec![self.host_string(name, values)?, self.host_string(source, values)?], output),
             _ => return Err(InterpretError::UnsupportedOperation("compiler host arguments")),
         };
         let [destination] = destinations else { return Err(InterpretError::UnsupportedOperation("compiler host result")); };
-        let payload = service(kind, &inputs).map_err(|_| InterpretError::ExplicitTrap)?.into_bytes();
         let (object, start, capacity) = self.slice_place(output, values)?;
         self.check_range(object, start, capacity, true)?;
-        let required = u64::try_from(payload.len()).map_err(|_| InterpretError::ArithmeticTrap)?;
-        if required > i32::MAX as u64 { return Err(InterpretError::ArithmeticTrap); }
+        // Even a size probe must authenticate its complete output extent
+        // before invoking the injected service, as the native host does.
+        let payload = service(kind, &inputs).map_err(|_| InterpretError::ExplicitTrap)?.into_bytes();
+        let required = compiler_result_size(payload.len())?;
         if required <= capacity {
             let cells = &mut self.object_mut(object)?.cells;
             for (offset, byte) in payload.iter().enumerate() {
@@ -3286,7 +3297,21 @@ mod tests {
         match (kind, inputs) {
             (CompilerServiceKind::Footprint, [source]) => Ok(format!("[{source}]")),
             (CompilerServiceKind::Diff, [old, new]) => Ok(format!("{old}>{new}")),
+            (CompilerServiceKind::Doc, [name, source]) => Ok(format!("doc:{name}>{source}")),
+            (CompilerServiceKind::DocResultJson, [name, source]) => Ok(format!("{{\"ok\":\"{name}>{source}\"}}")),
             _ => Err("unexpected compiler service invocation".to_owned()),
+        }
+    }
+
+    #[test]
+    fn compiler_service_result_size_is_unsigned_wasm32() {
+        for byte_len in [0usize, 0x7fff_ffff, 0x8000_0000, u32::MAX as usize] {
+            assert_eq!(compiler_result_size(byte_len), Ok(byte_len as u64));
+        }
+        // A 32-bit host cannot represent an oversized allocation length.
+        if let Some(overflow) = (u32::MAX as usize).checked_add(1) {
+            assert_eq!(compiler_result_size(overflow), Err(InterpretError::ArithmeticTrap));
+            assert_eq!(compiler_result_size(usize::MAX), Err(InterpretError::ArithmeticTrap));
         }
     }
 
@@ -3380,6 +3405,75 @@ mod tests {
             .map(|cell| match cell { Some(InterpreterValue::Size(byte)) => *byte as u8, _ => 0 })
             .collect::<Vec<_>>();
         assert_eq!(output_bytes, b"foo>foo");
+    }
+
+    #[test]
+    fn compiler_doc_oracle_preserves_order_short_buffers_and_preflight() {
+        for (import, expected) in [
+            ("compiler_doc_into", "doc:n>pub"),
+            ("compiler_doc_result_json_into", "{\"ok\":\"n>pub\"}"),
+        ] {
+            let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+            let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+            let mut objects = Vec::new();
+            for bytes in [b"n".as_slice(), b"pub".as_slice()] {
+                let object = engine.allocate(LayoutId::from_bytes([11; 32]), AllocationClass::ReferenceCounted,
+                    RuntimeExtent::Counted { header_bytes: 0, count: bytes.len() as u64, capacity: bytes.len() as u64, stride_bytes: 1 }, false).unwrap();
+                for (index, byte) in bytes.iter().enumerate() {
+                    engine.object_mut(object).unwrap().cells.insert(CellKey::Element(index as u64), InterpreterValue::Size(u64::from(*byte)));
+                }
+                objects.push(object);
+            }
+            let output = engine.allocate(LayoutId::from_bytes([11; 32]), AllocationClass::ReferenceCounted,
+                RuntimeExtent::Counted { header_bytes: 0, count: 0, capacity: 2, stride_bytes: 1 }, false).unwrap();
+            engine.object_mut(output).unwrap().cells.insert(CellKey::Element(0), InterpreterValue::Size(33));
+            let before = engine.object(output).unwrap().cells.clone();
+            let mut values = BTreeMap::from([
+                (ValueId::new(100), InterpreterValue::ObjectRef(objects[0])),
+                (ValueId::new(101), InterpreterValue::ObjectRef(objects[1])),
+                (ValueId::new(102), InterpreterValue::ObjectRef(output)),
+                (ValueId::new(103), InterpreterValue::Size(0)),
+                (ValueId::new(104), InterpreterValue::Size(1)),
+                (ValueId::new(105), InterpreterValue::Size(3)),
+                (ValueId::new(106), InterpreterValue::Size(2)),
+            ]);
+            let argument = |object, length, access| HostCallArgument::Buffer {
+                place: slice(ValueId::new(object), ValueId::new(103), ValueId::new(length), access),
+                extent: HostBufferExtent::Slice,
+            };
+            let args = vec![argument(100, 104, AccessMode::Read), argument(101, 105, AccessMode::Read), argument(102, 106, AccessMode::Write)];
+            let result = ValueId::new(107);
+            assert_eq!(engine.compiler_host_call(import, &[result], &args, &mut values), Err(InterpretError::UnsupportedHostImport));
+            engine.config.compiler_services = Some(compiler_service);
+            engine.compiler_host_call(import, &[result], &args, &mut values).unwrap();
+            assert_eq!(values[&result], InterpreterValue::Size(expected.len() as u64));
+            assert_eq!(engine.object(output).unwrap().cells, before, "short output must not write a prefix");
+
+            fn must_not_call(_: CompilerServiceKind, _: &[String]) -> Result<String, String> {
+                panic!("malformed buffers must reject before provider invocation");
+            }
+            engine.config.compiler_services = Some(must_not_call);
+            values.insert(ValueId::new(106), InterpreterValue::Size(3));
+            assert!(engine.compiler_host_call(import, &[result], &args, &mut values).is_err(), "full output extent must fit even for a short buffer");
+            values.insert(ValueId::new(106), InterpreterValue::Size(2));
+            for (object, original) in [(objects[0], b'n'), (objects[1], b'p')] {
+                engine.object_mut(object).unwrap().cells.insert(CellKey::Element(0), InterpreterValue::Size(255));
+                assert!(engine.compiler_host_call(import, &[result], &args, &mut values).is_err(), "strict UTF-8 input");
+                engine.object_mut(object).unwrap().cells.insert(CellKey::Element(0), InterpreterValue::Size(u64::from(original)));
+            }
+            assert_eq!(engine.object(output).unwrap().cells, before);
+            engine.config.compiler_services = Some(compiler_service);
+            let RuntimeExtent::Counted { capacity, .. } = &mut engine.object_mut(output).unwrap().extent else { unreachable!() };
+            *capacity = expected.len() as u64 + 1;
+            engine.object_mut(output).unwrap().cells.insert(CellKey::Element(expected.len() as u64), InterpreterValue::Size(33));
+            values.insert(ValueId::new(106), InterpreterValue::Size(expected.len() as u64 + 1));
+            engine.compiler_host_call(import, &[result], &args, &mut values).unwrap();
+            assert_eq!(values[&result], InterpreterValue::Size(expected.len() as u64));
+            for (index, byte) in expected.bytes().enumerate() {
+                assert_eq!(engine.object(output).unwrap().cells.get(&CellKey::Element(index as u64)), Some(&InterpreterValue::Size(u64::from(byte))));
+            }
+            assert_eq!(engine.object(output).unwrap().cells.get(&CellKey::Element(expected.len() as u64)), Some(&InterpreterValue::Size(33)), "only the initialized result prefix is written");
+        }
     }
 
     #[test]

@@ -197,6 +197,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `compiler_diff_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_footprint_into` | `(i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_diff_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_doc_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `compiler_doc_result_json_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `compiler_doc_result_json_len` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `user_cap_field_len` | `(i32, i32) -> i32` | launch input | none | provided |

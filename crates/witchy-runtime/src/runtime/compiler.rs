@@ -76,6 +76,8 @@ pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
     linker.func_wrap("witchy", "compiler_footprint_into", host_compiler_footprint_into)?;
     linker.func_wrap("witchy", "compiler_diff_into", host_compiler_diff_into)?;
+    linker.func_wrap("witchy", "compiler_doc_into", host_compiler_doc_into)?;
+    linker.func_wrap("witchy", "compiler_doc_result_json_into", host_compiler_doc_result_json_into)?;
     linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
     linker.func_wrap(
         "witchy",
@@ -167,6 +169,46 @@ fn checked_guest_range(data_len: usize, ptr: i32, len: i32, what: &str) -> Resul
         return Err(Error::msg(format!("{what} ({start}..{end}) lies outside guest memory")));
     }
     Ok((start as usize, length as usize))
+}
+
+fn host_compiler_doc_into(
+    caller: Caller<'_, VmState>,
+    name_ptr: i32, name_len: i32, src_ptr: i32, src_len: i32,
+    out_ptr: i32, out_capacity: i32,
+) -> Result<i32> {
+    compiler_doc_into(caller, name_ptr, name_len, src_ptr, src_len, out_ptr, out_capacity, false)
+}
+
+fn host_compiler_doc_result_json_into(
+    caller: Caller<'_, VmState>,
+    name_ptr: i32, name_len: i32, src_ptr: i32, src_len: i32,
+    out_ptr: i32, out_capacity: i32,
+) -> Result<i32> {
+    compiler_doc_into(caller, name_ptr, name_len, src_ptr, src_len, out_ptr, out_capacity, true)
+}
+
+/// Stateless documentation: preflight all slices before invoking the trusted
+/// source-as-data renderer. Snapshot both inputs before any output write, even
+/// when a raw host-boundary test supplies overlapping slices.
+fn compiler_doc_into(
+    mut caller: Caller<'_, VmState>,
+    name_ptr: i32, name_len: i32, src_ptr: i32, src_len: i32,
+    out_ptr: i32, out_capacity: i32, result_json: bool,
+) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    checked_guest_range(data.len(), name_ptr, name_len, "compiler doc name")?;
+    checked_guest_range(data.len(), src_ptr, src_len, "compiler doc source")?;
+    checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
+    let name = read_unsigned_slice_str(data, name_ptr, name_len)?;
+    let source = read_unsigned_slice_str(data, src_ptr, src_len)?;
+    let services = caller.data().compiler_services.clone();
+    let result = if result_json {
+        services.doc_result_json(&name, &source)?
+    } else {
+        services.doc(&name, &source)?
+    };
+    write_result_bytes(&mut caller, out_ptr, out_capacity, result.as_bytes())
 }
 
 fn read_unsigned_slice_str(data: &[u8], ptr: i32, len: i32) -> Result<String> {
@@ -444,3 +486,7 @@ mod tests {
             .is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "compiler_doc_tests.rs"]
+mod doc_tests;

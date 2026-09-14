@@ -228,6 +228,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "compiler_diff_len" (func $compiler_diff_len_host (param i32 i32) (result i32)))
   (import "witchy" "compiler_footprint_into" (func $compiler_footprint_into_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_diff_into" (func $compiler_diff_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "witchy" "compiler_doc_into" (func $compiler_doc_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "witchy" "compiler_doc_result_json_into" (func $compiler_doc_result_json_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "compiler_doc_len" (func $compiler_doc_len_host (param i32 i32) (result i32)))
   (import "witchy" "compiler_doc_result_json_len" (func $compiler_doc_result_json_len_host (param i32 i32) (result i32)))
   (import "witchy" "user_cap_field_len" (func $user_cap_field_len_host (param i32 i32) (result i32)))
@@ -387,7 +389,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 164;
+pub const IMPORT_COUNT: usize = 166;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -660,6 +662,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "compiler_diff_len"
         | "compiler_footprint_into"
         | "compiler_diff_into"
+        | "compiler_doc_into"
+        | "compiler_doc_result_json_into"
         | "compiler_doc_len"
         | "compiler_doc_result_json_len"
         | "field_str_len"
@@ -958,7 +962,10 @@ mod tests {
             .expect("the exact checked-heap retirement import is present");
         assert_eq!(unregister.params, vec![WasmTy::I32]);
         assert!(unregister.results.is_empty());
-        for (name, arity) in [("compiler_footprint_into", 4), ("compiler_diff_into", 6)] {
+        for (name, arity) in [
+            ("compiler_footprint_into", 4), ("compiler_diff_into", 6),
+            ("compiler_doc_into", 6), ("compiler_doc_result_json_into", 6),
+        ] {
             let import = imports.iter().find(|import| import.name == name).expect("bounded compiler service import");
             assert_eq!(import.params, vec![WasmTy::I32; arity]);
             assert_eq!(import.results, vec![WasmTy::I32]);

@@ -2026,3 +2026,35 @@ RSA gate correction: the first coordinator attempt rejected the stale
 passes all 56 focused tests, including all `wir_prelude::tests::` integrity pins:
 nextest `0811ac1e-417a-4c6f-9b29-43f4d356f20b`, zero retries, 16.164 seconds.
 Log: `/private/tmp/witchy-rsa-count-focused.log`. The assertions are unchanged.
+
+### 2026-09-14: bounded compiler documentation
+
+`compiler.doc` and `compiler.__doc_result_json` now use stateless bounded
+compiler imports: retained name/source UTF-8 slices and a preflighted output
+capacity, with no partial write when capacity is short. Source remains data;
+existing parse/comptime refusals are preserved. The independent interpreter
+uses its compiler-service callback, not the runtime memory adapter. Review also
+corrected the shared oracle's signed result-size restriction to the existing
+unsigned wasm32 ABI, with allocation-free boundary tests. Import count is 166.
+
+Nextest `9a183604-77ee-41e0-b0ea-0047bc0abfee`: 70/70 focused tests passed,
+zero retries, 52.767 seconds, using the existing absolute warmed target.
+Log: `/private/tmp/witchy-coven-doc-focused.log`. The previous RSA selector set
+was extended with `compiler_doc`, `bounded_compiler_`, `compiler_service`,
+`compiler_imports_are_authenticated_internal_buffer_services`, and every
+`wir_prelude::tests::` integrity pin. Documentation bytes, parse/comptime errors,
+and later-argument mutation agree across all three execution legs; native and
+oracle bounds/UTF-8/short-buffer tests pass. Independent review is complete.
+Hello/wrap/jq parity still agrees at 3/5/7 lines; log:
+`/private/tmp/witchy-coven-doc-compact-parity.log`.
+
+Workflow evidence remains incomplete. Combined run
+`984d18f7-c26f-4950-85c2-d8fb95c6ac8a` built successfully but its best-effort
+PM/Coven cache setup timed out at 150 seconds, before any of 71 tests ran.
+No success is claimed for that run. Bounded separate probes found `pm list`
+refusing `MissingBinding("__capop.append_bytes")` after 25.47 seconds, and
+Coven still in source/comptime preparation after 60 seconds (sample stack:
+`run_comptime_module` / `prepare_runtime_module` / `annotate_checked`). Logs:
+`/private/tmp/witchy-coven-warm-diagnosis.JEbVVz/`. These do not prove a cause
+for the combined setup timeout. No full workflow or compiler-wide memory-safety
+claim follows from this slice; landing is pending behind the RSA queue change.

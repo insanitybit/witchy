@@ -11,6 +11,8 @@ pub fn call(
     let result = match service {
         CompilerServiceKind::Footprint => witchy_interp::compiler_natives::footprint(&arguments),
         CompilerServiceKind::Diff => witchy_interp::compiler_natives::diff(&arguments),
+        CompilerServiceKind::Doc => witchy_interp::compiler_natives::doc(&arguments),
+        CompilerServiceKind::DocResultJson => witchy_interp::compiler_natives::doc_result_json(&arguments),
     }.map_err(|error| error.message)?;
     match result {
         NativeValue::Str(result) => Ok(result),
