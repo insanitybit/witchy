@@ -95,7 +95,9 @@ pub enum InitialCheckError {
     DuplicateStaticDataId(crate::canonical_safewir::StaticDataId),
     MissingStaticDataId { function: FunctionId, data: crate::canonical_safewir::StaticDataId },
     UnexpectedStaticDataId(crate::canonical_safewir::StaticDataId),
+    InconsistentStaticDataUse(crate::canonical_safewir::StaticDataId),
     StaticDataExtentMismatch { function: FunctionId, object: ValueId },
+    InvalidStaticDataEncoding { function: FunctionId, object: ValueId },
     PointerBearingStaticData { function: FunctionId, object: ValueId },
     WritableStaticData { function: FunctionId, object: ValueId },
     UnsupportedHostCall { function: FunctionId },
@@ -130,6 +132,7 @@ pub enum InitialCheckError {
     /// closure registry does not name, or with a value type other than the
     /// registered `Callable(sig)`.
     InvalidClosureSlot { function: FunctionId, object: ValueId },
+    UnsupportedScalarOperation { function: FunctionId, operation: &'static str },
 }
 
 impl fmt::Display for InitialCheckError {
@@ -332,6 +335,7 @@ fn check_static_data<S: ModuleStage>(
         }
     }
     let mut referenced = BTreeSet::new();
+    let mut bindings = BTreeMap::new();
     for function in candidate.functions() {
         let constants: BTreeMap<_, _> = function
             .blocks
@@ -352,6 +356,14 @@ fn check_static_data<S: ModuleStage>(
                     data: *data,
                 })?;
                 referenced.insert(*data);
+                let binding = normalized_static_data_use(*layout, extent, &constants, layouts)
+                    .ok_or(InitialCheckError::StaticDataExtentMismatch {
+                        function: function.id,
+                        object: *destination,
+                    })?;
+                if bindings.insert(*data, binding.clone()).is_some_and(|previous| previous != binding) {
+                    return Err(InitialCheckError::InconsistentStaticDataUse(*data));
+                }
                 if layout_contains_pointer(*layout, layouts, &mut Vec::new()) {
                     return Err(InitialCheckError::PointerBearingStaticData {
                         function: function.id,
@@ -364,6 +376,12 @@ fn check_static_data<S: ModuleStage>(
                         object: *destination,
                     });
                 }
+                if !static_data_payload_is_canonical(*layout, extent, segment.bytes(), &constants, layouts) {
+                    return Err(InitialCheckError::InvalidStaticDataEncoding {
+                        function: function.id,
+                        object: *destination,
+                    });
+                }
             }
         }
     }
@@ -371,6 +389,40 @@ fn check_static_data<S: ModuleStage>(
         return Err(InitialCheckError::UnexpectedStaticDataId(*id));
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedStaticDataUse {
+    layout: crate::layout::LayoutId,
+    extent: NormalizedStaticExtent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NormalizedStaticExtent {
+    FixedBytes(u64),
+    Counted { header_bytes: u32, count: u64, capacity: u64, stride_bytes: u32 },
+}
+
+fn normalized_static_data_use(
+    layout: crate::layout::LayoutId,
+    extent: &super::Extent,
+    constants: &BTreeMap<ValueId, u64>,
+    layouts: &crate::layout::LayoutInterner,
+) -> Option<NormalizedStaticDataUse> {
+    let layout = layouts.resolve_nominal(layout).ok()?;
+    let extent = match extent {
+        super::Extent::FixedBytes(bytes) => NormalizedStaticExtent::FixedBytes(*bytes),
+        super::Extent::Counted { header_bytes, count, capacity, stride_bytes } => {
+            NormalizedStaticExtent::Counted {
+                header_bytes: *header_bytes,
+                count: *constants.get(count)?,
+                capacity: *constants.get(capacity)?,
+                stride_bytes: *stride_bytes,
+            }
+        }
+        super::Extent::HeaderPrefix { .. } => return None,
+    };
+    Some(NormalizedStaticDataUse { layout, extent })
 }
 
 fn layout_contains_pointer(
@@ -465,6 +517,114 @@ fn static_data_extent_matches(
                 && u32::from_le_bytes(bytes[capacity_offset as usize..capacity_offset as usize + 4].try_into().unwrap()) == *capacity as u32
         }
         _ => false,
+    }
+}
+
+fn static_data_payload_is_canonical(
+    layout: crate::layout::LayoutId,
+    extent: &super::Extent,
+    bytes: &[u8],
+    constants: &BTreeMap<ValueId, u64>,
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
+    let Some(descriptor) = layouts.get(layout) else { return false };
+    match extent {
+        super::Extent::FixedBytes(_) => canonical_fixed_layout_bytes(layout, bytes, layouts, &mut Vec::new()),
+        super::Extent::Counted { header_bytes, count, stride_bytes, .. } => {
+            let Some(count) = constants.get(count).copied() else { return false };
+            let (element, data_offset) = match descriptor.kind() {
+                crate::layout::LayoutKind::RuntimeBuffer { element } => (*element, *header_bytes),
+                crate::layout::LayoutKind::PackedList { element, .. } => {
+                    let crate::layout::HeaderLayout::PackedList { data_offset, .. } = descriptor.header() else { return false };
+                    (*element, data_offset)
+                }
+                _ => return false,
+            };
+            let Ok(element) = layouts.resolve_nominal(element) else { return false };
+            let Some(element_descriptor) = layouts.get(element) else { return false };
+            let crate::layout::LayoutSize::Fixed(element_size) = element_descriptor.size() else { return false };
+            if element_size != *stride_bytes {
+                return false;
+            }
+            (0..count).all(|index| {
+                let Some(start) = index
+                    .checked_mul(u64::from(*stride_bytes))
+                    .and_then(|offset| u64::from(data_offset).checked_add(offset))
+                    .and_then(|offset| usize::try_from(offset).ok())
+                else { return false };
+                let Some(end) = start.checked_add(element_size as usize) else { return false };
+                bytes.get(start..end).is_some_and(|element_bytes| {
+                    canonical_fixed_layout_bytes(element, element_bytes, layouts, &mut Vec::new())
+                })
+            })
+        }
+        super::Extent::HeaderPrefix { .. } => false,
+    }
+}
+
+fn canonical_fixed_layout_bytes(
+    layout: crate::layout::LayoutId,
+    bytes: &[u8],
+    layouts: &crate::layout::LayoutInterner,
+    visiting: &mut Vec<crate::layout::LayoutId>,
+) -> bool {
+    let Ok(layout) = layouts.resolve_nominal(layout) else { return false };
+    if visiting.contains(&layout) {
+        return false;
+    }
+    let Some(descriptor) = layouts.get(layout) else { return false };
+    let crate::layout::LayoutSize::Fixed(size) = descriptor.size() else { return false };
+    if bytes.len() != size as usize {
+        return false;
+    }
+    if let crate::layout::LayoutKind::Scalar(kind) = descriptor.kind() {
+        return canonical_scalar_bytes(*kind, bytes);
+    }
+    if !matches!(descriptor.kind(), crate::layout::LayoutKind::Tuple { .. } | crate::layout::LayoutKind::PackedRecord { .. }) {
+        return false;
+    }
+    visiting.push(layout);
+    let valid = descriptor.fields().iter().all(|field| {
+        let start = field.offset() as usize;
+        match field.kind() {
+            crate::layout::FieldKind::Scalar(kind) => {
+                let Some(end) = start.checked_add(kind.size() as usize) else { return false };
+                bytes.get(start..end).is_some_and(|field_bytes| canonical_scalar_bytes(kind, field_bytes))
+            }
+            crate::layout::FieldKind::Inline(child) => {
+                let Ok(child) = layouts.resolve_nominal(child) else { return false };
+                let Some(crate::layout::LayoutSize::Fixed(child_size)) = layouts.get(child).map(|child| child.size()) else { return false };
+                let Some(end) = start.checked_add(child_size as usize) else { return false };
+                bytes.get(start..end).is_some_and(|field_bytes| canonical_fixed_layout_bytes(child, field_bytes, layouts, visiting))
+            }
+            crate::layout::FieldKind::Pointer { .. } => false,
+        }
+    });
+    visiting.pop();
+    valid
+}
+
+fn canonical_scalar_bytes(kind: crate::layout::ScalarKind, bytes: &[u8]) -> bool {
+    if bytes.len() != kind.size() as usize {
+        return false;
+    }
+    match kind {
+        crate::layout::ScalarKind::Unit => bytes == [0; 4],
+        crate::layout::ScalarKind::Bool => matches!(bytes, [0] | [1]),
+        crate::layout::ScalarKind::BoolValueSlot => {
+            matches!(u64::from_le_bytes(bytes.try_into().expect("checked scalar width")), 0 | 1)
+        }
+        crate::layout::ScalarKind::Callable => false,
+        crate::layout::ScalarKind::Int
+        | crate::layout::ScalarKind::Float
+        | crate::layout::ScalarKind::Duration
+        | crate::layout::ScalarKind::U32
+        | crate::layout::ScalarKind::Tag8
+        | crate::layout::ScalarKind::Tag16
+        | crate::layout::ScalarKind::Tag32
+        | crate::layout::ScalarKind::RawByte
+        | crate::layout::ScalarKind::V128 => true,
     }
 }
 
@@ -1196,8 +1356,12 @@ fn check_operation(
         Operation::ConstBool { destination, .. } => {
             require_type(function, *destination, ValueType::Bool)
         }
-        Operation::ConstSize { destination, .. } => {
-            require_type(function, *destination, ValueType::Size)
+        Operation::ConstSize { destination, value } => {
+            require_type(function, *destination, ValueType::Size)?;
+            if u32::try_from(*value).is_err() {
+                return unsupported_scalar(function, "ConstSize outside Wasm32");
+            }
+            Ok(())
         }
         Operation::CapabilityNone { destination, kind } => require_type(function, *destination, ValueType::NullableCapability(*kind)),
         Operation::CapabilitySome { destination, source } => {
@@ -1216,33 +1380,20 @@ fn check_operation(
             let ValueType::NullableCapability(kind) = actual else { return Err(type_mismatch(function, *source, ValueType::NullableCapability(crate::canonical_safewir::CapabilityKindId::new(0)), actual)); };
             require_type(function, *destination, ValueType::Capability(kind))
         }
-        Operation::Arithmetic { destination, operator, left, right, .. } => {
+        Operation::Arithmetic { destination, operator, left, right, overflow } => {
             let result = value_type(function, *destination)?;
-            if !matches!(result, ValueType::Int | ValueType::Size | ValueType::Float) {
-                return Err(type_mismatch(function, *destination, ValueType::Int, result));
-            }
-            // Floats have no bit or shift operators; only the arithmetic four
-            // (and remainder) are meaningful and mapped by the backend.
-            if result == ValueType::Float
-                && !matches!(
-                    operator,
-                    crate::canonical_safewir::ArithmeticOperator::Add
-                        | crate::canonical_safewir::ArithmeticOperator::Subtract
-                        | crate::canonical_safewir::ArithmeticOperator::Multiply
-                        | crate::canonical_safewir::ArithmeticOperator::DivideSigned
-                        | crate::canonical_safewir::ArithmeticOperator::DivideUnsigned
-                        | crate::canonical_safewir::ArithmeticOperator::RemainderSigned
-                        | crate::canonical_safewir::ArithmeticOperator::RemainderUnsigned
-                )
-            {
-                return Err(type_mismatch(function, *destination, ValueType::Int, result));
+            if !scalar_arithmetic_is_backend_total(result, *operator, *overflow) {
+                return unsupported_scalar(function, "Arithmetic operator/type/overflow combination");
             }
             require_type(function, *left, result)?;
             require_type(function, *right, result)
         }
-        Operation::Compare { destination, left, right, .. } => {
+        Operation::Compare { destination, operator, left, right } => {
             require_type(function, *destination, ValueType::Bool)?;
             let left_type = value_type(function, *left)?;
+            if !scalar_comparison_is_backend_total(left_type, *operator) {
+                return unsupported_scalar(function, "Compare operator/type combination");
+            }
             require_type(function, *right, left_type)
         }
         Operation::NarrowSize { destination, value } => {
@@ -1380,6 +1531,44 @@ fn check_operation(
         Operation::DropRef { .. } => unsupported_memory(function, "DropRef"),
         Operation::Reclaim { .. } => unsupported_memory(function, "Reclaim"),
     }
+}
+
+fn scalar_arithmetic_is_backend_total(
+    value_type: ValueType,
+    operator: super::ArithmeticOperator,
+    overflow: super::OverflowBehavior,
+) -> bool {
+    use super::{ArithmeticOperator as A, OverflowBehavior as O};
+    match (value_type, operator, overflow) {
+        (ValueType::Int | ValueType::Size, _, O::Wrap) => true,
+        (ValueType::Int, A::DivideSigned | A::RemainderSigned, O::Trap) => true,
+        (ValueType::Size, A::Add, O::Trap) => true,
+        (
+            ValueType::Float,
+            A::Add | A::Subtract | A::Multiply | A::DivideSigned | A::DivideUnsigned,
+            O::Wrap,
+        ) => true,
+        _ => false,
+    }
+}
+
+fn scalar_comparison_is_backend_total(
+    value_type: ValueType,
+    operator: super::ComparisonOperator,
+) -> bool {
+    use super::ComparisonOperator as C;
+    match value_type {
+        ValueType::Int | ValueType::Size | ValueType::Float => true,
+        ValueType::Bool => matches!(operator, C::Equal | C::NotEqual),
+        _ => false,
+    }
+}
+
+fn unsupported_scalar<T>(
+    function: &Function,
+    operation: &'static str,
+) -> Result<T, InitialCheckError> {
+    Err(InitialCheckError::UnsupportedScalarOperation { function: function.id, operation })
 }
 
 fn inline_scalar_layout_type(
@@ -1729,17 +1918,17 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::super::{
-        AccessMode, AllocationClass, BasicBlock, BlockId, BlockParameter, CallableContract,
+        AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, BlockId, BlockParameter, CallableContract,
         CanonicalAbiCatalog, CanonicalModule,
         CheckedSourceIdentity, ComparisonOperator, Extent, Function, FunctionId, FunctionSignature,
         FunctionSignatureId, GuardKind, HeaderField, HostBufferExtent, HostCallArgument,
         HostMutation, HostParameterRole, HostReentrancy, HostResultRole, ImportContract,
         ImportContractIdentity, ImportId, LoadTransfer, LoweredModuleParts, MemoryEffect, Operation, ParameterContract,
         ParameterOwnership, Place, Projection, ProperTailSite, ResultContract, Revision, TailSiteId,
-        Terminator, ValueId, ValueType,
+        StaticDataId, StaticDataSegment, Terminator, ValueId, ValueType,
     };
     use super::{InitialCheckError, check_initial};
-    use super::super::{CallArgument, StoreTransfer};
+    use super::super::{CallArgument, OverflowBehavior, StoreTransfer};
     use crate::layout::{LayoutBundle, LayoutId, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
     // The closure-object subset: one `PackedRecord` whose slot 0 is the
@@ -3724,6 +3913,172 @@ mod tests {
         assert!(check_initial(module).is_ok());
     }
 
+    fn static_candidate(
+        layouts: LayoutBundle,
+        value_types: BTreeMap<ValueId, ValueType>,
+        operations: Vec<Operation>,
+        segments: Vec<StaticDataSegment>,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        CanonicalModule::from_lowering_with_static_data(
+            LoweredModuleParts {
+                revision: Revision::new(0),
+                checked_source: CheckedSourceIdentity::from_digest([41; 32]),
+                layouts,
+                signatures: vec![FunctionSignature {
+                    id: SIGNATURE,
+                    parameters: Vec::new(),
+                    results: Vec::new(),
+                    contract: contract(Vec::new()),
+                }],
+                imports: Vec::new(),
+                functions: vec![Function {
+                    id: FUNCTION,
+                    signature: SIGNATURE,
+                    entry: ENTRY,
+                    value_types,
+                    blocks: vec![BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations,
+                        terminator: Terminator::Return { values: Vec::new() },
+                    }],
+                }],
+                proper_tail_sites: Vec::new(),
+            },
+            segments,
+        )
+    }
+
+    #[test]
+    fn static_data_id_cannot_change_normalized_extent() {
+        let (layouts, layout) = dynamic_byte_layout();
+        let count_a = ValueId::new(40);
+        let capacity_a = ValueId::new(41);
+        let count_b = ValueId::new(42);
+        let capacity_b = ValueId::new(43);
+        let first = ValueId::new(44);
+        let second = ValueId::new(45);
+        let data = StaticDataId::new(0);
+        let candidate = static_candidate(
+            layouts,
+            [
+                (count_a, ValueType::Size), (capacity_a, ValueType::Size),
+                (count_b, ValueType::Size), (capacity_b, ValueType::Size),
+                (first, ValueType::Ref(layout)), (second, ValueType::Ref(layout)),
+            ].into_iter().collect(),
+            vec![
+                Operation::ConstSize { destination: count_a, value: 1 },
+                Operation::ConstSize { destination: capacity_a, value: 1 },
+                Operation::ConstSize { destination: count_b, value: 0 },
+                Operation::ConstSize { destination: capacity_b, value: 0 },
+                Operation::StaticData { destination: first, layout, extent: Extent::Counted { header_bytes: 4, count: count_a, capacity: capacity_a, stride_bytes: 1 }, data },
+                Operation::StaticData { destination: second, layout, extent: Extent::Counted { header_bytes: 4, count: count_b, capacity: capacity_b, stride_bytes: 1 }, data },
+            ],
+            vec![StaticDataSegment::new(data, vec![1, 0, 0, 0, 7])],
+        );
+        assert!(matches!(check_initial(candidate), Err(InitialCheckError::InconsistentStaticDataUse(id)) if id == data));
+    }
+
+    #[test]
+    fn nested_static_bool_requires_canonical_zero_or_one() {
+        let mut interner = LayoutInterner::new();
+        let boolean = interner.intern_scalar(ScalarKind::Bool).unwrap();
+        let inner = interner.intern_packed_record(vec![boolean]).unwrap();
+        let outer = interner.intern_packed_record(vec![inner]).unwrap();
+        let descriptor = interner.get(outer).unwrap();
+        let crate::layout::LayoutSize::Fixed(size) = descriptor.size() else { panic!("fixed record") };
+        let inner_offset = descriptor.fields()[0].offset() as usize;
+        let bool_offset = interner.get(inner).unwrap().fields()[0].offset() as usize;
+        let mut bytes = vec![0; size as usize];
+        bytes[inner_offset + bool_offset] = 2;
+        let object = ValueId::new(40);
+        let data = StaticDataId::new(0);
+        let candidate = static_candidate(
+            LayoutBundle::from_interner(&interner, [outer]).unwrap(),
+            [(object, ValueType::Ref(outer))].into_iter().collect(),
+            vec![Operation::StaticData { destination: object, layout: outer, extent: Extent::FixedBytes(u64::from(size)), data }],
+            vec![StaticDataSegment::new(data, bytes)],
+        );
+        assert!(matches!(check_initial(candidate), Err(InitialCheckError::InvalidStaticDataEncoding { object: invalid, .. }) if invalid == object));
+    }
+
+    fn scalar_binary_candidate(
+        value_type: ValueType,
+        operation: Operation,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        lowered(
+            [(ValueId::new(40), value_type), (ValueId::new(41), value_type), (ValueId::new(42), value_type)]
+                .into_iter().collect(),
+            operation_constants(value_type).into_iter().chain([operation]).collect(),
+            Terminator::Return { values: vec![ValueId::new(42)] },
+            vec![value_type],
+            Vec::new(),
+        )
+    }
+
+    fn operation_constants(value_type: ValueType) -> Vec<Operation> {
+        match value_type {
+            ValueType::Int => vec![Operation::ConstInt { destination: ValueId::new(40), value: 4 }, Operation::ConstInt { destination: ValueId::new(41), value: 2 }],
+            ValueType::Size => vec![Operation::ConstSize { destination: ValueId::new(40), value: 4 }, Operation::ConstSize { destination: ValueId::new(41), value: 2 }],
+            ValueType::Float => vec![Operation::ConstFloat { destination: ValueId::new(40), bits: 4.0_f64.to_bits() }, Operation::ConstFloat { destination: ValueId::new(41), bits: 2.0_f64.to_bits() }],
+            ValueType::Bool => vec![Operation::ConstBool { destination: ValueId::new(40), value: true }, Operation::ConstBool { destination: ValueId::new(41), value: false }],
+            _ => vec![Operation::ConstUnit { destination: ValueId::new(40) }, Operation::ConstUnit { destination: ValueId::new(41) }],
+        }
+    }
+
+    #[test]
+    fn scalar_checker_refuses_non_total_backend_combinations() {
+        let arithmetic = |value_type, operator, overflow| scalar_binary_candidate(
+            value_type,
+            Operation::Arithmetic { destination: ValueId::new(42), operator, left: ValueId::new(40), right: ValueId::new(41), overflow },
+        );
+        for candidate in [
+            arithmetic(ValueType::Int, ArithmeticOperator::Add, OverflowBehavior::Trap),
+            arithmetic(ValueType::Size, ArithmeticOperator::Subtract, OverflowBehavior::Trap),
+            arithmetic(ValueType::Float, ArithmeticOperator::RemainderSigned, OverflowBehavior::Wrap),
+            arithmetic(ValueType::Float, ArithmeticOperator::Add, OverflowBehavior::Trap),
+            scalar_binary_candidate(ValueType::Bool, Operation::Compare { destination: ValueId::new(42), operator: ComparisonOperator::LessSigned, left: ValueId::new(40), right: ValueId::new(41) }),
+            lowered(
+                [(ValueId::new(40), ValueType::Unit), (ValueId::new(41), ValueType::Unit), (ValueId::new(42), ValueType::Bool)].into_iter().collect(),
+                operation_constants(ValueType::Unit).into_iter().chain([Operation::Compare { destination: ValueId::new(42), operator: ComparisonOperator::Equal, left: ValueId::new(40), right: ValueId::new(41) }]).collect(),
+                Terminator::Return { values: vec![ValueId::new(42)] },
+                vec![ValueType::Bool],
+                Vec::new(),
+            ),
+        ] {
+            assert!(matches!(check_initial(candidate), Err(InitialCheckError::UnsupportedScalarOperation { .. })));
+        }
+    }
+
+    #[test]
+    fn size_constant_must_fit_wasm32() {
+        let module = lowered(
+            [(VALUE, ValueType::Size)].into_iter().collect(),
+            vec![Operation::ConstSize { destination: VALUE, value: u64::from(u32::MAX) + 1 }],
+            Terminator::Return { values: vec![VALUE] },
+            vec![ValueType::Size],
+            Vec::new(),
+        );
+        assert!(matches!(check_initial(module), Err(InitialCheckError::UnsupportedScalarOperation { operation: "ConstSize outside Wasm32", .. })));
+    }
+
+    #[test]
+    fn scalar_checker_accepts_exact_backend_matrix_edges() {
+        let arithmetic = |value_type, operator, overflow| scalar_binary_candidate(
+            value_type,
+            Operation::Arithmetic { destination: ValueId::new(42), operator, left: ValueId::new(40), right: ValueId::new(41), overflow },
+        );
+        for candidate in [
+            arithmetic(ValueType::Int, ArithmeticOperator::BitXor, OverflowBehavior::Wrap),
+            arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, OverflowBehavior::Trap),
+            arithmetic(ValueType::Size, ArithmeticOperator::Add, OverflowBehavior::Trap),
+            arithmetic(ValueType::Float, ArithmeticOperator::DivideUnsigned, OverflowBehavior::Wrap),
+            scalar_binary_candidate(ValueType::Bool, Operation::Compare { destination: ValueId::new(42), operator: ComparisonOperator::NotEqual, left: ValueId::new(40), right: ValueId::new(41) }),
+        ] {
+            assert!(check_initial(candidate).is_ok());
+        }
+    }
+
     #[test]
     fn nullable_capability_operations_are_checked() {
         let absent = ValueId::new(40);
@@ -4247,10 +4602,9 @@ mod tests {
     fn dynamic_allocation_extent_must_fit_wasm_address_space() {
         assert_eq!(
             check_initial(dynamic_load_module(true, u64::MAX, true)).unwrap_err(),
-            InitialCheckError::MissingAllocationSizeGuard {
+            InitialCheckError::UnsupportedScalarOperation {
                 function: FUNCTION,
-                capacity: ValueId::new(1),
-                maximum: (u64::from(u32::MAX) - 4) / 4,
+                operation: "ConstSize outside Wasm32",
             }
         );
     }

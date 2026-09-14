@@ -10838,6 +10838,75 @@ mod tests {
         assert_eq!(function.call(&mut store, ()).unwrap(), 9);
     }
 
+    #[cfg(feature = "native")]
+    #[test]
+    fn backend_total_scalar_families_match_the_interpreter() {
+        use crate::canonical_interpreter::{InterpreterValue, interpret};
+
+        let specs = [
+            (FunctionId::new(20), ValueType::Int, Operation::ConstInt { destination: ValueId::new(1), value: 40 }, Operation::ConstInt { destination: ValueId::new(2), value: 2 }, ArithmeticOperator::Add, OverflowBehavior::Wrap),
+            (FunctionId::new(21), ValueType::Size, Operation::ConstSize { destination: ValueId::new(1), value: 40 }, Operation::ConstSize { destination: ValueId::new(2), value: 2 }, ArithmeticOperator::Add, OverflowBehavior::Trap),
+            (FunctionId::new(22), ValueType::Float, Operation::ConstFloat { destination: ValueId::new(1), bits: 84.0_f64.to_bits() }, Operation::ConstFloat { destination: ValueId::new(2), bits: 2.0_f64.to_bits() }, ArithmeticOperator::DivideSigned, OverflowBehavior::Wrap),
+        ];
+        let mut signatures = Vec::new();
+        let mut functions = Vec::new();
+        for (function_id, value_type, left, right, operator, overflow) in specs {
+            let signature_id = FunctionSignatureId::new(function_id.get());
+            signatures.push(FunctionSignature {
+                id: signature_id,
+                parameters: Vec::new(),
+                results: vec![value_type],
+                contract: CallableContract { parameters: Vec::new(), results: vec![ResultContract::Value(value_type)], parameter_effects: BTreeMap::new() },
+            });
+            functions.push(Function {
+                id: function_id,
+                signature: signature_id,
+                entry: BlockId::new(0),
+                value_types: [(ValueId::new(1), value_type), (ValueId::new(2), value_type), (ValueId::new(3), value_type)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: BlockId::new(0),
+                    parameters: Vec::new(),
+                    operations: vec![left, right, Operation::Arithmetic { destination: ValueId::new(3), operator, left: ValueId::new(1), right: ValueId::new(2), overflow }],
+                    terminator: Terminator::Return { values: vec![ValueId::new(3)] },
+                }],
+            });
+        }
+        signatures.push(FunctionSignature {
+            id: FunctionSignatureId::new(23), parameters: Vec::new(), results: vec![ValueType::Bool],
+            contract: CallableContract { parameters: Vec::new(), results: vec![ResultContract::Value(ValueType::Bool)], parameter_effects: BTreeMap::new() },
+        });
+        functions.push(Function {
+            id: FunctionId::new(23), signature: FunctionSignatureId::new(23), entry: BlockId::new(0),
+            value_types: [(ValueId::new(1), ValueType::Bool), (ValueId::new(2), ValueType::Bool), (ValueId::new(3), ValueType::Bool)].into_iter().collect(),
+            blocks: vec![BasicBlock { id: BlockId::new(0), parameters: Vec::new(), operations: vec![
+                Operation::ConstBool { destination: ValueId::new(1), value: true },
+                Operation::ConstBool { destination: ValueId::new(2), value: true },
+                Operation::Compare { destination: ValueId::new(3), operator: ComparisonOperator::Equal, left: ValueId::new(1), right: ValueId::new(2) },
+            ], terminator: Terminator::Return { values: vec![ValueId::new(3)] } }],
+        });
+        let candidate = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(20), checked_source: CheckedSourceIdentity::from_digest([20; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(), signatures, imports: Vec::new(), functions,
+            proper_tail_sites: Vec::new(),
+        });
+        let checked = check_initial_with_test_witness(candidate).unwrap();
+        let validated = validate_final_for_test(checked).unwrap();
+        assert_eq!(interpret(&validated, FunctionId::new(20), Vec::new()).unwrap(), vec![InterpreterValue::Int(42)]);
+        assert_eq!(interpret(&validated, FunctionId::new(21), Vec::new()).unwrap(), vec![InterpreterValue::Size(42)]);
+        assert_eq!(interpret(&validated, FunctionId::new(22), Vec::new()).unwrap(), vec![InterpreterValue::FloatBits(42.0_f64.to_bits())]);
+        assert_eq!(interpret(&validated, FunctionId::new(23), Vec::new()).unwrap(), vec![InterpreterValue::Bool(true)]);
+
+        let wasm = encode_validated(validated).unwrap();
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        assert_eq!(instance.get_typed_func::<(), i64>(&mut store, "f20").unwrap().call(&mut store, ()).unwrap(), 42);
+        assert_eq!(instance.get_typed_func::<(), i32>(&mut store, "f21").unwrap().call(&mut store, ()).unwrap(), 42);
+        assert_eq!(instance.get_typed_func::<(), f64>(&mut store, "f22").unwrap().call(&mut store, ()).unwrap(), 42.0);
+        assert_eq!(instance.get_typed_func::<(), i32>(&mut store, "f23").unwrap().call(&mut store, ()).unwrap(), 1);
+    }
+
     #[test]
     fn correspondence_rejects_semantic_mismatch() {
         let source = checked_scalar();
