@@ -58,6 +58,7 @@ fi
 # multi-minute build/test cycle reaches the same assertion.
 cmds=()
 early_cmds=()
+canonical_native_batch=()
 add() { local c="$1"; local x; for x in ${cmds[0]+"${cmds[@]}"}; do [ "$x" = "$c" ] && return; done; cmds+=("$c"); }
 add_early() { local c="$1"; local x; for x in ${early_cmds[0]+"${early_cmds[@]}"}; do [ "$x" = "$c" ] && return; done; early_cmds+=("$c"); }
 
@@ -728,6 +729,10 @@ for p in "${paths[@]}"; do
         scripts/submit-with-presubmit.sh | scripts/test-submit-with-presubmit.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/test-submit-with-presubmit.sh" ;;
+        scripts/canonical-native-edit.sh | scripts/test-canonical-native-edit.sh)
+            add_gate_test test_for_paths
+            add "bash -n scripts/canonical-native-edit.sh scripts/test-canonical-native-edit.sh"
+            add "./scripts/test-canonical-native-edit.sh" ;;
         scripts/test-for-paths.sh | scripts/test-path-receipts.sh | scripts/test-impact.py | \
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
@@ -888,9 +893,10 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     # clippy. That is a checkpoint workload and discouraged exact-tip receipts.
     # Documentation accompanying those compiler files adds no executable test
     # surface, so it must not turn the same edit back into a checkpoint. Keep
-    # the edit loop to three feature-distinct invocations that retain the
+    # the edit loop to three scoped runs from one native union build, retaining
     # load-bearing ABI, authority, ownership, bounds, admission, and independent
-    # semantic assertions. The serialized landing selection is unchanged.
+    # semantic assertions. Standalone runtime feature profiles remain separate.
+    # The serialized landing selection is unchanged.
     canonical_build_recipe_wir_expr=""
     canonical_build_recipe_lower_target=""
     canonical_build_recipe_lower_expr=""
@@ -911,10 +917,14 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
         canonical_crypto_wir_expr=" or test(canonical_interpreter::crypto_rsa_tests::)"
         canonical_crypto_app_expr=" or test(/^rfc0165_crypto(_rsa)?::/)"
     fi
+    canonical_native_wir_expr="test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(boolean_reaches::) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(owned_tail_nonprefix_range_requires_a_checked_end_bound) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}${canonical_crypto_wir_expr}"
+    canonical_native_lower_expr="test(canonical_pipeline::tests::list_string_)${canonical_build_recipe_lower_expr}"
+    canonical_native_app_expr="test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(/^commands::embedded_pm::tests::/) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}"
+    canonical_native_batch=("$canonical_native_wir_expr" "$canonical_native_lower_expr" "$canonical_native_app_expr" "$canonical_build_recipe")
     cmds=(
-        "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(boolean_reaches::) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(owned_tail_nonprefix_range_requires_a_checked_end_bound) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_capabilities_lower_only_to_externref) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}${canonical_crypto_wir_expr}'"
-        "cargo nextest run -p witchy-lower --features witchy-wir/native --lib${canonical_build_recipe_lower_target} -E 'test(canonical_pipeline::tests::list_string_)${canonical_build_recipe_lower_expr}'"
-        "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E 'test(architecture::root_integration_test_binaries_stay_within_budget) or test(wasm_abi_catalog::native_host_links_every_catalog_import_with_the_declared_signature) or test(wasm_abi_catalog::public_spec_contains_the_generated_complete_catalog) or test(wasm_abi_catalog::capability_imports_name_their_authority_family) or test(wasm_abi_catalog::precompiled_runner_authority_rows_are_cataloged) or test(rfc0077_integration_grants::source_integration_recipe_runs_selected_console_capture_and_reports_abort) or test(rfc0087_uniform_var::list_pop_projected_coordinates_and_nested_payloads_on_three_legs) or test(rfc0165_admitted_launch::admitted_entry_without_a_console_grant_is_refused_before_it_runs) or test(rfc0165_admitted_launch::admitted_guard_near_misses_trap_exactly_at_the_boundary) or test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them) or test(rfc0165_owner_adapters::server_pool_oracle::/) or test(/^commands::embedded_pm::tests::/) or test(/^commands::test_runner::canonical_integration_tests::/) or test(/^rfc0165_enum_equality::/) or test(=rfc0165_oracle::admitted_observer_is_not_called_on_refusal) or test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)${canonical_build_recipe_app_expr}${canonical_crypto_app_expr}'"
+        "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"
+        "cargo nextest run -p witchy-lower --features witchy-wir/native --lib${canonical_build_recipe_lower_target} -E '${canonical_native_lower_expr}'"
+        "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E '${canonical_native_app_expr}'"
     )
     if [ "$canonical_build_recipe" -eq 1 ]; then
         cmds+=("cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_read_tests::/) or test(/^runtime::host::build_env_tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'")
@@ -955,15 +965,29 @@ if [ "${#cmds[@]}" -eq 0 ]; then
     exit 0
 fi
 
+if [ "${#canonical_native_batch[@]}" -gt 0 ]; then
+    echo "canonical native: one union build; first three selections reuse fresh nextest metadata (runtime profiles stay separate)"
+fi
 echo "focused checks for this change (run before 'merge-queue.sh submit'):"
 for c in "${cmds[@]}"; do echo "  $c"; done
 
 if [ "$run" -eq 1 ]; then
     run_started_at="$SECONDS"
-    for c in "${cmds[@]}"; do
+    first_command=0
+    if [ "${#canonical_native_batch[@]}" -gt 0 ]; then
+        run_sha="$(git rev-parse HEAD)"
+        ./scripts/canonical-native-edit.sh "${canonical_native_batch[@]}"
+        first_command=3
+    fi
+    for ((i=first_command; i<${#cmds[@]}; i++)); do
+        c="${cmds[$i]}"
         printf '\n\033[1;34m==> %s\033[0m\n' "$c"
         bash -c "$c"
     done
+    if [ "${#canonical_native_batch[@]}" -gt 0 ] && [ "$(git rev-parse HEAD)" != "$run_sha" ]; then
+        echo "canonical native: HEAD changed during checks; no receipt" >&2
+        exit 1
+    fi
     printf '\n\033[1;32mall focused checks green\033[0m\n'
     # Only a path set derived from the complete branch diff can certify the
     # current tip. Explicit paths may cover only part of the change. The

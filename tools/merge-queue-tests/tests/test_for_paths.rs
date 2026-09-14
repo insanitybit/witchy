@@ -1641,3 +1641,24 @@ fn gate_nextest_queue_scripts_do_not_select_rfc_conformance_binaries() {
         "a queue-script change pulled in the conformance suites:\n{out}"
     );
 }
+
+#[test]
+fn canonical_native_edit_reuses_one_build_without_changing_scope_or_receipts() {
+    let output = Command::new("bash")
+        .arg(workspace_root().join("scripts/test-canonical-native-edit.sh"))
+        .output()
+        .expect("run mocked canonical-native edit workflow");
+    assert!(output.status.success(), "{}\n{}",
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn canonical_native_reuse_helper_changes_run_the_mocked_workflow() {
+    for path in ["scripts/canonical-native-edit.sh", "scripts/test-canonical-native-edit.sh"] {
+        let commands = selected(&["--edit-loop", path]);
+        assert!(commands.iter().any(|command| command == "./scripts/test-canonical-native-edit.sh"), "{commands:?}");
+        assert!(!commands.iter().any(|command| command.contains("cargo ")), "mocked tooling check started Cargo: {commands:?}");
+        let gate = gate_nextest(&[path]);
+        assert!(gate.contains("test_for_paths"), "missing landing regression: {gate}");
+    }
+}
