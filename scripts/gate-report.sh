@@ -393,6 +393,14 @@ jq -sn \
                        |map({actor:(.[0].actor//"unset"), submissions:length})|sort_by(-.submissions)),
              by_actor_hint:($subs|group_by(.actor_hint//"unknown")
                             |map({actor_hint:(.[0].actor_hint//"unknown"), submissions:length})|sort_by(-.submissions)),
+             receipt_rate_by_actor_hint:($subs|group_by(.actor_hint//"unknown")
+                                        |map((. as $group
+                                             | {actor_hint:($group[0].actor_hint//"unknown"),
+                                                submissions:($group|length),
+                                                eligible:($group|map(select((.presubmit_eligible // (if ((.touches//"") == "docs") then "false" else "true" end)) == "true"))|length),
+                                                receipts:($group|map(select(.presubmit_sha_match=="true"))|length)})
+                                             | . + {receipt_rate:(if .eligible==0 then null else (.receipts/.eligible) end)})
+                                        | sort_by(-.submissions, .actor_hint)),
              by_touches:($subs|map(select((.touches//"")!=""))|group_by(.touches)
                          |map({touches:.[0].touches, submissions:length})|sort_by(-.submissions))}),
         red_causes:($failed|group_by(.red_class//"unclassified")
@@ -508,6 +516,7 @@ jq -r '
     "  edit check p50 / p90:    \(value(.attribution.presubmit_edit_s.p50; "s")) / \(value(.attribution.presubmit_edit_s.p90; "s")) (\(.attribution.presubmit_edit_s.count) samples)",
     "  actor set (not \"unset\"): \(if .attribution.actor_adoption==null then "n/a" else ((.attribution.actor_adoption*100|round|tostring)+"%") end)",
     ("  actor hints:              " + (.attribution.by_actor_hint | map("\(.actor_hint)=\(.submissions)") | join(", "))),
+    ("  receipts by actor hint:   " + (.attribution.receipt_rate_by_actor_hint | map("\(.actor_hint)=\(.receipts)/\(.eligible)") | join(", "))),
     "  Co-Authored-By trailer:  \(if .attribution.trailer_adoption==null then "n/a" else ((.attribution.trailer_adoption*100|round|tostring)+"%") end)",
     (if (.red_causes|length)==0 then "" else
         ("\nFailed gate time by cause\n"
