@@ -320,6 +320,26 @@ retains ABI, authority, ownership, bounds, admission, and semantic sentinels.
 Improving use of that receipt-bearing command has more direct evidence than
 adding another gate or deleting coverage.
 
+**Receipt-adoption boundary, 2026-09-14 12:16Z.** The read-only
+`gate-report.sh --json` report covered 137 submissions, 124 landed branches,
+and 121 green gates over the preceding 24 hours. Fifteen failed attempts
+consumed 4,393 seconds of failed work; 12 landed changes had at least one
+failed attempt. Among 116 submissions for which a focused receipt was
+possible, 71 had an exact-tip receipt (61.2%). The largest missing-receipt
+clusters were queue-infrastructure changes (12) and compiler changes touching
+`typeck,codegen,wasm-abi,docs` (10), followed by
+`typeck,codegen,interp,wasm-abi,docs` (4). The compiler branches visible in the
+same journal continued to submit without a receipt, so the new report does not
+yet establish adoption by compiler agents.
+
+The queue now records a structural `actor_hint` derived from the submitting
+worktree and reports receipt rates by that hint. The linked-worktree cohort was
+3/3, but all three were queue/report changes made by this investigation; the
+sample is therefore a measurement boundary, not evidence of compiler-agent
+improvement. The next uncontended compiler submission from a linked worktree
+is the first useful cohort observation. This change records measurements only;
+it does not alter gate policy, exclusions, or compiler code.
+
 **Evidence and reproduction of the analysis.** The source report is the local
 artifact `/private/tmp/witchy-development-latency-2026-09-12.md`, produced in
 Codex thread `01a09617-befb-7ad2-9ef1-e701722ee3a2`. These records are local and
