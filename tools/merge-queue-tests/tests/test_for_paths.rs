@@ -880,6 +880,12 @@ fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
         ] {
             assert!(commands[0].contains(contract), "{path}: {contract}: {commands:?}");
         }
+        assert!(
+            commands[1].contains("--test codegen")
+                && commands[1]
+                    .contains("grantful_build_primitives_compile_to_build_imports_only"),
+            "{path}: {commands:?}",
+        );
         for module in [
             "source::build_recipe_tests::",
             "source::build_env_recipe_tests::",
