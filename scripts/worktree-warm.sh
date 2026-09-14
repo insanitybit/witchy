@@ -63,6 +63,7 @@ esac
 
 # This override is a portability escape hatch and a deterministic test hook.
 copy_mode="${WITCHY_WORKTREE_WARM_COPY_MODE:-}"
+clone_testcache=1
 if [[ -z "$copy_mode" ]]; then
     if cp --help 2>&1 | grep -F -- '--reflink' >/dev/null; then
         copy_mode="reflink"
@@ -134,6 +135,7 @@ clone_target() { # clone_target <src-target> <dest-target>
     for profile in "$src"/*/; do
         name="$(basename "$profile")"
         [[ "$name" == "tmp" ]] && continue
+        [[ "$clone_testcache" == 0 && "$name" == "witchy-testcache" ]] && continue
         if [[ -d "$profile/debug" || -d "$profile/release" ]]; then
             mkdir "$dst/$name"
             for entry in "$profile".??* "$profile"*; do
@@ -176,6 +178,10 @@ clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <m
                 echo "worktree-warm: no safe warm target to clone" >&2
                 return 1
             }
+            # The persistent stdlib cache is keyed by the test executable's
+            # identity. A gate-worktree binary is relinked in this checkout,
+            # so copying its thousands of cache entries only adds metadata work.
+            clone_testcache=0
         elif [[ -x "$main/scripts/merge-queue.sh" ]]; then
             local script
             script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -188,7 +194,9 @@ clone_or_gate_fallback() { # clone_or_gate_fallback <preferred-source> <dest> <m
         fi
     fi
     clone_target "$source" "$dest"
-    echo "worktree-warm: seeded $dest from $source ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
+    local skipped="incremental/ and deps/*.rcgu.o skipped"
+    [[ "$clone_testcache" == 1 ]] || skipped="$skipped, stale witchy-testcache skipped"
+    echo "worktree-warm: seeded $dest from $source ($copy_description, $skipped)"
 }
 
 if [[ "${1:-}" == "--target-dir" ]]; then
@@ -218,4 +226,5 @@ if [[ -e "$dest/target" ]]; then
     echo "worktree-warm: $dest/target already exists; leaving it alone" >&2
     exit 0
 fi
+clone_testcache=0
 clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"

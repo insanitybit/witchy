@@ -45,6 +45,7 @@ fn assert_seed(repo: &Path, destination: &str) {
         "debug/build/build-script.rcgu.o",
         "wasm32-unknown-unknown/debug/deps/keep-wasm.rlib",
         "nextest/ci/config.toml",
+        "witchy-testcache/v1/current/std.wstd",
     ] {
         assert!(target.join(relative).is_file(), "seed omitted {relative}");
     }
@@ -99,6 +100,7 @@ fn worktree_warm_uses_portable_copy_modes_and_filters_dead_artifacts() {
     write(root, "target/wasm32-unknown-unknown/debug/deps/drop-wasm.rcgu.o", "dead\n");
     write(root, "target/wasm32-unknown-unknown/debug/incremental/stale", "dead\n");
     write(root, "target/nextest/ci/config.toml", "profile = 'ci'\n");
+    write(root, "target/witchy-testcache/v1/current/std.wstd", "cached std\n");
 
     let copied = seed(root, "seed-copy", Some("copy"));
     assert!(
@@ -134,6 +136,11 @@ fn worktree_warm_uses_the_active_gate_generation_when_main_target_is_absent() {
         ".claude/worktrees/merge-gate/target-prewarm/debug/deps/keep.rlib",
         "warm dependency\n",
     );
+    write(
+        root,
+        ".claude/worktrees/merge-gate/target-prewarm/witchy-testcache/v1/stale/std.wstd",
+        "stale cache\n",
+    );
 
     let output = seed_from_locked_gate(root, "seed-gate");
     assert!(
@@ -143,7 +150,12 @@ fn worktree_warm_uses_the_active_gate_generation_when_main_target_is_absent() {
     );
     assert!(root.join("seed-gate/debug/deps/keep.rlib").is_file());
     assert!(
+        !root.join("seed-gate/witchy-testcache").exists(),
+        "gate-worktree executable cache cannot match a relinked checkout",
+    );
+    assert!(
         String::from_utf8_lossy(&output.stdout)
             .contains("merge-gate/target-prewarm (copy, incremental/")
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("stale witchy-testcache skipped"));
 }
