@@ -2222,8 +2222,11 @@ fn emit_checked_arithmetic(
             body.instruction(&wasm_encoder::Instruction::End);
         }
         (
-            Some(ValueType::Int),
-            ArithmeticOperator::DivideSigned | ArithmeticOperator::RemainderSigned,
+            Some(ValueType::Int | ValueType::Size),
+            ArithmeticOperator::DivideSigned
+            | ArithmeticOperator::DivideUnsigned
+            | ArithmeticOperator::RemainderSigned
+            | ArithmeticOperator::RemainderUnsigned,
             crate::canonical_safewir::OverflowBehavior::Trap,
         )
         | (_, _, crate::canonical_safewir::OverflowBehavior::Wrap) => {}
@@ -5707,13 +5710,16 @@ fn expected_block_operations_plan(
                 } else if !matches!(
                     (function.value_types.get(destination), operator, overflow),
                     (
-                        Some(ValueType::Int),
-                        ArithmeticOperator::DivideSigned | ArithmeticOperator::RemainderSigned,
+                        Some(ValueType::Int | ValueType::Size),
+                        ArithmeticOperator::DivideSigned
+                            | ArithmeticOperator::DivideUnsigned
+                            | ArithmeticOperator::RemainderSigned
+                            | ArithmeticOperator::RemainderUnsigned,
                         crate::canonical_safewir::OverflowBehavior::Trap,
                     ) | (_, _, crate::canonical_safewir::OverflowBehavior::Wrap)
                 ) {
-                    // Mirror of `emit_checked_arithmetic`: signed division traps
-                    // natively; everything else must be `Wrap`.
+                    // Mirror of `emit_checked_arithmetic`: integer division
+                    // and remainder trap natively; everything else must wrap.
                     return Err(CanonicalAdmissionError::UnsupportedPlan);
                 }
                 push_get(&mut plan, &layout, *left)?;
