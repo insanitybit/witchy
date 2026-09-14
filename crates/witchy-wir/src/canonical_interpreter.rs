@@ -4681,7 +4681,9 @@ mod tests {
                 id: site,
                 function: FUNCTION, discharged_by: None,
             }],
-        });
+        }).with_proper_tail_locations(vec![
+            crate::canonical_safewir::ProperTailLocation::new(site, FUNCTION, recurse),
+        ]);
         let checked = check_initial_with_test_witness(candidate).expect("initial validation");
         let module = validate_final_for_test(checked).expect("final validation");
 

@@ -962,6 +962,7 @@ if capability_imports.contains("build_out_write_at") {
         eprintln!("canonical scope: {names:?}");
     }
     let mut functions = Vec::new();
+    let mut proper_tail_locations = BTreeMap::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name) {
@@ -983,6 +984,7 @@ if capability_imports.contains("build_out_write_at") {
             &checked_parameter_conventions,
             &signatures,
             &tail_manifest,
+            &mut proper_tail_locations,
             typed.table(),
             source.dictionary_key_comparators(),
             &layouts,
@@ -1028,6 +1030,7 @@ if capability_imports.contains("build_out_write_at") {
             &checked_parameter_conventions,
             &signatures,
             &tail_manifest,
+            &mut proper_tail_locations,
             typed.table(),
             source.dictionary_key_comparators(),
             &layouts,
@@ -1084,8 +1087,15 @@ if capability_imports.contains("build_out_write_at") {
         signatures,
         imports,
         functions,
-        proper_tail_sites: canonical_tail_sites(tail_manifest, typed.module(), &functions_by_name, &lambda_callables)?,
+        proper_tail_sites: canonical_tail_sites(
+            tail_manifest,
+            typed.module(),
+            &functions_by_name,
+            &lambda_callables,
+            &proper_tail_locations,
+        )?,
     }, static_data_segments)
+        .with_proper_tail_locations(proper_tail_locations.into_values().collect())
         .with_vm_services(vm_services)
         .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
         .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
@@ -1559,6 +1569,7 @@ fn lower_function(
     checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &[FunctionSignature],
     tail_manifest: &ProperTailSiteManifest,
+    proper_tail_locations: &mut BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
     type_table: &TypeTable,
     dictionary_comparators: &[(Type, String)],
     layout_bundle: &LayoutBundle,
@@ -1572,6 +1583,7 @@ fn lower_function(
 ) -> Result<Function, CanonicalLoweringError> {
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
+        function_id: id,
         source_body: body,
         next_value: 0,
         values: BTreeMap::new(),
@@ -1600,6 +1612,7 @@ fn lower_function(
         checked_parameter_conventions,
         signatures,
         tail_manifest,
+        proper_tail_locations,
         type_table,
         dictionary_comparators,
         layout_bundle,
@@ -2052,6 +2065,7 @@ struct BlockBuilder {
 
 struct FunctionLowerer<'a> {
     function: String,
+    function_id: FunctionId,
     /// Original checked nodes, never cloned: explicit returns in ordinary
     /// blocks still discharge their structural proper-tail obligations.
     source_body: &'a witchy_syntax::ast::Block,
@@ -2103,6 +2117,7 @@ struct FunctionLowerer<'a> {
     checked_parameter_conventions: &'a HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &'a [FunctionSignature],
     tail_manifest: &'a ProperTailSiteManifest,
+    proper_tail_locations: &'a mut BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
     type_table: &'a TypeTable,
     dictionary_comparators: &'a [(Type, String)],
     layout_bundle: &'a LayoutBundle,
@@ -5882,8 +5897,10 @@ impl FunctionLowerer<'_> {
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
         let (arguments, _) = self.lower_call_arguments(name, arguments, signature_id, &signature, true)?;
+        let site = witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes());
+        self.bind_tail_location(site)?;
         Ok(Terminator::TailCall {
-            site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
+            site,
             callee,
             arguments,
         })
@@ -5984,12 +6001,31 @@ impl FunctionLowerer<'_> {
         let code = self.closure_callable(callee, signature_id)?;
         let environment = self.clone_reference_token(callee)?;
         arguments.insert(0, CallArgument::Move(environment));
+        let site = witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes());
+        self.bind_tail_location(site)?;
         Ok(Terminator::VarTailCall {
-            site: witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
+            site,
             callee: code,
             signature: signature_id,
             arguments,
         })
+    }
+
+    fn bind_tail_location(
+        &mut self,
+        site: witchy_wir::canonical_safewir::TailSiteId,
+    ) -> Result<(), CanonicalLoweringError> {
+        let location = witchy_wir::canonical_safewir::ProperTailLocation::new(
+            site,
+            self.function_id,
+            self.current,
+        );
+        if self.proper_tail_locations.insert(site, location).is_some() {
+            return Err(CanonicalLoweringError::TailManifest(
+                "proper-tail source site lowered more than once".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// A closure record for `function` with the given `Int` captures in its
@@ -14582,6 +14618,7 @@ fn canonical_tail_sites(
     module: &witchy_syntax::ast::Module,
     functions_by_name: &HashMap<String, (FunctionId, FunctionSignatureId)>,
     lambda_functions: &HashMap<ProperTailCallableId, FunctionId>,
+    locations: &BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
     let scope = witchy_types::pipeline::canonical_scope(module);
     manifest
@@ -14600,6 +14637,13 @@ fn canonical_tail_sites(
                 })
         })
         .map(|site| {
+            let canonical_site =
+                witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes());
+            if !locations.contains_key(&canonical_site) {
+                return Err(CanonicalLoweringError::MissingProperTailSite(
+                    "proper-tail source site has no canonical control location".to_string(),
+                ));
+            }
             if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
                 eprintln!(
                     "canonical proper-tail obligation {:?}: {:?}",
@@ -15302,6 +15346,18 @@ fn main() -> Int:
     #[test]
     fn proper_tail_source_lowers_with_manifest_identity() {
         let candidate = lower("fn recurse(n: Int) -> Int:\n    return recurse(n)\n");
+        let location = candidate.proper_tail_locations().first().copied()
+            .expect("source tail has a canonical location");
+        let function = candidate.functions().iter()
+            .find(|function| function.id == location.function())
+            .expect("bound function exists");
+        let block = function.blocks.iter()
+            .find(|block| block.id == location.block())
+            .expect("bound block exists");
+        assert!(matches!(
+            block.terminator,
+            Terminator::TailCall { site, .. } if site == location.site()
+        ));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "{result:?}");
     }

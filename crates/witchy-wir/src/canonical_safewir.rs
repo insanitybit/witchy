@@ -1304,6 +1304,27 @@ pub struct ProperTailSite {
     pub discharged_by: Option<FunctionId>,
 }
 
+/// Exact canonical control location to which one checked source proper-tail
+/// obligation lowered. The source-derived site identifies the source
+/// operation; this binding prevents moving it to another reachable tail
+/// terminator in the same function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProperTailLocation {
+    site: TailSiteId,
+    function: FunctionId,
+    block: BlockId,
+}
+
+impl ProperTailLocation {
+    pub const fn new(site: TailSiteId, function: FunctionId, block: BlockId) -> Self {
+        Self { site, function, block }
+    }
+
+    pub const fn site(self) -> TailSiteId { self.site }
+    pub const fn function(self) -> FunctionId { self.function }
+    pub const fn block(self) -> BlockId { self.block }
+}
+
 /// Immutable bytes installed by the canonical backend before heap allocation.
 /// Segment identity is part of the authenticated module digest; callers can
 /// only borrow the bytes after construction.
@@ -1461,6 +1482,7 @@ pub struct CanonicalModule<S: ModuleStage> {
     imports: Vec<ImportContract>,
     functions: Vec<Function>,
     proper_tail_sites: Vec<ProperTailSite>,
+    proper_tail_locations: Vec<ProperTailLocation>,
     static_data_segments: Vec<StaticDataSegment>,
     abi_catalog: Option<CanonicalAbiCatalog>,
     abi_bindings: CandidateAbiBindings,
@@ -1508,6 +1530,7 @@ impl CanonicalModule<LoweredCandidate> {
             imports: parts.imports,
             functions: parts.functions,
             proper_tail_sites: parts.proper_tail_sites,
+            proper_tail_locations: Vec::new(),
             static_data_segments,
             abi_catalog: None,
             abi_bindings: CandidateAbiBindings::default(),
@@ -1571,6 +1594,12 @@ impl CanonicalModule<LoweredCandidate> {
         self
     }
 
+    /// Attach source-path-derived bindings before initial validation.
+    pub fn with_proper_tail_locations(mut self, locations: Vec<ProperTailLocation>) -> Self {
+        self.proper_tail_locations = locations;
+        self
+    }
+
     /// Declare the closure-object layouts: each `PackedRecord` whose slot 0 is
     /// the callable lane, mapped to the environment-taking signature that lane
     /// holds. The checker types every callable slot from this map.
@@ -1598,6 +1627,7 @@ impl<S: ModuleStage> CanonicalModule<S> {
             imports: self.imports,
             functions: self.functions,
             proper_tail_sites: self.proper_tail_sites,
+            proper_tail_locations: self.proper_tail_locations,
             static_data_segments: self.static_data_segments,
             abi_catalog: self.abi_catalog,
             abi_bindings: self.abi_bindings,
@@ -1640,6 +1670,10 @@ impl<S: ModuleStage> CanonicalModule<S> {
 
     pub fn proper_tail_sites(&self) -> &[ProperTailSite] {
         &self.proper_tail_sites
+    }
+
+    pub fn proper_tail_locations(&self) -> &[ProperTailLocation] {
+        &self.proper_tail_locations
     }
 
     pub fn static_data_segments(&self) -> &[StaticDataSegment] {

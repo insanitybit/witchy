@@ -44,6 +44,7 @@ pub(crate) fn module_digest<S: ModuleStage>(module: &CanonicalModule<S>) -> Modu
         writer.u32(service.callback().get());
     }
     writer.tail_sites(module.proper_tail_sites());
+    writer.tail_locations(module.proper_tail_locations());
     digest_bytes(MODULE_DIGEST_DOMAIN, &writer.finish())
 }
 
@@ -960,6 +961,17 @@ impl CanonicalWriter {
         self.len(sites.len());
         for site in sites {
             self.tail_site(site);
+        }
+    }
+
+    fn tail_locations(&mut self, locations: &[super::ProperTailLocation]) {
+        let mut ordered = locations.to_vec();
+        ordered.sort();
+        self.len(ordered.len());
+        for location in ordered {
+            self.fixed_bytes(&location.site().digest());
+            self.u32(location.function().get());
+            self.u32(location.block().get());
         }
     }
 

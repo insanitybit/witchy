@@ -8355,7 +8355,13 @@ mod tests {
                 id: tail_site,
                 function: FunctionId::new(22), discharged_by: None,
             }],
-        }))
+        }).with_proper_tail_locations(vec![
+            crate::canonical_safewir::ProperTailLocation::new(
+                tail_site,
+                FunctionId::new(22),
+                crate::canonical_safewir::BlockId::new(22),
+            ),
+        ]))
     }
 
     #[cfg(feature = "native")]
@@ -8471,6 +8477,24 @@ mod tests {
         }
     }
 
+    fn capability_indirect_candidate(
+        tail: bool,
+        value_type: ValueType,
+    ) -> CanonicalModule<LoweredCandidate> {
+        let candidate = CanonicalModule::from_lowering(capability_indirect_parts(tail, value_type));
+        if tail {
+            candidate.with_proper_tail_locations(vec![
+                crate::canonical_safewir::ProperTailLocation::new(
+                    crate::canonical_safewir::TailSiteId::from_digest([0x32; 32]),
+                    FunctionId::new(20),
+                    crate::canonical_safewir::BlockId::new(0),
+                ),
+            ])
+        } else {
+            candidate
+        }
+    }
+
     fn indirect_capability_types() -> [ValueType; 2] {
         let kind = crate::canonical_safewir::CapabilityKindId::new(17);
         [ValueType::Capability(kind), ValueType::NullableCapability(kind)]
@@ -8479,18 +8503,16 @@ mod tests {
     #[test]
     fn admitted_capability_var_call_preserves_kind_and_plan() {
         for value_type in indirect_capability_types() {
-            admit_canonical(finalize(CanonicalModule::from_lowering(
-                capability_indirect_parts(false, value_type),
-            ))).expect("checked capability indirect call matches the independent byte plan");
+            admit_canonical(finalize(capability_indirect_candidate(false, value_type)))
+                .expect("checked capability indirect call matches the independent byte plan");
         }
     }
 
     #[test]
     fn admitted_capability_var_tail_call_preserves_proper_tail_and_plan() {
         for value_type in indirect_capability_types() {
-            admit_canonical(finalize(CanonicalModule::from_lowering(
-                capability_indirect_parts(true, value_type),
-            ))).expect("checked capability proper tail matches the independent byte plan");
+            admit_canonical(finalize(capability_indirect_candidate(true, value_type)))
+                .expect("checked capability proper tail matches the independent byte plan");
         }
     }
 
@@ -8499,9 +8521,8 @@ mod tests {
     fn admitted_capability_indirect_calls_preserve_externrefs() {
         for tail in [false, true] {
             for value_type in indirect_capability_types() {
-                let artifact = admit_canonical(finalize(CanonicalModule::from_lowering(
-                    capability_indirect_parts(tail, value_type),
-                ))).expect("capability identity call admits");
+                let artifact = admit_canonical(finalize(capability_indirect_candidate(tail, value_type)))
+                    .expect("capability identity call admits");
                 let engine = wasmtime::Engine::default();
                 let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
                 let mut store = wasmtime::Store::new(&engine, ());
@@ -8674,6 +8695,17 @@ mod tests {
             ],
             proper_tail_sites: if tail { vec![crate::canonical_safewir::ProperTailSite { id: tail_site, function: FunctionId::new(1), discharged_by: None }] } else { Vec::new() },
         });
+        let candidate = if tail {
+            candidate.with_proper_tail_locations(vec![
+                crate::canonical_safewir::ProperTailLocation::new(
+                    tail_site,
+                    FunctionId::new(1),
+                    crate::canonical_safewir::BlockId::new(1),
+                ),
+            ])
+        } else {
+            candidate
+        };
         let checked = check_initial_with_test_witness(candidate).expect("direct scalar call is initially valid");
         validate_final_for_test(checked).expect("direct scalar call is final-valid")
     }

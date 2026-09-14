@@ -6,7 +6,7 @@ use super::{
     BasicBlock, BlockId, CallArgument, CanonicalAbiCatalog, CanonicalModule, Function, FunctionId,
     FunctionSignature, FunctionSignatureId, GuardKind, HostCallArgument, ImportContract, ImportId, InitialValid,
     LoweredCandidate, ModuleStage, Operation, OptimizationCandidate,
-    ParameterOwnership, ProperTailSite, TailSiteId, Terminator, ValueId,
+    ParameterOwnership, ProperTailLocation, ProperTailSite, TailSiteId, Terminator, ValueId,
     ValueType,
 };
 
@@ -85,11 +85,19 @@ pub enum InitialCheckError {
         actual: [u8; 32],
     },
     MissingTailObligation(TailSiteId),
+    MissingTailLocation(TailSiteId),
+    UnexpectedTailLocation(TailSiteId),
+    DuplicateTailLocation(TailSiteId),
     UnexpectedTailSite(TailSiteId),
     TailSiteFunctionMismatch {
         site: TailSiteId,
         expected: FunctionId,
         actual: FunctionId,
+    },
+    TailSiteBlockMismatch {
+        site: TailSiteId,
+        expected: BlockId,
+        actual: BlockId,
     },
     UnsupportedMemoryOperation { function: FunctionId, operation: &'static str },
     DuplicateStaticDataId(crate::canonical_safewir::StaticDataId),
@@ -266,7 +274,10 @@ fn check_candidate<S: ModuleStage>(
         owners::check(function, &owners)?;
     }
     host::check_imports(&imports, &signatures, catalog)?;
-    let tail_obligations = index_tail_obligations(candidate.proper_tail_sites())?;
+    let tail_obligations = index_tail_obligations(
+        candidate.proper_tail_sites(),
+        candidate.proper_tail_locations(),
+    )?;
     let mut observed_tail_sites = BTreeSet::new();
     let closure_layouts = candidate.closure_layouts();
 
@@ -752,12 +763,39 @@ fn index_imports(
 
 fn index_tail_obligations(
     obligations: &[ProperTailSite],
-) -> Result<BTreeMap<TailSiteId, FunctionId>, InitialCheckError> {
-    let mut result = BTreeMap::new();
+    locations: &[ProperTailLocation],
+) -> Result<BTreeMap<TailSiteId, ProperTailLocation>, InitialCheckError> {
+    let mut expected_functions = BTreeMap::new();
     for obligation in obligations {
         let discharger = obligation.discharged_by.unwrap_or(obligation.function);
-        if result.insert(obligation.id, discharger).is_some() {
+        if expected_functions.insert(obligation.id, discharger).is_some() {
             return Err(InitialCheckError::DuplicateTailObligation(obligation.id));
+        }
+    }
+    let mut result = BTreeMap::new();
+    let mut occupied = BTreeSet::new();
+    for location in locations {
+        let site = location.site();
+        let expected = expected_functions
+            .get(&site)
+            .copied()
+            .ok_or(InitialCheckError::UnexpectedTailLocation(site))?;
+        if expected != location.function() {
+            return Err(InitialCheckError::TailSiteFunctionMismatch {
+                site,
+                expected,
+                actual: location.function(),
+            });
+        }
+        if result.insert(site, *location).is_some()
+            || !occupied.insert((location.function(), location.block()))
+        {
+            return Err(InitialCheckError::DuplicateTailLocation(site));
+        }
+    }
+    for site in expected_functions.keys() {
+        if !result.contains_key(site) {
+            return Err(InitialCheckError::MissingTailLocation(*site));
         }
     }
     Ok(result)
@@ -770,7 +808,7 @@ fn check_function(
     imports: &BTreeMap<ImportId, &ImportContract>,
     catalog: Option<&CanonicalAbiCatalog>,
     functions: &FunctionIndex,
-    tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
+    tail_obligations: &BTreeMap<TailSiteId, ProperTailLocation>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
     layouts: &crate::layout::LayoutInterner,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
@@ -802,6 +840,25 @@ fn check_function(
     let dominators = dominators(function, &blocks, &predecessors)?;
     let definition_sites = definition_sites(function);
     let memory = MemoryChecker::new(function, layouts, signature, closure_layouts)?;
+    let mut all_tail_sites = BTreeSet::new();
+    for block in &function.blocks {
+        match &block.terminator {
+            Terminator::TailCall { site, .. } | Terminator::VarTailCall { site, .. } => {
+                if !all_tail_sites.insert(*site) {
+                    return Err(InitialCheckError::DuplicateTailObligation(*site));
+                }
+                observe_tail_site(
+                    function,
+                    block.id,
+                    *site,
+                    false,
+                    tail_obligations,
+                    observed_tail_sites,
+                )?;
+            }
+            _ => {}
+        }
+    }
     check_memory_cfg(
         function,
         signature,
@@ -830,7 +887,7 @@ fn check_memory_cfg(
     definition_sites: &BTreeMap<ValueId, DefinitionSite>,
     dominators: &Dominators,
     mut memory: MemoryChecker<'_>,
-    tail_obligations: &BTreeMap<TailSiteId, FunctionId>,
+    tail_obligations: &BTreeMap<TailSiteId, ProperTailLocation>,
     observed_tail_sites: &mut BTreeSet<TailSiteId>,
 ) -> Result<(), InitialCheckError> {
     let mut incoming = BTreeMap::new();
@@ -889,7 +946,14 @@ fn check_memory_cfg(
     for block_id in incoming.keys() {
         match &blocks[block_id].terminator {
             Terminator::TailCall { site, .. } | Terminator::VarTailCall { site, .. } => {
-                observe_tail_site(function, *site, tail_obligations, observed_tail_sites)?;
+                observe_tail_site(
+                    function,
+                    *block_id,
+                    *site,
+                    true,
+                    tail_obligations,
+                    observed_tail_sites,
+                )?;
             }
             _ => {}
         }
@@ -1837,20 +1901,32 @@ fn check_tail_call(
 
 fn observe_tail_site(
     function: &Function,
+    block: BlockId,
     site: TailSiteId,
-    obligations: &BTreeMap<TailSiteId, FunctionId>,
+    reachable: bool,
+    obligations: &BTreeMap<TailSiteId, ProperTailLocation>,
     observed: &mut BTreeSet<TailSiteId>,
 ) -> Result<(), InitialCheckError> {
     let expected = obligations
         .get(&site)
         .copied()
         .ok_or(InitialCheckError::UnexpectedTailSite(site))?;
-    if expected != function.id {
+    if expected.function() != function.id {
         return Err(InitialCheckError::TailSiteFunctionMismatch {
             site,
-            expected,
+            expected: expected.function(),
             actual: function.id,
         });
+    }
+    if expected.block() != block {
+        return Err(InitialCheckError::TailSiteBlockMismatch {
+            site,
+            expected: expected.block(),
+            actual: block,
+        });
+    }
+    if !reachable {
+        return Ok(());
     }
     if !observed.insert(site) {
         return Err(InitialCheckError::DuplicateTailObligation(site));
@@ -1945,7 +2021,7 @@ mod tests {
         HostMutation, HostParameterRole, HostReentrancy, HostResultRole, ImportContract,
         ImportContractIdentity, ImportId, LoadTransfer, LoweredModuleParts, MemoryEffect, Operation, ParameterContract,
         ParameterOwnership, Place, Projection, ProperTailSite, ResultContract, Revision, TailSiteId,
-        StaticDataId, StaticDataSegment, Terminator, ValueId, ValueType,
+        ProperTailLocation, StaticDataId, StaticDataSegment, Terminator, ValueId, ValueType,
     };
     use super::{InitialCheckError, check_initial};
     use super::super::{CallArgument, OverflowBehavior, StoreTransfer};
@@ -3928,7 +4004,7 @@ mod tests {
             },
             vec![ValueType::Int],
             Vec::new(),
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
 
         assert!(check_initial(module).is_ok());
     }
@@ -4165,7 +4241,7 @@ mod tests {
             Terminator::Return { values: Vec::new() },
             Vec::new(),
             Vec::new(),
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
 
         assert!(check_initial(module).is_ok());
     }
@@ -4231,7 +4307,7 @@ mod tests {
                 id: TAIL_SITE,
                 function: FUNCTION, discharged_by: None,
             }],
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
 
         assert!(check_initial(module).is_ok());
     }
@@ -4251,7 +4327,11 @@ mod tests {
                 id: TAIL_SITE,
                 function: FUNCTION, discharged_by: None,
             }],
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(
+            TAIL_SITE,
+            FUNCTION,
+            BlockId::new(1),
+        )]);
         let condition = ValueId::new(99);
         module.functions[0].value_types.insert(condition, ValueType::Bool);
         module.functions[0].blocks[0].operations = vec![Operation::ConstBool {
@@ -4295,7 +4375,11 @@ mod tests {
                 id: TAIL_SITE,
                 function: FUNCTION, discharged_by: None,
             }],
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(
+            TAIL_SITE,
+            FUNCTION,
+            BlockId::new(1),
+        )]);
         module.functions[0].blocks.push(BasicBlock {
             id: BlockId::new(1),
             parameters: Vec::new(),
@@ -4323,11 +4407,102 @@ mod tests {
                 id: TAIL_SITE,
                 function: FUNCTION, discharged_by: None,
             }],
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
 
         assert_eq!(
             check_initial(module).unwrap_err(),
             InitialCheckError::MissingTailObligation(TAIL_SITE)
+        );
+    }
+
+    #[test]
+    fn unreachable_tail_at_the_bound_location_cannot_discharge_an_obligation() {
+        let mut module = lowered(
+            BTreeMap::new(),
+            Vec::new(),
+            Terminator::Return { values: Vec::new() },
+            Vec::new(),
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION,
+                discharged_by: None,
+            }],
+        )
+        .with_proper_tail_locations(vec![ProperTailLocation::new(
+            TAIL_SITE,
+            FUNCTION,
+            BlockId::new(1),
+        )]);
+        module.functions[0].blocks.push(BasicBlock {
+            id: BlockId::new(1),
+            parameters: Vec::new(),
+            operations: Vec::new(),
+            terminator: Terminator::TailCall {
+                site: TAIL_SITE,
+                callee: FUNCTION,
+                arguments: Vec::new(),
+            },
+        });
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::MissingTailObligation(TAIL_SITE)
+        );
+    }
+
+    #[test]
+    fn tail_site_moved_to_another_reachable_branch_is_refused() {
+        let mut module = lowered(
+            [(VALUE, ValueType::Bool)].into_iter().collect(),
+            vec![Operation::ConstBool {
+                destination: VALUE,
+                value: true,
+            }],
+            Terminator::BranchIf {
+                condition: VALUE,
+                then_target: BlockId::new(1),
+                then_arguments: Vec::new(),
+                else_target: BlockId::new(2),
+                else_arguments: Vec::new(),
+            },
+            Vec::new(),
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION,
+                discharged_by: None,
+            }],
+        )
+        .with_proper_tail_locations(vec![ProperTailLocation::new(
+            TAIL_SITE,
+            FUNCTION,
+            BlockId::new(1),
+        )]);
+        module.functions[0].blocks.extend([
+            BasicBlock {
+                id: BlockId::new(1),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: Terminator::Return { values: Vec::new() },
+            },
+            BasicBlock {
+                id: BlockId::new(2),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: Terminator::TailCall {
+                    site: TAIL_SITE,
+                    callee: FUNCTION,
+                    arguments: Vec::new(),
+                },
+            },
+        ]);
+
+        assert_eq!(
+            check_initial(module).unwrap_err(),
+            InitialCheckError::TailSiteBlockMismatch {
+                site: TAIL_SITE,
+                expected: BlockId::new(1),
+                actual: BlockId::new(2),
+            }
         );
     }
 
@@ -5456,7 +5631,7 @@ mod tests {
                 id: TAIL_SITE,
                 function: FUNCTION, discharged_by: None,
             }],
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
         assert_eq!(
             check_initial(moved_module).unwrap_err(),
             InitialCheckError::UseAfterConsume {
@@ -5489,7 +5664,7 @@ mod tests {
                 ownership: Some(super::super::Ownership::Shared),
             }],
             Vec::new(),
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
         assert_eq!(
             check_initial(module).unwrap_err(),
             InitialCheckError::UnconsumedReference {
@@ -5630,7 +5805,7 @@ mod tests {
                 ownership: Some(super::super::Ownership::Shared),
             }],
             vec![ProperTailSite { id: TAIL_SITE, function: FUNCTION, discharged_by: None }],
-        );
+        ).with_proper_tail_locations(vec![ProperTailLocation::new(TAIL_SITE, FUNCTION, ENTRY)]);
         assert!(check_initial(module).is_ok());
     }
 
