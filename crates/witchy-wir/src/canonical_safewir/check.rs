@@ -1624,8 +1624,24 @@ fn scalar_arithmetic_is_backend_total(
 ) -> bool {
     use super::{ArithmeticOperator as A, OverflowBehavior as O};
     match (value_type, operator, overflow) {
-        (ValueType::Int | ValueType::Size, _, O::Wrap) => true,
-        (ValueType::Int, A::DivideSigned | A::RemainderSigned, O::Trap) => true,
+        (
+            ValueType::Int | ValueType::Size,
+            A::Add
+            | A::Subtract
+            | A::Multiply
+            | A::BitAnd
+            | A::BitOr
+            | A::BitXor
+            | A::ShiftLeft
+            | A::ShiftRightSigned
+            | A::ShiftRightUnsigned,
+            O::Wrap,
+        ) => true,
+        (
+            ValueType::Int | ValueType::Size,
+            A::DivideSigned | A::DivideUnsigned | A::RemainderSigned | A::RemainderUnsigned,
+            O::Trap,
+        ) => true,
         (ValueType::Size, A::Add, O::Trap) => true,
         (
             ValueType::Float,
@@ -4163,6 +4179,54 @@ mod tests {
             ),
         ] {
             assert!(matches!(check_initial(candidate), Err(InitialCheckError::UnsupportedScalarOperation { .. })));
+        }
+    }
+
+    fn int_arithmetic_candidate(
+        left_value: i64,
+        right_value: i64,
+        operator: ArithmeticOperator,
+        overflow: OverflowBehavior,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        lowered(
+            [
+                (ValueId::new(40), ValueType::Int),
+                (ValueId::new(41), ValueType::Int),
+                (ValueId::new(42), ValueType::Int),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                Operation::ConstInt { destination: ValueId::new(40), value: left_value },
+                Operation::ConstInt { destination: ValueId::new(41), value: right_value },
+                Operation::Arithmetic {
+                    destination: ValueId::new(42),
+                    operator,
+                    left: ValueId::new(40),
+                    right: ValueId::new(41),
+                    overflow,
+                },
+            ],
+            Terminator::Return { values: vec![ValueId::new(42)] },
+            vec![ValueType::Int],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn wrapping_division_and_remainder_are_refused_before_runtime_traps() {
+        for (operator, left, right) in [
+            (ArithmeticOperator::DivideSigned, i64::MIN, -1),
+            (ArithmeticOperator::RemainderSigned, i64::MIN, -1),
+            (ArithmeticOperator::DivideSigned, 1, 0),
+            (ArithmeticOperator::DivideUnsigned, 1, 0),
+            (ArithmeticOperator::RemainderSigned, 1, 0),
+            (ArithmeticOperator::RemainderUnsigned, 1, 0),
+        ] {
+            assert!(matches!(
+                check_initial(int_arithmetic_candidate(left, right, operator, OverflowBehavior::Wrap)),
+                Err(InitialCheckError::UnsupportedScalarOperation { .. })
+            ));
         }
     }
 
