@@ -817,7 +817,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     fi
     canonical_wasmir_tail_expr=""
     if [ "$canonical_wasmir_tail" -eq 1 ]; then
-        canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::outlined_address_predicate_mutation_fails_independent_admission)"
+        canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::outlined_address_predicate_mutation_fails_independent_admission) or test(=canonical_wasmir::tests::outlined_retain_saturation_predicate_mutation_fails_admission) or test(=canonical_wasmir::tests::outlined_memory_bounds_body_size_and_executes_shared_nullable_drops)"
     fi
     cmds=(
         "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E 'test(wir_prelude::tests::every_prelude_import_has_abi_metadata) or test(wir_prelude::tests::parsed_prelude_imports_are_complete) or test(canonical_safewir::build_read::tests::build_read_catalog_separates_root_authority_from_bounded_responses) or test(boolean_reaches::) or test(constant_successor_publication_keeps_the_existing_prefix_ownership) or test(constant_prefix_publication_rejects_gaps_and_missing_children) or test(scalar_move_range_is_bounds_checked_and_admitted) or test(scalar_clone_range_is_ownership_safe_and_admitted) or test(owned_tail_nonprefix_range_requires_a_checked_end_bound) or test(dynamic_pointer_prefix_cannot_hide_an_unaccounted_child_slot) or test(canonical_wasm_encoding_is_private_and_requires_final_authority)${canonical_wasmir_tail_expr}${canonical_build_recipe_wir_expr}'"

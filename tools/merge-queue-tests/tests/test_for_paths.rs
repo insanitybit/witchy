@@ -687,8 +687,10 @@ fn canonical_wasmir_edit_keeps_the_expensive_admission_sentinel() {
     let commands = selected(&["--edit-loop", "crates/witchy-wir/src/canonical_wasmir.rs"]);
     assert_eq!(commands.len(), 3, "canonical WasmIR route changed shape: {commands:?}");
     assert!(
-        commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission"),
-        "direct WasmIR edits lost the independent admission sentinel: {commands:?}",
+        commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
+            && commands[0].contains("outlined_retain_saturation_predicate_mutation_fails_admission")
+            && commands[0].contains("outlined_memory_bounds_body_size_and_executes_shared_nullable_drops"),
+        "direct WasmIR edits lost a canonical tail sentinel: {commands:?}",
     );
 }
 
