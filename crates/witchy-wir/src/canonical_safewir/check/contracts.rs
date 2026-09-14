@@ -10,6 +10,33 @@ use super::{FunctionIndex, InitialCheckError};
 
 const MAX_CONTRACT_ITERATIONS: usize = 32;
 
+/// Borrowed syntax only, scoped to one contract derivation. Keep every candidate
+/// in scan order, including duplicate destinations in malformed input. This is
+/// not a cache of authentication answers or evolving body summaries.
+struct CallableDefinitions<'a> {
+    by_destination: BTreeMap<ValueId, Vec<&'a Operation>>,
+}
+
+impl<'a> CallableDefinitions<'a> {
+    fn new(function: &'a Function) -> Self {
+        let mut by_destination: BTreeMap<ValueId, Vec<&'a Operation>> = BTreeMap::new();
+        for operation in function.blocks.iter().flat_map(|block| &block.operations) {
+            let destination = match operation {
+                Operation::Load { destination, .. }
+                | Operation::MoveValue { destination, .. }
+                | Operation::ClosureOwner(
+                    crate::canonical_safewir::closure_owner_contract::OwnerOperation::ReadCallable {
+                        destination, ..
+                    },
+                ) => *destination,
+                _ => continue,
+            };
+            by_destination.entry(destination).or_default().push(operation);
+        }
+        Self { by_destination }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BodySummary {
     needs: Vec<BTreeSet<MemoryEffect>>,
@@ -157,11 +184,15 @@ fn derive_all(
         .map(|(id, function)| Ok((*id, initial_summary(function, signatures)?)))
         .collect::<Result<BTreeMap<_, _>, InitialCheckError>>()?;
 
+    let definitions = functions
+        .iter()
+        .map(|(id, function)| (*id, CallableDefinitions::new(function)))
+        .collect::<BTreeMap<_, _>>();
     let mut converged = false;
     for _ in 0..MAX_CONTRACT_ITERATIONS {
         let next = functions
             .iter()
-            .map(|(id, function)| Ok((*id, derive_summary(function, functions, signatures, &summaries)?)))
+            .map(|(id, function)| Ok((*id, derive_summary(function, functions, signatures, &summaries, &definitions[id])?)))
             .collect::<Result<BTreeMap<_, _>, InitialCheckError>>()?;
         if next == summaries {
             converged = true;
@@ -211,6 +242,7 @@ fn derive_summary(
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
+    definitions: &CallableDefinitions<'_>,
 ) -> Result<BodySummary, InitialCheckError> {
     let entry = function
         .blocks
@@ -236,7 +268,7 @@ fn derive_summary(
             (*value, Origin::Parameter { parameter: *parameter, layout })
         })
         .collect::<BTreeMap<_, _>>();
-    let mut origins = derive_origins(function, functions, signatures, summaries, &entry_origins)?;
+    let mut origins = derive_origins(function, functions, signatures, summaries, &entry_origins, definitions)?;
     let mut summary = initial_summary(function, signatures)?;
 
     for block in &function.blocks {
@@ -249,6 +281,7 @@ fn derive_summary(
                 summaries,
                 &mut origins,
                 &mut summary,
+                definitions,
             )?;
         }
         match &block.terminator {
@@ -285,7 +318,7 @@ fn derive_summary(
                     .get(signature)
                     .copied()
                     .ok_or(InitialCheckError::MissingSignature(*signature))?;
-                let target = indirect_target_summary(function, *callee, signature, functions, summaries)?;
+                let target = indirect_target_summary(function, *callee, signature, functions, summaries, definitions)?;
                 if target.results.len() != summary.results.len()
                     || signature.results.len() != summary.results.len()
                     || target.results.iter().any(|result| !is_indirect_result(result))
@@ -345,6 +378,7 @@ fn derive_origins(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     entry_origins: &BTreeMap<ValueId, Origin>,
+    definitions: &CallableDefinitions<'_>,
 ) -> Result<BTreeMap<ValueId, Origin>, InitialCheckError> {
     let blocks = function
         .blocks
@@ -370,6 +404,7 @@ fn derive_origins(
                     signatures,
                     summaries,
                     &mut origins,
+                    definitions,
                 )?;
             }
             match &block.terminator {
@@ -407,6 +442,7 @@ fn propagate_operation_origins(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
+    definitions: &CallableDefinitions<'_>,
 ) -> Result<(), InitialCheckError> {
     match operation {
         Operation::ClosureOwner(owner) => {
@@ -502,7 +538,7 @@ fn propagate_operation_origins(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            let target = indirect_target_summary(function, *callee, signature, functions, summaries)?;
+            let target = indirect_target_summary(function, *callee, signature, functions, summaries, definitions)?;
             if target.results.len() != destinations.len()
                 || target.results.iter().any(|result| !is_indirect_result(result))
             {
@@ -587,6 +623,7 @@ fn derive_operation(
     summaries: &BTreeMap<FunctionId, BodySummary>,
     origins: &mut BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
+    definitions: &CallableDefinitions<'_>,
 ) -> Result<(), InitialCheckError> {
     match operation {
         Operation::Alloc { destination, layout, class, extent } => {
@@ -661,7 +698,7 @@ fn derive_operation(
                 .get(signature)
                 .copied()
                 .ok_or(InitialCheckError::MissingSignature(*signature))?;
-            let target = indirect_target_summary(function, *callee, signature, functions, summaries)?;
+            let target = indirect_target_summary(function, *callee, signature, functions, summaries, definitions)?;
             if target.results.len() != destinations.len()
                 || target.results.iter().any(|result| !is_indirect_result(result))
             {
@@ -750,6 +787,7 @@ fn indirect_target_summary(
     signature: &FunctionSignature,
     functions: &FunctionIndex,
     summaries: &BTreeMap<FunctionId, BodySummary>,
+    definitions: &CallableDefinitions<'_>,
 ) -> Result<BodySummary, InitialCheckError> {
     let mut target = None;
     for candidate in functions.with_signature(signature.id) {
@@ -765,7 +803,7 @@ fn indirect_target_summary(
     if let Some(target) = target {
         return Ok(target);
     }
-    if authenticated_indirect_callee(function, callee, signature.id, &mut BTreeSet::new()) {
+    if authenticated_indirect_callee(definitions, callee, signature.id, &mut BTreeSet::new()) {
         return declared_shared_summary(signature)
             .ok_or(InitialCheckError::UnsupportedIndirectCall { function: function.id });
     }
@@ -776,7 +814,7 @@ fn indirect_target_summary(
 /// came from a checked closure lane. A raw Callable parameter remains
 /// unsupported because its table index has no authenticated signature.
 fn authenticated_indirect_callee(
-    function: &Function,
+    definitions: &CallableDefinitions<'_>,
     callee: ValueId,
     signature: FunctionSignatureId,
     visited: &mut BTreeSet<ValueId>,
@@ -784,7 +822,7 @@ fn authenticated_indirect_callee(
     if !visited.insert(callee) {
         return false;
     }
-    function.blocks.iter().flat_map(|block| &block.operations).any(|operation| match operation {
+    definitions.by_destination.get(&callee).into_iter().flatten().copied().any(|operation| match operation {
         Operation::Load { destination, place, transfer }
             if *destination == callee
                 && *transfer == LoadTransfer::CopyScalar
@@ -797,7 +835,7 @@ fn authenticated_indirect_callee(
             },
         ) if *destination == callee && *family == signature => true,
         Operation::MoveValue { destination, source } if *destination == callee => {
-            authenticated_indirect_callee(function, *source, signature, visited)
+            authenticated_indirect_callee(definitions, *source, signature, visited)
         }
         _ => false,
     })
@@ -1092,6 +1130,9 @@ fn returned_extent(extent: &Extent) -> ReturnedExtent {
         Extent::HeaderPrefix { minimum_bytes } => ReturnedExtent::FixedBytes(u64::from(*minimum_bytes)),
     }
 }
+
+#[cfg(test)]
+mod callable_definition_index_tests;
 
 #[cfg(test)]
 mod tests {
