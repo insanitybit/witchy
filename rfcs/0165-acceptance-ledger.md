@@ -2124,3 +2124,16 @@ remaining workflow/optimizer obligations are still pending.
 - `rfc0165_chars_allocation` and `rfc0165_encoding`: 13/13 passed (nextest run `5aad32f6-3983-49e6-9d33-44fb28d00464`). The new three-leg cases cover 32,768 scalars under a 16 MiB native limit, UTF-8 scalar indexing, dynamic empty strings, retained aliases, mutation, malformed base64, and zero owned-object leaks.
 - Existing-binary `hello`, `wrap`, and `jq` parity agreed (3/5/7 output lines). The formerly trapping 8 MiB public-base64 input now decodes to 6 MiB. The separate registry replay subsequently traps during install; registry reliability is supporting evidence, not a SafeWIR acceptance gate.
 - Bounded steady-state heap reuse remains a distinct obligation: balanced owned-object accounting alone does not establish reusable storage. No new corpus count or compiler-wide memory-safety claim is made here.
+
+### 2026-09-14: complete canonical example coverage
+
+Broad source `unique` contracts remain deferred from canonical v1; the
+`opt_mode` example now uses the ordinary owned-reference ABI while preserving
+its proper-tail state machine. The exact example, its rune test, and the
+serialized merge gate passed, landing as `3897237b31e38e91dfe364cc9bce9ce0478b1968`.
+
+A fresh run of `WITCHY_DEV_TARGET=/private/tmp/witchy-rfc0165-bounded-heap/target-codex
+./scripts/rfc0165-dev/census.sh` against that source and the allocator-integrity
+backend reported `check ok=163 fail=0`, `runnable agree: 92`, and
+`disagree: 0`. This closes canonical example-language coverage. It does not
+establish optimizer correctness or compiler-wide memory safety.
