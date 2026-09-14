@@ -26,6 +26,8 @@ mod exec;
 mod fetch;
 #[path = "canonical_registry_hosts.rs"]
 mod registry_hosts;
+#[path = "canonical_dir_storage.rs"]
+mod dir_storage;
 #[path = "canonical_build_read.rs"]
 mod build_read;
 #[path = "canonical_crypto.rs"]
@@ -809,6 +811,19 @@ if capability_imports.contains("build_out_write_at") {
                     push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
                 ];
                 catalog = catalog.with_build_exec_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![dir, text, text], vec![ValueType::Bool], None)?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                ];
+                catalog = catalog.with_dir_storage_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if witchy_wir::canonical_safewir::REGISTRY_HOST_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
@@ -8002,6 +8017,12 @@ impl FunctionLowerer<'_> {
         if self.values[&token] != ValueType::Capability(receiver_kind) {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability operation token"));
         }
+        if dir_storage::is_operation(name) {
+            if receiver_kind != witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND {
+                return Err(CanonicalLoweringError::UnsupportedExpression("Dir storage receiver"));
+            }
+            return self.lower_dir_storage(name, token, &arguments[1..]);
+        }
         if name == "__capop.now" && arguments.len() == 1
             && receiver_kind == witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND
         {
@@ -13942,8 +13963,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 28] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into"];
+const CAPABILITY_IMPORTS: [&str; 34] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into", "dir_write_bytes_at"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -13979,6 +14000,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
+    if dir_storage::is_operation(name) { return true; }
     matches!(name, "__capop.now" | "__capop.make_dir" | "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
 }
 
@@ -14002,6 +14024,12 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                 match (name.as_str(), receiver) {
                     ("__capop.now", "Clock") => { needed.insert("clock_now"); }
                     ("__capop.make_dir", "Dir") => { needed.insert("dir_make_dir_at"); }
+                    ("__capop.create_new", "Dir") => { needed.insert("dir_create_new_at"); }
+                    ("__capop.replace", "Dir") => { needed.insert("dir_replace_at"); }
+                    ("__capop.read_bytes", "Dir") => {
+                        needed.extend(["dir_read_bytes_at", "dir_bytes_response_size", "dir_bytes_response_into"]);
+                    }
+                    ("__capop.write_bytes", "Dir") => { needed.insert("dir_write_bytes_at"); }
                     ("__capop.only", "Fetch") => { needed.insert("fetch_only_at"); }
                     ("__capop.fetch", "Net") => { needed.insert("net_fetch_at"); }
                     ("__capop.send_raw", "Fetch") => {

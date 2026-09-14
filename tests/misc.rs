@@ -25,6 +25,9 @@ mod rfc0165_messages;
 #[path = "misc/rfc0165_registry_hosts.rs"]
 mod rfc0165_registry_hosts;
 
+#[path = "misc/rfc0165_dir_storage.rs"]
+mod rfc0165_dir_storage;
+
 #[path = "misc/rfc0165_range_bounds.rs"]
 mod rfc0165_range_bounds;
 

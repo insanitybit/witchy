@@ -1879,3 +1879,48 @@ version (`git diff --exit-code impl/rfc0165-online-pm-integration --
 crates/witchy-wir/src/canonical_wasmir.rs`). The co-selected deferred
 package-manager lifecycle probe still refuses during Coven lowering at
 `UnsupportedExpression("comparison type")`; it is not a green workflow claim.
+
+### Confined directory storage integration (2026-09-14)
+
+Canonical lowering now covers `Dir.create_new`, `Dir.replace`, `Dir.read_bytes`,
+and `Dir.write_bytes` through six authenticated imports. Exclusive creation and
+atomic replacement retain the existing provider semantics. Binary reads return
+private, immutable, instance-bound snapshots; repeated size/copy operations do
+not reread paths. Copies preflight their entire output and leave short buffers
+untouched. The lowerer guards returned lengths before publishing counted bytes.
+Void host calls materialize Unit in value position; their host ABI stays void.
+The ABI catalog contains 163 imports. No new SafeWIR operation, raw fallback,
+entry capability, or validator exception was added.
+
+Independent reviews covered catalog/lowering and native/oracle boundaries.
+Review corrections preserve signed response-size limits and the distinct
+create/replace/read behavior for leaf symlinks; intermediate traversal remains
+refused. Oracle filesystem mutations stay within its explicit fixture overlay.
+The runtime and oracle implementations remain independent.
+
+Focused final evidence: 42/42 passed, no retries, nextest run
+`f2ae5b77-d8ee-4f3a-b22b-55cea7f5251d`, 7.263 seconds after a 19.74-second build.
+Command: `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run
+-p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower
+--features native --lib --bin witchy --test misc --test e2e --test codegen
+--test cli_subcommands --test rfc0165_route_gate --ignore-default-filter
+--profile ci --retries 0 -E 'test(dir_storage_) |
+test(server_pool_dir_storage_) | binary_id(=witchy-wir::rfc0165_route_gate)'
+--test-threads 2 --no-fail-fast`.
+Log: `/private/tmp/witchy-dir-storage-focused.log`.
+The broader integration run `881b6ce1-2cb9-4841-9688-6613cbb7b4eb` had 78 passes
+and one deferred package-manager failure; registry, range, source-scope, and ABI
+checks passed. `hello`, `wrap`, and `jq` agree with 3, 5, and 7 output lines in
+`/private/tmp/witchy-dir-storage-compact-parity.log`.
+
+The real `pm_coven_lifecycle::witchy_pm_add_resolves_and_fetches_from_coven`
+probe now passes the previous missing `__capop.replace` lowering and refuses at
+`UnsupportedExpression("comparison type")` before Coven binds its socket.
+Its traced rejection is the non-scalar/non-String comparison branch in
+`canonical_lower.rs::lower_binary`; the failing source function and operand
+kind are not yet isolated. A standalone Bytes equality/inequality probe agrees
+on two output lines, so Bytes comparison is not being changed speculatively.
+Diagnostic log: `/private/tmp/witchy-dir-storage-next-blocker.log`.
+No deferred test was removed, no broad census was rerun, and neither the whole
+package-manager workflow nor compiler-wide memory safety is established here.

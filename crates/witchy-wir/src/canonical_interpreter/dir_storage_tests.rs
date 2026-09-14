@@ -97,6 +97,18 @@ fn dir_storage_oracle_snapshots_survive_writes_and_short_copies() {
 }
 
 #[test]
+fn dir_storage_oracle_response_length_signed_abi_boundary_without_allocation() {
+    use crate::canonical_interpreter::dir_storage::response_length;
+    for length in [0, 1, i32::MAX as usize - 1, i32::MAX as usize] {
+        assert_eq!(response_length(length), Ok(length as u64));
+    }
+    for length in [i32::MAX as usize + 1, u32::MAX as usize, usize::MAX] {
+        assert_eq!(response_length(length),
+            Err(InterpretError::RegistryFixture("Dir byte response exceeds the guest ABI size limit".into())));
+    }
+}
+
+#[test]
 fn dir_storage_oracle_empty_response_has_typed_zero() {
     let (module, layout) = module(vec![]);
     let mut engine = Engine::new(module.module(), config());
@@ -260,7 +272,7 @@ fn dir_storage_oracle_aliased_inputs_are_snapshotted() {
 }
 
 #[test]
-fn dir_storage_oracle_fallback_is_readonly_and_refuses_aliases() {
+fn dir_storage_oracle_fallback_leaf_symlinks_preserve_provider_operations() {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!("witchy-dir-storage-{}-{}", std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
@@ -290,16 +302,42 @@ fn dir_storage_oracle_fallback_is_readonly_and_refuses_aliases() {
     for (name, target) in [("inside", "file"), ("outside", "/"), ("dangling", "absent"), ("parent", "directory")] {
         std::os::unix::fs::symlink(target, root.join(name)).unwrap();
         for operation in ["dir_create_new_at", "dir_replace_at", "dir_write_bytes_at", "dir_read_bytes_at"] {
-            for path in [name.to_owned(), format!("./{name}/./child")] {
-                let before = engine.config.fixture.clone();
-                let result = if operation == "dir_read_bytes_at" {
-                    let path = buffer(&mut engine, layout, &mut values, path.as_bytes(), false);
-                    engine.dir_storage_host_call(operation, &[RESULT], &[HostCallArgument::Capability(CAP), path], &mut values)
-                } else { write(&mut engine, layout, &mut values, operation, path.as_bytes(), b"data") };
-                assert!(result.is_err(), "{operation}/{path}");
-                assert_eq!(engine.config.fixture, before);
-            }
+            let path = format!("./{name}/./child");
+            let before = engine.config.fixture.clone();
+            let result = if operation == "dir_read_bytes_at" {
+                let path = buffer(&mut engine, layout, &mut values, path.as_bytes(), false);
+                engine.dir_storage_host_call(operation, &[RESULT], &[HostCallArgument::Capability(CAP), path], &mut values)
+            } else { write(&mut engine, layout, &mut values, operation, path.as_bytes(), b"data") };
+            assert!(result.is_err(), "intermediate link: {operation}/{path}");
+            assert_eq!(engine.config.fixture, before);
         }
+        let before = engine.config.fixture.clone();
+        assert!(write(&mut engine, layout, &mut values, "dir_write_bytes_at", name.as_bytes(), b"data").is_err());
+        let path = buffer(&mut engine, layout, &mut values, name.as_bytes(), false);
+        assert!(engine.dir_storage_host_call("dir_read_bytes_at", &[RESULT],
+            &[HostCallArgument::Capability(CAP), path], &mut values).is_err());
+        assert_eq!(engine.config.fixture, before);
+        for operation in ["dir_create_new_at", "dir_replace_at"] {
+            assert!(write(&mut engine, layout, &mut values, operation, name.as_bytes(), &[255]).is_err());
+            assert_eq!(engine.config.fixture, before, "text preflight precedes every leaf-link result");
+        }
+        write(&mut engine, layout, &mut values, "dir_create_new_at", name.as_bytes(), b"loser").unwrap();
+        assert_eq!(values[&RESULT], InterpreterValue::Bool(false));
+        assert_eq!(engine.config.fixture, before, "an existing leaf link loses exclusive creation");
+        write(&mut engine, layout, &mut values, "dir_replace_at", name.as_bytes(), b"local replacement").unwrap();
+        assert_eq!(engine.config.fixture.files[name], b"local replacement");
+        assert!(std::fs::symlink_metadata(root.join(name)).unwrap().file_type().is_symlink(), "replacement is fixture-only");
+        assert_eq!(std::fs::read_link(root.join(name)).unwrap(), std::path::PathBuf::from(target));
+        assert_eq!(std::fs::read(root.join("file")).unwrap(), b"changed fixture", "the link target is never written");
+        let response = snapshot(&mut engine, layout, &mut values, name.as_bytes());
+        values.insert(RESPONSE, response);
+        let output = buffer(&mut engine, layout, &mut values, &[0; 17], true);
+        engine.dir_storage_host_call("dir_bytes_response_into", &[RESULT],
+            &[HostCallArgument::Capability(RESPONSE), output.clone()], &mut values).unwrap();
+        assert_eq!(bytes(&engine, &output, &values), b"local replacement");
+        write(&mut engine, layout, &mut values, "dir_write_bytes_at", name.as_bytes(), &[255]).unwrap();
+        assert_eq!(engine.config.fixture.files[name], [255], "after replacement the virtual entry is a regular file");
+        assert!(write(&mut engine, layout, &mut values, "dir_replace_at", format!("{name}/child").as_bytes(), b"data").is_err());
     }
     engine.config.fixture.root = Some(root.join("file/child"));
     let before = engine.config.fixture.clone();

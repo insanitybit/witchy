@@ -1,4 +1,6 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
+use std::sync::Arc;
+use witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES;
 
 #[path = "exec.rs"]
 mod canonical_exec;
@@ -34,6 +36,9 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
     linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
     linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[2], host_dir_read_bytes_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_bytes_response_size)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_bytes_response_into)?;
     Ok(())
 }
 
@@ -54,6 +59,9 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     // `Dir[Write]` gate as its frozen siblings.
     linker.func_wrap("witchy", "dir_write_at", host_dir_write_at)?;
     linker.func_wrap("witchy", "dir_make_dir_at", host_dir_make_dir_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[0], host_dir_create_new_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[1], host_dir_replace_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[5], host_dir_write_bytes_at)?;
     Ok(())
 }
 
@@ -668,6 +676,132 @@ fn read_bytes_backing(file: &FileBacking) -> Result<Vec<u8>> {
         }),
     }
 }
+
+/// Private immutable read result, not a Dir or an entry grant. Neither an
+/// integer kind nor bytes supplied by the guest can construct this authority.
+#[derive(Clone)]
+struct DirBytesResponse {
+    issuer: Arc<()>,
+    bytes: Arc<Vec<u8>>,
+}
+
+fn dir_bytes_length(length: usize) -> Result<i32> {
+    i32::try_from(length).map_err(|_| Error::msg("Dir byte response exceeds the guest ABI size limit"))
+}
+
+fn dir_storage_range(ptr: i32, length: i32, limit: usize) -> Result<std::ops::Range<usize>> {
+    let start = usize::try_from(ptr).map_err(|_| Error::msg("negative Dir storage slice pointer"))?;
+    let length = usize::try_from(length).map_err(|_| Error::msg("negative Dir storage slice length"))?;
+    let end = start.checked_add(length).filter(|end| *end <= limit)
+        .ok_or_else(|| Error::msg("Dir storage slice lies outside guest memory"))?;
+    Ok(start..end)
+}
+
+fn dir_bytes_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Arc<Vec<u8>>> {
+    let token = token.ok_or_else(|| Error::msg("Dir byte response is null"))?;
+    let data = token.data(caller)?.ok_or_else(|| Error::msg("Dir byte response has no host data"))?;
+    let response = data.downcast_ref::<DirBytesResponse>()
+        .ok_or_else(|| Error::msg("Dir byte response has wrong host kind"))?;
+    if !Arc::ptr_eq(&caller.data().registry_issuer, &response.issuer) {
+        return Err(Error::msg("Dir byte response belongs to another instance"));
+    }
+    Ok(response.bytes.clone())
+}
+
+fn host_dir_read_bytes_at(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let dir = dir_authority_ref(&caller, dir)?;
+    dir_require_read(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
+    dir_guard(&dir, &path, false)?;
+    // Exactly one filesystem read. Later getters only borrow this snapshot.
+    let bytes = read_bytes_backing(&dir_file_backing(&dir, &path, false)?)?;
+    dir_bytes_length(bytes.len())?;
+    let response = DirBytesResponse { issuer: caller.data().registry_issuer.clone(), bytes: Arc::new(bytes) };
+    ExternRef::new(&mut caller, response).map(Some)
+}
+
+fn host_dir_bytes_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    dir_bytes_length(dir_bytes_response(&caller, token)?.len())
+}
+
+fn host_dir_bytes_response_into(
+    mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32,
+) -> Result<i32> {
+    let bytes = dir_bytes_response(&caller, token)?;
+    let required = dir_bytes_length(bytes.len())?;
+    let memory = memory_of(&mut caller)?;
+    let output = dir_storage_range(out_ptr, capacity, memory.data_size(&caller))?;
+    // Preflight even an empty or short buffer in full. No partial copy, state
+    // consumption, or guest-visible pointer into another instance's memory.
+    if output.len() >= bytes.len() {
+        memory.write(&mut caller, output.start, bytes.as_slice())?;
+    }
+    Ok(required)
+}
+
+fn dir_storage_text_inputs(
+    caller: &mut Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<(DirAuthority, String, String)> {
+    let dir = dir_authority_ref(caller, dir)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(caller)?;
+    let path = read_slice_str(memory.data(&*caller), path_ptr, path_len)?;
+    let contents = read_slice_str(memory.data(&*caller), data_ptr, data_len)?;
+    Ok((dir, path, contents))
+}
+
+fn host_dir_create_new_at(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<i32> {
+    let (dir, path, contents) = dir_storage_text_inputs(&mut caller, dir, path_ptr, path_len, data_ptr, data_len)?;
+    dir_guard(&dir, &path, false)?;
+    let _ = dir_file_backing(&dir, &path, true)?;
+    let created = match &dir.backing {
+        DirBacking::Fs(base) => base.create_new(&path, contents.as_bytes())
+            .map_err(|e| Error::msg(format!("create_new failed for `{path}`: {}", e.0)))?,
+    };
+    Ok(i32::from(created))
+}
+
+fn host_dir_replace_at(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<()> {
+    let (dir, path, contents) = dir_storage_text_inputs(&mut caller, dir, path_ptr, path_len, data_ptr, data_len)?;
+    dir_guard(&dir, &path, false)?;
+    let _ = dir_file_backing(&dir, &path, true)?;
+    match &dir.backing {
+        DirBacking::Fs(base) => base.replace(&path, contents.as_bytes())
+            .map_err(|e| Error::msg(format!("replace failed for `{path}`: {}", e.0))),
+    }
+}
+
+fn host_dir_write_bytes_at(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<()> {
+    let dir = dir_authority_ref(&caller, dir)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
+    let input = dir_storage_range(data_ptr, data_len, memory.data_size(&caller))?;
+    let bytes = memory.data(&caller)[input].to_vec();
+    dir_guard(&dir, &path, false)?;
+    match dir_file_backing(&dir, &path, true)? {
+        FileBacking::Fs(file) => file.write_all(&bytes).map_err(|e| {
+            Error::msg(format!("write failed for `{}`: {e}", file.display_path().display()))
+        }),
+    }
+}
+
+#[cfg(test)]
+#[path = "dir_storage_tests.rs"]
+mod dir_storage_tests;
 
 /// `exec_run(d, path, args, stdin) -> byte length`: spawn the executable named by
 /// `path` within Dir externref `d` (confined like `dir_read`), passing `args` (a

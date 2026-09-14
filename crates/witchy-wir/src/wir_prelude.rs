@@ -376,11 +376,17 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "secretstore_lookup_at" (func $secretstore_lookup_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "crypto_sign_into" (func $crypto_sign_into_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_public_key_into" (func $crypto_public_key_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_create_new_at" (func $dir_create_new_at_host (param externref i32 i32 i32 i32) (result i32)))
+  (import "witchy" "dir_replace_at" (func $dir_replace_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_read_bytes_at" (func $dir_read_bytes_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_bytes_response_size" (func $dir_bytes_response_size_host (param externref) (result i32)))
+  (import "witchy" "dir_bytes_response_into" (func $dir_bytes_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_write_bytes_at" (func $dir_write_bytes_at_host (param externref i32 i32 i32 i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 157;
+pub const IMPORT_COUNT: usize = 163;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -550,6 +556,12 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "secretstore_lookup_at"
         | "crypto_sign_into"
         | "crypto_public_key_into"
+        | "dir_create_new_at"
+        | "dir_replace_at"
+        | "dir_read_bytes_at"
+        | "dir_bytes_response_size"
+        | "dir_bytes_response_into"
+        | "dir_write_bytes_at"
         | "crypto.sign"
         | "crypto.public_key"
         | "secretstore_lookup"
@@ -689,10 +701,12 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_list_into"
         | "dir_exists_at"
         | "dir_is_dir_at"
-        | "dir_read_file" => AUTH_DIR_READ,
+        | "dir_read_file" | "dir_read_bytes_at" | "dir_bytes_response_size"
+        | "dir_bytes_response_into" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
-        | "dir_write_at" | "dir_make_dir_at" => AUTH_DIR_WRITE,
+        | "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"
+        | "dir_replace_at" | "dir_write_bytes_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" | "file_read_into" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
