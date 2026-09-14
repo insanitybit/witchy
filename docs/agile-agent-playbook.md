@@ -130,6 +130,18 @@ Use `./scripts/agent-check.sh` for local checks:
 - `./scripts/agent-check.sh parity`
 - `./scripts/test-for-paths.sh --run <path...>` (for unusual touched sets)
 
+When the branch is ready to queue, use the combined command from its own
+worktree:
+
+```sh
+./scripts/submit-with-presubmit.sh <branch> [note]
+```
+
+It runs the exact-tip edit checks and submits that same tip, preserving the
+receipt join used to measure and prevent failure-driven rework. Use the
+separate `agent-check.sh edit` then `merge-queue.sh submit` commands only when
+you need to inspect or stage those steps independently.
+
 Defaults:
 
 - No command here runs the full gate.
