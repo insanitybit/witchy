@@ -1038,6 +1038,7 @@ fn direct_rfc0165_fixture_edits_run_complete_modules() {
     for (path, module) in [
         ("tests/misc/rfc0165_messages.rs", "rfc0165_messages"),
         ("tests/misc/rfc0165_corpus.rs", "rfc0165_corpus"),
+        ("tests/misc/rfc0165_project_run.rs", "rfc0165_project_run"),
     ] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");

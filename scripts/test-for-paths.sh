@@ -829,6 +829,8 @@ if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
             cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_messages::/)'" ) ;;
         tests/misc/rfc0165_corpus.rs)
             cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_corpus::/)'" ) ;;
+        tests/misc/rfc0165_project_run.rs)
+            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_project_run::/)'" ) ;;
         *) ;;
     esac
 fi
@@ -836,7 +838,8 @@ if [ "$edit_loop" -eq 1 ] && [ "${#cmds[@]}" -gt 0 ] \
     && [ "${#paths[@]}" -eq 1 ] \
     && { [ "${paths[0]}" = "tests/misc/rfc0165_fetch.rs" ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_messages.rs" ] \
-        || [ "${paths[0]}" = "tests/misc/rfc0165_corpus.rs" ]; }; then
+        || [ "${paths[0]}" = "tests/misc/rfc0165_corpus.rs" ] \
+        || [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ]; }; then
     : # Keep the exact direct-file module route selected above.
 elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
     && [ "$registry_replay_paths_only" -eq 1 ] \
