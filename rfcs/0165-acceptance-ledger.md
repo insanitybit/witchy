@@ -1821,3 +1821,29 @@ build; run `8bbc525b-f6bd-4de3-87fc-a3dc021d502e`, log
 command with filter `test(commands::embedded_pm::tests::) | test(rfc0165_pm::) | test(registry_hosts_checked_) | test(rfc0165_range_bounds::)`.
 The full gate remains the coordinator's responsibility; this is not terminal
 landing evidence.
+
+### Registry gate repair: observer refusal fixture (2026-09-14)
+
+The second registry gate attempt (`43a0a53fb21742b16c64fab9d20e851c0aee5cb5`,
+rebased candidate `2e878fe1eefdaad7588c9450a940352e3b184f14`) was red at
+`2026-09-14T06:42:11Z`: `admitted_observer_is_not_called_on_refusal`
+used an unused Clock entry as an unsupported-source placeholder. Clock entry
+admission is now supported. The fixture now uses the existing open-Dynamic
+library refusal, which lacks closed payload authority. Both the zero-observer
+assertion and the Unsupported/Rejected distinction remain; the separate
+AST-only missing-source-witness negative is unchanged.
+
+Focused evidence: 48/48 passed, no retries, nextest run
+`1d3fde59-698f-4176-87d4-8dd76ae73446`, 4.973 seconds after a 21.01-second build.
+Command: `CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc taskpolicy -c utility cargo nextest run
+-p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower
+--features native --lib --bin witchy --test misc --test e2e --test codegen
+--test cli_subcommands --ignore-default-filter --profile ci --retries 0
+-E 'test(admitted_observer_is_not_called_on_refusal) |
+test(commands::embedded_pm::tests::) | test(registry_hosts_) |
+test(registry_oracle_) | test(rfc0165_range_bounds::)'
+--test-threads 2 --no-fail-fast`.
+Local log: `/private/tmp/witchy-registry-observer-refusal-repair.log`.
+This is focused evidence, not a terminal merge event or completion of the
+package-manager workflow. Directory storage remains a separate unfinished slice.

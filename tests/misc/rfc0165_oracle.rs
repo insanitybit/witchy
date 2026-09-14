@@ -45,8 +45,12 @@ fn main(console: Console):
 
 #[test]
 fn admitted_observer_is_not_called_on_refusal() {
-    let unsupported = witchy::resolve_std_only_checked("fn main(clock: Clock):\n    Nil\n")
-        .expect("backend-unsupported source checks");
+    // An open library parameter has no authenticated closed Dynamic payload
+    // catalog. Unlike a newly supported entry capability, this is an explicit
+    // missing-authority refusal rather than a coverage-dependent placeholder.
+    let unsupported = witchy::resolve_std_only_checked(
+        "import dynamic\nfn forward(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\n",
+    ).expect("open Dynamic library source checks without inventing payload authority");
     let ast = witchy_syntax::parser::parse_module("fn main() -> Int:\n    1\n")
         .expect("AST-only source parses");
     let ast_only = witchy_types::pipeline::link_checked(
