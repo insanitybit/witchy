@@ -869,6 +869,10 @@ fn build_recipe_test_edits_run_their_executable_module() {
     for (path, module) in [
         ("src/source/build_recipe_tests.rs", "build_recipe_tests"),
         (
+            "src/source/build_net_recipe_tests.rs",
+            "build_recipe_tests::build_net_recipe_tests",
+        ),
+        (
             "src/source/build_env_recipe_tests.rs",
             "build_env_recipe_tests",
         ),

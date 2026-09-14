@@ -365,6 +365,9 @@ for p in "${paths[@]}"; do
         src/source/build_recipe_tests.rs)
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::/)'"
             path_has_early=1 ;;
+        src/source/build_net_recipe_tests.rs)
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_recipe_tests::build_net_recipe_tests::/)'"
+            path_has_early=1 ;;
         src/source/build_env_recipe_tests.rs)
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^source::build_env_recipe_tests::/)'"
             path_has_early=1 ;;
