@@ -478,7 +478,7 @@ fn cmd_init(console: Console, root: Dir, dir: String) -> Int:
 // --- lock: pin every dependency by content hash ------------------------------
 // The lockfile is regenerated from source, so it can never disagree with the
 // bytes on disk: `lock` writes the hashes, `verify` recomputes and compares.
-fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
+pub fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
     if dir.is_empty():
         console.print("usage: grimoire lock <dir>")
         1

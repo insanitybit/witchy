@@ -5,9 +5,9 @@
 
 use crate::{ast, bundled_module, commands, parser, pipeline};
 
-// Project execution has its own source entry, not an AST-selected declaration
-// or a copied witness. Both CLI routes call the same Grimoire handler; unrelated
-// registry command bodies do not become part of this entry's admission scope.
+// Project workflows have their own source entries, not AST-selected declarations
+// or copied witnesses. Each CLI route calls its existing Grimoire handler;
+// unrelated registry bodies do not become part of that entry's admission scope.
 const PROJECT_RUN_ENTRY: &str = r#"from grimoire import cmd_run
 fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec) -> Int:
     cmd_run(console, runner, root, bin, args)
@@ -16,6 +16,14 @@ fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec)
 const PROJECT_BUILD_ENTRY: &str = r#"from grimoire import cmd_build
 fn main(console: Console, args: List(String), root: Dir, bin: Dir, runner: Exec, env: Env) -> Int:
     cmd_build(console, runner, root, bin, env, args)
+"#;
+
+const PROJECT_LOCK_ENTRY: &str = r#"from grimoire import cmd_lock
+fn main(console: Console, args: List(String), root: Dir) -> Int:
+    if args.length() > 1:
+        cmd_lock(console, root, args[1])
+    else:
+        cmd_lock(console, root, "")
 "#;
 
 /// Run the EMBEDDED witchy package-manager front-end (`projects/grimoire/src/grimoire.witchy`)
@@ -86,6 +94,8 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
             ("__witchy_project_run", PROJECT_RUN_ENTRY)
         } else if pm_args.first().map(String::as_str) == Some("build") {
             ("__witchy_project_build", PROJECT_BUILD_ENTRY)
+        } else if pm_args.first().map(String::as_str) == Some("lock") {
+            ("__witchy_project_lock", PROJECT_LOCK_ENTRY)
         } else {
             ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"))
         };
