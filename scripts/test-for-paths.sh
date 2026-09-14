@@ -715,6 +715,9 @@ for p in "${paths[@]}"; do
         scripts/agent-check.sh | scripts/test-agent-check-qos.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/test-agent-check-qos.sh" ;;
+        scripts/submit-with-presubmit.sh | scripts/test-submit-with-presubmit.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/test-submit-with-presubmit.sh" ;;
         scripts/test-for-paths.sh | scripts/test-path-receipts.sh | scripts/test-impact.py | \
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
