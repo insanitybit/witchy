@@ -15,4 +15,4 @@ for f in examples/*/src/*.witchy; do
 done
 echo "check ok=$ok fail=$fail"
 echo "runnable agree: $(grep -c ^AGREE "$STATUS/census-parity.txt")  disagree: $(grep -c ^DISAGREE "$STATUS/census-parity.txt")"
-grep ^DISAGREE "$STATUS/census-parity.txt"
+grep ^DISAGREE "$STATUS/census-parity.txt" || true
