@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_syntax::ast::{Type, TypeDef};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CapabilityKind { Console, Dir, Env, File, Net, Listener, Socket, BuildOut, BuildRead, BuildEnv, BuildExec, BuildNet, Exec, Fetch }
+pub enum CapabilityKind { Console, Dir, Env, File, Net, Listener, Socket, BuildOut, BuildRead, BuildEnv, BuildExec, BuildNet, Exec, Fetch, Clock, SecretStore, Secret }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityRepresentation {
@@ -58,6 +58,9 @@ fn direct_kind(
     match name.as_str() {
         "Exec" if arguments.is_empty() => return Some(CapabilityKind::Exec),
         "Fetch" if arguments.is_empty() => return Some(CapabilityKind::Fetch),
+        "Clock" if arguments.is_empty() => return Some(CapabilityKind::Clock),
+        "SecretStore" if arguments.is_empty() => return Some(CapabilityKind::SecretStore),
+        "Secret" => return Some(CapabilityKind::Secret),
         "BuildOut" if arguments.is_empty() => return Some(CapabilityKind::BuildOut),
         "BuildRead" if arguments.is_empty() => return Some(CapabilityKind::BuildRead),
         "BuildEnv" if arguments.is_empty() => return Some(CapabilityKind::BuildEnv),
@@ -90,6 +93,20 @@ mod tests {
     }
 
     fn named(name: &str) -> Type { Type::Named(name.to_owned(), Vec::new()) }
+
+    #[test]
+    fn registry_capabilities_keep_root_kinds_and_nullable_secret_distinct() {
+        let definitions = BTreeMap::new();
+        for (name, kind) in [("Clock", CapabilityKind::Clock), ("SecretStore", CapabilityKind::SecretStore), ("Secret", CapabilityKind::Secret)] {
+            assert_eq!(representation(&named(name), &definitions), Some(CapabilityRepresentation::Direct(kind)));
+        }
+        let secret = Type::Named("Secret".into(), vec![named("Seal")]);
+        assert_eq!(representation(&secret, &definitions), Some(CapabilityRepresentation::Direct(CapabilityKind::Secret)));
+        let optional = Type::Named("Option".into(), vec![secret]);
+        assert_eq!(representation(&optional, &definitions), Some(CapabilityRepresentation::Nullable(CapabilityKind::Secret)));
+        assert_eq!(representation(&Type::Named("Option".into(), vec![optional]), &definitions), None);
+        assert_eq!(representation(&Type::Named("SecretStore".into(), vec![named("Int")]), &definitions), None);
+    }
 
     #[test]
     fn checked_capability_representation_keeps_absence_distinct() {

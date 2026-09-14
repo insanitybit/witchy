@@ -25,6 +25,9 @@ mod exec;
 pub use exec::{OracleExecFixture, OracleExecCall};
 mod fetch;
 pub use fetch::{OracleFetchFixture, OracleFetchCall, OracleFetchSource, OracleFetchOutcome};
+mod registry_host;
+pub use registry_host::{OracleClockFixture, OracleSecretFixture, OracleSecretStoreFixture};
+mod dir_create;
 mod crypto;
 mod crypto_hash;
 mod dir_metadata;
@@ -111,12 +114,13 @@ pub struct CapabilityToken {
     build_read: Option<build_read::Token>,
     exec: Option<exec::Token>,
     fetch: Option<fetch::Token>,
+    registry: Option<registry_host::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new(), net: None, service: None, build_out: None, build_read: None, exec: None, fetch: None }
+        Self { kind, scope: String::new(), net: None, service: None, build_out: None, build_read: None, exec: None, fetch: None, registry: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -142,6 +146,9 @@ impl InterpreterValue {
             crate::CanonicalEntryCapability::Console => 0,
             crate::CanonicalEntryCapability::Exec => crate::canonical_safewir::EXEC_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::Fetch => crate::canonical_safewir::FETCH_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::Clock => crate::canonical_safewir::CLOCK_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::SecretStore => crate::canonical_safewir::SECRET_STORE_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::Secret => crate::canonical_safewir::SECRET_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildRead => crate::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildEnv => crate::canonical_safewir::BUILD_ENV_CAPABILITY_KIND.get(),
@@ -162,6 +169,12 @@ pub struct OracleFixture {
     pub exec: Option<OracleExecFixture>,
     /// Explicit root grants and ordered provider wire outcomes. No network IO.
     pub fetch: Option<OracleFetchFixture>,
+    /// Explicit grants and ordered Unix-millisecond observations. No ambient clock.
+    pub clock: Option<OracleClockFixture>,
+    /// Presence grants lookup, including an explicitly empty store.
+    pub secret_store: Option<OracleSecretStoreFixture>,
+    /// Direct Secret entry authority must be an explicit Signing fixture.
+    pub signing_secret: Option<OracleSecretFixture>,
     /// Explicit write grant for a fresh virtual build output directory.
     pub build_out: bool,
     pub build_read: Option<OracleBuildReadFixture>,
@@ -172,6 +185,9 @@ pub struct OracleFixture {
     /// Exact ordered raw HTTP responses; no ambient network is available.
     pub build_net: Option<OracleBuildNetFixture>,
     pub files: BTreeMap<String, Vec<u8>>,
+    /// Explicit empty directories as well as parents created by virtual mkdir.
+    /// Like `files`, these are normalized relative paths under the granted root.
+    pub directories: BTreeSet<String>,
     pub environment: BTreeMap<String, String>,
     /// A directory the oracle reads when a path is not in `files` (the
     /// parity third leg runs against the same root the backend was granted);
@@ -217,6 +233,7 @@ impl OracleFixture {
         if let Some(contents) = self.files.get(path) {
             return Some(contents.clone());
         }
+        if self.directories.contains(path) { return None; }
         let entry = self.root_entry(path)?;
         if !std::fs::symlink_metadata(&entry).ok()?.is_file() {
             return None;
@@ -226,7 +243,10 @@ impl OracleFixture {
 
     fn exists(&self, path: &str) -> bool {
         let prefix = format!("{path}/");
-        self.files.contains_key(path)
+        path.is_empty()
+            || self.files.contains_key(path)
+            || self.directories.contains(path)
+            || self.directories.iter().any(|name| name.starts_with(&prefix))
             || self.files.keys().any(|name| name.starts_with(&prefix))
             || self.root_entry(path).is_some()
     }
@@ -236,7 +256,7 @@ impl OracleFixture {
     fn entry_names(&self, scope: &str) -> Vec<String> {
         let prefix = if scope.is_empty() { String::new() } else { format!("{scope}/") };
         let mut names = std::collections::BTreeSet::new();
-        for key in self.files.keys() {
+        for key in self.files.keys().chain(self.directories.iter()) {
             if let Some(rest) = key.strip_prefix(&prefix)
                 && let Some(first) = rest.split('/').next()
                 && !first.is_empty()
@@ -259,11 +279,14 @@ impl OracleFixture {
 
     fn is_directory(&self, path: &str) -> bool {
         let prefix = format!("{path}/");
-        self.files.keys().any(|name| name.starts_with(&prefix))
+        !self.files.contains_key(path) && (path.is_empty()
+            || self.directories.contains(path)
+            || self.directories.iter().any(|name| name.starts_with(&prefix))
+            || self.files.keys().any(|name| name.starts_with(&prefix))
             || self
                 .root_entry(path)
                 .and_then(|entry| std::fs::symlink_metadata(entry).ok())
-                .is_some_and(|metadata| metadata.is_dir())
+                .is_some_and(|metadata| metadata.is_dir()))
     }
 
     fn variable(&self, name: &str) -> Option<String> {
@@ -339,6 +362,7 @@ pub enum InterpretError {
     BuildNet(String),
     ExecFixture(String),
     FetchFixture(String),
+    RegistryFixture(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
 }
@@ -403,6 +427,7 @@ pub fn interpret_with_config(
     engine.finish_build_exec()?;
     engine.finish_build_net()?;
     engine.finish_fetch()?;
+    engine.finish_registry()?;
     Ok(results)
 }
 
@@ -479,12 +504,14 @@ pub fn interpret_program(
     let arguments = engine.bind_build_read_entry(arguments)?;
     let arguments = engine.bind_exec_entry(arguments)?;
     let arguments = engine.bind_fetch_entry(arguments)?;
+    let arguments = engine.bind_registry_entry(arguments)?;
     let results = engine.execute(function, arguments)?;
     let net_trace = engine.finish_net()?;
     engine.finish_exec()?;
     engine.finish_build_exec()?;
     engine.finish_build_net()?;
     engine.finish_fetch()?;
+    engine.finish_registry()?;
     let leaked_objects = engine
         .objects
         .values()
@@ -557,6 +584,7 @@ struct Engine<'a> {
     server: net::ServerState,
     exec: exec::State,
     fetch: fetch::State,
+    registry: registry_host::State,
     build_out: build_out::State,
     build_read: build_read::State,
     build_exec: build_exec::State,
@@ -596,6 +624,7 @@ impl<'a> Engine<'a> {
             server,
             exec: exec::State::new(),
             fetch: fetch::State::new(),
+            registry: registry_host::State::new(),
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
             build_read: build_read::State::new(),
@@ -1522,6 +1551,9 @@ impl<'a> Engine<'a> {
         if crate::canonical_safewir::FETCH_IMPORT_NAMES.contains(&contract.name.as_str()) {
             return self.fetch_host_call(&contract.name, destinations, arguments, values);
         }
+        if registry_host::IMPORTS.contains(&contract.name.as_str()) {
+            return self.registry_host_call(&contract.name, destinations, arguments, values);
+        }
         if build_read::is_import(&contract.name) {
             return self.build_read_host_call(&contract.name, destinations, arguments, values);
         }
@@ -1685,6 +1717,14 @@ impl<'a> Engine<'a> {
                 let scope = self.capability_scope(token, DIR_KIND, values)?;
                 let path = self.host_path(&scope, &self.host_string(path, values)?)?;
                 let data = self.host_bytes(data, values)?;
+                // A directory cannot also become a fixture file. Include the
+                // root and empty explicit directories, which have no file keys
+                // from which to infer their existence. Refuse before mutation.
+                if path.is_empty() || self.config.fixture.directories.contains(&path)
+                    || self.config.fixture.is_directory(&path)
+                {
+                    return Err(InterpretError::ExplicitTrap);
+                }
                 self.config.fixture.files.insert(path, data);
                 Ok(())
             }
@@ -1696,7 +1736,10 @@ impl<'a> Engine<'a> {
                 if !self.config.fixture.is_directory(&scope) {
                     return Err(InterpretError::ExplicitTrap);
                 }
-                values.insert(*destination, InterpreterValue::Capability(CapabilityToken { scope, ..CapabilityToken::root(DIR_KIND) }));
+                let HostCallArgument::Capability(source) = token else { unreachable!() };
+                let InterpreterValue::Capability(source) = self.value(*source, values)? else { unreachable!() };
+                let narrowed = self.registry.narrow_dir(source, scope)?;
+                values.insert(*destination, InterpreterValue::Capability(narrowed));
                 Ok(())
             }
             ("dir_read_file", [token, HostCallArgument::Buffer { place: path, .. }], [destination]) => {

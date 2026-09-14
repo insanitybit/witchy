@@ -240,6 +240,15 @@ enum CaptureFieldKind {
 // authenticate it against the current session, not merely its Rust payload
 // type. This exposes no token constructor or public capability policy API.
 trait CaptureAuthority: 'static {
+    fn require_clock(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("Clock capture has no instance authority");
+    }
+    fn require_secret_store(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("SecretStore capture has no instance authority");
+    }
+    fn require_secret(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("Secret capture has no instance authority");
+    }
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()>;
     fn require_build_out(&self, _data: &dyn std::any::Any) -> Result<()> {
         bail!("BuildOut capture has no instance authority");
@@ -275,6 +284,15 @@ fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
 }
 
 impl CaptureAuthority for super::super::VmState {
+    fn require_clock(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::clock_env_rand::authenticate_clock_capture(self, data)
+    }
+    fn require_secret_store(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::secret::authenticate_store_capture(self, data)
+    }
+    fn require_secret(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::secret::authenticate_secret_capture(self, data)
+    }
     fn require_build_out(&self, data: &dyn std::any::Any) -> Result<()> {
         super::build_out::authenticate_capture(self, data)
     }
@@ -324,6 +342,12 @@ fn require_capability<T: CaptureAuthority>(store: impl wasmtime::AsContext<Data 
 fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::Any, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<()> {
     use witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND;
     let matches = match kind.get() {
+        id if id == witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND.get() =>
+            return state.require_clock(data),
+        id if id == witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND.get() =>
+            return state.require_secret_store(data),
+        id if id == witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND.get() =>
+            return state.require_secret(data),
         0 => return state.require_console(data),
         9 => return state.require_build_out(data),
         id if id == witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get() =>
@@ -1351,6 +1375,56 @@ mod tests {
             assert!(binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0).is_err(),
                 "projection must reauthenticate the captured session");
             vm.store.data_mut().fetch_issuer = issuer;
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            binding.family_retain(&vm.store, owner)?;
+            assert!(binding.release_owner_cleanup_items(&mut vm.store, owner)?.is_empty());
+            let cleanup = binding.release_owner_cleanup_items(&mut vm.store, owner)?;
+            assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [91]);
+            assert!(binding.family_retain(&vm.store, owner).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn registry_hosts_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        use witchy_wir::canonical_safewir::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND};
+        let (_root, mut vm, tokens) = super::super::secret::registry_tests::capture_fixture();
+        for (index, kind) in [CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND].into_iter().enumerate() {
+            let token = tokens[index];
+            let (mut binding, _) = list_capture_bindings(vm.store.engine())?;
+            binding.payload_type = StructType::new(vm.store.engine(), [
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+            ])?;
+            binding.capture_fields = vec![CaptureField {
+                capture: 0, field: 2, kind: CaptureFieldKind::Capability(kind),
+            }].into_boxed_slice();
+            let pre = StructRefPre::new(&mut vm.store, binding.payload_type.clone());
+            let forged = ExternRef::new(&mut vm.store, kind.get())?;
+            for invalid in [tokens[(index + 1) % tokens.len()], forged] {
+                let payload = StructRef::new(&mut vm.store, &pre,
+                    &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(invalid))])?;
+                assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            }
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            let owner = binding.seal_gc(&mut vm.store, payload)?;
+            assert!(require_capability(&vm.store, owner, kind).is_err());
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            let issuer = std::mem::replace(&mut vm.store.data_mut().registry_issuer, Arc::new(()));
+            assert!(require_capability(&vm.store, token, kind).is_err());
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            assert!(binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0).is_err(),
+                "projection must reauthenticate the captured session");
+            vm.store.data_mut().registry_issuer = issuer;
             let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
             assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
             drop(projected);

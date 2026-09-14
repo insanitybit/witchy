@@ -247,6 +247,7 @@ fn result_type(role: &HostResultRole) -> ValueType {
     match role {
         HostResultRole::Value(value_type) => *value_type,
         HostResultRole::Capability(kind) => ValueType::Capability(*kind),
+        HostResultRole::NullableCapability(kind) => ValueType::NullableCapability(*kind),
     }
 }
 
@@ -555,5 +556,45 @@ mod tests {
                 Err(super::InitialCheckError::HostContractRoleMismatch { .. })
             ));
         }
+    }
+
+    #[test]
+    fn registry_hosts_nullable_result_requires_authenticated_exact_kind() {
+        use super::super::super::{HostResultRole, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND};
+        let layout = LayoutId::from_bytes([71; 32]);
+        let catalog = super::super::super::CanonicalAbiCatalog::from_imports(Vec::new())
+            .with_registry_host_imports([0, 1, 2, 3, 4].map(FunctionSignatureId::new), layout).unwrap();
+        let import = catalog.imports().into_iter().find(|import| import.name == "secretstore_lookup_at").unwrap();
+        let role = HostParameterRole::Capability(SECRET_STORE_CAPABILITY_KIND);
+        let mut signature = signature(&role);
+        signature.id = import.signature;
+        signature.parameters.push(ValueType::Ref(layout));
+        signature.results = vec![ValueType::NullableCapability(SECRET_CAPABILITY_KIND)];
+        let path = ValueId::new(4);
+        let result = ValueId::new(5);
+        let mut function = function(ValueType::Capability(SECRET_STORE_CAPABILITY_KIND));
+        function.value_types.insert(path, ValueType::Ref(layout));
+        function.value_types.insert(result, signature.results[0]);
+        let arguments = [HostCallArgument::Capability(VALUE), HostCallArgument::Buffer {
+            place: Place::projected(path, Projection::Slice { start: ValueId::new(6), length: ValueId::new(7) },
+                ValueType::Ref(layout), AccessMode::Read), extent: HostBufferExtent::Slice,
+        }];
+        let imports = [(import.id, &import)].into_iter().collect();
+        let signatures = [(signature.id, &signature)].into_iter().collect();
+        check_call(&function, import.id, &[result], &arguments, &imports, &signatures, Some(&catalog)).unwrap();
+        for wrong in [ValueType::Int, ValueType::Capability(SECRET_CAPABILITY_KIND),
+            ValueType::NullableCapability(SECRET_STORE_CAPABILITY_KIND)]
+        {
+            function.value_types.insert(result, wrong);
+            assert!(check_call(&function, import.id, &[result], &arguments, &imports, &signatures, Some(&catalog)).is_err());
+        }
+        function.value_types.insert(result, signature.results[0]);
+        function.value_types.insert(VALUE, ValueType::Capability(SECRET_CAPABILITY_KIND));
+        assert!(check_call(&function, import.id, &[result], &arguments, &imports, &signatures, Some(&catalog)).is_err());
+        let mut forged = import.clone();
+        forged.result_roles = vec![HostResultRole::Value(signature.results[0])];
+        let forged_imports = [(forged.id, &forged)].into_iter().collect();
+        assert!(matches!(check_imports(&forged_imports, &signatures, Some(&catalog)),
+            Err(super::InitialCheckError::InvalidCanonicalAbiContract { .. })));
     }
 }

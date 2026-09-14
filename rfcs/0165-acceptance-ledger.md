@@ -1750,3 +1750,56 @@ The generic edit-loop attempt was deliberately stopped after its two ABI probes
 passed: its feature-changing broad routes were redundant with the 119-test
 integration shard and these focused reruns. No completed edit-loop receipt is
 claimed. The coordinator still owns the full gate and terminal landing.
+
+##### Registry hosts and retained range bounds (2026-09-14)
+
+The Fetch slice reached a terminal green coordinator event at
+`2026-09-14T05:43:43Z`, merged SHA
+`56381725b90722d05dc0ae5907d134b1262b2e42`, change
+`mq-eebe3bbe3eae04b01e32735504776d9cb8be1f1c`. The full batch gate took
+372 seconds with zero retries; log
+`state/merge-queue/logs/20260914-013730-impl~rfc0165-fetch-integration-99116-27.log`.
+
+The next focused slice retains embedded Coven source witnesses and adds bounded
+Clock, SecretStore lookup/require, signing/public-key, and directory-creation
+hosts. New root kinds are private host-minted externrefs, tied to the current
+instance; nullable lookup has its own authenticated result role. Signing
+snapshots inputs and publishes only the guarded initialized output prefix.
+Clock-only programs need no String layout. Optional lookup does not inject
+unused require-diagnostic data. Arbitrary catalog construction remains private.
+Fixed-vector checked-source signing agrees with the independent oracle and
+admitted native execution, including captured Secret, absent lookup, prior
+output on require failure, and zero owned-heap leaks on successful execution.
+
+Coven also exposed a pre-existing type-recording defect: range inference typed
+only a transient clone, leaving retained parameterized bound nodes untyped.
+The checker now infers each original bound once and applies the unchanged
+range constraints through private transient locals. Four cross-layer probes
+pin retained type facts, half-open/inclusive ranges, empty ranges, bound-call
+order, exact output, and successful cleanup. No validator rule was relaxed.
+Independent reviews cleared the changed authority paths, range typing, and the
+oracle fixes for CurDir mkdir and directory/file collisions.
+
+**55/55 focused tests passed**, no retries, 6.224 seconds after a 3.41-second
+incremental build. Nextest run `e4bc1ec0-ee2c-4dfd-9732-1e1e00afe43e`; log
+`/private/tmp/witchy-registry-hosts-final-focused.log`. With the preceding
+absolute warmed-target command, use this filter:
+
+```text
+test(registry_hosts_) | test(registry_capabilities_) | test(registry_secret_store_) | test(registry_oracle_) | test(server_pool_registry_hosts_) | test(embedded_coven_) | test(remaining_internal_admitted_coven_owner_execution) | test(rfc0165_pm::) | test(wasm_abi_catalog::) | test(rfc0165_range_bounds::)
+```
+
+The same binary passed `hello`, `wrap`, and `jq` interpreter/Wasm parity
+(3/5/7 output lines), log `/private/tmp/witchy-registry-final-compact-parity.log`.
+This is focused evidence, not a new census or this slice's terminal landing.
+
+The real `pm_coven_lifecycle::witchy_pm_add_resolves_and_fetches_from_coven`
+workflow remains refused. Run `9f6c67a6-f2a1-41c6-8329-e00374c11935`, log
+`/private/tmp/witchy-registry-hosts-integrated-5.log`, advanced beyond the range
+failure to Coven's `MissingBinding("__capop.replace")`. Its four other reds
+were source-qualified function lookup in the new test harness, corrected and
+covered by the final green shard. The storage inventory also identifies
+`Dir.create_new`, `Dir.read_bytes`, and `Dir.write_bytes`; their existing native
+semantics need canonical bounded contracts. No package-workflow exclusion was
+removed, and full online package execution is not claimed. Compiler-wide
+memory safety and the full SafeWIR objective remain unestablished.

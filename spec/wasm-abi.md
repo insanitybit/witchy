@@ -341,6 +341,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `build_read_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `build_env_at` | `(externref, i32, i32) -> externref` | capability authority | Build.Env | omitted |
 | `build_response_is_some` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `clock_now` | `(externref) -> i64` | capability authority | Clock | omitted |
+| `dir_make_dir_at` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `secretstore_lookup_at` | `(externref, i32, i32) -> externref` | capability authority | SecretStore | omitted |
+| `crypto_sign_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Secret | omitted |
+| `crypto_public_key_into` | `(externref, i32, i32) -> i32` | capability authority | Secret | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 

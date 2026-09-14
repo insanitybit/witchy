@@ -22,6 +22,12 @@ mod rfc0165_build_env_project;
 #[path = "misc/rfc0165_messages.rs"]
 mod rfc0165_messages;
 
+#[path = "misc/rfc0165_registry_hosts.rs"]
+mod rfc0165_registry_hosts;
+
+#[path = "misc/rfc0165_range_bounds.rs"]
+mod rfc0165_range_bounds;
+
 #[path = "misc/rfc0165_net.rs"]
 mod rfc0165_net;
 

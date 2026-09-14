@@ -593,7 +593,7 @@ fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
                     let (scheme, host, port) = shp
                     install_resolve(console, net, root, env, clock, registry_origin(scheme, host, port), name, req, target, args)
 
-fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
+pub fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     if has_path_flag(args):
         console.print("`add --path` is not supported yet. Add the path dependency to witchy.toml by hand, under [dependencies]:")
         console.print("    \"<name>\" = { path = \"<relative-path>\" }")
@@ -645,7 +645,7 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
                 let origin = registry_origin(scheme, host, port)
                 add_pkg_gated(console, net, root, origin, name, req, cooldown_now(env, clock, args), allowed_caps(args), has_flag(args, "--allow-staged"), assume_yes(env, args))
 
-fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
+pub fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if dir.is_empty() || rootpub.is_empty():
         console.print("usage: grimoire verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
         1

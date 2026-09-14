@@ -29,6 +29,8 @@ impl OracleFixture {
             if self.files.contains_key(&pieces.join("/")) { return false; }
         }
         let prefix = format!("{}/", pieces.join("/"));
+        if self.directories.contains(&pieces.join("/"))
+            || self.directories.iter().any(|name| name.starts_with(&prefix)) { return true; }
         if self.files.keys().any(|name| name.starts_with(&prefix)) { return true; }
         let Some(root) = &self.root else { return false; };
         fixture_directory(&root.join(scope), relative)

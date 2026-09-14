@@ -41,7 +41,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
                     }
                     _ => {}
                 }
-                if is_list_access(expression) || matches!(expression, Expr::Call { name, .. } if name == "fail" || (console && is_console_print(name))) {
+                if is_list_access(expression) || matches!(expression, Expr::Call { name, .. } if name == "fail" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
                         let line = body.lines.get(index).copied().ok_or(
@@ -153,6 +153,10 @@ impl FunctionLowerer<'_> {
             .ok_or(CanonicalLoweringError::UnsupportedExpression("fail source witness"))?;
         // Evaluate once, before publishing this call's own immutable source site.
         let message = self.lower_expr(message)?;
+        self.abort_value_at(&site, message)
+    }
+
+    pub(super) fn abort_value_at(&mut self, site: &Site, message: ValueId) -> Result<(), CanonicalLoweringError> {
         let function = self.lower_string_literal(&site.function)?;
         let line = self.push_const_size(u64::from(site.line))?;
         let start = self.push_const_size(0)?;

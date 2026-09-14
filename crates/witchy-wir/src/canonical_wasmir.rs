@@ -515,6 +515,7 @@ fn validate_host_call_lowering(
         let expected = match role {
             HostResultRole::Value(value_type) => *value_type,
             HostResultRole::Capability(kind) => ValueType::Capability(*kind),
+            HostResultRole::NullableCapability(kind) => ValueType::NullableCapability(*kind),
         };
         if value_types.get(destination) != Some(&expected) {
             return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall result type" });
@@ -549,7 +550,7 @@ fn host_import_wasm_signature(
     for role in &import.result_roles {
         match role {
             HostResultRole::Value(value_type) => results.push(host_scalar_wasm_type(function, ValueId::new(u32::MAX), *value_type)?),
-            HostResultRole::Capability(_) => results.push(ValType::EXTERNREF),
+            HostResultRole::Capability(_) | HostResultRole::NullableCapability(_) => results.push(ValType::EXTERNREF),
         }
     }
     Ok((parameters, results))
@@ -1604,6 +1605,11 @@ pub struct AdmittedCanonicalArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalEntryCapability {
     Exec,
+    Clock,
+    /// An explicitly supplied namespace; an empty namespace is still a grant.
+    SecretStore,
+    /// A separate bare signing-secret grant, not inferred from a Store entry.
+    Secret,
     /// An explicit origin-scoped grant, in Fetch-parameter ordinal order.
     Fetch,
     Console,
@@ -1689,6 +1695,9 @@ impl CanonicalEntry {
                 CanonicalEntryCapability::BuildNet => 16,
                 CanonicalEntryCapability::Exec => 10,
                 CanonicalEntryCapability::Fetch => 17,
+                CanonicalEntryCapability::Clock => 19,
+                CanonicalEntryCapability::SecretStore => 20,
+                CanonicalEntryCapability::Secret => 21,
             });
         }
         bytes.push(match self.result {
@@ -1734,6 +1743,9 @@ impl CanonicalEntry {
                 16 => Ok(CanonicalEntryCapability::BuildNet),
                 10 => Ok(CanonicalEntryCapability::Exec),
                 17 => Ok(CanonicalEntryCapability::Fetch),
+                19 => Ok(CanonicalEntryCapability::Clock),
+                20 => Ok(CanonicalEntryCapability::SecretStore),
+                21 => Ok(CanonicalEntryCapability::Secret),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -7183,6 +7195,15 @@ ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPA
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::FETCH_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Fetch);
             }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::CLOCK_CAPABILITY_KIND => {
+                capabilities.push(CanonicalEntryCapability::Clock);
+            }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::SECRET_STORE_CAPABILITY_KIND => {
+                capabilities.push(CanonicalEntryCapability::SecretStore);
+            }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::SECRET_CAPABILITY_KIND => {
+                capabilities.push(CanonicalEntryCapability::Secret);
+            }
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Net);
             }
@@ -7341,6 +7362,17 @@ mod tests {
         let encoded = entry.encode();
         assert_eq!(encoded[encoded.len() - 5..encoded.len() - 1], [0, 1, 2, 4]);
         assert_eq!(super::CanonicalEntry::decode(&encoded), Ok(entry));
+    }
+
+    #[test]
+    fn registry_hosts_entry_tags_preserve_separate_roots() {
+        use super::{CanonicalEntry, CanonicalEntryCapability as C, CanonicalEntryResult};
+        let entry = CanonicalEntry { export: "f0".into(),
+            capabilities: vec![C::Clock, C::SecretStore, C::Secret, C::Dir],
+            argument_positions: Vec::new(), result: CanonicalEntryResult::Unit };
+        let bytes = entry.encode();
+        assert_eq!(&bytes[bytes.len() - 5..bytes.len() - 1], &[19, 20, 21, 1]);
+        assert_eq!(CanonicalEntry::decode(&bytes), Ok(entry));
     }
 
     #[test]

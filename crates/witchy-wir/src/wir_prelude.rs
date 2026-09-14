@@ -371,11 +371,16 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "build_read_response_into" (func $build_read_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "build_env_at" (func $build_env_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "build_response_is_some" (func $build_response_is_some_host (param externref) (result i32)))
+  (import "witchy" "clock_now" (func $clock_now_host (param externref) (result i64)))
+  (import "witchy" "dir_make_dir_at" (func $dir_make_dir_at_host (param externref i32 i32)))
+  (import "witchy" "secretstore_lookup_at" (func $secretstore_lookup_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "crypto_sign_into" (func $crypto_sign_into_host (param externref i32 i32 i32 i32) (result i32)))
+  (import "witchy" "crypto_public_key_into" (func $crypto_public_key_into_host (param externref i32 i32) (result i32)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 152;
+pub const IMPORT_COUNT: usize = 157;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -412,6 +417,7 @@ impl AbiImportClass {
 pub enum AbiImportAuthority {
     ConsoleRead,
     Secret,
+    SecretStore,
     Env,
     DirGrant,
     DirRead,
@@ -438,6 +444,7 @@ impl AbiImportAuthority {
         match self {
             Self::ConsoleRead => "Console.Read",
             Self::Secret => "Secret",
+            Self::SecretStore => "SecretStore",
             Self::Env => "Env",
             Self::DirGrant => "Dir.grant",
             Self::DirRead => "Dir.Read",
@@ -464,6 +471,7 @@ impl AbiImportAuthority {
 const NO_AUTHORITIES: &[AbiImportAuthority] = &[];
 const AUTH_CONSOLE_READ: &[AbiImportAuthority] = &[AbiImportAuthority::ConsoleRead];
 const AUTH_SECRET: &[AbiImportAuthority] = &[AbiImportAuthority::Secret];
+const AUTH_SECRET_STORE: &[AbiImportAuthority] = &[AbiImportAuthority::SecretStore];
 const AUTH_ENV: &[AbiImportAuthority] = &[AbiImportAuthority::Env];
 const AUTH_DIR_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::DirGrant];
 const AUTH_DIR_READ: &[AbiImportAuthority] = &[AbiImportAuthority::DirRead];
@@ -537,6 +545,11 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "crypto.__shake256" => C::PureInfrastructure,
 
         "console_read_len"
+        | "clock_now"
+        | "dir_make_dir_at"
+        | "secretstore_lookup_at"
+        | "crypto_sign_into"
+        | "crypto_public_key_into"
         | "crypto.sign"
         | "crypto.public_key"
         | "secretstore_lookup"
@@ -660,7 +673,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
     let authorities = match name {
         "console_read_len" => AUTH_CONSOLE_READ,
-        "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
+        "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
+        "secretstore_lookup_at" => AUTH_SECRET_STORE,
         "mint_env" | "env_only" | "env_len" | "env_fill" | "env_has_var" | "env_get_into" => AUTH_ENV,
         "mint_dir" | "dir_subtree_at" => AUTH_DIR_GRANT,
         "dir_read_len"
@@ -678,7 +692,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_read_file" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
-        | "dir_write_at" => AUTH_DIR_WRITE,
+        | "dir_write_at" | "dir_make_dir_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" | "file_read_into" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
@@ -701,7 +715,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "net_send_slice" | "net_recv_line_size" | "net_recv_bytes_size" | "net_recv_all_size" | "net_take_received_into" => AUTH_NET_CONNECT,
         "net_listen" | "net_listen_at" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
-        "now" | "now_monotonic" => AUTH_CLOCK,
+        "now" | "now_monotonic" | "clock_now" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,
         "exec_run_at" => AUTH_EXEC_DIR,
         "mint_exec" | "exec_only" | "exec_run" => AUTH_EXEC,

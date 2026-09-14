@@ -40,6 +40,7 @@ pub enum CanonicalCapabilityKind {
     BuildEnv,
     BuildNet,
     BuildExec,
+    SecretStore,
 }
 
 /// A structural identity for a checked source type used by a reference or
@@ -404,6 +405,9 @@ fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, Canon
         | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {
             CanonicalValueKind::Reference(CanonicalReferenceKind::Capability(capability_kind(ty)))
         }
+        Ty::Named(name, arguments) if name.as_ref() == "SecretStore" && arguments.is_empty() => {
+            CanonicalValueKind::Reference(CanonicalReferenceKind::Capability(CanonicalCapabilityKind::SecretStore))
+        }
         Ty::List(_) | Ty::Named(_, _) | Ty::Dyn(_, _) => {
             CanonicalValueKind::Reference(CanonicalReferenceKind::Aggregate(key))
         }
@@ -501,6 +505,7 @@ fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), Cano
         Ty::Socket => bytes.push(18), Ty::Listener => bytes.push(19), Ty::BuildOut => bytes.push(20), Ty::BuildRead => bytes.push(21), Ty::BuildEnv => bytes.push(22), Ty::BuildNet => bytes.push(23), Ty::BuildExec => bytes.push(24),
         Ty::List(element) => { bytes.push(25); encode_ty(element, context, bytes)?; }
         Ty::Tuple(items) => { bytes.push(26); put_len(bytes, items.len()); for item in items.iter() { encode_ty(item, context, bytes)?; } }
+        Ty::Named(name, args) if name.as_ref() == "SecretStore" && args.is_empty() => { bytes.push(30); }
         Ty::Named(name, args) => { bytes.push(27); bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes()); put_len(bytes, args.len()); for arg in args.iter() { encode_ty(arg, context, bytes)?; } }
         Ty::Dyn(name, args) => { bytes.push(28); bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes()); put_len(bytes, args.len()); for arg in args.iter() { encode_ty(arg, context, bytes)?; } }
         Ty::Fn(params, result, conventions, mutable, qualifiers) => { bytes.push(29); put_len(bytes, params.len()); for (index, param) in params.iter().enumerate() { bytes.push(convention(conventions.get(index).copied().unwrap_or_default()) as u8); bytes.push(u8::from(mutable.get(index).copied().unwrap_or(false))); encode_ty(param, context, bytes)?; } encode_ty(result, context, bytes)?; bytes.push(u8::from(qualifiers.pure)); bytes.push(u8::from(qualifiers.once)); }
@@ -588,8 +593,8 @@ fn builtin_nominal_tag(name: &str, arity: usize) -> Result<Option<u32>, Canonica
     Ok(Some(tag))
 }
 
-fn is_capability_name(name: &str) -> bool { matches!(name, "Console" | "Clock" | "Rand" | "Env" | "Secret" | "Exec" | "Fetch" | "Dir" | "File" | "Net" | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec") }
-fn capability_name(name: &str) -> CanonicalCapabilityKind { match name { "Console" => CanonicalCapabilityKind::Console, "Clock" => CanonicalCapabilityKind::Clock, "Rand" => CanonicalCapabilityKind::Rand, "Env" => CanonicalCapabilityKind::Env, "Secret" => CanonicalCapabilityKind::Secret, "Exec" => CanonicalCapabilityKind::Exec, "Fetch" => CanonicalCapabilityKind::Fetch, "Dir" => CanonicalCapabilityKind::Dir, "File" => CanonicalCapabilityKind::File, "Net" => CanonicalCapabilityKind::Net, "Socket" => CanonicalCapabilityKind::Socket, "Listener" => CanonicalCapabilityKind::Listener, "BuildOut" => CanonicalCapabilityKind::BuildOut, "BuildRead" => CanonicalCapabilityKind::BuildRead, "BuildEnv" => CanonicalCapabilityKind::BuildEnv, "BuildNet" => CanonicalCapabilityKind::BuildNet, "BuildExec" => CanonicalCapabilityKind::BuildExec, _ => unreachable!("checked capability name") } }
+fn is_capability_name(name: &str) -> bool { matches!(name, "Console" | "Clock" | "Rand" | "Env" | "Secret" | "SecretStore" | "Exec" | "Fetch" | "Dir" | "File" | "Net" | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec") }
+fn capability_name(name: &str) -> CanonicalCapabilityKind { match name { "Console" => CanonicalCapabilityKind::Console, "Clock" => CanonicalCapabilityKind::Clock, "Rand" => CanonicalCapabilityKind::Rand, "Env" => CanonicalCapabilityKind::Env, "Secret" => CanonicalCapabilityKind::Secret, "SecretStore" => CanonicalCapabilityKind::SecretStore, "Exec" => CanonicalCapabilityKind::Exec, "Fetch" => CanonicalCapabilityKind::Fetch, "Dir" => CanonicalCapabilityKind::Dir, "File" => CanonicalCapabilityKind::File, "Net" => CanonicalCapabilityKind::Net, "Socket" => CanonicalCapabilityKind::Socket, "Listener" => CanonicalCapabilityKind::Listener, "BuildOut" => CanonicalCapabilityKind::BuildOut, "BuildRead" => CanonicalCapabilityKind::BuildRead, "BuildEnv" => CanonicalCapabilityKind::BuildEnv, "BuildNet" => CanonicalCapabilityKind::BuildNet, "BuildExec" => CanonicalCapabilityKind::BuildExec, _ => unreachable!("checked capability name") } }
 
 #[cfg(test)]
 mod tests {
@@ -620,6 +625,16 @@ mod tests {
         let a = manifest("fn apply(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    apply(1)\n");
         let b = manifest("fn renamed(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    renamed(1)\n");
         assert_eq!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn registry_secret_store_callable_abi_is_closed_and_kind_bound() {
+        let store = manifest("fn keep(store: SecretStore) -> SecretStore:\n    store\n");
+        let secret = manifest("fn keep(secret: Secret) -> Secret:\n    secret\n");
+        let clock = manifest("fn keep(clock: Clock) -> Clock:\n    clock\n");
+        assert_ne!(store.digest(), secret.digest());
+        assert_ne!(store.digest(), clock.digest());
+        assert_ne!(secret.digest(), clock.digest());
     }
 
     #[test]

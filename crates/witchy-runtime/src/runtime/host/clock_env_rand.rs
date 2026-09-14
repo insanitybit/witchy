@@ -1,4 +1,5 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
+use std::sync::Arc;
 
 use super::super::{
     fill_slice, memory_of, read_slice_str, read_wstr, read_wstr_list, EnvAuthority, VmState,
@@ -9,6 +10,39 @@ pub(in crate::runtime) fn link_clock(linker: &mut Linker<VmState>) -> Result<()>
     linker.func_wrap("witchy", "now", host_now)?;
     linker.func_wrap("witchy", "now_monotonic", host_now_monotonic)?;
     Ok(())
+}
+
+pub(in crate::runtime) struct ClockAuthority {
+    issuer: Arc<()>,
+}
+
+pub(in crate::runtime) fn mint_clock(state: &VmState) -> Result<ClockAuthority> {
+    if !state.caps.clock {
+        return Err(Error::msg("the program's `main` requires a Clock capability that was not granted"));
+    }
+    Ok(ClockAuthority { issuer: state.registry_issuer.clone() })
+}
+
+pub(in crate::runtime) fn authenticate_clock_capture(state: &VmState, data: &dyn std::any::Any) -> Result<()> {
+    let authority = data.downcast_ref::<ClockAuthority>()
+        .ok_or_else(|| Error::msg("clock_now: wrong capability kind"))?;
+    if !Arc::ptr_eq(&state.registry_issuer, &authority.issuer) {
+        return Err(Error::msg("clock_now: capability belongs to another instance"));
+    }
+    Ok(())
+}
+
+pub(in crate::runtime) fn link_canonical_clock(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "clock_now", host_clock_now)?;
+    Ok(())
+}
+
+fn host_clock_now(caller: Caller<'_, VmState>, clock: Option<Rooted<ExternRef>>) -> Result<i64> {
+    let clock = clock.ok_or_else(|| Error::msg("clock_now: null capability"))?;
+    let data = clock.data(&caller)?.ok_or_else(|| Error::msg("clock_now: missing capability data"))?;
+    authenticate_clock_capture(caller.data(), data)?;
+    // Reuse the exact provider, including its pre-epoch fallback and units.
+    Ok(host_now(caller))
 }
 
 /// Register the `Rand` draw import.

@@ -278,6 +278,23 @@ fn fixture(files: &[(&str, &[u8])], environment: &[(&str, &str)]) -> Interpreter
 }
 
 #[test]
+fn registry_oracle_server_pool_primary_executes_existing_dir_read_program() {
+    let module = read_into_program(b"f");
+    let mut config = fixture(&[("f", b"hello")], &[]);
+    config.fixture.server_pool = Some(super::OracleServerPoolFixture::default());
+    let mut engine = super::Engine::new(module.module(), config);
+    let requests = vec![InterpreterValue::capability(DIR_CAPABILITY_KIND.get())];
+    // The existing retained-worker profile still excludes Dir. This probe
+    // covers primary launch binding and actual authenticated import dispatch,
+    // without widening that separate worker-launch contract.
+    assert!(engine.server.retain_launch(FUNCTION, &requests, &[]).is_err());
+    let arguments = engine.prepare_launch(&[ValueType::Capability(DIR_CAPABILITY_KIND)], requests, &[]).unwrap();
+    assert_eq!(engine.execute(FUNCTION, arguments).unwrap(), [InterpreterValue::Size(5)]);
+    assert_eq!(engine.output, ["hello"]);
+    assert!(engine.config.fixture.directories.is_empty());
+}
+
+#[test]
 fn dir_read_into_answers_the_full_length_and_fills_the_buffer() {
     let module = read_into_program(b"f");
     let run = interpret_program(

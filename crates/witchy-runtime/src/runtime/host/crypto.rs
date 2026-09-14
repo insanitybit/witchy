@@ -5,6 +5,56 @@ use super::super::{memory_of, read_wbytes, read_wstr, read_wstr_list, VmState};
 use super::secret::secret_material_ref;
 use crate::value::NativeValue as Value;
 
+pub(in crate::runtime) fn link_canonical_keyed(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "crypto_sign_into", host_crypto_sign_into)?;
+    linker.func_wrap("witchy", "crypto_public_key_into", host_crypto_public_key_into)?;
+    Ok(())
+}
+
+fn checked_keyed_output(data: &[u8], ptr: i32, capacity: i32) -> Result<std::ops::Range<usize>> {
+    if ptr < 0 || capacity < 0 { bail!("negative keyed crypto output slice"); }
+    let start = ptr as usize;
+    let end = start.checked_add(capacity as usize)
+        .filter(|end| *end <= data.len()).ok_or_else(|| Error::msg("keyed crypto output slice out of bounds"))?;
+    Ok(start..end)
+}
+
+fn host_crypto_sign_into(
+    mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>,
+    msg_ptr: i32, msg_len: i32, out_ptr: i32, out_cap: i32,
+) -> Result<i32> {
+    let material = super::secret::canonical_secret_material_ref(&caller, key)?;
+    let memory = memory_of(&mut caller)?;
+    let message = super::super::read_slice_str(memory.data(&caller), msg_ptr, msg_len)?;
+    let output = checked_keyed_output(memory.data(&caller), out_ptr, out_cap)?;
+    let provider = crate::native::lookup(intrinsics::CRYPTO_SIGN)
+        .ok_or_else(|| Error::msg("crypto.sign is not registered"))?;
+    let Value::Str(signature) = provider(&[Value::Secret(material.bytes), Value::Str(message)])
+        .map_err(|e| Error::msg(e.message))? else { bail!("crypto.sign did not return a String"); };
+    if signature.len() != 128 { bail!("crypto.sign returned an invalid signature length"); }
+    if output.len() >= signature.len() {
+        memory.write(&mut caller, output.start, signature.as_bytes())?;
+    }
+    Ok(128)
+}
+
+fn host_crypto_public_key_into(
+    mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>, out_ptr: i32, out_cap: i32,
+) -> Result<i32> {
+    let material = super::secret::canonical_secret_material_ref(&caller, key)?;
+    let memory = memory_of(&mut caller)?;
+    let output = checked_keyed_output(memory.data(&caller), out_ptr, out_cap)?;
+    let provider = crate::native::lookup(intrinsics::CRYPTO_PUBLIC_KEY)
+        .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
+    let Value::Str(public_key) = provider(&[Value::Secret(material.bytes)])
+        .map_err(|e| Error::msg(e.message))? else { bail!("crypto.public_key did not return a String"); };
+    if public_key.len() != 64 { bail!("crypto.public_key returned an invalid public key length"); }
+    if output.len() >= public_key.len() {
+        memory.write(&mut caller, output.start, public_key.as_bytes())?;
+    }
+    Ok(64)
+}
+
 /// Register crypto operations that consume opaque host-side secret material.
 pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", intrinsics::CRYPTO_SIGN, host_crypto_sign)?;

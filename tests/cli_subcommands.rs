@@ -23,6 +23,9 @@ const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 mod temp_dir;
 use temp_dir::TempDir;
 
+#[path = "support/rfc0165_pm_entry.rs"]
+mod rfc0165_pm;
+
 /// A fresh, unique temp directory for one test.
 fn workdir(tag: &str) -> TempDir {
     TempDir::new(&format!("cli-{tag}"))

@@ -350,6 +350,7 @@ impl CanonicalWriter {
         match role {
             HostResultRole::Value(value_type) => { self.u8(0); self.value_type(*value_type); }
             HostResultRole::Capability(kind) => { self.u8(1); self.u32(kind.get()); }
+            HostResultRole::NullableCapability(kind) => { self.u8(2); self.u32(kind.get()); }
         }
     }
 

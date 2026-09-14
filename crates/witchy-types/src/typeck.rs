@@ -9044,8 +9044,23 @@ impl Checker {
             )),
             // A range lowers to a list-building block; type it as that block.
             Expr::Range { lo, hi, inclusive } => {
-                let d = witchy_syntax::parser::desugar_range((**lo).clone(), (**hi).clone(), *inclusive);
-                self.infer_transient(&d)
+                // Record facts on the retained source operands, not on clones
+                // whose addresses disappear after this inference. Infer each
+                // operand once so ownership/call effects are not duplicated.
+                let lower = self.infer(lo)?;
+                let upper = self.infer(hi)?;
+                self.push();
+                let lower_name = "__checked_range_lo".to_owned();
+                let upper_name = "__checked_range_hi".to_owned();
+                self.define(lower_name.clone(), lower, false);
+                self.define(upper_name.clone(), upper, false);
+                // Keep the existing desugared range constraints, including
+                // comparison and increment typing, over these private locals.
+                let d = witchy_syntax::parser::desugar_range(
+                    Expr::Var(lower_name), Expr::Var(upper_name), *inclusive);
+                let result = self.infer_transient(&d);
+                self.pop();
+                result
             }
             // A subscript lowers to a type-directed read: `list.at(xs, i)` for
             // lists, `dict.at(d, k)` for dicts. Keep the call-shaped transient so

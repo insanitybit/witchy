@@ -24,6 +24,8 @@ mod abort;
 mod exec;
 #[path = "canonical_fetch.rs"]
 mod fetch;
+#[path = "canonical_registry_hosts.rs"]
+mod registry_hosts;
 #[path = "canonical_build_read.rs"]
 mod build_read;
 #[path = "canonical_crypto.rs"]
@@ -220,8 +222,12 @@ pub fn lower_typed_module(
             (source.clone(), (family.owner_type, family.list_type))).collect(),
     };
     let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
+    let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
     let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
+    if requires_secret {
+        string_payloads.extend(registry_hosts::REQUIRED_SECRET_MESSAGE_PARTS.map(|part| part.as_bytes().to_vec()));
+    }
     string_payloads.sort();
     string_payloads.dedup();
     let string_data_ids = string_payloads
@@ -625,7 +631,11 @@ pub fn lower_typed_module(
     let print_name = if print_at { "console_print_at" } else { "console_print" };
     let prints = contains_console_print(typed.module());
     let floats = renders_float(typed.module(), typed.table(), &definitions);
-    let capability_imports = collect_capability_imports(typed.module(), typed.table());
+    let mut capability_imports = collect_capability_imports(typed.module(), typed.table());
+    capability_imports.extend(registry_imports);
+    // Clock has no guest-memory lane. Register it independently of the
+    // buffer-host catalog, which requires a concrete String layout.
+    let clock_needed = capability_imports.remove("clock_now");
     let compiler_imports = collect_compiler_imports(typed.module());
     let regex_spans = regex::is_needed(typed.module());
     // RFC-0165 Net import registration (Net track).
@@ -801,6 +811,21 @@ if capability_imports.contains("build_out_write_at") {
                 catalog = catalog.with_build_exec_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
+            if witchy_wir::canonical_safewir::REGISTRY_HOST_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+                let store = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND);
+                let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                let optional = ValueType::NullableCapability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                let ids = [
+                    push_import_signature(vec![clock], vec![ValueType::Int], None)?,
+                    push_import_signature(vec![dir, text], Vec::new(), None)?,
+                    push_import_signature(vec![store, text], vec![optional], None)?,
+                    push_import_signature(vec![secret, text, text], vec![ValueType::Size], Some(2))?,
+                    push_import_signature(vec![secret, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_registry_host_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
             if !compiler_imports.is_empty() {
                 let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
                     footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
@@ -881,6 +906,28 @@ if capability_imports.contains("build_out_write_at") {
                 .collect(),
         };
         imports = projected;
+        abi_catalog = Some(catalog);
+    }
+
+    if clock_needed {
+        let id = FunctionSignatureId::new(u32::try_from(signatures.len())
+            .map_err(|_| CanonicalLoweringError::IdOverflow)?);
+        let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+        signatures.push(FunctionSignature {
+            id, parameters: vec![clock], results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![ParameterContract { value_type: clock, ownership: ParameterOwnership::Value }],
+                results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new(),
+            },
+        });
+        let catalog = match abi_catalog.take() {
+            Some(catalog) => catalog.with_clock_import(id),
+            None => CanonicalAbiCatalog::from_authenticated_clock(id),
+        }.map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        let import = catalog.imports().into_iter().find(|import| import.name == "clock_now")
+            .expect("authenticated Clock catalog contains its import");
+        host_imports.capabilities.insert("clock_now", import.id);
+        imports.push(import);
         abi_catalog = Some(catalog);
     }
 
@@ -2371,6 +2418,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => self.lower_registry_intrinsic(expression, name, args).map(|_| ()),
             Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args).map(|_| ()),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args).map(|_| ()),
             // RFC-0165 Net dispatch (Net track).
@@ -2843,6 +2891,11 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         let results = self.results.clone();
         match expression {
+            Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => {
+                let value = self.lower_registry_intrinsic(expression, name, args)?;
+                let terminator = self.return_value(Some(value), &results)?;
+                self.finish_current(terminator)
+            }
             Expr::If { cond, then_block, else_block } => {
                 let condition = self.lower_expr(cond)?;
                 if self.values[&condition] != ValueType::Bool {
@@ -6424,6 +6477,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => self.lower_registry_intrinsic(expression, name, args),
             Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args),
             // RFC-0165 Net dispatch (Net track).
@@ -7931,6 +7985,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability operation receiver"));
         };
         let receiver_kind = match self.expression_type(receiver)?.unqualified() {
+            Type::Named(kind, arguments) if kind == "Clock" && arguments.is_empty() => witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildOut" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildRead" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildEnv" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND,
@@ -7947,10 +8002,28 @@ impl FunctionLowerer<'_> {
         if self.values[&token] != ValueType::Capability(receiver_kind) {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability operation token"));
         }
+        if name == "__capop.now" && arguments.len() == 1
+            && receiver_kind == witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND
+        {
+            let import = self.capability_import("clock_now")?;
+            let value = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::HostCall { destinations: vec![value], import,
+                arguments: vec![HostCallArgument::Capability(token)] });
+            return Ok(Some(value));
+        }
         let layout = self.string_layout_id()?;
         let is_dir = receiver_kind == witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND;
         let is_file = receiver_kind == witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND;
         match (name, is_dir, is_file, &arguments[1..]) {
+            ("__capop.make_dir", true, false, [path]) => {
+                let path = self.lower_string_argument(path)?;
+                let path = self.clone_reference_token(path)?;
+                let argument = self.string_slice_argument(path, layout)?;
+                let import = self.capability_import("dir_make_dir_at")?;
+                self.push_operation(Operation::HostCall { destinations: Vec::new(), import,
+                    arguments: vec![HostCallArgument::Capability(token), argument] });
+                self.push_zero(ValueType::Unit).map(Some)
+            }
             ("__capop.only", false, false, [origins])
                 if receiver_kind == witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND => {
                 self.lower_fetch_only(token, origins).map(Some)
@@ -13546,6 +13619,9 @@ fn source_value_type(
             CapabilityKind::Socket => witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND,
             CapabilityKind::Exec => witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND,
             CapabilityKind::Fetch => witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND,
+            CapabilityKind::Clock => witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND,
+            CapabilityKind::SecretStore => witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND,
+            CapabilityKind::Secret => witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND,
             CapabilityKind::BuildOut => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
             CapabilityKind::BuildRead => witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND,
             CapabilityKind::BuildEnv => witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND,
@@ -13866,8 +13942,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 23] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at"];
+const CAPABILITY_IMPORTS: [&str; 28] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -13903,7 +13979,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
-    matches!(name, "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
+    matches!(name, "__capop.now" | "__capop.make_dir" | "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -13924,6 +14000,8 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     _ => "",
                 };
                 match (name.as_str(), receiver) {
+                    ("__capop.now", "Clock") => { needed.insert("clock_now"); }
+                    ("__capop.make_dir", "Dir") => { needed.insert("dir_make_dir_at"); }
                     ("__capop.only", "Fetch") => { needed.insert("fetch_only_at"); }
                     ("__capop.fetch", "Net") => { needed.insert("net_fetch_at"); }
                     ("__capop.send_raw", "Fetch") => {

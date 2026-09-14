@@ -1357,6 +1357,8 @@ pub struct VmState {
     fetch_grants: Vec<Vec<String>>,
     /// Fresh per Store, shared by its Net-derived/direct Fetch roots and results.
     fetch_issuer: Arc<()>,
+    /// Canonical Clock, SecretStore and Secret tokens belong to this instance.
+    registry_issuer: Arc<()>,
     /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener (plus
     /// its TLS config) it must reuse instead of binding its own. `listen` returns
     /// this; `serve_pool` sees it set and does NOT spawn another pool (only the
@@ -1506,6 +1508,18 @@ impl Vm {
         let mut fetch_ordinal = 0usize;
         for capability in entry.capabilities() {
             let token = match capability {
+                CanonicalEntryCapability::Clock => {
+                    let authority = host::clock_env_rand::mint_clock(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::SecretStore => {
+                    let authority = host::secret::mint_store(self.store.data());
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::Secret => {
+                    let authority = host::secret::mint_canonical_secret(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
                 CanonicalEntryCapability::Console => {
                     #[cfg(feature = "test-fixtures")]
                     if self.store.data().fixture_console.is_some() {
@@ -2481,6 +2495,10 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "heap_frontier", host_heap_frontier)?;
 
     host::console::link_abort(linker)?;
+    // These imports expose no guest mint; each call authenticates its token.
+    host::clock_env_rand::link_canonical_clock(linker)?;
+    host::secret::link_canonical(linker)?;
+    host::crypto::link_canonical_keyed(linker)?;
     // Linking the fixture ABI grants no provider or token. Its handler checks
     // the private fixture session before reading guest memory or producing output.
     host::console::link_fixture_console(linker)?;
@@ -2731,6 +2749,7 @@ fn vmstate_from_caps(
         nets,
         fetch_grants: caps.fetch_grants.clone(),
         fetch_issuer,
+        registry_issuer: Arc::new(()),
         worker_listener,
         build_out,
         build_out_issuer: Arc::new(()),

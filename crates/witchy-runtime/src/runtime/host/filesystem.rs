@@ -53,6 +53,7 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
     // (RFC-0165 slice 42) The canonical route's write op, under the same
     // `Dir[Write]` gate as its frozen siblings.
     linker.func_wrap("witchy", "dir_write_at", host_dir_write_at)?;
+    linker.func_wrap("witchy", "dir_make_dir_at", host_dir_make_dir_at)?;
     Ok(())
 }
 
@@ -880,6 +881,22 @@ fn host_dir_set_executable(
 
 /// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent). Creating a
 /// directory is a directory op (RFC-0011 `kind`): a `files()` policy forbids it.
+fn host_dir_make_dir_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32,
+) -> Result<()> {
+    let dir = dir_authority_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    let name = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
+    dir_guard(&dir, &name, true)?;
+    match &dir.backing {
+        DirBacking::Fs(base) => base.make_dir(&name).map_err(|e| Error::msg(format!(
+            "make_dir failed for `{}`: {}", base.display_path().join(&name).display(), e.0
+        ))),
+    }
+}
+
 fn host_dir_make_dir(
     mut caller: Caller<'_, VmState>,
     d: Option<Rooted<ExternRef>>,

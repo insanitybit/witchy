@@ -63,6 +63,8 @@ mod exec;
 pub use exec::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND, EXEC_IMPORT_NAMES};
 mod fetch;
 pub use fetch::{FETCH_CAPABILITY_KIND, FETCH_RESPONSE_KIND, FETCH_IMPORT_NAMES};
+mod registry_hosts;
+pub use registry_hosts::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND, REGISTRY_HOST_IMPORT_NAMES};
 mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};
@@ -103,8 +105,8 @@ pub enum ValueType {
     Ref(LayoutId),
     Gc(GcTypeId),
     Capability(CapabilityKindId),
-    /// An SSA-only optional authenticated capability. It is never a memory
-    /// value, host ABI lane, or entry argument.
+    /// An optional authenticated capability. It is never a linear-memory value
+    /// or entry argument; a host may return it only through its dedicated role.
     NullableCapability(CapabilityKindId),
     Callable(FunctionSignatureId),
 }
@@ -401,6 +403,7 @@ pub enum HostParameterRole {
 pub enum HostResultRole {
     Value(ValueType),
     Capability(CapabilityKindId),
+    NullableCapability(CapabilityKindId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

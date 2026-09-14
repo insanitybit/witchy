@@ -63,6 +63,9 @@ impl ServerState {
     }
 
     pub(in super::super) fn before_host_call(&self, name: &str) -> Result<(), InterpretError> {
+        if (self.fixture.is_some() || self.worker) && super::super::registry_host::IMPORTS.contains(&name) {
+            return Err(InterpretError::UnsupportedOperation("server pool registry host effect ordering"));
+        }
         if (self.fixture.is_some() || self.worker) && matches!(name, "net_connect_at" | "fetch_send_at") {
             return Err(InterpretError::UnsupportedOperation("server pool outbound traffic"));
         }
@@ -152,6 +155,25 @@ impl<'a> Engine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_pool_registry_hosts_refuse_before_and_after_rendezvous() {
+        for worker in [false, true] {
+            let mut server = ServerState::new((!worker).then(OracleServerPoolFixture::default));
+            server.worker = worker;
+            for rendezvous in [false, true] {
+                server.rendezvous = rendezvous;
+                for name in ["dir_read_into", "dir_subtree_at", "dir_list_into", "dir_exists_at"] {
+                    assert_eq!(server.before_host_call(name).is_ok(), !worker || rendezvous,
+                        "preserve existing Dir effect ordering: worker={worker}, rendezvous={rendezvous}, import={name}");
+                }
+                for name in super::super::super::registry_host::IMPORTS {
+                    assert_eq!(server.before_host_call(name),
+                        Err(InterpretError::UnsupportedOperation("server pool registry host effect ordering")));
+                }
+            }
+        }
+    }
 
     #[test]
     fn server_pool_outbound_connect_refuses_before_and_after_rendezvous() {
