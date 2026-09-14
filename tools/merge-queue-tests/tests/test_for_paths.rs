@@ -942,6 +942,26 @@ fn url_component_edits_run_only_the_url_component_module() {
 }
 
 #[test]
+fn network_misc_edits_run_only_their_modules() {
+    for (path, module) in [
+        ("tests/misc/canonical_net_fixture.rs", "canonical_net_fixture"),
+        ("tests/misc/http_url_fallible.rs", "http_url_fallible"),
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert!(
+            commands[0].contains(&format!("test(/^{}::/)", module)),
+            "{path}: {commands:?}"
+        );
+        assert_ne!(
+            commands[0],
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
+            "{path} expanded to every misc test: {commands:?}"
+        );
+    }
+}
+
+#[test]
 fn build_read_host_edits_keep_authority_bounds_and_abi_probes() {
     for path in [
         "crates/witchy-runtime/src/runtime/host/build_read.rs",

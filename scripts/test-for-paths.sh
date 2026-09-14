@@ -601,6 +601,14 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^url_components::/)'"
             path_has_early=1 ;;
+        tests/misc/canonical_net_fixture.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^canonical_net_fixture::/)'"
+            path_has_early=1 ;;
+        tests/misc/http_url_fallible.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^http_url_fallible::/)'"
+            path_has_early=1 ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1
