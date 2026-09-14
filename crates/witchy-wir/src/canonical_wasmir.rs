@@ -2392,9 +2392,9 @@ fn emit_alloc(
         }
     };
     // Search reclaimed storage first. Scratch 2 is the current free-list
-    // handle and scratch 3 is its predecessor. A fitting block may be larger
-    // than requested; rewriting its extent header makes the unused suffix
-    // inaccessible rather than granting the new object stale authority.
+    // handle and scratch 3 is its predecessor. Reuse requires an exact
+    // physical extent: shrinking the header of a larger block would lose its
+    // suffix and corrupt the runtime's contiguous heap walk.
     body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
     emit_set_index(body, scratch_index(layout, 2));
     body.instruction(&wasm_encoder::Instruction::I32Const(0));
@@ -2456,7 +2456,7 @@ fn emit_alloc(
     body.instruction(&wasm_encoder::Instruction::I32Sub);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get_index(body, scratch_index(layout, 0));
-    body.instruction(&wasm_encoder::Instruction::I32GeU);
+    body.instruction(&wasm_encoder::Instruction::I32Eq);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     emit_get_index(body, scratch_index(layout, 3));
     body.instruction(&wasm_encoder::Instruction::I32Eqz);
@@ -2514,7 +2514,23 @@ fn emit_alloc(
 /// A fixed layout's allocation size, when it and the allocator prefix fit
 /// the 32-bit address space.
 fn fixed_alloc_bytes(bytes: u64) -> Option<u32> {
-    u32::try_from(bytes).ok().filter(|bytes| *bytes <= u32::MAX - RC_PREFIX_BYTES)
+    u32::try_from(bytes)
+        .ok()
+        .filter(|bytes| *bytes <= u32::MAX - RC_PREFIX_BYTES)
+        // A reclaimed object stores its next-link in the dead payload. Keep
+        // the physical cell wide enough even for zero-sized and compact
+        // scalar layouts; SafeWIR still authorizes only the logical layout.
+        .map(|bytes| bytes.max(4))
+}
+
+#[cfg(test)]
+#[test]
+fn fixed_alloc_reserves_a_complete_free_list_link() {
+    assert_eq!(fixed_alloc_bytes(0), Some(4));
+    assert_eq!(fixed_alloc_bytes(1), Some(4));
+    assert_eq!(fixed_alloc_bytes(2), Some(4));
+    assert_eq!(fixed_alloc_bytes(4), Some(4));
+    assert_eq!(fixed_alloc_bytes(5), Some(5));
 }
 
 fn emit_update_count(
@@ -5488,7 +5504,7 @@ fn expected_alloc_plan(
         PlanToken::I32Sub,
         PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
         PlanToken::LocalGet(layout.scratch[0]),
-        PlanToken::I32GeU,
+        PlanToken::I32Eq,
         PlanToken::If("Empty".to_owned()),
         PlanToken::LocalGet(layout.scratch[3]),
         PlanToken::I32Eqz,
