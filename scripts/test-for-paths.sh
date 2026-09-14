@@ -324,7 +324,6 @@ for p in "${paths[@]}"; do
         *) registry_replay_paths_only=0 ;;
     esac
     case "$p" in
-        src/source/package_inputs/registry_replay_tests.rs | \
         tests/misc/rfc0165_packaged_source.rs)
             registry_replay_contract_surface=1 ;;
     esac
@@ -703,6 +702,15 @@ for p in "${paths[@]}"; do
     esac
     [ "$path_has_early" -eq 1 ] || all_paths_have_early=0
 done
+
+# A direct edit to the registry replay test module has no packaged-source
+# contract path to trigger the specialized route. Enable that route only for
+# the standalone file; mixed packaged-source edits retain their broader source
+# ownership probes.
+if [ "${#paths[@]}" -eq 1 ] \
+    && [ "${paths[0]}" = "src/source/package_inputs/registry_replay_tests.rs" ]; then
+    registry_replay_contract_surface=1
+fi
 
 # Corpus impact: partition example_tests by what the tests already name
 # (std/foo.witchy strings, include_str, // gate-covers: labels, filename
