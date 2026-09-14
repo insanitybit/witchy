@@ -7,6 +7,9 @@
 #[path = "support/temp_dir.rs"]
 mod temp_dir;
 
+#[path = "misc/rfc0165_bounded_heap.rs"]
+mod rfc0165_bounded_heap;
+
 #[path = "misc/rfc0165_packaged_source.rs"]
 mod rfc0165_packaged_source;
 
