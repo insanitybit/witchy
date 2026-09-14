@@ -617,6 +617,14 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0087_migration_census::/)'"
             path_has_early=1 ;;
+        tests/misc/rfc0152_async_region_formation.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_async_region_formation::/)'"
+            path_has_early=1 ;;
+        tests/misc/rfc0152_semantic_matrix.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_semantic_matrix::/)'"
+            path_has_early=1 ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1

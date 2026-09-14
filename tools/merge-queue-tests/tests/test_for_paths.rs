@@ -994,6 +994,30 @@ fn migration_census_edits_run_only_the_census_module() {
 }
 
 #[test]
+fn async_region_edits_run_complete_rfc0152_modules() {
+    for (path, module) in [
+        (
+            "tests/misc/rfc0152_async_region_formation.rs",
+            "rfc0152_async_region_formation",
+        ),
+        ("tests/misc/rfc0152_semantic_matrix.rs", "rfc0152_semantic_matrix"),
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert!(
+            commands[0].contains(&format!("test(/^{}::/)", module))
+                && commands[0].contains("cargo nextest run --test misc"),
+            "{path}: {commands:?}"
+        );
+        assert_ne!(
+            commands[0],
+            "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
+            "{path} expanded to every misc test: {commands:?}"
+        );
+    }
+}
+
+#[test]
 fn direct_fetch_fixture_edits_run_the_complete_fetch_module() {
     let commands = selected(&["--edit-loop", "tests/misc/rfc0165_fetch.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");
