@@ -31,6 +31,7 @@ pub fn interpret_entry_program(
     let net_trace = engine.finish_net()?;
     engine.finish_exec()?;
     engine.finish_build_exec()?;
+    engine.finish_build_net()?;
     let leaked_objects = engine.objects.values().filter(|object|
         matches!(object.storage, RuntimeStorage::Allocation(_))).count()
         + engine.owners.len()

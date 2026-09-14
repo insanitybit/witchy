@@ -7,6 +7,7 @@ pub(super) mod closure_owner;
 pub(super) mod crypto;
 pub(super) mod build_env;
 pub(super) mod build_exec;
+pub(super) mod build_net;
 pub(super) mod filesystem;
 pub(super) mod fetch;
 #[cfg(feature = "test-fixtures")]

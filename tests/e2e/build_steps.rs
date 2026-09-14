@@ -302,3 +302,94 @@ fn build_exec_child_paths_flow_through_the_package_manager() {
     );
     fixture.finish();
 }
+
+/// BuildNet must survive the real grant/child/admission boundary and publish
+/// source which is checked again before the consumer can execute it.
+#[test]
+fn build_net_fetches_generated_source_through_the_package_manager() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::mpsc::{self, TryRecvError};
+    use std::time::Duration;
+
+    let fixture = BuildWorkspace::new(
+        "build-net-generated-source",
+        "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n",
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let generated_source = "pub fn value() -> Int:\n    42\n";
+    // Dropping the sender also cancels accept on a failed compile, rather than
+    // leaving an unbounded peer thread waiting for a request which cannot come.
+    let (cancel, cancellation) = mpsc::channel::<()>();
+    let peer = std::thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 512];
+                    while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                        assert!(request.len() < 4096, "unexpectedly large build request");
+                        let count = socket.read(&mut buffer).unwrap();
+                        assert_ne!(count, 0, "incomplete build request");
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    write!(socket,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        generated_source.len(), generated_source,
+                    ).unwrap();
+                    return Some(String::from_utf8(request).unwrap());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if !matches!(cancellation.try_recv(), Err(TryRecvError::Empty)) {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("build peer accept: {error}"),
+            }
+        }
+    });
+
+    std::fs::write(
+        fixture.app.join("witchy.toml"),
+        format!(
+            "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+             [capabilities]\nruntime = [\"Console\"]\n\n\
+             [dependencies]\n\"genlib\" = {{ path = \"../genlib\" }}\n\n\
+             [build.grants.\"genlib\"]\nnet = [{host:?}]\n"
+        ),
+    ).unwrap();
+    fixture.write_lib(
+        "pub fn placeholder() -> Int:\n    0\n",
+        &format!(
+            "fn build(out: BuildOut, net: BuildNet):\n    out.write_out(\"genmod.witchy\", net.fetch_build({host:?}, \"/schema\"))\n"
+        ),
+    );
+    fixture.write_app(
+        "import genmod\nfn main(console: Console):\n    console.print(\"${genmod.value()}\")\n",
+    );
+    let output = Command::new(BIN)
+        .current_dir(&fixture.work)
+        .args(["run", "app"])
+        .output()
+        .expect("spawn network-backed build");
+    drop(cancel);
+    let request = peer.join().expect("build peer thread");
+    assert!(
+        output.status.success() && stdout(&output).lines().any(|line| line.trim() == "42"),
+        "BuildNet must publish admitted generated source: status={} stdout={} stderr={}",
+        output.status, stdout(&output), stderr(&output),
+    );
+    let request = request.expect("the admitted build must contact its granted peer");
+    assert!(request.starts_with("GET /schema HTTP/1.1\r\n"), "{request:?}");
+    assert!(request.contains("\r\nHost: 127.0.0.1\r\n"), "{request:?}");
+    assert_eq!(
+        std::fs::read_to_string(fixture.app.join("build-out/genlib/genmod.witchy")).unwrap(),
+        generated_source,
+    );
+    fixture.finish();
+}

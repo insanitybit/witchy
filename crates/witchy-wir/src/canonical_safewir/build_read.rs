@@ -5,6 +5,7 @@ pub const BUILD_READ_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(1
 pub const BUILD_READ_RESPONSE_KIND: CapabilityKindId = CapabilityKindId::new(13);
 pub const BUILD_ENV_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(14);
 pub const BUILD_EXEC_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(15);
+pub const BUILD_NET_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(16);
 pub const BUILD_READ_IMPORT_NAMES: [&str; 3] = [
     "build_read_at", "build_read_response_size", "build_read_response_into",
 ];
@@ -14,6 +15,9 @@ pub const BUILD_ENV_IMPORT_NAMES: [&str; 4] = [
 ];
 pub const BUILD_EXEC_IMPORT_NAMES: [&str; 3] = [
     "build_exec_run", "build_read_response_size", "build_read_response_into",
+];
+pub const BUILD_NET_IMPORT_NAMES: [&str; 3] = [
+    "build_net_fetch", "build_read_response_size", "build_read_response_into",
 ];
 
 impl CanonicalAbiCatalog {
@@ -74,6 +78,26 @@ impl CanonicalAbiCatalog {
         self.with_build_response_imports([signatures[1], signatures[2]], string_layout)
     }
 
+    pub fn with_build_net_imports(
+        mut self, signatures: [FunctionSignatureId; 3], string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        let buffer = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let fetch = authenticated_capability_import(
+            BUILD_NET_IMPORT_NAMES[0],
+            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::ExternRef], signatures[0],
+            vec![HostParameterRole::Capability(BUILD_NET_CAPABILITY_KIND), buffer.clone(), buffer],
+            vec![HostResultRole::Capability(BUILD_READ_RESPONSE_KIND)],
+            HostMutation::ReadOnly, &[AbiImportAuthority::BuildFetch],
+        )?;
+        self.imports.insert(fetch.id, fetch);
+        self.with_build_response_imports([signatures[1], signatures[2]], string_layout)
+    }
+
     fn with_build_response_imports(
         mut self, signatures: [FunctionSignatureId; 2], string_layout: LayoutId,
     ) -> Result<Self, String> {
@@ -99,6 +123,41 @@ impl CanonicalAbiCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_net_catalog_authenticates_root_and_both_read_slices() {
+        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        let layout = LayoutId::from_bytes([34; 32]);
+        let signatures = [0, 1, 2].map(FunctionSignatureId::new);
+        let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
+            .with_build_net_imports(signatures, layout).unwrap();
+        assert_eq!(catalog.imports.len(), 3);
+        let fetch = catalog.imports.values().find(|import| import.name == "build_net_fetch").unwrap();
+        let buffer = HostParameterRole::Buffer {
+            value_type: ValueType::Ref(layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
+        };
+        assert_eq!(fetch.signature, signatures[0]);
+        assert_eq!(fetch.parameter_roles, vec![HostParameterRole::Capability(BUILD_NET_CAPABILITY_KIND), buffer.clone(), buffer]);
+        assert_eq!(fetch.result_roles, vec![HostResultRole::Capability(BUILD_READ_RESPONSE_KIND)]);
+        assert_eq!(fetch.reentrancy, HostReentrancy::Forbidden);
+        assert_eq!(fetch.mutation, HostMutation::ReadOnly);
+        assert!(matches!(fetch.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)));
+        let params = [WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32];
+        assert!(authenticated_internal_service_import(
+            "build_net_fetch", &params, &[WasmTy::ExternRef], signatures[0],
+            fetch.parameter_roles.clone(), fetch.result_roles.clone(), HostMutation::ReadOnly,
+        ).is_err(), "a response service must not acquire network authority");
+        assert!(authenticated_capability_import(
+            "build_net_fetch", &params, &[WasmTy::ExternRef], signatures[0],
+            fetch.parameter_roles.clone(), fetch.result_roles.clone(), HostMutation::ReadOnly,
+            &[AbiImportAuthority::BuildExec],
+        ).is_err(), "a tool grant is not a BuildNet grant");
+        assert!(authenticated_capability_import(
+            "build_net_fetch", &[WasmTy::I32, WasmTy::I32], &[WasmTy::I32], signatures[0],
+            fetch.parameter_roles.clone(), fetch.result_roles.clone(), HostMutation::ReadOnly,
+            &[AbiImportAuthority::BuildFetch],
+        ).is_err(), "legacy pointer-only transport must not authenticate");
+    }
 
     #[test]
     fn build_exec_catalog_requires_token_and_two_complete_read_slices() {

@@ -73,7 +73,6 @@ witchy-lower codegen::assembly::checked_codegen_boundary_tests::ready_int_channe
 witchy-lower codegen::assembly::checked_codegen_boundary_tests::scalar_channel_region_preserves_an_effectful_eager_prologue
 witchy-lower::codegen tests::dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter
 witchy-lower::codegen tests::forced_copy_dict_update_does_not_reference_an_ownership_token
-witchy::bin/witchy commands::build_steps::compiled_build_step_tests::compiled_build_net_fetches_only_allow_listed_hosts
 witchy::bin/witchy commands::execution::runtime_parity_tests::parity_authenticates_user_dynamic_declarations
 witchy::bin/witchy commands::web::dev::tests::compiler_invalidation_follows_the_loaded_local_source_graph
 witchy::bin/witchy commands::web::dev::tests::failed_rebuild_keeps_last_good_artifacts

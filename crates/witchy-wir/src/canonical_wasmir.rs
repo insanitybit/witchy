@@ -1602,6 +1602,8 @@ pub enum CanonicalEntryCapability {
     BuildEnv,
     /// A recipe-only grant of host-selected confined tools (kind 15).
     BuildExec,
+    /// A recipe-only exact host:port allow-list (kind 16).
+    BuildNet,
     /// A root `Dir` grant, minted by the launcher from the grant ordinal
     /// among the entry's `Dir` parameters (kind 1).
     Dir,
@@ -1671,6 +1673,7 @@ impl CanonicalEntry {
                 CanonicalEntryCapability::BuildRead => 12,
                 CanonicalEntryCapability::BuildEnv => 14,
                 CanonicalEntryCapability::BuildExec => 15,
+                CanonicalEntryCapability::BuildNet => 16,
                 CanonicalEntryCapability::Exec => 10,
             });
         }
@@ -1714,6 +1717,7 @@ impl CanonicalEntry {
                 12 => Ok(CanonicalEntryCapability::BuildRead),
                 14 => Ok(CanonicalEntryCapability::BuildEnv),
                 15 => Ok(CanonicalEntryCapability::BuildExec),
+                16 => Ok(CanonicalEntryCapability::BuildNet),
                 10 => Ok(CanonicalEntryCapability::Exec),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
@@ -7154,6 +7158,9 @@ ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPA
             }
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND && source.is_build_recipe() => {
                 capabilities.push(CanonicalEntryCapability::BuildExec);
+            }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_NET_CAPABILITY_KIND && source.is_build_recipe() => {
+                capabilities.push(CanonicalEntryCapability::BuildNet);
             }
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::EXEC_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Exec);

@@ -81,6 +81,24 @@ impl FunctionLowerer<'_> {
         self.lower_build_response_string(response)
     }
 
+    pub(super) fn lower_build_net(&mut self, token: ValueId, host: &Expr, path: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let host = self.lower_string_argument(host)?;
+        // Evaluate once and retain the first value before a path expression
+        // can write back to its source binding.
+        let host = self.clone_reference_token(host)?;
+        let path = self.lower_string_argument(path)?;
+        let host = self.string_slice_argument(host, layout)?;
+        let path = self.string_slice_argument(path, layout)?;
+        let fetch = self.capability_import("build_net_fetch")?;
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND))?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import: fetch,
+            arguments: vec![HostCallArgument::Capability(token), host, path],
+        });
+        self.lower_build_response_string(response)
+    }
+
     fn lower_build_response_string(&mut self, response: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let size = self.capability_import("build_read_response_size")?;

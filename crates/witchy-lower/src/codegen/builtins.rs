@@ -1043,8 +1043,9 @@ impl Codegen<'_> {
                 call("build_get_env", self.lower_args(&[&args[1]])?)
             }
             ("fetch_build", 3) => {
-                self.used_build_ops.insert("fetch_build");
-                call("build_fetch", self.lower_args(&[&args[1], &args[2]])?)
+                // A ghost receiver and staged global bytes cannot implement
+                // the authenticated BuildNet token/slice/response contract.
+                return None;
             }
             ("run_tool", 3) => {
                 // The authenticated ABI carries a real BuildExec token and

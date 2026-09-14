@@ -1367,6 +1367,7 @@ pub struct VmState {
     build_read_issuer: Arc<()>,
     build_env_issuer: Arc<()>,
     build_exec_issuer: Arc<()>,
+    build_net_issuer: Arc<()>,
     build_exec_tools:
         std::collections::BTreeMap<String, crate::confine::ConfinedFile>,
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
@@ -1534,6 +1535,10 @@ CanonicalEntryCapability::BuildOut => {
                 }
                 CanonicalEntryCapability::BuildExec => {
                     let authority = host::build_exec::mint(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::BuildNet => {
+                    let authority = host::build_net::mint(self.store.data())?;
                     ExternRef::new(&mut self.store, authority)?
                 }
                 CanonicalEntryCapability::Exec => {
@@ -2576,6 +2581,7 @@ pub(crate) fn link_capability_imports(
     host::build_read::link(linker)?;
     host::build_env::link(linker)?;
     host::build_exec::link(linker)?;
+    host::build_net::link(linker)?;
     if caps.build_out.is_some() {
         host::build::link_out(linker)?;
     }
@@ -2585,9 +2591,8 @@ pub(crate) fn link_capability_imports(
     if caps.build_env.is_some() {
         host::build::link_env(linker)?;
     }
-    if caps.build_net_allow.is_some() {
-        host::build::link_fetch(linker)?;
-    }
+    // BuildNet uses its authenticated root/slice import and immutable response.
+    // Do not retain the legacy grant-only build_fetch_len/pending route.
     // build_exec_run now has the authenticated token/slice ABI. Do not also
     // register the old zero-representation staging ABI under the same name.
     host::staging::link_staging(linker)?;
@@ -2719,6 +2724,7 @@ fn vmstate_from_caps(
         build_read_issuer: Arc::new(()),
         build_env_issuer: Arc::new(()),
         build_exec_issuer: Arc::new(()),
+        build_net_issuer: Arc::new(()),
         build_exec_tools,
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),

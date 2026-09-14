@@ -1516,3 +1516,49 @@ taskpolicy -c utility cargo nextest run -p witchy-runtime -p witchy-wir -p witch
 
 This repair is focused-green, not merged evidence. BuildNet remains a separate
 unverified slice; the full SafeWIR goal and compiler-wide safety claim remain open.
+
+#### BuildExec landed; BuildNet execution checkpoint
+
+The coordinator subsequently merged the BuildExec repair and its stack at
+`47a51bb86099d50e6ddadfce8cb8b7c9b1192bd9`. BuildNet is a separate focused-green
+slice on `impl/rfc0165-build-network-next`, awaiting serialized queue landing.
+
+BuildNet uses an authenticated externref root and immutable response handles,
+with exact host allow-list matching and complete strict-UTF8 argument snapshots
+before network access. Its existing plaintext HTTP/body-decoding semantics are
+preserved; this slice adds no timeout, TLS, redirect, or response-size guarantee.
+Independent runtime and compiler/oracle source reviews found no blocking
+contract mismatch. The native peer fixture now explicitly makes accepted
+sockets blocking, and the generated ABI catalog names `build_net_fetch`.
+
+Run `69d22524-f738-4264-9c85-d9020808dc20` built in 8m16s and ran 90 focused
+tests in 118.858 seconds: 89 passed, one failed. Log:
+`/private/tmp/witchy-build-net-integrated-focused.log`. Passing evidence includes
+admitted source/native/oracle BuildNet probes, capability and buffer denials,
+the package-manager fetch-to-generated-source workflow, ABI conformance, and
+BuildRead/BuildEnv/BuildExec regressions. The remaining failure is
+`rfc0103_build_step_confinement::production_build_recipe_rejects_traversal_and_other_families`:
+its ordinary `Net` fixture correctly refuses with `a build step may only take
+build-time capabilities`, but the test still expects `unsupported`. The
+assertion was subsequently corrected to name that precise early refusal, while
+retaining failure-status and no-escape checks. No production rule changed.
+
+The corrected run `bbe2a4a6-74ad-48de-8130-3fcb2262d482` passed all 90 tests in
+107.813 seconds after a 3.79-second warmed build. Log:
+`/private/tmp/witchy-build-net-integrated-green.log`. The passing
+`compiled_build_net_fetches_only_allow_listed_hosts` test is removed from the
+shared deferred list; no other exclusion changed. Review was completed before
+submission. This is focused evidence, not a terminal full-gate result.
+
+The same binary passes interpreter/compiled-Wasm parity for `hello`, `wrap`, and
+`jq` (3/5/7 output lines), logged in
+`/private/tmp/witchy-build-net-compact-parity.log`. Reproduce the focused shard
+with the absolute warmed target and package/feature union above, replacing its
+selector with:
+
+```text
+test(build_net) | test(build_exec) | test(build_env) | test(build_read) | test(build_recipe) | test(rfc0103_build_step_confinement) | test(wasm_abi_catalog) | test(grantful_build_primitives_compile_to_build_imports_only) | test(build_step_generated_deps_link_and_run) | test(build_steps_are_default_deny_even_when_safe) | test(build_steps_auto_run_and_generated_source_is_gated) | test(deterministic_build_output_is_cached)
+```
+
+The full SafeWIR goal remains incomplete. Compiler-wide memory safety is not
+established.

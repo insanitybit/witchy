@@ -12,7 +12,7 @@ fn production_build_recipe_rejects_traversal_and_other_families() {
     for (text, expected) in [
         ("fn build(out: BuildOut):\n    out.write_out(\"../escape.txt\", \"never\")\n", "escapes"),
         ("fn build(out: BuildOut, input: BuildRead) -> Nil:\n    Nil\n", "no read grant"),
-        ("fn build(out: BuildOut, net: BuildNet) -> Nil:\n    Nil\n", "unsupported"),
+        ("fn build(out: BuildOut, net: Net) -> Nil:\n    Nil\n", "a build step may only take build-time capabilities"),
     ] {
         std::fs::write(&source, text).unwrap();
         let result = Command::new(BIN).args(["build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap()]).output().unwrap();

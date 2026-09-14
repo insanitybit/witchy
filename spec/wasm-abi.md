@@ -186,6 +186,7 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
+
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -234,7 +235,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `build_out_write` | `(i32, i32)` | capability authority | Build.Out | omitted |
 | `build_env_len` | `(i32) -> i32` | capability authority | Build.Env | omitted |
 | `build_env_fill` | `(i32, i32)` | capability authority | Build.Env | omitted |
-| `build_fetch_len` | `(i32, i32) -> i32` | capability authority | Build.Fetch | omitted |
+| `build_net_fetch` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Build.Fetch | omitted |
 | `build_exec_run` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Build.Exec | omitted |
 | `net_recv_line_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_all_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |

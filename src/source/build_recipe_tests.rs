@@ -8,6 +8,9 @@ mod build_env_recipe_tests;
 #[path = "build_exec_recipe_tests.rs"]
 mod build_exec_recipe_tests;
 
+#[path = "build_net_recipe_tests.rs"]
+mod build_net_recipe_tests;
+
 struct Folder(PathBuf);
 impl Folder {
     fn new() -> Self {
@@ -112,7 +115,7 @@ fn build_recipe_rejects_unsupported_and_imported_targets() {
     let folder = Folder::new();
     for source in [
         "fn ordinary() -> Nil:\n    Nil\n",
-        "fn build(out: BuildOut, net: BuildNet) -> Nil:\n    Nil\n",
+        "fn build(out: BuildOut, net: Net) -> Nil:\n    Nil\n",
         "fn build(var out: BuildOut) -> Nil:\n    Nil\n",
         "fn build(own out: BuildOut) -> Nil:\n    Nil\n",
         "fn build(value: String) -> Nil:\n    Nil\n",

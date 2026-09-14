@@ -265,7 +265,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "build_out_write" (func $build_out_write_host (param i32 i32)))
   (import "witchy" "build_env_len" (func $build_env_len_host (param i32) (result i32)))
   (import "witchy" "build_env_fill" (func $build_env_fill_host (param i32 i32)))
-  (import "witchy" "build_fetch_len" (func $build_fetch_len_host (param i32 i32) (result i32)))
+  (import "witchy" "build_net_fetch" (func $build_net_fetch_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "build_exec_run" (func $build_exec_run_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "net_recv_line_len" (func $net_recv_line_len_host (param externref) (result i32)))
   (import "witchy" "net_recv_all_len" (func $net_recv_all_len_host (param externref) (result i32)))
@@ -552,7 +552,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "build_out_write_at"
         | "build_env_len"
         | "build_env_fill"
-        | "build_fetch_len"
+        | "build_net_fetch"
         | "build_exec_run"
         | "net_recv_line_len"
         | "net_recv_all_len"
@@ -703,7 +703,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "build_read_len" | "build_read_at" => AUTH_BUILD_READ,
         "build_out_write" | "build_out_write_at" => AUTH_BUILD_OUT,
         "build_env_len" | "build_env_fill" | "build_env_at" => AUTH_BUILD_ENV,
-        "build_fetch_len" => AUTH_BUILD_FETCH,
+        "build_net_fetch" => AUTH_BUILD_FETCH,
         "build_exec_run" => AUTH_BUILD_EXEC,
         _ => NO_AUTHORITIES,
     };

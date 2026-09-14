@@ -258,10 +258,6 @@ fn run_build_recipe(
     grants: BuildRuntimeGrants,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<Vec<String>, String> {
-if !grants.net_hosts.is_empty()
-{
-    return Err("build recipe: BuildNet grants are unsupported".into());
-}
 let source = source.to_str().ok_or_else(|| "build source path is not UTF-8".to_string())?;
 let recipe = crate::source::link_build_file(source)?;
 let artifact = match codegen::compile_checked_build_recipe_artifact(&recipe) {
@@ -282,6 +278,7 @@ let caps = runtime::Capabilities {
     build_exec_tools,
     build_exec_runtime_roots: build_exec_runtime_roots(),
     exec_child_paths: grants.child_paths,
+    build_net_allow: Some(grants.net_hosts),
     ..runtime::Capabilities::none()
 };
 super::confinement::arm(&caps, confinement)?;
