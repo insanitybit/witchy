@@ -1044,6 +1044,21 @@ fn semantic_conformance_edits_run_the_known_independent_expectation_probe_first(
 }
 
 #[test]
+fn dispatch_edits_probe_fetch_origin_admission_before_commands_module() {
+    let commands = selected(&["--edit-loop", "src/commands/dispatch.rs"]);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert_eq!(
+        commands[0],
+        "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+    );
+    assert!(
+        commands[1].contains("test(/^commands::/)")
+            && commands[1].starts_with("./scripts/nextest-admitted.sh witchy -- "),
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn network_misc_edits_run_only_their_modules() {
     for (path, module) in [
         ("tests/misc/canonical_net_fixture.rs", "canonical_net_fixture"),

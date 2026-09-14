@@ -518,6 +518,11 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_witchy_test 'commands::web'
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::web/)'" ;;
+        src/commands/dispatch.rs)
+            any_rust=1
+            add_early "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+            add_witchy_test 'commands::'
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::/)'" ;;
         src/commands/*)
             any_rust=1
             add_witchy_test 'commands::'
