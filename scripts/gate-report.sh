@@ -389,6 +389,14 @@ jq -sn \
                | map({touches:(if ((.[0].touches//"")|length)==0 then "unclassified" else .[0].touches end),
                       submissions:length})
                | sort_by(-.submissions, .touches)),
+             missing_receipts_by_actor_hint_and_touches:($eligible
+               | map(select(.presubmit_sha_match!="true"))
+               | group_by([(.actor_hint//"unknown"),
+                          (if ((.touches//"")|length)==0 then "unclassified" else .touches end)] | join("|"))
+               | map({actor_hint:(.[0].actor_hint//"unknown"),
+                     touches:(if ((.[0].touches//"")|length)==0 then "unclassified" else .[0].touches end),
+                     submissions:length})
+               | sort_by(-.submissions, .actor_hint, .touches)),
              by_actor:($subs|group_by(.actor//"unset")
                        |map({actor:(.[0].actor//"unset"), submissions:length})|sort_by(-.submissions)),
              by_actor_hint:($subs|group_by(.actor_hint//"unknown")
@@ -512,6 +520,13 @@ jq -r '
         ("  missing receipt surfaces: "
          + (.attribution.missing_receipts_by_touches
             | map("\(.touches)=\(.submissions)") | join(", ")))
+     end),
+    (if (.attribution.missing_receipts_by_actor_hint_and_touches|length)==0 then
+        "  missing receipt cohorts: none"
+     else
+        ("  missing receipt cohorts: "
+         + (.attribution.missing_receipts_by_actor_hint_and_touches
+            | map("\(.actor_hint)/\(.touches)=\(.submissions)") | join(", ")))
      end),
     "  edit check p50 / p90:    \(value(.attribution.presubmit_edit_s.p50; "s")) / \(value(.attribution.presubmit_edit_s.p90; "s")) (\(.attribution.presubmit_edit_s.count) samples)",
     "  actor set (not \"unset\"): \(if .attribution.actor_adoption==null then "n/a" else ((.attribution.actor_adoption*100|round|tostring)+"%") end)",

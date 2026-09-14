@@ -321,6 +321,14 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
             {"touches": "unclassified", "submissions": 1},
         ])
     );
+    assert_eq!(
+        report["attribution"]["missing_receipts_by_actor_hint_and_touches"],
+        serde_json::json!([
+            {"actor_hint": "unknown", "touches": "codegen", "submissions": 3},
+            {"actor_hint": "unknown", "touches": "runtime", "submissions": 1},
+            {"actor_hint": "unknown", "touches": "unclassified", "submissions": 1},
+        ])
+    );
     assert_eq!(report["phases_s"]["compile"]["p50"], 20);
     assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 21);
     assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);
