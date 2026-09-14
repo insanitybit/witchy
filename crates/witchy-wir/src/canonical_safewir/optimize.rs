@@ -153,6 +153,7 @@ pub(super) fn check_rewrite_relation(
         || before.signatures != after.signatures
         || before.imports != after.imports
         || before.proper_tail_sites != after.proper_tail_sites
+        || before.proper_tail_locations != after.proper_tail_locations
         || before.static_data_segments != after.static_data_segments
         || before.abi_catalog != after.abi_catalog
         || before.abi_bindings != after.abi_bindings
@@ -266,7 +267,8 @@ mod tests {
     use super::super::{
         BasicBlock, BlockId, CallableContract, CheckedSourceIdentity, FunctionId,
         FunctionSignature, FunctionSignatureId, LoweredCandidate, LoweredModuleParts,
-        ResultContract, Revision, Terminator, ValueType,
+        ProperTailLocation, ProperTailSite, ResultContract, Revision, TailSiteId, Terminator,
+        ValueType,
     };
     use super::*;
 
@@ -277,6 +279,7 @@ mod tests {
     const FIRST_CONDITION: ValueId = ValueId::new(2);
     const SECOND_CONDITION: ValueId = ValueId::new(3);
     const MARKER: ValueId = ValueId::new(4);
+    const TAIL_SITE: TailSiteId = TailSiteId::from_digest([7; 32]);
 
     fn block(id: u32, operations: Vec<Operation>, terminator: Terminator) -> BasicBlock {
         BasicBlock {
@@ -288,6 +291,13 @@ mod tests {
     }
 
     fn candidate(blocks: Vec<BasicBlock>) -> CanonicalModule<LoweredCandidate> {
+        candidate_with_tail_sites(blocks, Vec::new())
+    }
+
+    fn candidate_with_tail_sites(
+        blocks: Vec<BasicBlock>,
+        proper_tail_sites: Vec<ProperTailSite>,
+    ) -> CanonicalModule<LoweredCandidate> {
         let signature = FunctionSignature {
             id: SIGNATURE,
             parameters: Vec::new(),
@@ -320,7 +330,7 @@ mod tests {
                 value_types,
                 blocks,
             }],
-            proper_tail_sites: Vec::new(),
+            proper_tail_sites,
         })
     }
 
@@ -352,6 +362,31 @@ mod tests {
             Terminator::Return { values: Vec::new() },
         )]))
         .expect("initial graph is valid")
+    }
+
+    fn validated_with_tail_location() -> CanonicalModule<InitialValid> {
+        let module = candidate_with_tail_sites(
+            vec![block(
+                0,
+                duplicate_operations(),
+                Terminator::TailCall {
+                    site: TAIL_SITE,
+                    callee: FUNCTION,
+                    arguments: Vec::new(),
+                },
+            )],
+            vec![ProperTailSite {
+                id: TAIL_SITE,
+                function: FUNCTION,
+                discharged_by: None,
+            }],
+        )
+        .with_proper_tail_locations(vec![ProperTailLocation::new(
+            TAIL_SITE,
+            FUNCTION,
+            BlockId::new(0),
+        )]);
+        super::super::check_initial(module).expect("tail-call graph is valid")
     }
 
     fn duplicate_operations() -> Vec<Operation> {
@@ -574,6 +609,37 @@ mod tests {
         assert_eq!(
             check_rewrite_relation(&before, &different),
             Err(RewriteRelationError::OperationChanged),
+        );
+    }
+
+    #[test]
+    fn relation_preserves_proper_tail_locations() {
+        let before = validated_with_tail_location();
+        let preserved: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
+
+        assert_eq!(check_rewrite_relation(&before, &preserved), Ok(()));
+    }
+
+    #[test]
+    fn relation_rejects_dropped_or_relocated_proper_tail_locations() {
+        let before = validated_with_tail_location();
+
+        let mut dropped: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
+        dropped.proper_tail_locations.clear();
+        assert_eq!(
+            check_rewrite_relation(&before, &dropped),
+            Err(RewriteRelationError::ModuleMetadataChanged),
+        );
+
+        let mut relocated: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
+        relocated.proper_tail_locations = vec![ProperTailLocation::new(
+            TAIL_SITE,
+            FUNCTION,
+            BlockId::new(1),
+        )];
+        assert_eq!(
+            check_rewrite_relation(&before, &relocated),
+            Err(RewriteRelationError::ModuleMetadataChanged),
         );
     }
 }
