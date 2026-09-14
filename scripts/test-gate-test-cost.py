@@ -100,6 +100,23 @@ check.sh: serialized nextest selection: --test merge_queue
         assert "gate log   fixture.log" in workspace, workspace
         assert "execution  102s wall" in workspace, workspace
 
+        explicit = subprocess.run(
+            [
+                "python3",
+                str(ROOT / "scripts/gate-test-cost.py"),
+                "--log",
+                str(preflight),
+                "--top",
+                "1",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert "gate log   newest-preflight.log" in explicit, explicit
+        assert "execution  0s wall" in explicit, explicit
+
 
 if __name__ == "__main__":
     main()

@@ -12,6 +12,7 @@ Usage:
     scripts/gate-test-cost.py --top 40         # deeper tail
     scripts/gate-test-cost.py --trend          # week-over-week regression
     scripts/gate-test-cost.py --workspace-only # ignore scoped landing shards
+    scripts/gate-test-cost.py --log state/merge-queue/logs/gate.log # inspect one named log
     scripts/gate-test-cost.py --budget 5.0     # list tests over a budget
     scripts/gate-test-cost.py --assert-budget 2 # fail if any ordinary test exceeds 2s
     scripts/gate-test-cost.py --assert-budget 2 --exempt-file scripts/nightly-deferred-tests.txt
@@ -288,6 +289,8 @@ def main():
     ap.add_argument("--trend", action="store_true", help="week-over-week suite cost")
     ap.add_argument("--workspace-only", action="store_true",
                     help="ignore path-scoped nextest selections and mine full workspace stages")
+    ap.add_argument("--log", type=str, default="",
+                    help="inspect exactly one existing gate log instead of selecting the newest")
     ap.add_argument("--budget", type=float, default=0.0,
                     help="list every test slower than this many seconds")
     ap.add_argument("--assert-budget", type=float, default=0.0,
@@ -303,11 +306,18 @@ def main():
         print(f"no gate logs at {LOG_DIR} — run the merge queue first", file=sys.stderr)
         return 1
 
+    if args.trend and args.log:
+        ap.error("--log cannot be combined with --trend")
+
     if args.trend:
         trend(load(args.runs, args.workspace_only))
         return 0
 
-    runs = load(1, args.workspace_only)
+    if args.log:
+        run = parse(os.path.abspath(args.log))
+        runs = [run] if run else []
+    else:
+        runs = load(1, args.workspace_only)
     if not runs:
         print("no gate log with a completed test stage found", file=sys.stderr)
         return 1
