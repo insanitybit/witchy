@@ -7,9 +7,12 @@
 use std::fmt;
 
 use witchy_types::pipeline::{CanonicalCheckedSource, CheckedModule};
+use witchy_wir::canonical_safewir::optimize::{
+    BoundsGuardEliminationError, eliminate_same_block_redundant_bounds_guards_checked,
+};
 use witchy_wir::canonical_safewir::{
-    FinalValidationError, InitialWitnessError,
-    ValidatedSafeWir, check_initial_with_witness, validate_final,
+    FinalValidationError, InitialWitnessError, ValidatedSafeWir, check_initial_with_witness,
+    validate_final, validate_optimized_final,
 };
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
 
@@ -22,6 +25,7 @@ pub(crate) enum CanonicalPipelineError {
     Layout(CanonicalLayoutError),
     Lowering(CanonicalLoweringError),
     InitialValidation(InitialWitnessError),
+    Optimization(BoundsGuardEliminationError),
     FinalValidation(FinalValidationError),
     Admission(CanonicalAdmissionError),
 }
@@ -78,10 +82,22 @@ pub(crate) fn validate_checked_source(
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
     let checked = check_initial_with_witness(candidate, source)
         .map_err(CanonicalPipelineError::InitialValidation)?;
-    // RFC-0165 milestone one has no optional transformations. The final
-    // validator consumes and independently rechecks this exact sealed graph.
-    validate_final(checked, source)
-        .map_err(CanonicalPipelineError::FinalValidation)
+    if source
+        .typed_module()
+        .module()
+        .modes
+        .iter()
+        .any(|mode| mode == "opt")
+    {
+        let optimized = eliminate_same_block_redundant_bounds_guards_checked(checked)
+            .map_err(CanonicalPipelineError::Optimization)?;
+        validate_optimized_final(optimized, source)
+            .map_err(CanonicalPipelineError::FinalValidation)
+    } else {
+        // Ordinary mode remains the zero-pass baseline. The final validator
+        // consumes and independently rechecks this exact sealed graph.
+        validate_final(checked, source).map_err(CanonicalPipelineError::FinalValidation)
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +215,37 @@ pub(crate) mod tests {
 
         assert_eq!(validated.checked_source().digest(), checked.canonical_source_witness().unwrap().source_bundle_digest());
         assert_eq!(validated.revision().get(), 0);
+    }
+
+    #[test]
+    fn opt_mode_runs_the_assured_bounds_pass_before_admission() {
+        let source = "mode opt\n\nfn main() -> Int:\n    let xs = [41]\n    xs[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked opt source");
+        let validated = validate_checked_module(&checked)
+            .expect("assured bounds optimization reaches final validation");
+        assert_eq!(
+            validated.revision().get(),
+            1,
+            "the source-generated redundant bounds guard must be removed"
+        );
+
+        let artifact = admit_checked_module(&checked).expect("optimized opt module admits");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("optimized Wasm");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine)
+            .instantiate(&mut store, &module)
+            .expect("instantiate optimized Wasm");
+        let entry = artifact.entry().expect("checked main entry").export();
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, entry)
+            .expect("typed optimized entry");
+        assert_eq!(main.call(&mut store, ()).expect("run optimized entry"), 41);
     }
 
     #[test]
