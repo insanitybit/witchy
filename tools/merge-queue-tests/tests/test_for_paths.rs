@@ -1238,7 +1238,8 @@ fn std_path_without_rust_keeps_its_focused_checks() {
     assert_eq!(commands.len(), 3, "{commands:?}");
     assert!(commands[0].contains("example_tests"), "{commands:?}");
     assert!(commands[1].contains("stdlib_docs_are_current"), "{commands:?}");
-    assert!(commands[2].contains("witchy fmt --check"), "{commands:?}");
+    assert!(commands[2].contains("fmt --check"), "{commands:?}");
+    assert!(commands[2].contains("${CARGO_TARGET_DIR:-target}/debug/witchy"), "{commands:?}");
 }
 
 #[test]
@@ -1246,7 +1247,17 @@ fn mixed_rust_and_std_keeps_only_fast_and_std_formatting() {
     let commands = selected(&["crates/witchy-syntax/src/parser.rs", "std/meta.witchy"]);
     assert_eq!(commands.len(), 2, "{commands:?}");
     assert_eq!(commands[0], "./scripts/check.sh --fast");
-    assert!(commands[1].contains("witchy fmt --check"), "{commands:?}");
+    assert!(commands[1].contains("fmt --check"), "{commands:?}");
+    assert!(commands[1].contains("${CARGO_TARGET_DIR:-target}/debug/witchy"), "{commands:?}");
+}
+
+#[test]
+fn project_formatting_uses_the_isolated_cargo_target() {
+    let commands = selected(&["projects/glamour/examples/accessibility/src/main.witchy"]);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[0].contains("${CARGO_TARGET_DIR:-target}/debug/witchy"), "{commands:?}");
+    assert!(commands[0].contains("fmt --check"), "{commands:?}");
+    assert_eq!(commands[1], "./scripts/check.sh --e2e");
 }
 
 #[test]

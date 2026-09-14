@@ -484,7 +484,7 @@ for p in "${paths[@]}"; do
             gate_need_stdlib_docs=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
-            add "./target/debug/witchy fmt --check std/*.witchy" ;;
+            add "\"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check std/*.witchy" ;;
         README.md)
             corpus_impact=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
@@ -498,7 +498,7 @@ for p in "${paths[@]}"; do
             # validator, catching that false Run button pre-submit.
             add "./scripts/check.sh --wasm" ;;
         projects/grimoire/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
-            add "find projects -type f -path '*/src/*.witchy' -exec ./target/debug/witchy fmt --check {} +"
+            add "find projects -type f -path '*/src/*.witchy' -exec \"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check {} +"
             broad_e2e=1
             add "./scripts/check.sh --e2e" ;;
         web/witchy-runtime/glamour-*.mjs | \
