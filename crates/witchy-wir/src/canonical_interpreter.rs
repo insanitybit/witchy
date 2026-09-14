@@ -916,7 +916,7 @@ impl<'a> Engine<'a> {
                 self.init_nullable_owned(place, values)?;
             }
             Operation::CopyBytes { destination, source, length } => {
-                self.copy_range(destination, source, *length, RangeTransfer::Copy, values)?;
+                self.copy_bytes(destination, source, *length, values)?;
             }
             Operation::MoveRange { destination, source, count } => {
                 self.copy_range(destination, source, *count, RangeTransfer::Move, values)?;
@@ -1940,8 +1940,54 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// `CopyBytes`/`CloneRange` copy cells; `MoveRange` moves them, which
-    /// carries each child token across without a retain.
+    /// Copies raw bytes with `memmove` semantics. Unlike typed range transfer,
+    /// byte copies may overlap because the complete source is snapshotted
+    /// before any destination cell is written.
+    fn copy_bytes(
+        &mut self,
+        destination: &Place,
+        source: &Place,
+        length: ValueId,
+        values: &BTreeMap<ValueId, InterpreterValue>,
+    ) -> Result<(), InterpretError> {
+        let length = self.size_value(length, values)?;
+        let (source_object, source_start, source_length) = self.slice_place(source, values)?;
+        let (destination_object, destination_start, destination_length) = self.slice_place(destination, values)?;
+        if source_length != length || destination_length != length {
+            return Err(InterpretError::TypeMismatch("range length"));
+        }
+        self.check_range(source_object, source_start, length, false)?;
+        self.check_range(destination_object, destination_start, length, true)?;
+        if self.object(destination_object)?.immutable {
+            return Err(InterpretError::ImmutableObject(destination_object));
+        }
+
+        let mut bytes = Vec::with_capacity(length as usize);
+        for offset in 0..length {
+            let key = CellKey::Element(source_start.checked_add(offset).ok_or(InterpretError::ArithmeticTrap)?);
+            let byte = self
+                .object(source_object)?
+                .cells
+                .get(&key)
+                .cloned()
+                .ok_or(InterpretError::UninitializedPlace)?;
+            if matches!(byte, InterpreterValue::ObjectRef(_)) {
+                return Err(InterpretError::TypeMismatch("byte cell"));
+            }
+            bytes.push(byte);
+        }
+
+        let cells = &mut self.object_mut(destination_object)?.cells;
+        for (offset, byte) in bytes.into_iter().enumerate() {
+            let key = CellKey::Element(destination_start.checked_add(offset as u64).ok_or(InterpretError::ArithmeticTrap)?);
+            cells.insert(key, byte);
+        }
+        Ok(())
+    }
+
+    /// `CloneRange` copies typed cells; `MoveRange` moves them, which carries
+    /// each child token across without a retain. Same-object ranges are refused
+    /// even when disjoint because their ownership accounting is not byte copy.
     fn copy_range(
         &mut self,
         destination: &Place,
@@ -3725,6 +3771,82 @@ mod tests {
             engine.load(&element(source), LoadTransfer::CopyScalar, &values),
             Err(InterpretError::UninitializedPlace)
         );
+    }
+
+    fn assert_same_object_byte_copy(source_start: u64, destination_start: u64, length: u64, expected: &[i64]) {
+        let module = validated(empty_layouts(), vec![], BTreeMap::new(), vec![], Terminator::Return { values: vec![] }, vec![]);
+        let mut engine = Engine::new(module.module(), InterpreterConfig::default());
+        let layout = LayoutId::from_bytes([15; 32]);
+        let object = engine
+            .allocate(
+                layout,
+                AllocationClass::ReferenceCounted,
+                RuntimeExtent::Counted {
+                    header_bytes: 0,
+                    count: 4,
+                    capacity: 4,
+                    stride_bytes: 1,
+                },
+                false,
+            )
+            .unwrap();
+        for (index, byte) in [1_i64, 2, 3, 4].into_iter().enumerate() {
+            engine
+                .object_mut(object)
+                .unwrap()
+                .cells
+                .insert(CellKey::Element(index as u64), InterpreterValue::Int(byte));
+        }
+
+        let object_value = ValueId::new(100);
+        let source_start_value = ValueId::new(101);
+        let destination_start_value = ValueId::new(102);
+        let length_value = ValueId::new(103);
+        let values = BTreeMap::from([
+            (object_value, InterpreterValue::ObjectRef(object)),
+            (source_start_value, InterpreterValue::Size(source_start)),
+            (destination_start_value, InterpreterValue::Size(destination_start)),
+            (length_value, InterpreterValue::Size(length)),
+        ]);
+        let range = |start, access| {
+            Place::projected(
+                object_value,
+                Projection::Slice { start, length: length_value },
+                ValueType::Int,
+                access,
+            )
+        };
+        engine
+            .copy_bytes(
+                &range(destination_start_value, crate::canonical_safewir::AccessMode::Write),
+                &range(source_start_value, crate::canonical_safewir::AccessMode::Read),
+                length_value,
+                &values,
+            )
+            .unwrap();
+
+        let actual = (0..4)
+            .map(|index| match engine.objects[&object].cells[&CellKey::Element(index)] {
+                InterpreterValue::Int(byte) => byte,
+                ref value => panic!("expected byte cell, got {value:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn copy_bytes_forward_overlap_uses_memmove_snapshot() {
+        assert_same_object_byte_copy(0, 1, 3, &[1, 1, 2, 3]);
+    }
+
+    #[test]
+    fn copy_bytes_backward_overlap_uses_memmove_snapshot() {
+        assert_same_object_byte_copy(1, 0, 3, &[2, 3, 4, 4]);
+    }
+
+    #[test]
+    fn copy_bytes_self_copy_preserves_raw_buffer() {
+        assert_same_object_byte_copy(0, 0, 4, &[1, 2, 3, 4]);
     }
 
     #[test]
