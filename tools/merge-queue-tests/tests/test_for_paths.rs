@@ -1013,6 +1013,16 @@ fn embedded_pm_edits_run_only_the_embedded_pm_module() {
 }
 
 #[test]
+fn lower_codegen_edits_run_the_known_fast_failure_probe_first() {
+    let commands = selected(&["--edit-loop", "crates/witchy-lower/tests/codegen.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert_eq!(
+        commands[0],
+        "cargo nextest run -p witchy-lower --test codegen -E 'test(=grantful_build_primitives_compile_to_build_imports_only)'"
+    );
+}
+
+#[test]
 fn network_misc_edits_run_only_their_modules() {
     for (path, module) in [
         ("tests/misc/canonical_net_fixture.rs", "canonical_net_fixture"),
