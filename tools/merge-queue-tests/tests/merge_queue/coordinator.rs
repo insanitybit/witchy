@@ -1703,6 +1703,24 @@ fn submit_journals_whether_a_presubmit_receipt_covers_the_tip() {
     assert_eq!(resubmitted["presubmit_edit_elapsed_s"], "37");
 }
 
+/// The opt-in submit wrapper is queue tooling. Keep its submissions in the
+/// receipt-adoption denominator so the metric measures the workflow it names.
+#[test]
+fn submit_wrapper_changes_are_presubmit_eligible_queue_infrastructure() {
+    for path in ["scripts/agent-check.sh", "scripts/submit-with-presubmit.sh"] {
+        let fixture = QueueFixture::stack(&[path]);
+
+        fixture.mq_ok(&["submit", "a"], "true");
+        let submitted = fixture
+            .journal()
+            .into_iter()
+            .filter(|event| event["event"] == "submitted")
+            .next_back()
+            .expect("a submitted event");
+        assert_eq!(submitted["presubmit_eligible"], "true", "path: {path}");
+    }
+}
+
 /// A prose-only branch cannot obtain a receipt at all: `test-for-paths` reports
 /// no focused checks and a docs-scope gate writes none. Warning on every
 /// documentation change trains submitters to ignore the warning, which costs
