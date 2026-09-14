@@ -674,18 +674,24 @@ fn canonical_capabilities_lower_only_to_externref() {
         "canonical capability values must be represented as Wasm externref"
     );
     assert!(
+        source.contains("ValueType::NullableCapability(_) => Ok(ValType::EXTERNREF)"),
+        "canonical nullable capability values must be represented as Wasm externref"
+    );
+    assert!(
         source.contains("HostParameterRole::Capability(_) => parameters.push(ValType::EXTERNREF)"),
         "canonical capability parameters must be represented as Wasm externref"
     );
     assert!(
-        source.contains("HostResultRole::Capability(_) => results.push(ValType::EXTERNREF)"),
-        "canonical capability results must be represented as Wasm externref"
+        source.contains("HostResultRole::Capability(_) | HostResultRole::NullableCapability(_) => results.push(ValType::EXTERNREF)"),
+        "canonical capability and nullable capability results must be represented as Wasm externref"
     );
     for integer_type in ["I32", "I64", "F32", "F64", "V128"] {
-        assert!(
-            !source.contains(&format!("ValueType::Capability(_) => Ok(ValType::{integer_type})")),
-            "canonical capability values must not map to ValType::{integer_type}"
-        );
+        for role in ["Capability", "NullableCapability"] {
+            assert!(
+                !source.contains(&format!("ValueType::{role}(_) => Ok(ValType::{integer_type})")),
+                "canonical {role} values must not map to ValType::{integer_type}"
+            );
+        }
     }
 }
 

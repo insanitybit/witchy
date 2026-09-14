@@ -1859,3 +1859,23 @@ Final shard: 50/50 passed, no retries, nextest run
 `0adb48dd-f59f-4112-9a34-99ed306297f3`, 3.404 seconds after a 5.33-second build.
 Use the preceding command with `| test(checked_entry_scope_)` added to its filter.
 Log: `/private/tmp/witchy-registry-scope-refusal-repair-2.log`.
+
+### Registry route-pin repair (2026-09-14)
+
+The third registry attempt (`3931c7302c53490efe1a2424e2e1ae215e8eb8e3`,
+rebased candidate `21046f425a73fabe8e110984e8c327f82983766c`) was red at
+`2026-09-14T11:05:32Z` after 4555 workspace tests passed. The capability-result
+source pin expected a single match pattern; the encoder now combines required
+and nullable capabilities in one arm returning `EXTERNREF`. The pin requires
+both result roles and now also checks nullable capability values and their
+non-integer representation. Existing integer-mapping negatives remain.
+Independent mapping review confirmed exact capability-kind result checks and
+null-trapping unwrap; no production mapping changed in this repair.
+
+All 15 `witchy-wir::rfc0165_route_gate` tests passed in the storage integration
+run recorded at `/private/tmp/witchy-dir-storage-next-blocker.log`.
+The checked `canonical_wasmir.rs` is byte-identical to the registry branch's
+version (`git diff --exit-code impl/rfc0165-online-pm-integration --
+crates/witchy-wir/src/canonical_wasmir.rs`). The co-selected deferred
+package-manager lifecycle probe still refuses during Coven lowering at
+`UnsupportedExpression("comparison type")`; it is not a green workflow claim.
