@@ -1174,7 +1174,7 @@ classify_touches() { # classify_touches <newline-separated-paths>
         'confinement:^crates/witchy-confinement/' \
         'std:^std/' \
         'docs:^(rfcs|book|spec|docs|wiki)/' \
-        'queue-infra:^(scripts/(merge-queue|check|gate-report|test-for-paths|agent-check|submit-with-presubmit)\.sh|tools/merge-queue-tests/)' \
+        'queue-infra:^(scripts/(merge-queue|check|gate-report|test-for-paths|agent-check|test-agent-check-qos|submit-with-presubmit|test-submit-with-presubmit)\.sh|tools/merge-queue-tests/)' \
         ; do
         name="${pair%%:*}"
         pattern="${pair#*:}"

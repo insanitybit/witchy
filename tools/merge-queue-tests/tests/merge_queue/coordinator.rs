@@ -1707,7 +1707,12 @@ fn submit_journals_whether_a_presubmit_receipt_covers_the_tip() {
 /// receipt-adoption denominator so the metric measures the workflow it names.
 #[test]
 fn submit_wrapper_changes_are_presubmit_eligible_queue_infrastructure() {
-    for path in ["scripts/agent-check.sh", "scripts/submit-with-presubmit.sh"] {
+    for path in [
+        "scripts/agent-check.sh",
+        "scripts/test-agent-check-qos.sh",
+        "scripts/submit-with-presubmit.sh",
+        "scripts/test-submit-with-presubmit.sh",
+    ] {
         let fixture = QueueFixture::stack(&[path]);
 
         fixture.mq_ok(&["submit", "a"], "true");
