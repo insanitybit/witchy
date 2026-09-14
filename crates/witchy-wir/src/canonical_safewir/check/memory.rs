@@ -1959,7 +1959,14 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         }
         let state = self.live_object(object)?;
-        let Some(element) = self.descriptor(state.layout)?.kind().packed_element_layout() else {
+        let descriptor = self.descriptor(state.layout)?;
+        let Some(element) = descriptor.kind().packed_element_layout() else {
+            if matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. })
+                && !state.initialized_owned_slots
+                && !self.fixed_value_fields_initialized(object, state.layout)?
+            {
+                return self.unsupported(operation);
+            }
             return Ok(());
         };
         if !matches!(self.descriptor(element)?.kind(), LayoutKind::Scalar(_)) {
@@ -3033,6 +3040,7 @@ impl<'a> MemoryChecker<'a> {
             self.require_type(value, expected)?;
             let slot = self.reference_slot(place)?;
             self.state.initialized_scalar_slots.insert(slot);
+            self.consolidate_fixed_fields(place.object())?;
             return Ok(());
         }
         if !expected.is_memory_bearing() {
@@ -3042,6 +3050,7 @@ impl<'a> MemoryChecker<'a> {
             self.require_type(value, expected)?;
             let slot = self.reference_slot(place)?;
             self.state.initialized_scalar_slots.insert(slot);
+            self.consolidate_fixed_fields(place.object())?;
             // A byte slot takes the low byte of a `Size`; the path must
             // prove the value fits so no bits are silently dropped.
             if self.is_raw_byte_element_place(place)? && !self.proven_at_most(value, 255) {
@@ -3213,10 +3222,66 @@ impl<'a> MemoryChecker<'a> {
             .collect())
     }
 
-    /// Once every owned pointer field of a fixed-layout object holds a
-    /// stored reference, the object is complete: the summary flag replaces
-    /// the per-slot facts (which a join could not reconcile across fresh
-    /// identities), and loads and drops rely on the flag from then on.
+    /// Whether every value-bearing field of a fixed record or tuple has been
+    /// initialized. This is deliberately exhaustive over field storage forms:
+    /// an unrecognized inline layout is not evidence of initialization.
+    fn fixed_value_fields_initialized(
+        &self,
+        object: ValueId,
+        layout: crate::layout::LayoutId,
+    ) -> Result<bool, InitialCheckError> {
+        let descriptor = self.descriptor(layout)?;
+        if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
+            return Ok(false);
+        }
+        for (index, field) in descriptor.fields().iter().enumerate() {
+            let slot = SlotIdentity::Constant(index as u64);
+            let initialized = match field.kind() {
+                FieldKind::Scalar(_) => self.checked_scalar_slot_stored(object, slot),
+                FieldKind::Pointer {
+                    slot: PointerSlot::Owned,
+                    ..
+                } => self.stored_slot_by_identity(object, slot).is_some(),
+                FieldKind::Pointer {
+                    slot: PointerSlot::OwnedNullable,
+                    ..
+                } => {
+                    self.stored_slot_by_identity(object, slot).is_some()
+                        || self.nullable_slot_absent(object, slot)
+                }
+                FieldKind::Pointer { .. } => false,
+                FieldKind::Inline(field_layout) => match self.descriptor(field_layout)?.kind() {
+                    LayoutKind::Scalar(_) => self.checked_scalar_slot_stored(object, slot),
+                    LayoutKind::RuntimeValueSlot { value }
+                        if matches!(self.descriptor(*value)?.kind(), LayoutKind::Scalar(_)) =>
+                    {
+                        self.checked_scalar_slot_stored(object, slot)
+                    }
+                    LayoutKind::RuntimePointerValueSlot {
+                        semantics: PointerSlot::Owned,
+                        ..
+                    } => self.stored_slot_by_identity(object, slot).is_some(),
+                    LayoutKind::RuntimePointerValueSlot {
+                        semantics: PointerSlot::OwnedNullable,
+                        ..
+                    } => {
+                        self.stored_slot_by_identity(object, slot).is_some()
+                            || self.nullable_slot_absent(object, slot)
+                    }
+                    _ => false,
+                },
+            };
+            if !initialized {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Once every value-bearing field of a fixed-layout object is initialized,
+    /// the object is complete: the summary flag replaces the pointer-slot
+    /// facts (which a join could not reconcile across fresh identities), and
+    /// loads and drops rely on the flag from then on.
     fn unit_fields_initialized(&self, object: ValueId, layout: crate::layout::LayoutId) -> Result<bool, InitialCheckError> {
         Ok(self.descriptor(layout)?.fields().iter().enumerate().all(|(index, field)| {
             field.kind() != FieldKind::Scalar(ScalarKind::Unit)
@@ -3227,17 +3292,10 @@ impl<'a> MemoryChecker<'a> {
     fn consolidate_fixed_fields(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let layout = self.live_object(object)?.layout;
         let pointer_fields = self.fixed_pointer_fields(layout)?;
-        if pointer_fields.is_empty() {
+        if !matches!(self.descriptor(layout)?.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
             return Ok(());
         }
-        let complete = pointer_fields
-            .iter()
-            .all(|(index, _)| {
-                let slot = SlotIdentity::Constant(*index);
-                self.stored_slot_by_identity(object, slot).is_some()
-                    || self.nullable_slot_absent(object, slot)
-            });
-        if !complete || !self.unit_fields_initialized(object, layout)? {
+        if !self.fixed_value_fields_initialized(object, layout)? {
             return Ok(());
         }
         for (index, _) in &pointer_fields {
@@ -5913,6 +5971,245 @@ mod tests {
             }).unwrap();
         }
         test(&mut checker, child);
+    }
+
+    fn with_fixed_value_record_checker(
+        pointer_field: bool,
+        test: impl FnOnce(
+            &mut MemoryChecker<'_>,
+            crate::layout::LayoutId,
+            crate::layout::LayoutId,
+        ),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let scalar = layouts.intern_scalar(ScalarKind::Int).expect("scalar layout");
+        let mut fields = vec![scalar];
+        if pointer_field {
+            fields.push(
+                layouts
+                    .intern_runtime_pointer_value_slot(scalar, PointerSlot::Owned)
+                    .expect("owned pointer slot"),
+            );
+        }
+        let record = layouts.intern_packed_record(fields).expect("record layout");
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: crate::canonical_safewir::FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: BTreeMap::from([
+                (SOURCE, ValueType::Ref(record)),
+                (DESTINATION, ValueType::Ref(record)),
+                (CHILD, ValueType::Ref(scalar)),
+                (END, ValueType::Ref(scalar)),
+                (LOADED, ValueType::Int),
+            ]),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: vec![],
+                operations: vec![],
+                terminator: crate::canonical_safewir::Terminator::Return { values: vec![] },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: vec![],
+            results: vec![],
+            contract: CallableContract {
+                parameters: vec![],
+                results: vec![],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closure_layouts)
+            .expect("checker construction");
+        test(&mut checker, record, scalar);
+    }
+
+    fn allocate_fixed_for_test(
+        checker: &mut MemoryChecker<'_>,
+        destination: ValueId,
+        layout: crate::layout::LayoutId,
+    ) {
+        let LayoutSize::Fixed(bytes) = checker.descriptor(layout).expect("layout").size() else {
+            panic!("fixed test layout");
+        };
+        checker
+            .check(&Operation::Alloc {
+                destination,
+                layout,
+                extent: Extent::FixedBytes(u64::from(bytes)),
+                class: AllocationClass::ReferenceCounted,
+            })
+            .expect("fixed allocation");
+    }
+
+    fn fixed_field(
+        object: ValueId,
+        index: u32,
+        value_type: ValueType,
+        access: AccessMode,
+    ) -> Place {
+        Place::projected(object, Projection::Field { index }, value_type, access)
+    }
+
+    fn fixed_fresh_result(
+        checker: &MemoryChecker<'_>,
+        layout: crate::layout::LayoutId,
+    ) -> ResultContract {
+        let LayoutSize::Fixed(bytes) = checker.descriptor(layout).expect("layout").size() else {
+            panic!("fixed test layout");
+        };
+        ResultContract::Fresh {
+            layout,
+            class: AllocationClass::ReferenceCounted,
+            extent: ReturnedExtent::FixedBytes(u64::from(bytes)),
+        }
+    }
+
+    #[test]
+    fn reused_scalar_record_must_be_reinitialized_before_call_or_return() {
+        with_fixed_value_record_checker(false, |checker, record, _scalar| {
+            allocate_fixed_for_test(checker, SOURCE, record);
+            checker
+                .check(&Operation::ConstInt { destination: LOADED, value: 17 })
+                .expect("scalar value");
+            checker
+                .check(&Operation::Store {
+                    place: fixed_field(SOURCE, 0, ValueType::Int, AccessMode::Write),
+                    value: LOADED,
+                    transfer: StoreTransfer::CopyScalar,
+                })
+                .expect("old scalar field initialization");
+            checker
+                .check(&Operation::DropRef { object: SOURCE })
+                .expect("old record cleanup");
+
+            allocate_fixed_for_test(checker, DESTINATION, record);
+            let parameter = ParameterContract {
+                value_type: ValueType::Ref(record),
+                ownership: ParameterOwnership::Unique,
+            };
+            let result = fixed_fresh_result(checker, record);
+            assert!(matches!(
+                checker.check_call(
+                    &[CallArgument::Move(DESTINATION)],
+                    std::slice::from_ref(&parameter),
+                    &[],
+                    &[],
+                ),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Call(uninitialized owned slot)",
+                    ..
+                })
+            ));
+            assert!(matches!(
+                checker.check_return(&[DESTINATION], std::slice::from_ref(&result)),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Return(uninitialized owned slot)",
+                    ..
+                })
+            ));
+
+            checker
+                .check(&Operation::Store {
+                    place: fixed_field(DESTINATION, 0, ValueType::Int, AccessMode::Write),
+                    value: LOADED,
+                    transfer: StoreTransfer::CopyScalar,
+                })
+                .expect("new scalar field initialization");
+            let complete = checker.snapshot();
+            checker
+                .check_call(
+                    &[CallArgument::Move(DESTINATION)],
+                    &[parameter],
+                    &[],
+                    &[],
+                )
+                .expect("complete record call");
+            checker.restore(complete);
+            checker
+                .check_return(&[DESTINATION], &[result])
+                .expect("complete record return");
+        });
+    }
+
+    #[test]
+    fn storing_last_pointer_does_not_initialize_mixed_record_scalar_field() {
+        with_fixed_value_record_checker(true, |checker, record, scalar| {
+            allocate_fixed_for_test(checker, SOURCE, record);
+            allocate_fixed_for_test(checker, CHILD, scalar);
+            checker
+                .check(&Operation::ConstInt { destination: LOADED, value: 23 })
+                .expect("scalar value");
+            checker
+                .check(&Operation::Store {
+                    place: fixed_field(SOURCE, 0, ValueType::Int, AccessMode::Write),
+                    value: LOADED,
+                    transfer: StoreTransfer::CopyScalar,
+                })
+                .expect("old scalar field initialization");
+            checker
+                .check(&Operation::Store {
+                    place: fixed_field(SOURCE, 1, ValueType::Ref(scalar), AccessMode::Write),
+                    value: CHILD,
+                    transfer: StoreTransfer::MoveUnique,
+                })
+                .expect("old pointer field initialization");
+            checker
+                .check(&Operation::DropRef { object: SOURCE })
+                .expect("old record cleanup");
+
+            allocate_fixed_for_test(checker, DESTINATION, record);
+            allocate_fixed_for_test(checker, END, scalar);
+            checker
+                .check(&Operation::Store {
+                    place: fixed_field(DESTINATION, 1, ValueType::Ref(scalar), AccessMode::Write),
+                    value: END,
+                    transfer: StoreTransfer::MoveUnique,
+                })
+                .expect("new pointer field initialization");
+            assert!(!checker.state.objects[&DESTINATION].initialized_owned_slots);
+
+            let parameter = ParameterContract {
+                value_type: ValueType::Ref(record),
+                ownership: ParameterOwnership::Unique,
+            };
+            let result = fixed_fresh_result(checker, record);
+            assert!(checker
+                .check_call(
+                    &[CallArgument::Move(DESTINATION)],
+                    std::slice::from_ref(&parameter),
+                    &[],
+                    &[],
+                )
+                .is_err());
+            assert!(checker
+                .check_return(&[DESTINATION], std::slice::from_ref(&result))
+                .is_err());
+
+            checker
+                .check(&Operation::Store {
+                    place: fixed_field(DESTINATION, 0, ValueType::Int, AccessMode::Write),
+                    value: LOADED,
+                    transfer: StoreTransfer::CopyScalar,
+                })
+                .expect("new scalar field initialization");
+            assert!(checker.state.objects[&DESTINATION].initialized_owned_slots);
+            let complete = checker.snapshot();
+            checker
+                .check_call(
+                    &[CallArgument::Move(DESTINATION)],
+                    &[parameter],
+                    &[],
+                    &[],
+                )
+                .expect("complete mixed record call");
+            checker.restore(complete);
+            checker
+                .check_return(&[DESTINATION], &[result])
+                .expect("complete mixed record return");
+        });
     }
 
     fn nullable_field(object: ValueId, child: crate::layout::LayoutId, access: AccessMode) -> Place {
