@@ -9245,6 +9245,54 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    /// Initialize the next slot of a unique, preallocated list. The checker
+    /// must establish uniqueness and the initialized prefix; spare capacity
+    /// alone never authorizes modifying an aliased list.
+    fn append_preallocated_owned_element(
+        &mut self,
+        object: ValueId,
+        value: ValueId,
+        list_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let (layout, element_type, header_bytes, stride_bytes) =
+            list_layout(list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        if self.values.get(&object) != Some(&ValueType::Ref(layout))
+            || self.values.get(&value) != Some(&element_type)
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("preallocated list append type"));
+        }
+        let (count, capacity) = self.tracked_lanes(object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("preallocated list append extent"),
+        )?;
+        self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)?;
+        let available = self.push_compare(ComparisonOperator::LessUnsigned, count, capacity)?;
+        self.push_guard(available, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Element { index: count },
+                element_type,
+                AccessMode::Write,
+            ),
+            value,
+            transfer: if matches!(element_type, ValueType::Ref(_)) {
+                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+            } else {
+                witchy_wir::canonical_safewir::StoreTransfer::CopyScalar
+            },
+        });
+        let one = self.push_const_size(1)?;
+        let next = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Add, count, one, OverflowBehavior::Trap,
+        )?;
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, capacity)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::UpdateCount { object, count: next });
+        self.set_tracked_lanes(object, next, capacity);
+        self.known_list_lengths.remove(&object);
+        Ok(object)
+    }
+
     /// Append an owned element to a list value: a fresh list one longer
     /// than `old_object` holding a clone of its prefix and `value`, with the
     /// old list dropped. The canonical push template; `list.push` and the
@@ -12729,9 +12777,29 @@ impl FunctionLowerer<'_> {
     /// sequence.
     fn lower_string_chars_dynamic(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
-        let list = self.push_empty_value(&list_type)?;
+        let (layout, _, header_bytes, stride_bytes) =
+            list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        // Each UTF-8 sequence occupies at least one byte. Reserve that upper
+        // bound once instead of copying every preceding character per append.
+        let source_length = self.string_length_of(object)?;
+        // Accumulator lanes are renamed across loop edges. Keep the source's
+        // length identity outside that renaming, as with split_lanes.
+        let capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::MoveValue { destination: capacity, source: source_length });
+        let count = self.push_const_size(0)?;
+        self.guard_dynamic_extent(count, capacity, header_bytes, stride_bytes)?;
+        let list = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: list,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes, count, capacity, stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.set_tracked_lanes(list, count, capacity);
         self.lower_utf8_sequence_loop(object, list, |this, lanes, piece| {
-            let grown = this.push_owned_element(lanes[0], piece, &list_type)?;
+            let grown = this.append_preallocated_owned_element(lanes[0], piece, &list_type)?;
             let (count, capacity) = this.tracked_lanes(grown).expect("a pushed list has lanes");
             Ok(vec![grown, count, capacity])
         })

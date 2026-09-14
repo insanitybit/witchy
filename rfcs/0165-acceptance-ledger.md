@@ -2117,3 +2117,10 @@ motivating late async-compilation sample is
 `/private/tmp/witchy-async-abort-late.2emJu7/sample-180.txt`; it is a sampling
 window, not a whole-run percentage or measured speedup. Landing and the
 remaining workflow/optimizer obligations are still pending.
+
+### 2026-09-14: bounded dynamic character-list construction
+
+- `string.chars()` now allocates its unique result once, bounded by UTF-8 byte length, and initializes each owned slot under existing capacity guards. A separate capacity SSA identity preserves the source-length proof across loop joins. No checker, encoder, or ownership rule was weakened.
+- `rfc0165_chars_allocation` and `rfc0165_encoding`: 13/13 passed (nextest run `5aad32f6-3983-49e6-9d33-44fb28d00464`). The new three-leg cases cover 32,768 scalars under a 16 MiB native limit, UTF-8 scalar indexing, dynamic empty strings, retained aliases, mutation, malformed base64, and zero owned-object leaks.
+- Existing-binary `hello`, `wrap`, and `jq` parity agreed (3/5/7 output lines). The formerly trapping 8 MiB public-base64 input now decodes to 6 MiB. The separate registry replay subsequently traps during install; registry reliability is supporting evidence, not a SafeWIR acceptance gate.
+- Bounded steady-state heap reuse remains a distinct obligation: balanced owned-object accounting alone does not establish reusable storage. No new corpus count or compiler-wide memory-safety claim is made here.
