@@ -3529,19 +3529,33 @@ cmd_sweep() {
     # Intersect the two sorted sets once instead of starting `git show-ref` for
     # every historical merge. The measured journal named 2,464 merged branch
     # rows, while most refs had already been deleted.
-    local b
+    local b branch_batches=0 branch_candidates=0
+    local branch_batch=()
     while IFS= read -r b; do
-        sweep_probe=$((sweep_probe + 1))
-        if [ "$((sweep_probe % 16))" -eq 0 ] && queue_has_ready_change; then
+        [ -n "$b" ] || continue
+        branch_batch+=("$b")
+        branch_candidates=$((branch_candidates + 1))
+        [ "${#branch_batch[@]}" -ge 16 ] || continue
+        # `git branch -d` validates every named ref independently. Batch the
+        # validation so a large landed-ref backlog does not pay one Git process
+        # startup per branch, then yield before starting another bounded batch.
+        git -C "$root" branch -d -- "${branch_batch[@]}" >/dev/null 2>&1 || true
+        branch_batches=$((branch_batches + 1))
+        branch_batch=()
+        if queue_has_ready_change; then
             deferred_sweep=1
             note "sweep: ready queue work arrived; deferring remaining historical branch cleanup"
             return 0
         fi
-        [ -n "$b" ] || continue
-        git -C "$root" branch -d "$b" >/dev/null 2>&1 && note "sweep: deleted merged branch $b"
     done < <(comm -12 \
         <(printf '%s\n' "$merged_branches") \
         <(git -C "$root" for-each-ref --format='%(refname:lstrip=2)' refs/heads | sort -u))
+    if [ "${#branch_batch[@]}" -gt 0 ]; then
+        git -C "$root" branch -d -- "${branch_batch[@]}" >/dev/null 2>&1 || true
+        branch_batches=$((branch_batches + 1))
+    fi
+    [ "$branch_candidates" -eq 0 ] \
+        || note "sweep: checked $branch_candidates historical branch candidate(s) in $branch_batches batch(es)"
     note "sweep: removed $swept worktree(s)"
 }
 

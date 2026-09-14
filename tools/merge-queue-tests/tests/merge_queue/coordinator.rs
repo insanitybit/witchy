@@ -1933,6 +1933,48 @@ fn sweep_defers_branch_pruning_while_ready_work_waits() {
 }
 
 #[test]
+fn sweep_batches_historical_branch_pruning() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["status"], "true");
+    let mut journal = String::new();
+    for index in 0..33 {
+        let branch = format!("landed-batch-{index:02}");
+        run_git(&fixture.root, &["branch", &branch, "master"]);
+        journal.push_str(&format!(
+            "{{\"event\":\"merged\",\"branch\":\"{branch}\"}}\n"
+        ));
+    }
+    fs::write(fixture.state.join("journal.jsonl"), journal)
+        .expect("write merged branch history");
+
+    let output = fixture.mq_ok(&["sweep"], "true");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains("checked 33 historical branch candidate(s) in 3 batch(es)"),
+        "sweep did not prune in bounded batches: {combined}",
+    );
+    for index in 0..33 {
+        assert!(
+            !git_output(
+                &fixture.root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    &format!("refs/heads/landed-batch-{index:02}"),
+                ],
+            )
+            .status
+            .success(),
+            "sweep retained landed-batch-{index:02}",
+        );
+    }
+}
+
+#[test]
 fn sweep_yields_when_ready_work_arrives_during_branch_pruning() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["status"], "true");
