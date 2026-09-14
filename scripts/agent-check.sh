@@ -75,7 +75,24 @@ ensure_agent_target() {
     fi
 }
 
-AGENT_TARGET_DIR="${CARGO_TARGET_DIR:-target-codex}"
+default_agent_target() {
+    local repo_root main_worktree
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        printf 'target-codex\n'
+        return
+    }
+    main_worktree="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+    if [ -n "$main_worktree" ] && [ "$repo_root" != "$main_worktree" ]; then
+        # A linked worktree already owns its seeded target/. Reuse it instead
+        # of cloning the same cache into a second per-agent directory.
+        printf 'target\n'
+    else
+        # Agents sharing the main checkout still need independent Cargo locks.
+        printf 'target-codex\n'
+    fi
+}
+
+AGENT_TARGET_DIR="${CARGO_TARGET_DIR:-$(default_agent_target)}"
 agent_target_from_gate=0
 command="${1:-}"
 shift || true

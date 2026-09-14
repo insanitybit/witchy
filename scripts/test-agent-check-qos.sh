@@ -56,7 +56,7 @@ run_fixture() {
     shift
     (
         cd "$fixture"
-        env PATH="$tmp/bin:$PATH" \
+        env -u CARGO_TARGET_DIR PATH="$tmp/bin:$PATH" \
             AGENT_CHECK_QOS_LOG="$tmp/taskpolicy.log" \
             AGENT_CHECK_WARM_LOG="$tmp/warm.log" \
             AGENT_CHECK_ENV_LOG="$tmp/env.log" \
@@ -85,6 +85,28 @@ grep -F 'strip=unset target=target-codex args=--edit-loop --run docs/probe.md' \
     "$tmp/env.log" >/dev/null
 
 test "$(wc -l <"$tmp/warm.log" | tr -d ' ')" = 3
+
+# A linked worktree has its own target/ and must not pay to clone it into a
+# second target-codex/. Keep the non-git fixture above as the shared-checkout
+# fallback, then exercise Git's actual linked-worktree metadata here.
+main_fixture="$tmp/main-repo"
+linked_fixture="$tmp/linked-repo"
+mkdir -p "$main_fixture/scripts"
+cp "$root/scripts/agent-check.sh" "$main_fixture/scripts/agent-check.sh"
+cp "$fixture/scripts/test-for-paths.sh" "$main_fixture/scripts/test-for-paths.sh"
+cp "$fixture/scripts/worktree-warm.sh" "$main_fixture/scripts/worktree-warm.sh"
+git -C "$main_fixture" init -q
+git -C "$main_fixture" config user.email test@example.com
+git -C "$main_fixture" config user.name Test
+git -C "$main_fixture" add scripts
+git -C "$main_fixture" commit -qm initial
+git -C "$main_fixture" worktree add -qb linked "$linked_fixture"
+env -u CARGO_TARGET_DIR AGENT_CHECK_ENV_LOG="$tmp/linked-env.log" FAKE_AGENT_PLAN=shell \
+    "$linked_fixture/scripts/agent-check.sh" edit docs/probe.md >/dev/null
+grep -F 'strip=unset target=target args=--edit-loop --run docs/probe.md' \
+    "$tmp/linked-env.log" >/dev/null
+
 echo "agent-check focused commands inherit utility QoS"
 echo "agent-check matches gate-seeded test profiles and preserves explicit symbols"
 echo "agent-check skips target seeding for shell-only edit plans"
+echo "agent-check reuses the private target of a linked worktree"
