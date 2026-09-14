@@ -427,7 +427,6 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     // (rfcs/0004-self-hosted-cli.md Phase 5); the IdP helpers `coven-gen-issuer` /
     // `coven-mint-token` stay on the Rust path (test-only key tooling).
     if std::env::args().nth(1).as_deref() == Some("coven-serve") {
-        use std::collections::{HashSet, VecDeque};
         let mut addr = "127.0.0.1:8787".to_string();
         let mut root: Option<std::path::PathBuf> = None;
         let mut issuers: Vec<String> = Vec::new();
@@ -534,33 +533,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         // Retain the admitted artifact, including its sealed entry and owner
         // bridges, instead of projecting to unauthenticated launch bytes.
         let artifact_result = (|| {
-            let embedded: std::collections::HashMap<&str, &str> = coven_modules.iter().copied().collect();
-            let mut modules: Vec<(String, ast::Module)> = Vec::new();
-            let mut loaded: HashSet<String> = HashSet::new();
-            let mut queue: VecDeque<(String, String)> = VecDeque::new();
-            queue.push_back(("coven".to_string(), embedded["coven"].to_string()));
-            while let Some((name, source)) = queue.pop_front() {
-                if !loaded.insert(name.clone()) {
-                    continue;
-                }
-                let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
-                for imp in &module.imports {
-                    if loaded.contains(imp) {
-                        continue;
-                    }
-                    // A coven_* sibling resolves from the embedded set; everything else
-                    // (server, json, crypto, ...) is a bundled std module.
-                    match embedded.get(imp.as_str()) {
-                        Some(s) => queue.push_back((imp.clone(), s.to_string())),
-                        None => match bundled_module(imp) {
-                            Some(s) => queue.push_back((imp.clone(), s.to_string())),
-                            None => return Err(format!("embedded coven imports `{imp}`, not a bundled or coven module")),
-                        },
-                    }
-                }
-                modules.push((name, module));
-            }
-            let checked = pipeline::link_checked(modules, "coven").map_err(|e| e.to_string())?;
+            let checked = check_embedded_coven_sources(coven_modules)?;
             compile_embedded_coven(&checked)
         })();
         let artifact = match artifact_result {
@@ -1185,6 +1158,47 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     }
 }
 
+/// Discover imports from the compiler's embedded graph without discarding the
+/// exact source bytes. The source linker freshly checks the real coven entry
+/// and derives its canonical witnesses; parsed ASTs confer no such authority.
+fn check_embedded_coven_sources(
+    coven_modules: &[(&str, &str)],
+) -> Result<pipeline::CheckedModule, String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let embedded: HashMap<&str, &str> = coven_modules.iter().copied().collect();
+    let entry = embedded.get("coven")
+        .ok_or_else(|| "embedded coven is missing source entry `coven`".to_string())?;
+    let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut loaded: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, String)> = VecDeque::new();
+    queue.push_back(("coven".to_string(), (*entry).to_string()));
+    while let Some((name, source)) = queue.pop_front() {
+        if !loaded.insert(name.clone()) {
+            continue;
+        }
+        let module = parser::parse_module(&source).map_err(|e| format!("{name}: {e}"))?;
+        for imp in &module.imports {
+            if loaded.contains(imp) {
+                continue;
+            }
+            // Preserve the existing embedded-sibling precedence and bundled-only
+            // fallback. No filesystem or network lookup can supply source here.
+            match embedded.get(imp.as_str()) {
+                Some(s) => queue.push_back((imp.clone(), s.to_string())),
+                None => match bundled_module(imp) {
+                    Some(s) => queue.push_back((imp.clone(), s.to_string())),
+                    None => return Err(format!("embedded coven imports `{imp}`, not a bundled or coven module")),
+                },
+            }
+        }
+        sources.push((name, source.into_bytes()));
+    }
+    witchy_types::pipeline::link_checked_from_source_bundle(
+        sources, "coven", witchy_interp::comptime::expand_compile_time,
+    ).map_err(|e| e.to_string())
+}
+
 fn compile_embedded_coven(
     checked: &pipeline::CheckedModule,
 ) -> Result<witchy_wir::AdmittedCanonicalArtifact, String> {
@@ -1218,7 +1232,9 @@ fn main(console: Console, args: List(String)):
     report()
     report()
 "#;
-    let checked = witchy::resolve_std_only_checked(source).expect("checked Coven fixture");
+    let checked = check_embedded_coven_sources(&[("coven", source)])
+        .expect("source-backed embedded Coven fixture");
+    assert!(checked.canonical_source().is_some(), "embedded loader retains its source witness");
     let args = vec!["coven launch argument".to_owned()];
     let expected = vec!["coven launch argument".to_owned(); 2];
     let (source_output, source_exit) = crate::interpreter::run_module_exit(
@@ -1239,6 +1255,49 @@ fn main(console: Console, args: List(String)):
     vm.run().expect("execute owner-bearing Coven fixture");
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
+
+#[cfg(test)]
+#[test]
+fn embedded_coven_source_bundle_retains_imported_source() {
+    let entry = "import coven_fixture\nfn main(console: Console):\n    console.print(coven_fixture.message())\n";
+    let sibling = "pub fn message() -> String:\n    \"embedded sibling\"\n";
+    let checked = check_embedded_coven_sources(&[
+        ("coven_fixture", sibling), ("coven", entry),
+    ]).expect("real selected entry and imported embedded bytes check together");
+    assert!(checked.canonical_source().is_some());
+    let artifact = compile_embedded_coven(&checked).expect("source-backed graph admits");
+    let mut runtime = runtime::Runtime::batch().expect("runtime");
+    let mut vm = spawn_embedded_coven(&mut runtime, &artifact, runtime::Capabilities {
+        print: true, quiet: true, ..Default::default()
+    }).expect("admitted embedded graph");
+    vm.run().expect("execute selected Coven fixture entry");
+    assert_eq!(vm.output(), ["embedded sibling"]);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
+
+#[cfg(test)]
+#[test]
+fn embedded_coven_ast_only_checked_module_remains_refused() {
+    let source = "fn main(console: Console):\n    console.print(\"not authorized by an AST\")\n";
+    let module = parser::parse_module(source).expect("parse");
+    let checked = pipeline::link_checked(vec![("coven".to_string(), module)], "coven")
+        .expect("AST-only semantic checking remains available");
+    assert!(checked.canonical_source().is_none());
+    let error = compile_embedded_coven(&checked).err().expect("AST-only input cannot admit");
+    assert!(error.contains("MissingCheckedSourceWitness"), "{error}");
+}
+
+#[cfg(test)]
+#[test]
+fn embedded_coven_source_bundle_refuses_missing_entry_and_imports() {
+    let error = check_embedded_coven_sources(&[("other", "fn main():\n    ()\n")])
+        .err().expect("an arbitrary module cannot replace coven");
+    assert_eq!(error, "embedded coven is missing source entry `coven`");
+    let source = "import absent_coven_source_dependency\nfn main():\n    ()\n";
+    let error = check_embedded_coven_sources(&[("coven", source)])
+        .err().expect("missing sources cannot use ambient resolution");
+    assert!(error.contains("embedded coven imports `absent_coven_source_dependency`"), "{error}");
 }
 
 /// The `host:port` Net-grant authority for a `--trust-issuer-oidc` issuer URL.
