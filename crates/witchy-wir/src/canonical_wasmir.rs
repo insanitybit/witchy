@@ -1318,6 +1318,11 @@ fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, LoweringError> {
 }
 
 const STATIC_DATA_BASE: u32 = 16;
+const WASM_PAGE_BYTES: u64 = 65_536;
+
+fn initial_memory_pages(heap_start: u32) -> u64 {
+    (u64::from(heap_start).saturating_add(WASM_PAGE_BYTES - 1) / WASM_PAGE_BYTES).max(1)
+}
 
 fn static_data_plan(
     segments: &[crate::canonical_safewir::StaticDataSegment],
@@ -4405,7 +4410,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     }
     let mut memory = MemorySection::new();
     memory.memory(MemoryType {
-        minimum: 1,
+        minimum: initial_memory_pages(target.heap_start),
         maximum: None,
         memory64: false,
         shared: false,
@@ -6885,7 +6890,7 @@ fn expected_metadata_prefix(
         });
     }
     let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: None, memory64: false, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
@@ -10868,6 +10873,122 @@ mod tests {
             .get_typed_func::<(), i64>(&mut store, "f1")
             .expect("scalar export has the checked signature");
         assert_eq!(function.call(&mut store, ()).unwrap(), 9);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn fixed_static_aggregate_and_nominal_reuse_match_both_engines() {
+        use crate::canonical_interpreter::{InterpreterValue, interpret};
+
+        let mut interner = LayoutInterner::new();
+        let int = interner.intern_scalar(ScalarKind::Int).unwrap();
+        let boolean = interner.intern_scalar(ScalarKind::Bool).unwrap();
+        let physical = interner.intern_packed_record(vec![int, boolean]).unwrap();
+        let nominal = interner.intern_opaque_nominal([0x5a; 32]).unwrap();
+        interner.bind_nominal(nominal, physical).unwrap();
+        let descriptor = interner.get(physical).unwrap();
+        let crate::layout::LayoutSize::Fixed(size) = descriptor.size() else { panic!("fixed aggregate") };
+        let int_offset = descriptor.fields()[0].offset() as usize;
+        let bool_offset = descriptor.fields()[1].offset() as usize;
+        let mut bytes = vec![0; size as usize];
+        bytes[int_offset..int_offset + 8].copy_from_slice(&42_i64.to_le_bytes());
+        bytes[bool_offset] = 1;
+
+        let first = ValueId::new(1);
+        let second = ValueId::new(2);
+        let loaded_int = ValueId::new(3);
+        let loaded_bool = ValueId::new(4);
+        let data = crate::canonical_safewir::StaticDataId::new(0);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(24),
+            parameters: Vec::new(),
+            results: vec![ValueType::Int, ValueType::Bool],
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: vec![ResultContract::Value(ValueType::Int), ResultContract::Value(ValueType::Bool)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let candidate = CanonicalModule::from_lowering_with_static_data(
+            LoweredModuleParts {
+                revision: Revision::new(24),
+                checked_source: CheckedSourceIdentity::from_digest([24; 32]),
+                layouts: LayoutBundle::from_interner(&interner, [nominal]).unwrap(),
+                signatures: vec![signature],
+                imports: Vec::new(),
+                functions: vec![Function {
+                    id: FunctionId::new(24),
+                    signature: FunctionSignatureId::new(24),
+                    entry: BlockId::new(0),
+                    value_types: [
+                        (first, ValueType::Ref(nominal)),
+                        (second, ValueType::Ref(physical)),
+                        (loaded_int, ValueType::Int),
+                        (loaded_bool, ValueType::Bool),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    blocks: vec![BasicBlock {
+                        id: BlockId::new(0),
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::StaticData { destination: first, layout: nominal, extent: Extent::FixedBytes(u64::from(size)), data },
+                            Operation::StaticData { destination: second, layout: physical, extent: Extent::FixedBytes(u64::from(size)), data },
+                            Operation::Load {
+                                destination: loaded_int,
+                                place: Place::projected(first, Projection::Field { index: 0 }, ValueType::Int, AccessMode::Read),
+                                transfer: LoadTransfer::CopyScalar,
+                            },
+                            Operation::Load {
+                                destination: loaded_bool,
+                                place: Place::projected(second, Projection::Field { index: 1 }, ValueType::Bool, AccessMode::Read),
+                                transfer: LoadTransfer::CopyScalar,
+                            },
+                        ],
+                        terminator: Terminator::Return { values: vec![loaded_int, loaded_bool] },
+                    }],
+                }],
+                proper_tail_sites: Vec::new(),
+            },
+            vec![crate::canonical_safewir::StaticDataSegment::new(data, bytes)],
+        );
+        let checked = check_initial_with_test_witness(candidate).unwrap();
+        let validated = validate_final_for_test(checked).unwrap();
+        assert_eq!(
+            interpret(&validated, FunctionId::new(24), Vec::new()).unwrap(),
+            vec![InterpreterValue::Int(42), InterpreterValue::Bool(true)]
+        );
+
+        let wasm = encode_validated(validated).unwrap();
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        assert_eq!(
+            instance
+                .get_typed_func::<(), (i64, i32)>(&mut store, "f24")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap(),
+            (42, 1)
+        );
+    }
+
+    #[test]
+    fn static_data_boundary_selects_enough_initial_memory_pages() {
+        for (end, expected_heap_start, expected_pages) in [
+            (65_536_usize, 65_536_u32, 1_u64),
+            (65_537_usize, 65_544_u32, 2_u64),
+        ] {
+            let segment = crate::canonical_safewir::StaticDataSegment::new(
+                crate::canonical_safewir::StaticDataId::new(0),
+                vec![0; end - STATIC_DATA_BASE as usize],
+            );
+            let (plan, heap_start) = static_data_plan(&[segment]).unwrap();
+            assert_eq!(plan[0].offset as usize + plan[0].bytes.len(), end);
+            assert_eq!(heap_start, expected_heap_start);
+            assert_eq!(initial_memory_pages(heap_start), expected_pages);
+        }
     }
 
     #[cfg(feature = "native")]

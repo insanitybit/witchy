@@ -871,6 +871,12 @@ impl<'a> Engine<'a> {
                 data,
             } => {
                 let extent = self.runtime_extent(extent, values)?;
+                let layout = self
+                    .layouts
+                    .as_deref()
+                    .ok_or(InterpretError::UnsupportedOperation("StaticData layouts"))?
+                    .resolve_nominal(*layout)
+                    .map_err(|_| InterpretError::UnsupportedOperation("StaticData nominal layout"))?;
                 let bytes = self
                     .module
                     .static_data_segments()
@@ -880,14 +886,14 @@ impl<'a> Engine<'a> {
                     .ok_or(InterpretError::UnsupportedOperation("StaticData missing segment"))?;
                 let object = if let Some(object) = self.static_objects.get(data) {
                     let existing = self.object(*object)?;
-                    if existing.layout != *layout || existing.extent != extent {
+                    if existing.layout != layout || existing.extent != extent {
                         return Err(InterpretError::UnsupportedOperation(
                             "StaticData inconsistent segment reuse",
                         ));
                     }
                     *object
                 } else {
-                    let object = self.allocate_static(*layout, extent, bytes)?;
+                    let object = self.allocate_static(layout, extent, bytes)?;
                     self.static_objects.insert(*data, object);
                     object
                 };
@@ -2303,9 +2309,21 @@ impl<'a> Engine<'a> {
         bytes: &[u8],
     ) -> Result<BTreeMap<CellKey, InterpreterValue>, InterpretError> {
         let layouts = self.layouts.as_deref().ok_or(InterpretError::UnsupportedOperation("StaticData layouts"))?;
+        let layout = layouts
+            .resolve_nominal(layout)
+            .map_err(|_| InterpretError::UnsupportedOperation("StaticData nominal layout"))?;
         let descriptor = layouts
             .get(layout)
             .ok_or(InterpretError::UnsupportedOperation("StaticData unknown layout"))?;
+        if let RuntimeExtent::FixedBytes(expected) = extent {
+            let crate::layout::LayoutSize::Fixed(actual) = descriptor.size() else {
+                return Err(InterpretError::UnsupportedOperation("StaticData fixed dynamic layout"));
+            };
+            if *expected != u64::from(actual) || bytes.len() != actual as usize {
+                return Err(InterpretError::UnsupportedOperation("StaticData fixed extent"));
+            }
+            return materialize_fixed_static_cells(layouts, layout, bytes);
+        }
         let (element, count, data_offset, stride) = match (descriptor.kind(), extent) {
             (
                 LayoutKind::RuntimeBuffer { element },
@@ -2327,8 +2345,11 @@ impl<'a> Engine<'a> {
             }
             _ => return Err(InterpretError::UnsupportedOperation("StaticData layout")),
         };
+        let element = layouts
+            .resolve_nominal(*element)
+            .map_err(|_| InterpretError::UnsupportedOperation("StaticData nominal element layout"))?;
         let element_descriptor = layouts
-            .get(*element)
+            .get(element)
             .ok_or(InterpretError::UnsupportedOperation("StaticData element layout"))?;
         let LayoutKind::Scalar(kind) = element_descriptor.kind() else {
             return Err(InterpretError::UnsupportedOperation("StaticData non-scalar element"));
@@ -2826,6 +2847,101 @@ impl<'a> Engine<'a> {
             return Err(InterpretError::StepLimitExceeded);
         }
         Ok(())
+    }
+}
+
+fn materialize_fixed_static_cells(
+    layouts: &crate::layout::LayoutInterner,
+    layout: LayoutId,
+    bytes: &[u8],
+) -> Result<BTreeMap<CellKey, InterpreterValue>, InterpretError> {
+    let layout = layouts
+        .resolve_nominal(layout)
+        .map_err(|_| InterpretError::UnsupportedOperation("StaticData nominal fixed layout"))?;
+    let descriptor = layouts
+        .get(layout)
+        .ok_or(InterpretError::UnsupportedOperation("StaticData fixed layout"))?;
+    let crate::layout::LayoutSize::Fixed(size) = descriptor.size() else {
+        return Err(InterpretError::UnsupportedOperation("StaticData fixed layout size"));
+    };
+    if bytes.len() != size as usize {
+        return Err(InterpretError::UnsupportedOperation("StaticData fixed payload width"));
+    }
+    match descriptor.kind() {
+        LayoutKind::Scalar(kind) => Ok(BTreeMap::from([(
+            CellKey::Field(0),
+            static_scalar(bytes, 0, *kind)?,
+        )])),
+        LayoutKind::Tuple { .. } | LayoutKind::PackedRecord { .. } => descriptor
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                let start = field.offset() as usize;
+                let value = match field.kind() {
+                    crate::layout::FieldKind::Scalar(kind) => {
+                        static_scalar(bytes, start as u64, kind)?
+                    }
+                    crate::layout::FieldKind::Inline(child) => {
+                        let child = layouts.resolve_nominal(child).map_err(|_| {
+                            InterpretError::UnsupportedOperation("StaticData nominal inline layout")
+                        })?;
+                        let child_descriptor = layouts.get(child).ok_or(
+                            InterpretError::UnsupportedOperation("StaticData inline layout"),
+                        )?;
+                        let crate::layout::LayoutSize::Fixed(child_size) = child_descriptor.size() else {
+                            return Err(InterpretError::UnsupportedOperation("StaticData inline size"));
+                        };
+                        let end = start
+                            .checked_add(child_size as usize)
+                            .ok_or(InterpretError::ArithmeticTrap)?;
+                        static_fixed_value(
+                            layouts,
+                            child,
+                            bytes.get(start..end).ok_or(InterpretError::UnsupportedOperation(
+                                "StaticData inline bounds",
+                            ))?,
+                        )?
+                    }
+                    crate::layout::FieldKind::Pointer { .. } => {
+                        return Err(InterpretError::UnsupportedOperation(
+                            "StaticData pointer field",
+                        ));
+                    }
+                };
+                Ok((CellKey::Field(index as u32), value))
+            })
+            .collect(),
+        _ => Err(InterpretError::UnsupportedOperation("StaticData fixed layout kind")),
+    }
+}
+
+fn static_fixed_value(
+    layouts: &crate::layout::LayoutInterner,
+    layout: LayoutId,
+    bytes: &[u8],
+) -> Result<InterpreterValue, InterpretError> {
+    let layout = layouts
+        .resolve_nominal(layout)
+        .map_err(|_| InterpretError::UnsupportedOperation("StaticData nominal inline value"))?;
+    let descriptor = layouts
+        .get(layout)
+        .ok_or(InterpretError::UnsupportedOperation("StaticData inline value layout"))?;
+    match descriptor.kind() {
+        LayoutKind::Scalar(kind) => static_scalar(bytes, 0, *kind),
+        LayoutKind::Tuple { .. } | LayoutKind::PackedRecord { .. } => {
+            let cells = materialize_fixed_static_cells(layouts, layout, bytes)?;
+            let fields = (0..descriptor.fields().len())
+                .map(|index| {
+                    cells
+                        .get(&CellKey::Field(index as u32))
+                        .cloned()
+                        .ok_or(InterpretError::UninitializedPlace)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(InterpreterValue::InlineAggregate { layout, fields })
+        }
+        _ => Err(InterpretError::UnsupportedOperation("StaticData inline value kind")),
     }
 }
 
@@ -3794,7 +3910,7 @@ mod tests {
                 ArithmeticOperator::DivideSigned,
                 u64::from(u32::MAX - 1),
                 2,
-                OverflowBehavior::Wrap,
+                OverflowBehavior::Trap,
                 Ok(vec![InterpreterValue::Size(u64::from(u32::MAX))]),
             ),
         ];
@@ -3822,7 +3938,7 @@ mod tests {
             ArithmeticOperator::DivideSigned,
             u64::from(i32::MIN as u32),
             u64::from(u32::MAX),
-            OverflowBehavior::Wrap,
+            OverflowBehavior::Trap,
         );
         assert_eq!(
             interpret(&signed_division_trap, FUNCTION, Vec::new()),
@@ -3928,7 +4044,7 @@ mod tests {
                     operator: ArithmeticOperator::Add,
                     left: input,
                     right: zero,
-                    overflow: OverflowBehavior::Trap,
+                    overflow: OverflowBehavior::Wrap,
                 },
             ],
             Terminator::Return {
@@ -4049,7 +4165,7 @@ mod tests {
                     operator: ArithmeticOperator::Add,
                     left,
                     right,
-                    overflow: OverflowBehavior::Trap,
+                    overflow: OverflowBehavior::Wrap,
                 },
             ],
             Terminator::Return {
@@ -4667,7 +4783,7 @@ mod tests {
                             operator: ArithmeticOperator::Subtract,
                             left: n,
                             right: one,
-                            overflow: OverflowBehavior::Trap,
+                            overflow: OverflowBehavior::Wrap,
                         }],
                         terminator: Terminator::TailCall {
                             site,
