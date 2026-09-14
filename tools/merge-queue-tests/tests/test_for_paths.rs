@@ -1026,6 +1026,24 @@ fn e2e_integration_test_keeps_its_dedicated_shard() {
 }
 
 #[test]
+fn nested_e2e_module_uses_the_real_cargo_target_and_module_filter() {
+    assert_eq!(
+        selected(&["--edit-loop", "tests/e2e/sandbox_grants.rs"]),
+        ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test e2e -E 'test(/^sandbox_grants::/)'"],
+    );
+}
+
+#[test]
+fn complete_e2e_shard_subsumes_a_nested_module_probe() {
+    let commands = selected(&["--edit-loop", "tests/e2e/offline_pm.rs", "tests/e2e.rs"]);
+    assert_eq!(commands, ["./scripts/check.sh --e2e"], "{commands:?}");
+    assert!(
+        !commands.iter().any(|command| command.contains("--test e2e/")),
+        "router emitted a nonexistent nested Cargo target: {commands:?}",
+    );
+}
+
+#[test]
 fn router_changes_run_router_regressions() {
     let output = route(&["scripts/test-for-paths.sh"]);
     assert!(output.contains("for f in scripts/*.sh; do bash -n"));

@@ -101,6 +101,7 @@ corpus_impact=0
 gate_example_mods=()
 gate_witchy_tests=()
 gate_need_conformance=0
+broad_e2e=0
 add_pkg() {
     local p="$1" x
     for x in ${gate_pkgs[0]+"${gate_pkgs[@]}"}; do [ "$x" = "$p" ] && return; done
@@ -498,6 +499,7 @@ for p in "${paths[@]}"; do
             add "./scripts/check.sh --wasm" ;;
         projects/grimoire/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
             add "find projects -type f -path '*/src/*.witchy' -exec ./target/debug/witchy fmt --check {} +"
+            broad_e2e=1
             add "./scripts/check.sh --e2e" ;;
         web/witchy-runtime/glamour-*.mjs | \
         web/witchy-runtime/heap-reset.test.mjs | \
@@ -554,7 +556,21 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'" ;;
         tests/e2e.rs)
             gate_workspace=1
+            broad_e2e=1
             add "./scripts/check.sh --e2e" ;;
+        tests/e2e/*.rs)
+            any_rust=1
+            add_gate_test e2e
+            test_name="${p##*/}"
+            test_name="${test_name%.rs}"
+            case "$test_name" in
+                '' | *[!A-Za-z0-9_]*)
+                    broad_e2e=1
+                    add "./scripts/check.sh --e2e" ;;
+                *)
+                    add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test e2e -E 'test(/^${test_name}::/)'" ;;
+            esac
+            ;;
         tests/misc.rs | tests/misc/*)
             any_rust=1
             add_gate_test misc
@@ -690,6 +706,22 @@ fi
 if [ "$gate_nextest" -eq 1 ]; then
     emit_gate_nextest
     exit 0
+fi
+
+# Nested `tests/e2e/*.rs` files are modules in the single Cargo target named
+# `e2e`; a path such as `--test e2e/offline_pm` names no target. When another
+# changed path already selected the complete e2e shard, drop the narrower
+# module invocation it subsumes so a successful broad run is not followed by
+# duplicate discovery and execution.
+if [ "$broad_e2e" -eq 1 ]; then
+    remaining=()
+    for c in ${cmds[0]+"${cmds[@]}"}; do
+        case "$c" in
+            *"cargo nextest run --test e2e -E 'test(/^"*) ;;
+            *) remaining+=("$c") ;;
+        esac
+    done
+    cmds=("${remaining[@]}")
 fi
 
 # Queue infrastructure keeps its complete 69-test process/locking corpus in the
