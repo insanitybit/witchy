@@ -46,6 +46,14 @@ run_paths_checks() {
     "${agent_priority[@]}" ./scripts/test-for-paths.sh --run "$@"
 }
 
+explicit_paths_cover_tip() {
+    [ "$#" -gt 0 ] || return 1
+    local all_paths selected_paths
+    all_paths="$(git diff --name-only master...HEAD -- 2>/dev/null | sort)"
+    selected_paths="$(git diff --name-only master...HEAD -- "$@" 2>/dev/null | sort)"
+    [ -n "$all_paths" ] && [ "$all_paths" = "$selected_paths" ]
+}
+
 run_edit_checks() {
     local explicit_paths="$#" started_at="$SECONDS"
     local edit_plan
@@ -55,9 +63,11 @@ run_edit_checks() {
     fi
     run_in_agent_env ./scripts/test-for-paths.sh --edit-loop --run "$@"
     # With no explicit paths, test-for-paths derived its selection from the
-    # entire branch diff. Record that exact clean commit even when the cheapest
-    # route used named probes and never entered check.sh.
-    if [ "$explicit_paths" -eq 0 ]; then
+    # entire branch diff. An explicit path list is equally safe only when its
+    # pathspec expansion covers that complete committed diff; partial probes
+    # must not certify the tip. Record only an exact clean commit even when the
+    # cheapest route used named probes and never entered check.sh.
+    if [ "$explicit_paths" -eq 0 ] || explicit_paths_cover_tip "$@"; then
         ./scripts/record-shard-receipt.sh edit "$((SECONDS - started_at))" || true
     fi
 }
