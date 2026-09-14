@@ -928,7 +928,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
         # package-wide landing selection, but run the cheaper bounds/nullable
         # semantic sentinel in the edit loop alongside the other admission
         # probes. This changes frequency, never coverage at landing.
-        canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::outlined_memory_bounds_body_size_and_executes_shared_nullable_drops)"
+        canonical_wasmir_tail_expr=" or test(=canonical_wasmir::tests::admitted_owned_reference_call_executes_and_preserves_ownership) or test(=canonical_wasmir::tests::outlined_memory_bounds_body_size_and_executes_shared_nullable_drops)"
     fi
     if [ "$canonical_crypto" -eq 1 ]; then
         canonical_crypto_wir_expr=" or test(canonical_interpreter::crypto_rsa_tests::)"

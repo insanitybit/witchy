@@ -751,7 +751,8 @@ fn canonical_wasmir_edit_keeps_bounds_and_defers_mutation_stress() {
     let commands = selected(&["--edit-loop", "crates/witchy-wir/src/canonical_wasmir.rs"]);
     assert_eq!(commands.len(), 3, "canonical WasmIR route changed shape: {commands:?}");
     assert!(
-        commands[0].contains("outlined_memory_bounds_body_size_and_executes_shared_nullable_drops")
+        commands[0].contains("admitted_owned_reference_call_executes_and_preserves_ownership")
+            && commands[0].contains("outlined_memory_bounds_body_size_and_executes_shared_nullable_drops")
             && !commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
             && !commands[0].contains("outlined_retain_saturation_predicate_mutation_fails_admission"),
         "direct WasmIR edits did not defer the measured mutation stress tests: {commands:?}",
