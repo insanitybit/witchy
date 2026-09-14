@@ -33,12 +33,14 @@ RFC calls it WasmIR. A checked SafeWIR module lowers through a small reviewed
 operation mapping, is encoded immediately, and is bound to the exact bytes that
 may execute. Raw WIR is never a production input or fallback after cutover.
 
-Implementation is staged. The first production milestone has no optional
-optimization passes. It establishes useful, runtime-checked SafeWIR coverage,
-checked reference counting with dynamic uniqueness, an executable SafeWIR
-semantics, backend correspondence, and an atomic production cutover. Later
-milestones add analyses and enable optimizations only with safety rechecking and
-semantic-preservation evidence.
+Implementation is staged. The first production milestone cut over with no
+optional optimization passes. It established useful, runtime-checked SafeWIR
+coverage, checked reference counting with dynamic uniqueness, an executable
+SafeWIR semantics, backend correspondence, and an atomic production cutover.
+Post-cutover milestones may enable individual opt-mode passes only with safety
+rechecking and pass-specific semantic-preservation evidence. The first such
+pass, same-block redundant bounds-guard elimination, is now enabled only for
+`opt` modules; ordinary mode remains the zero-pass baseline.
 
 This RFC supersedes RFC-0162's inference-heavy integration strategy. It retains
 RFC-0162's memory model, kernel-layout work, fail-closed policy, and exact-byte
@@ -520,15 +522,16 @@ The live evidence and landing state for these rows is maintained in
 | B5 | A capability role cannot be satisfied by an integer or linear-memory reference; unsupported capability APIs reject precisely. |
 | B6 | The independent SafeWIR interpreter agrees with emitted Wasm for the digest-bound foundation corpus, including adversarial bounds and ownership probes. |
 | B7 | WasmIR has no optimization and no production constructor except the reviewed backend mapping from validated SafeWIR. |
-| B8 | No optional SafeWIR optimization pass is enabled. Mandatory semantic legalization is explicit and separately evidenced. |
+| B8 | Ordinary mode enables no optional SafeWIR pass. Every opt-mode pass is individually named, checks its exact before/after relation, revalidates the candidate independently, and has merged executable evidence. Mandatory semantic legalization remains explicit and separately evidenced. |
 | B9 | The digest-bound foundation corpus covers scalars, control flow, UTF-8 strings, scalar/string lists, runtime indexing, mutation, direct/indirect top-level calls, `let`/`var`/`own`, loops, proper tails, reclamation, and packed scalar records. Every excluded family has a precise canonical refusal. |
 | B10 | The atomic cutover removes every production raw-WIR encoder, adapter authority, mixed helper path, and per-program fallback. |
 | B11 | Every executable, cached, published, or launched byte sequence is bound to the exact admitted artifact produced from the checked SafeWIR module. |
 | B12 | Native security suites compile and run as mandatory gates; a compile failure is red rather than silently skipping tests. |
 
-Passing B1-B12 supports the conditional memory-safety claim for the
-optimizer-free SafeWIR compiler. It does not establish optimization correctness
-because no optional optimization is enabled.
+Passing B1-B12 supports the conditional memory-safety claim for the ordinary
+zero-pass SafeWIR compiler. B8 additionally admits only the specifically
+assured opt-mode passes recorded in the acceptance ledger; it does not establish
+correctness of unlisted, future, or disabled optimizations.
 
 ## Optimization milestones
 
