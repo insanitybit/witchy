@@ -48,7 +48,7 @@ fn check_scoped_modules(entry: &[u8], library: &[u8]) -> witchy::pipeline::Check
 fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
     use witchy::runtime::{Capabilities, Runtime};
     use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
-    let library = b"fn add(a: Int, b: Int) -> Int:\n    a + b\npub fn make(offset: Int) -> fn(Int) -> Int:\n    fn(value: Int) -> Int: add(offset, value)\npub fn apply(operation: fn(Int) -> Int, value: Int) -> Int:\n    operation(value)\npub fn unused(clock: Clock) -> Int:\n    1\n";
+    let library = b"import dynamic\nfn add(a: Int, b: Int) -> Int:\n    a + b\npub fn make(offset: Int) -> fn(Int) -> Int:\n    fn(value: Int) -> Int: add(offset, value)\npub fn apply(operation: fn(Int) -> Int, value: Int) -> Int:\n    operation(value)\npub fn unused(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\n";
     let check = |entry: &[u8]| check_scoped_modules(entry, library);
     let entry = b"import library\nfn main(console: Console):\n    let operation = library.make(4)\n    console.print(\"${library.apply(operation, 3)}\")\n";
     let checked = check(entry);
@@ -69,17 +69,25 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
 
-    for entry in [
-        "import library\nfn main(clock: Clock) -> Int:\n    library.unused(clock)\n",
-        "import library\nfn main():\n    let callback = library.unused\n    Nil\n",
-        "fn exported(clock: Clock) -> Int:\n    1\nfn main():\n    Nil\n",
+    // Open Dynamic values lack closed payload authority. This refusal remains
+    // meaningful as capability support expands; no retained declaration may
+    // disappear merely because it is difficult to lower.
+    for (entry, retained) in [
+        ("import library\nimport dynamic\nfn forward(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    library.unused(value)\nfn main():\n    Nil\n", "library.unused"),
+        ("import library\nfn main():\n    let callback = library.unused\n    Nil\n", "library.unused"),
+        ("import dynamic\nfn exported(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\nfn main():\n    Nil\n", "entry.exported"),
     ] {
         let checked = check(entry.as_bytes());
+        let source = checked.canonical_source().unwrap();
+        let scope = witchy_types::pipeline::canonical_scope(source.typed_module().module());
+        assert!(scope.contains(retained)
+            || retained.strip_prefix("entry.").is_some_and(|name| scope.contains(name)),
+            "retain required declaration {retained}");
         match witchy::codegen::compile_checked_module_artifact(&checked) {
             witchy::codegen::LoweringOutcome::Unsupported(error) => {
-                assert!(error.to_string().contains("Clock"), "{error}");
+                assert!(error.to_string().contains("Dynamic"), "{error}");
             }
-            _ => panic!("reachable or entry-exported Clock must still refuse admission"),
+            _ => panic!("reachable or entry-exported open Dynamic must refuse without payload authority"),
         }
     }
 }

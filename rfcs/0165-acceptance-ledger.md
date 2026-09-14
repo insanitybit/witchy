@@ -1847,3 +1847,15 @@ test(registry_oracle_) | test(rfc0165_range_bounds::)'
 Local log: `/private/tmp/witchy-registry-observer-refusal-repair.log`.
 This is focused evidence, not a terminal merge event or completion of the
 package-manager workflow. Directory storage remains a separate unfinished slice.
+
+The bounded stale-fixture review also found three Clock-based scope refusals in
+`checked_entry_scope_preserves_calls_and_captures_across_three_legs`.
+They now exercise open-Dynamic declarations through a direct call, a callback,
+and an entry-module export, with explicit retained-scope assertions. The positive
+closure still returns `7` on all three legs. The first replacement incorrectly
+put a Dynamic parameter on `main`; the final fixture instead uses an ordinary
+entry-module `forward` function and a valid zero-argument `main`.
+Final shard: 50/50 passed, no retries, nextest run
+`0adb48dd-f59f-4112-9a34-99ed306297f3`, 3.404 seconds after a 5.33-second build.
+Use the preceding command with `| test(checked_entry_scope_)` added to its filter.
+Log: `/private/tmp/witchy-registry-scope-refusal-repair-2.log`.
