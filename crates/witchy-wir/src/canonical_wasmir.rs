@@ -9429,7 +9429,7 @@ mod tests {
                     Operation::Load { destination: element_loaded, place: Place::projected(object, Projection::Element { index: second_index }, ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                     Operation::Reclaim { object },
                 ],
-                vec![element_loaded],
+                vec![capacity_loaded, length_loaded, element_loaded],
             )
         };
         let mut value_types = BTreeMap::new();
@@ -10131,8 +10131,8 @@ mod tests {
                         Operation::ConstSize { destination: capacity, value: 1 },
                         Operation::Alloc { destination: object, layout, extent: Extent::Counted { header_bytes: 8, count, capacity, stride_bytes: 4 }, class: crate::canonical_safewir::AllocationClass::ReferenceCounted },
                         Operation::CloneRef { destination: shared, source: object },
-                        Operation::Load { destination: loaded, place: Place::projected(shared, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                         Operation::Release { object: shared },
+                        Operation::Load { destination: loaded, place: Place::projected(object, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read), transfer: LoadTransfer::CopyScalar },
                         Operation::DropRef { object },
                     ],
                     terminator: Terminator::Return { values: vec![loaded] },
@@ -10634,15 +10634,21 @@ mod tests {
                 Vec::new(),
             )
             .unwrap(),
-            vec![crate::canonical_interpreter::InterpreterValue::Size(42)],
+            vec![
+                crate::canonical_interpreter::InterpreterValue::Size(2),
+                crate::canonical_interpreter::InterpreterValue::Size(2),
+                crate::canonical_interpreter::InterpreterValue::Size(42),
+            ],
         );
         let wasm = encode_validated(source).expect("packed scalar collection encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-        let run = instance.get_typed_func::<(), i32>(&mut store, "f30").unwrap();
-        assert_eq!(run.call(&mut store, ()).unwrap(), 42);
+        let run = instance
+            .get_typed_func::<(), (i32, i32, i32)>(&mut store, "f30")
+            .unwrap();
+        assert_eq!(run.call(&mut store, ()).unwrap(), (2, 2, 42));
     }
 
     #[cfg(feature = "native")]
@@ -10659,7 +10665,7 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
-    fn shared_release_preserves_root_for_use() {
+    fn shared_release_preserves_surviving_original_for_use() {
         let source = checked_share_fixture();
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();
@@ -10723,6 +10729,180 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
         let run = instance.get_typed_func::<(), ()>(&mut store, "f32").unwrap();
         assert!(run.call(&mut store, ()).is_err(), "refused growth traps");
+    }
+
+    #[test]
+    fn allocation_exclusive_end_boundary_matches_emission_and_plan() {
+        fn module_with_body(body: &WasmFunctionEncoder) -> Vec<u8> {
+            let mut types = TypeSection::new();
+            types.ty().function([], []);
+            let mut functions = FunctionSection::new();
+            functions.function(0);
+            let mut memories = MemorySection::new();
+            memories.memory(MemoryType {
+                minimum: 1,
+                maximum: None,
+                memory64: false,
+                shared: false,
+                page_size_log2: None,
+            });
+            let mut globals = GlobalSection::new();
+            for value in [16, 0, 16] {
+                globals.global(
+                    GlobalType {
+                        val_type: ValType::I32,
+                        mutable: true,
+                        shared: false,
+                    },
+                    &ConstExpr::i32_const(value),
+                );
+            }
+            let mut code = CodeSection::new();
+            code.function(body);
+            let mut module = WasmModule::new();
+            module
+                .section(&types)
+                .section(&functions)
+                .section(&memories)
+                .section(&globals)
+                .section(&code);
+            module.finish()
+        }
+
+        fn operator_positions(bytes: &[u8]) -> (Option<usize>, Option<usize>) {
+            let mut boundary = None;
+            let mut mutation = None;
+            let mut index = 0;
+            for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+                if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
+                    let mut operators = body.get_operators_reader().unwrap();
+                    while !operators.eof() {
+                        match operators.read().unwrap() {
+                            wasmparser::Operator::I64Const { value }
+                                if value == i64::from(u32::MAX) && boundary.is_none() =>
+                            {
+                                boundary = Some(index);
+                            }
+                            wasmparser::Operator::MemoryGrow { .. }
+                            | wasmparser::Operator::GlobalSet { .. }
+                            | wasmparser::Operator::I32Store { .. }
+                                if mutation.is_none() =>
+                            {
+                                mutation = Some(index);
+                            }
+                            _ => {}
+                        }
+                        index += 1;
+                    }
+                }
+            }
+            (boundary, mutation)
+        }
+
+        let mut interner = LayoutInterner::new();
+        let scalar = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let destination = ValueId::new(1);
+        let signature = scalar_signature_with(
+            FunctionSignatureId::new(168),
+            Vec::new(),
+            Vec::new(),
+        );
+        let function = Function {
+            id: FunctionId::new(168),
+            signature: signature.id,
+            entry: BlockId::new(168),
+            value_types: [(destination, ValueType::Ref(scalar))].into_iter().collect(),
+            blocks: vec![BasicBlock {
+                id: BlockId::new(168),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let layout = local_layout(&function, &signature, &interner).unwrap();
+        let representable_bytes = u64::from(u32::MAX - RC_PREFIX_BYTES);
+        let representable = Extent::FixedBytes(representable_bytes);
+        let exclusive_4gib = Extent::FixedBytes(representable_bytes + 1);
+
+        assert_eq!(fixed_alloc_bytes(representable_bytes), Some(u32::MAX - RC_PREFIX_BYTES));
+        assert_eq!(fixed_alloc_bytes(representable_bytes + 1), None);
+
+        let declarations = || layout.extra_types.iter().copied().map(|value_type| (1, value_type));
+        let mut emitted = WasmFunctionEncoder::new(declarations());
+        emit_alloc(
+            &mut emitted,
+            &function,
+            &layout,
+            &interner,
+            destination,
+            scalar,
+            &representable,
+        )
+        .expect("an exclusive end of u32::MAX remains structurally representable");
+        emitted.instruction(&wasm_encoder::Instruction::End);
+        let emitted = module_with_body(&emitted);
+        wasmparser::validate(&emitted).expect("representable boundary emission is valid Wasm");
+        let (emitted_boundary, emitted_mutation) = operator_positions(&emitted);
+        assert!(
+            emitted_boundary.unwrap() < emitted_mutation.unwrap(),
+            "the exclusive-end guard must precede memory growth and allocator mutation",
+        );
+
+        let mut planned = Vec::new();
+        expected_alloc_plan(
+            &mut planned,
+            &function,
+            &layout,
+            None,
+            destination,
+            &representable,
+        )
+        .expect("the independent plan accepts the representable predecessor");
+        let planned_boundary = planned
+            .iter()
+            .position(|token| *token == PlanToken::I64Const(i64::from(u32::MAX)))
+            .unwrap();
+        let planned_mutation = planned
+            .iter()
+            .position(|token| matches!(
+                token,
+                PlanToken::MemoryGrow
+                    | PlanToken::GlobalSet(_)
+                    | PlanToken::I32Store { .. }
+            ))
+            .unwrap();
+        assert!(planned_boundary < planned_mutation);
+
+        let mut rejected = WasmFunctionEncoder::new(declarations());
+        assert!(matches!(
+            emit_alloc(
+                &mut rejected,
+                &function,
+                &layout,
+                &interner,
+                destination,
+                scalar,
+                &exclusive_4gib,
+            ),
+            Err(EncodeError::UnsupportedLayout { operation: "Alloc extent", .. })
+        ));
+        rejected.instruction(&wasm_encoder::Instruction::End);
+        let rejected = module_with_body(&rejected);
+        assert_eq!(operator_positions(&rejected), (None, None));
+
+        let mut rejected_plan = Vec::new();
+        assert!(matches!(
+            expected_alloc_plan(
+                &mut rejected_plan,
+                &function,
+                &layout,
+                None,
+                destination,
+                &exclusive_4gib,
+            ),
+            Err(CanonicalAdmissionError::UnsupportedPlan)
+        ));
+        assert!(rejected_plan.is_empty(), "rejection must precede planned allocator mutation");
     }
 
     #[cfg(feature = "native")]
@@ -10886,6 +11066,128 @@ mod tests {
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
         let run = instance.get_typed_func::<(i32, i32, i32, i32, i32), ()>(&mut store, "probe")?;
         run.call(&mut store, arguments.into())
+    }
+
+    #[cfg(feature = "native")]
+    fn raw_pointer_clone_range_probe() -> (Vec<u8>, u32, u32) {
+        let mut interner = LayoutInterner::new();
+        let byte = interner.intern_scalar(ScalarKind::RawByte).unwrap();
+        let child = interner.intern_runtime_buffer(byte).unwrap();
+        let slot = interner
+            .intern_runtime_pointer_value_slot(child, PointerSlot::Owned)
+            .unwrap();
+        let list = interner.intern_packed_list(slot, RcHeader::Required).unwrap();
+        let collection = collection_layout(FunctionId::new(167), &interner, list).unwrap();
+        let source = ValueId::new(1);
+        let destination = ValueId::new(2);
+        let source_start = ValueId::new(3);
+        let destination_start = ValueId::new(4);
+        let count = ValueId::new(5);
+        let parameters = [
+            (source, ValueType::Ref(list)),
+            (destination, ValueType::Ref(list)),
+            (source_start, ValueType::Size),
+            (destination_start, ValueType::Size),
+            (count, ValueType::Size),
+        ];
+        let source_place = Place::projected(
+            source,
+            Projection::Slice { start: source_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Read,
+        );
+        let destination_place = Place::projected(
+            destination,
+            Projection::Slice { start: destination_start, length: count },
+            ValueType::Ref(list),
+            AccessMode::Write,
+        );
+        let operation = Operation::CloneRange {
+            destination: destination_place.clone(),
+            source: source_place.clone(),
+            count,
+        };
+        let signature = scalar_signature_with(
+            FunctionSignatureId::new(167),
+            parameters.iter().map(|(_, value_type)| *value_type).collect(),
+            Vec::new(),
+        );
+        let function = Function {
+            id: FunctionId::new(167),
+            signature: signature.id,
+            entry: BlockId::new(167),
+            value_types: parameters.iter().copied().collect(),
+            blocks: vec![BasicBlock {
+                id: BlockId::new(167),
+                parameters: parameters
+                    .iter()
+                    .map(|(value, value_type)| BlockParameter {
+                        value: *value,
+                        value_type: *value_type,
+                        ownership: None,
+                    })
+                    .collect(),
+                operations: vec![operation],
+                terminator: Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let layout = local_layout(&function, &signature, &interner).unwrap();
+        let mut body = WasmFunctionEncoder::new(
+            layout
+                .extra_types
+                .iter()
+                .copied()
+                .map(|value_type| (1, value_type)),
+        );
+        emit_clone_range(
+            &mut body,
+            &function,
+            &layout,
+            &destination_place,
+            &source_place,
+            count,
+            &interner,
+        )
+        .unwrap();
+        body.instruction(&wasm_encoder::Instruction::End);
+
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32; 5], Vec::new());
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        let mut memories = MemorySection::new();
+        memories.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        let mut globals = GlobalSection::new();
+        for value in [0, 0, 16] {
+            globals.global(
+                GlobalType {
+                    val_type: ValType::I32,
+                    mutable: true,
+                    shared: false,
+                },
+                &ConstExpr::i32_const(value),
+            );
+        }
+        let mut exports = ExportSection::new();
+        exports.export("probe", ExportKind::Func, 0);
+        exports.export("memory", ExportKind::Memory, 0);
+        let mut code = CodeSection::new();
+        code.function(&body);
+        let mut module = WasmModule::new();
+        module
+            .section(&types)
+            .section(&functions)
+            .section(&memories)
+            .section(&globals)
+            .section(&exports)
+            .section(&code);
+        (module.finish(), collection.data_offset, collection.stride)
     }
 
     #[cfg(feature = "native")]
@@ -11280,6 +11582,61 @@ mod tests {
     #[test]
     fn scalar_clone_range_start_stride_overflow_traps_before_copy() {
         assert!(run_raw_scalar_clone_range_probe([0, 0, (u32::MAX - 1) as i32, 0, 0]).is_err());
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn pointer_clone_range_second_saturated_child_traps_before_destination_publish() {
+        let (wasm, data_offset, stride) = raw_pointer_clone_range_probe();
+        wasmparser::validate(&wasm).expect("raw pointer CloneRange probe is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, wasm).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let source = 32u32;
+        let destination = 128u32;
+        let first_child = 256u32;
+        let saturated_child = 288u32;
+        let first_destination = 0x1122_3344u32;
+        let second_destination = 0x5566_7788u32;
+        let mut contents = vec![0; 320];
+        let mut put = |at: u32, value: u32| {
+            let at = usize::try_from(at).unwrap();
+            contents[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        put(source + data_offset, first_child);
+        put(source + data_offset + stride, saturated_child);
+        put(destination + data_offset, first_destination);
+        put(destination + data_offset + stride, second_destination);
+        put(first_child - RC_PREFIX_BYTES, 1);
+        put(saturated_child - RC_PREFIX_BYTES, u32::MAX);
+        memory.write(&mut store, 0, &contents).unwrap();
+
+        let probe = instance
+            .get_typed_func::<(i32, i32, i32, i32, i32), ()>(&mut store, "probe")
+            .unwrap();
+        assert!(
+            probe
+                .call(
+                    &mut store,
+                    (source as i32, destination as i32, 0, 0, 2),
+                )
+                .is_err(),
+            "the second saturated source child must trap",
+        );
+
+        let data = memory.data(&store);
+        let word = |at: u32| {
+            let at = usize::try_from(at).unwrap();
+            u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+        };
+        assert_eq!(word(destination + data_offset), first_destination);
+        assert_eq!(word(destination + data_offset + stride), second_destination);
+        assert_eq!(word(source + data_offset), first_child);
+        assert_eq!(word(source + data_offset + stride), saturated_child);
+        assert_eq!(word(first_child - RC_PREFIX_BYTES), 2);
+        assert_eq!(word(saturated_child - RC_PREFIX_BYTES), u32::MAX);
     }
 
     #[test]
