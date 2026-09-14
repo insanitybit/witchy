@@ -665,6 +665,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     ]);
     assert_eq!(mixed.len(), 3, "canonical edit loop expanded past its sentinels: {mixed:?}");
     assert!(mixed[0].contains("constant_prefix_publication_rejects_gaps_and_missing_children"), "{mixed:?}");
+    assert!(mixed[0].contains("scalar_checker_refuses_non_total_backend_combinations"), "{mixed:?}");
     assert!(mixed[0].contains("test(boolean_reaches::)"), "{mixed:?}");
     assert!(mixed[0].contains("scalar_move_range_is_bounds_checked_and_admitted"), "{mixed:?}");
     assert!(mixed[0].contains("scalar_clone_range_is_ownership_safe_and_admitted"), "{mixed:?}");
