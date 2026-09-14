@@ -127,6 +127,12 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   `coordinator_started` records an auto-started detached daemon and the actor
   that triggered it.
 
+  `actor_hint` remains a derived structural hint, separate from the verbatim
+  `actor`. It records `master-checkout`, `claude`, `codex`, or
+  `linked-worktree` when the submitter path identifies one of those layouts;
+  otherwise it remains `unknown`. The hint does not authorize a submission or
+  infer who authored it.
+
   **Recorded verbatim vs. derived.** `branch`, `sha`, `submitted_sha`,
   `change_id`, `attempt_id`, `by`, and `note` are recorded verbatim from the
   submission. `presubmit_*`, `gate_load_*`, `host_ncpu`, `stages`, and

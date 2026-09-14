@@ -1604,6 +1604,7 @@ cmd_submit() {
     case "$PWD" in
         */.claude/worktrees/*) actor_hint="claude" ;;
         */.codex/worktrees/*)  actor_hint="codex" ;;
+        /private/tmp/witchy-*) actor_hint="linked-worktree" ;;
         "$root") actor_hint="master-checkout" ;;
     esac
 
