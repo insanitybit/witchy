@@ -549,37 +549,48 @@ fn classify_crate_skips(path: &str) -> (String, String) {
 
 #[test]
 fn lower_and_syntax_batches_skip_rust_class_and_wasm() {
-    for path in [
-        "crates/witchy-lower/src/lib.rs",
-        "crates/witchy-syntax/src/lib.rs",
-        "crates/witchy-wir/src/lib.rs",
-    ] {
-        let (env, label) = classify_crate_skips(path);
-        let want_fmt = if path.contains("witchy-syntax") {
-            "skip_fmt=0"
-        } else {
-            "skip_fmt=1"
-        };
-        assert!(
-            env.contains("skip_rust=1")
-                && env.contains("skip_wasm=1")
-                && env.contains("skip_compile=0")
-                && env.contains(want_fmt),
-            "{label} should skip rust-class/wasm, keep compile, and classify fmt ({want_fmt}): {env}",
-        );
-        assert!(
-            !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
-            "{label} launched unfiltered --workspace nextest: {env}",
-        );
-        if path.contains("witchy-lower") {
+    thread::scope(|scope| {
+        let cases = [
+            "crates/witchy-lower/src/lib.rs",
+            "crates/witchy-syntax/src/lib.rs",
+            "crates/witchy-wir/src/lib.rs",
+        ]
+        .map(|path| {
+            scope.spawn(move || {
+                let (env, label) = classify_crate_skips(path);
+                let want_fmt = if path.contains("witchy-syntax") {
+                    "skip_fmt=0"
+                } else {
+                    "skip_fmt=1"
+                };
+                assert!(
+                    env.contains("skip_rust=1")
+                        && env.contains("skip_wasm=1")
+                        && env.contains("skip_compile=0")
+                        && env.contains(want_fmt),
+                    "{label} should skip rust-class/wasm, keep compile, and classify fmt ({want_fmt}): {env}",
+                );
+                assert!(
+                    !env.contains("nextest=[--workspace") && !env.contains("nextest=[]"),
+                    "{label} launched unfiltered --workspace nextest: {env}",
+                );
+                if path.contains("witchy-lower") {
+                    assert!(
+                        env.contains("nextest=[-p witchy-lower")
+                            && !env.contains("witchy-wir")
+                            && !env.contains("witchy-runtime"),
+                        "{label} still attached wir/runtime to a lower-only batch: {env}",
+                    );
+                }
+            })
+        });
+        for case in cases {
             assert!(
-                env.contains("nextest=[-p witchy-lower")
-                    && !env.contains("witchy-wir")
-                    && !env.contains("witchy-runtime"),
-                "{label} still attached wir/runtime to a lower-only batch: {env}",
+                case.join().is_ok(),
+                "crate classification fixture thread failed",
             );
         }
-    }
+    });
 }
 
 #[test]
