@@ -340,6 +340,18 @@ improvement. The next uncontended compiler submission from a linked worktree
 is the first useful cohort observation. This change records measurements only;
 it does not alter gate policy, exclusions, or compiler code.
 
+**Enum-equality route correction, 2026-09-14.** The landed compiler change
+`e06774f11` added four semantic tests in `tests/misc/rfc0165_enum_equality.rs`.
+The full gate ran them at 0.328s, 0.364s, 0.294s, and 0.287s (1.273s of test
+body time) after spending 322s on the complete candidate gate. The canonical
+edit route selected none of these tests. Commit `f079f93d4` added the module to
+the existing three-command route and extended the route regression assertions;
+its 86 router tests and 22 queue-edit tests passed, and the unchanged landing
+gate remained green in 101s. The focused route adds no process or compilation
+stage, so the recoverable saving is the avoided full-gate discovery delay when
+one of these semantic checks fails. The estimate excludes command startup and
+compile reuse; the full gate remains authoritative.
+
 **Evidence and reproduction of the analysis.** The source report is the local
 artifact `/private/tmp/witchy-development-latency-2026-09-12.md`, produced in
 Codex thread `01a09617-befb-7ad2-9ef1-e701722ee3a2`. These records are local and
