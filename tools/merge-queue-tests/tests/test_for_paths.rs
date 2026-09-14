@@ -681,6 +681,10 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
         mixed[2].contains("rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata"),
         "{mixed:?}"
     );
+    assert!(
+        mixed[2].contains("semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation"),
+        "{mixed:?}"
+    );
     assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
     assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
@@ -1023,6 +1027,16 @@ fn lower_codegen_edits_run_the_known_fast_failure_probe_first() {
     assert_eq!(
         commands[0],
         "cargo nextest run -p witchy-lower --test codegen -E 'test(=grantful_build_primitives_compile_to_build_imports_only)'"
+    );
+}
+
+#[test]
+fn semantic_conformance_edits_run_the_known_independent_expectation_probe_first() {
+    let commands = selected(&["--edit-loop", "tests/misc/semantic_conformance.rs"]);
+    assert_eq!(
+        commands,
+        ["cargo nextest run --test misc -E 'test(=semantic_conformance::independent_expectation_rejects_a_shared_semantic_mutation)'"],
+        "{commands:?}"
     );
 }
 
