@@ -118,6 +118,18 @@ pub(super) struct NetState {
 enum Receive { Line, Bytes(usize), All }
 
 impl NetState {
+    /// The Fetch fixture retains this authenticated token as a permanent floor.
+    /// Exact endpoint grants are the existing deterministic Net profile, not a
+    /// substitute implementation of DNS or the native wildcard/CIDR policy.
+    pub(super) fn fetch_grant(&self, token: &CapabilityToken) -> Result<(usize, OracleNetGrant), InterpretError> {
+        let Resource::Grant(ordinal) = self.authenticate(token, NET)? else {
+            return Err(refused(OracleNetError::WrongKind));
+        };
+        let grant = &self.grants[ordinal];
+        if !grant.connect { return Err(refused(OracleNetError::RightsDenied)); }
+        Ok((ordinal, grant.clone()))
+    }
+
     pub(super) fn new(fixture: OracleNetFixture) -> Self {
         Self { issuer: Arc::new(()), grants: fixture.grants, events: fixture.transcript.into(),
             observed: Vec::new(), chunk_offset: 0, listeners: BTreeSet::new(), sockets: BTreeMap::new(),

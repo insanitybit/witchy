@@ -1089,9 +1089,9 @@ impl Codegen<'_> {
                 if self.collect_wir { call("net_accept", a) } else { host("net_accept_host", a) }
             }
             ("fetch", 2) => {
-                self.used_net_ops.insert("connect");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("net_fetch", a) } else { host("net_fetch_host", a) }
+                // The canonical receiver/slice contract cannot be supplied by
+                // this retired raw-header route.
+                return None;
             }
             // RFC-0011 typed verbs: `only`/`deny` take a policy record; extract its
             // single `pattern` field and feed the host op the same string. `only` is
@@ -1128,8 +1128,7 @@ impl Codegen<'_> {
                 }
             }
             ("send_raw", 5) => {
-                let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?;
-                if self.collect_wir { call("fetch_send", a) } else { host("fetch_send_host", a) }
+                return None;
             }
             ("deny", 2) => {
                 self.used_net_ops.insert("deny");

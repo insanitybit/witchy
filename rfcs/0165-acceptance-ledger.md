@@ -1593,7 +1593,7 @@ the unchanged candidate then passed the coordinator. Reproduction and cleanup:
 `/private/tmp/witchy-offline-pm-async-success-repro.log` and
 `/private/tmp/witchy-offline-pm-async-success-cleanup.txt`.
 
-#### Pinned vendored registry source replay: focused green
+#### Pinned vendored registry source replay: merged
 
 Closed capture/replay retains the raw lock, signed record, package manifest,
 and complete signed source tree. Compiler-fixed authenticated verifier sources
@@ -1631,8 +1631,12 @@ if [ -n "$excluded" ]; then filter="($filter) & not ($excluded)"; fi
 "${common[@]}" -E "$filter"
 ```
 
-This slice is focused-green, not merged evidence. Online registry operations,
-remaining workflows, and optimizer/security acceptance are still incomplete.
+Registry replay and its CLI owner-refusal regression landed as master
+`984b1dc98002657aaa12d6438d2d5d268f921300`, from submitted
+`01c872b4de8a4cd197080fd31df2956d44626ab0`. The terminal merged event records
+`state/merge-queue/logs/20260913-234032-impl~rfc0165-registry-replay-integration-99116-10.log`.
+Online registry operations, remaining workflows, and optimizer/security
+acceptance are still incomplete.
 Compiler-wide memory safety is not established.
 
 Registry replay gate follow-up: the first gate rejected the stale CLI test
@@ -1647,5 +1651,56 @@ The expanded focused selector adds `test(rfc0165_packaged_source::)` to
 shared deferred-test filter and the absolute warmed target above. Result:
 31/31 passed, 77.236 seconds after a 17.41-second build, no retries; nextest run
 `4738ac76-14dc-4a40-83c7-733bb019bf97`. Log:
-`/private/tmp/witchy-pinned-vendor-cli-gate-fix.log`. This repairs the gate fixture;
-it does not constitute terminal merge evidence.
+`/private/tmp/witchy-pinned-vendor-cli-gate-fix.log`. This focused run preceded
+the terminal gate recorded above.
+
+#### Canonical Fetch and opaque callable lanes: focused green (2026-09-14)
+
+Branch `impl/rfc0165-fetch-integration` now supports explicit Fetch entry grants,
+Net-derived Fetch, GET/POST through the existing Grimoire wrappers, and
+`Fetch.only` narrowing. Five bounded imports use issuer-bound kinds 17/18 and
+immutable responses; the ABI catalog has 152 imports. The existing HTTP/TLS
+provider, post-DNS Net floor, redirects policy, wire-size limit, and provider
+error-as-value behavior are retained. No raw production fallback was added.
+
+The unchanged source probes exercise captured clients, argument evaluation
+with later mutation, retained responses, both canonical oracle launch APIs,
+source-interpreter/native HTTP traffic, and zero owned-heap leaks. Ordinary and
+tail indirect calls now support opaque capability lanes only under exact
+kind/nullability, Value ownership and no-memory-effect contracts. Ref/Gc and
+proper-tail restrictions remain in force. Local callable-result dispatch uses
+lexical types rather than a shadowed global signature. Independent review
+cleared the changed runtime, oracle, checker, lowering and source boundaries.
+
+Evidence: 119/119 focused tests passed, no retries, in 163.474 seconds after a
+63-second build; nextest run `723450bf-309a-45ac-996f-265ef99b1899`, log
+`/private/tmp/witchy-fetch-final-focused.log`. The same binary passed
+`hello`/`wrap`/`jq` interpreter/Wasm parity (3/5/7 output lines), log
+`/private/tmp/witchy-fetch-final-compact-parity.log`. This is not a fresh census
+or terminal merge evidence. Only the two newly proven exclusions were removed:
+`fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm` and
+`typed_errors::http_typed_errors_are_matchable_and_bridge_to_string`.
+
+Reproduce with the existing absolute warmed target and shared exclusion policy:
+
+```sh
+export CARGO_TARGET_DIR=/private/tmp/witchy-rfc0165-net-half-close-target
+export CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= CC=cc
+excluded=$(awk 'NF == 2 && $1 !~ /^#/ { if (n++) printf " | "; printf "(binary_id(=%s) & test(=%s))", $1, $2 }' scripts/rfc0165-deferred-tests.txt)
+filter='test(fetch) | test(server_pool_) | test(local_callable_result) | test(indirect_capability_) | test(capability_indirect_) | test(admitted_capability_var_) | test(indirect_reference_value_argument_is_refused) | test(build_net) | test(build_exec) | test(build_recipe) | test(wasm_abi_catalog) | test(checked_entry_scope_) | test(pinned_vendor_)'
+if [ -n "$excluded" ]; then filter="($filter) & not ($excluded)"; fi
+filter="($filter) | (binary_id(=witchy::cli_subcommands) & test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)) | (binary_id(=witchy::misc) & test(=typed_errors::http_typed_errors_are_matchable_and_bridge_to_string))"
+taskpolicy -c utility cargo nextest run \
+  -p witchy-runtime -p witchy-wir -p witchy-types -p witchy -p witchy-lower \
+  --features native --lib --bin witchy --test misc --test e2e \
+  --test codegen --test cli_subcommands --ignore-default-filter --profile ci \
+  --retries 0 -E "$filter" --test-threads 2 --no-fail-fast
+```
+
+Residuals: the Fetch oracle refuses DNS-dependent derived Net floors rather
+than inventing resolver evidence; its current derived profile uses numeric
+exact endpoints. The server-pool oracle remains inbound-only, including Fetch.
+Canonical `Net.only` remains unsupported; this slice does not claim it was
+implemented. Full online package-manager workflows, remaining coverage and
+optimizer/security acceptance still need their own evidence. Compiler-wide
+memory safety is not established.

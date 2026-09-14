@@ -1149,6 +1149,7 @@ pub(super) fn value_type_matches_source(
             CapabilityRepresentation::Direct(CapabilityKind::Listener) | CapabilityRepresentation::Nullable(CapabilityKind::Listener) => super::LISTENER_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::Socket) | CapabilityRepresentation::Nullable(CapabilityKind::Socket) => super::SOCKET_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::Exec) | CapabilityRepresentation::Nullable(CapabilityKind::Exec) => super::EXEC_CAPABILITY_KIND,
+            CapabilityRepresentation::Direct(CapabilityKind::Fetch) | CapabilityRepresentation::Nullable(CapabilityKind::Fetch) => super::FETCH_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::BuildOut) | CapabilityRepresentation::Nullable(CapabilityKind::BuildOut) => super::BUILD_OUT_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::BuildRead) | CapabilityRepresentation::Nullable(CapabilityKind::BuildRead) => super::BUILD_READ_CAPABILITY_KIND,
             CapabilityRepresentation::Direct(CapabilityKind::BuildEnv) | CapabilityRepresentation::Nullable(CapabilityKind::BuildEnv) => super::BUILD_ENV_CAPABILITY_KIND,

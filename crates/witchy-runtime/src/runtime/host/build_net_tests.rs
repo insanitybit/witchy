@@ -202,7 +202,7 @@ fn build_net_authenticates_kind_current_issuer_and_read_before_memory() {
     let mut vm = vm(Capabilities { build_net_allow: Some(Vec::new()), ..Capabilities::none() }, false);
     let authority = mint(vm.store.data()).unwrap();
     let forged = Some(ExternRef::new(&mut vm.store, BUILD_NET_CAPABILITY_KIND.get()).unwrap());
-    let ordinary = Some(ExternRef::new(&mut vm.store, crate::runtime::NetAuthority { allow: vec!["127.0.0.1:1".into()] }).unwrap());
+    let ordinary = Some(ExternRef::new(&mut vm.store, crate::runtime::NetAuthority { allow: vec!["127.0.0.1:1".into()], issuer: Arc::new(()) }).unwrap());
     let foreign = Some(ExternRef::new(&mut vm.store, Authority { issuer: Arc::new(()), ..authority.clone() }).unwrap());
     let denied = Some(ExternRef::new(&mut vm.store, Authority { read: false, ..authority }).unwrap());
     let response = Some(super::super::build_read::new_response(&mut vm.store, Some("not authority")).unwrap());

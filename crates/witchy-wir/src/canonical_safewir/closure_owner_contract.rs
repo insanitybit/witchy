@@ -79,6 +79,7 @@ impl<'a> SourceConstructor<'a> {
                     CapabilityKind::Listener => super::LISTENER_CAPABILITY_KIND,
                     CapabilityKind::Socket => super::SOCKET_CAPABILITY_KIND,
                     CapabilityKind::Exec => super::EXEC_CAPABILITY_KIND,
+                    CapabilityKind::Fetch => super::FETCH_CAPABILITY_KIND,
                     CapabilityKind::BuildOut => super::BUILD_OUT_CAPABILITY_KIND,
                     CapabilityKind::BuildRead => super::BUILD_READ_CAPABILITY_KIND,
                     CapabilityKind::BuildEnv => super::BUILD_ENV_CAPABILITY_KIND,

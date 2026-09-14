@@ -1232,6 +1232,8 @@ use crate::net::Stream;
 #[derive(Clone, Debug)]
 struct NetAuthority {
     allow: Vec<String>,
+    // Preserved by attenuation; Fetch derivation authenticates the actual VM.
+    issuer: Arc<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -1353,6 +1355,8 @@ pub struct VmState {
     nets: Vec<NetAuthority>,
     /// Declarative Fetch grants awaiting wrapper-local `mint_fetch(i)`.
     fetch_grants: Vec<Vec<String>>,
+    /// Fresh per Store, shared by its Net-derived/direct Fetch roots and results.
+    fetch_issuer: Arc<()>,
     /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener (plus
     /// its TLS config) it must reuse instead of binding its own. `listen` returns
     /// this; `serve_pool` sees it set and does NOT spawn another pool (only the
@@ -1499,6 +1503,7 @@ impl Vm {
         // the i-th `Dir` in `main`'s signature is backed by the i-th grant.
         let mut dir_ordinal = 0usize;
         let mut net_ordinal = 0usize;
+        let mut fetch_ordinal = 0usize;
         for capability in entry.capabilities() {
             let token = match capability {
                 CanonicalEntryCapability::Console => {
@@ -1539,6 +1544,11 @@ CanonicalEntryCapability::BuildOut => {
                 }
                 CanonicalEntryCapability::BuildNet => {
                     let authority = host::build_net::mint(self.store.data())?;
+                    ExternRef::new(&mut self.store, authority)?
+                }
+                CanonicalEntryCapability::Fetch => {
+                    let authority = host::fetch::mint(self.store.data(), fetch_ordinal)?;
+                    fetch_ordinal += 1;
                     ExternRef::new(&mut self.store, authority)?
                 }
                 CanonicalEntryCapability::Exec => {
@@ -2561,6 +2571,8 @@ pub(crate) fn link_capability_imports(
     if !caps.fetch_grants.is_empty() {
         host::fetch::link_mint(linker)?;
     }
+    // Canonical linkage is authority-free; every call authenticates a token.
+    host::fetch::link(linker)?;
     if !caps.fetch_grants.is_empty() || (net && caps.net_connect) {
         host::fetch::link_ops(linker)?;
     }
@@ -2673,12 +2685,13 @@ fn vmstate_from_caps(
             rights: caps.file_rights.get(i).copied().unwrap_or_else(FsRights::full),
         }))
         .collect::<Result<Vec<_>>>()?;
+    let fetch_issuer = Arc::new(());
     let nets = caps
         .net_allow
         .iter()
         .cloned()
         .chain(caps.net_grants.iter().cloned())
-        .map(|allow| NetAuthority { allow })
+        .map(|allow| NetAuthority { allow, issuer: fetch_issuer.clone() })
         .collect();
     let build_out = caps
         .build_out
@@ -2717,6 +2730,7 @@ fn vmstate_from_caps(
         pending_bytes: None,
         nets,
         fetch_grants: caps.fetch_grants.clone(),
+        fetch_issuer,
         worker_listener,
         build_out,
         build_out_issuer: Arc::new(()),

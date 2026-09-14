@@ -271,8 +271,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `mint_net` | `(i32) -> externref` | capability authority | Net.grant | omitted |
 | `mint_fetch` | `(i32) -> externref` | capability authority | Fetch.grant | omitted |
 | `fetch_only` | `(externref, i32) -> externref` | capability authority | Fetch | omitted |
-| `fetch_send_len` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Fetch | omitted |
-| `net_fetch` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `fetch_send_at` | `(externref, i32, i32, i32, i32, i32, i32, i32, i32) -> externref` | capability authority | Fetch | omitted |
+| `net_fetch_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `fetch_response_size` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `fetch_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `fetch_only_at` | `(externref, i32, i32) -> externref` | capability authority | Fetch | omitted |
 | `net_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_try_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_resolve_size` | `(externref, i32) -> i32` | capability authority | Net.Connect | omitted |

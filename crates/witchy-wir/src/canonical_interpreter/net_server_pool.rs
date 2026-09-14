@@ -3,7 +3,7 @@
 //! Pre-rendezvous execution may only compute in its private heap and obtain
 //! the shared listener. Other host effects refuse, so moving those pure
 //! prefixes ahead of the sequential suffixes preserves the startup barrier.
-//! This is an inbound-only profile: outbound connects refuse in the primary
+//! This is an inbound-only profile: outbound Net and Fetch calls refuse in the primary
 //! and every worker, even after rendezvous. Disjoint socket ids alone cannot
 //! prove independence from a peer blocked in another pool instance. Scripts
 //! do not supply guest results; arbitrary concurrency is not modeled.
@@ -63,7 +63,7 @@ impl ServerState {
     }
 
     pub(in super::super) fn before_host_call(&self, name: &str) -> Result<(), InterpretError> {
-        if (self.fixture.is_some() || self.worker) && name == "net_connect_at" {
+        if (self.fixture.is_some() || self.worker) && matches!(name, "net_connect_at" | "fetch_send_at") {
             return Err(InterpretError::UnsupportedOperation("server pool outbound traffic"));
         }
         if self.worker && !self.rendezvous && !matches!(name,
@@ -160,11 +160,14 @@ mod tests {
             server.worker = worker;
             for rendezvous in [false, true] {
                 server.rendezvous = rendezvous;
-                assert_eq!(server.before_host_call("net_connect_at"),
-                    Err(InterpretError::UnsupportedOperation("server pool outbound traffic")));
+                for name in ["net_connect_at", "fetch_send_at"] {
+                    assert_eq!(server.before_host_call(name),
+                        Err(InterpretError::UnsupportedOperation("server pool outbound traffic")));
+                }
             }
         }
         ServerState::new(None).before_host_call("net_connect_at").unwrap();
+        ServerState::new(None).before_host_call("fetch_send_at").unwrap();
     }
 
     #[test]

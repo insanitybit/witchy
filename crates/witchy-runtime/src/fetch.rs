@@ -469,13 +469,16 @@ fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, FetchError> {
         if size == 0 {
             return Ok(output);
         }
-        if input.len() < size + 2 || &input[size..size + 2] != b"\r\n" {
+        let chunk_end = size.checked_add(2).ok_or_else(|| FetchError::MalformedResponse {
+            message: "truncated chunk body".to_string(),
+        })?;
+        if input.len() < chunk_end || &input[size..chunk_end] != b"\r\n" {
             return Err(FetchError::MalformedResponse {
                 message: "truncated chunk body".to_string(),
             });
         }
         output.extend_from_slice(&input[..size]);
-        input = &input[size + 2..];
+        input = &input[chunk_end..];
     }
 }
 
@@ -516,6 +519,17 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    #[test]
+    fn fetch_chunk_size_overflow_is_a_malformed_response_not_a_panic() {
+        for size in [usize::MAX, usize::MAX - 1, usize::MAX - 2] {
+            let input = format!("{size:x}\r\n");
+            let error = decode_chunked(input.as_bytes()).unwrap_err();
+            assert!(matches!(error, FetchError::MalformedResponse { ref message }
+                if message == "truncated chunk body"), "{error:?}");
+        }
+        assert_eq!(decode_chunked(b"3\r\nabc\r\n0\r\n\r\n").unwrap(), b"abc");
+    }
 
     fn serve(response: &'static [u8]) -> (String, mpsc::Receiver<Vec<u8>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -258,6 +258,18 @@ pub fn run_checked_module(
     root: impl AsRef<Path>,
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
+    run_checked_module_with_fetch_grant(checked, root, net_allow, Vec::new())
+}
+
+/// Authenticated checked-source execution with an explicit origin-scoped Fetch
+/// grant. This is the existing source launcher with host-supplied grant data;
+/// it neither reconstructs source authority nor supplies a default origin.
+pub fn run_checked_module_with_fetch_grant(
+    checked: &witchy_types::pipeline::CheckedModule,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
     let runtime_catalog = checked
         .runtime_declaration_catalog()
         .map_err(|error| RuntimeError { message: error.to_string() })?;
@@ -270,7 +282,7 @@ pub fn run_checked_module(
             Vec::new(),
             Vec::new(),
             net_allow,
-            Vec::new(),
+            fetch_origins,
             Vec::new(),
             None,
             Vec::new(),

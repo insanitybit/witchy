@@ -1458,11 +1458,24 @@ fn check_indirect_reference_arguments(
     if arguments.len() != signature.contract.parameters.len() {
         return Err(InitialCheckError::UnsupportedIndirectCall { function: function.id });
     }
-    if arguments.iter().zip(&signature.contract.parameters).any(|(argument, parameter)| {
+    if arguments.iter().zip(&signature.contract.parameters).enumerate().any(|(index, (argument, parameter))| {
         let value = match argument {
             CallArgument::Value(value) | CallArgument::Move(value) => *value,
         };
         let value_type = value_type(function, value);
+        if matches!(value_type.as_ref(), Ok(ValueType::Capability(_) | ValueType::NullableCapability(_)))
+            || matches!(parameter.value_type, ValueType::Capability(_) | ValueType::NullableCapability(_))
+        {
+            // Opaque capabilities are value lanes, not movable linear-memory
+            // references. Preserve the exact kind and nullability, and do not
+            // let this case acquire any reference ownership or memory effects.
+            return !(matches!(argument, CallArgument::Value(_))
+                && value_type.as_ref().is_ok_and(|actual| *actual == parameter.value_type)
+                && signature.parameters.get(index) == Some(&parameter.value_type)
+                && parameter.ownership == ParameterOwnership::Value
+                && signature.contract.parameter_effects.get(&(index as u32))
+                    .is_none_or(|effects| effects.is_empty()));
+        }
         let memory_bearing = value_type.as_ref()
             .map(|value_type| value_type.is_memory_bearing())
             .unwrap_or(true);
@@ -2154,6 +2167,98 @@ mod tests {
             ),
             Err(InitialCheckError::UnsupportedIndirectCall { function }) if function == FUNCTION
         ));
+    }
+
+    #[test]
+    fn indirect_capability_arguments_require_exact_effect_free_value_contracts() {
+        let kind = super::super::CapabilityKindId::new(17);
+        let other_kind = super::super::CapabilityKindId::new(0);
+        for actual in [ValueType::Capability(kind), ValueType::NullableCapability(kind)] {
+            let function = Function {
+                id: FUNCTION, signature: SIGNATURE, entry: ENTRY,
+                value_types: [(VALUE, actual)].into_iter().collect(),
+                blocks: Vec::new(),
+            };
+            let valid = FunctionSignature {
+                id: CALLEE_SIGNATURE,
+                parameters: vec![actual], results: Vec::new(),
+                contract: CallableContract {
+                    parameters: vec![ParameterContract {
+                        value_type: actual, ownership: ParameterOwnership::Value,
+                    }],
+                    results: Vec::new(), parameter_effects: BTreeMap::new(),
+                },
+            };
+            let check = |signature: &FunctionSignature, argument| {
+                super::check_indirect_reference_arguments(&function, &[argument], signature)
+            };
+            assert!(check(&valid, CallArgument::Value(VALUE)).is_ok());
+            let mut empty_effects = valid.clone();
+            empty_effects.contract.parameter_effects.insert(0, Vec::new());
+            assert!(check(&empty_effects, CallArgument::Value(VALUE)).is_ok());
+            assert!(check(&valid, CallArgument::Move(VALUE)).is_err());
+            assert!(check(&valid, CallArgument::Value(ValueId::new(u32::MAX))).is_err());
+            for wrong in [ValueType::Capability(other_kind), ValueType::NullableCapability(other_kind),
+                ValueType::Capability(kind), ValueType::NullableCapability(kind), ValueType::Int]
+            {
+                if wrong == actual { continue; }
+                let mut signature = valid.clone();
+                signature.parameters[0] = wrong;
+                signature.contract.parameters[0].value_type = wrong;
+                assert!(check(&signature, CallArgument::Value(VALUE)).is_err());
+            }
+            let mut wrong_signature = valid.clone();
+            wrong_signature.parameters[0] = ValueType::Int;
+            assert!(check(&wrong_signature, CallArgument::Value(VALUE)).is_err());
+            for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared,
+                ParameterOwnership::WriteBack, ParameterOwnership::UniqueWriteBack]
+            {
+                let mut signature = valid.clone();
+                signature.contract.parameters[0].ownership = ownership;
+                assert!(check(&signature, CallArgument::Value(VALUE)).is_err());
+            }
+            for effect in [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release,
+                MemoryEffect::Write, MemoryEffect::Reclaim]
+            {
+                let mut signature = valid.clone();
+                signature.contract.parameter_effects.insert(0, vec![effect]);
+                assert!(check(&signature, CallArgument::Value(VALUE)).is_err());
+            }
+            let mut missing_contract = valid.clone();
+            missing_contract.contract.parameters.clear();
+            assert!(check(&missing_contract, CallArgument::Value(VALUE)).is_err());
+        }
+    }
+
+    #[test]
+    fn indirect_capability_support_preserves_ref_gc_move_restrictions() {
+        let layout = LayoutId::from_bytes([0; 32]);
+        for value_type in [ValueType::Ref(layout), ValueType::Gc(crate::canonical_safewir::GcTypeId::new(0))] {
+            let function = Function {
+                id: FUNCTION, signature: SIGNATURE, entry: ENTRY,
+                value_types: [(VALUE, value_type)].into_iter().collect(), blocks: Vec::new(),
+            };
+            let mut signature = FunctionSignature {
+                id: CALLEE_SIGNATURE, parameters: vec![value_type], results: Vec::new(),
+                contract: CallableContract {
+                    parameters: vec![ParameterContract { value_type, ownership: ParameterOwnership::Shared }],
+                    results: Vec::new(), parameter_effects: BTreeMap::new(),
+                },
+            };
+            assert!(super::check_indirect_reference_arguments(
+                &function, &[CallArgument::Move(VALUE)], &signature,
+            ).is_ok());
+            assert!(super::check_indirect_reference_arguments(
+                &function, &[CallArgument::Value(VALUE)], &signature,
+            ).is_err());
+            signature.contract.parameters[0].ownership = ParameterOwnership::Value;
+            assert!(super::check_indirect_reference_arguments(
+                &function, &[CallArgument::Value(VALUE)], &signature,
+            ).is_err());
+            assert!(super::check_indirect_reference_arguments(
+                &function, &[CallArgument::Move(VALUE)], &signature,
+            ).is_err());
+        }
     }
 
     fn allocated_list_with_header(

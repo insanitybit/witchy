@@ -810,12 +810,23 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
 }
 
 fn is_indirect_result(value_type: ValueType) -> bool {
-    is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_))
+    is_indirect_scalar(value_type)
+        || matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_)
+            | ValueType::Capability(_) | ValueType::NullableCapability(_))
 }
 
 fn is_indirect_parameter(signature: &FunctionSignature, index: usize, value_type: ValueType) -> bool {
     if is_indirect_scalar(value_type) {
         return true;
+    }
+    if matches!(value_type, ValueType::Capability(_) | ValueType::NullableCapability(_)) {
+        // Externref capability lanes carry their exact checked kind, not
+        // linear-memory ownership or permission to apply memory effects.
+        return signature.contract.parameters.get(index).is_some_and(|parameter| {
+            parameter.value_type == value_type
+                && parameter.ownership == ParameterOwnership::Value
+        }) && signature.contract.parameter_effects.get(&(index as u32))
+            .is_none_or(|effects| effects.is_empty());
     }
     matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_))
         && matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::Shared | ParameterOwnership::WriteBack))
@@ -1593,6 +1604,8 @@ pub struct AdmittedCanonicalArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalEntryCapability {
     Exec,
+    /// An explicit origin-scoped grant, in Fetch-parameter ordinal order.
+    Fetch,
     Console,
     /// A recipe-only, write-only build output grant (kind 9).
     BuildOut,
@@ -1675,6 +1688,7 @@ impl CanonicalEntry {
                 CanonicalEntryCapability::BuildExec => 15,
                 CanonicalEntryCapability::BuildNet => 16,
                 CanonicalEntryCapability::Exec => 10,
+                CanonicalEntryCapability::Fetch => 17,
             });
         }
         bytes.push(match self.result {
@@ -1719,6 +1733,7 @@ impl CanonicalEntry {
                 15 => Ok(CanonicalEntryCapability::BuildExec),
                 16 => Ok(CanonicalEntryCapability::BuildNet),
                 10 => Ok(CanonicalEntryCapability::Exec),
+                17 => Ok(CanonicalEntryCapability::Fetch),
                 other => Err(invalid(&format!("unknown capability tag {other}"))),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -7165,6 +7180,9 @@ ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPA
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::EXEC_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Exec);
             }
+            ValueType::Capability(kind) if *kind == crate::canonical_safewir::FETCH_CAPABILITY_KIND => {
+                capabilities.push(CanonicalEntryCapability::Fetch);
+            }
             ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND => {
                 capabilities.push(CanonicalEntryCapability::Net);
             }
@@ -8210,6 +8228,245 @@ mod tests {
             Err(CanonicalAdmissionError::PlanMismatch("function body"))
                 | Err(CanonicalAdmissionError::WasmValidation)
         ));
+    }
+
+    fn capability_indirect_parts(tail: bool, value_type: ValueType) -> LoweredModuleParts {
+        let caller_id = FunctionId::new(20);
+        let callee_id = FunctionId::new(21);
+        let caller_signature = FunctionSignatureId::new(20);
+        let callee_signature = FunctionSignatureId::new(21);
+        let parameter = ValueId::new(0);
+        let callable = ValueId::new(1);
+        let result = ValueId::new(2);
+        let site = crate::canonical_safewir::TailSiteId::from_digest([0x32; 32]);
+        let mut operations = vec![Operation::FunctionValue {
+            destination: callable,
+            function: callee_id,
+        }];
+        let mut value_types: BTreeMap<_, _> = [
+            (parameter, value_type),
+            (callable, ValueType::Callable(callee_signature)),
+        ].into_iter().collect();
+        let terminator = if tail {
+            Terminator::VarTailCall {
+                site, callee: callable, signature: callee_signature,
+                arguments: vec![CallArgument::Value(parameter)],
+            }
+        } else {
+            value_types.insert(result, value_type);
+            operations.push(Operation::VarCall {
+                destinations: vec![result], callee: callable, signature: callee_signature,
+                arguments: vec![CallArgument::Value(parameter)],
+            });
+            Terminator::Return { values: vec![result] }
+        };
+        LoweredModuleParts {
+            revision: Revision::new(32),
+            checked_source: CheckedSourceIdentity::from_digest([0x32; 32]),
+            layouts: LayoutBundle::from_interner(&LayoutInterner::new(), []).unwrap(),
+            signatures: vec![
+                scalar_signature_with(caller_signature, vec![value_type], vec![value_type]),
+                scalar_signature_with(callee_signature, vec![value_type], vec![value_type]),
+            ],
+            imports: Vec::new(),
+            functions: vec![
+                Function {
+                    id: caller_id, signature: caller_signature,
+                    entry: crate::canonical_safewir::BlockId::new(0),
+                    value_types,
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(0),
+                        parameters: vec![BlockParameter {
+                            value: parameter, value_type, ownership: None,
+                        }],
+                        operations, terminator,
+                    }],
+                },
+                Function {
+                    id: callee_id, signature: callee_signature,
+                    entry: crate::canonical_safewir::BlockId::new(0),
+                    value_types: [(parameter, value_type)].into_iter().collect(),
+                    blocks: vec![BasicBlock {
+                        id: crate::canonical_safewir::BlockId::new(0),
+                        parameters: vec![BlockParameter {
+                            value: parameter, value_type, ownership: None,
+                        }],
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: vec![parameter] },
+                    }],
+                },
+            ],
+            proper_tail_sites: if tail {
+                vec![crate::canonical_safewir::ProperTailSite {
+                    id: site, function: caller_id, discharged_by: None,
+                }]
+            } else { Vec::new() },
+        }
+    }
+
+    fn indirect_capability_types() -> [ValueType; 2] {
+        let kind = crate::canonical_safewir::CapabilityKindId::new(17);
+        [ValueType::Capability(kind), ValueType::NullableCapability(kind)]
+    }
+
+    #[test]
+    fn admitted_capability_var_call_preserves_kind_and_plan() {
+        for value_type in indirect_capability_types() {
+            admit_canonical(finalize(CanonicalModule::from_lowering(
+                capability_indirect_parts(false, value_type),
+            ))).expect("checked capability indirect call matches the independent byte plan");
+        }
+    }
+
+    #[test]
+    fn admitted_capability_var_tail_call_preserves_proper_tail_and_plan() {
+        for value_type in indirect_capability_types() {
+            admit_canonical(finalize(CanonicalModule::from_lowering(
+                capability_indirect_parts(true, value_type),
+            ))).expect("checked capability proper tail matches the independent byte plan");
+        }
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn admitted_capability_indirect_calls_preserve_externrefs() {
+        for tail in [false, true] {
+            for value_type in indirect_capability_types() {
+                let artifact = admit_canonical(finalize(CanonicalModule::from_lowering(
+                    capability_indirect_parts(tail, value_type),
+                ))).expect("capability identity call admits");
+                let engine = wasmtime::Engine::default();
+                let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+                let mut store = wasmtime::Store::new(&engine, ());
+                let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+                let function = instance.get_typed_func::<
+                    Option<wasmtime::Rooted<wasmtime::ExternRef>>,
+                    Option<wasmtime::Rooted<wasmtime::ExternRef>>,
+                >(&mut store, "f20").unwrap();
+                // This is a transport sentinel, not a host-minted authority:
+                // the fixture performs no host calls or capability effects.
+                let token = wasmtime::ExternRef::new(&mut store, 73_u32).unwrap();
+                let returned = function.call(&mut store, Some(token)).unwrap().unwrap();
+                assert_eq!(returned.data(&store).unwrap().unwrap().downcast_ref::<u32>(), Some(&73));
+                if matches!(value_type, ValueType::NullableCapability(_)) {
+                    assert!(function.call(&mut store, None).unwrap().is_none());
+                }
+            }
+        }
+    }
+
+    fn lower_capability_indirect_for_test(parts: &LoweredModuleParts) -> Result<(), LoweringError> {
+        let function = &parts.functions[0];
+        let block = &function.blocks[0];
+        let signatures = parts.signatures.iter().map(|signature| {
+            (signature.id, signature.clone())
+        }).collect();
+        if matches!(&block.terminator, Terminator::VarTailCall { .. }) {
+            lower_terminator(function, block.id, &block.terminator, &signatures).map(|_| ())
+        } else {
+            lower_operation(
+                function.id, block.id, 1, &block.operations[1], &function.value_types,
+                &signatures, &BTreeMap::new(), &LayoutInterner::new(),
+                &BTreeMap::new(), &mut BTreeMap::new(),
+            ).map(|_| ())
+        }
+    }
+
+    #[test]
+    fn capability_indirect_calls_reject_wrong_kind_and_signature() {
+        for tail in [false, true] {
+            for value_type in indirect_capability_types() {
+                for (value, wrong_type) in [
+                    (ValueId::new(0), ValueType::Capability(crate::canonical_safewir::CapabilityKindId::new(0))),
+                    (ValueId::new(0), ValueType::Int),
+                    (ValueId::new(1), ValueType::Callable(FunctionSignatureId::new(20))),
+                ] {
+                    let mut parts = capability_indirect_parts(tail, value_type);
+                    parts.functions[0].value_types.insert(value, wrong_type);
+                    assert!(lower_capability_indirect_for_test(&parts).is_err());
+                    assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
+                }
+                let mut parts = capability_indirect_parts(tail, value_type);
+                if tail {
+                    // A proper tail cannot change the caller's result kind.
+                    parts.signatures[0].results[0] = ValueType::Int;
+                    parts.signatures[0].contract.results[0] = ResultContract::Value(ValueType::Int);
+                } else {
+                    parts.functions[0].value_types.insert(ValueId::new(2), ValueType::Int);
+                    assert!(lower_capability_indirect_for_test(&parts).is_err());
+                }
+                assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn capability_indirect_parameters_require_value_without_memory_effects() {
+        for tail in [false, true] {
+            for value_type in indirect_capability_types() {
+                let mut parts = capability_indirect_parts(tail, value_type);
+                assert!(lower_capability_indirect_for_test(&parts).is_ok());
+                parts.signatures[1].contract.parameter_effects.insert(0, Vec::new());
+                assert!(lower_capability_indirect_for_test(&parts).is_ok());
+                for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared,
+                    ParameterOwnership::WriteBack, ParameterOwnership::UniqueWriteBack]
+                {
+                    parts.signatures[1].contract.parameters[0].ownership = ownership;
+                    assert!(lower_capability_indirect_for_test(&parts).is_err());
+                }
+                parts.signatures[1].contract.parameters[0].ownership = ParameterOwnership::Value;
+                for effect in [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release] {
+                    parts.signatures[1].contract.parameter_effects.insert(0, vec![effect]);
+                    assert!(lower_capability_indirect_for_test(&parts).is_err());
+                }
+                parts.signatures[1].contract.parameter_effects.clear();
+                parts.signatures[1].contract.parameters[0].value_type = ValueType::Int;
+                assert!(lower_capability_indirect_for_test(&parts).is_err());
+                parts.signatures[1].contract.parameters.clear();
+                assert!(lower_capability_indirect_for_test(&parts).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn capability_indirect_tail_cannot_drop_required_site() {
+        let mut parts = capability_indirect_parts(true, indirect_capability_types()[0]);
+        parts.functions[0].blocks[0].terminator = Terminator::Return {
+            values: vec![ValueId::new(0)],
+        };
+        assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
+    }
+
+    #[test]
+    fn capability_indirect_contract_forgery_fails_initial_admission() {
+        for tail in [false, true] {
+            for value_type in indirect_capability_types() {
+                for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared,
+                    ParameterOwnership::WriteBack, ParameterOwnership::UniqueWriteBack]
+                {
+                    let mut parts = capability_indirect_parts(tail, value_type);
+                    parts.signatures[1].contract.parameters[0].ownership = ownership;
+                    assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
+                }
+                for effect in [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release,
+                    MemoryEffect::Write, MemoryEffect::Reclaim]
+                {
+                    let mut parts = capability_indirect_parts(tail, value_type);
+                    parts.signatures[1].contract.parameter_effects.insert(0, vec![effect]);
+                    assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
+                }
+                let mut parts = capability_indirect_parts(tail, value_type);
+                let block = &mut parts.functions[0].blocks[0];
+                if let Terminator::VarTailCall { arguments, .. } = &mut block.terminator {
+                    arguments[0] = CallArgument::Move(ValueId::new(0));
+                } else if let Operation::VarCall { arguments, .. } = &mut block.operations[1] {
+                    arguments[0] = CallArgument::Move(ValueId::new(0));
+                } else {
+                    panic!("fixture must contain the indirect call");
+                }
+                assert!(check_initial_with_test_witness(CanonicalModule::from_lowering(parts)).is_err());
+            }
+        }
     }
 
     fn checked_direct_call(tail: bool) -> ValidatedSafeWir {

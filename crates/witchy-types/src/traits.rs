@@ -1646,6 +1646,7 @@ pub(super) fn named_type(name: &str) -> Type {
 /// final impl-table lookup encodes a name.
 fn declared_expr_type(
     e: &Expr,
+    scope: &Scope<Type>,
     fn_sigs: &HashMap<String, FnSig>,
     type_of: &dyn Fn(&Expr) -> Option<Type>,
 ) -> Option<Type> {
@@ -1665,6 +1666,22 @@ fn declared_expr_type(
             _ => None,
         },
         Expr::Call { name, args } => {
+            // Named calls also invoke local function values. During the quiet
+            // pass there is no TypeTable yet: use the lexical callable's
+            // declared result, not a same-spelled global declaration. Unknown
+            // or non-callable shadows stay unknown until ordinary checking.
+            if scope.is_local(name) {
+                let Type::Fn(params, ret, _, _) = scope.get(name)?.unqualified() else {
+                    return None;
+                };
+                let mut binds = HashMap::new();
+                for (param, arg) in params.iter().zip(args) {
+                    if let Some(arg_ty) = type_of(arg) {
+                        let _ = bind_ast_type_vars(param, &arg_ty, &mut binds);
+                    }
+                }
+                return Some(subst_trait_params(ret, &binds));
+            }
             if let Some((params, ret, _, _)) = fn_sigs.get(name) {
                 let mut binds = HashMap::new();
                 for (param, arg) in params.iter().zip(args) {
@@ -1738,7 +1755,8 @@ fn local_expr_type(
         Expr::Duration(_) => Some(named_type("Duration")),
         Expr::Str(_) => Some(named_type("String")),
         Expr::Bool(_) => Some(named_type("Bool")),
-        Expr::Var(name) => scope.get(name).cloned().or_else(|| {
+        Expr::Var(name) if scope.is_local(name) => scope.get(name).cloned(),
+        Expr::Var(name) => {
             let (params, ret, conventions, qualifiers) = fn_sigs.get(name)?;
             Some(Type::Fn(
                 params.iter().cloned().collect::<Option<Vec<_>>>()?,
@@ -1746,7 +1764,7 @@ fn local_expr_type(
                 conventions.clone(),
                 *qualifiers,
             ))
-        }),
+        },
         Expr::Field { base, field } => {
             let base_ty = type_of(base)?;
             let Type::Named(owner, args) = base_ty.unqualified() else {
@@ -1785,7 +1803,7 @@ fn local_expr_type(
             Some(inferred_nominal_type(info, inferred))
         }
         Expr::Call { .. } | Expr::Index { .. } | Expr::Try(_) => {
-            declared_expr_type(e, fn_sigs, type_of)
+            declared_expr_type(e, scope, fn_sigs, type_of)
         }
         Expr::Apply { func, .. } => match type_of(func)?.unqualified() {
             Type::Fn(_, ret, _, _) => Some((**ret).clone()),
@@ -1882,7 +1900,7 @@ impl Ctx<'_> {
             // (empty table) relies on to type a let bound to a generic call
             // (`let above = table.at(i - 1)`), so a method call on it resolves
             // BEFORE annotate needs a fully-resolved module.
-            .or_else(|| declared_expr_type(e, self.fn_sigs, &|a| self.type_ast(a, scope)))
+            .or_else(|| declared_expr_type(e, scope, self.fn_sigs, &|a| self.type_ast(a, scope)))
             .or_else(|| {
                 local_expr_type(
                     e,
@@ -4615,6 +4633,45 @@ struct Mono<'a> {
 mod structured_dispatch_tests {
     use super::*;
 
+    #[test]
+    fn local_callable_results_bootstrap_capability_and_record_methods() {
+        for source in [
+            "type Holder:\n    client: Fetch\nfn probe(fetch: Fetch) -> String:\n    let holder = Holder(fetch)\n    let captured = fn() -> Fetch: holder.client\n    let client = captured()\n    client.send_raw(\"GET\", \"http://127.0.0.1:1/\", \"\", \"\")\n",
+            "fn probe(net: Net[Connect, Tcp]) -> Fetch:\n    let acquire = fn() -> Net[Connect, Tcp]: net\n    let client = acquire()\n    client.fetch(\"http://127.0.0.1:1\")\n",
+            "type Number:\n    value: Int\nimpl Number:\n    fn amount(self) -> Int:\n        self.value\nfn probe() -> Int:\n    let acquire = fn() -> Number: Number(7)\n    let value = acquire()\n    value.amount()\n",
+        ] {
+            let module = witchy_syntax::parser::parse_module(source).expect("source syntax");
+            let (lowered, missing, _, _) = lower_with(module, false);
+            assert!(missing.is_empty(), "{missing:?}");
+            crate::typeck::check(&lowered).expect("ordinary checker validates the recovered callable result");
+        }
+    }
+
+    #[test]
+    fn local_callable_result_never_borrows_a_shadowed_global_signature() {
+        let mut signatures = HashMap::new();
+        signatures.insert("acquire".into(), (Vec::new(), named_type("Fetch"), Vec::new(), CallableQualifiers::ORDINARY));
+        let call = Expr::Call { name: "acquire".into(), args: Vec::new() };
+        let mut scope = Scope::new();
+        scope.insert("acquire".into(), Type::Fn(Vec::new(), Box::new(named_type("String")), Vec::new(), CallableQualifiers::ORDINARY));
+        assert_eq!(declared_expr_type(&call, &scope, &signatures, &|_| None), Some(named_type("String")));
+        scope.insert("acquire".into(), named_type("Int"));
+        assert_eq!(declared_expr_type(&call, &scope, &signatures, &|_| None), None);
+        scope.bind_local("acquire");
+        assert_eq!(declared_expr_type(&call, &scope, &signatures, &|_| None), None);
+        assert_eq!(local_expr_type(&Expr::Var("acquire".into()), &scope, &HashMap::new(), &signatures, &HashMap::new(), &|_| None), None);
+    }
+
+    #[test]
+    fn local_callable_result_does_not_erase_network_rights() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn probe(net: Net[Listen, Tcp]) -> Fetch:\n    let acquire = fn() -> Net[Listen, Tcp]: net\n    let client = acquire()\n    client.fetch(\"http://127.0.0.1:1\")\n"
+        ).unwrap();
+        let (lowered, _, _, _) = lower_with(module, false);
+        let error = crate::typeck::check(&lowered).unwrap_err().to_string();
+        assert!(error.contains("Connect"), "{error}");
+    }
+
     fn nominal(name: &str, args: Vec<Type>) -> Type {
         Type::Named(name.to_string(), args)
     }
@@ -4636,7 +4693,7 @@ mod structured_dispatch_tests {
             name: "head".to_string(),
             args: vec![Expr::Var("values".to_string())],
         };
-        let actual = declared_expr_type(&expression, &signatures, &|expr| match expr {
+        let actual = declared_expr_type(&expression, &Scope::new(), &signatures, &|expr| match expr {
             Expr::Var(name) if name == "values" => {
                 Some(nominal("List", vec![named_type("String")]))
             }
@@ -4662,6 +4719,7 @@ mod structured_dispatch_tests {
         );
         let unbound = declared_expr_type(
             &Expr::Call { name: "empty_dict".to_string(), args: Vec::new() },
+            &Scope::new(),
             &signatures,
             &|_| None,
         );

@@ -66,7 +66,7 @@ pub(crate) use runners::{
 };
 pub use runners::{
     evaluate_checked, evaluate_checked_noargs, evaluate_compiler_module, run,
-    run_checked_module, run_in, run_with, CompilerValue,
+    run_checked_module, run_checked_module_with_fetch_grant, run_in, run_with, CompilerValue,
 };
 #[cfg(feature = "test-fixtures")]
 pub use runners::{

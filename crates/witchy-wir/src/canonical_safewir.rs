@@ -61,6 +61,8 @@ pub mod closure_owner_contract;
 mod owner_authority;
 mod exec;
 pub use exec::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND, EXEC_IMPORT_NAMES};
+mod fetch;
+pub use fetch::{FETCH_CAPABILITY_KIND, FETCH_RESPONSE_KIND, FETCH_IMPORT_NAMES};
 mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};

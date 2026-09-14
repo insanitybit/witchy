@@ -259,6 +259,12 @@ trait CaptureAuthority: 'static {
     fn require_build_net(&self, _data: &dyn std::any::Any) -> Result<()> {
         bail!("BuildNet capture has no instance authority");
     }
+    fn require_fetch(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("Fetch capture has no instance authority");
+    }
+    fn require_fetch_response(&self, _data: &dyn std::any::Any) -> Result<()> {
+        bail!("Fetch response capture has no instance authority");
+    }
 }
 
 fn require_production_console(data: &dyn std::any::Any) -> Result<()> {
@@ -286,6 +292,12 @@ impl CaptureAuthority for super::super::VmState {
     }
     fn require_build_net(&self, data: &dyn std::any::Any) -> Result<()> {
         super::build_net::authenticate_capture(self, data)
+    }
+    fn require_fetch(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::fetch::authenticate_capture(self, data)
+    }
+    fn require_fetch_response(&self, data: &dyn std::any::Any) -> Result<()> {
+        super::fetch::authenticate_response_capture(self, data)
     }
     fn require_console(&self, data: &dyn std::any::Any) -> Result<()> {
         #[cfg(feature = "test-fixtures")]
@@ -324,6 +336,10 @@ fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::
             return state.require_build_exec(data),
         id if id == BUILD_NET_CAPABILITY_KIND.get() =>
             return state.require_build_net(data),
+        id if id == witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND.get() =>
+            return state.require_fetch(data),
+        id if id == witchy_wir::canonical_safewir::FETCH_RESPONSE_KIND.get() =>
+            return state.require_fetch_response(data),
         1 => data.is::<super::super::DirAuthority>(),
         2 => data.is::<super::super::EnvAuthority>(),
         3 => data.is::<super::super::FileAuthority>(),
@@ -1294,6 +1310,60 @@ mod tests {
     }
 
     #[test]
+    fn fetch_captures_authenticate_kind_session_projection_and_cleanup() -> Result<()> {
+        use wasmtime::{FieldType, Mutability, StructRef, StructRefPre, StructType, Val, ValType};
+        use witchy_wir::canonical_safewir::{FETCH_CAPABILITY_KIND, FETCH_RESPONSE_KIND};
+        let (mut vm, grant) = super::super::fetch::tests::empty_grant_fixture();
+        let response = super::super::fetch::new_response(&mut vm.store, "retained Fetch response")?;
+        let grant = grant.unwrap();
+        let build_response = super::super::build_read::new_response(&mut vm.store, Some("wrong response family"))?;
+        for (kind, token, wrong_kind) in [
+            (FETCH_CAPABILITY_KIND, grant, response),
+            (FETCH_RESPONSE_KIND, response, grant),
+        ] {
+            let (mut binding, _) = list_capture_bindings(vm.store.engine())?;
+            binding.payload_type = StructType::new(vm.store.engine(), [
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::I32.into()),
+                FieldType::new(Mutability::Const, ValType::EXTERNREF.into()),
+            ])?;
+            binding.capture_fields = vec![CaptureField {
+                capture: 0, field: 2, kind: CaptureFieldKind::Capability(kind),
+            }].into_boxed_slice();
+            let pre = StructRefPre::new(&mut vm.store, binding.payload_type.clone());
+            for invalid in [wrong_kind, build_response, ExternRef::new(&mut vm.store, kind.get())?] {
+                let payload = StructRef::new(&mut vm.store, &pre,
+                    &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(invalid))])?;
+                assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            }
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            let owner = binding.seal_gc(&mut vm.store, payload)?;
+            assert!(require_capability(&vm.store, owner, kind).is_err());
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            let issuer = std::mem::replace(&mut vm.store.data_mut().fetch_issuer, Arc::new(()));
+            assert!(require_capability(&vm.store, token, kind).is_err());
+            let payload = StructRef::new(&mut vm.store, &pre,
+                &[Val::I32(0), Val::I32(0), Val::ExternRef(Some(token))])?;
+            assert!(binding.seal_gc(&mut vm.store, payload).is_err());
+            assert!(binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0).is_err(),
+                "projection must reauthenticate the captured session");
+            vm.store.data_mut().fetch_issuer = issuer;
+            let projected = binding.capability::<OwnedRooted<StructRef>>(&vm.store, owner, 0)?;
+            assert!(Rooted::ref_eq(&vm.store, &token, &projected)?);
+            drop(projected);
+            binding.family_retain(&vm.store, owner)?;
+            assert!(binding.release_owner_cleanup_items(&mut vm.store, owner)?.is_empty());
+            let cleanup = binding.release_owner_cleanup_items(&mut vm.store, owner)?;
+            assert_eq!(cleanup.iter().map(|item| item.family_tag).collect::<Vec<_>>(), [91]);
+            assert!(binding.family_retain(&vm.store, owner).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn exec_capture_requires_exact_host_grant_not_wrapper_or_response_kind() -> Result<()> {
         use wasmtime::{FieldType, Mutability, StructType, Val, ValType};
         use witchy_wir::canonical_safewir::{EXEC_CAPABILITY_KIND, EXEC_RESPONSE_KIND};
@@ -1346,7 +1416,7 @@ mod tests {
             capture: 0, field: 2, kind: CaptureFieldKind::Capability(NET_CAPABILITY_KIND),
         }].into_boxed_slice();
         outer.capture_fields[0].kind = CaptureFieldKind::Owner(wrapper.owner_type);
-        let net = ExternRef::new(&mut store, super::super::super::NetAuthority { allow: Vec::new() })?;
+        let net = ExternRef::new(&mut store, super::super::super::NetAuthority { allow: Vec::new(), issuer: Arc::new(()) })?;
         let console = ExternRef::new(&mut store, ConsoleCapability)?;
         let forged = ExternRef::new(&mut store, 4_i32)?;
         require_capability(&store, net, NET_CAPABILITY_KIND)?;

@@ -98,7 +98,7 @@ impl Mono<'_> {
 
     fn type_ast(&self, e: &Expr, scope: &Scope<Type>) -> Option<Type> {
         table_ast_type(self.table, e)
-            .or_else(|| declared_expr_type(e, &self.fn_sigs, &|arg| self.type_ast(arg, scope)))
+            .or_else(|| declared_expr_type(e, scope, &self.fn_sigs, &|arg| self.type_ast(arg, scope)))
             .or_else(|| {
                 local_expr_type(
                     e,

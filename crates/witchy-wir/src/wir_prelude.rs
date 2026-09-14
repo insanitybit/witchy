@@ -301,8 +301,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "mint_net" (func $mint_net_host (param i32) (result externref)))
   (import "witchy" "mint_fetch" (func $mint_fetch_host (param i32) (result externref)))
   (import "witchy" "fetch_only" (func $fetch_only_host (param externref i32) (result externref)))
-  (import "witchy" "fetch_send_len" (func $fetch_send_host (param externref i32 i32 i32 i32) (result i32)))
-  (import "witchy" "net_fetch" (func $net_fetch_host (param externref i32) (result externref)))
+  (import "witchy" "fetch_send_at" (func $fetch_send_host (param externref i32 i32 i32 i32 i32 i32 i32 i32) (result externref)))
+  (import "witchy" "net_fetch_at" (func $net_fetch_host (param externref i32 i32) (result externref)))
+  (import "witchy" "fetch_response_size" (func $fetch_response_size_host (param externref) (result i32)))
+  (import "witchy" "fetch_response_into" (func $fetch_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "fetch_only_at" (func $fetch_only_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_connect" (func $net_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_try_connect" (func $net_try_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param externref i32) (result i32)))
@@ -372,7 +375,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 149;
+pub const IMPORT_COUNT: usize = 152;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -578,8 +581,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "mint_net"
         | "mint_fetch"
         | "fetch_only"
-        | "fetch_send_len"
-        | "net_fetch"
+        | "fetch_send_at"
+        | "fetch_only_at"
+        | "net_fetch_at"
         | "net_connect"
         | "net_try_connect"
         | "net_resolve_size"
@@ -641,6 +645,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_with_dir_run"
         | "vm_serve_run"
         | "exec_response_size" | "exec_response_into"
+        | "fetch_response_size" | "fetch_response_into"
         | "build_read_response_size" | "build_read_response_into"
         | "build_response_is_some"
         | "vm_service_start" | "vm_service_step" | "vm_service_response_size"
@@ -678,8 +683,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "file_read_len" | "file_write" | "file_read_into" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,
-        "fetch_only" | "fetch_send_len" => AUTH_FETCH,
-        "net_fetch" => AUTH_NET_CONNECT,
+        "fetch_only" | "fetch_only_at" | "fetch_send_at" => AUTH_FETCH,
+        "net_fetch_at" => AUTH_NET_CONNECT,
         "net_connect" | "net_connect_at"
         | "net_try_connect"
         | "net_resolve_size"

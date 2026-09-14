@@ -666,12 +666,15 @@ fn main(console: Console):
         let interpreted =
             interpreter::run_module_fetch(linked.clone(), ".", vec![origin.clone()])
                 .expect("interpreter");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers Fetch");
+        let checked = witchy::resolve_std_only_checked(&src).expect("checked Fetch source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical path lowers Fetch and narrowing");
+        assert!(matches!(codegen::compile_module_binary(&linked),
+            codegen::LoweringOutcome::Unsupported(_)), "raw Fetch encoding must remain unavailable");
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
-            .spawn(
-                &bytes,
+            .spawn_admitted(
+                &artifact,
                 Capabilities {
                     print: true,
                     quiet: true,
@@ -715,12 +718,15 @@ fn main(console: Console):
         let net_allow = vec![address.to_string()];
         let interpreted =
             interpreter::run_module(linked.clone(), ".", net_allow.clone()).expect("interpreter");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers Net-to-Fetch derivation");
+        let checked = witchy::resolve_std_only_checked(&source).expect("checked Net-to-Fetch source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical path lowers Net-to-Fetch derivation");
+        assert!(matches!(codegen::compile_module_binary(&linked),
+            codegen::LoweringOutcome::Unsupported(_)), "raw Net-to-Fetch encoding must remain unavailable");
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
-            .spawn(
-                &bytes,
+            .spawn_admitted(
+                &artifact,
                 Capabilities {
                     print: true,
                     quiet: true,

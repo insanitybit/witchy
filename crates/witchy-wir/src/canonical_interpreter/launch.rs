@@ -32,6 +32,7 @@ pub fn interpret_entry_program(
     engine.finish_exec()?;
     engine.finish_build_exec()?;
     engine.finish_build_net()?;
+    engine.finish_fetch()?;
     let leaked_objects = engine.objects.values().filter(|object|
         matches!(object.storage, RuntimeStorage::Allocation(_))).count()
         + engine.owners.len()
@@ -50,7 +51,8 @@ pub(super) fn prepare_launch(
     let capabilities = engine.bind_net_entry(capabilities)?;
     let capabilities = engine.bind_build_entry(capabilities)?;
     let capabilities = engine.bind_build_read_entry(capabilities)?;
-    let mut capabilities = engine.bind_exec_entry(capabilities)?.into_iter();
+    let capabilities = engine.bind_exec_entry(capabilities)?;
+    let mut capabilities = engine.bind_fetch_entry(capabilities)?.into_iter();
     let mut values = Vec::new();
     for parameter in parameters {
         if *parameter == ValueType::Ref(list_layout) {

@@ -23,6 +23,8 @@ const SIZE_MAX: u64 = u32::MAX as u64;
 
 mod exec;
 pub use exec::{OracleExecFixture, OracleExecCall};
+mod fetch;
+pub use fetch::{OracleFetchFixture, OracleFetchCall, OracleFetchSource, OracleFetchOutcome};
 mod crypto;
 mod crypto_hash;
 mod dir_metadata;
@@ -108,12 +110,13 @@ pub struct CapabilityToken {
     build_out: Option<build_out::Token>,
     build_read: Option<build_read::Token>,
     exec: Option<exec::Token>,
+    fetch: Option<fetch::Token>,
 }
 
 impl CapabilityToken {
     /// The root token a launcher mints for one entry capability parameter.
     pub fn root(kind: u32) -> Self {
-        Self { kind, scope: String::new(), net: None, service: None, build_out: None, build_read: None, exec: None }
+        Self { kind, scope: String::new(), net: None, service: None, build_out: None, build_read: None, exec: None, fetch: None }
     }
 
     pub fn kind(&self) -> u32 {
@@ -138,6 +141,7 @@ impl InterpreterValue {
         Self::capability(match capability {
             crate::CanonicalEntryCapability::Console => 0,
             crate::CanonicalEntryCapability::Exec => crate::canonical_safewir::EXEC_CAPABILITY_KIND.get(),
+            crate::CanonicalEntryCapability::Fetch => crate::canonical_safewir::FETCH_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildOut => crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildRead => crate::canonical_safewir::BUILD_READ_CAPABILITY_KIND.get(),
             crate::CanonicalEntryCapability::BuildEnv => crate::canonical_safewir::BUILD_ENV_CAPABILITY_KIND.get(),
@@ -156,6 +160,8 @@ impl InterpreterValue {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OracleFixture {
     pub exec: Option<OracleExecFixture>,
+    /// Explicit root grants and ordered provider wire outcomes. No network IO.
+    pub fetch: Option<OracleFetchFixture>,
     /// Explicit write grant for a fresh virtual build output directory.
     pub build_out: bool,
     pub build_read: Option<OracleBuildReadFixture>,
@@ -332,6 +338,7 @@ pub enum InterpretError {
     BuildExec(String),
     BuildNet(String),
     ExecFixture(String),
+    FetchFixture(String),
     NetFixture(OracleNetError),
     UnsupportedOperation(&'static str),
 }
@@ -395,6 +402,7 @@ pub fn interpret_with_config(
     engine.finish_exec()?;
     engine.finish_build_exec()?;
     engine.finish_build_net()?;
+    engine.finish_fetch()?;
     Ok(results)
 }
 
@@ -470,11 +478,13 @@ pub fn interpret_program(
     let arguments = engine.bind_build_entry(arguments)?;
     let arguments = engine.bind_build_read_entry(arguments)?;
     let arguments = engine.bind_exec_entry(arguments)?;
+    let arguments = engine.bind_fetch_entry(arguments)?;
     let results = engine.execute(function, arguments)?;
     let net_trace = engine.finish_net()?;
     engine.finish_exec()?;
     engine.finish_build_exec()?;
     engine.finish_build_net()?;
+    engine.finish_fetch()?;
     let leaked_objects = engine
         .objects
         .values()
@@ -546,6 +556,7 @@ enum RuntimeStorage {
 struct Engine<'a> {
     server: net::ServerState,
     exec: exec::State,
+    fetch: fetch::State,
     build_out: build_out::State,
     build_read: build_read::State,
     build_exec: build_exec::State,
@@ -584,6 +595,7 @@ impl<'a> Engine<'a> {
         Self {
             server,
             exec: exec::State::new(),
+            fetch: fetch::State::new(),
             services: vm_service::ServiceState::new(),
             build_out: build_out::State::new(),
             build_read: build_read::State::new(),
@@ -1506,6 +1518,9 @@ impl<'a> Engine<'a> {
         }
         if exec::is_import(&contract.name) {
             return self.exec_host_call(&contract.name, destinations, arguments, values);
+        }
+        if crate::canonical_safewir::FETCH_IMPORT_NAMES.contains(&contract.name.as_str()) {
+            return self.fetch_host_call(&contract.name, destinations, arguments, values);
         }
         if build_read::is_import(&contract.name) {
             return self.build_read_host_call(&contract.name, destinations, arguments, values);

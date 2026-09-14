@@ -22,6 +22,8 @@ mod abort;
 // RFC-0165 Net registration (Net track).
 #[path = "canonical_exec.rs"]
 mod exec;
+#[path = "canonical_fetch.rs"]
+mod fetch;
 #[path = "canonical_build_read.rs"]
 mod build_read;
 #[path = "canonical_crypto.rs"]
@@ -772,6 +774,20 @@ if capability_imports.contains("build_out_write_at") {
                     push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
                 ];
                 catalog = catalog.with_build_net_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if capability_imports.contains("net_fetch_at") || capability_imports.contains("fetch_send_at") || capability_imports.contains("fetch_only_at") {
+                let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
+                let fetch = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![net, text], vec![fetch], None)?,
+                    push_import_signature(vec![fetch, text, text, text, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    push_import_signature(vec![fetch, text], vec![fetch], None)?,
+                ];
+                catalog = catalog.with_fetch_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if capability_imports.contains("build_exec_run") {
@@ -7920,6 +7936,8 @@ impl FunctionLowerer<'_> {
             Type::Named(kind, arguments) if kind == "BuildEnv" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildExec" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildNet" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND,
+            Type::Named(kind, arguments) if kind == "Fetch" && arguments.is_empty() => witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND,
+            Type::Named(kind, _) if kind == "Net" => witchy_wir::canonical_safewir::NET_CAPABILITY_KIND,
             Type::Named(kind, _) if kind == "Dir" => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
             Type::Named(kind, _) if kind == "File" => witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "Env" && arguments.is_empty() => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
@@ -7933,6 +7951,18 @@ impl FunctionLowerer<'_> {
         let is_dir = receiver_kind == witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND;
         let is_file = receiver_kind == witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND;
         match (name, is_dir, is_file, &arguments[1..]) {
+            ("__capop.only", false, false, [origins])
+                if receiver_kind == witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND => {
+                self.lower_fetch_only(token, origins).map(Some)
+            }
+            ("__capop.fetch", false, false, [origin])
+                if receiver_kind == witchy_wir::canonical_safewir::NET_CAPABILITY_KIND => {
+                self.lower_fetch_derive(token, origin).map(Some)
+            }
+            ("__capop.send_raw", false, false, fields)
+                if receiver_kind == witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND && fields.len() == 4 => {
+                self.lower_fetch_send(token, fields).map(Some)
+            }
             ("__capop.fetch_build", false, false, [host, path])
                 if receiver_kind == witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND => {
                 self.lower_build_net(token, host, path).map(Some)
@@ -13515,6 +13545,7 @@ fn source_value_type(
             CapabilityKind::Listener => witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND,
             CapabilityKind::Socket => witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND,
             CapabilityKind::Exec => witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND,
+            CapabilityKind::Fetch => witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND,
             CapabilityKind::BuildOut => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
             CapabilityKind::BuildRead => witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND,
             CapabilityKind::BuildEnv => witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND,
@@ -13778,7 +13809,10 @@ fn is_indirect_scalar(value_type: ValueType) -> bool {
 }
 
 fn is_indirect_result(value_type: ValueType) -> bool {
-    if matches!(value_type, ValueType::Unit | ValueType::Gc(_)) { return true; }
+    // Capability values already have source-bound externref callable ABI
+    // lanes. Passing/returning one does not mint authority or acquire a heap
+    // ownership convention; ordinary and proper-tail indirect calls agree.
+    if matches!(value_type, ValueType::Unit | ValueType::Gc(_) | ValueType::Capability(_) | ValueType::NullableCapability(_)) { return true; }
     is_indirect_scalar(value_type) || matches!(value_type, ValueType::Ref(_))
 }
 
@@ -13832,8 +13866,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 18] =
-    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch"];
+const CAPABILITY_IMPORTS: [&str; 23] =
+    ["dir_read_into", "dir_list_into", "dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "file_read_into", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at"];
 
 /// The separator between the names `dir_list_into` writes; a file name never
 /// contains it.
@@ -13869,7 +13903,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// or `Env` receiver (`dir.read`, `dir.exists`, `dir.write`, `dir.subtree`,
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
-    matches!(name, "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
+    matches!(name, "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -13890,6 +13924,11 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     _ => "",
                 };
                 match (name.as_str(), receiver) {
+                    ("__capop.only", "Fetch") => { needed.insert("fetch_only_at"); }
+                    ("__capop.fetch", "Net") => { needed.insert("net_fetch_at"); }
+                    ("__capop.send_raw", "Fetch") => {
+                        needed.extend(["fetch_send_at", "fetch_response_size", "fetch_response_into"]);
+                    }
                     ("__capop.read", "Dir") => { needed.insert("dir_read_into"); }
                     ("__capop.list", "Dir") => { needed.insert("dir_list_into"); }
                     ("__capop.exists", "Dir") => { needed.insert("dir_exists_at"); }
