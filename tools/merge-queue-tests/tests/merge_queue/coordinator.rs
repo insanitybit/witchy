@@ -962,7 +962,20 @@ fn red_parent_blocks_child_until_the_same_change_is_resubmitted_green() {
     submit_stack(&fixture, &["a", "b", "c"]);
     let parent_id = fixture.change("a")["change_id"].clone();
 
-    fixture.mq_ok(&["run", "--once"], "false");
+    // This assertion owns dependency blocking, not red-batch attribution. Keep
+    // the red attempt to its parent; the dedicated prefix-split fixture covers
+    // batch blame and replay independently.
+    let red = fixture
+        .mq_command(&["run", "--once"], "false")
+        .env("MERGE_QUEUE_BATCH_MAX", "1")
+        .output()
+        .expect("run isolated red parent");
+    assert!(
+        red.status.success(),
+        "isolated red-parent run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&red.stdout),
+        String::from_utf8_lossy(&red.stderr),
+    );
     let status = fixture.status();
     let child = status["queue"]
         .as_array()
