@@ -665,10 +665,13 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
     assert!(
         commands[0].contains("--test rfc0165_route_gate")
             && commands[0].contains("test(boolean_reaches::)")
-            && commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission")
             && commands[0]
                 .contains("canonical_wasm_encoding_is_private_and_requires_final_authority"),
         "the focused route omitted the final-authority admission boundary: {commands:?}",
+    );
+    assert!(
+        !commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission"),
+        "the expensive WasmIR tail probe leaked into unrelated canonical edits: {commands:?}",
     );
     assert!(
         commands[2].starts_with("WITCHY_ORACLE_EXAMPLE=calc ")
@@ -676,6 +679,16 @@ fn canonical_rewrite_edit_loop_stays_bounded_across_stage_files() {
                 "test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)",
             ),
         "the focused route omitted the filtered production oracle: {commands:?}",
+    );
+}
+
+#[test]
+fn canonical_wasmir_edit_keeps_the_expensive_admission_sentinel() {
+    let commands = selected(&["--edit-loop", "crates/witchy-wir/src/canonical_wasmir.rs"]);
+    assert_eq!(commands.len(), 3, "canonical WasmIR route changed shape: {commands:?}");
+    assert!(
+        commands[0].contains("outlined_address_predicate_mutation_fails_independent_admission"),
+        "direct WasmIR edits lost the independent admission sentinel: {commands:?}",
     );
 }
 
