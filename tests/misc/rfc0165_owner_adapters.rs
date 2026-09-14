@@ -76,11 +76,13 @@ fn main(net: Net):
     assert!(artifact.owner_bridges().is_empty());
     assert_eq!(witchy_wir::canonical_entry_from_wasm(artifact.wasm()).unwrap().as_ref(), artifact.entry());
     let mut runtime = Runtime::batch().unwrap();
-    let mut vm = runtime.spawn(artifact.wasm(), Capabilities {
+    let error = match runtime.spawn(artifact.wasm(), Capabilities {
         net_allow: Some(vec!["127.0.0.1:0".into()]), net_listen: true, ..Default::default()
-    }, 256).unwrap();
-    let error = vm.run().expect_err("entry bytes cannot replace sealed admitted worker metadata");
-    assert!(format!("{error:#}").contains("server worker requires an admitted program with canonical entry metadata"));
+    }, 256) {
+        Ok(_) => panic!("entry bytes cannot replace sealed admission authority"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("raw Wasm cannot claim canonical admission"));
 }
 
 #[test]
