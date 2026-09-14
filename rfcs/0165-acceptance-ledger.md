@@ -2020,3 +2020,9 @@ nextest run `f46af213-b485-4607-9ca8-a4bb476918d5` reached the next refusal:
 Log: `/private/tmp/witchy-coven-rsa-integrated-3.log`.
 No fresh census, complete workflow, optimizer assurance, or compiler-wide memory
 safety claim follows from this focused slice. Landing of this slice is pending.
+
+RSA gate correction: the first coordinator attempt rejected the stale
+`IMPORT_COUNT` constant (163 versus 164 parsed imports). The corrected count
+passes all 56 focused tests, including all `wir_prelude::tests::` integrity pins:
+nextest `0811ac1e-417a-4c6f-9b29-43f4d356f20b`, zero retries, 16.164 seconds.
+Log: `/private/tmp/witchy-rsa-count-focused.log`. The assertions are unchanged.

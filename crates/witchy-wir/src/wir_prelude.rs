@@ -387,7 +387,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 163;
+pub const IMPORT_COUNT: usize = 164;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
