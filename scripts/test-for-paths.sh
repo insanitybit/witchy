@@ -811,14 +811,25 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ] \
-    && [ "${paths[0]}" = "tests/misc/rfc0165_fetch.rs" ]; then
-    # A direct edit to the Fetch fixture can run its complete three-test
-    # module. Mixed compiler/RFC edits keep the broader canonical checkpoint
-    # below, and the serialized landing gate is unchanged.
-    cmds=(
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_fetch::/)'"
-    )
+if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
+    case "${paths[0]}" in
+        tests/misc/rfc0165_fetch.rs)
+            # A direct edit to the Fetch fixture can run its complete three-test
+            # module. Mixed compiler/RFC edits keep the broader checkpoint below.
+            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_fetch::/)'" ) ;;
+        tests/misc/rfc0165_messages.rs)
+            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_messages::/)'" ) ;;
+        tests/misc/rfc0165_corpus.rs)
+            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_corpus::/)'" ) ;;
+        *) ;;
+    esac
+fi
+if [ "$edit_loop" -eq 1 ] && [ "${#cmds[@]}" -gt 0 ] \
+    && [ "${#paths[@]}" -eq 1 ] \
+    && { [ "${paths[0]}" = "tests/misc/rfc0165_fetch.rs" ] \
+        || [ "${paths[0]}" = "tests/misc/rfc0165_messages.rs" ] \
+        || [ "${paths[0]}" = "tests/misc/rfc0165_corpus.rs" ]; }; then
+    : # Keep the exact direct-file module route selected above.
 elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
     && [ "$registry_replay_paths_only" -eq 1 ] \
     && [ "$registry_replay_contract_surface" -eq 1 ]; then

@@ -1010,6 +1010,27 @@ fn direct_fetch_fixture_edits_run_the_complete_fetch_module() {
 }
 
 #[test]
+fn direct_rfc0165_fixture_edits_run_complete_modules() {
+    for (path, module) in [
+        ("tests/misc/rfc0165_messages.rs", "rfc0165_messages"),
+        ("tests/misc/rfc0165_corpus.rs", "rfc0165_corpus"),
+    ] {
+        let commands = selected(&["--edit-loop", path]);
+        assert_eq!(commands.len(), 1, "{path}: {commands:?}");
+        assert!(
+            commands[0].contains(&format!("test(/^{}::/)", module))
+                && commands[0].contains("cargo nextest run --test misc"),
+            "{path}: {commands:?}"
+        );
+        assert!(
+            !commands[0].contains("rfc0165_route_gate")
+                && !commands[0].contains("oracle_agrees_on_the_admitted_examples_shard_3"),
+            "{path} retained the canonical checkpoint: {commands:?}"
+        );
+    }
+}
+
+#[test]
 fn build_read_host_edits_keep_authority_bounds_and_abi_probes() {
     for path in [
         "crates/witchy-runtime/src/runtime/host/build_read.rs",
