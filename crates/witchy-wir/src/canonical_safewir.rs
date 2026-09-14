@@ -1305,9 +1305,13 @@ pub struct ProperTailSite {
 }
 
 /// Exact canonical control location to which one checked source proper-tail
-/// obligation lowered. The source-derived site identifies the source
-/// operation; this binding prevents moving it to another reachable tail
-/// terminator in the same function.
+/// obligation lowered.
+///
+/// This is a lowering-authored binding, not independent evidence that lowering
+/// selected the correct source branch. It prevents a later transformation from
+/// substituting another reachable tail terminator for the one lowering bound.
+/// Independent source-to-CFG correctness remains an obligation of canonical
+/// lowering (or a future translation validator).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProperTailLocation {
     site: TailSiteId,
@@ -1594,7 +1598,29 @@ impl CanonicalModule<LoweredCandidate> {
         self
     }
 
-    /// Attach source-path-derived bindings before initial validation.
+    /// Attach lowering-derived source-site bindings before initial validation.
+    ///
+    /// This operation exists only for [`CanonicalModule<LoweredCandidate>`].
+    /// Once the initial checker has minted validated authority, neither an
+    /// optimizer nor another later stage can rewrite the bindings together with
+    /// a terminator:
+    ///
+    /// ```compile_fail
+    /// use witchy_wir::canonical_safewir::{
+    ///     CanonicalModule, InitialValid, ProperTailLocation,
+    /// };
+    ///
+    /// fn rewrite_validated_binding(
+    ///     module: CanonicalModule<InitialValid>,
+    ///     locations: Vec<ProperTailLocation>,
+    /// ) {
+    ///     let _ = module.with_proper_tail_locations(locations);
+    /// }
+    /// ```
+    ///
+    /// The binding establishes substitution resistance after lowering. It does
+    /// not independently establish that lowering mapped the source site to the
+    /// correct CFG location.
     pub fn with_proper_tail_locations(mut self, locations: Vec<ProperTailLocation>) -> Self {
         self.proper_tail_locations = locations;
         self
