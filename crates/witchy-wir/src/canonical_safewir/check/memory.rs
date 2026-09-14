@@ -2246,6 +2246,16 @@ impl<'a> MemoryChecker<'a> {
             });
         };
         let descriptor = self.descriptor(state.layout)?;
+        if matches!(descriptor.kind(), LayoutKind::RuntimeBuffer { .. })
+            && !self.is_raw_byte_buffer(state.layout)?
+        {
+            return self.unsupported(match operation {
+                "MoveRange" => "MoveRange(non-raw RuntimeBuffer)",
+                "CloneRange" => "CloneRange(non-raw RuntimeBuffer)",
+                "CopyBytes" => "CopyBytes(non-raw RuntimeBuffer)",
+                _ => "range(non-raw RuntimeBuffer)",
+            });
+        }
         let Some(element) = descriptor.kind().packed_element_layout() else {
             return self.unsupported("range(non-packed-layout)");
         };
@@ -2336,10 +2346,16 @@ impl<'a> MemoryChecker<'a> {
         element: crate::layout::LayoutId,
         operation: &'static str,
     ) -> Result<(), InitialCheckError> {
-        if matches!(self.descriptor(element)?.kind(),
-            LayoutKind::Scalar(ScalarKind::RawByte | ScalarKind::BoolValueSlot))
-        {
-            return Ok(());
+        match self.descriptor(element)?.kind() {
+            LayoutKind::Scalar(ScalarKind::RawByte) => return Ok(()),
+            LayoutKind::Scalar(ScalarKind::V128 | ScalarKind::BoolValueSlot) => {
+                return self.unsupported(match operation {
+                    "MoveRange" => "MoveRange(unmapped scalar element)",
+                    "CloneRange" => "CloneRange(unmapped scalar element)",
+                    _ => "range(unmapped scalar element)",
+                });
+            }
+            _ => {}
         }
         let element_type = self.value_type_for_layout(element)?;
         if element_type.is_memory_bearing() {
@@ -2698,10 +2714,14 @@ impl<'a> MemoryChecker<'a> {
         extent: &Extent,
         class: AllocationClass,
     ) -> Result<(), InitialCheckError> {
-        if class == AllocationClass::Scratch {
+        if class != AllocationClass::ReferenceCounted {
             return Err(InitialCheckError::UnsupportedMemoryOperation {
                 function: self.function.id,
-                operation: "Alloc(Scratch)",
+                operation: match class {
+                    AllocationClass::Bump => "Alloc(Bump)",
+                    AllocationClass::Scratch => "Alloc(Scratch)",
+                    AllocationClass::ReferenceCounted => unreachable!(),
+                },
             });
         }
         self.require_ref_type(destination, layout)?;
@@ -2935,7 +2955,11 @@ impl<'a> MemoryChecker<'a> {
         if place.access() != AccessMode::Read {
             return self.unsupported("Load(access)");
         }
+        self.require_supported_runtime_buffer_access(place, "Load(non-raw RuntimeBuffer)")?;
         let expected = self.check_place(place)?;
+        if expected == ValueType::V128 {
+            return self.unsupported("Load(V128)");
+        }
         if transfer == LoadTransfer::TakeLast {
             return self.take_last(destination, place, expected);
         }
@@ -3196,7 +3220,11 @@ impl<'a> MemoryChecker<'a> {
                 object: place.object(),
             });
         }
+        self.require_supported_runtime_buffer_access(place, "Store(non-raw RuntimeBuffer)")?;
         let expected = self.check_place(place)?;
+        if expected == ValueType::V128 {
+            return self.unsupported("Store(V128)");
+        }
         // The only producer of a `Callable` value is `FunctionValue`, so a
         // closure slot store copies a table index into the lane.
         if let ValueType::Callable(_) = expected {
@@ -3214,18 +3242,18 @@ impl<'a> MemoryChecker<'a> {
                 return self.unsupported("Store(scalar transfer)");
             }
             self.require_type(value, expected)?;
-            let slot = self.reference_slot(place)?;
-            self.state.initialized_scalar_slots.insert(slot);
-            self.consolidate_fixed_fields(place.object())?;
-            // A byte slot takes the low byte of a `Size`; the path must
-            // prove the value fits so no bits are silently dropped.
-            if self.is_raw_byte_element_place(place)? && !self.proven_at_most(value, 255) {
+            if let Some(maximum) = self.scalar_store_maximum(place)?
+                && !self.proven_at_most(value, maximum)
+            {
                 return Err(InitialCheckError::MissingBoundsGuard {
                     function: self.function.id,
                     index: value,
                     count: value,
                 });
             }
+            let slot = self.reference_slot(place)?;
+            self.state.initialized_scalar_slots.insert(slot);
+            self.consolidate_fixed_fields(place.object())?;
             return Ok(());
         }
         let ValueType::Ref(layout) = expected else {
@@ -4281,13 +4309,65 @@ impl<'a> MemoryChecker<'a> {
         self.state.constants.get(&value) == Some(&0)
     }
 
-    /// Whether `place` is an element of a raw-byte buffer (a string byte).
-    fn is_raw_byte_element_place(&self, place: &Place) -> Result<bool, InitialCheckError> {
-        if !matches!(place.projection(), Projection::Element { .. }) {
-            return Ok(false);
-        }
+    fn require_supported_runtime_buffer_access(
+        &self,
+        place: &Place,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
         let layout = self.live_object(place.object())?.layout;
-        self.is_raw_byte_buffer(layout)
+        if matches!(self.descriptor(layout)?.kind(), LayoutKind::RuntimeBuffer { .. })
+            && !self.is_raw_byte_buffer(layout)?
+        {
+            return self.unsupported(operation);
+        }
+        Ok(())
+    }
+
+    /// Return the maximum integer encodable by a physically narrowed scalar
+    /// lane. This is checked before initialization is recorded, so a refused
+    /// store cannot authenticate bytes the backend would truncate.
+    fn scalar_store_maximum(&self, place: &Place) -> Result<Option<u64>, InitialCheckError> {
+        let object = self.live_object(place.object())?;
+        let descriptor = self.descriptor(object.layout)?;
+        let kind = match place.projection() {
+            Projection::Element { .. } => match descriptor.kind().packed_element_layout() {
+                Some(layout) => self.scalar_kind(layout)?,
+                None => None,
+            },
+            Projection::Field { index } => {
+                let field = descriptor.fields().get(*index as usize).ok_or(
+                    InitialCheckError::InvalidProjection {
+                        function: self.function.id,
+                        object: place.object(),
+                    },
+                )?;
+                match field.kind() {
+                    FieldKind::Scalar(kind) => Some(kind),
+                    FieldKind::Inline(layout) => self.scalar_kind(layout)?,
+                    FieldKind::Pointer { .. } => None,
+                }
+            }
+            Projection::Header(_) | Projection::Slice { .. } => None,
+        };
+        Ok(match kind {
+            Some(ScalarKind::RawByte | ScalarKind::Tag8) => Some(255),
+            Some(ScalarKind::Tag16) => Some(65_535),
+            _ => None,
+        })
+    }
+
+    fn scalar_kind(
+        &self,
+        layout: crate::layout::LayoutId,
+    ) -> Result<Option<ScalarKind>, InitialCheckError> {
+        Ok(match self.descriptor(layout)?.kind() {
+            LayoutKind::Scalar(kind) => Some(*kind),
+            LayoutKind::RuntimeValueSlot { value } => match self.descriptor(*value)?.kind() {
+                LayoutKind::Scalar(kind) => Some(*kind),
+                _ => None,
+            },
+            _ => None,
+        })
     }
 
     /// Whether the path proves `value <= bound`: a constant, or an unsigned
@@ -6307,6 +6387,265 @@ mod tests {
                 class: AllocationClass::ReferenceCounted,
             })
             .expect("fixed allocation");
+    }
+
+    fn with_scalar_field_checker(
+        kind: ScalarKind,
+        test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let scalar = layouts.intern_scalar(kind).expect("scalar layout");
+        let record = layouts.intern_packed_record(vec![scalar]).expect("record layout");
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: BTreeMap::from([
+                (SOURCE, ValueType::Ref(record)),
+                (LOADED, if kind == ScalarKind::V128 { ValueType::V128 } else { ValueType::Size }),
+                (CAPACITY, ValueType::Size),
+                (CONDITION, ValueType::Bool),
+            ]),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract { parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new() },
+        };
+        let closures = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closures).unwrap();
+        allocate_fixed_for_test(&mut checker, SOURCE, record);
+        test(&mut checker, record);
+    }
+
+    #[test]
+    fn alloc_accepts_only_reference_counted_storage() {
+        for class in [AllocationClass::Bump, AllocationClass::Scratch] {
+            with_fixed_value_record_checker(false, |checker, record, _| {
+                let LayoutSize::Fixed(bytes) = checker.descriptor(record).unwrap().size() else { panic!("fixed record"); };
+                assert!(matches!(
+                    checker.check(&Operation::Alloc {
+                        destination: SOURCE, layout: record,
+                        extent: Extent::FixedBytes(u64::from(bytes)), class,
+                    }),
+                    Err(InitialCheckError::UnsupportedMemoryOperation { .. })
+                ));
+                assert!(!checker.state.objects.contains_key(&SOURCE));
+            });
+        }
+        with_fixed_value_record_checker(false, |checker, record, _| {
+            allocate_fixed_for_test(checker, SOURCE, record);
+            assert_eq!(checker.state.objects[&SOURCE].allocation_class, Some(AllocationClass::ReferenceCounted));
+        });
+    }
+
+    #[test]
+    fn tag_store_accepts_exact_boundaries_and_unsigned_dynamic_guards() {
+        for (kind, maximum) in [(ScalarKind::Tag8, 255), (ScalarKind::Tag16, 65_535)] {
+            with_scalar_field_checker(kind, |checker, record| {
+                checker.check(&Operation::ConstSize { destination: LOADED, value: maximum }).unwrap();
+                checker.check(&Operation::Store {
+                    place: fixed_field(SOURCE, 0, ValueType::Size, AccessMode::Write),
+                    value: LOADED, transfer: StoreTransfer::CopyScalar,
+                }).expect("exact tag boundary");
+                assert!(checker.state.objects[&SOURCE].initialized_owned_slots);
+                assert_eq!(checker.live_object(SOURCE).unwrap().layout, record);
+            });
+            with_scalar_field_checker(kind, |checker, _| {
+                checker.check(&Operation::ConstSize { destination: CAPACITY, value: maximum }).unwrap();
+                checker.check(&Operation::Compare {
+                    destination: CONDITION, operator: ComparisonOperator::LessEqualUnsigned,
+                    left: LOADED, right: CAPACITY,
+                }).unwrap();
+                checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Arithmetic }).unwrap();
+                checker.check(&Operation::Store {
+                    place: fixed_field(SOURCE, 0, ValueType::Size, AccessMode::Write),
+                    value: LOADED, transfer: StoreTransfer::CopyScalar,
+                }).expect("dominating unsigned tag bound");
+            });
+        }
+    }
+
+    #[test]
+    fn tag_store_refusal_does_not_record_initialization() {
+        for (kind, refused) in [(ScalarKind::Tag8, 256), (ScalarKind::Tag16, 65_536)] {
+            with_scalar_field_checker(kind, |checker, _| {
+                checker.check(&Operation::ConstSize { destination: LOADED, value: refused }).unwrap();
+                let place = fixed_field(SOURCE, 0, ValueType::Size, AccessMode::Write);
+                assert!(matches!(
+                    checker.check(&Operation::Store { place: place.clone(), value: LOADED, transfer: StoreTransfer::CopyScalar }),
+                    Err(InitialCheckError::MissingBoundsGuard { .. })
+                ));
+                assert!(!checker.checked_scalar_slot_initialized(&place).unwrap());
+                assert!(!checker.state.objects[&SOURCE].initialized_owned_slots);
+            });
+        }
+    }
+
+    #[test]
+    fn v128_load_and_store_are_refused_before_slot_authority_changes() {
+        with_scalar_range_checker(ScalarKind::V128, true, |checker, _| {
+            let write = Place::projected(
+                DESTINATION,
+                Projection::Element { index: START },
+                ValueType::V128,
+                AccessMode::Write,
+            );
+            let before = checker.snapshot();
+            assert!(matches!(
+                checker.check(&Operation::Store { place: write.clone(), value: LOADED, transfer: StoreTransfer::CopyScalar }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(non-raw RuntimeBuffer)", .. })
+            ));
+            assert_eq!(checker.snapshot(), before);
+            assert!(matches!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(
+                        SOURCE,
+                        Projection::Element { index: START },
+                        ValueType::V128,
+                        AccessMode::Read,
+                    ),
+                    transfer: LoadTransfer::CopyScalar,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Load(non-raw RuntimeBuffer)", .. })
+            ));
+            assert_eq!(checker.snapshot(), before);
+        });
+    }
+
+    fn with_scalar_range_checker(
+        kind: ScalarKind,
+        runtime_buffer: bool,
+        test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
+    ) {
+        let mut layouts = LayoutInterner::new();
+        let element = layouts.intern_scalar(kind).unwrap();
+        let list = if runtime_buffer {
+            layouts.intern_runtime_buffer(element).unwrap()
+        } else {
+            layouts.intern_packed_list(element, RcHeader::Required).unwrap()
+        };
+        let LayoutSize::Dynamic { base, stride } = layouts.get(list).unwrap().size() else { panic!("dynamic list"); };
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0), signature: FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: BTreeMap::from([
+                (COUNT, ValueType::Size), (CAPACITY, ValueType::Size), (START, ValueType::Size),
+                (ZERO, ValueType::Size), (SOURCE, ValueType::Ref(list)), (DESTINATION, ValueType::Ref(list)),
+                (LOADED, if kind == ScalarKind::V128 { ValueType::V128 } else { ValueType::Size }),
+            ]),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0), parameters: Vec::new(), operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature, parameters: Vec::new(), results: Vec::new(),
+            contract: CallableContract { parameters: Vec::new(), results: Vec::new(), parameter_effects: BTreeMap::new() },
+        };
+        let closures = BTreeMap::new();
+        let mut checker = MemoryChecker::new(&function, &layouts, &signature, &closures).unwrap();
+        checker.state.constants.extend([(COUNT, 1), (CAPACITY, 1), (START, 0), (ZERO, 0), (LOADED, 7)]);
+        checker.state.guards.insert((ComparisonOperator::LessUnsigned, START, CAPACITY));
+        for (object, count) in [(SOURCE, COUNT), (DESTINATION, ZERO)] {
+            checker.check(&Operation::Alloc {
+                destination: object, layout: list,
+                extent: Extent::Counted { header_bytes: base, count, capacity: CAPACITY, stride_bytes: stride },
+                class: AllocationClass::ReferenceCounted,
+            }).unwrap();
+        }
+        checker.state.range_states.insert(
+            RangeIdentity { object: SOURCE, start: START, length: COUNT },
+            RangeState {
+                element, ownership: Ownership::Unique,
+                allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true,
+                zero_width: false, zero_start: true,
+            },
+        );
+        test(&mut checker, list);
+    }
+
+    fn scalar_range_place(object: ValueId, list: crate::layout::LayoutId, access: AccessMode) -> Place {
+        Place::projected(object, Projection::Slice { start: START, length: COUNT }, ValueType::Ref(list), access)
+    }
+
+    #[test]
+    fn non_raw_runtime_buffer_load_store_and_ranges_are_refused() {
+        with_scalar_range_checker(ScalarKind::U32, true, |checker, list| {
+            assert!(matches!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read),
+                    transfer: LoadTransfer::CopyScalar,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Load(non-raw RuntimeBuffer)", .. })
+            ));
+            assert!(matches!(
+                checker.check(&Operation::Store {
+                    place: Place::projected(DESTINATION, Projection::Element { index: START }, ValueType::Size, AccessMode::Write),
+                    value: LOADED, transfer: StoreTransfer::CopyScalar,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(non-raw RuntimeBuffer)", .. })
+            ));
+            for operation in [
+                Operation::MoveRange {
+                    destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
+                    source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
+                },
+                Operation::CloneRange {
+                    destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
+                    source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
+                },
+            ] {
+                assert!(matches!(checker.check(&operation), Err(InitialCheckError::UnsupportedMemoryOperation { .. })));
+            }
+        });
+    }
+
+    #[test]
+    fn raw_byte_runtime_buffer_and_mapped_packed_range_remain_supported() {
+        with_scalar_range_checker(ScalarKind::RawByte, true, |checker, _| {
+            checker.check(&Operation::Store {
+                place: Place::projected(DESTINATION, Projection::Element { index: START }, ValueType::Size, AccessMode::Write),
+                value: LOADED, transfer: StoreTransfer::CopyScalar,
+            }).expect("raw-byte runtime buffer store");
+        });
+        with_scalar_range_checker(ScalarKind::U32, false, |checker, list| {
+            checker.check(&Operation::MoveRange {
+                destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
+                source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
+            }).expect("mapped packed scalar range");
+        });
+    }
+
+    #[test]
+    fn unmapped_v128_and_bool_value_slot_ranges_are_refused() {
+        for kind in [ScalarKind::V128, ScalarKind::BoolValueSlot] {
+            for clone in [false, true] {
+                with_scalar_range_checker(kind, true, |checker, list| {
+                    let operation = if clone {
+                        Operation::CloneRange {
+                            destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
+                            source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
+                        }
+                    } else {
+                        Operation::MoveRange {
+                            destination: scalar_range_place(DESTINATION, list, AccessMode::Write),
+                            source: scalar_range_place(SOURCE, list, AccessMode::Read), count: COUNT,
+                        }
+                    };
+                    assert!(matches!(checker.check(&operation), Err(InitialCheckError::UnsupportedMemoryOperation { .. })));
+                });
+            }
+        }
     }
 
     fn fixed_field(
