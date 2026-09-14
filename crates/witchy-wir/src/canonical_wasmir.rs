@@ -10602,6 +10602,23 @@ mod tests {
         let target = lower_validated(&source).unwrap();
         let receipt = check_correspondence(source.module(), &target).unwrap();
         assert_eq!(receipt.mappings.len(), 24);
+        assert!(receipt
+            .mappings
+            .iter()
+            .any(|mapping| mapping.rule == CorrespondenceRule::MemoryStore));
+        assert!(receipt
+            .mappings
+            .iter()
+            .any(|mapping| mapping.rule == CorrespondenceRule::MemoryUpdateCount));
+        assert_eq!(
+            crate::canonical_interpreter::interpret(
+                &source,
+                FunctionId::new(30),
+                Vec::new(),
+            )
+            .unwrap(),
+            vec![crate::canonical_interpreter::InterpreterValue::Size(42)],
+        );
         let wasm = encode_validated(source).expect("packed scalar collection encodes");
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
