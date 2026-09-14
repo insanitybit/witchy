@@ -1803,3 +1803,21 @@ covered by the final green shard. The storage inventory also identifies
 semantics need canonical bounded contracts. No package-workflow exclusion was
 removed, and full online package execution is not claimed. Compiler-wide
 memory safety and the full SafeWIR objective remain unestablished.
+
+##### Registry gate routing fixture repair (2026-09-14)
+
+The first registry gate was red at `273cf267ccaadee0c9d1767e0aa08e8301ab3c35`
+in `commands::embedded_pm::tests::offline_pm_entries_leave_online_and_unknown_dispatch_unchanged`:
+the fixture still expected `add` to select the full dispatcher. It now asserts
+exact names and source bodies for the new fixed `add` and `verify-rune` entries.
+Unmigrated verbs, unknown/compound command strings and `None` retain the original
+dispatcher assertions. Splitting tuple equality preserves both assertions while
+avoiding a whole-source dump for an entry-name mismatch. No production rule or
+package-workflow deferral changed. Independent review cleared the correction.
+
+**12/12 focused tests passed**, no retries, 6.735 seconds after a 24.95-second
+build; run `8bbc525b-f6bd-4de3-87fc-a3dc021d502e`, log
+`/private/tmp/witchy-registry-gate-pm-routing.log`. Use the preceding warmed-target
+command with filter `test(commands::embedded_pm::tests::) | test(rfc0165_pm::) | test(registry_hosts_checked_) | test(rfc0165_range_bounds::)`.
+The full gate remains the coordinator's responsibility; this is not terminal
+landing evidence.

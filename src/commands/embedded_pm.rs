@@ -265,18 +265,25 @@ mod tests {
 
     #[test]
     fn offline_pm_entries_leave_online_and_unknown_dispatch_unchanged() {
+        // Add and offline rune verification now have fixed checked-source
+        // wrappers too. Other online verbs still use the original dispatcher.
         for (verb, expected) in [
             ("test", ("__witchy_project_test", super::PROJECT_TEST_ENTRY)),
             ("deps", ("__witchy_project_deps", super::PROJECT_DEPS_ENTRY)),
             ("tree", ("__witchy_project_tree", super::PROJECT_TREE_ENTRY)),
+            ("add", ("__witchy_project_add", super::PROJECT_ADD_ENTRY)),
+            ("verify-rune", ("__witchy_project_verify_rune", super::PROJECT_VERIFY_RUNE_ENTRY)),
         ] {
             assert_eq!(super::embedded_pm_entry(Some(verb)), expected);
         }
         let original = ("grimoire", include_str!("../../projects/grimoire/src/grimoire.witchy"));
-        for verb in ["verify", "add", "install", "publish", "promote", "yank",
-            "list", "outdated", "update", "help", "not-a-verb", "test --integration"]
+        for verb in ["verify", "install", "publish", "promote", "yank",
+            "list", "outdated", "update", "help", "not-a-verb", "test --integration",
+            "add --help", "verify-rune --help"]
         {
-            assert_eq!(super::embedded_pm_entry(Some(verb)), original, "{verb}");
+            let actual = super::embedded_pm_entry(Some(verb));
+            assert_eq!(actual.0, original.0, "{verb}");
+            assert_eq!(actual.1, original.1, "{verb}");
         }
         assert_eq!(super::embedded_pm_entry(None), original);
     }
