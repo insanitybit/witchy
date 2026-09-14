@@ -811,7 +811,15 @@ fi
 # Any Rust change means the fast gate already runs every workspace nextest test.
 # Drop narrower nextest selections it subsumes, but retain independent shards
 # such as WASM, e2e, and Witchy source formatting.
-if [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
+if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ] \
+    && [ "${paths[0]}" = "tests/misc/rfc0165_fetch.rs" ]; then
+    # A direct edit to the Fetch fixture can run its complete three-test
+    # module. Mixed compiler/RFC edits keep the broader canonical checkpoint
+    # below, and the serialized landing gate is unchanged.
+    cmds=(
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_fetch::/)'"
+    )
+elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
     && [ "$registry_replay_paths_only" -eq 1 ] \
     && [ "$registry_replay_contract_surface" -eq 1 ]; then
     # Closed registry replay spans source capture, signature verification,
