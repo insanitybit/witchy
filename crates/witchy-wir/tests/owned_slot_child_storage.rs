@@ -104,9 +104,9 @@ fn owned_slots_require_managed_child_storage_before_consuming_move() {
         .expect_err("Bump child must fail at owned-slot store");
     assert_eq!(
         bump,
-        InitialCheckError::InvalidAllocationClass {
+        InitialCheckError::UnsupportedMemoryOperation {
             function: FunctionId::new(0),
-            object: ValueId::new(1),
+            operation: "Alloc(Bump)",
         }
     );
     let scratch = check_initial(owned_slot_candidate(AllocationClass::Scratch))
