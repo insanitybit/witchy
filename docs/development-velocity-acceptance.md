@@ -234,6 +234,8 @@ grant confinement, independent validation, execution, and heap cleanup.
 
 | 2026-09-15 | Refresh the post-probe receipt and latency cohort | Read-only `gate-report.sh --since 24h --json`, generated at `2026-09-15T01:07:57Z`, covers 182 submissions and 153 landed branches. | The report records 128 eligible receipt opportunities, 67 exact receipts, 52.3% eligible adoption, and a 90.2% first-pass clean rate. Submit-to-land is 109s p50 and 551s p90; gate wall is 100s p50 and 443s p90. | Missing receipts cluster in queue-infra (16), linked-worktree codegen/docs (10), and master-checkout queue-infra (11). The sample is observational and mixed; it supports measuring adoption and preserving automatic skips for dirty or ambiguous worktrees, not a causal workflow claim. |
 
+| 2026-09-15 | Measure the post-automatic-presubmit cohort | Read-only `gate-report.sh --since 2026-09-15T00:01:35Z --json`, generated at `2026-09-15T01:11:51Z`, fixes the cutoff at the automatic-presubmit activation. | The cohort contains 20 submissions, 19 landings, 9 eligible receipt opportunities, and 6 exact receipts (66.7% eligible adoption). First-pass clean is 89.5%; submit-to-land is 28s p50 and 146s p90; failed gates total 4.87 minutes. | This is a small, self-selected observational cohort with no batching and mixed docs/code changes. It supports continued measurement and suggests adoption improved over the 52.3% rolling baseline, but does not establish causality or agent idle-time savings. |
+
 Update this table only after terminal queue evidence. Record proposals and
 failed experiments in the criterion state or accompanying change, without
 presenting them as measured improvements.
