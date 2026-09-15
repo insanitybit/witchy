@@ -144,6 +144,8 @@ mod rfc0165_regex_spans;
 mod rfc0165_nullable_source;
 #[path = "misc/rfc0165_dictionary_mutation.rs"]
 mod rfc0165_dictionary_mutation;
+#[path = "misc/rfc0165_list_push_value.rs"]
+mod rfc0165_list_push_value;
 #[path = "misc/rfc0165_file_capability.rs"]
 mod rfc0165_file_capability;
 #[path = "misc/rfc0165_calc.rs"]

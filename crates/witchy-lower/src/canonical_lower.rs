@@ -7089,7 +7089,8 @@ impl FunctionLowerer<'_> {
             }
             Expr::Call { name, args } if compiler_service_import(name).is_some() => self.lower_compiler_service(name, args),
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::LIST_SET_AT => self.lower_list_set_at(expression, args),
-            Expr::Call { name, args } if name == witchy_syntax::intrinsics::GENERATED_LIST_PUSH => {
+            Expr::Call { name, args } if matches!(name.as_str(),
+                witchy_syntax::intrinsics::GENERATED_LIST_PUSH | witchy_syntax::intrinsics::LIST_PUSH) => {
                 self.lower_generated_list_push(args)
             }
             Expr::Call { name, args } if witchy_syntax::intrinsics::is_list_pop_extract(name) => {
