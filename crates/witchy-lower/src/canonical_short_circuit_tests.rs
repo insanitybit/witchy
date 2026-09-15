@@ -4,7 +4,7 @@ use witchy_syntax::origin::OriginTable;
 use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig, InterpreterValue};
 use witchy_wir::canonical_safewir::{check_initial_with_witness, validate_final, FunctionId};
 
-fn assert_execution(source_text: &str, expected: i64) {
+pub(super) fn assert_execution(source_text: &str, expected: i64) {
     // Exercise the same source in both modes. These are semantic tests of the
     // initial graph; optional optimizer scheduling belongs to its own suite.
     for mode in ["", "mode opt\n\n"] {

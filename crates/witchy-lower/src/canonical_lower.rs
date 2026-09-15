@@ -57,6 +57,10 @@ mod optimizer_tests;
 #[path = "canonical_short_circuit_tests.rs"]
 mod short_circuit_tests;
 
+#[cfg(test)]
+#[path = "canonical_pattern_decision_tests.rs"]
+mod pattern_decision_tests;
+
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_types::canonical_aggregates::{concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -3623,38 +3627,20 @@ impl FunctionLowerer<'_> {
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         let mut result_type = None;
-        // A top-level or-pattern over distinct constructors is a set of
-        // mutually exclusive tag dispatches with one checked body. Expanding
-        // only this disjoint form preserves guard semantics: a failed guard
-        // cannot fall through to another alternative that also matched.
-        // Tail-position expansion would duplicate one proper-tail witness, so
-        // it remains fail-closed until the source witness represents each
-        // alternative explicitly.
-        let mut dispatch_arms = Vec::new();
-        for (arm_index, arm) in arms.iter().enumerate() {
-            if let Pattern::Or(alternatives) = &arm.pattern {
-                if tail.is_some() || alternatives.is_empty() {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("tail or-pattern"));
-                }
-                let mut constructors = HashSet::new();
-                for alternative in alternatives {
-                    let Pattern::Ctor { name, .. } = alternative else {
-                        return Err(CanonicalLoweringError::UnsupportedExpression(
-                            "overlapping or-pattern",
-                        ));
-                    };
-                    if !constructors.insert(name.as_str()) {
-                        return Err(CanonicalLoweringError::UnsupportedExpression(
-                            "overlapping or-pattern",
-                        ));
-                    }
-                    dispatch_arms.push((arm_index, arm, alternative));
-                }
-            } else {
-                dispatch_arms.push((arm_index, arm, &arm.pattern));
-            }
-        }
-        let mut arm_results = Vec::with_capacity(dispatch_arms.len());
+        let mut arm_results = Vec::with_capacity(arms.len());
+        // Pattern failure and guard failure must not share a forward escape
+        // around the successful body's join. For guarded matches, advance an
+        // arm index on distinct backedges instead. The index starts at zero
+        // and only advances to the following source arm; bindings, guards and
+        // bodies are still lowered once, with no fabricated failure payloads.
+        let dispatch = if arms.iter().any(|arm| arm.guard.is_some()) {
+            let zero = self.push_const_int(0)?;
+            let header = self.new_block(&[ValueType::Int])?;
+            let index = self.blocks[header.get() as usize].parameters[0].value;
+            self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+            self.current = header;
+            Some((header, index))
+        } else { None };
         // The dispatch block the next arm tests in. It is `None` once an
         // irrefutable arm has ended dispatch: allocating a fallthrough block
         // for an arm that cannot fail would leave a block no edge reaches, and
@@ -3663,44 +3649,38 @@ impl FunctionLowerer<'_> {
         let mut next = Some(self.current);
 
         let mut continuing_facts = Vec::new();
-        for (dispatch_index, (arm_index, arm, pattern)) in dispatch_arms.into_iter().enumerate() {
+        for (arm_index, arm) in arms.iter().enumerate() {
             let Some(current) = next else { break };
             // Each arm starts from the facts before the `match`; every arm's
             // facts are merged back for the join's lane planning.
-            if dispatch_index > 0 {
+            if arm_index > 0 {
                 self.restore_snapshot(facts.clone());
             }
             self.current = current;
             self.bindings = outer.clone();
-            let arm_block = self.new_block(&[])?;
-            let condition = self.match_pattern_condition(scrutinee, pattern, &scrutinee_type)?;
-            // Only an arm that can fail (a refutable pattern or a guard) has a
-            // fallthrough successor.
-            let next_block = if condition.is_some() || arm.guard.is_some() {
-                Some(self.new_block(&[])?)
-            } else {
-                None
-            };
-            if let Some(condition) = condition {
+            let dispatch_next = if let Some((_, index)) = dispatch {
+                let selected = self.new_block(&[])?;
+                let next = self.new_block(&[])?;
+                let expected = self.push_const_int(i64::try_from(arm_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                let condition = self.push_compare(ComparisonOperator::Equal, index, expected)?;
                 self.finish_current(Terminator::BranchIf {
                     condition,
-                    then_target: arm_block,
+                    then_target: selected,
                     then_arguments: Vec::new(),
-                    else_target: next_block.expect("a refutable arm has a fallthrough"),
+                    else_target: next,
                     else_arguments: Vec::new(),
                 })?;
-            } else {
-                self.finish_current(Terminator::Branch {
-                    target: arm_block,
-                    arguments: Vec::new(),
-                })?;
-            }
-
-            self.current = arm_block;
-            self.bindings = outer.clone();
-            // Pattern bindings are emitted in the arm block: a list pattern's
-            // element loads are guarded by the length test that reached it.
-            let pattern_bindings = self.lower_match_pattern(scrutinee, pattern, &scrutinee_type)?;
+                self.current = selected;
+                Some(next)
+            } else { None };
+            // Every alternative selects bindings before the one original
+            // guard/body. A failed guard advances to the next source arm, not
+            // another alternative, and a tail body retains one source witness.
+            let mut next_block = None;
+            let (pattern_bindings, _) = self.lower_pattern_decision(
+                scrutinee, &arm.pattern, &scrutinee_type, &mut next_block,
+            )?;
+            let mut retry_blocks = next_block.into_iter().collect::<Vec<_>>();
             let shadowed_outer = pattern_bindings.iter()
                 .filter_map(|(name, _)| outer.get(name).map(|value| (name.clone(), *value)))
                 .collect::<Vec<_>>();
@@ -3708,6 +3688,15 @@ impl FunctionLowerer<'_> {
                 self.bindings.insert(name, value);
             }
             if let Some(guard) = &arm.guard {
+                if next_block.is_none() {
+                    next_block = Some(self.new_block(&[])?);
+                }
+                let guard_failure = if dispatch.is_some() && !retry_blocks.is_empty() {
+                    self.new_block(&[])?
+                } else {
+                    next_block.expect("a guarded arm has a fallthrough")
+                };
+                retry_blocks.push(guard_failure);
                 let guard = self.lower_expr(guard)?;
                 if self.values[&guard] != ValueType::Bool {
                     return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean match guard"));
@@ -3717,16 +3706,25 @@ impl FunctionLowerer<'_> {
                 // must not carry pattern bindings into the next arm.
                 // The guard expression may itself have split blocks (a
                 // short-circuit `&&`), so terminate the block it ended in,
-                // not the arm block it started in.
+                // not the block it started in.
                 let body_block = self.new_block(&[])?;
                 self.finish_current(Terminator::BranchIf {
                     condition: guard,
                     then_target: body_block,
                     then_arguments: Vec::new(),
-                    else_target: next_block.expect("a guarded arm has a fallthrough"),
+                    else_target: guard_failure,
                     else_arguments: Vec::new(),
                 })?;
                 self.current = body_block;
+            }
+            if let Some((header, _)) = dispatch {
+                let body_start = self.current;
+                for retry in retry_blocks {
+                    self.current = retry;
+                    let next_index = self.push_const_int(i64::try_from(arm_index + 1).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+                    self.finish_current(Terminator::Branch { target: header, arguments: vec![next_index] })?;
+                }
+                self.current = body_start;
             }
             if let Some(tail) = &tail {
                 // Tail mode: every arm exits the function itself, so the
@@ -3738,7 +3736,7 @@ impl FunctionLowerer<'_> {
                 ]);
                 self.lower_tail_expr(&arm.body, arm_path)?;
                 self.bindings = outer.clone();
-                next = next_block;
+                next = dispatch_next.or(next_block);
                 continue;
             }
             let value = if with_value {
@@ -3778,14 +3776,27 @@ impl FunctionLowerer<'_> {
                 arm_results.push((body_end, bindings, value));
             }
             self.bindings = outer.clone();
-            next = next_block;
+            next = dispatch_next.or(next_block);
         }
         // Exhaustiveness is the type checker's judgment; a dispatch that falls
         // off the last refutable arm is unreachable by that judgment and traps.
         self.bindings = outer.clone();
         if let Some(fallthrough) = next {
             self.current = fallthrough;
-            self.finish_current(Terminator::Trap)?;
+            if let Some((header, index)) = dispatch {
+                // No checked source arm accepts this index. Keep the trap as
+                // a checked operation so the dispatch CFG has only structured
+                // exits/backedges, including its impossible-index path.
+                let impossible = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::ConstBool { destination: impossible, value: false });
+                let held = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::ConstBool { destination: held, value: true });
+                let rejected = self.push_compare(ComparisonOperator::Equal, impossible, held)?;
+                self.push_guard(rejected, witchy_wir::canonical_safewir::GuardKind::DynamicType);
+                self.finish_current(Terminator::Branch { target: header, arguments: vec![index] })?;
+            } else {
+                self.finish_current(Terminator::Trap)?;
+            }
         }
         if tail.is_some() {
             self.bindings = outer;
@@ -3974,12 +3985,171 @@ impl FunctionLowerer<'_> {
         Ok(result)
     }
 
+    /// Emit a failure edge only when needed. An irrefutable alternative must
+    /// not leave an unreachable fallthrough block in the structured CFG.
+    fn branch_pattern_condition(
+        &mut self,
+        condition: Option<ValueId>,
+        failure: &mut Option<BlockId>,
+    ) -> Result<bool, CanonicalLoweringError> {
+        let Some(condition) = condition else { return Ok(false) };
+        let target = match *failure {
+            Some(target) => target,
+            None => {
+                let target = self.new_block(&[])?;
+                *failure = Some(target);
+                target
+            }
+        };
+        let success = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition,
+            then_target: success,
+            then_arguments: Vec::new(),
+            else_target: target,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = success;
+        Ok(true)
+    }
+
+    /// Decide the arm before selecting its bindings. Keeping the Boolean
+    /// predicate and binding phis in separate structured diamonds avoids
+    /// cross-edges between an alternative success and the next source arm.
+    fn lower_pattern_decision(
+        &mut self,
+        scrutinee: ValueId,
+        pattern: &Pattern,
+        scrutinee_type: &Type,
+        failure: &mut Option<BlockId>,
+    ) -> Result<(Vec<(String, ValueId)>, bool), CanonicalLoweringError> {
+        let condition = self.match_pattern_condition(scrutinee, pattern, scrutinee_type)?;
+        let refutable = self.branch_pattern_condition(condition, failure)?;
+        Ok((self.lower_match_pattern(scrutinee, pattern, scrutinee_type)?, refutable))
+    }
+
+    fn lower_or_pattern_decision(
+        &mut self,
+        scrutinee: ValueId,
+        alternatives: &[Pattern],
+        scrutinee_type: &Type,
+    ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        if alternatives.is_empty() {
+            return Err(CanonicalLoweringError::UnsupportedExpression("empty or-pattern"));
+        }
+        let facts = self.snapshot_facts();
+        let mut successes = Vec::new();
+        let mut continuing_facts = Vec::new();
+        for (index, alternative) in alternatives.iter().enumerate() {
+            self.restore_snapshot(facts.clone());
+            let last = index + 1 == alternatives.len();
+            let mut next = None;
+            let condition = self.match_pattern_condition(scrutinee, alternative, scrutinee_type)?;
+            // The whole arm already matched. If every earlier alternative
+            // failed, this last predicate must hold. Keep a checked guard
+            // instead of granting unchecked access to its variant payload.
+            let fails = if last {
+                if let Some(condition) = condition {
+                    let held = self.fresh(ValueType::Bool)?;
+                    self.push_operation(Operation::ConstBool { destination: held, value: true });
+                    let matches = self.push_compare(ComparisonOperator::Equal, condition, held)?;
+                    self.push_guard(matches, witchy_wir::canonical_safewir::GuardKind::DynamicType);
+                }
+                false
+            } else {
+                self.branch_pattern_condition(condition, &mut next)?
+            };
+            let bindings = self.lower_match_pattern(scrutinee, alternative, scrutinee_type)?;
+            successes.push((self.current, bindings.into_iter().collect::<HashMap<_, _>>()));
+            continuing_facts.push(self.snapshot_facts());
+            if !fails {
+                break;
+            }
+            if !last {
+                self.current = next.expect("a refutable alternative has a failure edge");
+            }
+        }
+        if successes.len() == 1 {
+            return Ok(successes.pop().expect("one alternative").1.into_iter().collect());
+        }
+        let mut names = successes[0].1.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        for (_, bindings) in &successes[1..] {
+            if bindings.len() != names.len()
+                || names.iter().any(|name| bindings.get(name).is_none_or(|value| {
+                    self.values[value] != self.values[&successes[0].1[name]]
+                }))
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression("inconsistent or-pattern bindings"));
+            }
+        }
+        self.restore_snapshot(facts.clone());
+        for arm_facts in continuing_facts.iter().cloned() {
+            self.absorb_facts(arm_facts);
+        }
+        let edges = successes.iter().map(|(block, bindings)| (*block, bindings)).collect::<Vec<_>>();
+        let plans = self.plan_binding_lanes(&edges, &names, &mut continuing_facts)?;
+        let mut parameter_types = Vec::new();
+        for plan in &plans {
+            parameter_types.push(self.values[&plan.values[0]]);
+            if plan.has_lanes() {
+                parameter_types.extend([ValueType::Size, ValueType::Size]);
+            }
+        }
+        let join = self.new_block(&parameter_types)?;
+        let parameters = self.blocks[join.get() as usize].parameters.clone();
+        let mut bindings = Vec::new();
+        let mut parameter_index = 0;
+        for plan in &plans {
+            let parameter = parameters[parameter_index].value;
+            if let Some(phi) = plan.phi {
+                self.blocks[join.get() as usize].parameters[parameter_index].ownership = Some(phi);
+            }
+            if plan.all_tokens {
+                self.token_join_parameters.insert(parameter);
+            }
+            bindings.push((plan.name.clone(), parameter));
+            parameter_index += 1 + if plan.has_lanes() { 2 } else { 0 };
+        }
+        for (edge, (block, _)) in successes.iter().enumerate() {
+            let mut arguments = Vec::new();
+            for plan in &plans {
+                arguments.push(plan.values[edge]);
+                if let (true, Some(extents)) = (plan.has_lanes(), &plan.extents) {
+                    arguments.extend([extents[edge].0, extents[edge].1]);
+                }
+            }
+            self.blocks[block.get() as usize].terminator = Some(Terminator::Branch { target: join, arguments });
+        }
+        self.restore_facts(facts, join);
+        self.current = join;
+        parameter_index = 0;
+        for plan in &plans {
+            if plan.has_lanes() {
+                let value = parameters[parameter_index].value;
+                let count = parameters[parameter_index + 1].value;
+                let capacity = parameters[parameter_index + 2].value;
+                if let Some(family) = plan.family {
+                    self.record_joined_dynamic_extent(value, count, capacity, family);
+                    self.guard_joined_dynamic_extent(value, count, capacity, family)?;
+                }
+            }
+            parameter_index += 1 + if plan.has_lanes() { 2 } else { 0 };
+        }
+        Ok(bindings)
+    }
+
     fn lower_match_pattern(
         &mut self,
         scrutinee: ValueId,
         pattern: &Pattern,
         scrutinee_type: &Type,
     ) -> Result<Vec<(String, ValueId)>, CanonicalLoweringError> {
+        let mut bound_names = Vec::new();
+        witchy_syntax::ast::pattern_binds(pattern, &mut bound_names);
+        if bound_names.is_empty() {
+            return Ok(Vec::new());
+        }
         if let Pattern::Ctor { name, args } = pattern
             && witchy_types::canonical_capabilities::representation(scrutinee_type, self.definitions).is_some()
         {
@@ -3999,6 +4169,7 @@ impl FunctionLowerer<'_> {
             return self.lower_match_pattern(payload, &args[0], &payload_type);
         }
         match pattern {
+            Pattern::Or(alternatives) => self.lower_or_pattern_decision(scrutinee, alternatives, scrutinee_type),
             Pattern::Var(name) if name != "_" => Ok(vec![(name.clone(), scrutinee)]),
             Pattern::Tuple(args) => {
                 let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
@@ -4017,7 +4188,7 @@ impl FunctionLowerer<'_> {
                             )?));
                         }
                         Pattern::Wildcard | Pattern::Var(_) => {}
-                        Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } => {
+                        Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } | Pattern::Or(_) => {
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
                             let payload = self.load_source_aggregate_field(
@@ -4025,7 +4196,7 @@ impl FunctionLowerer<'_> {
                             )?;
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
-                        Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
+                        Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
                         _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested tuple pattern")),
                     }
                 }
@@ -4056,7 +4227,7 @@ impl FunctionLowerer<'_> {
                         Pattern::Wildcard | Pattern::Var(_) => {}
                         // A tuple payload destructures through its own slot
                         // load; only names and wildcards inside it.
-                        Pattern::Tuple(_) => {
+                        Pattern::Tuple(_) | Pattern::Or(_) => {
                             let slot = variant.first_field + offset;
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
@@ -4088,7 +4259,7 @@ impl FunctionLowerer<'_> {
                         }
                         // A literal payload binds nothing; its test ran in the
                         // dispatch block.
-                        Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
+                        Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
                         _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern")),
                     }
                 }
@@ -4098,6 +4269,7 @@ impl FunctionLowerer<'_> {
             | Pattern::Var(_)
             | Pattern::Int(_)
             | Pattern::Duration(_)
+            | Pattern::IntRange { .. }
             | Pattern::Bool(_)
             | Pattern::Str(_) => Ok(Vec::new()),
             Pattern::List { elems, rest } => self.lower_list_pattern_bindings(scrutinee, scrutinee_type, elems, rest.as_ref()),
@@ -4137,11 +4309,11 @@ impl FunctionLowerer<'_> {
                     bindings.push((name.clone(), value));
                 }
                 Pattern::Wildcard | Pattern::Var(_) => {}
-                Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } => {
+                Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } | Pattern::Or(_) => {
                     let value = self.load_list_element(scrutinee, index, element_type)?;
                     bindings.extend(self.lower_match_pattern(value, pattern, &element_source_type)?);
                 }
-                Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) => {}
+                Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
                 _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested list pattern element")),
             }
         }
@@ -4311,6 +4483,9 @@ impl FunctionLowerer<'_> {
             return self.match_pattern_condition(scrutinee, &args[0], &payload_type);
         }
         let (value, expected_type) = match pattern {
+            Pattern::Or(alternatives) => {
+                return self.or_pattern_conditions(scrutinee, alternatives, scrutinee_type);
+            }
             Pattern::Ctor { name, args } => {
                 // A sum type's tag selects the arm; a one-variant record's
                 // constructor pattern always matches.
@@ -4364,6 +4539,20 @@ impl FunctionLowerer<'_> {
                 return Ok(Some(self.short_circuit_and(tag_test, |this| {
                     this.payload_pattern_conditions(scrutinee, first_field, &fields, &refutable)
                 })?));
+            }
+            Pattern::IntRange { lo, hi, inclusive } => {
+                if self.values[&scrutinee] != ValueType::Int {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("range pattern type"));
+                }
+                let lower = self.push_const_int(*lo)?;
+                let at_least = self.push_compare(ComparisonOperator::GreaterEqualSigned, scrutinee, lower)?;
+                return self.short_circuit_and(at_least, |this| {
+                    let upper = this.push_const_int(*hi)?;
+                    this.push_compare(
+                        if *inclusive { ComparisonOperator::LessEqualSigned } else { ComparisonOperator::LessSigned },
+                        scrutinee, upper,
+                    ).map(Some)
+                }).map(Some);
             }
             Pattern::Int(value) | Pattern::Duration(value) => {
                 let destination = self.fresh(ValueType::Int)?;
@@ -4525,12 +4714,41 @@ impl FunctionLowerer<'_> {
         })?))
     }
 
+    fn or_pattern_conditions(
+        &mut self,
+        scrutinee: ValueId,
+        alternatives: &[Pattern],
+        scrutinee_type: &Type,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some((first, rest)) = alternatives.split_first() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("empty or-pattern"));
+        };
+        let Some(left) = self.match_pattern_condition(scrutinee, first, scrutinee_type)? else {
+            return Ok(None);
+        };
+        if rest.is_empty() {
+            return Ok(Some(left));
+        }
+        self.short_circuit_condition(left, false, |this| {
+            this.or_pattern_conditions(scrutinee, rest, scrutinee_type)
+        }).map(Some)
+    }
+
     /// `left && right` where `right` is lowered in its own block only when
     /// `left` held; a `None` right operand holds trivially. The lowered right
     /// operand may not change the binding environment.
     fn short_circuit_and(
         &mut self,
         left: ValueId,
+        right: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.short_circuit_condition(left, true, right)
+    }
+
+    fn short_circuit_condition(
+        &mut self,
+        left: ValueId,
+        evaluate_on_true: bool,
         right: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         if self.values[&left] != ValueType::Bool {
@@ -4544,15 +4762,15 @@ impl FunctionLowerer<'_> {
         let result = self.blocks[join.get() as usize].parameters[0].value;
         self.finish_current(Terminator::BranchIf {
             condition: left,
-            then_target: evaluate_right,
+            then_target: if evaluate_on_true { evaluate_right } else { decided },
             then_arguments: Vec::new(),
-            else_target: decided,
+            else_target: if evaluate_on_true { decided } else { evaluate_right },
             else_arguments: Vec::new(),
         })?;
 
         self.current = decided;
         let decided_value = self.fresh(ValueType::Bool)?;
-        self.push_operation(Operation::ConstBool { destination: decided_value, value: false });
+        self.push_operation(Operation::ConstBool { destination: decided_value, value: !evaluate_on_true });
         self.finish_current(Terminator::Branch { target: join, arguments: vec![decided_value] })?;
 
         self.current = evaluate_right;
