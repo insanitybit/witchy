@@ -11725,6 +11725,10 @@ impl FunctionLowerer<'_> {
             let count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, exit_values[1], pad, OverflowBehavior::Wrap)?;
             let count_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, exit_values[2])?;
             self.push_guard(count_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            // Trimming may only publish bytes already initialized by the
+            // encoding loop. Capacity alone does not establish that prefix.
+            let prefix_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, count, exit_values[1])?;
+            self.push_guard(prefix_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
             self.push_operation(Operation::UpdateCount { object: output, count });
             self.string_lengths.insert(output, count);
         }
