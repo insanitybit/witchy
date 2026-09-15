@@ -10934,14 +10934,24 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_allocator_class_is_refused_by_canonical_backend() {
+    fn bump_allocator_class_is_refused_by_initial_check() {
         let mut interner = LayoutInterner::new();
         let element = interner.intern_scalar(ScalarKind::U32).unwrap();
         let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
         let bundle = LayoutBundle::from_interner(&interner, [layout]).unwrap();
         assert!(matches!(
-            encode_validated(checked_alloc_only(layout, bundle, crate::canonical_safewir::AllocationClass::Bump, 8, 4, 1)),
-            Err(EncodeError::Lowering(LoweringError::UnsupportedLayout { operation: "Alloc", .. }))
+            check_initial_with_test_witness(alloc_only_candidate(
+                layout,
+                bundle,
+                crate::canonical_safewir::AllocationClass::Bump,
+                8,
+                4,
+                1,
+            )),
+            Err(crate::canonical_safewir::InitialCheckError::UnsupportedMemoryOperation {
+                operation: "Alloc(Bump)",
+                ..
+            })
         ));
     }
 

@@ -310,7 +310,7 @@ pub const RULES: &[RuleEntry] = &[
         refuses: &[
             t(Check, "dynamic_allocation_extent_must_fit_wasm_address_space"),
             t(Backend, "allocation_past_linear_memory_grows_or_traps_when_growth_is_refused"),
-            t(Backend, "unsupported_allocator_class_is_refused_by_canonical_backend"),
+            t(Backend, "bump_allocator_class_is_refused_by_initial_check"),
         ],
     },
     RuleEntry {
@@ -523,7 +523,7 @@ pub const RULES: &[RuleEntry] = &[
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         admits: &[
             t(Interpreter, "validated_clone_and_two_drops_execute"),
-            t(Backend, "shared_release_preserves_root_for_use"),
+            t(Backend, "shared_release_preserves_surviving_original_for_use"),
         ],
         refuses: &[
             t(Memory, "release_rejects_shared_value_without_refcount_authority"),
