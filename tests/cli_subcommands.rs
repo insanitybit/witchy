@@ -807,11 +807,16 @@ fn sandbox_wasm_requires_explicit_dir_grant() {
     assert!(String::from_utf8_lossy(&denied.stderr).contains("Dir"));
 
     let granted = run(&["sandbox", "--dir", dir.to_str().unwrap(), wasm.to_str().unwrap()]);
-    assert!(granted.status.success(), "sandbox --dir must run it: {}", String::from_utf8_lossy(&granted.stderr));
+    assert!(!granted.status.success(), "a capability grant must not authenticate detached raw Wasm");
+    assert!(
+        String::from_utf8_lossy(&granted.stderr).contains("raw Wasm cannot claim canonical admission"),
+        "{}",
+        String::from_utf8_lossy(&granted.stderr),
+    );
 }
 
 #[test]
-fn fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm() {
+fn fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact() {
     let dir = workdir("fetch-grant");
     let src = write(
         &dir,
@@ -862,13 +867,14 @@ fn fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm() {
         wasm.to_str().unwrap(),
     ]);
     assert!(
-        granted_wasm.status.success(),
-        "valid Fetch origin must launch precompiled Wasm: {}",
-        String::from_utf8_lossy(&granted_wasm.stderr),
+        !granted_wasm.status.success(),
+        "a valid Fetch origin must not authenticate detached raw Wasm",
     );
-    assert_eq!(
-        String::from_utf8_lossy(&granted_wasm.stdout),
-        "fetch-ready\n"
+    assert!(
+        String::from_utf8_lossy(&granted_wasm.stderr)
+            .contains("raw Wasm cannot claim canonical admission"),
+        "{}",
+        String::from_utf8_lossy(&granted_wasm.stderr),
     );
 
     let grants = write(
