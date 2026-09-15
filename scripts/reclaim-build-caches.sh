@@ -85,15 +85,19 @@ free_mb() { df -m / | tail -1 | awk '{print $4}'; }
 # build that starts midway through.
 # Both prefixes in one sweep: an out-of-tree cache with an open handle is just
 # as live as an in-tree one.
-open_paths="$(lsof -n 2>/dev/null \
-    | grep -oE "$main/[^ ]*target[^/ ]*|/private/tmp/witchy-[^/ ]+(/target[^/ ]*)?" \
-    | sort -u || true)"
-if [ -z "$open_paths" ]; then
-    echo "reclaim: WARNING: lsof returned no open build paths at all." >&2
-    echo "reclaim: that is unlikely on a busy machine -- treating every cache as LIVE." >&2
+# The sanity check is on lsof itself, not on what it found: an idle machine
+# legitimately has no open build path, and that is exactly when reclaiming
+# is safest. A broken or blocked lsof prints nothing at all.
+lsof_output="$(lsof -n 2>/dev/null || true)"
+if [ -z "$lsof_output" ]; then
+    echo "reclaim: WARNING: lsof returned nothing at all (blocked or broken)." >&2
+    echo "reclaim: cannot tell live caches from idle ones -- treating every cache as LIVE." >&2
     echo "reclaim: re-run when lsof works rather than deleting blind." >&2
     exit 1
 fi
+open_paths="$(printf '%s\n' "$lsof_output" \
+    | grep -oE "$main/[^ ]*target[^/ ]*|/private/tmp/witchy-[^/ ]+(/target[^/ ]*)?" \
+    | sort -u || true)"
 
 # A branch waiting in the queue may need a fast fix-up if its gate goes red,
 # and a cold rebuild is the worst moment to hand its owner. Gating itself is
