@@ -231,6 +231,8 @@ fn lower_explicit_packs_inner(
 mod dynamic;
 mod closed_dynamic;
 pub(crate) use closed_dynamic::prepare as prepare_closed_dynamic;
+mod closed_traits;
+pub(crate) use closed_traits::prepare as prepare_closed_traits;
 
 use dynamic::{
     collect_dynamic_method_definitions, collect_dynamic_types, prepare_dynamic_methods,

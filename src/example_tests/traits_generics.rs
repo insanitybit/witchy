@@ -1,6 +1,35 @@
 use super::*;
 use crate::{codegen, interpreter, parser, typeck};
 
+fn assert_closed_trait_parity(source: &str, expected: &[&str]) {
+    let checked = witchy::resolve_std_only_checked(source).expect("source-backed trait fixture checks");
+    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("source interpreter executes trait fixture");
+    assert_eq!(source_output, expected, "independent source expectation");
+    let (artifact, oracle) = witchy::codegen::compile_checked_module_artifact_with_observer(
+        &checked, |validated, artifact| {
+            use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterValue};
+            let entry = artifact.entry().expect("source-bound entry");
+            let function = witchy_wir::canonical_safewir::FunctionId::new(
+                entry.export().strip_prefix('f').unwrap().parse().unwrap());
+            let tokens = entry.capabilities().iter().copied().map(InterpreterValue::entry_capability).collect();
+            interpret_entry_program(validated, function, tokens, &[], Default::default())
+                .expect("canonical interpreter executes closed traits")
+        },
+    ).expect_lowered("closed traits admit through ordinary canonical semantics");
+    assert_eq!(oracle.output, expected);
+    assert_eq!(oracle.output, source_output);
+    assert_eq!(oracle.leaked_objects, 0);
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact, witchy::runtime::Capabilities {
+        print: true, quiet: true, ..witchy::runtime::Capabilities::none()
+    }, 128).expect("spawn admitted trait fixture");
+    vm.run().expect("execute admitted trait fixture");
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.output(), source_output);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
+
     /// (BUG-538 / D9) Core values should compose through the public protocols,
     /// not through backend magic. This is the release gate over the protocol
     /// matrix: representative std values must have deliberate `Show`, `Reflect`,
@@ -153,15 +182,59 @@ fn main(console: Console):
     let base: dyn Base = rendered
     console.print("${base.base()}")
 "#;
-        let linked = resolve_std_src(src);
-        let want = vec!["2".to_string()];
-        assert_eq!(
-            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpreter"),
-            want,
-            "interpreter"
-        );
-        let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
-        assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm"), want, "wasm");
+        assert_closed_trait_parity(src, &["2"]);
+    }
+
+    #[test]
+    fn canonical_closed_trait_dispatch_preserves_distinct_payloads_and_upcast_copies() {
+        assert_closed_trait_parity(r#"
+trait Base:
+    fn base(let self) -> Int
+trait Render: Base:
+    fn render(let self) -> Int
+type Label:
+    Label(Int)
+type Other:
+    Other(Int)
+impl Base for Label:
+    fn base(let self) -> Int:
+        match self:
+            Label(n) -> n
+impl Render for Label:
+    fn render(let self) -> Int:
+        match self:
+            Label(n) -> n + 10
+impl Base for Other:
+    fn base(let self) -> Int:
+        match self:
+            Other(n) -> n * 10
+impl Render for Other:
+    fn render(let self) -> Int:
+        match self:
+            Other(n) -> n * 100
+fn main(console: Console):
+    let first: dyn Render = Label(2)
+    let second: dyn Render = Other(3)
+    for value in [first, second]:
+        let base: dyn Base = value
+        console.print("${base.base()}")
+        console.print("${value.render()}")
+"#, &["2", "12", "30", "300"]);
+    }
+
+    #[test]
+    fn canonical_closed_trait_open_parameter_does_not_mint_payload_authority() {
+        let checked = witchy::resolve_std_only_checked(r#"
+trait Base:
+    fn base(let self) -> Int
+fn forward(value: dyn Base) -> Int:
+    value.base()
+"#).expect("open trait source checks");
+        assert!(checked.canonical_source().unwrap().typed_module().module().items.iter().all(|item| {
+            !matches!(item, witchy::ast::Item::Type(definition) if definition.name.starts_with("$canonical.TraitPayload_"))
+        }));
+        witchy::codegen::compile_checked_module_artifact(&checked)
+            .expect_unsupported("an open trait parameter is not closed payload evidence");
     }
 
     #[test]

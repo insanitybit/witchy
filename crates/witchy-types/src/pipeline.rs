@@ -1161,6 +1161,22 @@ fn finish_canonical_source(
         None
     };
 
+    let (prepared_traits, traits_changed) = crate::existential::prepare_closed_traits(
+        typed_source, &witness_catalog,
+    ).map_err(|message| PipelineError::Type(TypeError { message }))?;
+    typed_source = prepared_traits;
+    if traits_changed {
+        let retained = typed_source.module().items.iter().filter_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        }).collect::<HashSet<_>>();
+        let instances = callable_witness.generic_instances.into_iter()
+            .filter(|(name, _)| retained.contains(name)).collect();
+        let dictionary_comparators = callable_witness.dictionary_comparators;
+        callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
+        callable_witness.dictionary_comparators = dictionary_comparators;
+    }
+
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()
         .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
