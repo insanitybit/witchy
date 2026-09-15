@@ -2279,11 +2279,17 @@ impl Ctx<'_> {
                                 self.discard_errors.borrow_mut().push(discarded_result_msg(bare));
                             }
                         }
-                        // Preserve the proven RFC-0051 storage paths for the common
-                        // discarded std mutators. This is a typed optimization: the
-                        // source call has already resolved to a concrete var callee,
-                        // and both source forms retain uniform write-back semantics.
-                        if let Some(writeback) = discarded_std_var_writeback(e, self.var_calls) {
+                        // Preserve the proven RFC-0051 storage paths for common
+                        // discarded std mutators only when no later argument can
+                        // perform a write-back. Otherwise retain the public `var`
+                        // call so the ordinary checker can enforce its live
+                        // receiver reservation before any storage rewrite.
+                        if let Some(writeback) = discarded_std_var_writeback(
+                            e,
+                            self.var_calls,
+                            self.returns_nil,
+                            scope,
+                        ) {
                             *stmt = writeback;
                         }
                     }
@@ -3659,12 +3665,154 @@ fn build_mutation_tables(
     (var_calls, returns_nil)
 }
 
+fn contains_potential_var_writeback(
+    expr: &Expr,
+    var_calls: &HashSet<String>,
+    known_calls: &HashMap<String, bool>,
+    scope: &Scope<Type>,
+) -> bool {
+    match expr {
+        Expr::Call { name, args } => {
+            var_calls.contains(name)
+                || match scope.get(name) {
+                    Some(ty) => match ty.unqualified() {
+                        Type::Fn(_, _, conventions, _) => conventions.contains(&Convention::Var),
+                        _ => true,
+                    },
+                    // All declared free functions are in `known_calls`; a
+                    // nested callable alias is handled at its binding below.
+                    // Unknown generated helper names must not disable the
+                    // proven RFC-0051 storage rewrite.
+                    None => false,
+                }
+                || args.iter().any(|arg| {
+                    contains_potential_var_writeback(arg, var_calls, known_calls, scope)
+                })
+        }
+        Expr::ExistentialCall { receiver, args, conventions, .. } => {
+            conventions.contains(&Convention::Var)
+                || contains_potential_var_writeback(receiver, var_calls, known_calls, scope)
+                || args.iter().any(|arg| {
+                    contains_potential_var_writeback(arg, var_calls, known_calls, scope)
+                })
+        }
+        // A function value's convention is not available in this preparation
+        // pass. Keeping the public call is the conservative optimization choice.
+        Expr::Apply { .. } | Expr::MethodCall { .. } | Expr::LabeledMethodCall { .. } => true,
+        Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args) => args.iter().any(|arg| {
+            contains_potential_var_writeback(arg, var_calls, known_calls, scope)
+        }),
+        Expr::LabeledCall { args, .. } => args.iter().any(|(_, arg)| {
+            contains_potential_var_writeback(arg, var_calls, known_calls, scope)
+        }),
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
+        | Expr::Field { base: expr, .. } => {
+            contains_potential_var_writeback(expr, var_calls, known_calls, scope)
+        }
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            contains_potential_var_writeback(lhs, var_calls, known_calls, scope)
+                || contains_potential_var_writeback(rhs, var_calls, known_calls, scope)
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            contains_potential_var_writeback(base, var_calls, known_calls, scope)
+                || fields.iter().any(|(_, value)| {
+                    contains_potential_var_writeback(value, var_calls, known_calls, scope)
+                })
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().any(|(_, value)| {
+                contains_potential_var_writeback(value, var_calls, known_calls, scope)
+            })
+                || spread.as_deref().is_some_and(|value| {
+                    contains_potential_var_writeback(value, var_calls, known_calls, scope)
+                })
+        }
+        Expr::If { cond, then_block, else_block } => {
+            contains_potential_var_writeback(cond, var_calls, known_calls, scope)
+                || block_contains_potential_var_writeback(then_block, var_calls, known_calls, scope)
+                || else_block.as_ref().is_some_and(|block| {
+                    block_contains_potential_var_writeback(block, var_calls, known_calls, scope)
+                })
+        }
+        Expr::Match { scrutinee, arms } => {
+            contains_potential_var_writeback(scrutinee, var_calls, known_calls, scope)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(|guard| {
+                        contains_potential_var_writeback(guard, var_calls, known_calls, scope)
+                    }) || contains_potential_var_writeback(&arm.body, var_calls, known_calls, scope)
+                })
+        }
+        Expr::Block(block) => {
+            block_contains_potential_var_writeback(block, var_calls, known_calls, scope)
+        }
+        Expr::While { cond, body } => {
+            contains_potential_var_writeback(cond, var_calls, known_calls, scope)
+                || block_contains_potential_var_writeback(body, var_calls, known_calls, scope)
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            contains_potential_var_writeback(scrutinee, var_calls, known_calls, scope)
+                || block_contains_potential_var_writeback(body, var_calls, known_calls, scope)
+        }
+        Expr::For { iter, body, .. } => {
+            contains_potential_var_writeback(iter, var_calls, known_calls, scope)
+                || block_contains_potential_var_writeback(body, var_calls, known_calls, scope)
+        }
+        Expr::Lambda { .. }
+        | Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => false,
+    }
+}
+
+fn block_contains_potential_var_writeback(
+    block: &Block,
+    var_calls: &HashSet<String>,
+    known_calls: &HashMap<String, bool>,
+    scope: &Scope<Type>,
+) -> bool {
+    block.stmts.iter().any(|statement| match statement {
+        // A prior nested rewrite may already have converted a checked public
+        // var call into an assignment. Preserve that evidence conservatively.
+        Stmt::Assign { .. } => true,
+        // A nested binding is not present in the outer `Scope` used by this
+        // pre-type rewrite. Its value may be a direct alias, lambda, callable
+        // field, or another inferred callable, so preserve the public call and
+        // let the authoritative type checker resolve the actual invocation.
+        Stmt::Let { .. } => true,
+        Stmt::LetPattern { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Expr(value)
+        | Stmt::Yield(value) => {
+            contains_potential_var_writeback(value, var_calls, known_calls, scope)
+        }
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => false,
+    })
+}
+
 fn discarded_std_var_writeback(
     expr: &Expr,
     var_calls: &HashSet<String>,
+    known_calls: &HashMap<String, bool>,
+    scope: &Scope<Type>,
 ) -> Option<Stmt> {
     let Expr::Call { name, args } = expr else { return None };
-    if !var_calls.contains(name) {
+    let later_writeback = args.iter().skip(1).any(|arg| {
+        contains_potential_var_writeback(arg, var_calls, known_calls, scope)
+    });
+    if !var_calls.contains(name) || later_writeback {
         return None;
     }
     let place = args.first()?.clone();

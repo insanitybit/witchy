@@ -198,3 +198,71 @@ fn main(console: Console):
         assert!(message.contains("later argument 2 writes back to an overlapping place"), "{message}");
     }
 }
+
+#[test]
+fn list_push_value_rejects_nested_rewritten_writeback_to_reserved_root() {
+    let source = r#"
+type Buf:
+    items: List(String)
+
+fn main(console: Console):
+    var b = Buf(["old"])
+    b.items.push(if true:
+        b.items.push("inner")
+        "tail"
+    else:
+        "tail")
+"#;
+    assert_reserved_receiver_refusal(source);
+}
+
+#[test]
+fn list_push_value_rejects_local_callable_writeback_to_reserved_root() {
+    let source = r#"
+type Buf:
+    items: List(String)
+
+fn replace(var buf: Buf) -> String:
+    buf = Buf(["changed"])
+    "tail"
+
+fn main(console: Console):
+    var b = Buf(["old"])
+    b.items.push(if true:
+        let f = replace
+        f(b)
+    else:
+        "tail")
+"#;
+    assert_reserved_receiver_refusal(source);
+}
+
+#[test]
+fn list_push_value_rejects_nested_lambda_writeback_to_reserved_root() {
+    let source = r#"
+type Buf:
+    items: List(String)
+
+fn main(console: Console):
+    var b = Buf(["old"])
+    b.items.push(if true:
+        let f: fn(var Buf) -> String = fn(var value: Buf):
+            value = Buf(["changed"])
+            "tail"
+        f(b)
+    else:
+        "tail")
+"#;
+    assert_reserved_receiver_refusal(source);
+}
+
+fn assert_reserved_receiver_refusal(source: &str) {
+    for source in [source.to_owned(), format!("mode opt\n{source}")] {
+        let error = witchy::resolve_std_only_checked(&source)
+            .err()
+            .expect("later argument must not replace the reserved receiver root");
+        let message = error.to_string();
+        assert!(message.contains("reserves `var` place rooted in `b`"), "{message}");
+        assert!(message.contains("later argument 2 writes back to an overlapping place"), "{message}");
+    }
+}

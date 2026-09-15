@@ -8785,6 +8785,17 @@ impl Checker {
                             out.push((name.clone(), index, place));
                         }
                     }
+                } else {
+                    // A callable introduced inside a later argument has not
+                    // entered this outer inference scope yet. Absence of its
+                    // convention cannot erase an earlier live `var`
+                    // reservation, so every assignable argument is a
+                    // potential write-back until its call is checked locally.
+                    for (index, argument) in args.iter().enumerate() {
+                        if let Some(place) = crate::access::checked_place(argument) {
+                            out.push((name.clone(), index, place));
+                        }
+                    }
                 }
                 for argument in args {
                     self.collect_var_writebacks_in_expr(argument, out);
@@ -8816,16 +8827,22 @@ impl Checker {
                 }
             }
             Expr::Apply { func, args } => {
-                if let Expr::Var(name) = func.as_ref()
-                    && let Some(conventions) = self.call_conventions_for_expr(name)
-                {
-                    for (index, (argument, convention)) in
-                        args.iter().zip(&conventions).enumerate()
-                    {
-                        if *convention == Convention::Var
-                            && let Some(place) = crate::access::checked_place(argument)
+                if let Expr::Var(name) = func.as_ref() {
+                    if let Some(conventions) = self.call_conventions_for_expr(name) {
+                        for (index, (argument, convention)) in
+                            args.iter().zip(&conventions).enumerate()
                         {
-                            out.push((name.clone(), index, place));
+                            if *convention == Convention::Var
+                                && let Some(place) = crate::access::checked_place(argument)
+                            {
+                                out.push((name.clone(), index, place));
+                            }
+                        }
+                    } else {
+                        for (index, argument) in args.iter().enumerate() {
+                            if let Some(place) = crate::access::checked_place(argument) {
+                                out.push((name.clone(), index, place));
+                            }
                         }
                     }
                 }
@@ -8918,8 +8935,15 @@ impl Checker {
     ) {
         for statement in &block.stmts {
             match statement {
+                Stmt::Assign { name, value, place_depth } => {
+                    out.push((
+                        "assignment".to_string(),
+                        0,
+                        crate::access::checked_assignment_place(name, value, *place_depth),
+                    ));
+                    self.collect_var_writebacks_in_expr(value, out);
+                }
                 Stmt::Let { value, .. }
-                | Stmt::Assign { value, .. }
                 | Stmt::LetPattern { value, .. }
                 | Stmt::Return(Some(value))
                 | Stmt::Expr(value)

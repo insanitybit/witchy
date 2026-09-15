@@ -187,6 +187,51 @@ pub(crate) fn checked_place(expression: &Expr) -> Option<CheckedPlace> {
     Some(CheckedPlace { root, steps })
 }
 
+/// Recover the destination preserved by [`Stmt::Assign::place_depth`] after
+/// RFC-0022 desugaring. This is deliberately narrower than recognizing an
+/// arbitrary right-hand-side shape: each level must be one canonical rebuild
+/// emitted by `desugar_place_assign`, otherwise the root-only place fails
+/// closed for overlap checks.
+pub(crate) fn checked_assignment_place(
+    root: &str,
+    value: &Expr,
+    place_depth: u32,
+) -> CheckedPlace {
+    let mut steps = Vec::new();
+    let mut current = value;
+    for _ in 0..place_depth {
+        match current {
+            Expr::RecordUpdate { fields, .. } if fields.len() == 1 => {
+                steps.push(CheckedPlaceStep::Field(fields[0].0.clone()));
+                current = &fields[0].1;
+            }
+            Expr::Call { name, args }
+                if name == intrinsics::LIST_SET_AT && args.len() == 3 =>
+            {
+                steps.push(match &args[1] {
+                    Expr::Int(value) => CheckedPlaceStep::Index(*value),
+                    _ => CheckedPlaceStep::DynamicIndex,
+                });
+                current = &args[2];
+            }
+            Expr::MethodCall { method, args, .. }
+                if method == "__set_at" && args.len() == 2 =>
+            {
+                steps.push(match &args[0] {
+                    Expr::Int(value) => CheckedPlaceStep::Index(*value),
+                    _ => CheckedPlaceStep::DynamicIndex,
+                });
+                current = &args[1];
+            }
+            _ => {
+                steps.clear();
+                break;
+            }
+        }
+    }
+    CheckedPlace { root: root.to_string(), steps }
+}
+
 /// Canonical assignable-place facts keyed to one exact module allocation.
 ///
 /// The producer recognizes only the place forms accepted by type checking. A
