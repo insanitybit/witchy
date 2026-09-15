@@ -256,6 +256,38 @@ fn main(console: Console):
     assert_reserved_receiver_refusal(source);
 }
 
+#[test]
+fn list_push_value_rejects_immediately_applied_lambda_writeback() {
+    let source = r#"
+type Buf:
+    items: List(String)
+
+fn main(console: Console):
+    var b = Buf(["old"])
+    b.items.push((fn(var value: Buf):
+        value = Buf(["changed"])
+        "tail")(b))
+"#;
+    assert_reserved_receiver_refusal(source);
+}
+
+#[test]
+fn list_push_value_rejects_keyword_call_writeback() {
+    let source = r#"
+type Buf:
+    items: List(String)
+
+fn replace(var value: Buf) -> String:
+    value = Buf(["changed"])
+    "tail"
+
+fn main(console: Console):
+    var b = Buf(["old"])
+    b.items.push(replace(value: b))
+"#;
+    assert_reserved_receiver_refusal(source);
+}
+
 fn assert_reserved_receiver_refusal(source: &str) {
     for source in [source.to_owned(), format!("mode opt\n{source}")] {
         let error = witchy::resolve_std_only_checked(&source)

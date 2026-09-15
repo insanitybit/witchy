@@ -3705,9 +3705,19 @@ fn contains_potential_var_writeback(
         | Expr::Tuple(args) => args.iter().any(|arg| {
             contains_potential_var_writeback(arg, var_calls, known_calls, scope)
         }),
-        Expr::LabeledCall { args, .. } => args.iter().any(|(_, arg)| {
-            contains_potential_var_writeback(arg, var_calls, known_calls, scope)
-        }),
+        Expr::LabeledCall { name, args } => {
+            var_calls.contains(name)
+                || match scope.get(name) {
+                    Some(ty) => match ty.unqualified() {
+                        Type::Fn(_, _, conventions, _) => conventions.contains(&Convention::Var),
+                        _ => true,
+                    },
+                    None => false,
+                }
+                || args.iter().any(|(_, arg)| {
+                    contains_potential_var_writeback(arg, var_calls, known_calls, scope)
+                })
+        }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }

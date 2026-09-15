@@ -8845,9 +8845,39 @@ impl Checker {
                             }
                         }
                     }
+                } else {
+                    // A computed callable can carry a `var` convention even
+                    // though this outer reservation walk has no stable name
+                    // with which to query its signature. Treat every
+                    // assignable argument as a potential write-back; the
+                    // call's own inference later determines its exact ABI.
+                    for (index, argument) in args.iter().enumerate() {
+                        if let Some(place) = crate::access::checked_place(argument) {
+                            out.push(("computed callable".to_string(), index, place));
+                        }
+                    }
                 }
                 self.collect_var_writebacks_in_expr(func, out);
                 for argument in args {
+                    self.collect_var_writebacks_in_expr(argument, out);
+                }
+            }
+            Expr::LabeledCall { name, args } => {
+                // Keyword resolution normally makes this positional before
+                // type checking. Keep the reservation census fail-closed if
+                // pipeline ordering changes: labels do not identify the
+                // convention order here, so any assignable argument may be
+                // the callee's `var` lane.
+                if self.call_conventions_for_expr(name)
+                    .is_none_or(|conventions| conventions.contains(&Convention::Var))
+                {
+                    for (index, (_, argument)) in args.iter().enumerate() {
+                        if let Some(place) = crate::access::checked_place(argument) {
+                            out.push((name.clone(), index, place));
+                        }
+                    }
+                }
+                for (_, argument) in args {
                     self.collect_var_writebacks_in_expr(argument, out);
                 }
             }
@@ -8917,7 +8947,6 @@ impl Checker {
             Expr::Lambda { .. }
             | Expr::MethodCall { .. }
             | Expr::Record { .. }
-            | Expr::LabeledCall { .. }
             | Expr::Int(_)
             | Expr::Duration(_)
             | Expr::Float(_)
