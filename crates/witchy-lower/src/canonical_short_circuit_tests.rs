@@ -39,6 +39,62 @@ pub(super) fn assert_execution(source_text: &str, expected: i64) {
 }
 
 #[test]
+fn conditional_separator_preserves_invariant_list_extent() {
+    assert_execution(
+        r#"
+fn render_headers(headers: List((String, String))) -> String:
+    var rendered = ""
+    for header in headers:
+        let (name, value) = header
+        if rendered != "":
+            rendered = rendered + "\n"
+        rendered = rendered + name + ": " + value
+    rendered
+
+fn main() -> Int:
+    let rendered = render_headers([("a", "b"), ("c", "d"), ("e", "f")])
+    if rendered == "a: b\nc: d\ne: f":
+        1
+    else:
+        0
+"#,
+        1,
+    );
+}
+
+#[test]
+fn conditional_paths_preserve_loop_list_extent_and_initialized_prefix() {
+    assert_execution(
+        r#"
+fn accumulate(entries: List(String)) -> Int:
+    var out = ["seed"]
+    let saved = out
+    for entry in entries:
+        let child = if entry == "a": entry else: "dir/" + entry
+        if entry == "a":
+            list.push(out, child)
+        list.push(out, child + "/tail")
+
+    var count = 0
+    for item in out:
+        count = count + 1
+    var saved_count = 0
+    for item in saved:
+        saved_count = saved_count + 1
+
+    if count == 5 && saved_count == 1 && saved[0] == "seed" && out[0] == "seed" && out[1] == "a" && out[2] == "a/tail" && out[3] == "dir/b/tail" && out[4] == "dir/c/tail":
+        1
+    else:
+        0
+
+fn main() -> Int:
+    accumulate(["a", "b", "c"])
+"#,
+        1,
+    );
+}
+
+#[test]
 fn scalar_writeback_taken_and_skipped_evaluates_each_operand_once() {
     for operator in ["&&", "||"] {
         for left in [false, true] {

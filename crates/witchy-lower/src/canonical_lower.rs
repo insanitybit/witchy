@@ -3591,16 +3591,16 @@ impl FunctionLowerer<'_> {
         // An extent lane can rename counts also used by an unchanged snapshot
         // of a string or list. The checker may meet that snapshot at header
         // precision, so pre-branch cached extents no longer authenticate it.
-        // Reload unchanged lists, retaining the explicit lanes of new list
-        // phis; replacing those lanes would lose their allocation proof.
+        // Reload only affected list snapshots and aliased-lane parameters.
+        // Unrelated lists, including invariant iterables and outer-loop
+        // phis, must retain their authenticated count/capacity identities.
         if shared_result_extents.is_some() || plans.iter().any(|plan| plan.has_lanes()) {
             let joined_result = result;
             let snapshots = self.bindings.values().copied()
                 .filter(|value| Some(*value) != joined_result && (
                     self.string_lengths.contains_key(value)
                     || (self.list_counts.contains_key(value)
-                        && (snapshot_parameters.contains(value)
-                            || !join_parameters.iter().any(|parameter| parameter.value == *value)))
+                        && snapshot_parameters.contains(value))
                 ))
                 .collect::<BTreeSet<_>>();
             for value in snapshots {
@@ -5322,7 +5322,7 @@ impl FunctionLowerer<'_> {
         iterable: &Expr,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
-        let facts = self.snapshot_facts();
+        let mut facts = self.snapshot_facts();
         if let Expr::Range { lo, hi, inclusive } = iterable {
             return self.lower_range_for(variable, lo, hi, *inclusive, body);
         }
@@ -5372,6 +5372,34 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
+        }
+
+        // A retained list can share extent SSA values with a carried root.
+        // Edge renaming then changes the retained object's counted facts too.
+        // Authenticate its own headers before the loop, giving it a capacity
+        // value independent of the mutable root's transported extent lanes.
+        let carried_extents = list_names
+            .iter()
+            .filter_map(|name| self.tracked_lanes(outer[name]))
+            .flat_map(|(count, capacity)| [count, capacity])
+            .collect::<BTreeSet<_>>();
+        let retained_lists = outer
+            .iter()
+            .filter(|(name, object)| {
+                !names.contains(name)
+                    && self.list_counts.contains_key(*object)
+                    && self.tracked_lanes(**object).is_some_and(|(count, capacity)| {
+                        carried_extents.contains(&count) || carried_extents.contains(&capacity)
+                    })
+            })
+            .map(|(_, object)| *object)
+            .collect::<BTreeSet<_>>();
+        for object in retained_lists {
+            self.known_list_lengths.remove(&object);
+            self.reload_dynamic_extent(object)?;
+            // This preheader definition dominates the body and exit. Do not
+            // restore the old, unauthenticated capacity after the loop.
+            facts.list_capacities.insert(object, self.list_capacities[&object]);
         }
 
         // The loop carries one canonical state tuple through every CFG edge:
