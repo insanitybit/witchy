@@ -3146,6 +3146,7 @@ impl FunctionLowerer<'_> {
         arm_facts: &mut [FactSnapshot],
     ) -> Result<Vec<BindingLanePlan>, CanonicalLoweringError> {
         let combined_facts = self.snapshot_facts();
+        let string_layout = self.string_layout_id().ok();
         let mut plans = Vec::with_capacity(changed_names.len());
         for name in changed_names {
             let mut values = arms.iter().map(|(_, bindings)| bindings[name]).collect::<Vec<_>>();
@@ -3195,11 +3196,21 @@ impl FunctionLowerer<'_> {
                 // stay cached for code the arm does not dominate.
                 self.current = *end;
                 self.restore_snapshot(arm_facts[index].clone());
-                if self.dynamic_extent_lanes(*value).is_none() {
-                    self.ensure_list_extent(*value)?;
-                    self.ensure_string_extent(*value)?;
-                }
-                let lanes = self.dynamic_extent_lanes(*value);
+                // Nested joins can demote an unchanged String's extent even
+                // while its old lanes remain cached. Authenticate this edge
+                // before requesting a Shared phi, preserving known capacity.
+                let lanes = if matches!(self.values[value],
+                    ValueType::Ref(layout) if Some(layout) == string_layout)
+                {
+                    self.authenticate_dynamic_result(*value, string_layout)?
+                        .map(|lane| (lane.count, lane.capacity))
+                } else {
+                    if self.dynamic_extent_lanes(*value).is_none() {
+                        self.ensure_list_extent(*value)?;
+                        self.ensure_string_extent(*value)?;
+                    }
+                    self.dynamic_extent_lanes(*value)
+                };
                 let Some((count, capacity)) = lanes else {
                     extents.clear();
                     break;

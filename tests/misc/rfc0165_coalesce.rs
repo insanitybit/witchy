@@ -121,6 +121,39 @@ fn main(console: Console):
 "#, &["[old]", "[old]", "[old, new]", "[old, new, last]"]);
 }
 
+#[test]
+fn nested_match_string_snapshot_lanes_are_authenticated_before_outer_phi() {
+    assert_both_modes(r##"
+fn choose(line: String, outer: Bool, inner: Bool) -> String:
+    if outer:
+        line
+    else:
+        match inner:
+            true -> line + "!"
+            false -> line
+
+fn header(line: String) -> String:
+    let close = line.index_of("]") ?? -1
+    if close < 0:
+        line
+    else:
+        let rest = line.substring(close + 1, line.char_count())
+        match rest.index_of("#"):
+            Some(h) -> line.substring(0, close + 1 + h).trim()
+            None -> line
+
+fn main(console: Console):
+    let snapshot = "old" + " value"
+    console.print(choose(snapshot, true, true))
+    console.print(choose(snapshot, false, true))
+    console.print(choose(snapshot, false, false))
+    console.print(snapshot)
+    console.print(header("plain"))
+    console.print(header("[section]"))
+    console.print(header("[section]  # comment"))
+"##, &["old value", "old value!", "old value", "old value", "plain", "[section]", "[section]"]);
+}
+
 fn assert_both_modes(source: &str, expected: &[&str]) {
     for source in [source.to_owned(), format!("mode opt\n{source}")] {
         let checked = witchy::resolve_std_only_checked(&source).expect("coalesce source checks");
