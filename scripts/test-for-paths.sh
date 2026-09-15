@@ -773,6 +773,12 @@ for p in "${paths[@]}"; do
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         justfile)
             add "just --list" ;;
+        spec/wasm-abi.md)
+            # The ABI catalog checks selected above validate this generated
+            # contract document and its native implementations. The generic
+            # documentation sweep is deferred, so adding it here selects zero
+            # runnable tests and prevents an otherwise green ABI presubmit.
+            add_gate_test misc ;;
         spec/stdlib.md)
             echo "WARNING: spec/stdlib.md is GENERATED — edit std/*.witchy doc-comments instead" >&2
             gate_need_stdlib_docs=1

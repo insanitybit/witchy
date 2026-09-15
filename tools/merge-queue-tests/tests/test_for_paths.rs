@@ -3,6 +3,32 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[test]
+fn wasm_abi_doc_uses_catalog_contracts_without_deferred_docs_sweep() {
+    for paths in [
+        vec!["spec/wasm-abi.md"],
+        vec!["--focused", "spec/wasm-abi.md"],
+        vec!["--edit-loop", "spec/wasm-abi.md"],
+        vec!["--edit-loop", "Cargo.lock", "crates/witchy-wir/Cargo.toml", "spec/wasm-abi.md"],
+    ] {
+        let commands = selected(&paths);
+        for required in [
+            "every_prelude_import_has_abi_metadata",
+            "parsed_prelude_imports_are_complete",
+            "public_spec_contains_the_generated_complete_catalog",
+            "native_host_links_every_catalog_import_with_the_declared_signature",
+        ] {
+            assert!(commands.iter().any(|command| command.contains(required)),
+                "missing {required}: {commands:?}");
+        }
+        assert!(!commands.iter().any(|command| command.contains("documentation_examples_are_valid")),
+            "ABI document selected the deferred prose sweep: {commands:?}");
+    }
+    let gate = gate_nextest(&["spec/wasm-abi.md"]);
+    assert!(gate.contains("--test misc"), "missing ABI integration tests: {gate}");
+    assert!(!gate.contains("documentation_examples_are_valid"), "{gate}");
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
