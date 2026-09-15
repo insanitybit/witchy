@@ -1041,6 +1041,23 @@ fn embedded_pm_edits_run_only_the_embedded_pm_module() {
 }
 
 #[test]
+fn cli_subcommand_edits_replay_output_authority_and_admission_guards() {
+    let commands = selected(&["--edit-loop", "tests/cli_subcommands.rs"]);
+    assert_eq!(commands.len(), 1, "CLI edit route expanded: {commands:?}");
+    for probe in [
+        "wasm_nil_main_int_output_is_not_eaten_as_exit_code",
+        "sandbox_wasm_requires_explicit_dir_grant",
+        "fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm",
+    ] {
+        assert!(
+            commands[0].contains(probe),
+            "missing CLI contract probe {probe}: {commands:?}"
+        );
+    }
+    assert!(commands[0].contains("--test cli_subcommands -E 'test(="), "broad CLI route: {commands:?}");
+}
+
+#[test]
 fn lower_codegen_edits_run_the_known_fast_failure_probe_first() {
     let commands = selected(&["--edit-loop", "crates/witchy-lower/tests/codegen.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");

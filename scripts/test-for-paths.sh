@@ -436,6 +436,12 @@ for p in "${paths[@]}"; do
         src/commands/embedded_pm.rs)
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::embedded_pm::tests::/)'"
             path_has_early=1 ;;
+        tests/cli_subcommands.rs)
+            # Keep the edit loop on the recent gate-red output contract plus
+            # one sandbox authority and one fetch-root admission guard. The
+            # complete cli_subcommands target remains in landing.
+            add_early "cargo nextest run --test cli_subcommands -E 'test(=wasm_nil_main_int_output_is_not_eaten_as_exit_code) or test(=sandbox_wasm_requires_explicit_dir_grant) or test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+            path_has_early=1 ;;
         crates/witchy-wir/tests/owned_slot_child_storage.rs)
             add_early "cargo nextest run -p witchy-wir --features native --test owned_slot_child_storage -E 'test(=owned_slots_require_managed_child_storage_before_consuming_move)'"
             path_has_early=1 ;;
