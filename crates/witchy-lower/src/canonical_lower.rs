@@ -5209,7 +5209,7 @@ impl FunctionLowerer<'_> {
         inclusive: bool,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
-        let facts = self.snapshot_facts();
+        let mut facts = self.snapshot_facts();
         let start = self.lower_expr(lo)?;
         let bound = self.lower_expr(hi)?;
         if self.values[&start] != ValueType::Int || self.values[&bound] != ValueType::Int {
@@ -5234,6 +5234,28 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
+        }
+        // A retained snapshot must not reuse scalar extent identities that
+        // the mutable root carries through this loop's phis. Authenticate
+        // separate live headers, just as list iteration does.
+        let carried_extents = list_names.iter()
+            .filter_map(|name| self.tracked_lanes(outer[name]))
+            .flat_map(|(count, capacity)| [count, capacity])
+            .collect::<BTreeSet<_>>();
+        let retained_lists = outer.iter()
+            .filter(|(name, object)| {
+                !names.contains(name)
+                    && self.list_counts.contains_key(*object)
+                    && self.tracked_lanes(**object).is_some_and(|(count, capacity)| {
+                        carried_extents.contains(&count) || carried_extents.contains(&capacity)
+                    })
+            })
+            .map(|(_, object)| *object)
+            .collect::<BTreeSet<_>>();
+        for object in retained_lists {
+            self.known_list_lengths.remove(&object);
+            self.reload_dynamic_extent(object)?;
+            facts.list_capacities.insert(object, self.list_capacities[&object]);
         }
         let mut state_types = names.iter().map(|name| self.values[&outer[name]]).collect::<Vec<_>>();
         state_types.extend(list_names.iter().flat_map(|_| [ValueType::Size, ValueType::Size]));
@@ -5269,6 +5291,18 @@ impl FunctionLowerer<'_> {
 
         self.current = header;
         bind_state(self, &header_values);
+        // The entry/backedge meet may retain only a header prefix for an
+        // invariant token. Re-establish its extent from live headers, not
+        // cached pre-loop scalar ids, before either successor uses it.
+        let invariant_extents = outer.iter()
+            .filter(|(name, object)| !names.contains(name) && self.tracked_lanes(**object).is_some())
+            .map(|(_, object)| *object)
+            .collect::<BTreeSet<_>>();
+        for object in &invariant_extents {
+            self.invalidate_dynamic_count(*object);
+            self.ensure_list_extent(*object)?;
+            self.ensure_string_extent(*object)?;
+        }
         let counter = *header_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
         let condition = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
@@ -5320,6 +5354,9 @@ impl FunctionLowerer<'_> {
 
         let exit_values = self.blocks[exit.get() as usize].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         self.restore_facts(facts, exit);
+        for object in invariant_extents {
+            self.invalidate_dynamic_count(object);
+        }
         self.current = exit;
         bind_state(self, &exit_values);
         Ok(())
@@ -9083,11 +9120,10 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
-    /// A list stored into another list is copied (value semantics): a fresh
-    /// exact-count allocation receives the source's elements through
-    /// `CloneRange`. Only scalar-element lists copy this way; a list of
-    /// references would need per-element retains the v1 range operation does
-    /// not express, and a literal is fresh already and moves.
+    /// A stored list gets fresh storage with the source's capacity, while
+    /// `CloneRange` copies only its initialized prefix and retains owned
+    /// elements. Preserving spare capacity lets later appends reuse allocation
+    /// size classes without sharing mutable storage with the source.
     fn clone_list_for_storage(
         &mut self,
         source: ValueId,
@@ -9108,14 +9144,10 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("nested list element type"));
         }
         self.ensure_list_extent(source)?;
-        let (length, _) = self.tracked_lanes(source).ok_or(
+        let (length, capacity) = self.tracked_lanes(source).ok_or(
             CanonicalLoweringError::UnsupportedExpression("nested list element without count state"),
         )?;
-        let maximum = self.push_const_size(
-            (u64::from(u32::MAX) - u64::from(header_bytes)) / u64::from(stride_bytes),
-        )?;
-        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, maximum)?;
-        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        self.guard_dynamic_extent(length, capacity, header_bytes, stride_bytes)?;
         // A pointer-element list is allocated empty and grows to the cloned
         // prefix once every element has been retained; a scalar list is
         // allocated at its final count.
@@ -9129,7 +9161,7 @@ impl FunctionLowerer<'_> {
             extent: witchy_wir::canonical_safewir::Extent::Counted {
                 header_bytes,
                 count: allocation_count,
-                capacity: length,
+                capacity,
                 stride_bytes,
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
@@ -9155,7 +9187,7 @@ impl FunctionLowerer<'_> {
             self.push_operation(Operation::UpdateCount { object, count: length });
         }
         self.list_counts.insert(object, length);
-        self.list_capacities.insert(object, length);
+        self.list_capacities.insert(object, capacity);
         Ok(object)
     }
 
@@ -9740,14 +9772,62 @@ impl FunctionLowerer<'_> {
             right: one,
             overflow: OverflowBehavior::Wrap,
         });
-        let capacity = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::Arithmetic {
-            destination: capacity,
-            operator: ArithmeticOperator::Add,
-            left: old_length,
-            right: one,
-            overflow: OverflowBehavior::Wrap,
+        // A fresh exact-length allocation on every append creates a distinct
+        // freelist size at every iteration, exhausting memory even after all
+        // old lists are dropped. Keep the current capacity when it fits;
+        // otherwise grow geometrically, saturating at the layout's limit.
+        // Storage is still fresh: spare capacity never permits alias mutation.
+        let grow = self.new_block(&[])?;
+        let double = self.new_block(&[])?;
+        let ready = self.new_block(&[ValueType::Size])?;
+        // Edge arguments are renamed throughout the checker's fact tables.
+        // Isolate the selected value so the original list's extent keeps its
+        // count/capacity identities on every edge into the join.
+        let retained_capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::MoveValue {
+            destination: retained_capacity, source: old_capacity,
         });
+        let has_room = self.push_compare(
+            ComparisonOperator::LessUnsigned, old_length, old_capacity,
+        )?;
+        self.finish_current(Terminator::BranchIf {
+            condition: has_room,
+            then_target: ready,
+            then_arguments: vec![retained_capacity],
+            else_target: grow,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = grow;
+        let half_maximum = self.push_const_size(
+            ((u64::from(u32::MAX) - u64::from(header_bytes))
+                / u64::from(stride_bytes)) / 2,
+        )?;
+        let can_double = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned, new_length, half_maximum,
+        )?;
+        // Keep the original maximum's constant fact available after the join.
+        let saturated_capacity = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::MoveValue {
+            destination: saturated_capacity, source: maximum_count,
+        });
+        self.finish_current(Terminator::BranchIf {
+            condition: can_double,
+            then_target: double,
+            then_arguments: Vec::new(),
+            else_target: ready,
+            else_arguments: vec![saturated_capacity],
+        })?;
+        self.current = double;
+        let two = self.push_const_size(2)?;
+        let doubled = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Multiply, new_length, two,
+            // The dominating half-maximum comparison proves this product
+            // cannot wrap; multiplication uses the backend's total form.
+            OverflowBehavior::Wrap,
+        )?;
+        self.finish_current(Terminator::Branch { target: ready, arguments: vec![doubled] })?;
+        self.current = ready;
+        let capacity = self.blocks[ready.get() as usize].parameters[0].value;
         let capacity_fits = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: capacity_fits,
@@ -11119,6 +11199,14 @@ impl FunctionLowerer<'_> {
             self.push_operation(Operation::DropRef { object: values });
             replaced
         } else {
+            let capacity = *self.list_capacities.get(&values).ok_or(
+                CanonicalLoweringError::UnsupportedExpression("dict values capacity"),
+            )?;
+            // Reading/replacing an entry requires index < count above.
+            // A write also needs the explicit physical-capacity relation;
+            // count and capacity need not be identical on a private clone.
+            let in_capacity = self.push_compare(ComparisonOperator::LessUnsigned, index, capacity)?;
+            self.push_guard(in_capacity, witchy_wir::canonical_safewir::GuardKind::Bounds);
             self.push_operation(Operation::Store {
                 place: witchy_wir::canonical_safewir::Place::projected(
                     values,
