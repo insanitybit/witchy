@@ -387,6 +387,63 @@ fn queens_shared_terminal_blocks_are_emitted_once() {
 }
 
 #[test]
+fn nested_conditional_list_assignment_preserves_winning_extent_lanes() {
+    let source = r#"
+fn identity(values: List(Int)) -> List(Int):
+    values
+
+fn main(console: Console):
+    var result: List(Int) = []
+    var found = false
+    var index = 0
+    while index < 3 && !found:
+        if index == 1:
+            let attempt = identity([7, 8])
+            if attempt.length() == 2:
+                result = attempt
+                found = true
+        index = index + 1
+    console.print("${result.length()}")
+    console.print("${result[0]}")
+    console.print("${result[1]}")
+"#;
+    let expected = vec!["2".to_owned(), "7".to_owned(), "8".to_owned()];
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+#[test]
+fn conditional_aliases_retain_common_extent_targets_on_both_edges() {
+    let source = r#"
+fn identity(values: List(Int)) -> List(Int):
+    values
+
+fn choose(flag: Bool) -> List(Int):
+    var a = identity([0])
+    var b = identity([1])
+    if flag:
+        let picked = identity([7])
+        a = picked
+        b = picked
+    else:
+        let picked = identity([8])
+        a = picked
+        b = picked
+    if flag:
+        a
+    else:
+        b
+
+fn main(console: Console):
+    console.print("${choose(true)[0]}")
+    console.print("${choose(false)[0]}")
+"#;
+    let expected = vec!["7".to_owned(), "8".to_owned()];
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+#[test]
 fn generic_templates_do_not_shift_executable_tail_site_owners() {
     assert_three_legs(include_str!("../../examples/generic_stack/src/generic_stack.witchy"), vec![
         "nums size:  3".to_owned(),

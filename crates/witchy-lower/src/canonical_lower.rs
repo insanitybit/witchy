@@ -3436,25 +3436,6 @@ impl FunctionLowerer<'_> {
             &[(then_end, &then_bindings), (else_end, &else_bindings)],
             &changed_names, &mut [then_facts, else_facts],
         )?;
-        // Two objects may share an incoming count/capacity definition yet
-        // diverge on the other edge. SSA renaming cannot assign that definition
-        // to both objects' distinct join lanes. Both managed phis preserve
-        // initialization, but their physical extents must be read after the
-        // meet, regardless of which binding's lanes were emitted last.
-        let mut lane_owners = BTreeMap::new();
-        let mut aliased_lane_names = BTreeSet::new();
-        for plan in &plans {
-            if let Some(extents) = &plan.extents {
-                for (edge, (count, capacity)) in extents.iter().enumerate() {
-                    for value in [count, capacity] {
-                        if let Some(other) = lane_owners.insert((edge, *value), plan.name.clone()) {
-                            aliased_lane_names.insert(other);
-                            aliased_lane_names.insert(plan.name.clone());
-                        }
-                    }
-                }
-            }
-        }
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
@@ -3488,9 +3469,6 @@ impl FunctionLowerer<'_> {
             then_arguments.push(plan.values[0]);
             else_arguments.push(plan.values[1]);
             let parameter = join_parameters[parameter_index].value;
-            if snapshot_names.contains(&plan.name) || aliased_lane_names.contains(&plan.name) {
-                snapshot_parameters.insert(parameter);
-            }
             if let (Some(phi), Some(extents)) = (plan.phi, &plan.extents) {
                 self.blocks[join_id.get() as usize].parameters[parameter_index].ownership = Some(phi);
                 if plan.has_lanes() {
@@ -3542,6 +3520,36 @@ impl FunctionLowerer<'_> {
             }
             None => None,
         };
+        // Match each edge's actual last-definition renaming, including any
+        // trailing result lanes. Consistent targets remain authenticated even
+        // when another binding owns those parameters. Only divergent targets
+        // require fresh header reads after the meet.
+        let argument_edges = [&then_arguments, &else_arguments];
+        let lane_targets = argument_edges.map(|arguments| {
+            arguments.iter().zip(&join_parameters)
+                .filter(|(_, parameter)| parameter.value_type == ValueType::Size)
+                .map(|(argument, parameter)| (*argument, parameter.value))
+                .collect::<BTreeMap<_, _>>()
+        });
+        let mut parameter_index = 0;
+        for plan in &plans {
+            if plan.has_lanes() {
+                let bounds = [0, 1].map(|edge| (
+                    lane_targets[edge][&argument_edges[edge][parameter_index + 1]],
+                    lane_targets[edge][&argument_edges[edge][parameter_index + 2]],
+                ));
+                let parameter = join_parameters[parameter_index].value;
+                if bounds[0] == bounds[1] {
+                    if let Some(family) = plan.family {
+                        self.record_joined_dynamic_extent(parameter, bounds[0].0, bounds[0].1, family);
+                    }
+                } else {
+                    snapshot_parameters.insert(parameter);
+                }
+                parameter_index += 2;
+            }
+            parameter_index += 1;
+        }
         self.blocks[then_end.get() as usize].terminator = Some(Terminator::Branch {
             target: join_id,
             arguments: then_arguments,
@@ -3598,8 +3606,9 @@ impl FunctionLowerer<'_> {
             let joined_result = result;
             let snapshots = self.bindings.values().copied()
                 .filter(|value| Some(*value) != joined_result && (
-                    self.string_lengths.contains_key(value)
-                    || (self.list_counts.contains_key(value)
+                    (self.string_lengths.contains_key(value)
+                        && !join_parameters.iter().any(|parameter| parameter.value == *value))
+                    || ((self.list_counts.contains_key(value) || self.string_lengths.contains_key(value))
                         && snapshot_parameters.contains(value))
                 ))
                 .collect::<BTreeSet<_>>();
