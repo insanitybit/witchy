@@ -10789,8 +10789,8 @@ impl FunctionLowerer<'_> {
         Ok(destination)
     }
 
-    /// The value at `index` of the dictionary's value list as an owned value
-    /// (a scalar as itself, a string as a fresh copy).
+    /// The value at `index` as an independent owned value. Reference-bearing
+    /// values use the same typed storage cloning as ordinary collection slots.
     fn lower_dict_value_at(&mut self, values: ValueId, index: ValueId, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
         let list_type = Type::Named("List".into(), vec![value_type.clone()]);
         let (_, element_type, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
@@ -10803,41 +10803,59 @@ impl FunctionLowerer<'_> {
     }
 
     fn owned_dict_value(&mut self, value: ValueId, value_type: &Type) -> Result<ValueId, CanonicalLoweringError> {
+        let expected = self.field_value_type(value_type)?;
+        if self.values.get(&value).copied() != Some(expected) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
+        }
         if Self::is_string_type(value_type) {
             self.ensure_string_extent(value)?;
             self.owned_string_copy(value)
-        } else if Self::dict_scalar_value(value_type) {
-            Ok(value)
+        } else if matches!(expected, ValueType::Ref(_) | ValueType::Gc(_)) {
+            self.owned_for_storage(value, value_type)
         } else {
-            Err(CanonicalLoweringError::UnsupportedExpression("dict value type"))
+            Ok(value)
         }
     }
 
-    /// Join two arms that each produce an owned dictionary value: string
-    /// lanes for a string, one parameter for a scalar. Returns the join
-    /// block and a closure-free protocol: callers branch to it with
-    /// `dict_value_lanes`.
+    /// Counted references transport their complete extent through the join.
+    /// Fixed-size aggregate copies carry a unique shell; managed values carry
+    /// their cloned token. Scalar values need no ownership or extent lanes.
     fn dict_value_join(&mut self, value_type: &Type) -> Result<BlockId, CanonicalLoweringError> {
-        if Self::is_string_type(value_type) {
-            let layout = self.string_layout_id()?;
-            self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])
-        } else {
-            let value_type = scalar_type(value_type)?;
-            self.new_block(&[value_type])
+        let lowered = self.field_value_type(value_type)?;
+        let ownership = match lowered {
+            ValueType::Ref(_) => Some(Ownership::Unique),
+            ValueType::Gc(_) => Some(Ownership::Shared),
+            _ => None,
+        };
+        let mut lanes = vec![(lowered, ownership)];
+        if let ValueType::Ref(layout) = lowered {
+            let descriptor = self.layouts.get(layout)
+                .ok_or_else(|| CanonicalLoweringError::MissingLayout(value_type.clone()))?;
+            if matches!(descriptor.size(), LayoutSize::Dynamic { .. }) {
+                lanes.extend([(ValueType::Size, None), (ValueType::Size, None)]);
+            }
         }
+        self.new_block_owned(&lanes)
     }
 
     fn dict_value_lanes(&mut self, value: ValueId, value_type: &Type) -> Result<Vec<ValueId>, CanonicalLoweringError> {
-        if Self::is_string_type(value_type) {
-            Ok(self.accumulator_lanes(value)?.0)
-        } else {
-            Ok(vec![value])
+        let lowered = self.field_value_type(value_type)?;
+        if self.values.get(&value).copied() != Some(lowered) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
         }
+        if let ValueType::Ref(layout) = lowered {
+            let descriptor = self.layouts.get(layout)
+                .ok_or_else(|| CanonicalLoweringError::MissingLayout(value_type.clone()))?;
+            if matches!(descriptor.size(), LayoutSize::Dynamic { .. }) {
+                return Ok(self.accumulator_lanes(value)?.0);
+            }
+        }
+        Ok(vec![value])
     }
 
     /// Dictionary keys use intrinsic scalar/string equality or a checked
-    /// source comparator. Scalar writes replace slots directly; string writes
-    /// rebuild the owned prefix without overwriting an initialized reference.
+    /// source comparator. Scalar writes replace slots directly; reference
+    /// writes rebuild the owned prefix without overwriting a live owned slot.
     fn lower_dict_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         match name {
             "dict.new" | "dict.with_capacity" => {
@@ -11017,7 +11035,7 @@ impl FunctionLowerer<'_> {
         value: ValueId,
         extract: bool,
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
-        if !Self::dict_scalar_value(value_type) && !Self::is_string_type(value_type) {
+        if self.values.get(&value).copied() != Some(self.field_value_type(value_type)?) {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
         }
         let key_type = key_type.clone();
@@ -11092,7 +11110,7 @@ impl FunctionLowerer<'_> {
         } else {
             None
         };
-        let replaced = if Self::is_string_type(&value_type) {
+        let replaced = if matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_)) {
             let index_int = self.fresh(ValueType::Int)?;
             self.push_operation(Operation::WidenSize { destination: index_int, value: index });
             let replaced = self.rebuild_list_value(values, index_int, value, value_list.clone())?;
@@ -11153,9 +11171,6 @@ impl FunctionLowerer<'_> {
         default: ValueId,
         callback: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if !Self::dict_scalar_value(value_type) && !Self::is_string_type(value_type) {
-            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
-        }
         let layout = self.closure_layout_for_value(callback)?;
         let signature_id = *self.closures.signature_by_layout.get(&layout)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
@@ -11196,7 +11211,7 @@ impl FunctionLowerer<'_> {
         self.bindings = bindings;
         let selected = self.block_parameter_values(join);
         self.track_accumulator_lanes(&selected);
-        let argument = if matches!(expected, ValueType::Ref(_)) {
+        let argument = if matches!(expected, ValueType::Ref(_) | ValueType::Gc(_)) {
             CallArgument::Move(self.clone_reference_token(selected[0])?)
         } else {
             CallArgument::Value(selected[0])
@@ -11226,9 +11241,6 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         extract: bool,
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
-        if !Self::dict_scalar_value(value_type) && !Self::is_string_type(value_type) {
-            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
-        }
         let key_list = Type::Named("List".into(), vec![key_type.clone()]);
         let value_list = Type::Named("List".into(), vec![value_type.clone()]);
         let keys = self.dict_list(dict, shape, 0)?;

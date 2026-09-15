@@ -306,3 +306,157 @@ fn main(console: Console):
     assert_three_legs(source, &["hint", "0", "42"]);
     assert_three_legs(&format!("mode opt\n{source}"), &["hint", "0", "42"]);
 }
+
+#[test]
+fn record_dictionary_values_preserve_displaced_removed_and_updated_snapshots() {
+    let source = r#"
+type Entry:
+    name: String
+    count: Int
+
+fn describe(value: Entry) -> String:
+    value.name + ":" + value.count.show()
+
+fn extracted(value: Option(Entry)) -> String:
+    match value:
+        Some(entry) -> "some:" + describe(entry)
+        None -> "none"
+
+fn bump(value: Entry) -> Entry:
+    Entry(value.name + "!", value.count + 1)
+
+fn main(console: Console):
+    var d: Dict(String, Entry) = dict.new()
+    console.print(extracted(dict.insert(d, "a", Entry("old", 1))))
+    let retained = dict.at(d, "a")
+    let replaced = dict.insert(d, "a", Entry("new", 2))
+    let _ = dict.insert(d, "b", Entry("tail", 3))
+    let removed = dict.remove(d, "b")
+    console.print(extracted(dict.remove(d, "missing")))
+    let snapshot = d
+    dict.update(d, "a", Entry("unused", 90), bump)
+    dict.update(d, "c", Entry("seed", 4), bump)
+    console.print(describe(retained))
+    console.print(extracted(replaced))
+    console.print(extracted(removed))
+    console.print(describe(dict.at(snapshot, "a")))
+    console.print(describe(dict.at(d, "a")))
+    console.print(describe(dict.at(d, "c")))
+    console.print(dict.keys(snapshot).join(","))
+    console.print(dict.keys(d).join(","))
+    let pairs = dict.pairs(d)
+    let (key, value) = pairs[0]
+    console.print(key + "=" + describe(value))
+    console.print(describe(dict.get_or(d, "absent", Entry("fallback", 8))))
+"#;
+    let expected = [
+        "none", "none", "old:1", "some:old:1", "some:tail:3", "new:2",
+        "new!:3", "seed!:5", "a", "a,c", "a=new!:3", "fallback:8",
+    ];
+    assert_three_legs(source, &expected);
+    assert_three_legs(&format!("mode opt\n{source}"), &expected);
+}
+
+#[test]
+fn list_string_dictionary_values_preserve_nested_owners_and_identity_results() {
+    let source = r#"
+fn describe(value: List(String)) -> String:
+    value.length().show() + ":" + value.join("|")
+
+fn extracted(value: Option(List(String))) -> String:
+    match value:
+        Some(items) -> "some:" + describe(items)
+        None -> "none"
+
+fn extend(value: List(String)) -> List(String):
+    list.concat(value, ["tail"])
+
+fn identity(value: List(String)) -> List(String):
+    value
+
+fn main(console: Console):
+    var d: Dict(String, List(String)) = dict.new()
+    let _ = dict.insert(d, "a", ["old", ""])
+    let retained = dict.at(d, "a")
+    let replaced = dict.insert(d, "a", ["new"])
+    let _ = dict.insert(d, "b", [])
+    let removed = dict.remove(d, "b")
+    console.print(extracted(dict.remove(d, "missing")))
+    let snapshot = d
+    dict.update(d, "a", [], extend)
+    dict.update(d, "c", [], extend)
+    dict.update(d, "a", [], identity)
+    console.print(describe(retained))
+    console.print(extracted(replaced))
+    console.print(extracted(removed))
+    console.print(describe(dict.at(snapshot, "a")))
+    console.print(describe(dict.at(d, "a")))
+    console.print(describe(dict.at(d, "c")))
+    let values = dict.values(d)
+    console.print(describe(values[0]))
+    console.print(dict.keys(d).join(","))
+"#;
+    let expected = [
+        "none", "2:old|", "some:2:old|", "some:0:", "1:new",
+        "2:new|tail", "1:tail", "2:new|tail", "a,c",
+    ];
+    assert_three_legs(source, &expected);
+    assert_three_legs(&format!("mode opt\n{source}"), &expected);
+}
+
+#[test]
+fn option_string_dictionary_values_distinguish_absence_empty_and_inactive_payloads() {
+    let source = r#"
+fn describe(value: Option(String)) -> String:
+    match value:
+        Some(text) -> "some[" + text + "]"
+        None -> "none"
+
+fn extracted(value: Option(Option(String))) -> String:
+    match value:
+        Some(item) -> "present:" + describe(item)
+        None -> "missing"
+
+fn revive(value: Option(String)) -> Option(String):
+    match value:
+        Some(text) -> Some(text + "!")
+        None -> Some("")
+
+fn identity(value: Option(String)) -> Option(String):
+    value
+
+fn main(console: Console):
+    var d: Dict(String, Option(String)) = dict.new()
+    console.print(extracted(dict.insert(d, "a", Some(""))))
+    let retained = dict.at(d, "a")
+    console.print(extracted(dict.insert(d, "a", None)))
+    console.print(extracted(dict.insert(d, "a", Some("live"))))
+    console.print(extracted(dict.insert(d, "a", None)))
+    let _ = dict.insert(d, "b", Some(""))
+    let removed = dict.remove(d, "b")
+    let missing = dict.remove(d, "missing")
+    let snapshot = d
+    dict.update(d, "a", Some("ignored"), revive)
+    dict.update(d, "c", Some("seed"), revive)
+    dict.update(d, "n", None, identity)
+    console.print(extracted(removed))
+    console.print(extracted(missing))
+    console.print(describe(retained))
+    console.print(describe(dict.at(snapshot, "a")))
+    console.print(describe(dict.at(d, "a")))
+    console.print(describe(dict.at(d, "c")))
+    console.print(describe(dict.at(d, "n")))
+    console.print(extracted(dict.get(d, "n")))
+    console.print(extracted(dict.get(d, "missing")))
+    console.print(describe(dict.get_or(d, "missing", Some("fallback"))))
+    let values = dict.values(d)
+    console.print(describe(values[2]))
+"#;
+    let expected = [
+        "missing", "present:some[]", "present:none", "present:some[live]",
+        "present:some[]", "missing", "some[]", "none", "some[]", "some[seed!]",
+        "none", "present:none", "missing", "some[fallback]", "none",
+    ];
+    assert_three_legs(source, &expected);
+    assert_three_legs(&format!("mode opt\n{source}"), &expected);
+}
