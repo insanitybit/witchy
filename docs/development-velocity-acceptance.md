@@ -232,6 +232,8 @@ grant confinement, independent validation, execution, and heap cleanup.
 
 | 2026-09-15 | Replay the owned-reference WasmIR failure before landing | The direct `canonical_wasmir.rs` edit route now includes `admitted_owned_reference_call_executes_and_preserves_ownership`, while deferring the two measured mutation-stress tests; the complete landing selection is unchanged. | `7acb5f5d3`; the focused receipt covered `edit,queue-infra-edit` in 86s and the full gate passed in 130s. | The prior ownership assertion failed after 202s of gate time while its body took 0.046s. This closes a demonstrated failure-rework gap. The route’s matched warm wall saving remains unmeasured. |
 
+| 2026-09-15 | Refresh the post-probe receipt and latency cohort | Read-only `gate-report.sh --since 24h --json`, generated at `2026-09-15T01:07:57Z`, covers 182 submissions and 153 landed branches. | The report records 128 eligible receipt opportunities, 67 exact receipts, 52.3% eligible adoption, and a 90.2% first-pass clean rate. Submit-to-land is 109s p50 and 551s p90; gate wall is 100s p50 and 443s p90. | Missing receipts cluster in queue-infra (16), linked-worktree codegen/docs (10), and master-checkout queue-infra (11). The sample is observational and mixed; it supports measuring adoption and preserving automatic skips for dirty or ambiguous worktrees, not a causal workflow claim. |
+
 Update this table only after terminal queue evidence. Record proposals and
 failed experiments in the criterion state or accompanying change, without
 presenting them as measured improvements.
