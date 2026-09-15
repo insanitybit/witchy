@@ -429,6 +429,9 @@ for p in "${paths[@]}"; do
         src/commands/embedded_pm.rs)
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^commands::embedded_pm::tests::/)'"
             path_has_early=1 ;;
+        crates/witchy-wir/tests/owned_slot_child_storage.rs)
+            add_early "cargo nextest run -p witchy-wir --features native --test owned_slot_child_storage -E 'test(=owned_slots_require_managed_child_storage_before_consuming_move)'"
+            path_has_early=1 ;;
         crates/witchy-wir/src/wir_prelude.rs | \
         crates/witchy-wir/examples/abi_catalog.rs | \
         tests/misc/wasm_abi_catalog.rs | \

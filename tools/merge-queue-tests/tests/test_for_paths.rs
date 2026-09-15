@@ -1046,6 +1046,19 @@ fn semantic_conformance_edits_run_the_known_independent_expectation_probe_first(
 }
 
 #[test]
+fn owned_slot_child_storage_edits_run_the_known_admission_probe_first() {
+    let commands = selected(&[
+        "--edit-loop",
+        "crates/witchy-wir/tests/owned_slot_child_storage.rs",
+    ]);
+    assert_eq!(
+        commands,
+        ["cargo nextest run -p witchy-wir --features native --test owned_slot_child_storage -E 'test(=owned_slots_require_managed_child_storage_before_consuming_move)'"],
+        "{commands:?}"
+    );
+}
+
+#[test]
 fn dispatch_edits_probe_fetch_origin_admission_before_commands_module() {
     let commands = selected(&["--edit-loop", "src/commands/dispatch.rs"]);
     assert_eq!(commands.len(), 2, "{commands:?}");
