@@ -1,6 +1,9 @@
 use witchy_syntax::origin::OriginTable;
 use witchy_wir::canonical_interpreter::{InterpretError, InterpreterValue, interpret};
-use witchy_wir::canonical_safewir::optimize::eliminate_same_block_redundant_bounds_guards_checked;
+use witchy_wir::canonical_safewir::optimize::{
+    CheckedPassOutcome, PassId, run_checked_pass,
+    eliminate_same_block_redundant_bounds_guards_checked,
+};
 use witchy_wir::canonical_safewir::{
     GuardKind, Operation, check_initial_with_witness, validate_final, validate_optimized_final,
 };
@@ -82,8 +85,9 @@ fn source_bounds_guard_optimization_admits_and_matches_execution() {
         witchy_wir::admit_canonical(zero_pass, source).expect("zero-pass module admits");
 
     let checked = check_initial_with_witness(candidate, source).expect("initial authority");
-    let optimized = eliminate_same_block_redundant_bounds_guards_checked(checked)
-        .expect("relation-checked optimization");
+    let CheckedPassOutcome::Applied(optimized) = run_checked_pass(checked, PassId::SameBlockBoundsGuards) else {
+        panic!("the production driver must apply this valid optimization");
+    };
     assert_eq!(
         optimized.module().revision(),
         initial_revision.checked_next().unwrap()

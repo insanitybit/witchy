@@ -1,11 +1,13 @@
 //! Assured canonical SafeWIR transformations.
 //!
-//! This module is not wired into production. Each entry point consumes a
-//! validated graph, constructs an authority-free candidate, checks the narrow
-//! before/after relation independently, and runs the full canonical checker.
+//! Production passes consume validated input, consult disposable analyses,
+//! construct an authority-free candidate, and revalidate it. The driver keeps
+//! the original checked input if a pass fails; final validation is still required.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+use super::analysis::{AnalysisDb, BoundsGuardRedundancy, ProgramPoint};
 
 use super::{
     CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, ComparisonOperator, Function,
@@ -46,9 +48,59 @@ impl std::error::Error for BoundsGuardEliminationError {}
 pub fn eliminate_same_block_redundant_bounds_guards_checked(
     before: CheckedInitialSafeWir,
 ) -> Result<CheckedOptimizedSafeWir, BoundsGuardEliminationError> {
+    attempt_bounds_guard_pass(&before)
+}
+
+fn attempt_bounds_guard_pass(
+    before: &CheckedInitialSafeWir,
+) -> Result<CheckedOptimizedSafeWir, BoundsGuardEliminationError> {
     let optimized = eliminate_same_block_redundant_bounds_guards(before.module().clone())?;
     super::authority::bind_checked_same_block_bounds_guard_optimization(before, optimized)
         .map_err(BoundsGuardEliminationError::Authority)
+}
+
+/// Enabled transformations have explicit input/output and rejection behavior.
+/// Adding a pass requires an exhaustive dispatch arm that checks its candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassId {
+    SameBlockBoundsGuards,
+}
+
+pub enum CheckedPassOutcome {
+    Applied(CheckedOptimizedSafeWir),
+    Retained {
+        original: CheckedInitialSafeWir,
+        reason: BoundsGuardEliminationError,
+    },
+}
+
+impl CheckedPassOutcome {
+    pub fn module(&self) -> &CanonicalModule<InitialValid> {
+        match self {
+            Self::Applied(checked) => checked.module(),
+            Self::Retained { original, .. } => original.module(),
+        }
+    }
+
+    pub fn validate_final(
+        self,
+        source: &witchy_types::pipeline::CanonicalCheckedSource,
+    ) -> Result<super::ValidatedSafeWir, super::FinalValidationError> {
+        match self {
+            Self::Applied(checked) => super::validate_optimized_final(checked, source),
+            Self::Retained { original, .. } => super::validate_final(original, source),
+        }
+    }
+}
+
+pub fn run_checked_pass(before: CheckedInitialSafeWir, pass: PassId) -> CheckedPassOutcome {
+    let result = match pass {
+        PassId::SameBlockBoundsGuards => attempt_bounds_guard_pass(&before),
+    };
+    match result {
+        Ok(after) => CheckedPassOutcome::Applied(after),
+        Err(reason) => CheckedPassOutcome::Retained { original: before, reason },
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,23 +120,16 @@ impl fmt::Display for RewriteRelationError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct ComparisonKey {
-    operator: ComparisonOperator,
-    left: ValueId,
-    right: ValueId,
-}
-
 /// Remove only a later bounds guard whose comparison has exactly the same
 /// operator and SSA operands as an earlier surviving bounds guard in the same
 /// basic block.
 ///
-/// This is deliberately not part of the production pass registry yet.
+/// Production dispatch uses this same analysis and candidate checker.
 pub fn eliminate_same_block_redundant_bounds_guards(
     before: CanonicalModule<InitialValid>,
 ) -> Result<CanonicalModule<InitialValid>, BoundsGuardEliminationError> {
     let mut candidate: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
-    if rewrite(&mut candidate) {
+    if rewrite(&mut candidate, &mut AnalysisDb::new(&before)) {
         candidate.revision = before.revision.checked_next().ok_or(
             BoundsGuardEliminationError::RevisionOverflow {
                 revision: before.revision,
@@ -97,43 +142,27 @@ pub fn eliminate_same_block_redundant_bounds_guards(
         .map_err(BoundsGuardEliminationError::Safety)
 }
 
-fn rewrite(candidate: &mut CanonicalModule<OptimizationCandidate>) -> bool {
+fn rewrite(
+    candidate: &mut CanonicalModule<OptimizationCandidate>,
+    analyses: &mut AnalysisDb<'_>,
+) -> bool {
     let mut changed = false;
     for function in &mut candidate.functions {
         for block in &mut function.blocks {
-            let mut comparisons = BTreeMap::new();
-            let mut surviving = BTreeSet::new();
             let before_len = block.operations.len();
+            let mut operation_index = 0;
             block.operations.retain(|operation| {
-                match operation {
-                    Operation::Compare {
-                        destination,
-                        operator,
-                        left,
-                        right,
-                    } => {
-                        comparisons.insert(
-                            *destination,
-                            ComparisonKey {
-                                operator: *operator,
-                                left: *left,
-                                right: *right,
-                            },
-                        );
-                    }
-                    Operation::Guard {
-                        condition,
-                        kind: GuardKind::Bounds,
-                    } => {
-                        if let Some(key) = comparisons.get(condition).copied() {
-                            if !surviving.insert(key) {
-                                return false;
-                            }
-                        }
-                    }
-                    _ => {}
+                let point = ProgramPoint {
+                    revision: analyses.revision(),
+                    function: function.id,
+                    block: block.id,
+                    operation: operation_index,
+                };
+                operation_index += 1;
+                if !matches!(operation, Operation::Guard { kind: GuardKind::Bounds, .. }) {
+                    return true;
                 }
-                true
+                analyses.query::<BoundsGuardRedundancy>(point) != Some(&true)
             });
             changed |= block.operations.len() != before_len;
         }
@@ -280,6 +309,86 @@ mod tests {
     const SECOND_CONDITION: ValueId = ValueId::new(3);
     const MARKER: ValueId = ValueId::new(4);
     const TAIL_SITE: TailSiteId = TailSiteId::from_digest([7; 32]);
+
+    #[test]
+    fn analysis_facts_are_scoped_to_the_snapshot_and_program_point() {
+        let before = validated(duplicate_operations());
+        let point = ProgramPoint {
+            revision: before.revision(), function: FUNCTION, block: BlockId::new(0), operation: 6,
+        };
+        let mut analyses = AnalysisDb::new(&before);
+        assert_eq!(analyses.query::<BoundsGuardRedundancy>(point), Some(&true));
+        assert_eq!(analyses.query::<BoundsGuardRedundancy>(ProgramPoint { operation: 3, ..point }), Some(&false));
+        for invalid in [
+            ProgramPoint { revision: Revision::new(2), ..point },
+            ProgramPoint { function: FunctionId::new(7), ..point },
+            ProgramPoint { block: BlockId::new(9), ..point },
+            ProgramPoint { operation: 99, ..point },
+        ] {
+            assert_eq!(analyses.query::<BoundsGuardRedundancy>(invalid), None);
+        }
+        let mut different = duplicate_operations();
+        different[5] = comparison(SECOND_CONDITION, ComparisonOperator::LessEqualUnsigned, LEFT, RIGHT);
+        let other = validated(different);
+        assert_eq!(other.revision(), before.revision());
+        assert_eq!(AnalysisDb::new(&other).query::<BoundsGuardRedundancy>(point), Some(&false));
+
+        let after = eliminate_same_block_redundant_bounds_guards(before.clone()).unwrap();
+        let mut next = AnalysisDb::new(&after);
+        assert_eq!(next.query::<BoundsGuardRedundancy>(point), None);
+        assert_eq!(next.query::<BoundsGuardRedundancy>(ProgramPoint { revision: after.revision(), ..point }), None);
+    }
+
+    #[test]
+    fn repeated_passes_are_idempotent() {
+        let first = eliminate_same_block_redundant_bounds_guards(validated(duplicate_operations())).unwrap();
+        let second = eliminate_same_block_redundant_bounds_guards(first.clone()).unwrap();
+        assert_eq!(second.revision(), first.revision());
+        assert_eq!(super::super::identity::module_digest(&second), super::super::identity::module_digest(&first));
+    }
+
+    #[test]
+    fn optional_pass_failure_preserves_initial_authority_and_final_validation() {
+        let mut lowered = candidate(vec![block(0, duplicate_operations(), Terminator::Return { values: Vec::new() })]);
+        lowered.revision = Revision::new(u64::MAX);
+        let before = super::super::check_initial_with_test_witness(lowered).unwrap();
+        let expected = before.module().clone();
+        let outcome = run_checked_pass(before, PassId::SameBlockBoundsGuards);
+        let CheckedPassOutcome::Retained { original, reason } = outcome else {
+            panic!("an overflowing optional pass must retain its input");
+        };
+        assert!(matches!(reason, BoundsGuardEliminationError::RevisionOverflow { .. }));
+        assert_eq!(original.module().revision(), expected.revision());
+        assert_eq!(super::super::identity::module_digest(original.module()), super::super::identity::module_digest(&expected));
+        super::super::validate_final_for_test(original).expect("retained authority validates");
+    }
+
+    #[test]
+    fn independent_analysis_extensions_compute_once_per_function() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use super::super::analysis::Analysis;
+        static COMPUTATIONS: AtomicUsize = AtomicUsize::new(0);
+        struct OperationCount;
+        impl Analysis for OperationCount {
+            type Result = usize;
+            type Fact = usize;
+            const VERSION: u32 = 3;
+            fn compute(_module: &CanonicalModule<InitialValid>, function: &Function) -> usize {
+                COMPUTATIONS.fetch_add(1, Ordering::Relaxed);
+                function.blocks.iter().map(|block| block.operations.len()).sum()
+            }
+            fn fact_at(result: &usize, _point: ProgramPoint) -> Option<&usize> {
+                Some(result)
+            }
+        }
+        let before = validated(duplicate_operations());
+        let mut analyses = AnalysisDb::new(&before);
+        for operation in [0, 3, 6, 7] {
+            let point = ProgramPoint { revision: before.revision(), function: FUNCTION, block: BlockId::new(0), operation };
+            assert_eq!(analyses.query::<OperationCount>(point), Some(&7));
+        }
+        assert_eq!(COMPUTATIONS.load(Ordering::Relaxed), 1);
+    }
 
     fn block(id: u32, operations: Vec<Operation>, terminator: Terminator) -> BasicBlock {
         BasicBlock {

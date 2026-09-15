@@ -8,11 +8,11 @@ use std::fmt;
 
 use witchy_types::pipeline::{CanonicalCheckedSource, CheckedModule};
 use witchy_wir::canonical_safewir::optimize::{
-    BoundsGuardEliminationError, eliminate_same_block_redundant_bounds_guards_checked,
+    PassId, run_checked_pass,
 };
 use witchy_wir::canonical_safewir::{
     FinalValidationError, InitialWitnessError, ValidatedSafeWir, check_initial_with_witness,
-    validate_final, validate_optimized_final,
+    validate_final,
 };
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError, admit_canonical};
 
@@ -25,7 +25,6 @@ pub(crate) enum CanonicalPipelineError {
     Layout(CanonicalLayoutError),
     Lowering(CanonicalLoweringError),
     InitialValidation(InitialWitnessError),
-    Optimization(BoundsGuardEliminationError),
     FinalValidation(FinalValidationError),
     Admission(CanonicalAdmissionError),
 }
@@ -89,9 +88,7 @@ pub(crate) fn validate_checked_source(
         .iter()
         .any(|mode| mode == "opt")
     {
-        let optimized = eliminate_same_block_redundant_bounds_guards_checked(checked)
-            .map_err(CanonicalPipelineError::Optimization)?;
-        validate_optimized_final(optimized, source)
+        run_checked_pass(checked, PassId::SameBlockBoundsGuards).validate_final(source)
             .map_err(CanonicalPipelineError::FinalValidation)
     } else {
         // Ordinary mode remains the zero-pass baseline. The final validator

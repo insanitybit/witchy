@@ -1589,7 +1589,7 @@ pub fn validate_final(
 }
 
 pub(super) fn bind_checked_same_block_bounds_guard_optimization(
-    checked: CheckedInitialSafeWir,
+    checked: &CheckedInitialSafeWir,
     module: CanonicalModule<InitialValid>,
 ) -> Result<CheckedOptimizedSafeWir, OptimizationAuthorityError> {
     if checked.witness.checked_source != checked.module.checked_source()
@@ -1615,7 +1615,7 @@ pub(super) fn bind_checked_same_block_bounds_guard_optimization(
     );
     Ok(CheckedOptimizedSafeWir {
         module,
-        checked_lowering: checked.witness,
+        checked_lowering: checked.witness.clone(),
         optimization,
     })
 }
