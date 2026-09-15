@@ -27,6 +27,19 @@ impl FunctionLowerer<'_> {
         site: &abort::Site,
     ) -> Result<ValueId, CanonicalLoweringError> {
         self.diagnose_list_index(source, index, site)?;
+        self.rebuild_list_value(source, index, replacement, list_type)
+    }
+
+    /// Internal replacement also used for a dictionary's successful key
+    /// lookup. Keep every typed extent and bounds check here; only the
+    /// source-level list-index diagnostic belongs to the wrapper above.
+    pub(super) fn rebuild_list_value(
+        &mut self,
+        source: ValueId,
+        index: ValueId,
+        replacement: ValueId,
+        list_type: Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         if let Some(family) = self.owner_list_family(source).cloned() {
             if self.values[&index] != ValueType::Int
                 || self.values[&replacement] != ValueType::Gc(family.owner_type)

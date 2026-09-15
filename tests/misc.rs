@@ -140,6 +140,8 @@ mod rfc0165_chars_allocation;
 mod rfc0165_regex_spans;
 #[path = "misc/rfc0165_nullable_source.rs"]
 mod rfc0165_nullable_source;
+#[path = "misc/rfc0165_dictionary_mutation.rs"]
+mod rfc0165_dictionary_mutation;
 #[path = "misc/rfc0165_file_capability.rs"]
 mod rfc0165_file_capability;
 #[path = "misc/rfc0165_calc.rs"]

@@ -10827,8 +10827,8 @@ impl FunctionLowerer<'_> {
     }
 
     /// Dictionary keys use intrinsic scalar/string equality or a checked
-    /// source comparator. Values are scalars or strings for reads and scalars
-    /// for in-place writes; other value representations still fail closed.
+    /// source comparator. Scalar writes replace slots directly; string writes
+    /// rebuild the owned prefix without overwriting an initialized reference.
     fn lower_dict_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         match name {
             "dict.new" => {
@@ -10955,7 +10955,7 @@ impl FunctionLowerer<'_> {
 
     /// Insert `key -> value`: fresh copies of both lists carry the write
     /// (the old dictionary is untouched, value semantics); a present key
-    /// has its value slot overwritten and the old scalar comes back as
+    /// has its value replaced and the old value comes back as
     /// `Some(old)`, an absent key grows both lists and yields `None`.
     /// Returns the rebuilt dictionary and, when `extract` asks for it, the
     /// extracted option (its `Option(v)` layout exists only in a program
@@ -10970,7 +10970,7 @@ impl FunctionLowerer<'_> {
         value: ValueId,
         extract: bool,
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
-        if !Self::dict_scalar_value(value_type) {
+        if !Self::dict_scalar_value(value_type) && !Self::is_string_type(value_type) {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
         }
         let key_type = key_type.clone();
@@ -11008,27 +11008,43 @@ impl FunctionLowerer<'_> {
             else_target: miss,
             else_arguments: Vec::new(),
         })?;
-        // Hit: the value slot is overwritten in the fresh copy and the old
-        // scalar comes back as `Some(old)`.
+        // Materialize the displaced value before any replacement loop. This
+        // keeps its ownership independent of the list being rebuilt.
         self.current = hit;
         let count = *self.list_counts.get(&values).ok_or(CanonicalLoweringError::UnsupportedExpression("dict values extent"))?;
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, count)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        let old = self.load_list_element(values, index, element_type)?;
-        self.push_operation(Operation::Store {
-            place: witchy_wir::canonical_safewir::Place::projected(
-                values,
-                Projection::Element { index },
-                element_type,
-                AccessMode::Write,
-            ),
-            value,
-            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
-        });
-        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![keys, values])?;
+        let displaced = if let Some(option_shape) = &option_shape {
+            let old = self.load_list_element(values, index, element_type)?;
+            Some(self.lower_aggregate(option_shape, 0, vec![old])?)
+        } else {
+            None
+        };
+        let replaced = if Self::is_string_type(&value_type) {
+            let index_int = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::WidenSize { destination: index_int, value: index });
+            let replaced = self.rebuild_list_value(values, index_int, value, value_list.clone())?;
+            // replace_list_value preserves its source for ordinary list
+            // callers. Here the source is our private temporary clone.
+            self.push_operation(Operation::DropRef { object: values });
+            replaced
+        } else {
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    values,
+                    Projection::Element { index },
+                    element_type,
+                    AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            });
+            values
+        };
+        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![keys, replaced])?;
         let mut lanes = vec![rebuilt];
-        if let Some(option_shape) = &option_shape {
-            lanes.push(self.lower_aggregate(option_shape, 0, vec![old])?);
+        if let Some(displaced) = displaced {
+            lanes.push(displaced);
         }
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
         // Miss: both lists grow by the new entry; `None` comes back.
@@ -11037,6 +11053,8 @@ impl FunctionLowerer<'_> {
         let key = if Self::dict_scalar_value(&key_type) { key }
             else { self.owned_for_storage(key, &key_type)? };
         let grown_keys = self.push_owned_element(keys, key, &key_list)?;
+        let value = if Self::dict_scalar_value(&value_type) { value }
+            else { self.owned_for_storage(value, &value_type)? };
         let grown_values = self.push_owned_element(values, value, &value_list)?;
         let rebuilt = self.lower_aggregate_moving(shape, 0, vec![grown_keys, grown_values])?;
         let mut lanes = vec![rebuilt];
