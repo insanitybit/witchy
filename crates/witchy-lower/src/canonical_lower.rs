@@ -925,6 +925,8 @@ if capability_imports.contains("build_out_write_at") {
             rsa_pkcs1_sha256_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT).map(|import| import.id),
             sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
             rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
+            crypto_extensions: witchy_wir::canonical_safewir::CRYPTO_EXTENSION_IMPORT_NAMES.iter()
+                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
             compiler: compiler_imports.iter()
@@ -14983,6 +14985,7 @@ struct HostImports {
     rsa_pkcs1_sha256_verify: Option<witchy_wir::canonical_safewir::ImportId>,
     sha256: Option<witchy_wir::canonical_safewir::ImportId>,
     rune_hash: Option<witchy_wir::canonical_safewir::ImportId>,
+    crypto_extensions: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
     compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,

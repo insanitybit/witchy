@@ -5,6 +5,9 @@ use super::super::{memory_of, read_wbytes, read_wstr, read_wstr_list, VmState};
 use super::secret::secret_material_ref;
 use crate::value::NativeValue as Value;
 
+#[path = "crypto_extensions.rs"]
+mod extensions;
+
 pub(in crate::runtime) fn link_canonical_keyed(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "crypto_sign_into", host_crypto_sign_into)?;
     linker.func_wrap("witchy", "crypto_public_key_into", host_crypto_public_key_into)?;
@@ -68,6 +71,7 @@ pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()>
 
 /// Register authority-free crypto operations.
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
+    extensions::link(linker)?;
     linker.func_wrap("witchy", "crypto_ed25519_verify_slices", host_ed25519_verify_slices)?;
     linker.func_wrap("witchy", "crypto_rsa_pkcs1_sha256_verify_slices", host_rsa_pkcs1_sha256_verify_slices)?;
     linker.func_wrap("witchy", "crypto_sha256_slices", host_sha256_slices)?;

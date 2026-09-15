@@ -33,6 +33,7 @@ mod dir_handles;
 pub use dir_storage::OracleDirMutations;
 mod crypto;
 mod crypto_hash;
+mod crypto_extensions;
 mod dir_metadata;
 mod build_out;
 pub use build_out::OracleBuildWrite;
@@ -1565,6 +1566,9 @@ impl<'a> Engine<'a> {
             || contract.name == crate::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT
         {
             return self.crypto_hash_host_call(&contract.name, destinations, arguments, values);
+        }
+        if crate::canonical_safewir::CRYPTO_EXTENSION_IMPORT_NAMES.contains(&contract.name.as_str()) {
+            return self.crypto_extension_host_call(&contract.name, destinations, arguments, values);
         }
         if exec::is_import(&contract.name) {
             return self.exec_host_call(&contract.name, destinations, arguments, values);

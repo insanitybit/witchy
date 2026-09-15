@@ -186,6 +186,7 @@ row: for ABI version 8 every row declares layout schema 1 with `accepted = []`.
 An empty set is an authenticated reject-all contract, never a wildcard.
 
 <!-- BEGIN GENERATED WASM ABI IMPORTS -->
+
 | import | signature | class | authority | browser |
 | --- | --- | --- | --- | --- |
 | `print` | `(i32, i32)` | non-authority infrastructure | none | provided |
@@ -357,6 +358,13 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_append_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_set_executable_at` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_rename_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `crypto_sha3_256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `crypto_hmac_sha256_slices` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `crypto_shake128_slices` | `(i32, i32, i64, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `crypto_shake256_slices` | `(i32, i32, i64, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `crypto_ecdsa_p256_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
+| `crypto_ecdsa_p256_verify_hex_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
 
 <!-- END GENERATED WASM ABI IMPORTS -->
 

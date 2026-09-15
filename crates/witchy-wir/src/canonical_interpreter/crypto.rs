@@ -62,7 +62,7 @@ fn verify_status(key: &str, message: &str, signature: &str) -> i64 {
 
 // RSA hex is variable-length. Decode ASCII pairs independently of the native
 // parser, retaining its accepted leading-plus pair spelling ("+f" -> 15).
-fn rsa_hex(text: &str) -> Option<Vec<u8>> {
+pub(super) fn rsa_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) { return None; }
     let digit = |byte| match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -79,7 +79,7 @@ fn rsa_hex(text: &str) -> Option<Vec<u8>> {
 // Consume one definite-length TLV using shrinking slices rather than the
 // native parser's mutable cursor. Preserve its exact length acceptance: up to
 // four length octets, long form >=128, including redundant leading zero octets.
-fn rsa_tlv(input: &[u8], tag: u8) -> Option<(&[u8], &[u8])> {
+pub(super) fn rsa_tlv(input: &[u8], tag: u8) -> Option<(&[u8], &[u8])> {
     let (&actual, input) = input.split_first()?;
     if actual != tag { return None; }
     let (&first, input) = input.split_first()?;
@@ -98,7 +98,7 @@ fn rsa_tlv(input: &[u8], tag: u8) -> Option<(&[u8], &[u8])> {
     Some((body.get(..length)?, body.get(length..) ?))
 }
 
-fn rsa_integer(bytes: &[u8]) -> bool {
+pub(super) fn rsa_integer(bytes: &[u8]) -> bool {
     match bytes {
         [] => false,
         [first, rest @ ..] => first & 128 == 0

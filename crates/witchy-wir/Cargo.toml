@@ -23,6 +23,7 @@ witchy-types = { path = "../witchy-types" }
 foldhash = "0.2.0"
 # Cryptographic identity for canonical SafeWIR optimization history.
 sha2 = "0.11.0"
+tiny-keccak = { version = "2.0.2", features = ["sha3", "shake"] }
 blake3 = "1.8.3"
 regex = "1.11"
 # The validation/test helpers that execute an emitted module under wasmtime

@@ -388,11 +388,18 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_append_bytes_at" (func $dir_append_bytes_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_set_executable_at" (func $dir_set_executable_at_host (param externref i32 i32)))
   (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "crypto_sha3_256_slices" (func $crypto_sha3_256_slices_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "crypto_hmac_sha256_slices" (func $crypto_hmac_sha256_slices_host (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "witchy" "crypto_shake128_slices" (func $crypto_shake128_slices_host (param i32 i32 i64 i32 i32) (result i32)))
+  (import "witchy" "crypto_shake256_slices" (func $crypto_shake256_slices_host (param i32 i32 i64 i32 i32) (result i32)))
+  (import "witchy" "crypto_ecdsa_p256_verify_slices" (func $crypto_ecdsa_p256_verify_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
+  (import "witchy" "crypto_ecdsa_p256_verify_hex_slices" (func $crypto_ecdsa_p256_verify_hex_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
 "#;
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 169;
+pub const IMPORT_COUNT: usize = 176;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v13: stateless regex character spans use explicit, bounded byte slices.
@@ -554,6 +561,13 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "crypto_rsa_pkcs1_sha256_verify_slices"
         | "crypto_sha256_slices"
         | "crypto_rune_hash_slices"
+        | "crypto_sha512_slices"
+        | "crypto_sha3_256_slices"
+        | "crypto_hmac_sha256_slices"
+        | "crypto_shake128_slices"
+        | "crypto_shake256_slices"
+        | "crypto_ecdsa_p256_verify_slices"
+        | "crypto_ecdsa_p256_verify_hex_slices"
         | "crypto.__shake128"
         | "crypto.__shake256" => C::PureInfrastructure,
 
