@@ -6652,11 +6652,6 @@ impl FunctionLowerer<'_> {
         let declaration_id = *self.closures.declaration_by_layout.get(&layout).ok_or(
             CanonicalLoweringError::UnsupportedExpression("closure signature"),
         )?;
-        let signature = self
-            .signatures
-            .get(signature_id.get() as usize)
-            .cloned()
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
         let declaration = self
             .signatures
             .get(declaration_id.get() as usize)
@@ -6668,7 +6663,22 @@ impl FunctionLowerer<'_> {
         if let Some(result) = declaration.results.iter().copied().find(|value_type| !is_indirect_result(*value_type)) {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
-        let (mut call_arguments, write_backs) = self.lower_call_arguments("<closure>", arguments, declaration_id, &declaration, false)?;
+        let (call_arguments, write_backs) = self.lower_call_arguments("<closure>", arguments, declaration_id, &declaration, false)?;
+        let destinations = self.emit_closure_call(closure, signature_id, call_arguments)?;
+        self.rebind_write_backs(&write_backs, &declaration, &destinations)?;
+        Ok(destinations[..destinations.len() - write_back_count(&declaration)].to_vec())
+    }
+
+    /// Emit the same owned closure ABI for source arguments and for values
+    /// selected by intrinsic control flow. No synthetic source bindings are needed.
+    fn emit_closure_call(
+        &mut self,
+        closure: ValueId,
+        signature_id: FunctionSignatureId,
+        mut call_arguments: Vec<CallArgument>,
+    ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        let signature = self.signatures.get(signature_id.get() as usize).cloned()
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
         let code = self.closure_callable(closure, signature_id)?;
         let environment = self.clone_reference_token(closure)?;
         call_arguments.insert(0, CallArgument::Move(environment));
@@ -6684,8 +6694,7 @@ impl FunctionLowerer<'_> {
             signature: signature_id,
             arguments: call_arguments,
         });
-        self.rebind_write_backs(&write_backs, &declaration, &destinations)?;
-        Ok(destinations[..destinations.len() - write_back_count(&declaration)].to_vec())
+        Ok(destinations)
     }
 
     fn rebind_write_backs(
@@ -10831,7 +10840,16 @@ impl FunctionLowerer<'_> {
     /// rebuild the owned prefix without overwriting an initialized reference.
     fn lower_dict_call(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
         match name {
-            "dict.new" => {
+            "dict.new" | "dict.with_capacity" => {
+                match (name, args) {
+                    ("dict.new", []) => {}
+                    ("dict.with_capacity", [capacity]) => {
+                        // Reservation is a hint, including negative hints that
+                        // the interpreter clamps to zero. Its effects still run.
+                        self.lower_expr(capacity)?;
+                    }
+                    _ => return Err(CanonicalLoweringError::UnsupportedExpression("dict constructor arguments")),
+                }
                 let ty = self.expression_type(expression)?;
                 let (shape, key, value) = self.dictionary_parts(&ty)?;
                 let keys = self.push_empty_value(&Type::Named("List".into(), vec![key]))?;
@@ -10957,6 +10975,16 @@ impl FunctionLowerer<'_> {
                 let (rebuilt, _) = self.lower_dict_remove(dict, &shape, &key_type, &value_type, key, false)?;
                 Ok(rebuilt)
             }
+            "dict.__update" => {
+                let [operand, key, default, callback] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.update arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let default = self.lower_expr(default)?;
+                let callback = self.lower_expr(callback)?;
+                self.lower_dict_update(dict, &shape, &key_type, &value_type, key, default, callback)
+            }
             // The pure form: the dictionary with the entry, as a value.
             "dict.__insert" => {
                 let [operand, key, value] = args else {
@@ -11000,7 +11028,32 @@ impl FunctionLowerer<'_> {
         let values = self.dict_list(dict, shape, 1)?;
         let keys = self.clone_list_value_for_storage(keys, &key_list)?;
         let values = self.clone_list_value_for_storage(values, &value_list)?;
-                let (found, index) = self.lower_dict_find(keys, key, &key_type)?;
+        let (found, index) = self.lower_dict_find(keys, key, &key_type)?;
+        self.lower_dict_insert_found(
+            dict, shape, &key_type, &value_type, key, value, extract, (keys, values), (found, index),
+        )
+    }
+
+    /// Repair a dictionary using a previously established lookup and private
+    /// list copies. Update uses this after its single callback invocation.
+    fn lower_dict_insert_found(
+        &mut self,
+        dict: ValueId,
+        shape: &ScalarAggregateShape,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        value: ValueId,
+        extract: bool,
+        lists: (ValueId, ValueId),
+        lookup: (ValueId, ValueId),
+    ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        let key_type = key_type.clone();
+        let value_type = value_type.clone();
+        let key_list = Type::Named("List".into(), vec![key_type.clone()]);
+        let value_list = Type::Named("List".into(), vec![value_type.clone()]);
+        let (keys, values) = lists;
+        let (found, index) = lookup;
         let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
         let option_shape = extract
             .then(|| scalar_aggregate_shape(&option_type, self.definitions))
@@ -11086,6 +11139,80 @@ impl FunctionLowerer<'_> {
         self.bindings = bindings;
         let join_values = self.block_parameter_values(join);
         Ok((join_values[0], join_values.get(1).copied()))
+    }
+
+    /// Select the current/default value, call once on the common path, then
+    /// repair with the saved lookup. Callback effects and traps are not pure.
+    fn lower_dict_update(
+        &mut self,
+        dict: ValueId,
+        shape: &ScalarAggregateShape,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        default: ValueId,
+        callback: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if !Self::dict_scalar_value(value_type) && !Self::is_string_type(value_type) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
+        }
+        let layout = self.closure_layout_for_value(callback)?;
+        let signature_id = *self.closures.signature_by_layout.get(&layout)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        let declaration_id = *self.closures.declaration_by_layout.get(&layout)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        let expected = self.field_value_type(value_type)?;
+        let declaration = self.signatures.get(declaration_id.get() as usize)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("closure signature"))?;
+        if declaration.parameters != [expected] || declaration.results != [expected]
+            || write_back_count(declaration) != 0
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict.update callback signature"));
+        }
+
+        let keys = self.dict_list(dict, shape, 0)?;
+        let values = self.dict_list(dict, shape, 1)?;
+        let (found, index) = self.lower_dict_find(keys, key, key_type)?;
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let join = self.dict_value_join(value_type)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: found, then_target: hit, then_arguments: Vec::new(),
+            else_target: miss, else_arguments: Vec::new(),
+        })?;
+        self.current = hit;
+        let present = self.lower_dict_value_at(values, index, value_type)?;
+        let arguments = self.dict_value_lanes(present, value_type)?;
+        self.finish_current(Terminator::Branch { target: join, arguments })?;
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let absent = self.owned_dict_value(default, value_type)?;
+        let arguments = self.dict_value_lanes(absent, value_type)?;
+        self.finish_current(Terminator::Branch { target: join, arguments })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let selected = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&selected);
+        let argument = if matches!(expected, ValueType::Ref(_)) {
+            CallArgument::Move(self.clone_reference_token(selected[0])?)
+        } else {
+            CallArgument::Value(selected[0])
+        };
+        let results = self.emit_closure_call(callback, signature_id, vec![argument])?;
+        let [updated] = results.as_slice() else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict.update callback result"));
+        };
+        let key_list = Type::Named("List".into(), vec![key_type.clone()]);
+        let value_list = Type::Named("List".into(), vec![value_type.clone()]);
+        let keys = self.clone_list_value_for_storage(keys, &key_list)?;
+        let values = self.clone_list_value_for_storage(values, &value_list)?;
+        let (rebuilt, _) = self.lower_dict_insert_found(
+            dict, shape, key_type, value_type, key, *updated, false, (keys, values), (found, index),
+        )?;
+        Ok(rebuilt)
     }
 
     /// Remove one entry with a single key lookup. Both outcomes return fresh

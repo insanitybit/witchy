@@ -238,3 +238,71 @@ fn main(console: Console):
     ).expect("authenticated dictionary entry checks with its real dependencies");
     assert_checked_three_legs(&checked, &["first,middle,last", "first,middle", "first,middle"]);
 }
+
+#[test]
+fn dictionary_update_evaluates_defaults_and_calls_once_on_both_lookup_paths() {
+    let source = r#"
+fn default_value(console: Console) -> Int:
+    console.print("default")
+    100
+
+fn changed(console: Console, value: Int) -> Int:
+    console.print("callback:${value}")
+    value + 1
+
+fn main(console: Console):
+    var d: Dict(Int, Int) = dict.new()
+    d[1] = 5
+    let callback = fn(value: Int): changed(console, value)
+    dict.update(d, 1, default_value(console), callback)
+    dict.update(d, 2, default_value(console), callback)
+    console.print("${dict.at(d, 1)} ${dict.at(d, 2)} ${dict.length(d)}")
+"#;
+    let expected = ["default", "callback:5", "default", "callback:100", "6 101 2"];
+    assert_three_legs(source, &expected);
+    assert_three_legs(&format!("mode opt\n{source}"), &expected);
+}
+
+#[test]
+fn dictionary_update_preserves_string_snapshots_captures_and_aliased_results() {
+    assert_three_legs(r#"
+fn append(value: String) -> String:
+    value + "!"
+
+fn identity(value: String) -> String:
+    value
+
+fn main(console: Console):
+    var d: Dict(String, String) = dict.new()
+    d["a"] = "old"
+    dict.update(d, "a", "ignored", append)
+    let snapshot = d
+    let retained = dict.at(d, "a")
+    let callback = fn(value: String): value + retained
+    dict.update(d, "a", "", callback)
+    dict.update(d, "b", "new", callback)
+    dict.update(d, "a", "ignored", identity)
+    console.print(dict.at(snapshot, "a"))
+    console.print(retained)
+    console.print(dict.at(d, "a"))
+    console.print(dict.at(d, "b"))
+    console.print(dict.keys(d).join(","))
+"#, &["old!", "old!", "old!old!", "newold!", "a,b"]);
+}
+
+#[test]
+fn dictionary_capacity_hint_evaluates_once_and_negative_hint_keeps_an_empty_dict() {
+    let source = r#"
+fn hint(console: Console) -> Int:
+    console.print("hint")
+    return -5
+
+fn main(console: Console):
+    var d: Dict(Int, Int) = dict.with_capacity(hint(console))
+    console.print("${dict.length(d)}")
+    dict.update(d, 4, 40, fn(value: Int): value + 2)
+    console.print("${dict.at(d, 4)}")
+"#;
+    assert_three_legs(source, &["hint", "0", "42"]);
+    assert_three_legs(&format!("mode opt\n{source}"), &["hint", "0", "42"]);
+}
