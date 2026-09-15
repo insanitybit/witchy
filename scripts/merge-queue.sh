@@ -1613,8 +1613,8 @@ cmd_submit() {
         submit_current_branch="$(git -C "$here" branch --show-current 2>/dev/null || true)"
         if [ "$submit_current_branch" = "$branch" ] \
             && [ -x "$here/scripts/agent-check.sh" ] \
-            && git -C "$here" diff --quiet --ignore-submodules -- \
-            && git -C "$here" diff --cached --quiet --ignore-submodules --; then
+            && [ -z "$(git -C "$here" status --porcelain=v1 \
+                --untracked-files=all --ignore-submodules 2>/dev/null)" ]; then
             note "no exact receipt for $branch@${tip_sha:0:9}; running focused pre-submit checks"
             if "$here/scripts/agent-check.sh" edit; then
                 if [ -f "$receipt_file" ]; then

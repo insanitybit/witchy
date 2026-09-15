@@ -1857,6 +1857,63 @@ fn a_clean_linked_submission_runs_the_automatic_focused_shard() {
     assert_eq!(submitted["presubmit_edit_elapsed_s"], "1");
 }
 
+#[test]
+fn a_dirty_linked_submission_skips_the_automatic_focused_shard() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let linked = fixture._temp.path().join("linked-a");
+    run_git(
+        &fixture.root,
+        &["worktree", "add", "--quiet", linked.to_str().unwrap(), "a"],
+    );
+    let linked_scripts = linked.join("scripts");
+    fs::create_dir_all(&linked_scripts).expect("create linked script directory");
+    let source_root = workspace_root();
+    fs::copy(
+        source_root.join("scripts/merge-queue.sh"),
+        linked_scripts.join("merge-queue.sh"),
+    )
+    .expect("copy merge queue script");
+    fs::copy(
+        source_root.join("scripts/state-paths.sh"),
+        linked_scripts.join("state-paths.sh"),
+    )
+    .expect("copy state path helper");
+    let marker = fixture._temp.path().join("automatic-edit-ran");
+    let agent_check = linked_scripts.join("agent-check.sh");
+    fs::write(
+        &agent_check,
+        format!(
+            "#!/usr/bin/env bash\nprintf 'ran\\n' > '{}'\n",
+            marker.display()
+        ),
+    )
+    .expect("write focused-check fixture");
+    fs::set_permissions(&agent_check, fs::Permissions::from_mode(0o755))
+        .expect("chmod focused-check fixture");
+
+    let mut command = Command::new("bash");
+    command
+        .arg(linked_scripts.join("merge-queue.sh"))
+        .args(["submit", "a"])
+        .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+        .env("MERGE_QUEUE_AUTOSTART", "0")
+        .env("MERGE_QUEUE_AUTO_PRESUBMIT", "1")
+        .env("MERGE_QUEUE_ALLOW_MERGE", "1");
+    let output = command.output().expect("run dirty linked automatic submit");
+    assert!(output.status.success(), "dirty submit failed");
+    assert!(!marker.exists(), "dirty linked checkout ran focused checks");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no green shard recorded"), "{stderr}");
+    let submitted = fixture
+        .journal()
+        .into_iter()
+        .find(|event| event["event"] == "submitted")
+        .expect("dirty submission was journaled");
+    assert_eq!(submitted["presubmit_sha_match"], "false");
+}
+
 /// `status` has always carried per-change `readiness`, but `doctor` -- the view
 /// an operator reads -- printed queue FILENAMES. A change stuck behind a failed
 /// parent therefore looked identical to one about to gate, and sat at the HEAD
