@@ -523,6 +523,213 @@ fn main(console: Console):
 "#, vec!["7".to_owned(), "11".to_owned(), "early".to_owned(), "late!".to_owned()]);
 }
 
+#[test]
+fn structural_equality_checks_nested_values_and_recursive_instantiations() {
+    let source = r#"
+type Stack:
+    Empty
+    Push(a, Stack(a))
+
+fn same(left: Stack(Int), right: Stack(Int)) -> Bool:
+    left == right
+
+fn main(console: Console):
+    let left = ([1, 2], (3, 4))
+    let right = ([1, 2], (3, 4))
+    console.print("${left == right}")
+    console.print("${([1], [2]) != ([1], [9])}")
+    console.print("${same(Push(1, Empty), Push(1, Empty))}")
+    console.print("${same(Push(1, Empty), Empty)}")
+    console.print("${Push(2, Push(1, Empty)) == Push(2, Push(9, Empty))}")
+    console.print("${Push(\"b\", Push(\"a\", Empty)) == Push(\"b\", Push(\"a\", Empty))}")
+    console.print("${Push(\"b\", Push(\"a\", Empty)) != Push(\"b\", Push(\"z\", Empty))}")
+"#;
+    let expected = ["true", "true", "true", "false", "false", "true", "true"]
+        .into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+#[test]
+fn structural_equality_preserves_custom_payload_equality_and_ieee_nan() {
+    let source = r#"
+type Key:
+    id: Int
+    cache: String
+
+impl PartialEq for Key:
+    fn eq(self, other: Key) -> Bool:
+        self.id == other.id
+
+type Tree:
+    Leaf(Key)
+    Branch(Tree, Tree)
+
+fn main(console: Console):
+    let left = ([Key(1, "left")], (7, "same"))
+    let right = ([Key(1, "right")], (7, "same"))
+    console.print("${left == right}")
+    console.print("${left == ([Key(2, \"left\")], (7, \"same\"))}")
+    let tree = Branch(Leaf(Key(1, "a")), Leaf(Key(2, "b")))
+    console.print("${tree == Branch(Leaf(Key(1, \"x\")), Leaf(Key(2, \"y\")))}")
+    console.print("${tree == Branch(Leaf(Key(1, \"x\")), Leaf(Key(3, \"y\")))}")
+    console.print("${tree != Branch(Leaf(Key(1, \"x\")), Leaf(Key(2, \"y\")))}")
+    console.print("${tree == Leaf(Key(1, \"a\"))}")
+    let nan = 0.0 / 0.0
+    let containing_nan = ([nan], 1)
+    console.print("${containing_nan == containing_nan}")
+    console.print("${containing_nan != containing_nan}")
+"#;
+    let expected = ["true", "false", "true", "false", "false", "false", "false", "true"]
+        .into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+#[test]
+fn structural_equality_evaluates_operands_once_and_keeps_the_left_snapshot() {
+    let source = r#"
+fn left(values: List(Int), console: Console) -> (List(Int), String):
+    console.print("left")
+    (values, "same")
+
+fn right(var values: List(Int), console: Console) -> (List(Int), String):
+    console.print("right")
+    values[0] = 9
+    (values, "same")
+
+fn main(console: Console):
+    var values = [1]
+    let snapshot = values
+    console.print("${left(values, console) == right(values, console)}")
+    console.print("${snapshot[0]} ${values[0]}")
+"#;
+    let expected = ["left", "right", "false", "1 9"]
+        .into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+#[test]
+fn structural_equality_only_compares_the_active_variant_payload() {
+    let source = r#"
+type Poison:
+    divisor: Int
+
+impl PartialEq for Poison:
+    fn eq(self, other: Poison) -> Bool:
+        (1 / self.divisor) == other.divisor
+
+type Choice:
+    Absent
+    Present(Poison)
+
+fn main(console: Console):
+    let absent: Choice = Absent
+    let present = Present(Poison(0))
+    console.print("${absent == present}")
+    console.print("${present == absent}")
+    console.print("${absent == absent}")
+"#;
+    let expected = ["false", "false", "true"]
+        .into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+
+    // The payload comparison really traps when both variants select it; a
+    // comparator that drops custom equality entirely must not pass the probe.
+    let active = source.replace("absent == present", "present == present");
+    let checked = witchy::resolve_std_only_checked(&active).expect("checked active payload");
+    assert!(witchy::interpreter::run_module_args(
+        checked.module().clone(), ".", Vec::new(), Vec::new(),
+    ).is_err(), "source custom equality divides by zero");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("active payload comparison admits before execution");
+    let entry = artifact.entry().expect("main entry");
+    let function = witchy_wir::canonical_safewir::FunctionId::new(
+        entry.export().strip_prefix('f').expect("canonical export prefix")
+            .parse().expect("function id"),
+    );
+    let validated = witchy::codegen::validate_checked_module_for_oracle(&checked)
+        .expect("active payload oracle validates");
+    let capabilities = entry.capabilities().iter().copied()
+        .map(witchy_wir::canonical_interpreter::InterpreterValue::entry_capability)
+        .collect();
+    assert!(witchy_wir::canonical_interpreter::interpret_program(
+        &validated, function, capabilities, Default::default(),
+    ).is_err(), "oracle executes the trapping payload comparator");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        witchy::runtime::Capabilities {
+            print: true, quiet: true, ..Default::default()
+        },
+        256,
+    ).expect("admitted active payload instance");
+    assert!(vm.run().is_err(), "Wasm executes the trapping payload comparator");
+}
+
+#[test]
+fn structural_equality_preserves_nested_dictionary_entry_order() {
+    let source = r#"
+import dict
+
+fn main(console: Console):
+    var left: Dict(String, Int) = dict.new()
+    left["a"] = 1
+    left["b"] = 2
+    var reversed: Dict(String, Int) = dict.new()
+    reversed["b"] = 2
+    reversed["a"] = 1
+    var same: Dict(String, Int) = dict.new()
+    same["a"] = 1
+    same["b"] = 2
+    console.print("${([left], 0) == ([reversed], 0)}")
+    console.print("${([left], 0) == ([same], 0)}")
+    console.print("${([left], 0) != ([reversed], 0)}")
+"#;
+    let expected = ["false", "true", "true"]
+        .into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+#[test]
+fn structural_equality_closes_new_dictionary_comparator_dependencies() {
+    let source = r#"
+import cmp
+import dict
+
+type Key derive(Eq):
+    id: Int
+    cache: Int
+
+impl PartialEq for Key:
+    fn eq(self, other: Key) -> Bool:
+        self.id == other.id
+
+type Box:
+    Box(a)
+
+impl PartialEq for Box(a) where a: PartialEq:
+    fn eq(self, other: Self) -> Bool:
+        var seen: Dict(Key, Int) = dict.new()
+        seen[Key(1, 10)] = 7
+        let found = seen.get_or(Key(1, 99), 0) == 7
+        match self:
+            Box(left) ->
+                match other:
+                    Box(right) -> found && left == right
+
+fn main(console: Console):
+    console.print("${[Box(1)] == [Box(1)]}")
+    console.print("${[Box(1)] == [Box(2)]}")
+"#;
+    let expected = ["true", "false"].into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_three_legs(source, expected.clone());
+    assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
 fn assert_three_legs(source: &str, expected: Vec<String>) {
     assert_three_legs_with_config(source, expected, Default::default());
 }

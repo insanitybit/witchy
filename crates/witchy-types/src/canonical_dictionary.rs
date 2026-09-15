@@ -39,23 +39,35 @@ fn discover(typed: &TypedModule, known: &[(Type, String)]) -> Result<Vec<Type>, 
     Ok(keys)
 }
 
-pub(crate) fn prepare(
-    mut typed: TypedModule,
-    catalog: &WitnessCatalog,
-) -> Result<(TypedModule, Vec<(Type, String)>), String> {
-    let prefix = format!("{}.$dictionary_eq_", typed.module().linked_entry.as_deref().unwrap_or("$canonical"));
-    if typed.module().items.iter().any(|item| matches!(item,
-        Item::Function(function) if function.name.starts_with(&prefix)))
-    {
-        return Err("canonical dictionary comparator declaration collision".into());
+/// One preparation session, extended as other source transformations expose
+/// new dictionary users. Existing wrappers remain tied to their concrete key
+/// and checked catalog; their names are never rediscovered as authority.
+pub(crate) struct Preparation<'catalog> {
+    prefix: String,
+    catalog: &'catalog WitnessCatalog,
+    comparators: Vec<(Type, String)>,
+}
+
+impl<'catalog> Preparation<'catalog> {
+    pub(crate) fn new(typed: &TypedModule, catalog: &'catalog WitnessCatalog) -> Result<Self, String> {
+        let prefix = format!("{}.$dictionary_eq_", typed.module().linked_entry.as_deref().unwrap_or("$canonical"));
+        if typed.module().items.iter().any(|item| matches!(item,
+            Item::Function(function) if function.name.starts_with(&prefix)))
+        {
+            return Err("canonical dictionary comparator declaration collision".into());
+        }
+        Ok(Self { prefix, catalog, comparators: Vec::new() })
     }
-    let mut comparators = Vec::new();
+
+    pub(crate) fn into_comparators(self) -> Vec<(Type, String)> { self.comparators }
+
+    pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, String> {
     loop {
-        let keys = discover(&typed, &comparators)?;
-        if keys.is_empty() { return Ok((typed, comparators)); }
+        let keys = discover(&typed, &self.comparators)?;
+        if keys.is_empty() { return Ok(typed); }
         let mut module = typed.into_module();
         for key in keys {
-        let target = catalog.dictionary_equality(&key)?;
+        let target = self.catalog.dictionary_equality(&key)?;
         if !module.items.iter().any(|item| matches!(item,
             Item::Function(function) if function.name == target
                 && !crate::pipeline::function_has_free_signature_variables(function)))
@@ -66,7 +78,7 @@ pub(crate) fn prepare(
         // The wrapper is an actual called function, not a fabricated scope
         // reference. Its checked body makes the selected implementation and
         // all its transitive callees part of ordinary canonical reachability.
-        let name = format!("{prefix}{}", comparators.len());
+        let name = format!("{}{}", self.prefix, self.comparators.len());
         module.items.push(Item::Function(Function {
             line: 0, public: false, pure: false, comptime_only: false,
             attributes: Vec::new(), name: name.clone(),
@@ -84,12 +96,13 @@ pub(crate) fn prepare(
             },
             bounds: Vec::new(), is_gen: false, is_async: false,
         }));
-        comparators.push((key, name));
+        self.comparators.push((key, name));
         }
         // Comparator bodies can themselves use dictionaries. Close over newly
         // reachable bodies, visiting each concrete key once. No pass invents
         // bodies here: targets must already exist in the finite checked module.
         // Structural mutation also invalidates all expression-address facts.
         typed = typeck::annotate_checked(module).map_err(|error| error.to_string())?;
+    }
     }
 }

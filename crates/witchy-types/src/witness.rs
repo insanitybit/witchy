@@ -68,7 +68,85 @@ pub struct WitnessCatalog {
     impls: Vec<ImplDef>,
 }
 
+/// Names derived from an actual retained PartialEq declaration and matching
+/// implementation. Neither name is an authority token: preparation must find
+/// or ordinarily specialize the executable body and recheck its signature.
+pub(crate) struct EqualityMethod {
+    pub template: String,
+    pub instance: String,
+    pub pure: bool,
+}
+
 impl WitnessCatalog {
+    pub(crate) fn equality_method(&self, concrete: &Type) -> Result<Option<EqualityMethod>, String> {
+        let mut declarations = self.traits.iter().filter(|definition| {
+            crate::traits::is_standard_trait_identity(&definition.name, "cmp", "PartialEq")
+        });
+        let Some(declaration) = declarations.next() else { return Ok(None) };
+        if declarations.next().is_some() {
+            return Err("structural equality trait identity is ambiguous".into());
+        }
+        let method = declaration.methods.iter().find(|method| method.name == "eq")
+            .ok_or("structural equality trait has no eq method")?;
+        let impls = self.impls.iter().collect::<Vec<_>>();
+        if !has_applicable_impl(&impls, &declaration.name, &[], concrete, &mut HashSet::new()) {
+            return Ok(None);
+        }
+        let (implementation, bindings) = resolve_impl(&impls, &declaration.name, &[], concrete)?;
+        let provided = implementation.methods.iter().find(|implementation| implementation.name == "eq");
+        Ok(Some(EqualityMethod {
+            template: crate::traits::mangle(Some(&declaration.name), &implementation.trait_args,
+                &implementation.type_name, "eq"),
+            instance: monomorphic_impl_method_name(&declaration.name, implementation, method,
+                &HashMap::new(), &bindings)?,
+            pure: provided.map_or(method.pure, |method| method.pure),
+        }))
+    }
+
+    /// Reconstruct ordinary dispatch inputs in a disposable specialization
+    /// module. The caller imports only newly reached executable functions, not
+    /// these declarations or regenerated versions of existing checked bodies.
+    pub(crate) fn equality_dispatch_module(&self, mut module: Module) -> Module {
+        let mut lifted = HashSet::new();
+        for implementation in &self.impls {
+            for method in &implementation.methods {
+                lifted.insert(crate::traits::mangle(implementation.trait_name.as_deref(),
+                    &implementation.trait_args, &implementation.type_name, &method.name));
+            }
+            if let Some(declaration) = self.traits.iter().find(|declaration|
+                implementation.trait_name.as_deref() == Some(declaration.name.as_str()))
+            {
+                for method in &declaration.methods {
+                    lifted.insert(crate::traits::mangle(Some(&declaration.name),
+                        &implementation.trait_args, &implementation.type_name, &method.name));
+                }
+            }
+        }
+        // Prefer already elaborated template bodies: their calls to inherent
+        // methods have been resolved by the original checked link as well.
+        let mut implementations = self.impls.clone();
+        for implementation in &mut implementations {
+            for method in &mut implementation.methods {
+                let name = crate::traits::mangle(implementation.trait_name.as_deref(),
+                    &implementation.trait_args, &implementation.type_name, &method.name);
+                if let Some(function) = module.items.iter().find_map(|item| match item {
+                    Item::Function(function) if function.name == name => Some(function),
+                    _ => None,
+                }) {
+                    method.body = function.body.clone();
+                }
+            }
+        }
+        module.items.retain(|item| match item {
+            Item::Trait(_) | Item::Impl(_) => false,
+            Item::Function(function) => !lifted.contains(&function.name),
+            _ => true,
+        });
+        module.items.extend(self.traits.iter().cloned().map(Item::Trait));
+        module.items.extend(implementations.into_iter().map(Item::Impl));
+        module
+    }
+
     /// Resolve a dictionary comparator from retained declarations, never from
     /// a backend reconstruction of a mangled function name. The canonical
     /// frontend still checks the selected executable body and its signature.

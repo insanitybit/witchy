@@ -785,14 +785,19 @@ fn canonicalize_callable_instances(
             message: "canonical source projection contains an unprepared generator".into(),
         }));
     }
-    let (module, generic_instances) =
+    let (module, mut generic_instances) =
         crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
     let typed = typeck::annotate_checked(module)?;
-    let (typed, dictionary_comparators) = match dictionary_catalog {
-        Some(catalog) => crate::canonical_dictionary::prepare(typed, catalog)
-            .map_err(|message| PipelineError::Type(TypeError { message }))?,
-        None => (typed, Vec::new()),
-    };
+    let (typed, equality_instances, dictionary_comparators) = crate::canonical_equality::prepare(typed, dictionary_catalog)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    for (name, identity) in equality_instances {
+        if generic_instances.get(&name).is_some_and(|previous| previous != &identity) {
+            return Err(PipelineError::Type(TypeError {
+                message: format!("equality preparation changed specialization identity `{name}`"),
+            }));
+        }
+        generic_instances.insert(name, identity);
+    }
     let mut callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
     callable_witness.dictionary_comparators = dictionary_comparators;
     Ok((typed, callable_witness))
