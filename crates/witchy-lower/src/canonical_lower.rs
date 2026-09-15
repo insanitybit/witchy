@@ -16537,7 +16537,10 @@ fn main() -> Int:
             list_layouts(),
         )
         .expect("lower List(Int) push source");
-        let operations = &candidate.functions()[0].blocks[0].operations;
+        // Capacity selection branches before initialization and release.
+        // Inspect every block; check_initial below proves the CFG obligations.
+        let operations = candidate.functions()[0].blocks.iter()
+            .flat_map(|block| &block.operations).collect::<Vec<_>>();
         assert!(operations.iter().any(|operation| matches!(
             operation,
             Operation::Guard { kind: GuardKind::Arithmetic, .. }
