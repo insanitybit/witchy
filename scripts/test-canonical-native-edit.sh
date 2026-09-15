@@ -120,7 +120,7 @@ expected_scopes = [
 for row, scope in zip(rows[2:5], expected_scopes):
     assert row["args"][row["args"].index("-E") + 1].startswith(scope + " and (")
 assert "binary(=cli_subcommands)" in rows[5]["args"][rows[5]["args"].index("-E") + 1]
-assert "fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm" in rows[5]["args"][rows[5]["args"].index("-E") + 1]
+assert "fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact" in rows[5]["args"][rows[5]["args"].index("-E") + 1]
 # Metadata belongs only to this run; no stale reusable success cache remains.
 assert not pathlib.Path(rows[2]["args"][rows[2]["args"].index("--binaries-metadata") + 1]).exists()
 PY

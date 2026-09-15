@@ -440,7 +440,7 @@ for p in "${paths[@]}"; do
             # Keep the edit loop on the recent gate-red output contract plus
             # one sandbox authority and one fetch-root admission guard. The
             # complete cli_subcommands target remains in landing.
-            add_early "cargo nextest run --test cli_subcommands -E 'test(=wasm_nil_main_int_output_is_not_eaten_as_exit_code) or test(=sandbox_wasm_requires_explicit_dir_grant) or test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+            add_early "cargo nextest run --test cli_subcommands -E 'test(=source_nil_main_int_output_is_not_eaten_as_exit_code) or test(=sandbox_wasm_requires_explicit_dir_grant) or test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
             path_has_early=1 ;;
         crates/witchy-wir/tests/owned_slot_child_storage.rs)
             add_early "cargo nextest run -p witchy-wir --features native --test owned_slot_child_storage -E 'test(=owned_slots_require_managed_child_storage_before_consuming_move)'"
@@ -536,7 +536,7 @@ for p in "${paths[@]}"; do
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::web/)'" ;;
         src/commands/dispatch.rs)
             any_rust=1
-            add_early "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+            add_early "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
             add_witchy_test 'commands::'
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^commands::/)'" ;;
         src/commands/*)
@@ -960,7 +960,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     cmds=(
         "cargo nextest run -p witchy-wir --features native --lib --test rfc0165_route_gate -E '${canonical_native_wir_expr}'"
         "cargo nextest run -p witchy-lower --features witchy-wir/native --lib${canonical_build_recipe_lower_target} -E '${canonical_native_lower_expr}'"
-        "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E '${canonical_native_app_expr}' && ./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+        "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --bin witchy --test misc --ignore-default-filter -E '${canonical_native_app_expr}' && ./scripts/nextest-admitted.sh witchy -- cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
     )
     if [ "$canonical_build_recipe" -eq 1 ]; then
         cmds+=("cargo nextest run -p witchy-runtime --features native --lib -E 'test(/^runtime::host::build_read_tests::/) or test(/^runtime::host::build_env_tests::/) or test(=runtime::host::closure_owner::tests::build_read_captures_authenticate_kind_session_projection_and_cleanup) or test(=runtime::host::closure_owner::tests::build_env_captures_reauthenticate_root_and_optional_response_and_cleanup)'")

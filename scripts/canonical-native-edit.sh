@@ -78,7 +78,7 @@ WITCHY_ORACLE_EXAMPLE=calc cargo nextest run "${reuse[@]}" --ignore-default-filt
     -E "package(=witchy) and ((kind(bin) and binary(=witchy)) or (kind(test) and binary(=misc))) and ($root_filter)"
 echo "canonical native: app group also probes fetch-root origin admission"
 env -u WITCHY_ORACLE_EXAMPLE cargo nextest run "${reuse[@]}" \
-    -E "package(=witchy) and kind(test) and binary(=cli_subcommands) and test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)"
+    -E "package(=witchy) and kind(test) and binary(=cli_subcommands) and test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)"
 if [ "$(git rev-parse HEAD)" != "$start_sha" ]; then
     echo "canonical native: HEAD changed during build/run; no receipt" >&2
     exit 1
