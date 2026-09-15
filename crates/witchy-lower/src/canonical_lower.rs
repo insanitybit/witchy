@@ -3599,16 +3599,16 @@ impl FunctionLowerer<'_> {
         // An extent lane can rename counts also used by an unchanged snapshot
         // of a string or list. The checker may meet that snapshot at header
         // precision, so pre-branch cached extents no longer authenticate it.
-        // Reload only affected list snapshots and aliased-lane parameters.
-        // Unrelated lists, including invariant iterables and outer-loop
-        // phis, must retain their authenticated count/capacity identities.
+        // String bounds are established by the single length header: split
+        // count/capacity arguments do not preserve those identities through
+        // every meet. Reauthenticate strings as before. Lists have a separate
+        // capacity bound; only affected snapshots may discard that identity.
         if shared_result_extents.is_some() || plans.iter().any(|plan| plan.has_lanes()) {
             let joined_result = result;
             let snapshots = self.bindings.values().copied()
                 .filter(|value| Some(*value) != joined_result && (
-                    (self.string_lengths.contains_key(value)
-                        && !join_parameters.iter().any(|parameter| parameter.value == *value))
-                    || ((self.list_counts.contains_key(value) || self.string_lengths.contains_key(value))
+                    self.string_lengths.contains_key(value)
+                    || (self.list_counts.contains_key(value)
                         && snapshot_parameters.contains(value))
                 ))
                 .collect::<BTreeSet<_>>();
