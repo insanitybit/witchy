@@ -230,6 +230,8 @@ grant confinement, independent validation, execution, and heap cleanup.
 
 | 2026-09-15 | Probe CLI output, sandbox authority, and fetch-root admission before the workspace gate | A direct `tests/cli_subcommands.rs` edit now selects three contract assertions: the recent nil-main output regression, explicit sandbox directory authority, and explicit fetch-root admission. The complete `cli_subcommands` target remains in landing. | `ac5fc8620`; the router regression and exact `edit,queue-infra-edit` receipt passed in 183s, followed by a 111s green full gate. | The nil-main assertion previously failed after 90s of gate time while its body took 0.265s. The route changes edit frequency from the whole CLI target to three named guards. Matched warm wall savings are not yet measured; failure-rework avoidance is the supported result. |
 
+| 2026-09-15 | Replay the owned-reference WasmIR failure before landing | The direct `canonical_wasmir.rs` edit route now includes `admitted_owned_reference_call_executes_and_preserves_ownership`, while deferring the two measured mutation-stress tests; the complete landing selection is unchanged. | `7acb5f5d3`; the focused receipt covered `edit,queue-infra-edit` in 86s and the full gate passed in 130s. | The prior ownership assertion failed after 202s of gate time while its body took 0.046s. This closes a demonstrated failure-rework gap. The route’s matched warm wall saving remains unmeasured. |
+
 Update this table only after terminal queue evidence. Record proposals and
 failed experiments in the criterion state or accompanying change, without
 presenting them as measured improvements.
