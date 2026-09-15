@@ -775,16 +775,14 @@ fn compile_rejects_unproved_package_owner_assignments_before_emission() {
     assert!(!wasm.exists());
 }
 
-// ---- BUG-104 / BUG-106: compiled `.wasm` artifact launch ----
+// ---- BUG-104 / BUG-106: output preservation and raw `.wasm` refusal ----
 
 #[test]
-fn wasm_nil_main_int_output_is_not_eaten_as_exit_code() {
+fn source_nil_main_int_output_is_not_eaten_as_exit_code() {
     // The BUG-104 guard: a Nil `main` that prints ints keeps every line and exits 0.
     let dir = workdir("wasm-print");
     let src = write(&dir, "p.witchy", "fn main(console: Console):\n    console.print(\"42\")\n    console.print(\"99\")\n");
-    let wasm = dir.join("p.wasm");
-    assert!(run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]).status.success());
-    let out = run(&[wasm.to_str().unwrap()]);
+    let out = run(&[&src]);
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n99\n");
 }
