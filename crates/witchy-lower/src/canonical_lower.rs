@@ -53,6 +53,10 @@ mod owned_tests;
 #[path = "canonical_optimizer_tests.rs"]
 mod optimizer_tests;
 
+#[cfg(test)]
+#[path = "canonical_short_circuit_tests.rs"]
+mod short_circuit_tests;
+
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
 use witchy_types::canonical_aggregates::{concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
 use witchy_types::pipeline::CanonicalCheckedSource;
@@ -3233,8 +3237,41 @@ impl FunctionLowerer<'_> {
         else_block: &witchy_syntax::ast::Block,
         with_value: bool,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
-        let string_layout = self.string_layout_id().ok();
         let condition = self.lower_expr(condition)?;
+        self.lower_conditional_branches(condition, |this| {
+            if with_value {
+                match this.lower_block_flow_value(then_block)? {
+                    Some(value) => Ok(Some(this.detach_bound_result(value)?)),
+                    None => Ok(None),
+                }
+            } else {
+                this.lower_block_effect(then_block)?;
+                Ok(None)
+            }
+        }, |this| {
+            if with_value {
+                match this.lower_block_flow_value(else_block)? {
+                    Some(value) => Ok(Some(this.detach_bound_result(value)?)),
+                    None => Ok(None),
+                }
+            } else {
+                this.lower_block_effect(else_block)?;
+                Ok(None)
+            }
+        })
+    }
+
+    /// Lower each successor once from the post-condition state, then join
+    /// results and changed bindings through the same owned-reference lanes.
+    /// Callbacks preserve the original checked expression identities: no
+    /// synthetic AST or second evaluation is needed for short-circuiting.
+    fn lower_conditional_branches(
+        &mut self,
+        condition: ValueId,
+        lower_then: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
+        lower_else: impl FnOnce(&mut Self) -> Result<Option<ValueId>, CanonicalLoweringError>,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let string_layout = self.string_layout_id().ok();
         if self.values[&condition] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
         }
@@ -3252,15 +3289,7 @@ impl FunctionLowerer<'_> {
 
         self.current = then_id;
         self.bindings = outer.clone();
-        let then_value = if with_value {
-            match self.lower_block_flow_value(then_block)? {
-                Some(value) => Some(self.detach_bound_result(value)?),
-                None => None,
-            }
-        } else {
-            self.lower_block_effect(then_block)?;
-            None
-        };
+        let then_value = lower_then(self)?;
         let then_bindings = self.bindings.clone();
         let then_end = self.current;
         let then_terminated = self.blocks[then_end.get() as usize].terminator.is_some();
@@ -3271,15 +3300,7 @@ impl FunctionLowerer<'_> {
 
         self.current = else_id;
         self.bindings = outer.clone();
-        let else_value = if with_value {
-            match self.lower_block_flow_value(else_block)? {
-                Some(value) => Some(self.detach_bound_result(value)?),
-                None => None,
-            }
-        } else {
-            self.lower_block_effect(else_block)?;
-            None
-        };
+        let else_value = lower_else(self)?;
         let else_bindings = self.bindings.clone();
         let else_end = self.current;
         let else_terminated = self.blocks[else_end.get() as usize].terminator.is_some();
@@ -3379,15 +3400,57 @@ impl FunctionLowerer<'_> {
         });
         let mut names = outer.keys().cloned().collect::<Vec<_>>();
         names.sort();
-        let changed_names = names
+        let mut changed_names = names
             .iter()
             .filter(|name| then_bindings[*name] != else_bindings[*name])
             .cloned()
             .collect::<Vec<_>>();
+        // A retained snapshot can share extent IDs with a rebound reference.
+        // Carry it explicitly too: each predecessor then proves its complete
+        // initialized prefix before the checker meets renamed extent facts.
+        // Header reloads alone cannot recreate that initialization evidence.
+        let changed_extents = changed_names.iter().flat_map(|name| {
+            [then_bindings[name], else_bindings[name]].into_iter()
+                .filter_map(|value| self.dynamic_extent_lanes(value))
+                .flat_map(|(count, capacity)| [count, capacity])
+        }).collect::<BTreeSet<_>>();
+        let snapshot_names = if !changed_extents.is_empty() {
+            names.iter().filter(|name| {
+                let value = then_bindings[*name];
+                value == else_bindings[*name]
+                    && self.carries_token(value)
+                    && self.dynamic_extent_lanes(value).is_some_and(|(count, capacity)| {
+                        changed_extents.contains(&count) || changed_extents.contains(&capacity)
+                    })
+            }).cloned().collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
+        changed_names.extend(snapshot_names.iter().cloned());
+        changed_names.sort();
         let plans = self.plan_binding_lanes(
             &[(then_end, &then_bindings), (else_end, &else_bindings)],
             &changed_names, &mut [then_facts, else_facts],
         )?;
+        // Two objects may share an incoming count/capacity definition yet
+        // diverge on the other edge. SSA renaming cannot assign that definition
+        // to both objects' distinct join lanes. Both managed phis preserve
+        // initialization, but their physical extents must be read after the
+        // meet, regardless of which binding's lanes were emitted last.
+        let mut lane_owners = BTreeMap::new();
+        let mut aliased_lane_names = BTreeSet::new();
+        for plan in &plans {
+            if let Some(extents) = &plan.extents {
+                for (edge, (count, capacity)) in extents.iter().enumerate() {
+                    for value in [count, capacity] {
+                        if let Some(other) = lane_owners.insert((edge, *value), plan.name.clone()) {
+                            aliased_lane_names.insert(other);
+                            aliased_lane_names.insert(plan.name.clone());
+                        }
+                    }
+                }
+            }
+        }
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
@@ -3416,10 +3479,14 @@ impl FunctionLowerer<'_> {
         let mut merged = outer;
         let mut rebound_references = Vec::new();
         let mut dynamic_join_parameters = Vec::new();
+        let mut snapshot_parameters = BTreeSet::new();
         for plan in &plans {
             then_arguments.push(plan.values[0]);
             else_arguments.push(plan.values[1]);
             let parameter = join_parameters[parameter_index].value;
+            if snapshot_names.contains(&plan.name) || aliased_lane_names.contains(&plan.name) {
+                snapshot_parameters.insert(parameter);
+            }
             if let (Some(phi), Some(extents)) = (plan.phi, &plan.extents) {
                 self.blocks[join_id.get() as usize].parameters[parameter_index].ownership = Some(phi);
                 if plan.has_lanes() {
@@ -3517,19 +3584,24 @@ impl FunctionLowerer<'_> {
             self.ensure_string_extent(parameter)?;
         }
         self.bindings = merged;
-        // An extent lane can rename a count also used by an unchanged outer
-        // string. Its cached count need not survive the other incoming edge.
-        // Reauthenticate those live strings here rather than treating a phi's
-        // count as the extent of an independently retained reference.
+        // An extent lane can rename counts also used by an unchanged snapshot
+        // of a string or list. The checker may meet that snapshot at header
+        // precision, so pre-branch cached extents no longer authenticate it.
+        // Reload unchanged lists, retaining the explicit lanes of new list
+        // phis; replacing those lanes would lose their allocation proof.
         if shared_result_extents.is_some() || plans.iter().any(|plan| plan.has_lanes()) {
             let joined_result = result;
-            let strings = self.bindings.values().copied()
-                .filter(|value| Some(*value) != joined_result && self.string_lengths.contains_key(value))
+            let snapshots = self.bindings.values().copied()
+                .filter(|value| Some(*value) != joined_result && (
+                    self.string_lengths.contains_key(value)
+                    || (self.list_counts.contains_key(value)
+                        && (snapshot_parameters.contains(value)
+                            || !join_parameters.iter().any(|parameter| parameter.value == *value)))
+                ))
                 .collect::<BTreeSet<_>>();
-            for value in strings {
-                self.string_lengths.remove(&value);
-                self.string_capacities.remove(&value);
-                self.ensure_string_extent(value)?;
+            for value in snapshots {
+                self.known_list_lengths.remove(&value);
+                self.reload_dynamic_extent(value)?;
             }
         }
         Ok(result)
@@ -9882,53 +9954,33 @@ impl FunctionLowerer<'_> {
         right: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let left = self.lower_expr(left)?;
-        let facts = self.snapshot_facts();
         if self.values[&left] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
         }
-        let bindings = self.bindings.clone();
-        let evaluate_right = self.new_block(&[])?;
-        let decided = self.new_block(&[])?;
-        let join = self.new_block(&[ValueType::Bool])?;
-        let result = self.blocks[join.get() as usize].parameters[0].value;
         // `&&`: a false left decides false, a true left evaluates the right.
         // `||`: a true left decides true, a false left evaluates the right.
-        let (then_target, else_target) = match operator {
-            BinOp::And => (evaluate_right, decided),
-            BinOp::Or => (decided, evaluate_right),
+        let evaluate_on_true = match operator {
+            BinOp::And => true,
+            BinOp::Or => false,
             _ => unreachable!("only `&&` and `||` short-circuit"),
         };
-        self.finish_current(Terminator::BranchIf {
-            condition: left,
-            then_target,
-            then_arguments: Vec::new(),
-            else_target,
-            else_arguments: Vec::new(),
-        })?;
-
-        self.current = decided;
-        let decided_value = self.fresh(ValueType::Bool)?;
-        self.push_operation(Operation::ConstBool {
-            destination: decided_value,
-            value: operator == BinOp::Or,
-        });
-        self.finish_current(Terminator::Branch { target: join, arguments: vec![decided_value] })?;
-
-        self.current = evaluate_right;
-        self.bindings = bindings.clone();
-        let right = self.lower_expr(right)?;
-        if self.values[&right] != ValueType::Bool {
-            return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
-        }
-        if self.bindings != bindings {
-            return Err(CanonicalLoweringError::UnsupportedExpression("binding change inside short-circuit operand"));
-        }
-        self.finish_current(Terminator::Branch { target: join, arguments: vec![right] })?;
-
-        self.restore_facts(facts, join);
-        self.current = join;
-        self.bindings = bindings;
-        Ok(result)
+        let lower_arm = |this: &mut Self, evaluate: bool| {
+            let value = if evaluate {
+                this.lower_expr(right)?
+            } else {
+                let value = this.fresh(ValueType::Bool)?;
+                this.push_operation(Operation::ConstBool { destination: value, value: !evaluate_on_true });
+                value
+            };
+            if this.values[&value] != ValueType::Bool {
+                return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean short-circuit operand"));
+            }
+            Ok(Some(value))
+        };
+        self.lower_conditional_branches(left,
+            |this| lower_arm(this, evaluate_on_true),
+            |this| lower_arm(this, !evaluate_on_true),
+        )?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent short-circuit expression"))
     }
 
     fn lower_binary(
