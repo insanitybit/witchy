@@ -5227,8 +5227,8 @@ mod tests {
                 .expect("pointer list layout")
         } else {
             layouts
-                .intern_runtime_buffer(element)
-                .expect("scalar buffer layout")
+                .intern_packed_list(element, RcHeader::Required)
+                .expect("scalar list layout")
         };
         let function = Function {
             id: crate::canonical_safewir::FunctionId::new(0),

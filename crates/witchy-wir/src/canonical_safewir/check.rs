@@ -2801,8 +2801,9 @@ mod tests {
         let (layouts, layout) = if raw_bytes {
             dynamic_byte_layout()
         } else {
-            dynamic_u32_layout()
+            packed_u32_layout()
         };
+        let (base, stride) = if raw_bytes { (4, 1) } else { (8, 4) };
         let start = ValueId::new(0);
         let length = ValueId::new(1);
         let count = ValueId::new(2);
@@ -2853,10 +2854,10 @@ mod tests {
                 destination: object,
                 layout,
                 extent: Extent::Counted {
-                    header_bytes: 4,
+                    header_bytes: base,
                     count,
                     capacity,
-                    stride_bytes: if raw_bytes { 1 } else { 4 },
+                    stride_bytes: stride,
                 },
                 class: AllocationClass::ReferenceCounted,
             },
@@ -3480,8 +3481,9 @@ mod tests {
         let (layouts, layout) = if raw_bytes {
             dynamic_byte_layout()
         } else {
-            dynamic_u32_layout()
+            packed_u32_layout()
         };
+        let (base, stride) = if raw_bytes { (4, 1) } else { (8, 4) };
         let start = ValueId::new(0);
         let length = ValueId::new(1);
         let capacity = ValueId::new(2);
@@ -3496,7 +3498,6 @@ mod tests {
         let check_1 = ValueId::new(11);
         let check_2 = ValueId::new(12);
         let check_3 = ValueId::new(13);
-        let stride_bytes = if raw_bytes { 1 } else { 4 };
         CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
             checked_source: CheckedSourceIdentity::from_digest([7; 32]),
@@ -3548,10 +3549,10 @@ mod tests {
                             destination: source,
                             layout,
                             extent: Extent::Counted {
-                                header_bytes: 4,
+                                header_bytes: base,
                                 count: length,
                                 capacity,
-                                stride_bytes,
+                                stride_bytes: stride,
                             },
                             class: AllocationClass::ReferenceCounted,
                         },
@@ -3559,10 +3560,10 @@ mod tests {
                             destination,
                             layout,
                             extent: Extent::Counted {
-                                header_bytes: 4,
+                                header_bytes: base,
                                 count: length,
                                 capacity,
-                                stride_bytes,
+                                stride_bytes: stride,
                             },
                             class: AllocationClass::ReferenceCounted,
                         },
@@ -4754,7 +4755,8 @@ mod tests {
         let object = ValueId::new(4);
         let loaded = ValueId::new(5);
         let stored = ValueId::new(6);
-        let (layouts, layout) = dynamic_u32_layout();
+        let (layouts, layout) = packed_u32_layout();
+        let (base, stride) = (8, 4);
         let mut operations = vec![
             Operation::ConstSize {
                 destination: count,
@@ -4786,10 +4788,10 @@ mod tests {
                 destination: object,
                 layout,
                 extent: Extent::Counted {
-                    header_bytes: 4,
+                    header_bytes: base,
                     count,
                     capacity,
-                    stride_bytes: 4,
+                    stride_bytes: stride,
                 },
                 class: AllocationClass::ReferenceCounted,
         });
@@ -5063,7 +5065,8 @@ mod tests {
         let condition = ValueId::new(3);
         let object = ValueId::new(4);
         let loaded = ValueId::new(5);
-        let (layouts, layout) = dynamic_u32_layout();
+        let (layouts, layout) = packed_u32_layout();
+        let (base, stride) = (8, 4);
         let mut operations = vec![
             Operation::ConstSize { destination: count, value: count_value },
             Operation::ConstSize { destination: capacity, value: capacity_value },
@@ -5083,10 +5086,10 @@ mod tests {
                 destination: object,
                 layout,
                 extent: Extent::Counted {
-                    header_bytes: 4,
+                    header_bytes: base,
                     count,
                     capacity,
-                    stride_bytes: 4,
+                    stride_bytes: stride,
                 },
                 class: AllocationClass::ReferenceCounted,
             },
@@ -5165,7 +5168,8 @@ mod tests {
         let stored = ValueId::new(9);
         let zero_in_capacity = ValueId::new(10);
         let index_in_capacity = ValueId::new(11);
-        let (layouts, layout) = dynamic_u32_layout();
+        let (layouts, layout) = packed_u32_layout();
+        let (base, stride) = (8, 4);
         let operations = vec![
             Operation::ConstSize { destination: count, value: 1 },
             Operation::ConstSize { destination: capacity, value: 2 },
@@ -5182,10 +5186,10 @@ mod tests {
                 destination: object,
                 layout,
                 extent: Extent::Counted {
-                    header_bytes: 4,
+                    header_bytes: base,
                     count,
                     capacity,
-                    stride_bytes: 4,
+                    stride_bytes: stride,
                 },
                 class: AllocationClass::ReferenceCounted,
             },

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use crate::canonical_safewir::*;
-use crate::layout::{LayoutBundle, LayoutInterner, LayoutSize, ScalarKind};
+use crate::layout::{LayoutBundle, LayoutInterner, LayoutSize, RcHeader, ScalarKind};
 
 fn candidate(operator: ComparisonOperator) -> CanonicalModule<LoweredCandidate> {
     let mut layouts = LayoutInterner::new();
     let element = layouts.intern_scalar(ScalarKind::U32).unwrap();
-    let list = layouts.intern_runtime_buffer(element).unwrap();
+    let list = layouts.intern_packed_list(element, RcHeader::Required).unwrap();
     let LayoutSize::Dynamic { base, stride } = layouts.get(list).unwrap().size() else { panic!("dynamic buffer"); };
     let count = ValueId::new(0);
     let capacity = ValueId::new(1);
