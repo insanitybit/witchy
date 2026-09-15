@@ -154,6 +154,10 @@ mod rfc0165_recursive;
 mod rfc0165_recursive_generic;
 #[path = "misc/rfc0165_recursive_render.rs"]
 mod rfc0165_recursive_render;
+#[path = "misc/rfc0165_coalesce.rs"]
+mod rfc0165_coalesce;
+#[path = "misc/rfc0165_loop_shadowing.rs"]
+mod rfc0165_loop_shadowing;
 #[path = "misc/rfc0165_reference_list_patterns.rs"]
 mod rfc0165_reference_list_patterns;
 #[path = "misc/rfc0165_nested_patterns.rs"]

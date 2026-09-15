@@ -1897,6 +1897,17 @@ struct LoopRebindings {
     pushed: BTreeSet<String>,
 }
 
+impl LoopRebindings {
+    /// An iteration binder hides the outer name throughout its body. Even a
+    /// nested local of that spelling cannot write back to the hidden binding;
+    /// transporting it as loop state would mix distinct lexical identities.
+    fn without_iteration_binding(mut self, name: &str) -> Self {
+        self.assigned.remove(name);
+        self.pushed.remove(name);
+        self
+    }
+}
+
 /// Cached extent facts (see `snapshot_facts`).
 #[derive(Clone)]
 struct FactSnapshot {
@@ -3415,11 +3426,20 @@ impl FunctionLowerer<'_> {
         // Carry it explicitly too: each predecessor then proves its complete
         // initialized prefix before the checker meets renamed extent facts.
         // Header reloads alone cannot recreate that initialization evidence.
-        let changed_extents = changed_names.iter().flat_map(|name| {
+        let mut changed_extents = changed_names.iter().flat_map(|name| {
             [then_bindings[name], else_bindings[name]].into_iter()
                 .filter_map(|value| self.dynamic_extent_lanes(value))
                 .flat_map(|(count, capacity)| [count, capacity])
         }).collect::<BTreeSet<_>>();
+        // A reference result can rename the same count/capacity definitions
+        // even when neither arm writes an outer binding. Preserve affected
+        // owners and snapshots through the ordinary binding lanes as well.
+        if let Some((then_lane, else_lane)) = &shared_result_extents {
+            changed_extents.extend([
+                then_lane.count, then_lane.capacity,
+                else_lane.count, else_lane.capacity,
+            ]);
+        }
         let snapshot_names = if !changed_extents.is_empty() {
             names.iter().filter(|name| {
                 let value = then_bindings[*name];
@@ -5218,15 +5238,13 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer range bounds"));
         }
         let outer = self.bindings.clone();
-        if outer.contains_key(variable) {
-            return Err(CanonicalLoweringError::DuplicateBinding(variable.to_owned()));
-        }
         // Only a name the body rebinds is a header lane; every other outer
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(body);
-        let mut names = loop_lane_names(&outer, &rebound);
+        let rebound = self.loop_rebindings_with_write_backs(body)
+            .without_iteration_binding(variable);
+        let names = loop_lane_names(&outer, &rebound);
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -5325,7 +5343,6 @@ impl FunctionLowerer<'_> {
         self.current = body_id;
         bind_state(self, &body_values);
         let body_counter = *body_values.last().ok_or(CanonicalLoweringError::IdOverflow)?;
-        self.bindings.insert(variable.to_owned(), body_counter);
         self.loop_contexts.push(LoopContext {
             header,
             exit,
@@ -5333,10 +5350,15 @@ impl FunctionLowerer<'_> {
             list_names: list_names.clone(),
             advance: LoopAdvance::IntCounter(body_counter),
         });
-        let lowered = self.lower_block_effect(body);
+        // Bounds were evaluated in the outer scope. The immutable counter has
+        // its own scope around the body, just like the checker/interpreter;
+        // restoring it must preserve the hidden value and its mutability.
+        let lowered = self.with_binding_scope(|lowerer| {
+            lowerer.bind_lexical(variable, body_counter, false)?;
+            lowerer.lower_block_effect(body)
+        });
         self.loop_contexts.pop();
         lowered?;
-        self.bindings.remove(variable);
         if self.blocks[self.current.get() as usize].terminator.is_none() {
             let mut carried = self.loop_edge_arguments(&names, &list_names)?;
             let one = self.fresh(ValueType::Int)?;
@@ -5398,16 +5420,9 @@ impl FunctionLowerer<'_> {
         // in an `if` arm counts) is loop state; a top-level-only scan once
         // dropped a nested `n = n + 1` and the loop silently kept the entry
         // value.
-        let rebound = self.loop_rebindings_with_write_backs(body);
-        let mut names = rebound
-            .assigned
-            .iter()
-            .chain(rebound.pushed.iter())
-            .filter(|name| outer.contains_key(*name))
-            .cloned()
-            .collect::<Vec<_>>();
-        names.sort();
-        names.dedup();
+        let rebound = self.loop_rebindings_with_write_backs(body)
+            .without_iteration_binding(variable);
+        let names = loop_lane_names(&outer, &rebound);
         if matches!(iterable, Expr::Var(name) if names.contains(name)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for iterator mutation"));
         }
@@ -5588,7 +5603,6 @@ impl FunctionLowerer<'_> {
         element
         };
         self.ensure_string_extent(element)?;
-        self.bindings.insert(variable.to_owned(), element);
         self.loop_contexts.push(LoopContext {
             header,
             exit,
@@ -5596,7 +5610,13 @@ impl FunctionLowerer<'_> {
             list_names: list_names.clone(),
             advance: LoopAdvance::ListCursor(body_index),
         });
-        let lowered = self.lower_block_effect(body);
+        // The iterable was evaluated before shadowing. This separate binder
+        // scope also makes reference-valued elements read-only and restores
+        // any outer reference without conflating its ownership with the item.
+        let lowered = self.with_binding_scope(|lowerer| {
+            lowerer.bind_lexical(variable, element, false)?;
+            lowerer.lower_block_effect(body)
+        });
         self.loop_contexts.pop();
         lowered?;
         if self.blocks[self.current.get() as usize].terminator.is_none() {
@@ -7505,86 +7525,20 @@ impl FunctionLowerer<'_> {
         let tag = self.load_record_field(object, 0, ValueType::Int)?;
         let some_tag = self.push_const_int(0)?;
         let is_some = self.push_compare(ComparisonOperator::Equal, tag, some_tag)?;
-        let facts = self.snapshot_facts();
-        let bindings = self.bindings.clone();
-        let when_some = self.new_block(&[])?;
-        let when_none = self.new_block(&[])?;
-        // A reference payload joins through a shared phi (the payload is a
-        // shared clone, the default its own token, which weakens); a string
-        // or list phi also carries count and capacity lanes.
-        let dynamic_payload = matches!(payload_type, ValueType::Ref(layout)
-            if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Dynamic { .. })));
-        let join = if dynamic_payload {
-            self.new_block(&[payload_type, ValueType::Size, ValueType::Size])?
-        } else {
-            self.new_block(&[payload_type])?
-        };
-        if matches!(payload_type, ValueType::Ref(_)) {
-            self.blocks[join.get() as usize].parameters[0].ownership = Some(Ownership::Shared);
-        }
-        self.finish_current(Terminator::BranchIf {
-            condition: is_some,
-            then_target: when_some,
-            then_arguments: Vec::new(),
-            else_target: when_none,
-            else_arguments: Vec::new(),
-        })?;
-        self.current = when_some;
-        let payload = self.load_record_field(object, 1, payload_type)?;
-        let some_end = self.current;
-        self.current = when_none;
-        self.bindings = bindings.clone();
-        let default = self.lower_expr(right)?;
-        if self.values[&default] != payload_type {
-            return Err(CanonicalLoweringError::UnsupportedExpression("coalesce default type"));
-        }
-        if self.bindings != bindings {
-            return Err(CanonicalLoweringError::UnsupportedExpression("binding change inside coalesce default"));
-        }
-        let none_end = self.current;
-        // A static default (`?? ""`) joined with the payload's token is
-        // materialized so both edges carry a token.
-        let mut lanes = [(some_end, payload), (none_end, default)];
-        if matches!(payload_type, ValueType::Ref(_)) {
-            self.materialize_mixed_lanes(&mut lanes)?;
-        }
-        let [(_, payload), (_, default)] = lanes;
-        let mut some_arguments = vec![payload];
-        let mut none_arguments = vec![default];
-        if dynamic_payload {
-            self.current = some_end;
-            self.ensure_string_extent(payload)?;
-            self.ensure_list_extent(payload)?;
-            let (count, capacity) = self.dynamic_extent_lanes(payload).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("coalesce payload extent"),
-            )?;
-            let (count, capacity) = self.split_lanes(count, capacity)?;
-            some_arguments.extend([count, capacity]);
-            self.current = none_end;
-            self.ensure_string_extent(default)?;
-            self.ensure_list_extent(default)?;
-            let (count, capacity) = self.dynamic_extent_lanes(default).ok_or(
-                CanonicalLoweringError::UnsupportedExpression("coalesce default extent"),
-            )?;
-            let (count, capacity) = self.split_lanes(count, capacity)?;
-            none_arguments.extend([count, capacity]);
-        }
-        self.current = some_end;
-        self.finish_current(Terminator::Branch { target: join, arguments: some_arguments })?;
-        self.current = none_end;
-        self.finish_current(Terminator::Branch { target: join, arguments: none_arguments })?;
-        self.restore_facts(facts, join);
-        self.current = join;
-        self.bindings = bindings;
-        let join_values = self.block_parameter_values(join);
-        if dynamic_payload {
-            if self.list_counts.contains_key(&payload) && self.list_counts.contains_key(&default) {
-                self.record_joined_extent(join_values[0], join_values[1], join_values[2], &[payload, default]);
-            } else {
-                self.reload_dynamic_extent(join_values[0])?;
+        // The lazy default may write back any ordinary var argument. Use the
+        // same per-edge binding, ownership, and extent join as if/short-circuit
+        // expressions instead of joining only the expression's result.
+        self.lower_conditional_branches(is_some, |this| {
+            // Never read the success payload on the None/Err edge.
+            let payload = this.load_record_field(object, 1, payload_type)?;
+            Ok(Some(this.detach_bound_result(payload)?))
+        }, |this| {
+            let default = this.lower_expr(right)?;
+            if this.values[&default] != payload_type {
+                return Err(CanonicalLoweringError::UnsupportedExpression("coalesce default type"));
             }
-        }
-        Ok(join_values[0])
+            Ok(Some(this.detach_bound_result(default)?))
+        })?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent coalesce expression"))
     }
 
     /// `value?` on a scalar `Option`/`Result`: continue with the payload, or

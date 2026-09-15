@@ -13,6 +13,10 @@ use super::{InitialCheckError, value_type};
 #[path = "move_range_identity_tests.rs"]
 mod move_range_identity_tests;
 
+#[cfg(test)]
+#[path = "prefix_provenance_tests.rs"]
+mod prefix_provenance_tests;
+
 use crate::canonical_safewir::{
     AccessMode, AllocationClass, ArithmeticOperator, BasicBlock, CallArgument,
     CallableContract, ComparisonOperator, Extent, Function, FunctionSignature, GuardKind,
@@ -176,6 +180,10 @@ pub(super) struct MemoryState {
     /// is distinct from an uninitialized slot and from a live stored edge.
     nullable_absent_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
     range_states: CowFacts<BTreeMap<RangeIdentity, RangeState>>,
+    /// This exact live range covered its allocation's entire current logical
+    /// prefix on every predecessor. This relates storage to its current count,
+    /// not two scalar SSA values, and grants no child ownership authority.
+    full_current_prefixes: CowFacts<BTreeSet<RangeIdentity>>,
     constants: CowFacts<BTreeMap<ValueId, u64>>,
     exact_additions: CowFacts<BTreeMap<ValueId, (ValueId, ValueId)>>,
     comparisons: CowFacts<BTreeMap<ValueId, Comparison>>,
@@ -225,6 +233,7 @@ impl<'a> MemoryChecker<'a> {
                 stored_objects: BTreeMap::new().into(),
                 nullable_absent_slots: BTreeSet::new().into(),
                 range_states: BTreeMap::new().into(),
+                full_current_prefixes: BTreeSet::new().into(),
                 constants: BTreeMap::new().into(),
                 exact_additions: BTreeMap::new().into(),
                 comparisons: BTreeMap::new().into(),
@@ -540,6 +549,13 @@ impl<'a> MemoryChecker<'a> {
                     )
                 })
                 .collect(),
+            full_current_prefixes: self.state.full_current_prefixes.iter().map(|identity| {
+                RangeIdentity {
+                    object: remap_value(&renames, identity.object),
+                    start: remap_value(&renames, identity.start),
+                    length: remap_value(&renames, identity.length),
+                }
+            }).collect(),
             constants: self
                 .state
                 .constants
@@ -779,13 +795,20 @@ impl<'a> MemoryChecker<'a> {
             }
         }
 
+        let mut range_states = meet_range_states(existing, incoming);
+        // Derive this relation before intersecting away predecessor-local
+        // scalar facts. HeaderPrefix demotion must not erase a complete
+        // prefix's Shared child status merely because its old count ID dies.
+        let mut full_current_prefixes = meet_full_current_prefixes(existing, incoming, &range_states);
+        self.synchronize_joined_full_prefixes(block, &objects, &mut range_states, &mut full_current_prefixes)?;
         Ok(MemoryState {
             objects: objects.into(),
             shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects).into(),
             nullable_absent_slots: existing.nullable_absent_slots.intersection(&incoming.nullable_absent_slots).copied().collect(),
             initialized_scalar_slots: existing.initialized_scalar_slots.intersection(&incoming.initialized_scalar_slots).copied().collect(),
-            range_states: meet_range_states(existing, incoming).into(),
+            range_states: range_states.into(),
+            full_current_prefixes: full_current_prefixes.into(),
             constants: intersect_map(&existing.constants, &incoming.constants).into(),
             exact_additions: intersect_map(&existing.exact_additions, &incoming.exact_additions).into(),
             comparisons: intersect_map(&existing.comparisons, &incoming.comparisons).into(),
@@ -797,6 +820,55 @@ impl<'a> MemoryChecker<'a> {
                 .copied()
                 .collect(),
         })
+    }
+
+    fn synchronize_joined_full_prefixes(
+        &self,
+        block: &BasicBlock,
+        objects: &BTreeMap<ValueId, ObjectState>,
+        ranges: &mut BTreeMap<RangeIdentity, RangeState>,
+        full_prefixes: &mut BTreeSet<RangeIdentity>,
+    ) -> Result<(), InitialCheckError> {
+        let mut replacements = Vec::new();
+        let mut allocations = BTreeSet::new();
+        for old in full_prefixes.iter().copied() {
+            let error = || InitialCheckError::IncompatibleMemoryJoin {
+                function: self.function.id, block: block.id, object: old.object,
+            };
+            let object = objects.get(&old.object).ok_or_else(error)?;
+            if !matches!(object.ownership, Ownership::Unique | Ownership::Shared) {
+                continue;
+            }
+            let Extent::Counted { count, .. } = object.extent else { continue; };
+            let range = ranges.get(&old).copied().ok_or_else(error)?;
+            if !range.initialized || !range.zero_start
+                || !matches!(range.ownership, Ownership::Unique | Ownership::Shared)
+                || !allocations.insert(object.identity)
+            {
+                return Err(error());
+            }
+            let fresh = RangeIdentity { length: count, ..old };
+            if fresh != old && ranges.contains_key(&fresh) {
+                return Err(error());
+            }
+            replacements.push((old, fresh, range));
+        }
+        // Object-only speculative promotion above can select a Counted extent
+        // while the range meet retains a predecessor's old length SSA name.
+        // Only the full-prefix proof established by BOTH ORIGINAL edges lets
+        // us synchronize that range to the checked joined count. No scalar
+        // equality is inferred, and partial prefixes are never retagged.
+        // Validate every replacement first: a collision or multiple complete
+        // prefixes for one allocation must not silently erase an obligation.
+        for (old, fresh, range) in replacements {
+            if fresh != old {
+                ranges.remove(&old);
+                ranges.insert(fresh, range);
+                full_prefixes.remove(&old);
+                full_prefixes.insert(fresh);
+            }
+        }
+        Ok(())
     }
 
     /// `object`'s state in `state` after header-extent promotion, when the
@@ -2477,6 +2549,7 @@ impl<'a> MemoryChecker<'a> {
         }
         if matches!(parameter, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
             && self.is_shared_immutable_storage(source, state) {
+            self.invalidate_full_current_prefixes(source);
             self.state.objects
                 .get_mut(&source)
                 .expect("live object exists")
@@ -2498,6 +2571,7 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
+        self.invalidate_full_current_prefixes(source);
         self.state.objects
             .get_mut(&source)
             .expect("live object exists")
@@ -2651,18 +2725,27 @@ impl<'a> MemoryChecker<'a> {
             }
             Operation::Load { destination, place, transfer } => {
                 self.load(*destination, place, *transfer)?;
+                if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeLast) {
+                    self.invalidate_full_current_prefixes(place.object());
+                }
                 Ok(true)
             }
             Operation::InitNullableOwned { place } => {
                 self.init_nullable_owned(place)?;
+                self.invalidate_full_current_prefixes(place.object());
                 Ok(true)
             }
             Operation::Store { place, value, transfer } => {
                 self.store(place, *value, *transfer)?;
+                self.invalidate_full_current_prefixes(place.object());
+                if *transfer == StoreTransfer::MoveUnique {
+                    self.invalidate_full_current_prefixes(*value);
+                }
                 Ok(true)
             }
             Operation::UpdateCount { object, count } => {
                 self.update_count(*object, *count)?;
+                self.invalidate_full_current_prefixes(*object);
                 Ok(true)
             }
             Operation::MoveValue { destination, source }
@@ -2685,18 +2768,23 @@ impl<'a> MemoryChecker<'a> {
             }
             Operation::Reclaim { object } => {
                 self.reclaim(*object)?;
+                self.invalidate_full_current_prefixes(*object);
                 Ok(true)
             }
             Operation::CopyBytes { destination, source, length } => {
                 self.copy_bytes(destination, source, *length)?;
+                self.invalidate_full_current_prefixes(destination.object());
                 Ok(true)
             }
             Operation::MoveRange { destination, source, count } => {
                 self.move_range(destination, source, *count)?;
+                self.invalidate_full_current_prefixes(source.object());
+                self.invalidate_full_current_prefixes(destination.object());
                 Ok(true)
             }
             Operation::CloneRange { destination, source, count } => {
                 self.clone_range(destination, source, *count)?;
+                self.invalidate_full_current_prefixes(destination.object());
                 Ok(true)
             }
             Operation::Retain { .. } => Err(InitialCheckError::UnsupportedMemoryOperation {
@@ -3637,12 +3725,88 @@ impl<'a> MemoryChecker<'a> {
         let Some((extent, raw_buffer)) = self.header_extent_in(&self.state, object)? else {
             return Ok(());
         };
-        if !raw_buffer {
+        let rebound = if !raw_buffer {
             let Extent::Counted { count, .. } = extent else { unreachable!() };
+            // The header and its bounds are authenticated before relating the
+            // old complete prefix to this newly loaded logical count.
+            let rebound = self.rebind_full_current_prefix(object, count)?;
             self.consolidate_pointer_prefix(object, count)?;
-        }
+            rebound
+        } else {
+            None
+        };
         self.state.objects.get_mut(&object).expect("live object exists").extent = extent;
+        if let Some(identity) = rebound
+            && self.state.range_states.get(&identity).is_some_and(|range|
+                range_is_full_current_prefix(&self.state, &identity, range))
+        {
+            // Consolidation clears old proofs before replacing any ranges.
+            // Retain only the transported range that actually survived it.
+            self.state.full_current_prefixes.insert(identity);
+        }
         Ok(())
+    }
+
+    fn invalidate_full_current_prefixes(&mut self, object: ValueId) {
+        let allocation = self.state.objects.get(&object).map(|state| state.identity);
+        let MemoryState { objects, full_current_prefixes, .. } = &mut self.state;
+        full_current_prefixes.retain(|range| {
+            range.object != object && !allocation.is_some_and(|allocation|
+                objects.get(&range.object).is_some_and(|state| state.identity == allocation))
+        });
+    }
+
+    /// Retiring a Shared token does not mutate the live allocation or its
+    /// initialized children. Keep existing proof only while another checked
+    /// managed token names that exact storage. This never creates proof and
+    /// deliberately does not consult the possible origins of Shared phis.
+    fn retire_shared_prefix_token(&mut self, object: ValueId) {
+        let survives = self.state.objects.get(&object).is_some_and(|retired| {
+            self.state.objects.iter().any(|(value, candidate)| {
+                *value != object
+                    && candidate.identity == retired.identity
+                    && candidate.layout == retired.layout
+                    && matches!(candidate.ownership, Ownership::Unique | Ownership::Shared)
+                    && self.is_shared_immutable_storage(*value, candidate)
+            })
+        });
+        if !survives {
+            self.invalidate_full_current_prefixes(object);
+        }
+    }
+
+    fn rebind_full_current_prefix(
+        &mut self,
+        object: ValueId,
+        count: ValueId,
+    ) -> Result<Option<RangeIdentity>, InitialCheckError> {
+        let layout = self.live_object(object)?.layout;
+        let Some(element) = self.descriptor(layout)?.kind().packed_element_layout() else {
+            return Ok(None);
+        };
+        if !matches!(self.descriptor(element)?.kind(), LayoutKind::RuntimePointerValueSlot { .. }) {
+            return Ok(None);
+        }
+        let mut candidates = self.state.full_current_prefixes.iter().filter_map(|identity| {
+            let range = self.state.range_states.get(identity)?;
+            (range.element == element && self.same_allocation(object, identity.object)
+                && range_is_full_current_prefix(&self.state, identity, range))
+                .then_some((*identity, *range))
+        });
+        let Some((old, range)) = candidates.next() else { return Ok(None); };
+        if candidates.next().is_some() {
+            return self.unsupported("HeaderPrefix(ambiguous complete prefix)");
+        }
+        let fresh = RangeIdentity { object, start: old.start, length: count };
+        if fresh != old && self.state.range_states.contains_key(&fresh) {
+            return self.unsupported("HeaderPrefix(complete prefix collision)");
+        }
+        self.state.full_current_prefixes.remove(&old);
+        self.state.range_states.remove(&old);
+        // Preserve initialization, Shared child ownership and allocation class
+        // verbatim. In particular, do not reseed a Unique managed ABI prefix.
+        self.state.range_states.insert(fresh, range);
+        Ok(Some(fresh))
     }
 
     /// Compute only the header-derived extent. Prefix consolidation remains
@@ -3859,6 +4023,7 @@ impl<'a> MemoryChecker<'a> {
         {
             return Ok(false);
         }
+        self.invalidate_full_current_prefixes(object);
         self.state.range_states.insert(
             RangeIdentity { object, start: count, length: count },
             RangeState {
@@ -3878,6 +4043,7 @@ impl<'a> MemoryChecker<'a> {
         object: ValueId,
         count: ValueId,
     ) -> Result<(), InitialCheckError> {
+        self.invalidate_full_current_prefixes(object);
         let layout = self.live_object(object)?.layout;
         let Some(element) = self.descriptor(layout)?.kind().packed_element_layout() else {
             return Ok(());
@@ -4149,6 +4315,31 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    fn require_destructor_slots_initialized(
+        &mut self,
+        object: ValueId,
+        operation: &'static str,
+    ) -> Result<(), InitialCheckError> {
+        match self.require_owned_slots_initialized(object, operation) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if !self.state.objects.get(&object).is_some_and(|state|
+                    matches!(state.extent, Extent::HeaderPrefix { .. }))
+                {
+                    return Err(error);
+                }
+                // Destruction may be the first operation after header loads:
+                // there need not have been a body access to promote this
+                // extent. Use the same authenticated promotion as a range
+                // access, including its retained-prefix rebinding, then rerun
+                // every existing owned-edge/initialization check. Already
+                // complete ABI values need no new header or bounds evidence.
+                self.promote_header_extent(object)?;
+                self.require_owned_slots_initialized(object, operation)
+            }
+        }
+    }
+
     fn release(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let state = self.live_object(object)?;
         if state.ownership != Ownership::Shared {
@@ -4163,26 +4354,28 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        self.require_owned_slots_initialized(object, "Release(uninitialized owned slot)")?;
+        self.require_destructor_slots_initialized(object, "Release(uninitialized owned slot)")?;
         self.state.objects
             .get_mut(&object)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
+        self.retire_shared_prefix_token(object);
         Ok(())
     }
 
     fn drop_ref(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
         let state = self.live_object(object)?;
+        let shared = state.ownership == Ownership::Shared;
         if !self.is_shared_immutable_storage(object, state) {
             return Err(InitialCheckError::InvalidAllocationClass {
                 function: self.function.id,
                 object,
             });
         }
-        self.require_owned_slots_initialized(object, "DropRef(uninitialized owned slot)")?;
         // The object's layout id is the interner key; re-deriving it from
         // the descriptor would hash the descriptor bytes on every DropRef.
         let layout = state.layout;
+        self.require_destructor_slots_initialized(object, "DropRef(uninitialized owned slot)")?;
         if self.layouts.get(layout).is_none() {
             return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,
@@ -4196,6 +4389,11 @@ impl<'a> MemoryChecker<'a> {
             .get_mut(&object)
             .expect("live object exists")
             .ownership = Ownership::Consumed;
+        if shared {
+            self.retire_shared_prefix_token(object);
+        } else {
+            self.invalidate_full_current_prefixes(object);
+        }
         Ok(())
     }
 
@@ -4817,21 +5015,7 @@ fn meet_range_states(
         .iter()
         .filter_map(|(identity, current)| {
             let mut candidates = incoming.range_states.iter().filter(|(candidate, next)| {
-                candidate.object == identity.object
-                    && next.element == current.element
-                    // Two zero-start prefixes match by that fact alone: a
-                    // start constant defined inside a loop body is renamed
-                    // away by the time the prefix reaches the next header.
-                    && if current.zero_width || next.zero_width {
-                        current.zero_width
-                            && next.zero_width
-                            && current.zero_start == next.zero_start
-                            && same_scalar_across(existing, identity.length, incoming, candidate.length)
-                    } else {
-                        ((current.zero_start && next.zero_start)
-                            || same_scalar_across(existing, identity.start, incoming, candidate.start))
-                            && same_scalar_across(existing, identity.length, incoming, candidate.length)
-                    }
+                range_states_match(existing, identity, current, incoming, candidate, next)
             });
             let (_next_identity, next) = candidates.next()?;
             if candidates.next().is_some() {
@@ -4876,6 +5060,78 @@ fn meet_range_states(
             ))
         })
         .collect()
+}
+
+/// Match range coordinates without introducing any new scalar equivalence.
+fn range_states_match(
+    existing: &MemoryState,
+    identity: &RangeIdentity,
+    current: &RangeState,
+    incoming: &MemoryState,
+    candidate: &RangeIdentity,
+    next: &RangeState,
+) -> bool {
+    candidate.object == identity.object && next.element == current.element
+        // A zero-start fact survives losing the SSA name of a loop-local zero.
+        && if current.zero_width || next.zero_width {
+            current.zero_width && next.zero_width
+                && current.zero_start == next.zero_start
+                && same_scalar_across(existing, identity.length, incoming, candidate.length)
+        } else {
+            ((current.zero_start && next.zero_start)
+                || same_scalar_across(existing, identity.start, incoming, candidate.start))
+                && same_scalar_across(existing, identity.length, incoming, candidate.length)
+        }
+}
+
+fn range_is_full_current_prefix(
+    facts: &MemoryState,
+    identity: &RangeIdentity,
+    range: &RangeState,
+) -> bool {
+    if !range.initialized || !range.zero_start
+        || !matches!(range.ownership, Ownership::Unique | Ownership::Shared)
+    {
+        return false;
+    }
+    let Some(root) = facts.objects.get(&identity.object) else { return false; };
+    // MoveValue can leave the range under a consumed SSA root. Only a live
+    // token for that very allocation can retain its proof; overlapping Shared
+    // phi origin sets are deliberately not storage identity.
+    facts.objects.values().any(|object| {
+        object.identity == root.identity && object.layout == root.layout
+            && matches!(object.ownership, Ownership::Unique | Ownership::Shared)
+            && match object.extent {
+                Extent::Counted { count, .. } => {
+                    MemoryChecker::same_scalar_in(facts, identity.length, count)
+                        && (!range.zero_width || facts.constants.get(&count) == Some(&0))
+                }
+                Extent::HeaderPrefix { .. } => facts.full_current_prefixes.contains(identity),
+                _ => false,
+            }
+    })
+}
+
+fn meet_full_current_prefixes(
+    existing: &MemoryState,
+    incoming: &MemoryState,
+    ranges: &BTreeMap<RangeIdentity, RangeState>,
+) -> BTreeSet<RangeIdentity> {
+    ranges.keys().filter_map(|identity| {
+        let current = existing.range_states.get(identity)?;
+        if !range_is_full_current_prefix(existing, identity, current) {
+            return None;
+        }
+        let mut candidates = incoming.range_states.iter().filter(|(candidate, next)|
+            range_states_match(existing, identity, current, incoming, candidate, next));
+        let (candidate, next) = candidates.next()?;
+        if candidates.next().is_some()
+            || !range_is_full_current_prefix(incoming, candidate, next)
+        {
+            return None;
+        }
+        Some(*identity)
+    }).collect()
 }
 
 fn same_scalar_across(
@@ -4947,7 +5203,7 @@ mod tests {
                 )+};
             }
             shared!(objects, shared_phi_origins, stored_objects, nullable_absent_slots,
-                range_states, constants, exact_additions, comparisons, guards,
+                range_states, full_current_prefixes, constants, exact_additions, comparisons, guards,
                 header_values, static_data_objects, initialized_scalar_slots);
 
             // Capture a deep value copy independently of the shared snapshots,
@@ -4982,6 +5238,9 @@ mod tests {
                 state.range_states.insert(RangeIdentity { object: SOURCE, start: ZERO, length: COUNT },
                     RangeState { element, ownership: Ownership::Shared, allocation_class: None,
                         initialized: true, zero_width: false, zero_start: true })
+            });
+            isolated!(full_current_prefixes, |state: &mut MemoryState| {
+                state.full_current_prefixes.insert(RangeIdentity { object: SOURCE, start: ZERO, length: COUNT })
             });
             isolated!(constants, |state: &mut MemoryState| state.constants.insert(COUNT, 99));
             isolated!(exact_additions, |state: &mut MemoryState| state.exact_additions.insert(CAPACITY, (COUNT, COUNT)));
