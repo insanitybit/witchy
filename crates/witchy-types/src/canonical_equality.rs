@@ -34,30 +34,61 @@ struct Preparation<'a> {
     needs_specialization: bool,
 }
 
-pub(crate) fn prepare(
-    mut typed: TypedModule,
-    catalog: Option<&WitnessCatalog>,
-) -> Result<(TypedModule, Instances, Vec<(Type, String)>), String> {
+/// Retain helper reservations, collision checks, and specialization identities
+/// across transformations that expose additional authenticated executable roots.
+pub(crate) struct PreparationSession<'catalog> {
+    equality: Preparation<'catalog>,
+    dictionaries: Option<crate::canonical_dictionary::Preparation<'catalog>>,
+    rendering: crate::canonical_render::Preparation,
+    instances: Instances,
+}
+
+impl<'catalog> PreparationSession<'catalog> {
+pub(crate) fn new(
+    typed: &TypedModule,
+    catalog: Option<&'catalog WitnessCatalog>,
+    instances: Instances,
+) -> Result<Self, String> {
     let prefix = format!("{}.$structural_eq_", typed.module().linked_entry.as_deref().unwrap_or("$canonical"));
     if typed.module().items.iter().any(|item| matches!(item,
         Item::Function(function) if function.name.starts_with(&prefix)))
     {
         return Err("canonical equality helper declaration collision".into());
     }
-    let mut preparation = Preparation {
+    let equality = Preparation {
         definitions: type_definitions(typed.module()), catalog,
         functions: BTreeSet::new(), prefix, helpers: Vec::new(), needs_specialization: false,
     };
-    let mut dictionaries = catalog.map(|catalog|
-        crate::canonical_dictionary::Preparation::new(&typed, catalog)).transpose()?;
-    let mut instances = Instances::new();
+    let dictionaries = catalog.map(|catalog|
+        crate::canonical_dictionary::Preparation::new(typed, catalog)).transpose()?;
+    let rendering = crate::canonical_render::Preparation::new(typed)?;
+    Ok(Self { equality, dictionaries, rendering, instances })
+}
+
+pub(crate) fn into_metadata(self) -> (Instances, Vec<(Type, String)>) {
+    let comparators = self.dictionaries.map(|dictionaries| dictionaries.into_comparators()).unwrap_or_default();
+    (self.instances, comparators)
+}
+
+pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, String> {
+    let catalog = self.equality.catalog;
+    let preparation = &mut self.equality;
+    let dictionaries = &mut self.dictionaries;
+    let rendering = &mut self.rendering;
+    let instances = &mut self.instances;
     loop {
         // Equality can reveal a custom method that uses a new dictionary key;
         // a dictionary comparator can itself contain compound equality. Close
         // both worklists with one catalog-bound dictionary preparation session.
-        if let Some(dictionaries) = &mut dictionaries {
+        if let Some(dictionaries) = dictionaries.as_mut() {
             typed = dictionaries.extend(typed)?;
         }
+        // Native render helpers can expose dictionary fields; selected custom
+        // equality bodies can expose further rendering. Retain all three
+        // preparation sessions until the checked executable scope is closed.
+        let (prepared, rendered) = rendering.extend(typed)?;
+        typed = prepared;
+        if rendered { continue; }
         let scope = crate::pipeline::canonical_scope(typed.module());
         preparation.functions = typed.module().items.iter().filter_map(|item| match item {
             Item::Function(function) => Some(function.name.clone()),
@@ -87,8 +118,7 @@ pub(crate) fn prepare(
             }
         }
         if !needs_rewrite {
-            let comparators = dictionaries.map(|dictionaries| dictionaries.into_comparators()).unwrap_or_default();
-            return Ok((typed, instances, comparators));
+            return Ok(typed);
         }
         let first_new = preparation.helpers.len();
         let mut changed = false;
@@ -172,6 +202,7 @@ pub(crate) fn prepare(
         // Newly reachable custom bodies may contain further native compound
         // comparisons. Revisit checked source, never the invalidated old table.
     }
+}
 }
 
 impl Preparation<'_> {
@@ -349,21 +380,21 @@ fn primitive(ty: &Type) -> bool {
         && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String" | "Nil" | "Unit"))
 }
 
-fn var(name: &str) -> Expr { Expr::Var(name.into()) }
-fn call(name: &str, args: Vec<Expr>) -> Expr { Expr::Call { name: name.into(), args } }
-fn binary(op: BinOp, left: Expr, right: Expr) -> Expr {
+pub(crate) fn var(name: &str) -> Expr { Expr::Var(name.into()) }
+pub(crate) fn call(name: &str, args: Vec<Expr>) -> Expr { Expr::Call { name: name.into(), args } }
+pub(crate) fn binary(op: BinOp, left: Expr, right: Expr) -> Expr {
     Expr::Binary { op, lhs: Box::new(left), rhs: Box::new(right) }
 }
 fn not(expr: Expr) -> Expr { Expr::Unary { op: UnOp::Not, expr: Box::new(expr) } }
-fn block(stmts: Vec<Stmt>) -> Block { Block { lines: vec![0; stmts.len()], stmts, region: None } }
-fn binding(name: &str, mutable: bool, value: Expr) -> Stmt {
+pub(crate) fn block(stmts: Vec<Stmt>) -> Block { Block { lines: vec![0; stmts.len()], stmts, region: None } }
+pub(crate) fn binding(name: &str, mutable: bool, value: Expr) -> Stmt {
     Stmt::Let { name: name.into(), ty: None, mutable, value }
 }
-fn destructure(pattern: Pattern, value: Expr) -> Stmt { Stmt::LetPattern { pattern, value } }
-fn bindings(prefix: &str, count: usize) -> Vec<Pattern> {
+pub(crate) fn destructure(pattern: Pattern, value: Expr) -> Stmt { Stmt::LetPattern { pattern, value } }
+pub(crate) fn bindings(prefix: &str, count: usize) -> Vec<Pattern> {
     (0..count).map(|index| Pattern::Var(format!("{prefix}{index}"))).collect()
 }
-fn arm(pattern: Pattern, body: Expr) -> MatchArm { MatchArm { line: 0, pattern, guard: None, body } }
+pub(crate) fn arm(pattern: Pattern, body: Expr) -> MatchArm { MatchArm { line: 0, pattern, guard: None, body } }
 fn conjunction(terms: Vec<Expr>) -> Expr {
     terms.into_iter().reduce(|left, right| binary(BinOp::And, left, right)).unwrap_or(Expr::Bool(true))
 }

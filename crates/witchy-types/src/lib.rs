@@ -16,6 +16,7 @@ pub mod canonical_capabilities;
 pub mod canonical_closure;
 mod canonical_dictionary;
 mod canonical_equality;
+mod canonical_render;
 pub mod canonical_worker;
 mod canonical_messages;
 pub mod async_program;

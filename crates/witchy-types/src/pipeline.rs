@@ -761,13 +761,14 @@ fn attach_canonical_source(
 
 /// Turn the typechecker-owned monomorphization result into the exact canonical
 /// lowering input.  The trait transform supplies identities, but its output is
-/// never trusted directly: the transformed module is immediately checked and
-/// the witness rejects any generated identity without a concrete checked body
-/// and signature.
-fn canonicalize_callable_instances(
+/// never trusted directly: the transformed module is immediately checked.
+/// Keep all specialization identities and preparation reservations until
+/// authenticated existential adapters have joined the executable scope; the
+/// final witness then binds the completed checked bodies and signatures.
+fn canonicalize_callable_instances<'catalog>(
     typed: typeck::TypedModule,
-    dictionary_catalog: Option<&crate::witness::WitnessCatalog>,
-) -> Result<(typeck::TypedModule, CanonicalCallableWitness), PipelineError> {
+    dictionary_catalog: Option<&'catalog crate::witness::WitnessCatalog>,
+) -> Result<(typeck::TypedModule, crate::canonical_equality::PreparationSession<'catalog>), PipelineError> {
     // The linked semantic proof already prepares generators through
     // witchy_syntax::generators::lower: owned tuple frames and iter.unfold,
     // never replay. Consume that exact typed projection, not checked.module()
@@ -785,22 +786,15 @@ fn canonicalize_callable_instances(
             message: "canonical source projection contains an unprepared generator".into(),
         }));
     }
-    let (module, mut generic_instances) =
+    let (module, generic_instances) =
         crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
     let typed = typeck::annotate_checked(module)?;
-    let (typed, equality_instances, dictionary_comparators) = crate::canonical_equality::prepare(typed, dictionary_catalog)
+    let mut preparation = crate::canonical_equality::PreparationSession::new(
+        &typed, dictionary_catalog, generic_instances,
+    ).map_err(|message| PipelineError::Type(TypeError { message }))?;
+    let typed = preparation.extend(typed)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
-    for (name, identity) in equality_instances {
-        if generic_instances.get(&name).is_some_and(|previous| previous != &identity) {
-            return Err(PipelineError::Type(TypeError {
-                message: format!("equality preparation changed specialization identity `{name}`"),
-            }));
-        }
-        generic_instances.insert(name, identity);
-    }
-    let mut callable_witness = bind_canonical_callable_witness(&typed, generic_instances)?;
-    callable_witness.dictionary_comparators = dictionary_comparators;
-    Ok((typed, callable_witness))
+    Ok((typed, preparation))
 }
 
 /// Whether a declaration claims a checked source-owned namespace. This is
@@ -1126,8 +1120,15 @@ fn finish_canonical_source(
     // The same checked link retains the resolved pre-erasure declarations;
     // capture their witnesses here, never from the later canonical AST.
     let witness_catalog = crate::witness::WitnessCatalog::from_module(checked.module());
-    let (mut typed_source, mut callable_witness) =
+    let (mut typed_source, mut preparation) =
         canonicalize_callable_instances(typed_source, Some(&witness_catalog))?;
+    // Only declarations actually removed by the following checked preparation
+    // may lose their specialization metadata. An already missing body must
+    // still reach the final binder's fail-closed identity checks.
+    let before_preparation = typed_source.module().items.iter().filter_map(|item| match item {
+        witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
+        _ => None,
+    }).collect::<HashSet<_>>();
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
     let dynamic_runtime_plan = if checked.module_owners.is_some() {
@@ -1145,15 +1146,6 @@ fn finish_canonical_source(
         typed_source = crate::existential::prepare_closed_dynamic(
             typed_source, &witness_catalog, &runtime_catalog, &plan,
         ).map_err(|message| PipelineError::Type(TypeError { message }))?;
-        let retained = typed_source.module().items.iter().filter_map(|item| match item {
-            witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
-            _ => None,
-        }).collect::<HashSet<_>>();
-        let instances = callable_witness.generic_instances.into_iter()
-            .filter(|(name, _)| retained.contains(name)).collect();
-        let dictionary_comparators = callable_witness.dictionary_comparators;
-        callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
-        callable_witness.dictionary_comparators = dictionary_comparators;
         Some(plan)
     } else {
         typed_source = crate::canonical_messages::prepare(typed_source, None)
@@ -1166,21 +1158,23 @@ fn finish_canonical_source(
         None
     };
 
-    let (prepared_traits, traits_changed) = crate::existential::prepare_closed_traits(
+    let (prepared_traits, _) = crate::existential::prepare_closed_traits(
         typed_source, &witness_catalog,
     ).map_err(|message| PipelineError::Type(TypeError { message }))?;
-    typed_source = prepared_traits;
-    if traits_changed {
-        let retained = typed_source.module().items.iter().filter_map(|item| match item {
-            witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
-            _ => None,
-        }).collect::<HashSet<_>>();
-        let instances = callable_witness.generic_instances.into_iter()
-            .filter(|(name, _)| retained.contains(name)).collect();
-        let dictionary_comparators = callable_witness.dictionary_comparators;
-        callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
-        callable_witness.dictionary_comparators = dictionary_comparators;
-    }
+    // Closed Dynamic/trait dispatch adds real calls to adapters authenticated
+    // by the retained catalog. Their bodies were not necessarily executable
+    // roots before that rewrite. Extend the SAME preparation sessions before
+    // deriving any final witness; never restart prefix-collision reservations.
+    typed_source = preparation.extend(prepared_traits)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    let (mut instances, dictionary_comparators) = preparation.into_metadata();
+    let retained = typed_source.module().items.iter().filter_map(|item| match item {
+        witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
+        _ => None,
+    }).collect::<HashSet<_>>();
+    instances.retain(|name, _| !before_preparation.contains(name) || retained.contains(name));
+    let mut callable_witness = bind_canonical_callable_witness(&typed_source, instances)?;
+    callable_witness.dictionary_comparators = dictionary_comparators;
 
     let proper_tail_manifest = typed_source
         .proper_tail_manifest()
