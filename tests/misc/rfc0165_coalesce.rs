@@ -154,6 +154,48 @@ fn main(console: Console):
 "##, &["old value", "old value!", "old value", "old value", "plain", "[section]", "[section]"]);
 }
 
+#[test]
+fn conditional_string_header_refresh_preserves_loop_carried_copy_bounds() {
+    assert_both_modes(r#"
+fn copy(text: String) -> String:
+    text
+
+fn decode(s: String) -> String:
+    var pending = ""
+    var i = 0
+    let n = s.char_count()
+    while i < n:
+        let ch = s.char_at(i) ?? ""
+        if ch == "%" && (s.char_at(i + 1) ?? "") == "x":
+            pending = pending + "!"
+        else:
+            pending = copy(pending) + ch
+        i = i + 1
+    pending
+
+fn main(console: Console):
+    console.print(decode(""))
+    console.print(decode("ab"))
+    console.print(decode("%x"))
+    console.print(decode("%?"))
+"#, &["", "ab", "!x", "%?"]);
+}
+
+#[test]
+fn while_preserves_snapshot_capacity_and_rebinds_growing_list_extent() {
+    assert_both_modes(r#"
+fn main(console: Console):
+    var values = [7]
+    let snapshot = values
+    var i = 0
+    while i < 8:
+        values.push(i)
+        i = i + 1
+    console.print("${snapshot}")
+    console.print("${values}")
+"#, &["[7]", "[7, 0, 1, 2, 3, 4, 5, 6, 7]"]);
+}
+
 fn assert_both_modes(source: &str, expected: &[&str]) {
     for source in [source.to_owned(), format!("mode opt\n{source}")] {
         let checked = witchy::resolve_std_only_checked(&source).expect("coalesce source checks");

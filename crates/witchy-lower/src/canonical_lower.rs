@@ -3433,6 +3433,24 @@ impl FunctionLowerer<'_> {
             .filter(|name| then_bindings[*name] != else_bindings[*name])
             .cloned()
             .collect::<Vec<_>>();
+        // A binding can keep the same reference value while nested control
+        // flow refreshes its count or capacity on only one predecessor. That
+        // is still a semantic rebind: carry the refreshed extent explicitly
+        // through this join instead of selecting one arm's side-table entry.
+        let snapshot_lanes = |snapshot: &FactSnapshot, value: ValueId| {
+            snapshot
+                .string_lengths
+                .get(&value)
+                .zip(snapshot.string_capacities.get(&value))
+                .map(|(count, capacity)| (*count, *capacity))
+                .or_else(|| {
+                    snapshot
+                        .list_counts
+                        .get(&value)
+                        .zip(snapshot.list_capacities.get(&value))
+                        .map(|(count, capacity)| (*count, *capacity))
+                })
+        };
         // A retained snapshot can share extent IDs with a rebound reference.
         // Carry it explicitly too: each predecessor then proves its complete
         // initialized prefix before the checker meets renamed extent facts.
@@ -3463,12 +3481,63 @@ impl FunctionLowerer<'_> {
         } else {
             BTreeSet::new()
         };
+        let extent_snapshot_names = names.iter().filter(|name| {
+            let value = then_bindings[*name];
+            value == else_bindings[*name]
+                && self.carries_token(value)
+                && !snapshot_names.contains(*name)
+                && matches!(self.values[&value], ValueType::Ref(layout) if Some(layout) == string_layout)
+                && snapshot_lanes(&then_facts, value) != snapshot_lanes(&else_facts, value)
+        }).cloned().collect::<BTreeSet<_>>();
         changed_names.extend(snapshot_names.iter().cloned());
         changed_names.sort();
+        changed_names.dedup();
+        let mut arm_facts = [then_facts, else_facts];
         let plans = self.plan_binding_lanes(
             &[(then_end, &then_bindings), (else_end, &else_bindings)],
-            &changed_names, &mut [then_facts, else_facts],
+            &changed_names, &mut arm_facts,
         )?;
+        let [mut then_facts, mut else_facts] = arm_facts;
+        // An unchanged reference already dominates the join and must not be
+        // threaded through another ownership phi merely because one arm
+        // refreshed its extent. Carry only the two scalar extent lanes.
+        let mut snapshot_extent_plans = Vec::new();
+        let mut snapshot_values = extent_snapshot_names.iter()
+            .map(|name| then_bindings[name])
+            .collect::<BTreeSet<_>>();
+        for value in std::mem::take(&mut snapshot_values) {
+            let mut extents = Vec::with_capacity(2);
+            let mut family = None;
+            for (index, end) in [then_end, else_end].into_iter().enumerate() {
+                self.restore_snapshot(if index == 0 { then_facts.clone() } else { else_facts.clone() });
+                self.current = end;
+                let Some(lane) = self.authenticate_dynamic_result(value, string_layout)? else {
+                    extents.clear();
+                    break;
+                };
+                if family.is_some_and(|existing| existing != lane.family) {
+                    extents.clear();
+                    break;
+                }
+                family = Some(lane.family);
+                extents.push(self.split_lanes(lane.count, lane.capacity)?);
+                if index == 0 {
+                    then_facts = self.snapshot_facts();
+                } else {
+                    else_facts = self.snapshot_facts();
+                }
+            }
+            if let (Some(family), [then_extent, else_extent]) =
+                (family, extents.as_slice())
+            {
+                snapshot_extent_plans.push((value, [*then_extent, *else_extent], family));
+            }
+        }
+        if !snapshot_extent_plans.is_empty() {
+            self.restore_snapshot(facts.clone());
+            self.absorb_facts(then_facts.clone());
+            self.absorb_facts(else_facts.clone());
+        }
         let mut parameter_types = Vec::new();
         for plan in &plans {
             parameter_types.push(self.values[&plan.values[0]]);
@@ -3483,6 +3552,9 @@ impl FunctionLowerer<'_> {
                 parameter_types.extend([ValueType::Size, ValueType::Size]);
             }
         }
+        parameter_types.extend(
+            std::iter::repeat_n(ValueType::Size, snapshot_extent_plans.len() * 2),
+        );
         let join_id = self.new_block(&parameter_types)?;
         if shared_result_extents.is_some() {
             self.blocks[join_id.get() as usize].parameters[binding_parameters].ownership =
@@ -3553,6 +3625,10 @@ impl FunctionLowerer<'_> {
             }
             None => None,
         };
+        for (_, extents, _) in &snapshot_extent_plans {
+            then_arguments.extend([extents[0].0, extents[0].1]);
+            else_arguments.extend([extents[1].0, extents[1].1]);
+        }
         // Match each edge's actual last-definition renaming, including any
         // trailing result lanes. Consistent targets remain authenticated even
         // when another binding owns those parameters. Only divergent targets
@@ -3615,6 +3691,21 @@ impl FunctionLowerer<'_> {
                 // would discard capacity before a subsequent nested join.
             }
         }
+        let mut authenticated_snapshot_values = BTreeSet::new();
+        for (value, extents, family) in &snapshot_extent_plans {
+            let bounds = [0, 1].map(|edge| (
+                lane_targets[edge][&extents[edge].0],
+                lane_targets[edge][&extents[edge].1],
+            ));
+            if bounds[0] == bounds[1] {
+                self.record_joined_dynamic_extent(*value, bounds[0].0, bounds[0].1, *family);
+                self.guard_joined_dynamic_extent(*value, bounds[0].0, bounds[0].1, *family)?;
+                authenticated_snapshot_values.insert(*value);
+            } else {
+                self.known_list_lengths.remove(value);
+                self.reload_dynamic_extent(*value)?;
+            }
+        }
         // CFG lanes preserve ownership/shape correspondence, but are not
         // authenticated physical extents after the checker consumes the join.
         // Reload the actual headers at the shared join instead of caching the
@@ -3640,7 +3731,8 @@ impl FunctionLowerer<'_> {
             let joined_result = result;
             let snapshots = self.bindings.values().copied()
                 .filter(|value| Some(*value) != joined_result && (
-                    self.string_lengths.contains_key(value)
+                    (self.string_lengths.contains_key(value)
+                        && !authenticated_snapshot_values.contains(value))
                     || (self.list_counts.contains_key(value)
                         && snapshot_parameters.contains(value))
                 ))
@@ -5213,7 +5305,6 @@ impl FunctionLowerer<'_> {
                 self.string_lengths.remove(object);
                 self.string_capacities.remove(object);
                 self.list_counts.remove(object);
-                self.list_capacities.remove(object);
                 self.known_list_lengths.remove(object);
             }
         }
