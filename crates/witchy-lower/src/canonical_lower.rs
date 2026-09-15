@@ -5188,7 +5188,7 @@ impl FunctionLowerer<'_> {
         condition: &Expr,
         body: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
-        let facts = self.snapshot_facts();
+        let mut facts = self.snapshot_facts();
         let outer = self.bindings.clone();
         // Only a name the body rebinds is a header lane; every other outer
         // binding keeps its value (and its token) across the loop, as in
@@ -5205,6 +5205,31 @@ impl FunctionLowerer<'_> {
             .collect::<Vec<_>>();
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("while list capacity state"));
+        }
+        // A retained list can initially share count/capacity SSA identities
+        // with a root carried by this loop. The backedge renames the mutable
+        // root's lanes; isolate each retained snapshot on its own authenticated
+        // headers before constructing that edge, as `lower_for` does.
+        let carried_extents = list_names
+            .iter()
+            .filter_map(|name| self.tracked_lanes(outer[name]))
+            .flat_map(|(count, capacity)| [count, capacity])
+            .collect::<BTreeSet<_>>();
+        let retained_lists = outer
+            .iter()
+            .filter(|(name, object)| {
+                !names.contains(name)
+                    && self.list_counts.contains_key(*object)
+                    && self.tracked_lanes(**object).is_some_and(|(count, capacity)| {
+                        carried_extents.contains(&count) || carried_extents.contains(&capacity)
+                    })
+            })
+            .map(|(_, object)| *object)
+            .collect::<BTreeSet<_>>();
+        for object in retained_lists {
+            self.known_list_lengths.remove(&object);
+            self.reload_dynamic_extent(object)?;
+            facts.list_capacities.insert(object, self.list_capacities[&object]);
         }
         let mut state_types = names
             .iter()
@@ -5239,6 +5264,18 @@ impl FunctionLowerer<'_> {
             let object = self.bindings[name];
             self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
             metadata_index += 2;
+        }
+        // The token itself dominates the loop, but its counted extent can meet
+        // down at the backedge. Reauthenticate invariant headers inside the
+        // header; carried references use their explicit metadata lanes.
+        let invariant_extents = outer.iter()
+            .filter(|(name, object)| !names.contains(name) && self.tracked_lanes(**object).is_some())
+            .map(|(_, object)| *object)
+            .collect::<BTreeSet<_>>();
+        for object in &invariant_extents {
+            self.invalidate_dynamic_count(*object);
+            self.ensure_list_extent(*object)?;
+            self.ensure_string_extent(*object)?;
         }
         let condition = self.lower_expr(condition)?;
         if self.values[&condition] != ValueType::Bool {
@@ -5289,6 +5326,9 @@ impl FunctionLowerer<'_> {
                 || self.list_counts.get(object) != facts.list_counts.get(object)
         }).collect::<BTreeSet<_>>();
         self.restore_facts(facts, exit);
+        for object in invariant_extents {
+            self.invalidate_dynamic_count(object);
+        }
         for object in invalidated_counts {
             self.invalidate_dynamic_count(object);
         }
