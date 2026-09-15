@@ -10938,6 +10938,25 @@ impl FunctionLowerer<'_> {
                 self.bindings.insert(target.clone(), rebuilt);
                 extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict insert result"))
             }
+            "dict.__remove_extract" => {
+                let [Expr::Var(target), key] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.remove arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(&args[0])?;
+                let key = self.lower_expr(key)?;
+                let (rebuilt, extracted) = self.lower_dict_remove(dict, &shape, &key_type, &value_type, key, true)?;
+                self.bindings.insert(target.clone(), rebuilt);
+                extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict remove result"))
+            }
+            "dict.__remove" => {
+                let [operand, key] = args else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("dict.remove arguments"));
+                };
+                let (dict, shape, key_type, value_type) = self.lower_dict_operand(operand)?;
+                let key = self.lower_expr(key)?;
+                let (rebuilt, _) = self.lower_dict_remove(dict, &shape, &key_type, &value_type, key, false)?;
+                Ok(rebuilt)
+            }
             // The pure form: the dictionary with the entry, as a value.
             "dict.__insert" => {
                 let [operand, key, value] = args else {
@@ -11067,6 +11086,74 @@ impl FunctionLowerer<'_> {
         self.bindings = bindings;
         let join_values = self.block_parameter_values(join);
         Ok((join_values[0], join_values.get(1).copied()))
+    }
+
+    /// Remove one entry with a single key lookup. Both outcomes return fresh
+    /// list owners, so neither successful nor missing removal consumes a snapshot.
+    fn lower_dict_remove(
+        &mut self,
+        dict: ValueId,
+        shape: &ScalarAggregateShape,
+        key_type: &Type,
+        value_type: &Type,
+        key: ValueId,
+        extract: bool,
+    ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
+        if !Self::dict_scalar_value(value_type) && !Self::is_string_type(value_type) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("dict value type"));
+        }
+        let key_list = Type::Named("List".into(), vec![key_type.clone()]);
+        let value_list = Type::Named("List".into(), vec![value_type.clone()]);
+        let keys = self.dict_list(dict, shape, 0)?;
+        let values = self.dict_list(dict, shape, 1)?;
+        let (found, index) = self.lower_dict_find(keys, key, key_type)?;
+        let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
+        let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
+        let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
+        if extract {
+            join_shapes.push((self.field_value_type(&option_type)?, Some(Ownership::Unique)));
+        }
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let join = self.new_block_owned(&join_shapes)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: found, then_target: hit, then_arguments: Vec::new(),
+            else_target: miss, else_arguments: Vec::new(),
+        })?;
+
+        self.current = hit;
+        let displaced = if let Some(option_shape) = &option_shape {
+            let old = self.lower_dict_value_at(values, index, value_type)?;
+            Some(self.lower_aggregate(option_shape, 0, vec![old])?)
+        } else {
+            None
+        };
+        let remaining_keys = self.remove_list_value(keys, index, key_list.clone())?;
+        let remaining_values = self.remove_list_value(values, index, value_list.clone())?;
+        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![remaining_keys, remaining_values])?;
+        let mut lanes = vec![rebuilt];
+        if let Some(displaced) = displaced {
+            lanes.push(displaced);
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let keys = self.clone_list_value_for_storage(keys, &key_list)?;
+        let values = self.clone_list_value_for_storage(values, &value_list)?;
+        let rebuilt = self.lower_aggregate_moving(shape, 0, vec![keys, values])?;
+        let mut lanes = vec![rebuilt];
+        if let Some(option_shape) = &option_shape {
+            lanes.push(self.lower_aggregate(option_shape, 1, Vec::new())?);
+        }
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let values = self.block_parameter_values(join);
+        Ok((values[0], values.get(1).copied()))
     }
 
     /// `dict.pairs`: a fresh list of `(key, value)` tuples in insertion

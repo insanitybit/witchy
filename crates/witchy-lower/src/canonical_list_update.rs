@@ -168,6 +168,112 @@ impl FunctionLowerer<'_> {
         Ok(result[0])
     }
 
+    /// Copy every element except one checked index into a new initialized
+    /// prefix. The source remains live, including all of its owned children.
+    pub(super) fn remove_list_value(
+        &mut self,
+        source: ValueId,
+        index: ValueId,
+        list_type: Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let (layout, element_type, header_bytes, stride_bytes) = list_layout(
+            &list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+        )?;
+        let Type::Named(_, arguments) = list_type.unqualified() else {
+            return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+        };
+        let [element_source_type] = arguments.as_slice() else {
+            return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+        };
+        if self.values[&source] != ValueType::Ref(layout) || self.values[&index] != ValueType::Size {
+            return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+        }
+        self.ensure_list_extent(source)?;
+        let (length, _) = self.tracked_lanes(source).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list removal source extent"),
+        )?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let zero = self.push_const_size(0)?;
+        let one = self.push_const_size(1)?;
+        let nonempty = self.push_compare(ComparisonOperator::LessUnsigned, zero, length)?;
+        self.push_guard(nonempty, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let remaining = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, length, one, OverflowBehavior::Wrap)?;
+        self.guard_dynamic_extent(remaining, remaining, header_bytes, stride_bytes)?;
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object, layout,
+            extent: witchy_wir::canonical_safewir::Extent::Counted {
+                header_bytes, count: zero, capacity: remaining, stride_bytes,
+            },
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.set_tracked_lanes(object, zero, remaining);
+        let facts = self.snapshot_facts();
+        let lanes = [
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None), (ValueType::Size, None),
+        ];
+        let header = self.new_block_owned(&lanes)?;
+        let body = self.new_block_owned(&lanes)?;
+        let exit = self.new_block_owned(&lanes)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![object, zero, remaining] })?;
+        self.current = header;
+        let header_values = self.block_parameter_values(header);
+        self.set_tracked_lanes(header_values[0], header_values[1], header_values[2]);
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[1], remaining)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more, then_target: body, then_arguments: header_values.clone(),
+            else_target: exit, else_arguments: header_values,
+        })?;
+
+        self.current = body;
+        let body_values = self.block_parameter_values(body);
+        let (output, cursor, capacity) = (body_values[0], body_values[1], body_values[2]);
+        self.set_tracked_lanes(output, cursor, capacity);
+        let fits = self.push_compare(ComparisonOperator::LessUnsigned, cursor, capacity)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let maximum = self.push_const_size(u64::from(u32::MAX))?;
+        let increment_fits = self.push_compare(ComparisonOperator::LessUnsigned, cursor, maximum)?;
+        self.push_guard(increment_fits, witchy_wir::canonical_safewir::GuardKind::Arithmetic);
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        let next_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, next, capacity)?;
+        self.push_guard(next_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let prefix = self.new_block(&[])?;
+        let suffix = self.new_block(&[])?;
+        let selected = self.new_block_owned(&lanes)?;
+        let before_removed = self.push_compare(ComparisonOperator::LessUnsigned, cursor, index)?;
+        let selection_facts = self.snapshot_facts();
+        self.finish_current(Terminator::BranchIf {
+            condition: before_removed, then_target: prefix, then_arguments: Vec::new(),
+            else_target: suffix, else_arguments: Vec::new(),
+        })?;
+        for (block, source_index) in [(prefix, cursor), (suffix, next)] {
+            self.restore_facts(selection_facts.clone(), block);
+            self.current = block;
+            let readable = self.push_compare(ComparisonOperator::LessUnsigned, source_index, length)?;
+            self.push_guard(readable, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            let value = self.load_list_element(source, source_index, element_type)?;
+            let value = if matches!(element_type, ValueType::Ref(_)) {
+                self.owned_for_storage(value, element_source_type)?
+            } else {
+                value
+            };
+            self.store_replacement_element(output, cursor, value, next, element_type);
+            self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, capacity] })?;
+        }
+        self.restore_facts(selection_facts, selected);
+        self.current = selected;
+        let selected_values = self.block_parameter_values(selected);
+        self.set_tracked_lanes(selected_values[0], selected_values[1], selected_values[2]);
+        self.finish_current(Terminator::Branch { target: header, arguments: selected_values })?;
+        self.restore_facts(facts, exit);
+        self.current = exit;
+        let result = self.block_parameter_values(exit);
+        self.set_tracked_lanes(result[0], result[1], result[2]);
+        Ok(result[0])
+    }
+
     fn store_replacement_element(&mut self, output: ValueId, index: ValueId, value: ValueId, next: ValueId, element_type: ValueType) {
         self.push_operation(Operation::Store {
             place: witchy_wir::canonical_safewir::Place::projected(
