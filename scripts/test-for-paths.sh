@@ -417,6 +417,13 @@ for p in "${paths[@]}"; do
         tests/misc/rfc0165_oracle.rs)
             add_early "WITCHY_ORACLE_EXAMPLE=calc cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_oracle::oracle_agrees_on_the_admitted_examples_shard_3)'"
             path_has_early=1 ;;
+        tests/misc/rfc0165_owner_adapters.rs)
+            # This admission-boundary assertion previously failed only after
+            # the full workspace stage. Keep the exact raw-Wasm rejection
+            # probe in the edit loop; the complete adapter family remains in
+            # the landing selection below.
+            add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'"
+            path_has_early=1 ;;
         tests/misc/rfc0077_integration_grants.rs)
             # The async source-integration cases each take about 166s and run
             # in the complete landing selection. Keep the edit loop on the
@@ -866,6 +873,8 @@ if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
             cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_corpus::/)'" ) ;;
         tests/misc/rfc0165_project_run.rs)
             cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_project_run::/)'" ) ;;
+        tests/misc/rfc0165_owner_adapters.rs)
+            cmds=("cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'") ;;
         *) ;;
     esac
 fi
@@ -874,7 +883,8 @@ if [ "$edit_loop" -eq 1 ] && [ "${#cmds[@]}" -gt 0 ] \
     && { [ "${paths[0]}" = "tests/misc/rfc0165_fetch.rs" ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_messages.rs" ] \
         || [ "${paths[0]}" = "tests/misc/rfc0165_corpus.rs" ] \
-        || [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ]; }; then
+        || [ "${paths[0]}" = "tests/misc/rfc0165_project_run.rs" ] \
+        || [ "${paths[0]}" = "tests/misc/rfc0165_owner_adapters.rs" ]; }; then
     : # Keep the exact direct-file module route selected above.
 elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
     && [ "$registry_replay_paths_only" -eq 1 ] \

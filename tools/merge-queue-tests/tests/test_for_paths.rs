@@ -911,6 +911,21 @@ fn server_pool_oracle_edit_keeps_its_authority_and_execution_probes() {
 }
 
 #[test]
+fn owner_adapter_edit_replays_the_raw_wasm_admission_probe_early() {
+    let commands = selected(&[
+        "--edit-loop",
+        "tests/misc/rfc0165_owner_adapters.rs",
+    ]);
+    assert_eq!(commands.len(), 1, "owner adapter edit route expanded: {commands:?}");
+    assert!(
+        commands[0].contains(
+            "rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata",
+        ),
+        "raw-Wasm admission probe was omitted: {commands:?}",
+    );
+}
+
+#[test]
 fn integration_driver_edits_use_the_bounded_semantic_contracts() {
     for path in [
         "crates/witchy-types/src/pipeline/test_driver/integration.rs",
