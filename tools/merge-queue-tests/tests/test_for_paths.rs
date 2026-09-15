@@ -691,7 +691,7 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
     assert!(mixed[2].contains("source_integration_recipe_runs_selected_console_capture_and_reports_abort"), "{mixed:?}");
     assert!(mixed[2].contains("commands::embedded_pm::tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_oracle::admitted_observer_is_not_called_on_refusal"), "{mixed:?}");
-    assert!(mixed[2].contains("fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm"), "{mixed:?}");
+    assert!(mixed[2].contains("fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact"), "{mixed:?}");
     assert!(mixed[2].contains("commands::test_runner::canonical_integration_tests::"), "{mixed:?}");
     assert!(mixed[2].contains("rfc0165_enum_equality::"), "{mixed:?}");
     assert!(!mixed.iter().any(|command| command.contains("check.sh --wasm") || command == "cargo nextest run --test misc"), "{mixed:?}");
@@ -1045,9 +1045,9 @@ fn cli_subcommand_edits_replay_output_authority_and_admission_guards() {
     let commands = selected(&["--edit-loop", "tests/cli_subcommands.rs"]);
     assert_eq!(commands.len(), 1, "CLI edit route expanded: {commands:?}");
     for probe in [
-        "wasm_nil_main_int_output_is_not_eaten_as_exit_code",
+        "source_nil_main_int_output_is_not_eaten_as_exit_code",
         "sandbox_wasm_requires_explicit_dir_grant",
-        "fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm",
+        "fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact",
     ] {
         assert!(
             commands[0].contains(probe),
@@ -1096,7 +1096,7 @@ fn dispatch_edits_probe_fetch_origin_admission_before_commands_module() {
     assert_eq!(commands.len(), 2, "{commands:?}");
     assert_eq!(
         commands[0],
-        "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm)'"
+        "cargo nextest run --test cli_subcommands -E 'test(=fetch_root_requires_an_explicit_valid_origin_and_admitted_artifact)'"
     );
     assert!(
         commands[1].contains("test(/^commands::/)")
