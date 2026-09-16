@@ -93,6 +93,64 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
 }
 
 #[test]
+fn checked_entry_scope_forwards_owned_dynamic_across_direct_and_indirect_calls() {
+    use witchy::runtime::{Capabilities, Runtime};
+    use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
+
+    let library = br#"import dynamic
+pub fn forward(value: dynamic.Dynamic) -> dynamic.Dynamic:
+    value
+pub fn forwarder() -> fn(dynamic.Dynamic) -> dynamic.Dynamic:
+    forward
+"#;
+    let entry = br#"import dynamic
+import reflect
+import library
+type User derive(Reflect):
+    value: Int
+fn main(console: Console):
+    let packed = dynamic.dynamic(User(7))
+    let direct = library.forward(packed)
+    let operation = library.forwarder()
+    let returned = operation(direct)
+    let decoded: Option(User) = dynamic.try_decode(returned)
+    match decoded:
+        Some(user) -> console.print("${user.value}")
+        None -> console.print("none")
+"#;
+    let checked = check_scoped_modules(entry, library);
+    let expected = ["7"];
+    let root = TempDir::new("checked-open-dynamic-forwarding");
+    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
+
+    let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
+        &checked,
+        |validated, artifact| {
+            let entry = artifact.entry().unwrap();
+            let function = witchy_wir::canonical_safewir::FunctionId::new(
+                entry.export().strip_prefix('f').unwrap().parse().unwrap(),
+            );
+            let tokens = entry.capabilities().iter().copied()
+                .map(InterpreterValue::entry_capability).collect();
+            let run = interpret_entry_program(
+                validated, function, tokens, &[], InterpreterConfig::default(),
+            ).unwrap();
+            assert_eq!(run.output, expected);
+            assert_eq!(run.leaked_objects, 0);
+        },
+    ).expect_lowered("owned Dynamic forwards without granting open introspection authority");
+    let mut runtime = Runtime::new().unwrap();
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print: true, ..Capabilities::none() },
+        256,
+    ).unwrap();
+    vm.run().unwrap();
+    assert_eq!(vm.output(), expected);
+    assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+}
+
+#[test]
 fn checked_entry_scope_keeps_imported_metadata_only_dynamic_methods() {
     use witchy::runtime::{Capabilities, Runtime};
     use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
