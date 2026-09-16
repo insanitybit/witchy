@@ -1,0 +1,24 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "witchy",
+      "camelcase": "Witchy",
+      "scope": "source.witchy",
+      "file-types": [
+        "witchy"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Witchy grammar for tree-sitter",
+    "authors": [
+      {
+        "name": "Colin OBrien"
+      }
+    ]
+  }
+}
