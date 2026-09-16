@@ -1250,12 +1250,17 @@ fn source_abi_qualifiers_supported(
     records: &ScalarRecordFields,
 ) -> bool {
     use witchy_syntax::ast::{Convention, Type, TypeQual};
-    let Type::Fn(parameters, result, _, _) = source.unqualified() else { return false };
+    let Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
     // Only a whole scalar parameter may preserve a shared loan in canonical
     // v1. Results, nested callables, projections, and every mutable qualifier
     // continue through the ordinary fail-closed walk below.
     let mut pending = vec![(result.as_ref(), false)];
-    pending.extend(parameters.iter().filter(|parameter| !is_direct_shared_int(parameter)).map(|parameter| (parameter, false)));
+    pending.extend(parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        (!is_direct_shared_int(parameter)).then_some((
+            parameter,
+            conventions.get(index) == Some(&Convention::Var),
+        ))
+    }));
     let mut definitions = HashSet::new();
     let mut visited = 0;
     while let Some((ty, var_parameter)) = pending.pop() {
