@@ -1152,18 +1152,20 @@ fn test_imported_module_tests_are_not_double_counted() {
 #[test]
 fn async_and_gen_tests_do_not_silently_pass() {
     // BUG-184: an async test with `fail_with` must FAIL (its body actually runs);
-    // a passing async test passes; a gen test is reported as a failure.
+    // a gen test is reported as a failure. Passing async execution is covered
+    // separately; keeping one scheduler-bearing driver makes this refusal
+    // regression practical in focused presubmits.
     let dir = workdir("test-async");
     write(
         &dir,
         "a.witchy",
-        "import testing\nasync fn test_async_fails() -> Nil:\n    testing.fail_with(\"boom\")\nasync fn test_async_passes() -> Nil:\n    testing.assert(1 + 1 == 2, \"ok\")\n",
+        "import iter\nimport testing\nasync fn test_async_fails() -> Nil:\n    testing.fail_with(\"boom\")\ngen fn test_gen() -> Iter(Int):\n    yield 1\n",
     );
     let out = run(&["test", dir.to_str().unwrap()]);
     assert!(!out.status.success(), "the failing async test must fail the run");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("test_async_fails ... FAILED"), "async fail must FAIL: {stdout}");
-    assert!(stdout.contains("test_async_passes ... ok"), "async pass must pass: {stdout}");
+    assert!(stdout.contains("test_gen ... FAILED"), "generator test must fail explicitly: {stdout}");
 }
 
 // ---- BUG-178 / BUG-179: `witchy caps` ----

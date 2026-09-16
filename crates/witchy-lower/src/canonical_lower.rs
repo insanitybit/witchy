@@ -5917,7 +5917,50 @@ impl FunctionLowerer<'_> {
     /// element, or a join parameter all of whose lanes carried one. Static
     /// data and join parameters over static data carry none.
     fn carries_token(&self, value: ValueId) -> bool {
-        self.carries_token_seen(value, &mut BTreeSet::new())
+        let mut direct = self.token_join_parameters.clone();
+        if let Some(entry) = self.blocks.first() {
+            direct.extend(entry.parameters.iter().filter_map(|parameter| {
+                parameter.ownership.is_some().then_some(parameter.value)
+            }));
+        }
+        for block in &self.blocks {
+            for operation in &block.operations {
+                match operation {
+                    Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
+                    | Operation::CloneRef { destination, .. }
+                    | Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast, .. } => {
+                        direct.insert(*destination);
+                    }
+                    Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
+                        direct.extend(destinations.iter().copied());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut incoming = BTreeMap::<ValueId, Vec<ValueId>>::new();
+        let mut record_edge = |target: BlockId, arguments: &[ValueId]| {
+            if let Some(block) = self.blocks.get(target.get() as usize) {
+                for (parameter, argument) in block.parameters.iter().zip(arguments) {
+                    incoming.entry(parameter.value).or_default().push(*argument);
+                }
+            }
+        };
+        for block in &self.blocks {
+            match &block.terminator {
+                Some(Terminator::Branch { target, arguments }) => {
+                    record_edge(*target, arguments);
+                }
+                Some(Terminator::BranchIf {
+                    then_target, then_arguments, else_target, else_arguments, ..
+                }) => {
+                    record_edge(*then_target, then_arguments);
+                    record_edge(*else_target, else_arguments);
+                }
+                _ => {}
+            }
+        }
+        self.carries_token_seen(value, &direct, &incoming, &mut BTreeSet::new())
     }
 
     /// Token-ness follows the explicit CFG: an owned entry parameter, an
@@ -5925,60 +5968,27 @@ impl FunctionLowerer<'_> {
     /// incoming edge feeds from a token-carrying argument (a loop threads a
     /// list binding through its header, body, and exit parameters). A cycle
     /// through a loop back edge contributes nothing.
-    fn carries_token_seen(&self, value: ValueId, seen: &mut BTreeSet<ValueId>) -> bool {
+    fn carries_token_seen(
+        &self,
+        value: ValueId,
+        direct: &BTreeSet<ValueId>,
+        incoming: &BTreeMap<ValueId, Vec<ValueId>>,
+        seen: &mut BTreeSet<ValueId>,
+    ) -> bool {
         if let ValueType::Gc(id) = self.values[&value] {
             return self.closures.owners.iter().any(|family| family.owner_type == id || family.list_type == id);
         }
-        if self.token_join_parameters.contains(&value) {
+        if direct.contains(&value) {
             return true;
         }
         if !seen.insert(value) {
             return false;
         }
-        if self.blocks.first().is_some_and(|entry| {
-            entry.parameters.iter().any(|parameter| parameter.value == value && parameter.ownership.is_some())
-        }) {
-            return true;
-        }
-        let minted = self.blocks.iter().any(|block| {
-            block.operations.iter().any(|operation| match operation {
-                Operation::Alloc { destination, class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted, .. }
-                | Operation::CloneRef { destination, .. } => *destination == value,
-                Operation::Load { destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast, .. } => {
-                    *destination == value
-                }
-                Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
-                    destinations.contains(&value)
-                }
-                _ => false,
+        incoming.get(&value).is_some_and(|arguments| {
+            arguments.iter().any(|argument| {
+                self.carries_token_seen(*argument, direct, incoming, seen)
             })
-        });
-        if minted {
-            return true;
-        }
-        let Some((target, index)) = self.blocks.iter().find_map(|block| {
-            block.parameters.iter().position(|parameter| parameter.value == value).map(|index| (block.id, index))
-        }) else {
-            return false;
-        };
-        let mut arguments = Vec::new();
-        for block in &self.blocks {
-            match &block.terminator {
-                Some(Terminator::Branch { target: edge, arguments: edge_arguments }) if *edge == target => {
-                    arguments.extend(edge_arguments.get(index).copied());
-                }
-                Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
-                    if *then_target == target {
-                        arguments.extend(then_arguments.get(index).copied());
-                    }
-                    if *else_target == target {
-                        arguments.extend(else_arguments.get(index).copied());
-                    }
-                }
-                _ => {}
-            }
-        }
-        arguments.into_iter().any(|argument| self.carries_token_seen(argument, seen))
+        })
     }
 
     /// Give every result lane of a join a token when any lane carries one:

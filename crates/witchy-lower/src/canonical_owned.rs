@@ -154,16 +154,24 @@ fn is_reference(function: &Function, value: ValueId) -> bool {
     matches!(function.value_types.get(&value), Some(ValueType::Ref(_) | ValueType::Gc(_)))
 }
 
-fn edge_needs(target: BlockId, arguments: &[ValueId], live_in: &BTreeMap<BlockId, Values>) -> Values {
+fn edge_needs(
+    function: &Function,
+    target: BlockId,
+    arguments: &[ValueId],
+    live_in: &BTreeMap<BlockId, Values>,
+) -> Values {
     let mut needed = live_in.get(&target).cloned().unwrap_or_default();
-    needed.extend(arguments.iter().copied());
+    needed.extend(arguments.iter().copied().filter(|value| is_reference(function, *value)));
     needed
 }
 
-fn live_tail(block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
-    let mut live: Values = terminal_uses(&block.terminator).into_iter().collect();
+fn live_tail(function: &Function, block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
+    let mut live: Values = terminal_uses(&block.terminator)
+        .into_iter()
+        .filter(|value| is_reference(function, *value))
+        .collect();
     for (target, arguments) in edges(&block.terminator) {
-        live.extend(edge_needs(target, arguments, live_in));
+        live.extend(edge_needs(function, target, arguments, live_in));
     }
     live
 }
@@ -174,13 +182,14 @@ fn liveness(function: &Function) -> BTreeMap<BlockId, Values> {
     loop {
         let mut changed = false;
         for block in function.blocks.iter().rev() {
-            let mut live = live_tail(block, &live_in);
+            let mut live = live_tail(function, block, &live_in);
             for operation in block.operations.iter().rev() {
-                for value in definitions(operation) { live.remove(&value); }
-                live.extend(uses(operation));
+                for value in definitions(operation) {
+                    if is_reference(function, value) { live.remove(&value); }
+                }
+                live.extend(uses(operation).into_iter().filter(|value| is_reference(function, *value)));
             }
             for parameter in &block.parameters { live.remove(&parameter.value); }
-            live.retain(|value| is_reference(function, *value));
             if live_in.get(&block.id) != Some(&live) {
                 live_in.insert(block.id, live);
                 changed = true;
@@ -195,6 +204,14 @@ fn release_dead(owned: &mut Values, live: &Values, output: &mut Vec<Operation>) 
     for object in dead {
         output.push(Operation::DropRef { object });
         owned.remove(&object);
+    }
+}
+
+fn release_values(owned: &mut Values, dead: &Values, output: &mut Vec<Operation>) {
+    for object in dead {
+        if owned.remove(object) {
+            output.push(Operation::DropRef { object: *object });
+        }
     }
 }
 
@@ -383,20 +400,30 @@ pub(super) fn insert_releases(
     while let Some(id) = pending.pop_front() {
         let block = blocks.get(&id).ok_or(ReleasePlacementError::MissingBlock(id))?;
         let mut owned = incoming[&id].clone();
-        let mut live = live_tail(block, &live_in);
-        let mut after = Vec::with_capacity(block.operations.len());
+        let mut live = live_tail(function, block, &live_in);
+        let mut dead_after = Vec::with_capacity(block.operations.len());
         for operation in block.operations.iter().rev() {
-            after.push(live.clone());
-            for value in definitions(operation) { live.remove(&value); }
-            live.extend(uses(operation));
+            let definitions = definitions(operation);
+            let uses = uses(operation);
+            let dead = definitions
+                .iter()
+                .chain(&uses)
+                .copied()
+                .filter(|value| is_reference(function, *value) && !live.contains(value))
+                .collect();
+            dead_after.push(dead);
+            for value in definitions {
+                if is_reference(function, value) { live.remove(&value); }
+            }
+            live.extend(uses.into_iter().filter(|value| is_reference(function, *value)));
         }
-        after.reverse();
+        dead_after.reverse();
         let mut output = Vec::new();
         release_dead(&mut owned, &live, &mut output);
-        for (operation, live_after) in block.operations.iter().zip(after) {
+        for (operation, dead) in block.operations.iter().zip(dead_after) {
             operation_flow(function, operation, &mut owned, &signatures, &callees)?;
             output.push(operation.clone());
-            release_dead(&mut owned, &live_after, &mut output);
+            release_values(&mut owned, &dead, &mut output);
         }
 
         let mut terminator = block.terminator.clone();
@@ -427,7 +454,11 @@ pub(super) fn insert_releases(
             if destination.parameters.len() != arguments.len() { return Err(ReleasePlacementError::EdgeArity(target)); }
             let mut edge_owned = owned.clone();
             let mut drops = Vec::new();
-            release_dead(&mut edge_owned, &edge_needs(target, arguments, &live_in), &mut drops);
+            release_dead(
+                &mut edge_owned,
+                &edge_needs(function, target, arguments, &live_in),
+                &mut drops,
+            );
             // Edge forwarding is simultaneous. One source token cannot provide
             // two destination lanes; that requires an explicit CloneRef.
             let mut moved = Values::new();

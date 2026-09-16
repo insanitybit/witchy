@@ -1,6 +1,7 @@
-//! Bare test recipe v2. Raw bytes and loader ownership survive discovery; a
+//! Bare test recipe v3. Raw bytes and loader ownership survive discovery; a
 //! fresh parse/check of the compiler-created entry derives ALL driver witnesses.
-//! Async, parameterized, fixture and integration recipes are separate obligations.
+//! Async tests are driven to completion; parameterized, fixture and integration
+//! recipes are separate obligations.
 use super::*;
 use witchy_syntax::ast::{Expr, Item, Stmt, Type};
 
@@ -9,7 +10,7 @@ pub use console_fixture::check_console_fixture_test_driver;
 mod integration;
 pub use integration::check_integration_test_driver;
 
-const BARE_RECIPE_VERSION: u32 = 2;
+const BARE_RECIPE_VERSION: u32 = 3;
 
 #[derive(Debug)]
 pub struct CheckedTestSuite {
@@ -109,12 +110,13 @@ pub fn check_bare_test_driver(
         return Err(refused(format!("unknown or ambiguous entry test `{selected}`")));
     }
     let (ordinal, target) = targets[0];
-    if target.is_async || target.is_gen || target.comptime_only || !target.params.is_empty()
+    if target.is_gen || target.comptime_only || !target.params.is_empty()
         || !target.bounds.is_empty()
         || target.ret.as_ref().is_some_and(|ty| !matches!(ty, Type::Named(name, args) if name == "Nil" && args.is_empty()))
     {
-        return Err(refused(format!("bare test `{selected}` requires an ordinary synchronous nullary Nil declaration; async, generator, parameterized and generic targets are unsupported")));
+        return Err(refused(format!("bare test `{selected}` requires an ordinary or async nullary Nil declaration; generator, parameterized and generic targets are unsupported")));
     }
+    let is_async = target.is_async;
     let declaration_ordinal = u64::try_from(ordinal)
         .map_err(|_| refused("test declaration ordinal overflow"))?;
     let mut hasher = blake3::Hasher::new();
@@ -135,13 +137,28 @@ pub fn check_bare_test_driver(
 
     // This fixed compiler template is not user input. Use the local source
     // declaration before linking, never a guessed post-link callable spelling.
-    let mut generated = witchy_syntax::parser::parse_module("fn main() -> Nil:\n    Nil\n")
+    let recipe = if is_async {
+        "fn main() -> Nil:\n    task.run(Nil)\n"
+    } else {
+        "fn main() -> Nil:\n    Nil\n"
+    };
+    let mut generated = witchy_syntax::parser::parse_module(recipe)
         .map_err(|error| refused(format!("invalid compiler test recipe: {error}")))?;
-    let Item::Function(main) = &mut generated.items[0] else {
+    let Some(Item::Function(main)) = generated.items.iter_mut()
+        .find(|item| matches!(item, Item::Function(function) if function.name == "main")) else {
         return Err(refused("invalid compiler test recipe entry"));
     };
     main.line = 0;
-    main.body.stmts = vec![Stmt::Expr(Expr::Call { name: bare.to_owned(), args: Vec::new() })];
+    let target_call = Expr::Call { name: bare.to_owned(), args: Vec::new() };
+    if is_async {
+        let [Stmt::Expr(Expr::Call { args, .. })] = main.body.stmts.as_mut_slice() else {
+            return Err(refused("invalid compiler async test recipe"));
+        };
+        *args = vec![target_call];
+    } else {
+        main.body.stmts = vec![Stmt::Expr(target_call)];
+    }
+    main.body.lines = vec![0];
     // Retain source-line alignment while replacing only the source entry main.
     for index in (0..entry.items.len()).rev() {
         if matches!(&entry.items[index], Item::Function(function) if function.name == "main") {
@@ -156,6 +173,30 @@ pub fn check_bare_test_driver(
         true, suite.checked.module_owners.clone(),
     )?;
     let typed = typed.ok_or_else(|| refused("test recipe check did not return typed source"))?;
+    let main = typed.module().items.iter().find_map(|item| match item {
+        Item::Function(function) if function.name == "main" => Some(function),
+        _ => None,
+    }).ok_or_else(|| refused("checked test recipe entry missing"))?;
+    let [Stmt::Expr(expression)] = main.body.stmts.as_slice() else {
+        return Err(refused("checked test recipe entry shape changed"));
+    };
+    let invocation = if is_async {
+        let Expr::Call { args, .. } = expression else {
+            return Err(refused("checked async test driver must run its task"));
+        };
+        let [invocation] = args.as_slice() else {
+            return Err(refused("checked async test driver task binding changed"));
+        };
+        invocation
+    } else {
+        expression
+    };
+    let Expr::Call { name, args } = invocation else {
+        return Err(refused("checked test recipe call shape changed"));
+    };
+    if name != selected || !args.is_empty() {
+        return Err(refused("checked test recipe target binding changed"));
+    }
     let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest)?;
     let runtime_catalog = Some(checked.runtime_declaration_catalog()?);
     let canonical_source = checked.canonical_source.take();

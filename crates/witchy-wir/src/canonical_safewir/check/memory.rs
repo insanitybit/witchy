@@ -3516,39 +3516,57 @@ impl<'a> MemoryChecker<'a> {
         if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
             return Ok(false);
         }
+        // Consolidation asks about every field after each incremental store.
+        // Resolve the current allocation aliases once instead of rescanning all
+        // fact tables and re-resolving identities independently per field.
+        // This index is deliberately ephemeral: moves, joins and reclamation
+        // can change the current MemoryState between operations.
+        let Some(identity) = self.state.objects.get(&object).map(|state| state.identity) else {
+            return Ok(false);
+        };
+        let aliases = self.state.objects.iter().filter_map(|(candidate, state)| {
+            (state.identity == identity).then_some(*candidate)
+        }).collect::<Vec<_>>();
+        let scalar_stored = |slot| aliases.iter().any(|alias| {
+            self.state.initialized_scalar_slots.contains(&(*alias, slot))
+        });
+        let object_stored = |slot| aliases.iter().any(|alias| {
+            self.state.stored_objects.contains_key(&(*alias, slot))
+        });
+        let nullable_absent = |slot| aliases.iter().any(|alias| {
+            self.state.nullable_absent_slots.contains(&(*alias, slot))
+        });
         for (index, field) in descriptor.fields().iter().enumerate() {
             let slot = SlotIdentity::Constant(index as u64);
             let initialized = match field.kind() {
-                FieldKind::Scalar(_) => self.checked_scalar_slot_stored(object, slot),
+                FieldKind::Scalar(_) => scalar_stored(slot),
                 FieldKind::Pointer {
                     slot: PointerSlot::Owned,
                     ..
-                } => self.stored_slot_by_identity(object, slot).is_some(),
+                } => object_stored(slot),
                 FieldKind::Pointer {
                     slot: PointerSlot::OwnedNullable,
                     ..
                 } => {
-                    self.stored_slot_by_identity(object, slot).is_some()
-                        || self.nullable_slot_absent(object, slot)
+                    object_stored(slot) || nullable_absent(slot)
                 }
                 FieldKind::Pointer { .. } => false,
                 FieldKind::Inline(field_layout) => match self.descriptor(field_layout)?.kind() {
-                    LayoutKind::Scalar(_) => self.checked_scalar_slot_stored(object, slot),
+                    LayoutKind::Scalar(_) => scalar_stored(slot),
                     LayoutKind::RuntimeValueSlot { value }
                         if matches!(self.descriptor(*value)?.kind(), LayoutKind::Scalar(_)) =>
                     {
-                        self.checked_scalar_slot_stored(object, slot)
+                        scalar_stored(slot)
                     }
                     LayoutKind::RuntimePointerValueSlot {
                         semantics: PointerSlot::Owned,
                         ..
-                    } => self.stored_slot_by_identity(object, slot).is_some(),
+                    } => object_stored(slot),
                     LayoutKind::RuntimePointerValueSlot {
                         semantics: PointerSlot::OwnedNullable,
                         ..
                     } => {
-                        self.stored_slot_by_identity(object, slot).is_some()
-                            || self.nullable_slot_absent(object, slot)
+                        object_stored(slot) || nullable_absent(slot)
                     }
                     _ => false,
                 },
