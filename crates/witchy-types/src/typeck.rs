@@ -6084,6 +6084,18 @@ impl Checker {
         }
     }
 
+    /// Transfer a plain variable through an `own` parameter. Normal Witchy has
+    /// value semantics, so it may materialize an owned copy and leave the
+    /// caller's binding live. `mode opt` makes that hidden adaptation a hard
+    /// cost boundary. Affine values remain consuming in every mode; they cannot
+    /// be copied to satisfy the convention.
+    fn transfer_owned_argument_binding(&mut self, name: &str) {
+        if self.opt_mode || self.is_must_binding(name) {
+            self.mark_consumed_binding(name);
+            self.consume_must_binding(name);
+        }
+    }
+
     fn reinitialize_binding(&mut self, name: &str) {
         if let Some(binding) = self.must_binding_key(name) {
             self.consumed.remove(&binding);
@@ -8465,8 +8477,7 @@ impl Checker {
                                     &format!("argument {} to `{name}`", i + 1),
                                 )?;
                             }
-                            self.mark_consumed_binding(v);
-                            self.consume_must_binding(v);
+                            self.transfer_owned_argument_binding(v);
                         }
                     }
                     // An owned value or an immutable borrow: no call-site
@@ -8624,8 +8635,7 @@ impl Checker {
                             var,
                             &format!("argument {} to function value `{name}`", index + 1),
                         )?;
-                        self.mark_consumed_binding(var);
-                        self.consume_must_binding(var);
+                        self.transfer_owned_argument_binding(var);
                     }
                 }
                 Convention::Let => {
@@ -8742,8 +8752,7 @@ impl Checker {
                             name,
                             &format!("operand {} to existential `{callee}`", index + 1),
                         )?;
-                        self.mark_consumed_binding(name);
-                        self.consume_must_binding(name);
+                        self.transfer_owned_argument_binding(name);
                     }
                 }
                 Convention::Let => {

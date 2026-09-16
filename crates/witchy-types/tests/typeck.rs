@@ -2506,18 +2506,28 @@ fn main():
     }
 
     #[test]
-    fn rejects_use_after_own_move() {
-        let src = r#"
+    fn own_arguments_follow_the_mode_boundary_and_explicit_move_stays_consuming() {
+        let normal = r#"
 fn take(own s: String) -> String:
     s
 
-fn main():
+fn main() -> Int:
     let x = "hi"
     let a = take(x)
     let b = take(x)
+    a.length() + b.length() + x.length()
 "#;
-        let e = check_str(src).unwrap_err();
-        assert!(e.contains("moved"), "got: {e}");
+        check_str(normal).expect("normal mode may prepare owned copies and retain its value");
+
+        let optimized = format!("mode opt\n\n{normal}");
+        let error = check_str(&optimized)
+            .expect_err("mode opt rejects the hidden copy after an owned transfer");
+        assert!(error.contains("moved"), "got: {error}");
+
+        let explicit = normal.replace("let a = take(x)", "let a = take(move x)");
+        let error = check_str(&explicit)
+            .expect_err("explicit move consumes its source in every mode");
+        assert!(error.contains("moved"), "got: {error}");
     }
 
     // (BUG-009 / RFC-0005 hardening #4) Attenuation proof for `Net` — mirrors
@@ -3781,4 +3791,3 @@ fn main():
         .expect("s.as_str().slice(0, 3).to_string() should typecheck");
     }
 }
-

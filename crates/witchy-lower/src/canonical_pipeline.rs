@@ -246,6 +246,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn normal_caller_prepares_owned_value_for_opt_export_without_changing_value_semantics() {
+        let api = "mode opt\n\npub fn append(own values: List(Int), value: Int) -> List(Int):\n    values.push(value)\n    values\n";
+        let main = "import api\n\nfn main() -> Int:\n    let values = [1, 2]\n    let extended = api.append(values, 3)\n    extended.length() * 10 + values.length()\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![
+                ("api".to_string(), api.as_bytes().to_vec()),
+                ("main".to_string(), main.as_bytes().to_vec()),
+            ],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("normal source may call a conventional owned opt export");
+
+        let artifact = admit_checked_module(&checked)
+            .expect("normal-to-opt ownership preparation reaches canonical admission");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("normal-to-opt artifact is valid Wasm");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine)
+            .instantiate(&mut store, &module)
+            .expect("instantiate normal-to-opt artifact");
+        let entry = artifact.entry().expect("checked main entry").export();
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, entry)
+            .expect("typed normal-to-opt entry");
+
+        assert_eq!(
+            main.call(&mut store, ()).expect("run normal-to-opt entry"),
+            32,
+            "the opt callee receives an owned value while the normal caller retains its value"
+        );
+    }
+
+    #[test]
     fn admitted_artifact_carries_checked_launch_contract_and_refuses_mutation() {
         let source = "fn main(console: Console):\n    console.print(\"ok\")\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
