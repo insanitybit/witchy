@@ -424,8 +424,9 @@ specialization, ownership extraction, or bounds-check elimination.
 overwritten, or discarded on a continuing/structured-exit path. Transfer moves
 the obligation; borrowing leaves it with its owner. Both success and error-value
 returns from a consuming operation must account for it. Unconditional program
-abort is not an implicit cleanup protocol. `must` propagates through aggregates,
-closures, and suspension frames; no implicit destructor or finalizer is added.
+abort is not an implicit cleanup protocol. `must` propagates through aggregates
+and admitted suspension frames; callable capture restrictions are specified
+below. No implicit destructor or finalizer is added.
 
 `pure fn(A) -> B` forbids externally observable authority effects and caller
 mutation, including `var` write-back and writes through input references. It
