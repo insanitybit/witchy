@@ -691,6 +691,24 @@ for p in "${paths[@]}"; do
             any_rust=1
             test_name="${p#tests/}"
             test_name="${test_name%.rs}"
+            # Shell `case` globs allow `*` to cross `/`, so a module such as
+            # `tests/rfc0122/migration.rs` reaches this generic arm. Cargo's
+            # integration target is the sibling root `tests/rfc0122.rs`, not
+            # the nonexistent `rfc0122/migration` target. Normalize only when
+            # that root target exists; otherwise retain the fail-safe broad
+            # selection below.
+            case "$test_name" in
+                */*)
+                    root_test_name="${test_name%%/*}"
+                    if [ -f "tests/$root_test_name.rs" ]; then
+                        test_name="$root_test_name"
+                    else
+                        gate_workspace=1
+                        add "./scripts/check.sh --fast"
+                        continue
+                    fi
+                    ;;
+            esac
             if ! git cat-file -e "master:$p" 2>/dev/null; then
                 add_early "cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
                 path_has_early=1

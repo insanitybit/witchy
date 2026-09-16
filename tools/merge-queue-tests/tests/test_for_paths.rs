@@ -379,17 +379,16 @@ fn gate_nextest_crate_plus_integration_test_unions_without_workspace() {
 }
 
 #[test]
-fn gate_nextest_nested_integration_module_fails_safe_to_workspace() {
+fn gate_nextest_nested_integration_modules_use_root_targets() {
     let output = gate_nextest(&[
         "crates/witchy-types/src/typeck.rs",
         "tests/browser/shim.rs",
         "tests/rfc0082/dynamic_methods.rs",
     ]);
-    assert_eq!(
-        output.trim(),
-        "WORKSPACE",
-        "nested integration modules became nonexistent binary selectors: {output}",
-    );
+    assert!(output.contains("binary(browser)"), "missing browser root target: {output}");
+    assert!(output.contains("binary(rfc0082)"), "missing rfc0082 root target: {output}");
+    assert!(!output.contains("browser/shim"), "nested path became a binary selector: {output}");
+    assert!(!output.contains("rfc0082/dynamic_methods"), "nested path became a binary selector: {output}");
 }
 
 #[test]
@@ -1455,6 +1454,14 @@ fn nested_e2e_module_uses_the_real_cargo_target_and_module_filter() {
     assert_eq!(
         selected(&["--edit-loop", "tests/e2e/sandbox_grants.rs"]),
         ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test e2e -E 'test(/^sandbox_grants::/)'"],
+    );
+}
+
+#[test]
+fn nested_integration_module_uses_its_root_cargo_target() {
+    assert_eq!(
+        selected(&["--edit-loop", "tests/rfc0122/migration.rs"]),
+        ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0122"],
     );
 }
 
