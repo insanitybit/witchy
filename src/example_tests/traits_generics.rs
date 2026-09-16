@@ -431,7 +431,8 @@ fn main() -> Int:
             );
         }
 
-        let moved = r#"
+        let moved = r#"mode opt
+
 trait Consume:
     fn take(own self) -> Int
 
