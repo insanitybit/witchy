@@ -162,6 +162,8 @@ mod rfc0165_coalesce;
 mod rfc0165_loop_shadowing;
 #[path = "misc/rfc0165_reference_list_patterns.rs"]
 mod rfc0165_reference_list_patterns;
+#[path = "misc/rfc0167_mode_interop.rs"]
+mod rfc0167_mode_interop;
 #[path = "misc/rfc0165_nested_patterns.rs"]
 mod rfc0165_nested_patterns;
 #[path = "misc/rfc0165_owner_adapters.rs"]
