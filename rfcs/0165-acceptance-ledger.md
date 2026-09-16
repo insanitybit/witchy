@@ -2156,3 +2156,35 @@ A fresh run of `WITCHY_DEV_TARGET=/private/tmp/witchy-rfc0165-bounded-heap/targe
 backend reported `check ok=163 fail=0`, `runnable agree: 92`, and
 `disagree: 0`. This closes canonical example-language coverage. It does not
 establish optimizer correctness or compiler-wide memory safety.
+
+### 2026-09-16: production SafeWIR implementation closure
+
+The B1-B12 implementation ledger above is now entirely `merged-green` on
+master. Production checked-source compilation has one route: checked source to
+canonical SafeWIR, initial validation with its source witness, the optional
+checked optimization boundary, final validation, mechanical WasmIR lowering,
+and exact-byte admission. Raw encoding remains restricted to explicit test and
+development features; missing witnesses, contracts, authenticated imports,
+definitions, or authority refuse instead of selecting a compatibility route.
+
+The final concrete gap found during the current-master audit was a projected
+shared `Int` reference. `2ac73ce51828e89fb552622029473f330a65a71b` binds its
+source element type, owner extent, layout, lowerer plan, runtime behavior, and
+Wasm backend decisions to the same checked authority. The serialized merge
+gate passed the workspace, prose, compile-check, clippy, and playground stages
+with zero flakes. Its presubmit also rejected a projected `String` element
+masquerading as `Int`; the source typechecker now issues a witness only for the
+direct checked `List(Int)` projection.
+
+Bounded heap reuse is no longer an open operational obligation from the
+character-list checkpoint. It landed as `e2b12d0cc` and was hardened by
+`b38dd51417` to reuse only exact extents, preserving a sound contiguous heap
+walk. These changes improve bounded execution without expanding SafeWIR
+authority or weakening admission.
+
+This closes the implementation objective represented by B1-B12. The safety
+claim remains the conditional claim in RFC-0165, including its explicit
+frontend, runtime, host, and Wasm-engine assumptions. It is not a proof of
+source-language type soundness, arbitrary optimizer correctness, or safety of
+externally supplied Wasm. RFC-0165 remains `proposed`; changing that governance
+status is separate from this implementation ledger.
