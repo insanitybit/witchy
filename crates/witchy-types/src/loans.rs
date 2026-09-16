@@ -107,6 +107,9 @@ struct BorrowSig {
     /// finalized AST signature retain `None`; every typed callable path uses
     /// this authority for exact projected-relation comparison.
     access: Option<AccessSignature>,
+    /// Declared input relations remain available when result inference has not
+    /// produced a complete access signature. Omitting `-> T` cannot erase them.
+    parameter_types: Vec<Option<Type>>,
     /// `true` when the return type is a borrowed view.
     returns_view: bool,
     /// `true` when the result is a nominal value containing authenticated
@@ -1359,18 +1362,17 @@ fn validate_signature(
         )));
     }
 
-    // A shared reference is read-only, so `var`/`own` on it is a contradiction.
-    // An exclusive reference is affine and may intentionally be transferred by
-    // `own`; later affine-state checking validates that transfer.
+    // Keep the existing `var` restriction separate from `own`: moving a shared
+    // handle transfers its binding, not write access to its referent.
     for p in &f.params {
         if p.ty.as_ref().is_some_and(|ty| {
             catalog.slots(ty).iter().any(|slot| slot.kind == BorrowKind::Shared)
         })
-            && p.convention.binds_mutable()
+            && p.convention == Convention::Var
         {
             return Err(terr(format!(
                 "parameter `{}` of `{}` is a borrowed view (read-only) but its convention \
-                 is mutable (`var`/`own`) — a view cannot be mutated or consumed",
+                 is mutable (`var`) — handle write-back for shared views is not supported",
                 p.name,
                 short_name(&f.name)
             )));
@@ -1406,6 +1408,7 @@ fn validate_signature(
 
     Ok(BorrowSig {
         access: None,
+        parameter_types: f.params.iter().map(|parameter| parameter.ty.clone()).collect(),
         returns_view: false,
         returns_borrowed_shell: false,
         owner_params: Vec::new(),
@@ -1449,6 +1452,7 @@ fn borrow_sig_from_access(
     }
     BorrowSig {
         access: Some(signature.clone()),
+        parameter_types: signature.params().iter().map(|parameter| Some(parameter.ty().clone())).collect(),
         returns_view: !relations.is_empty(),
         returns_borrowed_shell: matches!(
             signature.result().ty(),
@@ -2840,6 +2844,18 @@ impl LoanCtx<'_> {
                 } else {
                     let mut sources = self.borrow_sources(value, &callables, &live);
                     self.collect_alias_sources(value, &live, &mut sources);
+                    if sources.is_empty()
+                        && self.input_borrows.get(name).is_some_and(|inputs| {
+                            inputs.iter().any(|input| {
+                                input.root_type.as_ref().and_then(direct_reference_kind)
+                                    == Some(BorrowKind::Shared)
+                            })
+                        })
+                    {
+                        return Err(terr(format!(
+                            "assignment to shared reference handle `{name}` requires a reference value preserving its owner relation; an owned value does not implicitly become a reference"
+                        )));
+                    }
                     if !sources.is_empty() {
                         if sources.iter().any(|source| !source_is_direct_reference(source)) {
                             return Err(self.mutable_view_storage(name));
@@ -3194,7 +3210,7 @@ impl LoanCtx<'_> {
             // second borrowed result. `&*view` reaches this helper through the
             // outer borrow arm above, which deliberately recovers the live
             // source from its operand.
-            Expr::Unary { op: UnOp::Borrow, expr } => {
+            Expr::Unary { op: UnOp::Borrow | UnOp::Move, expr } => {
                 self.collect_alias_sources(expr, live, out);
             }
             Expr::Var(name) => {
@@ -3526,7 +3542,9 @@ impl LoanCtx<'_> {
                     self.collect_projected_result(base, step, callables, live, out);
                 }
             }
-            Expr::As { expr, .. } => self.collect_view_owners(expr, callables, live, out),
+            Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => {
+                self.collect_view_owners(expr, callables, live, out);
+            }
             _ => {}
         }
     }
@@ -4235,10 +4253,10 @@ impl LoanCtx<'_> {
                 && convention.binds_mutable()
                 && let Some(source) = sources.first()
                 && signature
-                    .access
-                    .as_ref()
-                    .and_then(|access| access.params().get(index))
-                    .is_none_or(|parameter| self.catalog.slots(parameter.ty()).is_empty())
+                    .parameter_types
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_none_or(|parameter| self.catalog.slots(parameter).is_empty())
                 && !preserves_explicit_list_relation
             {
                 let convention = if *convention == Convention::Var { "`var`" } else { "`own`" };
@@ -4256,9 +4274,8 @@ impl LoanCtx<'_> {
                 )));
             }
             if !is_std_fn(self.fn_name)
-                && let Some(access) = signature.access.as_ref()
-                && let Some(parameter) = access.params().get(index)
-                && let Some(required) = direct_reference_kind(parameter.ty())
+                && let Some(parameter) = signature.parameter_types.get(index).and_then(Option::as_ref)
+                && let Some(required) = direct_reference_kind(parameter)
             {
                 let supplied = sources.iter().map(|source| source.kind).max_by_key(|kind| {
                     matches!(kind, BorrowKind::Exclusive)
@@ -4513,6 +4530,27 @@ impl LoanCtx<'_> {
         found
     }
 
+    /// An input shared handle is not its referent's owner. Moving that handle
+    /// does not invalidate independently copied referent loans. A loan of the
+    /// handle slot itself has a different checked root/storage type and still
+    /// prevents the move, as does every exclusive loan.
+    fn transfer_invalidates_loan(&self, root: &str, loan: &Loan) -> bool {
+        if loan.owner != root {
+            return false;
+        }
+        let copied_shared_input = loan.kind == BorrowKind::Shared
+            && self.input_borrows.get(root).is_some_and(|sources| {
+                sources.iter().any(|source| {
+                    source.kind == BorrowKind::Shared
+                        && source.root_type.as_ref().and_then(direct_reference_kind)
+                            == Some(BorrowKind::Shared)
+                        && source.root_type == loan.root_type
+                        && source.owner_type == loan.owner_type
+                })
+            });
+        !copied_shared_input
+    }
+
     /// Reject `move owner` and passing `owner` to a `var`/`own` parameter, walked
     /// over every expression in the statement.
     fn reject_owner_transfer(
@@ -4528,24 +4566,8 @@ impl LoanCtx<'_> {
             }
             // `move owner`
             if let Expr::Unary { op: UnOp::Move, expr } = e {
-                let mut sources = self.borrow_sources(expr, callables, open);
-                self.collect_alias_sources(expr, open, &mut sources);
-                if let Some(source) = sources
-                    .iter()
-                    .find(|source| source.kind == BorrowKind::Shared)
-                {
-                    result = Err(terr(format!(
-                        "in `{}`: shared reference from `{}` to `{}` cannot be consumed with `move`; \
-                         shared references are copyable handles, so pass it directly or materialize \
-                         the referent with `.owned()`",
-                        short_name(self.fn_name),
-                        short_name(&source.origin),
-                        source.owner,
-                    )));
-                    return;
-                }
                 if let Some((root, _)) = expr_place(expr) {
-                    if let Some(loan) = open.iter().find(|loan| loan.owner == root) {
+                    if let Some(loan) = open.iter().find(|loan| self.transfer_invalidates_loan(root, loan)) {
                         result = Err(self.conflict(loan, "moved (`move`)"));
                     }
                 }
@@ -4558,7 +4580,13 @@ impl LoanCtx<'_> {
                             continue;
                         }
                         if let Some((root, _)) = expr_place(arg) {
-                            if let Some(loan) = open.iter().find(|loan| loan.owner == root) {
+                            if let Some(loan) = open.iter().find(|loan| {
+                                if *conv == Convention::Own {
+                                    self.transfer_invalidates_loan(root, loan)
+                                } else {
+                                    loan.owner == root
+                                }
+                            }) {
                                 let kind = if *conv == Convention::Var { "`var`" } else { "`own`" };
                                 result = Err(self.conflict(
                                     loan,
@@ -4577,7 +4605,13 @@ impl LoanCtx<'_> {
                         continue;
                     }
                     if let Some((root, _)) = expr_place(arg)
-                        && let Some(loan) = open.iter().find(|loan| loan.owner == root)
+                        && let Some(loan) = open.iter().find(|loan| {
+                            if *conv == Convention::Own {
+                                self.transfer_invalidates_loan(root, loan)
+                            } else {
+                                loan.owner == root
+                            }
+                        })
                     {
                         let kind = if *conv == Convention::Var { "`var`" } else { "`own`" };
                         result = Err(self.conflict(

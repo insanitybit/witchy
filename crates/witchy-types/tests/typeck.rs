@@ -2506,7 +2506,7 @@ fn main():
     }
 
     #[test]
-    fn own_arguments_follow_the_mode_boundary_and_explicit_move_stays_consuming() {
+    fn own_arguments_and_explicit_move_consume_in_both_modes() {
         let normal = r#"
 fn take(own s: String) -> String:
     s
@@ -2517,17 +2517,17 @@ fn main() -> Int:
     let b = take(x)
     a.length() + b.length() + x.length()
 "#;
-        check_str(normal).expect("normal mode may prepare owned copies and retain its value");
+        for mode in ["", "mode opt\n\n"] {
+            let source = format!("{mode}{normal}");
+            let error = check_str(&source)
+                .expect_err("own transfers the source binding in every mode");
+            assert!(error.contains("moved"), "got: {error}");
 
-        let optimized = format!("mode opt\n\n{normal}");
-        let error = check_str(&optimized)
-            .expect_err("mode opt rejects the hidden copy after an owned transfer");
-        assert!(error.contains("moved"), "got: {error}");
-
-        let explicit = normal.replace("let a = take(x)", "let a = take(move x)");
-        let error = check_str(&explicit)
-            .expect_err("explicit move consumes its source in every mode");
-        assert!(error.contains("moved"), "got: {error}");
+            let explicit = source.replace("let a = take(x)", "let a = take(move x)");
+            let error = check_str(&explicit)
+                .expect_err("explicit move consumes its source in every mode");
+            assert!(error.contains("moved"), "got: {error}");
+        }
     }
 
     // (BUG-009 / RFC-0005 hardening #4) Attenuation proof for `Net` — mirrors

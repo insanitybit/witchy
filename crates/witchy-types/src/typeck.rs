@@ -967,7 +967,7 @@ fn reject_borrowed_nominal_containers(
                     ));
                 }
                 if conventions.get(index) == Some(&Convention::Own)
-                    && !type_is_exclusive_reference(parameter)
+                    && !type_is_explicit_reference(parameter)
                     && let Some(relation) =
                         borrowed_nominal_relation_name(parameter, lifetime_nominals)
                 {
@@ -1030,7 +1030,7 @@ fn validate_callable_nominal_lifetimes(
                 ));
             }
             if parameter.convention == Convention::Own
-                && !type_is_exclusive_reference(ty)
+                && !type_is_explicit_reference(ty)
                 && let Some(relation) =
                     borrowed_nominal_relation_name(ty, lifetime_nominals)
             {
@@ -5418,6 +5418,22 @@ impl Checker {
         reject_borrowed_nominal_containers(ty, &self.borrowed_nominal_types, context)
     }
 
+    /// An admitted reference-bearing carrier is not permission to hide its
+    /// relation behind an existential or an unannotated callable result.
+    fn reject_borrowed_nominal_erasure(
+        &self,
+        ty: &Ty,
+        operation: &str,
+    ) -> Result<(), TypeError> {
+        self.reject_borrowed_nominal_runtime_ty(ty, operation)?;
+        if let Some(name) = self.borrowed_nominal_name(ty) {
+            return terr(format!(
+                "{operation} would erase borrowed nominal type `{name}` and its owner/lifetime relation; materialize a reference-free value or use an explicit relation-preserving contract"
+            ));
+        }
+        Ok(())
+    }
+
     fn reject_runtime_compiler_syntax_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
         if self.compiler_syntax_allowed || compiler_syntax_allowed_module(&self.cur_module) {
             return Ok(());
@@ -6084,16 +6100,27 @@ impl Checker {
         }
     }
 
-    /// Transfer a plain variable through an `own` parameter. Normal Witchy has
-    /// value semantics, so it may materialize an owned copy and leave the
-    /// caller's binding live. `mode opt` makes that hidden adaptation a hard
-    /// cost boundary. Affine values remain consuming in every mode; they cannot
-    /// be copied to satisfy the convention.
+    /// `own` transfers the source binding in every source mode. Copy repair may
+    /// establish storage uniqueness, but cannot undo this source-level move.
     fn transfer_owned_argument_binding(&mut self, name: &str) {
-        if self.opt_mode || self.is_must_binding(name) {
-            self.mark_consumed_binding(name);
-            self.consume_must_binding(name);
+        self.mark_consumed_binding(name);
+        self.consume_must_binding(name);
+    }
+
+    fn reject_consumed_own_argument(
+        &self,
+        argument: &Expr,
+        convention: Convention,
+    ) -> Result<(), TypeError> {
+        if convention == Convention::Own
+            && let Expr::Var(name) = argument
+            && self.is_consumed_binding(name)
+        {
+            return terr(format!(
+                "use of `{name}` after it was already transferred (moved by an `own` parameter)"
+            ));
         }
+        Ok(())
     }
 
     fn reinitialize_binding(&mut self, name: &str) {
@@ -8376,6 +8403,7 @@ impl Checker {
         if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
             let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
+                self.reject_consumed_own_argument(arg, *conv)?;
                 if let Some(parameter) = params.get(i) {
                     self.enforce_once_argument(
                         arg,
@@ -8390,15 +8418,19 @@ impl Checker {
                     .and_then(|params| params.get(i))
                     .copied()
                     .unwrap_or(false);
-                if explicit_exclusive {
-                    let Expr::Unary { op: UnOp::BorrowMut, expr } = arg else {
-                        // Type compatibility reports the primary error; this
-                        // branch is only reached for an already-rejected call.
-                        continue;
-                    };
-                    let Some(place) = crate::access::checked_place(expr) else {
-                        continue;
-                    };
+                // Preserve the existing reborrow/write-through handling for
+                // non-consuming reference parameters. `own` must still reach
+                // binding transfer when its argument is an existing handle.
+                if explicit_exclusive
+                    && *conv != Convention::Own
+                    && !matches!(arg, Expr::Unary { op: UnOp::BorrowMut, .. })
+                {
+                    continue;
+                }
+                if explicit_exclusive
+                    && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
+                    && let Some(place) = crate::access::checked_place(expr)
+                {
                     for (previous_index, previous) in &var_places {
                         if previous.overlaps(&place) {
                             return terr(format!(
@@ -8547,6 +8579,7 @@ impl Checker {
     ) -> Result<(), TypeError> {
         let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
+            self.reject_consumed_own_argument(arg, *convention)?;
             if let Some(parameter) = parameter_types.get(index) {
                 self.enforce_once_argument(
                     arg,
@@ -8692,6 +8725,7 @@ impl Checker {
 
         let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (operand, convention)) in operands.iter().zip(conventions).enumerate() {
+            self.reject_consumed_own_argument(operand, *convention)?;
             if index > 0
                 && let Some(parameter) = parameter_types.get(index - 1)
             {
@@ -9558,7 +9592,7 @@ impl Checker {
                 if ret.is_none()
                     && let Ty::Fn(_, result, _, _, _) = &function_ty
                 {
-                    self.reject_borrowed_nominal_runtime_ty(
+                    self.reject_borrowed_nominal_erasure(
                         result,
                         "inferred closure result",
                     )?;
@@ -10091,7 +10125,7 @@ impl Checker {
                         self.record_existential_upcast(expr, &target, &resolved_src)?;
                         return Ok(target);
                     }
-                    self.reject_borrowed_nominal_runtime_ty(
+                    self.reject_borrowed_nominal_erasure(
                         &resolved_src,
                         &format!("erasure to `dyn {}`", existential_bare(dyn_name)),
                     )?;
@@ -13714,6 +13748,14 @@ pub fn check_str(src: &str) -> Result<(), String> {
 #[cfg(test)]
 #[path = "typeck_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "own_tests.rs"]
+mod own_tests;
+
+#[cfg(test)]
+#[path = "reference_erasure_tests.rs"]
+mod reference_erasure_tests;
 
 #[cfg(test)]
 mod proper_tail_manifest_tests {

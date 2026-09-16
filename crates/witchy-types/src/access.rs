@@ -1338,7 +1338,7 @@ impl AccessSignature {
             {
                 return Err(AccessSignatureError::FrozenMutableParameter { position });
             }
-            if matches!(convention, Convention::Var | Convention::Own)
+            if convention == Convention::Var
                 && qualifiers
                     .iter()
                     .any(|qualifier| matches!(qualifier, AccessQualifier::Borrow(_)))

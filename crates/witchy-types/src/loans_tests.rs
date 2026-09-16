@@ -239,11 +239,10 @@
         )
         .expect("an exclusive reference may be consumed and returned");
 
-        let err = check_str(
-            "mode opt\n\nfn bad(own text: &'a String) -> &'a String:\n    text\n",
+        check_str(
+            "mode opt\n\nfn take(own text: &'a String) -> &'a String:\n    text\n",
         )
-        .expect_err("a shared reference cannot be consumed");
-        assert!(err.contains("to `own`"), "{err}");
+        .expect("own moves the shared handle, not its referent");
     }
 
     #[test]
@@ -915,17 +914,16 @@
     }
 
     #[test]
-    fn shared_reference_handles_copy_but_cannot_be_consumed_or_erased() {
+    fn shared_reference_handles_copy_or_move_but_cannot_erase_relations() {
         check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let first = &text\n    let second = first\n    console.print(first)\n    console.print(second)\n",
         )
         .expect("shared handles remain copyable");
 
-        let moved = check_str(
+        check_str(
             "mode opt\n\nfn main(console: Console):\n    var text = \"hello\"\n    let view = &text\n    let taken = move view\n    console.print(taken)\n",
         )
-        .expect_err("a shared handle may not be consumed with move");
-        assert!(moved.contains("shared reference") && moved.contains("move"), "{moved}");
+        .expect("moving a shared handle retains its owner relation");
 
         let erased = check_str(
             "mode opt\n\nfn consume(own text: String) -> Nil:\n    Nil\n\nfn main():\n    var text = \"hello\"\n    let view = &text\n    consume(view)\n",
