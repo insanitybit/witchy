@@ -1414,15 +1414,11 @@ fn signature_from_type(
     }
     let result_type = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
     let mut results = (!is_unit(result_type)).then_some(result_type).into_iter().collect::<Vec<_>>();
-    let mut result_contracts = if let Some((lifetime, inner)) = shared_reference_parts(result) {
+    let alias_parameter = unique_shared_alias_parameter(parameters, result)?;
+    let mut result_contracts = if let Some(parameter) = alias_parameter {
         let ValueType::Ref(layout) = result_type else {
             return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone()));
         };
-        let parameter = parameters.iter().position(|parameter| {
-            shared_reference_parts(parameter).is_some_and(|(candidate, parameter_inner)| {
-                candidate == lifetime && parameter_inner.unqualified() == inner.unqualified()
-            })
-        }).ok_or_else(|| CanonicalLoweringError::UnsupportedType(result.as_ref().clone()))?;
         vec![ResultContract::AliasesParameter {
             parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
             layout,
@@ -1481,8 +1477,13 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
             contains_deferred_v1_qualifier(base)
                 || fields.iter().any(|(_, field)| contains_deferred_v1_qualifier(field))
         }
+        // This slice admits shared references only on direct-call signatures.
+        // Callable values and indirect calls require a separate authenticated
+        // ABI rather than recursively inheriting direct-call authority.
         Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(contains_deferred_v1_qualifier)
+            parameters.iter().any(contains_reference_qualifier)
+                || contains_reference_qualifier(result)
+                || parameters.iter().any(contains_deferred_v1_qualifier)
                 || contains_deferred_v1_qualifier(result)
         }
     }
@@ -1493,11 +1494,85 @@ fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
     Some((lifetime, inner))
 }
 
+fn contains_reference_qualifier(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) | Type::Slice(inner) => contains_reference_qualifier(inner),
+        Type::Tuple(items) | Type::Named(_, items) | Type::Dyn(_, items) => {
+            items.iter().any(contains_reference_qualifier)
+        }
+        Type::RecordCompose { base, fields } => {
+            contains_reference_qualifier(base)
+                || fields.iter().any(|(_, field)| contains_reference_qualifier(field))
+        }
+        Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(contains_reference_qualifier)
+                || contains_reference_qualifier(result)
+        }
+    }
+}
+
+fn unique_shared_alias_parameter(
+    parameters: &[Type],
+    result: &Type,
+) -> Result<Option<usize>, CanonicalLoweringError> {
+    let Some((lifetime, inner)) = shared_reference_parts(result) else {
+        return Ok(None);
+    };
+    let mut candidates = parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        shared_reference_parts(parameter).and_then(|(candidate, parameter_inner)| {
+            (candidate == lifetime && parameter_inner.unqualified() == inner.unqualified())
+                .then_some(index)
+        })
+    });
+    let Some(parameter) = candidates.next() else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    if candidates.next().is_some() {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    }
+    Ok(Some(parameter))
+}
+
 fn is_direct_shared_string(ty: &Type) -> bool {
     matches!(
         ty.unqualified(),
         Type::Named(name, arguments) if name == "String" && arguments.is_empty()
     )
+}
+
+#[cfg(test)]
+mod direct_shared_string_scope_tests {
+    use super::*;
+    use witchy_syntax::ast::CallableQualifiers;
+
+    fn shared_string() -> Type {
+        Type::Qualified(
+            TypeQual::Borrow("a".to_owned()),
+            Box::new(Type::Named("String".to_owned(), vec![])),
+        )
+    }
+
+    #[test]
+    fn ambiguous_shared_alias_result_is_refused() {
+        let shared = shared_string();
+        assert!(matches!(
+            unique_shared_alias_parameter(&[shared.clone(), shared.clone()], &shared),
+            Err(CanonicalLoweringError::UnsupportedType(_))
+        ));
+    }
+
+    #[test]
+    fn shared_reference_nested_in_callable_value_is_deferred() {
+        let callable = Type::Fn(
+            vec![shared_string()],
+            Box::new(Type::Named("String".to_owned(), vec![])),
+            vec![Convention::Let],
+            CallableQualifiers::default(),
+        );
+        assert!(contains_deferred_v1_qualifier(&callable));
+        assert!(!contains_deferred_v1_qualifier(&shared_string()));
+    }
 }
 
 fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<Type> {
