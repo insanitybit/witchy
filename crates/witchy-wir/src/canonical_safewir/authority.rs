@@ -1459,6 +1459,11 @@ pub(super) fn value_type_matches_source(
 ) -> bool {
     if let super::ValueType::Gc(id) = actual {
         let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
+        if let super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
+            return id == family.owner_type
+                && is_direct_shared_int(expected)
+                && is_direct_shared_int(source);
+        }
         if let super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
             let aggregate = if id == family.list_type {
                 match source.unqualified() {

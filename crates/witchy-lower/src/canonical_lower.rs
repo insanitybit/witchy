@@ -87,7 +87,7 @@ use witchy_wir::canonical_safewir::{GcTypeId, closure_owner_contract::{
     SharedReferenceConstructor, SourceConstructor,
 }};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ClosureValueLayouts {
     linear: HashMap<Type, witchy_wir::layout::LayoutId>,
     owners: HashMap<Type, GcTypeId>,
@@ -232,6 +232,8 @@ pub fn lower_typed_module(
     let closure_families = crate::canonical_layouts::closure_families(source)
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let aggregate_families = crate::canonical_layouts::opaque_aggregate_families(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let shared_reference_layout = crate::canonical_layouts::shared_int_reference_layout(source)
         .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
     let closure_layouts = ClosureValueLayouts {
         linear: closure_families.iter().map(|(signature, family)| (signature.clone(), family.closure)).collect(),
@@ -603,58 +605,55 @@ pub fn lower_typed_module(
             constructors,
         });
     }
-    let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
-    let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
-    let scalar_root = scalar_reference_layout(&layouts, &layout_catalog, ScalarKind::Int)?;
-    let list_int = Type::Named("List".into(), vec![Type::Named("Int".into(), Vec::new())]);
-    let (list_root, _, _, _) = list_layout(
-        &list_int, &layouts, &layout_catalog, &closure_layouts, &definitions,
-    )?;
-    let whole_constructor = ConstructorId(next_constructor);
-    next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
-    let element_constructor = ConstructorId(next_constructor);
-    closure_context.owners.push(OwnerFamily {
-        source: OwnerFamilySource::SharedReference(Type::Qualified(
-            TypeQual::Borrow("a".into()),
-            Box::new(Type::Named("Int".into(), Vec::new())),
-        )),
-        owner_type: shared_reference_owner,
-        list_type: GcTypeId::new(shared_reference_owner.get() + 1),
-        signature: shared_reference_token,
-        declaration_signature: shared_reference_token,
-        environment: scalar_root,
-        constructors: vec![
-            OwnerConstructor {
-                id: whole_constructor,
-                function: FunctionId::new(u32::MAX),
-                witness: None,
-                environment_tag: 0,
-                captures: vec![OwnerCapture {
-                    value_type: ValueType::Ref(scalar_root),
-                    storage: CaptureStorage::EnvironmentField(1),
-                    transfer: CaptureTransfer::CloneManaged,
-                }],
-            },
-            OwnerConstructor {
-                id: element_constructor,
+    if let Some(shared_layout) = shared_reference_layout {
+        let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
+        let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
+        let whole_constructor = ConstructorId(next_constructor);
+        next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+        let mut constructors = vec![OwnerConstructor {
+            id: whole_constructor,
+            function: FunctionId::new(u32::MAX),
+            witness: None,
+            environment_tag: 0,
+            captures: vec![OwnerCapture {
+                value_type: ValueType::Ref(shared_layout.scalar_root),
+                storage: CaptureStorage::EnvironmentField(1),
+                transfer: CaptureTransfer::CloneManaged,
+            }],
+        }];
+        if let Some(list_root) = shared_layout.list_root {
+            constructors.push(OwnerConstructor {
+                id: ConstructorId(next_constructor),
                 function: FunctionId::new(u32::MAX),
                 witness: None,
                 environment_tag: 1,
                 captures: vec![
                     OwnerCapture {
                         value_type: ValueType::Ref(list_root),
-                        storage: CaptureStorage::EnvironmentField(1),
+                        storage: CaptureStorage::EnvironmentField(2),
                         transfer: CaptureTransfer::CloneManaged,
                     },
                     OwnerCapture {
                         value_type: ValueType::Size,
-                        storage: CaptureStorage::EnvironmentField(2),
+                        storage: CaptureStorage::EnvironmentField(3),
                         transfer: CaptureTransfer::CopyScalar,
                     },
                 ],
-            },
-        ],
-    });
+            });
+        }
+        closure_context.owners.push(OwnerFamily {
+            source: OwnerFamilySource::SharedReference(Type::Qualified(
+                TypeQual::Borrow("a".into()),
+                Box::new(Type::Named("Int".into(), Vec::new())),
+            )),
+            owner_type: shared_reference_owner,
+            list_type: GcTypeId::new(shared_reference_owner.get() + 1),
+            signature: shared_reference_token,
+            declaration_signature: shared_reference_token,
+            environment: shared_layout.environment,
+            constructors,
+        });
+    }
     closure_context.owners.sort_by_key(|family| family.owner_type);
     let checked_parameter_conventions = callable_types
         .iter()

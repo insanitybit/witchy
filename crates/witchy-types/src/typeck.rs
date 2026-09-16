@@ -9090,6 +9090,23 @@ impl Checker {
         r
     }
 
+    fn infer_index_parts(&mut self, base: &Expr, index: &Expr) -> Result<(Ty, Ty), TypeError> {
+        let base_ty = self.infer(base)?;
+        // The transient below types clones; infer the source index directly so
+        // its persistent node retains the fact canonical lowering consumes.
+        let _ = self.infer(index)?;
+        let desugared = if matches!(base_ty, Ty::Named(ref name, _) if **name == *"Dict") {
+            Expr::Call {
+                name: intrinsics::DICT_AT.to_string(),
+                args: vec![base.clone(), index.clone()],
+            }
+        } else {
+            witchy_syntax::parser::desugar_index(base.clone(), index.clone())
+        };
+        let result = self.infer_transient(&desugared)?;
+        Ok((base_ty, result))
+    }
+
     fn infer_inner(&mut self, expr: &Expr) -> Result<Ty, TypeError> {
         match expr {
             // Expanded away by `crate::tagged` during linking, before checking.
@@ -9128,20 +9145,7 @@ impl Checker {
             // lists, `dict.at(d, k)` for dicts. Keep the call-shaped transient so
             // the ordinary function signature enforces index/key types and bounds.
             Expr::Index { base, index } => {
-                let base_ty = self.infer(base)?;
-                // The transient below types clones; the source index expression
-                // is inferred directly so the table carries its type for the
-                // canonical lowering (`xs[i - 1]` reads the subtraction's type).
-                let _ = self.infer(index)?;
-                let d = if matches!(base_ty, Ty::Named(ref name, _) if **name == *"Dict") {
-                    Expr::Call {
-                        name: intrinsics::DICT_AT.to_string(),
-                        args: vec![(**base).clone(), (**index).clone()],
-                    }
-                } else {
-                    witchy_syntax::parser::desugar_index((**base).clone(), (**index).clone())
-                };
-                self.infer_transient(&d)
+                self.infer_index_parts(base, index).map(|(_, result)| result)
             }
             Expr::MethodCall { receiver, method, .. } => {
                 // Trait lowering resolves every method call (impl, trait
@@ -9725,7 +9729,28 @@ impl Checker {
                 }
             }
             Expr::Unary { op, expr } => {
-                let t = self.infer(expr)?;
+                let t = if matches!(op, UnOp::Borrow)
+                    && let Expr::Index { base, index } = expr.as_ref()
+                {
+                    let (base_ty, result) = self.infer_index_parts(base, index)?;
+                    let direct_list_int = match self.resolve(&base_ty) {
+                        Ty::List(element) => matches!(self.resolve(&element), Ty::Int),
+                        Ty::Named(name, arguments) => {
+                            name.rsplit('.').next() == Some("List")
+                                && arguments.len() == 1
+                                && matches!(self.resolve(&arguments[0]), Ty::Int)
+                        }
+                        _ => false,
+                    };
+                    if !direct_list_int {
+                        return terr(
+                            "projected shared references currently require a direct List(Int) element",
+                        );
+                    }
+                    self.finish_infer(expr, result)?
+                } else {
+                    self.infer(expr)?
+                };
                 match op {
                     // `move x` has the type of `x`, and consumes it: it's a
                     // use-site ownership transfer, so any later use of the moved

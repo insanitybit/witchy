@@ -285,20 +285,20 @@ impl OwnerConstructor {
         match self.captures.as_slice() {
             [OwnerCapture {
                 value_type: ValueType::Ref(_),
-                storage: CaptureStorage::EnvironmentField(1),
+                storage: CaptureStorage::EnvironmentField(root_field),
                 transfer: CaptureTransfer::CloneManaged,
-            }] => Some(SharedReferenceConstructor::WholeIntCell {
+            }] if *root_field > 0 => Some(SharedReferenceConstructor::WholeIntCell {
                 root: CaptureOrdinal(0),
             }),
             [OwnerCapture {
                 value_type: ValueType::Ref(_),
-                storage: CaptureStorage::EnvironmentField(1),
+                storage: CaptureStorage::EnvironmentField(root_field),
                 transfer: CaptureTransfer::CloneManaged,
             }, OwnerCapture {
                 value_type: ValueType::Size,
-                storage: CaptureStorage::EnvironmentField(2),
+                storage: CaptureStorage::EnvironmentField(index_field),
                 transfer: CaptureTransfer::CopyScalar,
-            }] => Some(SharedReferenceConstructor::ListIntElement {
+            }] if *root_field > 0 && *index_field > 0 && root_field != index_field => Some(SharedReferenceConstructor::ListIntElement {
                 root: CaptureOrdinal(0),
                 index: CaptureOrdinal(1),
                 bounds: SharedPlaceBounds::CurrentLogicalLength,

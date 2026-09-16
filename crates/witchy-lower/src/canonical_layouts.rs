@@ -25,6 +25,13 @@ pub(crate) fn shared_int_reference_owner_type() -> GcTypeId {
     GcTypeId::new(0xc300_0000)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SharedIntReferenceLayout {
+    pub environment: LayoutId,
+    pub scalar_root: LayoutId,
+    pub list_root: Option<LayoutId>,
+}
+
 /// The source-derived storage family for one `fn` signature.  The callable
 /// object remains the uniform value ABI; its second field owns one tagged
 /// environment record.  Variant zero is the empty environment used by named
@@ -107,7 +114,7 @@ impl std::error::Error for CanonicalLayoutError {}
 pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(bundle, _, _)| bundle)
+    project_layouts(source)?.finish_with_families().map(|(bundle, _, _, _)| bundle)
 }
 
 /// The closure layout of every `fn` type the canonical functions reach: a
@@ -130,7 +137,7 @@ pub(crate) fn closure_layouts(
 pub(crate) fn closure_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, ClosureFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, families, _)| families)
+    project_layouts(source)?.finish_with_families().map(|(_, families, _, _)| families)
 }
 
 /// Derive every aggregate that must use the opaque-owner representation.
@@ -140,7 +147,13 @@ pub(crate) fn closure_families(
 pub(crate) fn opaque_aggregate_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, OpaqueAggregateFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, _, families)| families)
+    project_layouts(source)?.finish_with_families().map(|(_, _, families, _)| families)
+}
+
+pub(crate) fn shared_int_reference_layout(
+    source: &CanonicalCheckedSource,
+) -> Result<Option<SharedIntReferenceLayout>, CanonicalLayoutError> {
+    project_layouts(source)?.finish_with_families().map(|(_, _, _, shared)| shared)
 }
 
 /// The identity of a `fn` type for closure purposes: the declared
@@ -499,13 +512,14 @@ impl LayoutProjection {
     }
 
     fn finish(self) -> Result<LayoutBundle, CanonicalLayoutError> {
-        self.finish_with_families().map(|(bundle, _, _)| bundle)
+        self.finish_with_families().map(|(bundle, _, _, _)| bundle)
     }
 
     fn finish_with_families(self) -> Result<(
         LayoutBundle,
         HashMap<Type, ClosureFamilyLayout>,
         HashMap<Type, OpaqueAggregateFamilyLayout>,
+        Option<SharedIntReferenceLayout>,
     ), CanonicalLayoutError> {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
@@ -638,8 +652,8 @@ impl LayoutProjection {
             interner.bind_nominal(nominal, body)
                 .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
         }
-        for ty in self.roots {
-            let identity = canonical_layout_type(&ty, &self.definitions);
+        for ty in &self.roots {
+            let identity = canonical_layout_type(ty, &self.definitions);
             let opaque_aggregate = aggregate_owner_types.contains_key(&identity);
             let opaque_list_element = match identity.unqualified() {
                 Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
@@ -655,10 +669,44 @@ impl LayoutProjection {
                 continue;
             }
             let root = intern_v1_layout(
-                &mut interner, &ty, &self.definitions, &recursive_types, &closure_layouts,
+                &mut interner, ty, &self.definitions, &recursive_types, &closure_layouts,
             )?;
             roots.insert(root);
         }
+        let shared_int_reference = if self.roots.iter().any(|ty| {
+            matches!(ty.unqualified(), Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty())
+        }) {
+            let scalar_type = Type::Named("Int".into(), Vec::new());
+            let scalar_root = intern_v1_layout(
+                &mut interner, &scalar_type, &self.definitions, &recursive_types, &closure_layouts,
+            )?;
+            let tag = interner.intern_scalar(ScalarKind::Int)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let scalar_slot = interner.intern_runtime_pointer_value_slot(scalar_root, PointerSlot::OwnedNullable)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            let mut children = vec![tag, scalar_slot];
+            let list_type = Type::Named("List".into(), vec![scalar_type]);
+            let list_root = if self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
+                let root = intern_v1_layout(
+                    &mut interner, &list_type, &self.definitions, &recursive_types, &closure_layouts,
+                )?;
+                let slot = interner.intern_runtime_pointer_value_slot(root, PointerSlot::OwnedNullable)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                let index = interner.intern_scalar(ScalarKind::U32)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                children.extend([slot, index]);
+                Some(root)
+            } else {
+                None
+            };
+            let environment = interner.intern_packed_record(children)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+            roots.insert(environment);
+            Some(SharedIntReferenceLayout { environment, scalar_root, list_root })
+        } else {
+            None
+        };
         let mut families = HashMap::new();
         for (signature, variants) in closure_specs {
             let environment = closure_environments[&signature];
@@ -704,7 +752,7 @@ impl LayoutProjection {
         }
         let bundle = LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-        Ok((bundle, families, aggregate_families))
+        Ok((bundle, families, aggregate_families, shared_int_reference))
     }
 }
 
@@ -1443,7 +1491,7 @@ mod tests {
         for root in roots {
             projection.visit_type(root).expect("opaque aggregate source projects");
         }
-        let (bundle, _, families) = projection.finish_with_families()
+        let (bundle, _, families, _) = projection.finish_with_families()
             .expect("opaque aggregate layouts finish");
         (bundle, families)
     }
@@ -1472,7 +1520,7 @@ mod tests {
             Type::Named("List".into(), vec![Type::Named("chan.Receiver".into(), vec![named("Int")])]),
         ]);
         let task = Type::Named("task.Task".into(), vec![tuple.clone()]);
-        let (bundle, _, families) = super::project_layouts(checked.canonical_source().unwrap())
+        let (bundle, _, families, _) = super::project_layouts(checked.canonical_source().unwrap())
             .expect("exact checked Task<Tuple> layouts project")
             .finish_with_families().expect("exact checked catalog finishes");
         let tuple_family = families.get(&tuple).expect("exact concrete tuple owner identity");
@@ -1526,7 +1574,7 @@ mod tests {
         projection.capture_variants.insert(callback_key, vec![(7, vec![named("Console")])]);
         projection.visit_type(&named("Task")).expect("Task reaches its callback family");
 
-        let (_, closures, aggregates) = projection.finish_with_families()
+        let (_, closures, aggregates, _) = projection.finish_with_families()
             .expect("Task-like family projects");
         assert!(closures.values().any(|family| family.owner_type.is_some()));
         let task = &aggregates[&named("Task")];
@@ -1588,7 +1636,7 @@ mod tests {
 
         let mut projection = LayoutProjection::default();
         projection.visit_type(&named("Console")).unwrap();
-        let (bundle, closures, aggregates) = projection.finish_with_families().unwrap();
+        let (bundle, closures, aggregates, _) = projection.finish_with_families().unwrap();
         assert!(bundle.roots().is_empty(), "a direct capability projects no linear root");
         assert!(closures.is_empty() && aggregates.is_empty());
 

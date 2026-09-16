@@ -297,6 +297,7 @@ fn validate_shared_reference_family(
         return Err(refuse());
     }
     let mut kinds = BTreeSet::new();
+    let mut expected_environment = BTreeMap::new();
     for constructor in &family.constructors {
         if constructor.witness.is_some() {
             return Err(refuse());
@@ -304,6 +305,10 @@ fn validate_shared_reference_family(
         let kind = constructor.shared_reference_constructor().ok_or_else(refuse)?;
         let root = constructor.captures.first().ok_or_else(refuse)?;
         let ValueType::Ref(root_layout) = root.value_type else { return Err(refuse()) };
+        let CaptureStorage::EnvironmentField(root_field) = root.storage else { return Err(refuse()) };
+        if expected_environment.insert(root_field, root.value_type).is_some() {
+            return Err(refuse());
+        }
         let physical = layouts.resolve_nominal(root_layout).map_err(|_| refuse())?;
         match kind {
             SharedReferenceConstructor::WholeIntCell { root } => {
@@ -315,6 +320,11 @@ fn validate_shared_reference_family(
                 }
             }
             SharedReferenceConstructor::ListIntElement { root, index, bounds: _ } => {
+                let index_capture = constructor.captures.get(index.0 as usize).ok_or_else(refuse)?;
+                let CaptureStorage::EnvironmentField(index_field) = index_capture.storage else { return Err(refuse()) };
+                if expected_environment.insert(index_field, ValueType::Size).is_some() {
+                    return Err(refuse());
+                }
                 let Some(crate::layout::LayoutKind::PackedList { element, .. }) =
                     layouts.get(physical).map(|descriptor| descriptor.kind())
                 else { return Err(refuse()) };
@@ -327,7 +337,7 @@ fn validate_shared_reference_family(
             }
         }
     }
-    Ok(())
+    validate_environment_layout(family.environment, &expected_environment, layouts, true)
 }
 
 fn validate_adapter_constructor<S: ModuleStage>(
@@ -625,6 +635,10 @@ mod tests {
         let mut layouts = LayoutInterner::new();
         let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
         let list = layouts.intern_packed_list(int, crate::layout::RcHeader::Required).unwrap();
+        let int_slot = layouts.intern_runtime_pointer_value_slot(int, crate::layout::PointerSlot::OwnedNullable).unwrap();
+        let list_slot = layouts.intern_runtime_pointer_value_slot(list, crate::layout::PointerSlot::OwnedNullable).unwrap();
+        let index = layouts.intern_scalar(ScalarKind::U32).unwrap();
+        let environment = layouts.intern_packed_record(vec![int, int_slot, list_slot, index]).unwrap();
         let source = Type::Qualified(TypeQual::Borrow("a".into()), Box::new(Type::Named("Int".into(), Vec::new())));
         let constructor = |id, captures| OwnerConstructor {
             id: ConstructorId(id),
@@ -641,12 +655,12 @@ mod tests {
         let element = constructor(2, vec![
             OwnerCapture {
                 value_type: ValueType::Ref(list),
-                storage: CaptureStorage::EnvironmentField(1),
+                storage: CaptureStorage::EnvironmentField(2),
                 transfer: CaptureTransfer::CloneManaged,
             },
             OwnerCapture {
                 value_type: ValueType::Size,
-                storage: CaptureStorage::EnvironmentField(2),
+                storage: CaptureStorage::EnvironmentField(3),
                 transfer: CaptureTransfer::CopyScalar,
             },
         ]);
@@ -659,7 +673,7 @@ mod tests {
             list_type: GcTypeId::new(801),
             signature: FunctionSignatureId::new(802),
             declaration_signature: FunctionSignatureId::new(803),
-            environment: int,
+            environment,
             constructors: vec![whole, element],
         };
         validate_shared_reference_family(&family, &source, &layouts).unwrap();

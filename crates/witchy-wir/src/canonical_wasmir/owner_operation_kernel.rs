@@ -23,9 +23,14 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
         return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
     }
     let mut function = function.clone();
+    let owner_bridges = if matches!(op, O::ReadSharedPlace { .. }) {
+        local.owner_bridges.clone()
+    } else {
+        Vec::new()
+    };
     let mut local = LocalLayout { memory_helpers: local.memory_helpers.clone(),
         owner_scratch: local.owner_scratch,
-        owner_bridges: Vec::new(),
+        owner_bridges,
         indices: local.indices.clone(),
         extra_types: local.extra_types.clone(),
         scratch: local.scratch.clone(),
@@ -182,6 +187,7 @@ fn emit_read_shared_place(
     let tag_import = *imports.get(&bridge.id()).ok_or(EncodeError::Lowering(
         LoweringError::UnsupportedOperation { function: function.id, operation: "shared-place tag bridge" },
     ))?;
+    body.instruction(&I::Block(BlockType::Empty));
     for constructor in &bridge.family().constructors {
         let projection = constructor.shared_reference_constructor().ok_or(EncodeError::Lowering(
             LoweringError::UnsupportedOperation { function: function.id, operation: "shared-place constructor schema" },
@@ -257,9 +263,11 @@ fn emit_read_shared_place(
         }
         emit_release(body, local, function, TEMP, layouts)?;
         emit_release(body, local, function, ENV, layouts)?;
+        body.instruction(&I::Br(1));
         body.instruction(&I::End);
     }
     body.instruction(&I::Unreachable);
+    body.instruction(&I::End);
     Ok(())
 }
 
@@ -277,6 +285,7 @@ fn plan_read_shared_place(
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
     let tag_import = *imports.get(&bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    plan.push(PlanToken::Block("Empty".to_owned()));
     for constructor in &bridge.family().constructors {
         let projection = constructor.shared_reference_constructor().ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
         let clone_bridge = local.owner_bridges.iter().find(|candidate| {
@@ -339,9 +348,11 @@ fn plan_read_shared_place(
         }
         push_drop_ref_plan(plan, function, layouts, local, TEMP)?;
         push_drop_ref_plan(plan, function, layouts, local, ENV)?;
+        plan.push(PlanToken::Br(1));
         plan.push(PlanToken::End);
     }
     plan.push(PlanToken::Unreachable);
+    plan.push(PlanToken::End);
     Ok(())
 }
 

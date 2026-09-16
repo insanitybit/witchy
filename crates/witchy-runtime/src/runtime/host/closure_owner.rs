@@ -83,9 +83,9 @@ let mut captures = Vec::new();
             OwnerFamilySource::Closure => Some(bridge.callable_indices().iter()
                 .find(|(id, _)| *id == constructor)
                 .ok_or_else(|| wasmtime::Error::msg("missing owner callable identity"))?.1),
-            OwnerFamilySource::Aggregate(_) => {
+            OwnerFamilySource::Aggregate(_) | OwnerFamilySource::SharedReference(_) => {
                 if !bridge.callable_indices().is_empty() || matches!(recipe, R::ReadCallable(_)) {
-                    bail!("aggregate owner has no callable identity");
+                    bail!("non-closure owner has no callable identity");
                 }
                 None
             }
