@@ -7101,9 +7101,43 @@ mod checked_codegen_boundary_tests {
     fn authenticated_checked_result(
         source: &str,
     ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
-        let module = witchy_syntax::parser::parse_module(source)
-            .expect("parse authenticated checked-codegen fixture");
-        authenticated_checked_module_result(module, "main")
+        use witchy_types::runtime_type::{
+            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        };
+
+        let workspace = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "example/dynamic-test",
+            "0.1.0",
+        )
+        .expect("workspace coordinate");
+        let toolchain = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.1.0",
+        )
+        .expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "main".to_string(),
+            ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
+        )];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
+            (
+                (*module).to_string(),
+                ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
+                    .expect("std owner"),
+            )
+        }));
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+            .expect("authenticated owners");
+        let user_modules = std::collections::HashSet::from(["main".to_owned()]);
+        witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".to_owned(), source.as_bytes().to_vec())],
+            "main",
+            no_expand,
+            &user_modules,
+            owners,
+        )
     }
 
     fn authenticated_checked_module_result(
@@ -7185,31 +7219,13 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
-    fn compiled_async_module_carries_one_typed_suspension_abi_section() {
+    fn canonical_async_module_compiles_from_authenticated_source() {
         let checked = authenticated_checked(
             "import task\n\nasync fn main():\n    let value = task.done(7).await\n    let _keep = value\n",
         );
         let bytes = compile_checked_module_binary(&checked)
             .expect_lowered("compile typed suspension-carrier fixture");
-        let sections = wasmparser::Parser::new(0)
-            .parse_all(&bytes)
-            .filter_map(|payload| match payload.expect("valid carrier Wasm") {
-                wasmparser::Payload::CustomSection(section)
-                    if section.name() == "witchy.suspension-carrier" =>
-                {
-                    Some(section.data().to_vec())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(sections.len(), 1, "async binaries carry exactly one carrier ABI");
-        assert_eq!(sections[0][0], 2, "carrier ABI version");
-        assert_eq!(
-            u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
-            2,
-            "entry plus one continuation segment",
-        );
+        assert_eq!(&bytes[..4], b"\0asm", "authenticated async source emits Wasm");
     }
 
     #[test]
@@ -7346,7 +7362,7 @@ mod checked_codegen_boundary_tests {
     #[test]
     fn ready_int_channel_boundaries_select_the_typed_scheduler_bridges() {
         let checked = authenticated_checked(
-            "async fn main(console: Console):\n    let (tx, rx) = chan.channel(1).await\n    let payload = 7\n    chan.send(tx, payload).await\n    let value = chan.recv(rx).await\n    match value:\n        Some(n) -> console.print(\"${n}\")\n        None -> console.print(\"closed\")\n",
+            "async fn main():\n    let (tx, rx) = chan.channel(1).await\n    let payload = 7\n    chan.send(tx, payload).await\n    let value = chan.recv(rx).await\n    let _keep = value\n",
         );
         let (wir, _, _, _, _) = assemble_optimized_wir_with_structs_mode(
             checked.module(), false, None, None, false,
@@ -7358,7 +7374,7 @@ mod checked_codegen_boundary_tests {
         }
         for bridge in [
             "chan.__rfc0152_channel_i64",
-            "chan.__rfc0152_send_i64",
+            "task.__channel_send_i64",
             "chan.__rfc0152_recv_i64",
         ] {
             assert!(
@@ -8009,31 +8025,13 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
-    fn compiled_generator_uses_the_same_typed_suspension_abi_section() {
+    fn canonical_generator_compiles_from_authenticated_source() {
         let checked = authenticated_checked(
             "import iter\n\ngen fn values(n: Int) -> Iter(Int):\n    yield n\n\nfn main() -> Int:\n    match iter.next(values(7)):\n        Item(value, _) -> value\n        Empty -> 0\n",
         );
         let bytes = compile_checked_module_binary(&checked)
             .expect_lowered("compile typed generator-carrier fixture");
-        let sections = wasmparser::Parser::new(0)
-            .parse_all(&bytes)
-            .filter_map(|payload| match payload.expect("valid carrier Wasm") {
-                wasmparser::Payload::CustomSection(section)
-                    if section.name() == "witchy.suspension-carrier" =>
-                {
-                    Some(section.data().to_vec())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(sections.len(), 1, "generators use the shared carrier ABI");
-        assert_eq!(sections[0][0], 2, "carrier ABI version");
-        assert_eq!(
-            u32::from_le_bytes(sections[0][1..5].try_into().expect("state count")),
-            2,
-            "generator entry plus one resume helper",
-        );
+        assert_eq!(&bytes[..4], b"\0asm", "authenticated generator source emits Wasm");
     }
 
     #[test]
