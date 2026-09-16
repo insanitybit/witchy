@@ -18,6 +18,13 @@ use witchy_wir::layout::{
     ResolvedNamed, ScalarKind,
 };
 
+/// Stable opaque identity for the v1 shared `&Int` place carrier. The carrier
+/// owns an authenticated root plus constructor-specific projection operands;
+/// it is deliberately disjoint from closure and aggregate owner namespaces.
+pub(crate) fn shared_int_reference_owner_type() -> GcTypeId {
+    GcTypeId::new(0xc300_0000)
+}
+
 /// The source-derived storage family for one `fn` signature.  The callable
 /// object remains the uniform value ABI; its second field owns one tagged
 /// environment record.  Variant zero is the empty environment used by named

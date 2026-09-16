@@ -292,6 +292,7 @@ fn operation_flow(
                 OwnerOperation::Construct { .. }
                 | OwnerOperation::ReadCapability { .. }
                 | OwnerOperation::ReadOwner { .. }
+                | OwnerOperation::ReadSharedPlace { .. }
                 | OwnerOperation::ReadCallable { .. }
                 | OwnerOperation::ReadTag { .. }
                 | OwnerOperation::Clone { .. }

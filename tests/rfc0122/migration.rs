@@ -50,6 +50,27 @@ fn main(console: Console):
     console.print("${read_tail(&value, 300000)}")
 "#;
 
+const PROJECTED_SHARED_INT_CALL: &str = r#"mode opt
+
+import list
+
+fn read(value: &'a Int) -> Int:
+    *value
+
+fn read_tail(value: &'a Int, remaining: Int) -> Int:
+    if remaining == 0:
+        *value
+    else:
+        read_tail(value, remaining - 1)
+
+fn main(console: Console):
+    let values = [3, 7, 11]
+    let selected = &values[1]
+    console.print("${read(selected)}")
+    console.print("${read_tail(selected, 300000)}")
+    console.print("${list.at(values, 1)}")
+"#;
+
 const DIRECT_SHARED_BYTES_CALL: &str = r#"mode opt
 
 import bytes
@@ -205,6 +226,16 @@ fn direct_shared_int_tail_call_launches_exact_admitted_bytes() {
 }
 
 #[test]
+fn projected_shared_int_call_launches_exact_admitted_bytes() {
+    let checked = witchy::resolve_std_only_checked(PROJECTED_SHARED_INT_CALL)
+        .expect("projected shared Int fixture must resolve and type-check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret projected shared Int fixture");
+    assert_eq!(interpreted, ["7", "7", "7"]);
+    assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
 fn direct_shared_bytes_call_launches_exact_admitted_bytes() {
     let checked = witchy::resolve_std_only_checked(DIRECT_SHARED_BYTES_CALL)
         .expect("direct shared Bytes fixture must resolve and type-check");
@@ -239,7 +270,7 @@ fn main(console: Console):
 "#,
         ),
         (
-            "projected element reference",
+            "mutable projected element reference",
             r#"mode opt
 fn first(values: &'a mut List(Int)) -> &'a mut Int:
     &mut values[0]
@@ -300,6 +331,16 @@ fn main(console: Console):
     }
 
     for (label, source) in [
+        (
+            "wrong projected element type",
+            r#"mode opt
+fn read(value: &'a String) -> String:
+    *value
+fn main(console: Console):
+    let values = ["x"]
+    console.print(read(&values[0]))
+"#,
+        ),
         (
             "capability reference",
             r#"mode opt
