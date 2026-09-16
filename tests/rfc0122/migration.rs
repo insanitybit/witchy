@@ -66,6 +66,22 @@ fn main(console: Console):
     console.print(bytes.to_string(data))
 "#;
 
+const DIRECT_SHARED_LIST_CALL: &str = r#"mode opt
+
+import list
+
+fn inspect_tail(values: &'a List(Int), remaining: Int) -> Int:
+    if remaining == 0:
+        list.length(*values) * 100 + list.at(*values, 1)
+    else:
+        inspect_tail(values, remaining - 1)
+
+fn main(console: Console):
+    let values = [3, 7, 11]
+    console.print("${inspect_tail(&values, 300000)}")
+    console.print("${list.length(values) * 10 + list.at(values, 0)}")
+"#;
+
 const LEGACY_MUTABLE_PARAMETER: &str = r#"mode opt
 
 import borrow
@@ -196,6 +212,119 @@ fn direct_shared_bytes_call_launches_exact_admitted_bytes() {
         .expect("interpret direct shared Bytes fixture");
     assert_eq!(interpreted, ["4", "safe"]);
     assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
+fn direct_shared_list_int_call_launches_exact_admitted_bytes() {
+    let checked = witchy::resolve_std_only_checked(DIRECT_SHARED_LIST_CALL)
+        .expect("direct shared List(Int) fixture must resolve and type-check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret direct shared List(Int) fixture");
+    assert_eq!(interpreted, ["307", "33"]);
+    assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
+fn shared_list_forms_outside_the_direct_whole_list_int_slice_refuse() {
+    for (label, source) in [
+        (
+            "mutable whole-list reference",
+            r#"mode opt
+import list
+fn length(values: &'a mut List(Int)) -> Int:
+    list.length(*values)
+fn main(console: Console):
+    var values = [1]
+    console.print("${length(&mut values)}")
+"#,
+        ),
+        (
+            "projected element reference",
+            r#"mode opt
+fn first(values: &'a mut List(Int)) -> &'a mut Int:
+    &mut values[0]
+fn main(console: Console):
+    var values = [1]
+    let slot = first(&mut values)
+    console.print("${*slot}")
+"#,
+        ),
+        (
+            "ambiguous list result owner",
+            r#"mode opt
+import list
+fn choose(left: &'a List(Int), right: &'a List(Int), flag: Bool) -> &'a List(Int):
+    if flag:
+        left
+    else:
+        right
+fn main(console: Console):
+    let left = [1]
+    let right = [2]
+    console.print("${list.at(*choose(&left, &right, true), 0)}")
+"#,
+        ),
+        (
+            "callable-carried list reference",
+            r#"mode opt
+import list
+fn length(values: &'a List(Int)) -> Int:
+    list.length(*values)
+fn apply(f: fn(&'a List(Int)) -> Int, values: &'a List(Int)) -> Int:
+    f(values)
+fn main(console: Console):
+    let values = [1]
+    console.print("${apply(length, &values)}")
+"#,
+        ),
+        (
+            "different generic list identity",
+            r#"mode opt
+import list
+fn length(values: &'a List(String)) -> Int:
+    list.length(*values)
+fn main(console: Console):
+    let values = ["not Int"]
+    console.print("${length(&values)}")
+"#,
+        ),
+    ] {
+        let checked = witchy::resolve_std_only_checked(source)
+            .unwrap_or_else(|error| panic!("{label} must reach canonical fail-closed admission: {error}"));
+        let refusal = codegen::compile_checked_module_artifact(&checked)
+            .expect_unsupported(label);
+        assert!(
+            refusal.message.contains("unsupported") || refusal.message.contains("canonical"),
+            "{label}: {refusal}"
+        );
+    }
+
+    for (label, source) in [
+        (
+            "capability reference",
+            r#"mode opt
+fn inspect(console: &'a Console) -> Int:
+    1
+fn main(console: Console):
+    inspect(&console)
+"#,
+        ),
+        (
+            "region-born list reference escape",
+            r#"mode opt
+fn main(console: Console):
+    let escaped = region -> &'a List(Int):
+        let values = [1]
+        &values
+    console.print("${(*escaped)[0]}")
+"#,
+        ),
+    ] {
+        assert!(
+            witchy::resolve_std_only_checked(source).is_err(),
+            "{label} must fail closed before canonical admission"
+        );
+    }
 }
 
 #[test]

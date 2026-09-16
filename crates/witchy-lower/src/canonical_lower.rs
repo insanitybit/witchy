@@ -1318,7 +1318,7 @@ fn checked_signature(
         ));
     }
     if let Some(result) = function.ret.as_ref().filter(|result| {
-        shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_buffer(inner))
+        shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
     }) {
         // Authenticate result provenance from the exact source declaration.
         // Checked callable normalization may merge lifetime variables, but it
@@ -1528,7 +1528,7 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
         Type::Qualified(TypeQual::Borrow(_), inner)
-            if is_direct_shared_buffer(inner) || is_direct_shared_int(inner) => false,
+            if is_direct_shared_owned_object(inner) || is_direct_shared_int(inner) => false,
         Type::Qualified(TypeQual::Borrow(_), _) => true,
         Type::Qualified(
             TypeQual::Unique
@@ -1602,12 +1602,16 @@ fn unique_shared_alias_parameter(
     Ok(Some(parameter))
 }
 
-fn is_direct_shared_buffer(ty: &Type) -> bool {
-    matches!(
-        ty.unqualified(),
+fn is_direct_shared_owned_object(ty: &Type) -> bool {
+    match ty.unqualified() {
         Type::Named(name, arguments)
-            if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty()
-    )
+            if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => true,
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            matches!(arguments[0].unqualified(), Type::Named(element, element_arguments)
+                if element == "Int" && element_arguments.is_empty())
+        }
+        _ => false,
+    }
 }
 
 fn is_direct_shared_int(ty: &Type) -> bool {
