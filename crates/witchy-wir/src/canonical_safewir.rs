@@ -24,6 +24,7 @@ pub(crate) use check::{operation_uses, terminator_uses};
 mod authority;
 pub use authority::{
     CheckedInitialSafeWir, CheckedLoweringWitness, CheckedOptimizedSafeWir,
+    CheckedSafeWirRevision,
     FinalValidationError, InitialWitnessError, OptimizationAuthorityError, ValidatedSafeWir,
     check_initial_with_witness, validate_final, validate_optimized_final,
 };

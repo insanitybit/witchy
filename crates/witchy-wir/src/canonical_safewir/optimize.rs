@@ -10,13 +10,14 @@ use std::fmt;
 use super::analysis::{AnalysisDb, BoundsGuardRedundancy, ProgramPoint};
 
 use super::{
-    CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, ComparisonOperator, Function,
-    GuardKind, InitialCheckError, InitialValid, Operation, OptimizationAuthorityError,
-    OptimizationCandidate, Revision, ValueId,
+    CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, CheckedSafeWirRevision,
+    ComparisonOperator, Function, GuardKind, InitialCheckError, InitialValid, Operation,
+    OptimizationAuthorityError, OptimizationCandidate, Revision, ValueId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundsGuardEliminationError {
+    NoChange,
     RevisionOverflow { revision: Revision },
     Authority(OptimizationAuthorityError),
     RewriteRelation(RewriteRelationError),
@@ -26,6 +27,7 @@ pub enum BoundsGuardEliminationError {
 impl fmt::Display for BoundsGuardEliminationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NoChange => write!(formatter, "bounds-guard pass made no change"),
             Self::RevisionOverflow { revision } => {
                 write!(formatter, "cannot advance SafeWIR revision {revision:?}")
             }
@@ -48,13 +50,20 @@ impl std::error::Error for BoundsGuardEliminationError {}
 pub fn eliminate_same_block_redundant_bounds_guards_checked(
     before: CheckedInitialSafeWir,
 ) -> Result<CheckedOptimizedSafeWir, BoundsGuardEliminationError> {
+    let before = CheckedSafeWirRevision::from(before);
     attempt_bounds_guard_pass(&before)
 }
 
 fn attempt_bounds_guard_pass(
-    before: &CheckedInitialSafeWir,
+    before: &CheckedSafeWirRevision,
 ) -> Result<CheckedOptimizedSafeWir, BoundsGuardEliminationError> {
     let optimized = eliminate_same_block_redundant_bounds_guards(before.module().clone())?;
+    if optimized.revision() == before.module().revision()
+        && super::identity::module_digest(&optimized)
+            == super::identity::module_digest(before.module())
+    {
+        return Err(BoundsGuardEliminationError::NoChange);
+    }
     super::authority::bind_checked_same_block_bounds_guard_optimization(before, optimized)
         .map_err(BoundsGuardEliminationError::Authority)
 }
@@ -69,16 +78,21 @@ pub enum PassId {
 pub enum CheckedPassOutcome {
     Applied(CheckedOptimizedSafeWir),
     Retained {
-        original: CheckedInitialSafeWir,
-        reason: BoundsGuardEliminationError,
+        current: CheckedSafeWirRevision,
+        reason: CheckedPassError,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedPassError {
+    SameBlockBoundsGuards(BoundsGuardEliminationError),
 }
 
 impl CheckedPassOutcome {
     pub fn module(&self) -> &CanonicalModule<InitialValid> {
         match self {
             Self::Applied(checked) => checked.module(),
-            Self::Retained { original, .. } => original.module(),
+            Self::Retained { current, .. } => current.module(),
         }
     }
 
@@ -88,18 +102,38 @@ impl CheckedPassOutcome {
     ) -> Result<super::ValidatedSafeWir, super::FinalValidationError> {
         match self {
             Self::Applied(checked) => super::validate_optimized_final(checked, source),
-            Self::Retained { original, .. } => super::validate_final(original, source),
+            Self::Retained { current, .. } => current.validate_final(source),
         }
     }
 }
 
-pub fn run_checked_pass(before: CheckedInitialSafeWir, pass: PassId) -> CheckedPassOutcome {
+trait CheckedPassContract {
+    fn apply(
+        before: &CheckedSafeWirRevision,
+    ) -> Result<CheckedOptimizedSafeWir, CheckedPassError>;
+}
+
+struct SameBlockBoundsGuardPass;
+
+impl CheckedPassContract for SameBlockBoundsGuardPass {
+    fn apply(
+        before: &CheckedSafeWirRevision,
+    ) -> Result<CheckedOptimizedSafeWir, CheckedPassError> {
+        attempt_bounds_guard_pass(before).map_err(CheckedPassError::SameBlockBoundsGuards)
+    }
+}
+
+pub fn run_checked_pass(
+    before: impl Into<CheckedSafeWirRevision>,
+    pass: PassId,
+) -> CheckedPassOutcome {
+    let before = before.into();
     let result = match pass {
-        PassId::SameBlockBoundsGuards => attempt_bounds_guard_pass(&before),
+        PassId::SameBlockBoundsGuards => SameBlockBoundsGuardPass::apply(&before),
     };
     match result {
         Ok(after) => CheckedPassOutcome::Applied(after),
-        Err(reason) => CheckedPassOutcome::Retained { original: before, reason },
+        Err(reason) => CheckedPassOutcome::Retained { current: before, reason },
     }
 }
 
@@ -354,13 +388,54 @@ mod tests {
         let before = super::super::check_initial_with_test_witness(lowered).unwrap();
         let expected = before.module().clone();
         let outcome = run_checked_pass(before, PassId::SameBlockBoundsGuards);
-        let CheckedPassOutcome::Retained { original, reason } = outcome else {
+        let CheckedPassOutcome::Retained { current, reason } = outcome else {
             panic!("an overflowing optional pass must retain its input");
         };
-        assert!(matches!(reason, BoundsGuardEliminationError::RevisionOverflow { .. }));
-        assert_eq!(original.module().revision(), expected.revision());
-        assert_eq!(super::super::identity::module_digest(original.module()), super::super::identity::module_digest(&expected));
+        assert!(matches!(
+            reason,
+            CheckedPassError::SameBlockBoundsGuards(
+                BoundsGuardEliminationError::RevisionOverflow { .. }
+            )
+        ));
+        assert_eq!(current.module().revision(), expected.revision());
+        assert_eq!(
+            super::super::identity::module_digest(current.module()),
+            super::super::identity::module_digest(&expected)
+        );
+        let CheckedSafeWirRevision::Initial(original) = current else {
+            panic!("initial authority changed kind on retention");
+        };
         super::super::validate_final_for_test(original).expect("retained authority validates");
+    }
+
+    #[test]
+    fn declined_second_pass_retains_first_checked_revision() {
+        let initial = validated_authority(duplicate_operations());
+        let first = match run_checked_pass(initial, PassId::SameBlockBoundsGuards) {
+            CheckedPassOutcome::Applied(checked) => checked,
+            CheckedPassOutcome::Retained { reason, .. } => panic!("first pass retained: {reason:?}"),
+        };
+        let first_revision = first.module().revision();
+        let first_digest = super::super::identity::module_digest(first.module());
+        let second = match run_checked_pass(first, PassId::SameBlockBoundsGuards) {
+            CheckedPassOutcome::Applied(_) => panic!("idempotent second pass changed the module"),
+            CheckedPassOutcome::Retained { current, reason } => {
+                assert!(matches!(
+                    reason,
+                    CheckedPassError::SameBlockBoundsGuards(
+                        BoundsGuardEliminationError::NoChange
+                    )
+                ));
+                current
+            }
+        };
+        assert_eq!(second.module().revision(), first_revision);
+        assert_eq!(super::super::identity::module_digest(second.module()), first_digest);
+        let CheckedSafeWirRevision::Optimized(second) = second else {
+            panic!("a declined second pass lost optimized authority");
+        };
+        super::super::validate_optimized_final_for_test(second)
+            .expect("the retained checked pass chain validates");
     }
 
     #[test]
@@ -471,6 +546,15 @@ mod tests {
             Terminator::Return { values: Vec::new() },
         )]))
         .expect("initial graph is valid")
+    }
+
+    fn validated_authority(operations: Vec<Operation>) -> CheckedInitialSafeWir {
+        super::super::check_initial_with_test_witness(candidate(vec![block(
+            0,
+            operations,
+            Terminator::Return { values: Vec::new() },
+        )]))
+        .expect("initial authority is valid")
     }
 
     fn validated_with_tail_location() -> CanonicalModule<InitialValid> {
