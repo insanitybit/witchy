@@ -6295,13 +6295,10 @@ impl FunctionLowerer<'_> {
         }
         self.reload_dynamic_extent(value)?;
         if string_layout == Some(layout) {
-            if let Some(&count) = self.string_lengths.get(&value) {
-                // A join forgets allocation slack. Logical length is always a
-                // valid conservative capacity bound, travels with the fresh
-                // authenticated count, and makes later mutation reallocate
-                // rather than rely on a non-dominating capacity definition.
-                let capacity = count;
-                self.string_capacities.insert(value, capacity);
+            if let (Some(&count), Some(&capacity)) = (
+                self.string_lengths.get(&value),
+                self.string_capacities.get(&value),
+            ) {
                 return Ok(Some(AuthenticatedExtentLane {
                     family: DynamicExtentFamily::String,
                     count,
@@ -8291,26 +8288,15 @@ impl FunctionLowerer<'_> {
             ),
             transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
         });
-        let maximum_length = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::ConstSize {
-            destination: maximum_length,
-            value: u64::from(u32::MAX - 4),
-        });
-        let length_fits = self.fresh(ValueType::Bool)?;
-        self.push_operation(Operation::Compare {
-            destination: length_fits,
-            operator: ComparisonOperator::LessEqualUnsigned,
-            left: length,
-            right: maximum_length,
-        });
-        self.push_operation(Operation::Guard {
-            condition: length_fits,
-            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-        });
+        // Allocation capacity is stable for this object even when a control-
+        // flow join invalidates its logical-length fact. Preserve that exact
+        // checker-visible identity and authenticate the refreshed header
+        // against it. A header-prefix value has no prior capacity, so its
+        // logical length remains the conservative capacity bound.
+        let capacity = self.string_capacities.get(&value).copied().unwrap_or(length);
+        self.guard_dynamic_extent(length, capacity, 4, 1)?;
         self.string_lengths.insert(value, length);
-        // A byte buffer's authenticated capacity is its count; record it so a
-        // join over two such strings has both extent lanes.
-        self.string_capacities.insert(value, length);
+        self.string_capacities.insert(value, capacity);
         Ok(())
     }
 
@@ -8324,7 +8310,9 @@ impl FunctionLowerer<'_> {
 
     fn reload_dynamic_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
         self.string_lengths.remove(&value);
-        self.string_capacities.remove(&value);
+        // String capacity belongs to the allocation identity, not to the
+        // logical header value refreshed below. String operations return a
+        // new object rather than reallocating an existing ValueId.
         self.list_counts.remove(&value);
         self.list_capacities.remove(&value);
         self.ensure_list_extent(value)?;
