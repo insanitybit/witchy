@@ -35,7 +35,7 @@ fn test_other():
     let (suite, _) = link_test_file(&files.path()).expect("authenticated raw suite");
     let driver = check_bare_test_driver(&suite, "suite.test_good").expect("compiler-owned recipe");
     let identity = driver.identity().expect("recipe identity");
-    assert_eq!(identity.recipe_version(), 2);
+    assert_eq!(identity.recipe_version(), 3);
     assert_eq!(identity.original_source_digest(), suite.original_source_digest());
     let source = driver.canonical_source().expect("fresh canonical source");
     assert_eq!(source.source_witness().source_bundle_digest(), identity.derived_source_digest());
@@ -74,7 +74,7 @@ fn canonical_bare_driver_refuses_inferred_non_nil_results() {
 }
 
 #[test]
-fn canonical_bare_driver_refuses_unknown_imported_parameterized_and_async_targets() {
+fn canonical_bare_driver_refuses_unknown_imported_and_parameterized_targets() {
     let files = Files::new(r#"
 import dependency
 fn test_good():
@@ -86,10 +86,13 @@ async fn test_async():
 "#);
     std::fs::write(files.0.join("dependency.witchy"), "pub fn test_foreign():\n    let value = 9\n").unwrap();
     let (suite, _) = link_test_file(&files.path()).expect("original source checks");
-    for target in ["suite.test_missing", "dependency.test_foreign", "suite.test_foreign", "suite.test_parameter", "suite.test_async"] {
+    for target in ["suite.test_missing", "dependency.test_foreign", "suite.test_foreign", "suite.test_parameter"] {
         let error = check_bare_test_driver(&suite, target).expect_err(target).to_string();
         assert!(error.contains("test") && (error.contains("unsupported") || error.contains("entry")), "{target}: {error}");
     }
+    let async_driver = check_bare_test_driver(&suite, "suite.test_async")
+        .expect("bare async tests use the compiler-owned completion recipe");
+    assert_eq!(async_driver.identity().unwrap().selected_declaration(), "suite.test_async");
 }
 
 #[test]
