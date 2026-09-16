@@ -26,18 +26,17 @@ use crate::{ast, codegen, parser, typeck};
         }
     }
 
-    /// Normal mode may adapt an `own` argument by copying, while `mode opt`
-    /// exposes the transfer cost and explicit `move` consumes in every mode.
+    /// Both `own` arguments and explicit `move` consume in every mode.
     /// A bare `let` borrow imposes no restriction.
     #[test]
     fn conventions_reuse_after_move_rejected() {
-        // Normal mode may prepare an independent owned value.
+        // Passing a binding to `own` consumes it in both source modes.
         let after_own = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    c.print(\"${drain(d)}\")\n    c.print(\"${list.length(d)}\")\n";
-        typeck::check_str(after_own).expect("normal mode may reuse after owned adaptation");
-        // Optimized code requires the transfer to remain explicit in its cost model.
-        let optimized = format!("mode opt\n\n{after_own}");
-        let e1 = typeck::check_str(&optimized).expect_err("opt reuse after own should fail");
-        assert!(e1.to_string().contains("after it was moved"), "got: {e1:?}");
+        for mode in ["", "mode opt\n\n"] {
+            let source = format!("{mode}{after_own}");
+            let error = typeck::check_str(&source).expect_err("reuse after own should fail");
+            assert!(error.to_string().contains("after it was moved"), "got: {error:?}");
+        }
         // Reuse after an explicit `move`.
         let after_move = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    c.print(\"${drain(move d)}\")\n    c.print(\"${list.length(d)}\")\n";
         assert!(
