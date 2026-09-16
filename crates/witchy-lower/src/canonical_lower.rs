@@ -1334,9 +1334,12 @@ fn checked_signature(
             value_parameters[parameter_index] = value_type;
             contract_parameters[parameter_index] = ParameterContract {
                 value_type,
-                ownership: ParameterOwnership::Value,
+                ownership: ParameterOwnership::Shared,
             };
-            parameter_effects.insert(parameter_index as u32, vec![MemoryEffect::Read]);
+            parameter_effects.insert(
+                parameter_index as u32,
+                vec![MemoryEffect::Read, MemoryEffect::Release],
+            );
         }
         if matches!(convention, Convention::Own)
             && !ordinary_own_type_supported(parameter)
@@ -1415,6 +1418,12 @@ fn signature_from_type(
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
         let ownership = match (value_type, convention) {
             (ValueType::Ref(_), Convention::Let | Convention::Borrow)
+                if shared_reference_parts(parameter)
+                    .is_some_and(|(_, inner)| is_direct_shared_int(inner)) =>
+            {
+                ParameterOwnership::Shared
+            }
+            (ValueType::Ref(_), Convention::Let | Convention::Borrow)
                 if shared_reference_parts(parameter).is_some() => ParameterOwnership::Value,
             (ValueType::Ref(_) | ValueType::Gc(_), Convention::Let | Convention::Borrow | Convention::Own) => {
                 ParameterOwnership::Shared
@@ -1428,14 +1437,21 @@ fn signature_from_type(
             (_, Convention::Let | Convention::Borrow | Convention::Own) => ParameterOwnership::Value,
         };
         if matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_)) {
-            parameter_effects.insert(
-                index as u32,
+            let effects = if shared_reference_parts(parameter)
+                .is_some_and(|(_, inner)| is_direct_shared_int(inner))
+            {
+                vec![MemoryEffect::Read, MemoryEffect::Release]
+            } else {
                 vec![
                     MemoryEffect::Read,
                     MemoryEffect::Retain,
                     MemoryEffect::Release,
-                ].into_iter().chain((ownership == ParameterOwnership::UniqueWriteBack).then_some(MemoryEffect::Write)).collect(),
-            );
+                ]
+                .into_iter()
+                .chain((ownership == ParameterOwnership::UniqueWriteBack).then_some(MemoryEffect::Write))
+                .collect()
+            };
+            parameter_effects.insert(index as u32, effects);
         }
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract { value_type, ownership });
@@ -7142,14 +7158,17 @@ impl FunctionLowerer<'_> {
                         actual,
                     });
                 }
-                // A direct shared scalar reference is an immutable address
-                // value, not an owned token. The checked signature and exact
-                // scalar-cell layout establish that ABI independently of the
-                // source convention spelling retained by type checking.
-                if contract.ownership == ParameterOwnership::Value
+                // A materialized scalar cell is an RC token owned solely for
+                // this call. A direct borrow transfers it even at a non-tail
+                // site; an existing reference is cloned only when caller work
+                // remains, and is moved at a proper tail edge.
+                if contract.ownership == ParameterOwnership::Shared
                     && self.is_scalar_reference(value, ScalarKind::Int)
                 {
-                    return Ok(CallArgument::Value(value));
+                    if tail || matches!(argument, Expr::Unary { op: UnOp::Borrow, .. }) {
+                        return Ok(CallArgument::Move(value));
+                    }
+                    return self.clone_reference_token(value).map(CallArgument::Move);
                 }
                 match conventions[parameter] {
                     Convention::Own => match contract.ownership {
@@ -7190,11 +7209,7 @@ impl FunctionLowerer<'_> {
                                     callee: callee.to_owned(), parameter, ownership: contract.ownership,
                                 });
                             }
-                            if self.is_scalar_reference(value, ScalarKind::Int) {
-                                Ok(CallArgument::Value(value))
-                            } else {
-                                Ok(CallArgument::Move(value))
-                            }
+                            Ok(CallArgument::Move(value))
                         }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         // A string literal cannot be cloned or moved as a token;

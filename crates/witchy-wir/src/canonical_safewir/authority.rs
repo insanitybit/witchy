@@ -1379,7 +1379,7 @@ fn candidate_signature_matches_source_inner(
             || !(direct_shared_int_matches(actual.value_type, source, layouts)
                 || value_type_matches_source(actual.value_type, source, layouts, signatures, context, records, closure_layouts)) { return false; }
         if direct_shared_int_matches(actual.value_type, source, layouts) {
-            return actual.ownership == super::ParameterOwnership::Value;
+            return actual.ownership == super::ParameterOwnership::Shared;
         }
         match (actual.value_type, convention) {
             (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),

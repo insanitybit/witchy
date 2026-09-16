@@ -933,11 +933,8 @@ impl<'a> MemoryChecker<'a> {
                 ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value => Ownership::Shared,
             };
             let extent = self.parameter_extent(layout)?;
-            let direct_scalar_view = contract.ownership == ParameterOwnership::Value
-                && matches!(self.descriptor(layout)?.kind(), LayoutKind::Scalar(ScalarKind::Int));
             let (allocation_class, shared_immutable) = match contract.ownership {
                 ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => (Some(AllocationClass::ReferenceCounted), false),
-                ParameterOwnership::Value if direct_scalar_view => (None, false),
                 ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value => (None, true),
             };
             let initialized_owned_slots = matches!(
@@ -1003,13 +1000,6 @@ impl<'a> MemoryChecker<'a> {
             }
             argument_states.push(Some(self.live_object(value)?.clone()));
             match argument {
-                CallArgument::Value(value)
-                    if parameter.ownership == ParameterOwnership::Value
-                        && matches!(self.descriptor(self.live_object(*value)?.layout)?.kind(),
-                            LayoutKind::Scalar(ScalarKind::Int)) =>
-                {
-                    self.require_complete_value_initialized(*value, "Call(uninitialized scalar reference)")?;
-                }
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
                     self.require_complete_value_initialized(*value, "Call(uninitialized owned slot)")?;
@@ -3781,7 +3771,10 @@ impl<'a> MemoryChecker<'a> {
             }
             Projection::Field { index } => {
                 if let LayoutKind::Scalar(kind) = descriptor.kind() {
-                    if *index != 0 || place.access() == AccessMode::Write && object.ownership != Ownership::Unique {
+                    if *kind != ScalarKind::Int
+                        || *index != 0
+                        || place.access() == AccessMode::Write && object.ownership != Ownership::Unique
+                    {
                         return self.invalid_projection(place.object());
                     }
                     self.value_type_for_scalar(*kind)?
@@ -4636,7 +4629,7 @@ impl<'a> MemoryChecker<'a> {
             },
             Projection::Field { index } => {
                 if let LayoutKind::Scalar(kind) = descriptor.kind() {
-                    if *index != 0 {
+                    if *kind != ScalarKind::Int || *index != 0 {
                         return self.invalid_projection(place.object());
                     }
                     Some(*kind)
@@ -6771,6 +6764,58 @@ mod tests {
                 class: AllocationClass::ReferenceCounted,
             })
             .expect("fixed allocation");
+    }
+
+    #[test]
+    fn virtual_scalar_root_field_refuses_non_int_layout() {
+        let mut layouts = LayoutInterner::new();
+        let scalar = layouts
+            .intern_scalar(ScalarKind::Float)
+            .expect("float scalar layout");
+        let function = Function {
+            id: crate::canonical_safewir::FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: crate::canonical_safewir::BlockId::new(0),
+            value_types: BTreeMap::from([
+                (SOURCE, ValueType::Ref(scalar)),
+                (LOADED, ValueType::Float),
+            ]),
+            blocks: vec![BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(0),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let signature = FunctionSignature {
+            id: function.signature,
+            parameters: Vec::new(),
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: Vec::new(),
+                results: Vec::new(),
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let closure_layouts = BTreeMap::new();
+        let mut checker = MemoryChecker::new(
+            &function,
+            &layouts,
+            &signature,
+            &closure_layouts,
+        )
+        .expect("checker construction");
+        allocate_fixed_for_test(&mut checker, SOURCE, scalar);
+        let place = Place::projected(
+            SOURCE,
+            Projection::Field { index: 0 },
+            ValueType::Float,
+            AccessMode::Read,
+        );
+        assert!(matches!(
+            checker.check_place(&place),
+            Err(InitialCheckError::InvalidProjection { .. })
+        ));
     }
 
     fn with_scalar_field_checker(

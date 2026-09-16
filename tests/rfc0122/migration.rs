@@ -37,6 +37,19 @@ fn main(console: Console):
     console.print("${read(&value) + 1}")
 "#;
 
+const DIRECT_SHARED_INT_TAIL_CALL: &str = r#"mode opt
+
+fn read_tail(value: &'a Int, remaining: Int) -> Int:
+    if remaining == 0:
+        *value
+    else:
+        read_tail(value, remaining - 1)
+
+fn main(console: Console):
+    let value = 42
+    console.print("${read_tail(&value, 300000)}")
+"#;
+
 const LEGACY_MUTABLE_PARAMETER: &str = r#"mode opt
 
 import borrow
@@ -145,6 +158,16 @@ fn direct_shared_int_call_launches_exact_admitted_bytes() {
         .expect("direct shared Int fixture must resolve and type-check");
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret direct shared Int fixture");
+    assert_eq!(interpreted, ["42"]);
+    assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
+fn direct_shared_int_tail_call_launches_exact_admitted_bytes() {
+    let checked = witchy::resolve_std_only_checked(DIRECT_SHARED_INT_TAIL_CALL)
+        .expect("tail shared Int fixture must resolve and type-check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret tail shared Int fixture");
     assert_eq!(interpreted, ["42"]);
     assert_eq!(compiled_output(&checked), interpreted);
 }
