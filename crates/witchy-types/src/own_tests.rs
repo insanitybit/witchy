@@ -34,21 +34,29 @@ fn default_owned_parameters_still_allow_copyable_caller_reuse() {
 
 #[test]
 fn own_reference_handle_consumption_does_not_depend_on_result_annotation() {
-    for mode in ["", "mode opt\n\n"] {
-        for kind in ["", "mut "] {
-            for result in ["", " -> ()"] {
-                for setup in ["", "    let invoke = take\n"] {
-                    let call = if setup.is_empty() { "take" } else { "invoke" };
-                    let source = format!(
-                        "{mode}fn take(own value: &'a {kind}String){result}:\n    return\n\nfn caller(value: &'a {kind}String):\n{setup}    {call}(value)\n    {call}(value)\n"
-                    );
-                    let error = check_str(&source).expect_err("a transferred reference handle is unavailable");
-                    assert!(error.contains("use of `value` after it was moved"), "{source}\n{error}");
-                    let single = source.replacen(&format!("    {call}(value)\n    {call}(value)"), &format!("    {call}(value)"), 1);
-                    check_str(&single).unwrap_or_else(|error| panic!("one handle transfer must succeed\n{single}\n{error}"));
-                }
+    for kind in ["", "mut "] {
+        for result in ["", " -> ()"] {
+            for setup in ["", "    let invoke = take\n"] {
+                let call = if setup.is_empty() { "take" } else { "invoke" };
+                let source = format!(
+                    "mode opt\n\nfn take(own value: &'a {kind}String){result}:\n    return\n\nfn caller(value: &'a {kind}String):\n{setup}    {call}(value)\n    {call}(value)\n"
+                );
+                let error = check_str(&source).expect_err("a transferred reference handle is unavailable");
+                assert!(error.contains("use of `value` after it was moved"), "{source}\n{error}");
+                let single = source.replacen(&format!("    {call}(value)\n    {call}(value)"), &format!("    {call}(value)"), 1);
+                check_str(&single).unwrap_or_else(|error| panic!("one handle transfer must succeed\n{single}\n{error}"));
             }
         }
+    }
+}
+
+#[test]
+fn own_reference_handles_do_not_bypass_opt_only_reference_syntax() {
+    for kind in ["", "mut "] {
+        let error = check_str(&format!(
+            "fn take(own value: &'a {kind}String):\n    return\n"
+        )).expect_err("own does not admit explicit-reference syntax in normal mode");
+        assert!(error.contains("available only in `mode opt` files"), "{error}");
     }
 }
 
