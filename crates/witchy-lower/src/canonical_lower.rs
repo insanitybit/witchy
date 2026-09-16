@@ -361,6 +361,7 @@ pub fn lower_typed_module(
         closure_context.declaration_by_layout.insert(layout, declaration_id);
     }
     let mut functions_by_name = HashMap::new();
+    let mut fresh_list_push_signatures = HashMap::new();
     for item in &typed.module().items {
         let Item::Function(function) = item else {
             match item {
@@ -388,9 +389,45 @@ pub fn lower_typed_module(
         let function_id = FunctionId::new(
             u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
-        let signature_id = *function_types
+        let source_signature_id = *function_types
             .get(function_type.unqualified())
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
+        // A monomorphized list.push helper always allocates its replacement
+        // list before dropping the input. Its result therefore carries a
+        // unique token even though the public source type conservatively says
+        // only `List(T)`. Keep that stronger fact on a private signature so a
+        // `var unique` caller can tail-forward its checked write-back contract
+        // without weakening it to Shared.
+        let signature_id = if function.name.starts_with("list.push__")
+            || function.name.starts_with("list.__push__")
+        {
+            if let Some(signature_id) = fresh_list_push_signatures.get(&source_signature_id) {
+                *signature_id
+            } else {
+                let mut signature = signatures[source_signature_id.get() as usize].clone();
+                let [ValueType::Ref(layout)] = signature.results.as_slice() else {
+                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                        function.name.clone(),
+                    ));
+                };
+                let [result] = signature.contract.results.as_mut_slice() else {
+                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                        function.name.clone(),
+                    ));
+                };
+                *result = ResultContract::Unique { layout: *layout };
+                signature.id = FunctionSignatureId::new(
+                    u32::try_from(signatures.len())
+                        .map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                );
+                let signature_id = signature.id;
+                signatures.push(signature);
+                fresh_list_push_signatures.insert(source_signature_id, signature_id);
+                signature_id
+            }
+        } else {
+            source_signature_id
+        };
         functions_by_name.insert(function.name.clone(), (function_id, signature_id));
     }
     // Lambdas become functions of their own, bound to their closure
@@ -670,6 +707,15 @@ pub fn lower_typed_module(
         })
         .collect::<HashMap<_, _>>();
     let mut checked_parameter_conventions = checked_parameter_conventions;
+    for (source_signature, fresh_signature) in &fresh_list_push_signatures {
+        let conventions = checked_parameter_conventions
+            .get(source_signature)
+            .cloned()
+            .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(
+                *source_signature,
+            ))?;
+        checked_parameter_conventions.insert(*fresh_signature, conventions);
+    }
     for ty in &callable_types {
         let (Some(conventions), Some(&closure_signature)) = (checked_parameter_conventions.get(&function_types[ty]).cloned(), closure_signatures.get(ty)) else { continue };
         let mut with_environment = vec![Convention::Let];
@@ -684,7 +730,7 @@ pub fn lower_typed_module(
         let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
             continue;
         };
-        signatures[signature_id.get() as usize] = checked_signature(
+        let mut signature = checked_signature(
             source,
             function,
             signature_id,
@@ -693,6 +739,22 @@ pub fn lower_typed_module(
             &closure_layouts,
             &definitions,
         )?;
+        if function.name.starts_with("list.push__")
+            || function.name.starts_with("list.__push__")
+        {
+            let [ValueType::Ref(layout)] = signature.results.as_slice() else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    function.name.clone(),
+                ));
+            };
+            let [result] = signature.contract.results.as_mut_slice() else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    function.name.clone(),
+                ));
+            };
+            *result = ResultContract::Unique { layout: *layout };
+        }
+        signatures[signature_id.get() as usize] = signature;
     }
 
     let mut imports = Vec::new();

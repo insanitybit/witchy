@@ -1643,6 +1643,63 @@ pub(crate) mod tests {
         main.call(&mut store, Some(console)).expect("run canonical UTF-8 concat");
         assert_eq!(store.data(), b"hi!");
     }
+
+    #[test]
+    fn normal_opt_opt_var_unique_chain_reaches_admitted_execution() {
+        let worker = "mode opt\n\npub fn append(var values: unique List(Int), value: Int) -> Nil:\n    values.push(value)\n";
+        let api = "mode opt\n\nimport worker\n\npub fn extend(var values: unique List(Int), value: Int) -> Nil:\n    worker.append(values, value)\n";
+        let main = "import api\n\nfn main() -> Int:\n    var values = [1, 2]\n    let snapshot = values\n    api.extend(values, 3)\n    values.length() * 100 + snapshot.length() * 10 + values[2]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![
+                ("worker".to_string(), worker.as_bytes().to_vec()),
+                ("api".to_string(), api.as_bytes().to_vec()),
+                ("main".to_string(), main.as_bytes().to_vec()),
+            ],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked normal -> opt -> opt var unique source");
+        crate::analysis::try_module_no_copy_misses(checked.module())
+            .expect("checked ownership facts survive the linked graph");
+        let (artifact, interpreted) = admit_checked_module_with_observer(
+            &checked,
+            |validated, artifact| {
+                let entry = artifact.entry().expect("checked main entry").export();
+                let function = witchy_wir::canonical_safewir::FunctionId::new(
+                    entry.strip_prefix('f').expect("canonical function export")
+                        .parse().expect("canonical function id"),
+                );
+                witchy_wir::canonical_interpreter::interpret_entry_program(
+                    validated,
+                    function,
+                    Vec::new(),
+                    &[],
+                    witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+                )
+                .expect("interpret admitted var unique graph")
+            },
+        )
+        .expect("admit normal -> opt -> opt var unique artifact");
+        assert_eq!(
+            interpreted.results,
+            vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(323)],
+        );
+        assert_eq!(interpreted.leaked_objects, 0);
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted var unique artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine)
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted var unique artifact");
+        let entry = artifact.entry().expect("checked main entry").export();
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, entry)
+            .expect("typed var unique entry");
+        assert_eq!(main.call(&mut store, ()).expect("run var unique entry"), 323);
+    }
+
 }
 
 #[cfg(test)]

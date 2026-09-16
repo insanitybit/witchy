@@ -649,11 +649,42 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = source.closed_callable_signature(binding.source_declaration_ordinal()) else {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
         };
+        let source_declaration = source.closed_callable_declaration(binding.source_declaration_ordinal());
         let source_signature = restore_direct_shared_scalar_parameters(
             source_signature,
-            source.closed_callable_declaration(binding.source_declaration_ordinal()),
+            source_declaration,
         );
-        if !candidate_signature_matches_source_with_layouts(signature, &source_signature, candidate, &records, &layouts) {
+        let source_matches = candidate_signature_matches_source_with_layouts(
+            signature,
+            &source_signature,
+            candidate,
+            &records,
+            &layouts,
+        );
+        let fresh_list_push_matches = !source_matches
+            && source_declaration.is_some_and(|declaration|
+                declaration.name.starts_with("list.push__")
+                    || declaration.name.starts_with("list.__push__"))
+            && {
+                // The compiler-owned list.push helper always allocates its
+                // replacement. Compare its physical ABI against source after
+                // erasing only that stronger result fact; the safety checker
+                // must still prove the original Unique contract from the body.
+                let mut source_shaped = (*signature).clone();
+                for result in &mut source_shaped.contract.results {
+                    if let super::ResultContract::Unique { layout } = result {
+                        *result = super::ResultContract::Shared { layout: *layout };
+                    }
+                }
+                candidate_signature_matches_source_with_layouts(
+                    &source_shaped,
+                    &source_signature,
+                    candidate,
+                    &records,
+                    &layouts,
+                )
+            };
+        if !source_matches && !fresh_list_push_matches {
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
