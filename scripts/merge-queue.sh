@@ -1360,8 +1360,17 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # (.config/nextest.toml); by run time every binary is loader-warm. Bounding
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
+    # Keep an interactive-less macOS host awake while the serialized gate owns
+    # the lock. Without this assertion, idle sleep suspends Cargo and the
+    # watchdog together, so its wall-clock budget expires during maintenance
+    # DarkWake even though the build received little CPU time. `caffeinate -i`
+    # is scoped to the gate process and is absent on non-macOS hosts.
+    local gate_awake=()
+    if command -v caffeinate >/dev/null 2>&1; then
+        gate_awake=(caffeinate -i)
+    fi
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec "${gate_awake[@]}" env -u CARGO_INCREMENTAL "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \

@@ -32,6 +32,58 @@ fn wait_for_branch_to_land(fixture: &QueueFixture, context: &str) {
     );
 }
 
+#[test]
+fn serialized_gate_holds_a_macos_idle_sleep_assertion_when_available() {
+    let fixture = fixture_with_gate_worktree();
+    let bin = fixture._temp.path().join("gate-awake-bin");
+    fs::create_dir(&bin).expect("create fake gate-awake bin");
+    let invocation = fixture._temp.path().join("caffeinate-invocation");
+    let caffeinate = bin.join("caffeinate");
+    fs::write(
+        &caffeinate,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >"$CAFFEINATE_INVOCATION"
+[ "$1" = -i ] || exit 92
+shift
+exec "$@"
+"#,
+    )
+    .expect("write fake caffeinate");
+    fs::set_permissions(&caffeinate, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake caffeinate");
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(workspace_root().join("scripts/merge-queue.sh"))
+        .args(["run", "--once"])
+        .env("PATH", path)
+        .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+        .env("MERGE_QUEUE_AUTOSTART", "0")
+        .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
+        .env("MERGE_QUEUE_GATE_CMD", "true")
+        .env("MERGE_QUEUE_ALLOW_MERGE", "1")
+        .env("MERGE_QUEUE_MONITOR_INTERVAL", "0.05")
+        .env("CAFFEINATE_INVOCATION", &invocation)
+        .output()
+        .expect("run one serialized gate");
+    assert!(
+        output.status.success(),
+        "serialized gate failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let args = fs::read_to_string(invocation).expect("read caffeinate invocation");
+    assert!(
+        args.starts_with("-i env -u CARGO_INCREMENTAL "),
+        "gate must hold only an idle-sleep assertion around its scrubbed environment: {args}",
+    );
+}
+
 fn stop_coordinator(
     mut coordinator: std::process::Child,
     guard: ProcessGroupGuard,
