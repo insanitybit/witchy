@@ -715,6 +715,31 @@ fn field_access(
     let descriptor = layouts
         .get(physical_layout)
         .ok_or(LoweringError::UnsupportedLayout { function, operation: "layout" })?;
+    if let LayoutKind::Scalar(scalar) = descriptor.kind() {
+        if index != 0 || !matches!(scalar, ScalarKind::Int) {
+            return Err(LoweringError::UnsupportedLayout { function, operation: "field" });
+        }
+        let width = scalar.size();
+        return Ok(MemoryAccess {
+            object,
+            collection: CollectionLayout {
+                layout,
+                length_offset: 0,
+                capacity_offset: None,
+                data_offset: 0,
+                stride: width,
+                scalar: *scalar,
+                pointer_layout: None,
+                pointer_slot: None,
+            },
+            offset: 0,
+            width,
+            scalar: *scalar,
+            pointer_layout: None,
+            pointer_slot: None,
+            index: None,
+        });
+    }
     let field = descriptor
         .fields()
         .get(index as usize)

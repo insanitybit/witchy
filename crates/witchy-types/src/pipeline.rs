@@ -253,6 +253,23 @@ impl CanonicalCheckedSource {
         self.callable_witness.signatures.get(name)
     }
 
+    /// Return the exact retained source declaration for a closed callable.
+    /// Unlike the checked callable signature, this preserves source loan
+    /// spelling needed by independent ABI correspondence.
+    #[doc(hidden)]
+    pub fn closed_callable_declaration(
+        &self,
+        ordinal: u32,
+    ) -> Option<&witchy_syntax::ast::Function> {
+        let name = self.callable_witness.runtime_functions.get(ordinal as usize)?;
+        self.typed.module().items.iter().find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if &function.name == name => {
+                Some(function)
+            }
+            _ => None,
+        })
+    }
+
     /// Exact source-derived metadata that canonical admission must carry into
     /// the artifact before final SafeWIR validation.
     #[doc(hidden)]

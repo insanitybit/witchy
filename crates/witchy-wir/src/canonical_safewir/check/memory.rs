@@ -933,8 +933,11 @@ impl<'a> MemoryChecker<'a> {
                 ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value => Ownership::Shared,
             };
             let extent = self.parameter_extent(layout)?;
+            let direct_scalar_view = contract.ownership == ParameterOwnership::Value
+                && matches!(self.descriptor(layout)?.kind(), LayoutKind::Scalar(ScalarKind::Int));
             let (allocation_class, shared_immutable) = match contract.ownership {
                 ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => (Some(AllocationClass::ReferenceCounted), false),
+                ParameterOwnership::Value if direct_scalar_view => (None, false),
                 ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value => (None, true),
             };
             let initialized_owned_slots = matches!(
@@ -1000,6 +1003,13 @@ impl<'a> MemoryChecker<'a> {
             }
             argument_states.push(Some(self.live_object(value)?.clone()));
             match argument {
+                CallArgument::Value(value)
+                    if parameter.ownership == ParameterOwnership::Value
+                        && matches!(self.descriptor(self.live_object(*value)?.layout)?.kind(),
+                            LayoutKind::Scalar(ScalarKind::Int)) =>
+                {
+                    self.require_complete_value_initialized(*value, "Call(uninitialized scalar reference)")?;
+                }
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
                     self.require_complete_value_initialized(*value, "Call(uninitialized owned slot)")?;
@@ -3770,27 +3780,34 @@ impl<'a> MemoryChecker<'a> {
                 }
             }
             Projection::Field { index } => {
-                let field = descriptor.fields().get(*index as usize).ok_or(
-                    InitialCheckError::InvalidProjection {
-                        function: self.function.id,
-                        object: place.object(),
-                    },
-                )?;
+                if let LayoutKind::Scalar(kind) = descriptor.kind() {
+                    if *index != 0 || place.access() == AccessMode::Write && object.ownership != Ownership::Unique {
+                        return self.invalid_projection(place.object());
+                    }
+                    self.value_type_for_scalar(*kind)?
+                } else {
+                    let field = descriptor.fields().get(*index as usize).ok_or(
+                        InitialCheckError::InvalidProjection {
+                            function: self.function.id,
+                            object: place.object(),
+                        },
+                    )?;
                 // The callable lane carries no value type of its own: the
                 // closure registry names the signature slot 0 must hold, and
                 // an unregistered layout has no readable lane at all.
-                match field.kind() {
-                    FieldKind::Scalar(ScalarKind::Callable) => {
-                        let derived = self.closure_slot_type(place.object(), object.layout)?;
-                        if place.value_type() != derived {
-                            return Err(InitialCheckError::InvalidClosureSlot {
-                                function: self.function.id,
-                                object: place.object(),
-                            });
+                    match field.kind() {
+                        FieldKind::Scalar(ScalarKind::Callable) => {
+                            let derived = self.closure_slot_type(place.object(), object.layout)?;
+                            if place.value_type() != derived {
+                                return Err(InitialCheckError::InvalidClosureSlot {
+                                    function: self.function.id,
+                                    object: place.object(),
+                                });
+                            }
+                            derived
                         }
-                        derived
+                        kind => self.value_type_for_field(kind)?,
                     }
-                    kind => self.value_type_for_field(kind)?,
                 }
             }
             Projection::Slice { .. } => return self.unsupported("Place(Slice)"),
@@ -4618,16 +4635,23 @@ impl<'a> MemoryChecker<'a> {
                 None => None,
             },
             Projection::Field { index } => {
-                let field = descriptor.fields().get(*index as usize).ok_or(
-                    InitialCheckError::InvalidProjection {
-                        function: self.function.id,
-                        object: place.object(),
-                    },
-                )?;
-                match field.kind() {
-                    FieldKind::Scalar(kind) => Some(kind),
-                    FieldKind::Inline(layout) => self.scalar_kind(layout)?,
-                    FieldKind::Pointer { .. } => None,
+                if let LayoutKind::Scalar(kind) = descriptor.kind() {
+                    if *index != 0 {
+                        return self.invalid_projection(place.object());
+                    }
+                    Some(*kind)
+                } else {
+                    let field = descriptor.fields().get(*index as usize).ok_or(
+                        InitialCheckError::InvalidProjection {
+                            function: self.function.id,
+                            object: place.object(),
+                        },
+                    )?;
+                    match field.kind() {
+                        FieldKind::Scalar(kind) => Some(kind),
+                        FieldKind::Inline(layout) => self.scalar_kind(layout)?,
+                        FieldKind::Pointer { .. } => None,
+                    }
                 }
             }
             Projection::Header(_) | Projection::Slice { .. } => None,

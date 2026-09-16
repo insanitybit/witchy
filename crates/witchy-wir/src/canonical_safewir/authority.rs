@@ -649,7 +649,11 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(source_signature) = source.closed_callable_signature(binding.source_declaration_ordinal()) else {
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
         };
-        if !candidate_signature_matches_source_with_layouts(signature, source_signature, candidate, &records, &layouts) {
+        let source_signature = restore_direct_shared_scalar_parameters(
+            source_signature,
+            source.closed_callable_declaration(binding.source_declaration_ordinal()),
+        );
+        if !candidate_signature_matches_source_with_layouts(signature, &source_signature, candidate, &records, &layouts) {
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
@@ -1246,7 +1250,12 @@ fn source_abi_qualifiers_supported(
     records: &ScalarRecordFields,
 ) -> bool {
     use witchy_syntax::ast::{Convention, Type, TypeQual};
-    let mut pending = vec![(source, false)];
+    let Type::Fn(parameters, result, _, _) = source.unqualified() else { return false };
+    // Only a whole scalar parameter may preserve a shared loan in canonical
+    // v1. Results, nested callables, projections, and every mutable qualifier
+    // continue through the ordinary fail-closed walk below.
+    let mut pending = vec![(result.as_ref(), false)];
+    pending.extend(parameters.iter().filter(|parameter| !is_direct_shared_int(parameter)).map(|parameter| (parameter, false)));
     let mut definitions = HashSet::new();
     let mut visited = 0;
     while let Some((ty, var_parameter)) = pending.pop() {
@@ -1285,6 +1294,46 @@ fn source_abi_qualifiers_supported(
     true
 }
 
+fn is_direct_shared_int(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(_), inner)
+            if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty()))
+}
+
+fn direct_shared_int_matches(
+    actual: super::ValueType,
+    source: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    let super::ValueType::Ref(layout) = actual else { return false };
+    is_direct_shared_int(source)
+        && layouts.resolve_nominal(layout).ok()
+            .and_then(|physical| layouts.get(physical))
+            .is_some_and(|descriptor| descriptor.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))
+}
+
+fn restore_direct_shared_scalar_parameters(
+    checked: &witchy_syntax::ast::Type,
+    declaration: Option<&witchy_syntax::ast::Function>,
+) -> witchy_syntax::ast::Type {
+    let mut restored = checked.clone();
+    let (witchy_syntax::ast::Type::Fn(parameters, result, _, _), Some(declaration)) =
+        (&mut restored, declaration)
+    else {
+        return restored;
+    };
+    for (parameter, declared) in parameters.iter_mut().zip(&declaration.params) {
+        if let Some(ty) = &declared.ty && is_direct_shared_int(ty) {
+            *parameter = ty.clone();
+        }
+    }
+    if let Some(declared) = &declaration.ret && is_direct_shared_int(declared) {
+        **result = declared.clone();
+    }
+    restored
+}
+
 fn candidate_signature_matches_source_inner(
     actual: &super::FunctionSignature,
     source: &witchy_syntax::ast::Type,
@@ -1315,7 +1364,8 @@ fn candidate_signature_matches_source_inner(
             || matches!(convention, witchy_syntax::ast::Convention::Own)
                 && (ordinary_own_source_type_supported(source)
                     || matches!(actual, super::ValueType::Ref(_) | super::ValueType::Gc(_))))
-        && value_type_matches_source(*actual, source, layouts, signatures, context, records, closure_layouts)
+        && (direct_shared_int_matches(*actual, source, layouts)
+            || value_type_matches_source(*actual, source, layouts, signatures, context, records, closure_layouts))
     }) {
         context.finish_callable(key, false);
         return false;
@@ -1326,7 +1376,11 @@ fn candidate_signature_matches_source_inner(
             || matches!(convention, witchy_syntax::ast::Convention::Own)
                 && (ordinary_own_source_type_supported(source)
                     || matches!(actual.value_type, super::ValueType::Ref(_) | super::ValueType::Gc(_))))
-            || !value_type_matches_source(actual.value_type, source, layouts, signatures, context, records, closure_layouts) { return false; }
+            || !(direct_shared_int_matches(actual.value_type, source, layouts)
+                || value_type_matches_source(actual.value_type, source, layouts, signatures, context, records, closure_layouts)) { return false; }
+        if direct_shared_int_matches(actual.value_type, source, layouts) {
+            return actual.ownership == super::ParameterOwnership::Value;
+        }
         match (actual.value_type, convention) {
             (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (super::ValueType::Gc(_), _) => false,

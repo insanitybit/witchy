@@ -27,6 +27,16 @@ fn main(console: Console):
     console.print(caller("value"))
 "#;
 
+const DIRECT_SHARED_INT_CALL: &str = r#"mode opt
+
+fn read(value: &'a Int) -> Int:
+    *value
+
+fn main(console: Console):
+    let value = 41
+    console.print("${read(&value) + 1}")
+"#;
+
 const LEGACY_MUTABLE_PARAMETER: &str = r#"mode opt
 
 import borrow
@@ -127,6 +137,63 @@ fn migrated_direct_shared_call_preserves_interpreter_wasm_behavior() {
         .expect("interpret migrated RFC-0122 fixture");
     assert_eq!(interpreted, ["value"]);
     assert_eq!(compiled_output(&checked), interpreted, "migrated reference semantics must agree on both backends");
+}
+
+#[test]
+fn direct_shared_int_call_launches_exact_admitted_bytes() {
+    let checked = witchy::resolve_std_only_checked(DIRECT_SHARED_INT_CALL)
+        .expect("direct shared Int fixture must resolve and type-check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret direct shared Int fixture");
+    assert_eq!(interpreted, ["42"]);
+    assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
+fn shared_scalar_reference_forms_outside_the_direct_input_slice_refuse() {
+    for (label, source) in [
+        (
+            "mutable scalar reference",
+            r#"mode opt
+fn read(value: &'a mut Int) -> Int:
+    *value
+fn main(console: Console):
+    var value = 1
+    console.print("${read(&mut value)}")
+"#,
+        ),
+        (
+            "borrowed scalar result",
+            r#"mode opt
+fn identity(value: &'a Int) -> &'a Int:
+    value
+fn main(console: Console):
+    let value = 1
+    console.print("${*identity(&value)}")
+"#,
+        ),
+        (
+            "callable-carried scalar reference",
+            r#"mode opt
+fn read(value: &'a Int) -> Int:
+    *value
+fn apply(f: fn(&'a Int) -> Int, value: &'a Int) -> Int:
+    f(value)
+fn main(console: Console):
+    let value = 1
+    console.print("${apply(read, &value)}")
+"#,
+        ),
+    ] {
+        let checked = witchy::resolve_std_only_checked(source)
+            .unwrap_or_else(|error| panic!("{label} must reach canonical fail-closed admission: {error}"));
+        let refusal = codegen::compile_checked_module_artifact(&checked)
+            .expect_unsupported(label);
+        assert!(
+            refusal.message.contains("unsupported") || refusal.message.contains("canonical"),
+            "{label}: {refusal}"
+        );
+    }
 }
 
 #[test]

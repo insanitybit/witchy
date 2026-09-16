@@ -284,6 +284,18 @@ fn project_layouts(
             }
             other => projection.visit_type(other)?,
         }
+        // The checked callable table intentionally erases loan syntax from
+        // scalar carriers.  Preserve the independently checked source
+        // declaration long enough to project the addressable scalar root
+        // required by a direct `&Int` ABI.
+        for parameter in &function.params {
+            if let Some(ty) = &parameter.ty {
+                projection.visit_type(ty)?;
+            }
+        }
+        if let Some(result) = &function.ret {
+            projection.visit_type(result)?;
+        }
 
         witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
             projection.visit_expression(
@@ -350,6 +362,16 @@ impl LayoutProjection {
     }
 
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
+        // Qualifiers are intentionally erased from ordinary physical layout
+        // identities. A direct shared scalar reference is the exception: it
+        // requires an addressable scalar root even though the unqualified
+        // scalar value itself is otherwise carried inline.
+        if let Type::Qualified(ast::TypeQual::Borrow(_), inner) = ty
+            && scalar_kind_of(inner) == Some(ScalarKind::Int)
+        {
+            self.roots.push(inner.as_ref().clone());
+            return Ok(());
+        }
         let key = canonical_layout_type(ty, &self.definitions);
         if self.visited.contains(&key) || !self.visiting.insert(key.clone()) {
             return Ok(());

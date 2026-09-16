@@ -1310,12 +1310,34 @@ fn checked_signature(
         }
         error
     })?;
-    let value_parameters = checked_signature.parameters;
-    let contract_parameters = checked_signature.contract.parameters;
-    let parameter_effects = checked_signature.contract.parameter_effects;
+    if function.ret.as_ref().is_some_and(|result| {
+        shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_int(inner))
+    }) {
+        return Err(CanonicalLoweringError::UnsupportedType(
+            function.ret.clone().expect("checked above"),
+        ));
+    }
+    let mut value_parameters = checked_signature.parameters;
+    let mut contract_parameters = checked_signature.contract.parameters;
+    let mut parameter_effects = checked_signature.contract.parameter_effects;
     for (parameter_index, ((parameter, source), convention)) in
         parameters.iter().zip(&function.params).zip(conventions).enumerate()
     {
+        if source.ty.as_ref().is_some_and(|ty| {
+            shared_reference_parts(ty).is_some_and(|(_, inner)| is_direct_shared_int(inner))
+        }) {
+            let value_type = ValueType::Ref(scalar_reference_layout(
+                layout_bundle,
+                layouts,
+                ScalarKind::Int,
+            )?);
+            value_parameters[parameter_index] = value_type;
+            contract_parameters[parameter_index] = ParameterContract {
+                value_type,
+                ownership: ParameterOwnership::Value,
+            };
+            parameter_effects.insert(parameter_index as u32, vec![MemoryEffect::Read]);
+        }
         if matches!(convention, Convention::Own)
             && !ordinary_own_type_supported(parameter)
             && !matches!(value_parameters[parameter_index], ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Capability(_))
@@ -1371,7 +1393,13 @@ fn signature_from_type(
         // A checked aggregate layout carries the same owned token as a string
         // or closure. Deferred qualifiers were rejected above; mapping must
         // succeed before a reference can authorize this convention.
-        let value_type = source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?;
+        let value_type = if shared_reference_parts(parameter)
+            .is_some_and(|(_, inner)| is_direct_shared_int(inner))
+        {
+            ValueType::Ref(scalar_reference_layout(layout_bundle, layouts, ScalarKind::Int)?)
+        } else {
+            source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions)?
+        };
         if matches!(convention, Convention::Own)
             && !ordinary_own_type_supported(parameter)
             && !matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_) | ValueType::Capability(_))
@@ -1414,6 +1442,11 @@ fn signature_from_type(
     }
     let result_type = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
     let mut results = (!is_unit(result_type)).then_some(result_type).into_iter().collect::<Vec<_>>();
+    if shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_int(inner)) {
+        // This slice has frame/cell provenance for direct borrowed inputs, but
+        // does not yet transport that provenance in result contracts.
+        return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone()));
+    }
     let alias_parameter = unique_shared_alias_parameter(parameters, result)?;
     let mut result_contracts = if let Some(parameter) = alias_parameter {
         let ValueType::Ref(layout) = result_type else {
@@ -1460,7 +1493,8 @@ fn var_parameter_type(ty: &Type, convention: Convention) -> Type {
 fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
-        Type::Qualified(TypeQual::Borrow(_), inner) if is_direct_shared_string(inner) => false,
+        Type::Qualified(TypeQual::Borrow(_), inner)
+            if is_direct_shared_string(inner) || is_direct_shared_int(inner) => false,
         Type::Qualified(TypeQual::Borrow(_), _) => true,
         Type::Qualified(
             TypeQual::Unique
@@ -1538,6 +1572,13 @@ fn is_direct_shared_string(ty: &Type) -> bool {
     matches!(
         ty.unqualified(),
         Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+    )
+}
+
+fn is_direct_shared_int(ty: &Type) -> bool {
+    matches!(
+        ty.unqualified(),
+        Type::Named(name, arguments) if name == "Int" && arguments.is_empty()
     )
 }
 
@@ -2290,6 +2331,43 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Option<&witchy_wir::layout::LayoutDescriptor> {
         let physical = self.layouts.resolve_nominal(layout).ok()?;
         self.layouts.get(physical)
+    }
+
+    fn is_scalar_reference(&self, value: ValueId, scalar: ScalarKind) -> bool {
+        let Some(ValueType::Ref(layout)) = self.values.get(&value).copied() else {
+            return false;
+        };
+        self.physical_descriptor(layout)
+            .is_some_and(|descriptor| descriptor.kind() == &LayoutKind::Scalar(scalar))
+    }
+
+    fn materialize_scalar_reference(
+        &mut self,
+        value: ValueId,
+        scalar: ScalarKind,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = scalar_reference_layout(self.layout_bundle, self.layouts, scalar)?;
+        let Some(LayoutSize::Fixed(bytes)) = self.physical_descriptor(layout).map(|descriptor| descriptor.size()) else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("scalar reference layout"));
+        };
+        let object = self.fresh(ValueType::Ref(layout))?;
+        self.push_operation(Operation::Alloc {
+            destination: object,
+            layout,
+            extent: witchy_wir::canonical_safewir::Extent::FixedBytes(u64::from(bytes)),
+            class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+        });
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                object,
+                Projection::Field { index: 0 },
+                self.values[&value],
+                AccessMode::Write,
+            ),
+            value,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        Ok(object)
     }
 }
 
@@ -7064,6 +7142,15 @@ impl FunctionLowerer<'_> {
                         actual,
                     });
                 }
+                // A direct shared scalar reference is an immutable address
+                // value, not an owned token. The checked signature and exact
+                // scalar-cell layout establish that ABI independently of the
+                // source convention spelling retained by type checking.
+                if contract.ownership == ParameterOwnership::Value
+                    && self.is_scalar_reference(value, ScalarKind::Int)
+                {
+                    return Ok(CallArgument::Value(value));
+                }
                 match conventions[parameter] {
                     Convention::Own => match contract.ownership {
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
@@ -7103,7 +7190,11 @@ impl FunctionLowerer<'_> {
                                     callee: callee.to_owned(), parameter, ownership: contract.ownership,
                                 });
                             }
-                            Ok(CallArgument::Move(value))
+                            if self.is_scalar_reference(value, ScalarKind::Int) {
+                                Ok(CallArgument::Value(value))
+                            } else {
+                                Ok(CallArgument::Move(value))
+                            }
                         }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         // A string literal cannot be cloned or moved as a token;
@@ -10474,10 +10565,25 @@ impl FunctionLowerer<'_> {
             (UnOp::Neg | UnOp::Not | UnOp::BitNot, _) => {
                 Err(CanonicalLoweringError::UnsupportedExpression("unary operand type"))
             }
+            (UnOp::Borrow, ValueType::Int) => self.materialize_scalar_reference(operand, ScalarKind::Int),
             (UnOp::Borrow, ValueType::Ref(_)) => self.clone_reference_token(operand),
             (UnOp::Borrow, _) => Err(CanonicalLoweringError::UnsupportedExpression("shared borrow operand")),
             (UnOp::BorrowMut, _) => {
                 Err(CanonicalLoweringError::UnsupportedExpression("mutable borrow"))
+            }
+            (UnOp::Deref, ValueType::Ref(_)) if self.is_scalar_reference(operand, ScalarKind::Int) => {
+                let destination = self.fresh(ValueType::Int)?;
+                self.push_operation(Operation::Load {
+                    destination,
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        operand,
+                        Projection::Field { index: 0 },
+                        ValueType::Int,
+                        AccessMode::Read,
+                    ),
+                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
+                });
+                Ok(destination)
             }
             (UnOp::Deref, ValueType::Ref(_)) => self.clone_reference_token(operand),
             (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference operand")),
@@ -14853,6 +14959,13 @@ fn source_value_type(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<ValueType, CanonicalLoweringError> {
+    if matches!(source, Type::Qualified(TypeQual::Borrow(_), inner)
+        if matches!(inner.unqualified(), Type::Named(name, arguments)
+            if name == "Int" && arguments.is_empty()))
+    {
+        return scalar_reference_layout(layout_bundle, layouts, ScalarKind::Int)
+            .map(ValueType::Ref);
+    }
     if let Some(owner) = closure_layouts.opaque_type(source, definitions) {
         return Ok(ValueType::Gc(owner));
     }
@@ -14931,6 +15044,25 @@ fn source_value_type(
         }
         _ => scalar_type(source),
     }
+}
+
+fn scalar_reference_layout(
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+    scalar: ScalarKind,
+) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
+    layout_bundle
+        .roots()
+        .iter()
+        .copied()
+        .find(|layout| {
+            layouts
+                .resolve_nominal(*layout)
+                .ok()
+                .and_then(|physical| layouts.get(physical))
+                .is_some_and(|descriptor| descriptor.kind() == &LayoutKind::Scalar(scalar))
+        })
+        .ok_or_else(|| CanonicalLoweringError::MissingLayout(Type::Named("Int".into(), Vec::new())))
 }
 
 /// The interned record layout whose slots are exactly `expected_fields`: a
