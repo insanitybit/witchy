@@ -5196,15 +5196,18 @@ impl FunctionLowerer<'_> {
         // does not carry.
         let rebound = self.loop_rebindings_with_write_backs(body);
         let mut names = loop_lane_names(&outer, &rebound);
-        // A dynamic object and its extent cross the loop header as one state
-        // tuple. Calls and nested joins may refine or demote that state on the
-        // backedge even when source syntax does not rebind the name.
-        let tracked_names = outer
+        // An immutable exact-extent object crosses the loop as one
+        // reference/count/capacity tuple. Mutable-capacity objects remain on
+        // the existing conservative path unless source semantics rebind them.
+        let invariant_names = outer
             .iter()
-            .filter_map(|(name, object)| self.tracked_lanes(*object).is_some().then(|| name.clone()))
+            .filter_map(|(name, object)| {
+                (!names.contains(name)
+                    && self.tracked_lanes(*object).is_some_and(|(count, capacity)| count == capacity)
+                    && self.known_shared_value(*object))
+                    .then(|| name.clone())
+            })
             .collect::<Vec<_>>();
-        let mentioned = crate::analysis::loop_mentions(condition, body, &tracked_names);
-        let invariant_names = mentioned.into_iter().filter(|name| !names.contains(name)).collect::<Vec<_>>();
         names.extend(invariant_names);
         names.sort();
         let list_names = names
@@ -6258,9 +6261,6 @@ impl FunctionLowerer<'_> {
         let ValueType::Ref(layout) = self.values[&value] else {
             return Ok(None);
         };
-        let prior_string_capacity = (string_layout == Some(layout) && !self.is_static_string(value))
-            .then(|| self.string_capacities.get(&value).copied())
-            .flatten();
         // A tracked list's count/capacity lanes are already authenticated by
         // its allocation or header guards.  Replacing those IDs with fresh
         // header loads at a result join loses the allocation proof for a
@@ -6296,36 +6296,11 @@ impl FunctionLowerer<'_> {
         self.reload_dynamic_extent(value)?;
         if string_layout == Some(layout) {
             if let Some(&count) = self.string_lengths.get(&value) {
-                let capacity = prior_string_capacity.unwrap_or(count);
-                if prior_string_capacity.is_some() {
-                    let maximum = self.fresh(ValueType::Size)?;
-                    self.push_operation(Operation::ConstSize {
-                        destination: maximum,
-                        value: u64::from(u32::MAX - 4),
-                    });
-                    let capacity_fits = self.fresh(ValueType::Bool)?;
-                    self.push_operation(Operation::Compare {
-                        destination: capacity_fits,
-                        operator: ComparisonOperator::LessEqualUnsigned,
-                        left: capacity,
-                        right: maximum,
-                    });
-                    self.push_operation(Operation::Guard {
-                        condition: capacity_fits,
-                        kind: witchy_wir::canonical_safewir::GuardKind::Arithmetic,
-                    });
-                    let count_fits = self.fresh(ValueType::Bool)?;
-                    self.push_operation(Operation::Compare {
-                        destination: count_fits,
-                        operator: ComparisonOperator::LessEqualUnsigned,
-                        left: count,
-                        right: capacity,
-                    });
-                    self.push_operation(Operation::Guard {
-                        condition: count_fits,
-                        kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-                    });
-                }
+                // A join forgets allocation slack. Logical length is always a
+                // valid conservative capacity bound, travels with the fresh
+                // authenticated count, and makes later mutation reallocate
+                // rather than rely on a non-dominating capacity definition.
+                let capacity = count;
                 self.string_capacities.insert(value, capacity);
                 return Ok(Some(AuthenticatedExtentLane {
                     family: DynamicExtentFamily::String,

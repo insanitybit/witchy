@@ -427,28 +427,8 @@ impl<'a> MemoryChecker<'a> {
         let mut objects = BTreeMap::new();
         for (value, state) in &self.state.objects {
             let original_value = *value;
-            // An invariant shared object can carry its old counted extent and
-            // a fresh authenticated length load through different scalar phi
-            // lanes. Canonicalize the remapped extent to the header lane: the
-            // immutable object cannot change length, and retaining the stale
-            // lane would make later joins forget an otherwise proven extent.
-            // Capacity reads are not interchangeable with logical length.
-            let remapped_header_count = (state.ownership == Ownership::Shared
-                && state.shared_immutable)
-                .then(|| {
-                    let Extent::Counted { count, .. } = state.extent else { return None };
-                    let loaded = self.state.header_values.get(&(original_value, HeaderField::Length))?;
-                    Self::same_scalar_in(&self.state, count, *loaded)
-                        .then(|| remap_value(&renames, *loaded))
-                })
-                .flatten();
             let mut state = state.clone();
             state.extent = remap_extent(&renames, &state.extent);
-            if let (Some(remapped), Extent::Counted { count, .. }) =
-                (remapped_header_count, &mut state.extent)
-            {
-                *count = remapped;
-            }
             let value = remap_value(&renames, original_value);
             if let Some(identity) = unique_phi_rebases.get(&original_value) {
                 state.identity = *identity;
@@ -5949,78 +5929,6 @@ mod tests {
             assert!(matches!(joined.objects[&SOURCE].extent, Extent::Counted { count: COUNT, capacity: COUNT, .. }));
             assert_eq!(joined.objects[&SOURCE].ownership, Ownership::Shared);
             assert_eq!(joined.objects[&SOURCE].identity, SOURCE);
-        });
-    }
-
-    #[test]
-    fn invariant_shared_extent_uses_authenticated_length_phi_lane() {
-        with_checker_capacity(true, 4, |checker, list| {
-            checker.state.constants.clear();
-            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
-            source.ownership = Ownership::Shared;
-            source.shared_immutable = true;
-            checker.check(&Operation::Load {
-                destination: LENGTH,
-                place: Place::projected(
-                    SOURCE,
-                    Projection::Header(HeaderField::Length),
-                    ValueType::Size,
-                    AccessMode::Read,
-                ),
-                transfer: LoadTransfer::CopyScalar,
-            }).expect("authenticated length reload");
-
-            let mut target = shared_extent_target(list);
-            target.parameters.remove(0);
-            target.parameters.push(crate::canonical_safewir::BlockParameter {
-                value: ValueId::new(102),
-                value_type: ValueType::Size,
-                ownership: None,
-            });
-            let edge = checker.transfer_edge(&target, &[LENGTH, COUNT, CAPACITY])
-                .expect("invariant object crosses scalar-only phi");
-            assert!(matches!(edge.objects[&SOURCE].extent,
-                Extent::Counted {
-                    count,
-                    capacity,
-                    ..
-                } if count == ValueId::new(100) && capacity == ValueId::new(102)));
-        });
-    }
-
-    #[test]
-    fn invariant_shared_extent_does_not_use_capacity_phi_as_length() {
-        with_checker_capacity(true, 4, |checker, list| {
-            checker.state.constants.clear();
-            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
-            source.ownership = Ownership::Shared;
-            source.shared_immutable = true;
-            checker.check(&Operation::Load {
-                destination: LENGTH,
-                place: Place::projected(
-                    SOURCE,
-                    Projection::Header(HeaderField::Capacity),
-                    ValueType::Size,
-                    AccessMode::Read,
-                ),
-                transfer: LoadTransfer::CopyScalar,
-            }).expect("authenticated capacity reload");
-
-            let mut target = shared_extent_target(list);
-            target.parameters.remove(0);
-            target.parameters.push(crate::canonical_safewir::BlockParameter {
-                value: ValueId::new(102),
-                value_type: ValueType::Size,
-                ownership: None,
-            });
-            let edge = checker.transfer_edge(&target, &[LENGTH, COUNT, CAPACITY])
-                .expect("capacity lane remains distinct");
-            assert!(matches!(edge.objects[&SOURCE].extent,
-                Extent::Counted {
-                    count,
-                    capacity,
-                    ..
-                } if count == ValueId::new(101) && capacity == ValueId::new(102)));
         });
     }
 
