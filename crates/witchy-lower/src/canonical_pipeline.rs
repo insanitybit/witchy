@@ -755,7 +755,7 @@ pub(crate) mod tests {
 
     #[test]
     fn own_list_forwarded_entry_parameter_reaches_admitted_execution() {
-        let source = "fn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn forward(own xs: List(Int)) -> Int:\n    let ys = identity(xs)\n    ys[0]\nfn main() -> Int:\n    forward([42])\n";
+        let source = "mode opt\n\nfn identity(own xs: List(Int)) -> List(Int):\n    xs\nfn forward(own xs: List(Int)) -> Int:\n    let ys = identity(xs)\n    ys[0]\nfn main() -> Int:\n    forward([42])\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
             "main",
