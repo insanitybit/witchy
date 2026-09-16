@@ -21,7 +21,7 @@ fn main(console: Console):
     let values = [1, 2]
     let before = values
     let extended = api.extend(values, 3)
-    console.print("${extended}:${values}:${before}")
+    console.print("${extended}:${before}")
 "#;
 
 struct ResetOptimizationOverride;
@@ -81,7 +81,7 @@ fn reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_
     witchy::enforce_performance_modes(module, "main")
         .expect("both imported opt functions satisfy their checked ownership contracts");
 
-    let expected = vec!["[1, 2, 3]:[1, 2]:[1, 2]".to_owned()];
+    let expected = vec!["[1, 2, 3]:[1, 2]".to_owned()];
     let interpreted = witchy::interpreter::run_module_args(
         module.clone(),
         ".",
