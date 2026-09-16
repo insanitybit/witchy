@@ -50,6 +50,22 @@ fn main(console: Console):
     console.print("${read_tail(&value, 300000)}")
 "#;
 
+const DIRECT_SHARED_BYTES_CALL: &str = r#"mode opt
+
+import bytes
+
+fn length_tail(data: &'a Bytes, remaining: Int) -> Int:
+    if remaining == 0:
+        bytes.length(*data)
+    else:
+        length_tail(data, remaining - 1)
+
+fn main(console: Console):
+    let data = bytes.from_string("safe")
+    console.print("${length_tail(&data, 300000)}")
+    console.print(bytes.to_string(data))
+"#;
+
 const LEGACY_MUTABLE_PARAMETER: &str = r#"mode opt
 
 import borrow
@@ -170,6 +186,70 @@ fn direct_shared_int_tail_call_launches_exact_admitted_bytes() {
         .expect("interpret tail shared Int fixture");
     assert_eq!(interpreted, ["42"]);
     assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
+fn direct_shared_bytes_call_launches_exact_admitted_bytes() {
+    let checked = witchy::resolve_std_only_checked(DIRECT_SHARED_BYTES_CALL)
+        .expect("direct shared Bytes fixture must resolve and type-check");
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret direct shared Bytes fixture");
+    assert_eq!(interpreted, ["4", "safe"]);
+    assert_eq!(compiled_output(&checked), interpreted);
+}
+
+#[test]
+fn shared_bytes_forms_outside_the_direct_whole_object_slice_refuse() {
+    for (label, source) in [
+        (
+            "mutable Bytes reference",
+            r#"mode opt
+import bytes
+fn length(data: &'a mut Bytes) -> Int:
+    bytes.length(*data)
+fn main(console: Console):
+    var data = bytes.from_string("x")
+    console.print("${length(&mut data)}")
+"#,
+        ),
+        (
+            "callable-carried Bytes reference",
+            r#"mode opt
+import bytes
+fn length(data: &'a Bytes) -> Int:
+    bytes.length(*data)
+fn apply(f: fn(&'a Bytes) -> Int, data: &'a Bytes) -> Int:
+    f(data)
+fn main(console: Console):
+    let data = bytes.from_string("x")
+    console.print("${apply(length, &data)}")
+"#,
+        ),
+        (
+            "ambiguous Bytes result owner",
+            r#"mode opt
+import bytes
+fn choose(left: &'a Bytes, right: &'a Bytes, flag: Bool) -> &'a Bytes:
+    if flag:
+        left
+    else:
+        right
+fn main(console: Console):
+    let left = bytes.from_string("left")
+    let right = bytes.from_string("right")
+    console.print(bytes.to_string(*choose(&left, &right, true)))
+"#,
+        ),
+    ] {
+        let checked = witchy::resolve_std_only_checked(source)
+            .unwrap_or_else(|error| panic!("{label} must reach canonical fail-closed admission: {error}"));
+        let refusal = codegen::compile_checked_module_artifact(&checked)
+            .expect_unsupported(label);
+        assert!(
+            refusal.message.contains("unsupported") || refusal.message.contains("canonical"),
+            "{label}: {refusal}"
+        );
+    }
 }
 
 #[test]

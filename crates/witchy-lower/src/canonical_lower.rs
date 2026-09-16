@@ -1317,6 +1317,24 @@ fn checked_signature(
             function.ret.clone().expect("checked above"),
         ));
     }
+    if let Some(result) = function.ret.as_ref().filter(|result| {
+        shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_buffer(inner))
+    }) {
+        // Authenticate result provenance from the exact source declaration.
+        // Checked callable normalization may merge lifetime variables, but it
+        // must not turn two possible physical owners into one alias contract.
+        let declared_parameters = function
+            .params
+            .iter()
+            .map(|parameter| {
+                parameter
+                    .ty
+                    .clone()
+                    .ok_or_else(|| CanonicalLoweringError::UnsupportedType(result.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        unique_shared_alias_parameter(&declared_parameters, result)?;
+    }
     let mut value_parameters = checked_signature.parameters;
     let mut contract_parameters = checked_signature.contract.parameters;
     let mut parameter_effects = checked_signature.contract.parameter_effects;
@@ -1510,7 +1528,7 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
         Type::Qualified(TypeQual::Borrow(_), inner)
-            if is_direct_shared_string(inner) || is_direct_shared_int(inner) => false,
+            if is_direct_shared_buffer(inner) || is_direct_shared_int(inner) => false,
         Type::Qualified(TypeQual::Borrow(_), _) => true,
         Type::Qualified(
             TypeQual::Unique
@@ -1584,10 +1602,11 @@ fn unique_shared_alias_parameter(
     Ok(Some(parameter))
 }
 
-fn is_direct_shared_string(ty: &Type) -> bool {
+fn is_direct_shared_buffer(ty: &Type) -> bool {
     matches!(
         ty.unqualified(),
-        Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+        Type::Named(name, arguments)
+            if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty()
     )
 }
 
