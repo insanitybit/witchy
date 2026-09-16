@@ -5265,18 +5265,6 @@ impl FunctionLowerer<'_> {
             self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
             metadata_index += 2;
         }
-        // The token itself dominates the loop, but its counted extent can meet
-        // down at the backedge. Reauthenticate invariant headers inside the
-        // header; carried references use their explicit metadata lanes.
-        let invariant_extents = outer.iter()
-            .filter(|(name, object)| !names.contains(name) && self.tracked_lanes(**object).is_some())
-            .map(|(_, object)| *object)
-            .collect::<BTreeSet<_>>();
-        for object in &invariant_extents {
-            self.invalidate_dynamic_count(*object);
-            self.ensure_list_extent(*object)?;
-            self.ensure_string_extent(*object)?;
-        }
         let condition = self.lower_expr(condition)?;
         if self.values[&condition] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
@@ -5326,9 +5314,6 @@ impl FunctionLowerer<'_> {
                 || self.list_counts.get(object) != facts.list_counts.get(object)
         }).collect::<BTreeSet<_>>();
         self.restore_facts(facts, exit);
-        for object in invariant_extents {
-            self.invalidate_dynamic_count(object);
-        }
         for object in invalidated_counts {
             self.invalidate_dynamic_count(object);
         }
