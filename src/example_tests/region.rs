@@ -26,15 +26,17 @@ use crate::{ast, codegen, parser, typeck};
         }
     }
 
-    /// Misusing the ownership conventions is rejected up front by the type checker
-    /// (so the same program fails on every backend, never just native): using a
-    /// value after it was consumed by `own`, or after `move`. A bare `let` borrow
-    /// imposes no such restriction.
+    /// Normal mode may adapt an `own` argument by copying, while `mode opt`
+    /// exposes the transfer cost and explicit `move` consumes in every mode.
+    /// A bare `let` borrow imposes no restriction.
     #[test]
     fn conventions_reuse_after_move_rejected() {
-        // Reuse after an `own` parameter consumes it.
+        // Normal mode may prepare an independent owned value.
         let after_own = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    c.print(\"${drain(d)}\")\n    c.print(\"${list.length(d)}\")\n";
-        let e1 = typeck::check_str(after_own).expect_err("reuse after own should fail");
+        typeck::check_str(after_own).expect("normal mode may reuse after owned adaptation");
+        // Optimized code requires the transfer to remain explicit in its cost model.
+        let optimized = format!("mode opt\n\n{after_own}");
+        let e1 = typeck::check_str(&optimized).expect_err("opt reuse after own should fail");
         assert!(e1.to_string().contains("after it was moved"), "got: {e1:?}");
         // Reuse after an explicit `move`.
         let after_move = "fn drain(own xs: List(Int)) -> Int:\n    list.length(xs)\nfn main(c: Console):\n    let d = [1, 2, 3]\n    c.print(\"${drain(move d)}\")\n    c.print(\"${list.length(d)}\")\n";
