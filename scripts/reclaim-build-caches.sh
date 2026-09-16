@@ -134,12 +134,24 @@ while IFS= read -r wt; do
     done
     [ "$has_cache" -eq 1 ] || continue
 
-    branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo DETACHED)"
-    dirty="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
-    # The queue rebases, so a landed branch is never an ancestor of master --
-    # patch-equivalence is the only honest test.
-    unlanded="$(git -C "$wt" cherry master HEAD 2>/dev/null | grep -c '^+' || true)"
-    unlanded="${unlanded//[!0-9]/}"; unlanded="${unlanded:-0}"
+    # A registered worktree whose checkout is gone (the directory was wiped
+    # and reused, leaving only caches) has no branch state to consult, and
+    # asking git about it aborts the whole run. Judge its caches by age
+    # alone, on the orphan threshold, like a standalone cache.
+    if git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+        gone=0
+        branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo DETACHED)"
+        dirty="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        # The queue rebases, so a landed branch is never an ancestor of master --
+        # patch-equivalence is the only honest test.
+        unlanded="$(git -C "$wt" cherry master HEAD 2>/dev/null | grep -c '^+' || true)"
+        unlanded="${unlanded//[!0-9]/}"; unlanded="${unlanded:-0}"
+    else
+        gone=1
+        branch=GONE
+        dirty=0
+        unlanded=0
+    fi
 
     for t in "$wt"/target*; do
         [ -d "$t" ] || continue
@@ -149,7 +161,9 @@ while IFS= read -r wt; do
             state=LIVE
         elif [ "$base" = target ] && [ "$include_clones" -eq 0 ]; then
             state=CLONE
-        elif [ "$(( (now - $(stat -f %m "$t")) / 3600 ))" -lt "$min_age_hours" ]; then
+        elif [ "$gone" -eq 1 ] && [ "$(( (now - $(stat -f %m "$t")) / 3600 ))" -lt "$orphan_min_age_hours" ]; then
+            state=RECENT
+        elif [ "$gone" -eq 0 ] && [ "$(( (now - $(stat -f %m "$t")) / 3600 ))" -lt "$min_age_hours" ]; then
             state=RECENT
         elif [ -n "$queued_branches" ] && grep -qxF -- "$branch" <<<"$queued_branches"; then
             state=QUEUED
