@@ -987,6 +987,7 @@ if capability_imports.contains("build_out_write_at") {
             &function.body,
             function_id,
             u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            is_opt_function(&function.name, &typed.module().modes),
             Vec::new(),
             &lambda_names,
             signature,
@@ -1033,6 +1034,7 @@ if capability_imports.contains("build_out_write_at") {
             lambda.body,
             lambda.function_id,
             lambda.item_index,
+            is_opt_function(&lambda.synthesized.name, &typed.module().modes),
             lambda.lambda_path.clone(),
             &lambda_names,
             signature,
@@ -1547,6 +1549,13 @@ fn write_back_count(signature: &FunctionSignature) -> usize {
         .count()
 }
 
+fn is_opt_function(name: &str, modes: &[String]) -> bool {
+    if let Some((module, _)) = name.split_once('.') {
+        return modes.iter().any(|mode| mode == &format!("@opt:{module}"));
+    }
+    modes.iter().any(|mode| mode == "opt")
+}
+
 fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
     let ty = ty.unqualified();
     match ty {
@@ -1572,6 +1581,7 @@ fn lower_function(
     body: &witchy_syntax::ast::Block,
     id: FunctionId,
     item: u32,
+    opt_mode: bool,
     lambda_path: Vec<ProperTailPathStep>,
     lambda_names: &HashMap<usize, String>,
     signature: &FunctionSignature,
@@ -1618,6 +1628,7 @@ fn lower_function(
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
+        opt_mode,
         functions,
         checked_parameter_conventions,
         signatures,
@@ -2134,6 +2145,10 @@ struct FunctionLowerer<'a> {
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
+    /// Whether the source function is governed by `mode opt`. Ordinary
+    /// functions may materialize owned copies at an `own` call boundary;
+    /// optimized functions and explicit moves transfer the existing token.
+    opt_mode: bool,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
     checked_parameter_conventions: &'a HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &'a [FunctionSignature],
@@ -6952,6 +6967,13 @@ impl FunctionLowerer<'_> {
                         // callee a fresh reference-counted copy instead.
                         if self.is_static_string(value) {
                             let owned = self.clone_string_for_storage(value)?;
+                            return Ok(CallArgument::Move(owned));
+                        }
+                        if !self.opt_mode
+                            && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
+                        {
+                            let source_type = self.expression_type(argument)?;
+                            let owned = self.owned_for_storage(value, &source_type)?;
                             return Ok(CallArgument::Move(owned));
                         }
                         // The authenticated source `own` convention transfers
