@@ -1856,6 +1856,19 @@ fn mentions_in_expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>)
     expr(e, accs, out)
 }
 
+/// Outer binding names referenced by a loop condition or body. Canonical
+/// SafeWIR uses this to make only participating dynamic objects explicit CFG
+/// state; merely-live outer collections must not acquire unrelated phi lanes.
+pub(crate) fn loop_mentions(condition: &Expr, body: &Block, candidates: &[String]) -> Vec<String> {
+    let candidates = candidates.iter().cloned().collect::<HashSet<_>>();
+    let mut mentioned = HashSet::default();
+    expr(condition, &candidates, &mut mentioned);
+    lambda_mentions(body, &candidates, &mut mentioned);
+    let mut mentioned = mentioned.into_iter().collect::<Vec<_>>();
+    mentioned.sort();
+    mentioned
+}
+
 fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
         match e {
             Expr::Var(v) => {

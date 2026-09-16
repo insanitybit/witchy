@@ -5196,12 +5196,20 @@ impl FunctionLowerer<'_> {
         // does not carry.
         let rebound = self.loop_rebindings_with_write_backs(body);
         let mut names = loop_lane_names(&outer, &rebound);
+        // A dynamic object and its extent cross the loop header as one state
+        // tuple. Calls and nested joins may refine or demote that state on the
+        // backedge even when source syntax does not rebind the name.
+        let tracked_names = outer
+            .iter()
+            .filter_map(|(name, object)| self.tracked_lanes(*object).is_some().then(|| name.clone()))
+            .collect::<Vec<_>>();
+        let mentioned = crate::analysis::loop_mentions(condition, body, &tracked_names);
+        let invariant_names = mentioned.into_iter().filter(|name| !names.contains(name)).collect::<Vec<_>>();
+        names.extend(invariant_names);
+        names.sort();
         let list_names = names
             .iter()
-            .filter_map(|name| {
-                let object = outer[name];
-                self.tracked_lanes(object).is_some().then(|| name.clone())
-            })
+            .filter_map(|name| self.tracked_lanes(outer[name]).is_some().then(|| name.clone()))
             .collect::<Vec<_>>();
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("while list capacity state"));
