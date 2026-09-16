@@ -344,7 +344,7 @@ itself; it is out of scope for this one and is not designed here.
   point: this RFC achieves a stronger structural result for the *guest* by giving
   it no ambient authority at all (an empty import set), rather than by hardening a
   language that has ambient authority by default.
-- [RFC-0006](./0006-compile-time-tagged-literals.md) — "Compile-time tagged
+- [RFC-0006](./0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) — "Compile-time tagged
   literals," the ergonomic `html` form for authoring views that this target
   ultimately runs.
 - [RFC-0008](./0008-frontend-framework-rune.md) — "A capability-pure

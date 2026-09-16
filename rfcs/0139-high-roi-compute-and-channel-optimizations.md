@@ -19,7 +19,7 @@ tracking: "Proposes four high-ROI performance tracks: Equivalent heterogeneous d
 
 ## Summary
 
-Following the completion of zero-allocation string slicing (`&'a str` / `&'a [T]`, [RFC-0122](0122-uniform-borrow-relations.md)), Witchy outperforms native Go in 5 major computational benchmarks (`expr_eval` 3.77x, `binary_trees` 1.45x, `dict_count` 1.31x, `record_build` 1.30x, `list_sum` 1.25x) and matches native Go floating-point math within 5% (`mandelbrot` 1.05x).
+Following the completion of zero-allocation string slicing (`&'a str` / `&'a [T]`, [RFC-0122](0167-witchy-language-contract.md#5-references-and-lifetimes)), Witchy outperforms native Go in 5 major computational benchmarks (`expr_eval` 3.77x, `binary_trees` 1.45x, `dict_count` 1.31x, `record_build` 1.30x, `list_sum` 1.25x) and matches native Go floating-point math within 5% (`mandelbrot` 1.05x).
 
 However, four distinct architectural bottlenecks cause Witchy to lag behind Go in specific workload domains:
 1. **Async Channel Multiplexing (`select_fanin` — 271.9x gap)**: Every `chan.select(a, b).await` allocates a temporary channel ID list `[ia, ib]`, a trampoline lambda closure, CPS continuation frames, and `Option((Int, __Msg))` enum envelopes.

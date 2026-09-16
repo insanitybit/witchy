@@ -1,7 +1,13 @@
 # RFC-0098 acceptance ledger
 
+> 2026-09-16 consolidation: this is historical evidence for the original
+> contract and recorded revisions, not the current language authority. See
+> [RFC-0167](0167-witchy-language-contract.md) and its
+> [open acceptance ledger](0167-acceptance-ledger.md). Old PROVEN labels do not
+> establish acceptance on the current canonical compiler route.
+
 This ledger is the checked-in completion record for
-[RFC-0098](0098-structural-record-width.md). A criterion becomes **DONE** only
+[RFC-0098](0167-witchy-language-contract.md#1-core-syntax). A criterion becomes **DONE** only
 after the cited executable evidence is on `master`; a clean worktree or queued
 branch is only **READY**.
 

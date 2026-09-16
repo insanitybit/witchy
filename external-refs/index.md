@@ -60,7 +60,7 @@ value semantics — plus the tracing-GC lineage we are choosing *not* to follow.
 - **FP²: Fully in-Place Functional Programming** — [`fip-fully-in-place-2023/`](fip-fully-in-place-2023/)
   (Lorenzen, Leijen, Swierstra; ICFP 2023). A linear calculus for when pure code
   runs with zero allocation (in-place) given unshared args. The static discipline
-  `mode opt` would enforce. → [`rfcs/performance-modes.md`](../rfcs/performance-modes.md) tiers 3 + 5.
+  `mode opt` would enforce. → [`rfcs/performance-modes.md`](../rfcs/0167-witchy-language-contract.md#6-normal-and-opt-interoperation) tiers 3 + 5.
 - **Implementation Strategies for Mutable Value Semantics** — [`mutable-value-semantics-2022/`](mutable-value-semantics-2022/)
   (Racordon, Shabalin, Zheng, Abrahams, Saeta; JOT 2022). The Hylo/Val basis —
   **witchy's design DNA**; `let`/`var`/`own` are Hylo's `let`/`inout`/`sink`. The

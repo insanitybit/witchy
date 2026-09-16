@@ -9,9 +9,9 @@ related:
   - "[0063](0063-strong-state-coherence-gate.md) (coherence gate)"
   - "[0067](0067-0-1-coherence-map.md) (ordering contract — this RFC closes its open decisions)"
   - "[0005](0005-unforgeable-capabilities.md) / externref-implementation-plan (decided IN, scoped)"
-  - "[0054](0054-structured-errors.md) (decided UN-DEFERRED)"
+  - "[0054](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction) (decided UN-DEFERRED)"
   - "[0066](0066-verified-passkey-2fa.md) (decided IN)"
-  - "[0087](0087-fused-mutators.md) (uniform var write-back - decided IN before 0.1)"
+  - "[0087](0167-witchy-language-contract.md#3-owned-values-and-calls) (uniform var write-back - decided IN before 0.1)"
 ---
 
 # RFC-0070: the 0.1 blocking set

@@ -33,7 +33,7 @@ value escape this scope?" / "is this binding uniquely owned here?" into **one
 confinement, liveness) computed once over the linked module, with every
 optimization re-expressed as a pure *consumer* that queries it. This is the
 enabling refactor for the rest of the performance-knob work
-([0025](0025-frozen-deep-immutability.md), [0026](0026-unique-qualifier.md),
+([0025](0167-witchy-language-contract.md#4-unique-and-frozen), [0026](0167-witchy-language-contract.md#4-unique-and-frozen),
 [0027](0027-packed-layouts-sroa.md)): once the substrate exists, a new knob is
 "raise a fact" or "add a consumer," not bespoke plumbing threaded through the
 lowerer.
@@ -56,7 +56,7 @@ representations:
 6. region copy-out's **watermark short-circuit** (`ptr < wm` ⇒ the value
    predates the region, return it without copying) — codegen `$rcopy`
 
-This is exactly the fragmentation that [ownership-analysis.md](ownership-analysis.md)
+This is exactly the fragmentation that [ownership-analysis.md](0167-witchy-language-contract.md#4-unique-and-frozen)
 already eliminated *once*, when it folded three separate eligibility whitelists
 plus an `expr_mentions` helper into a single uniqueness pass. The next
 consolidation is the same move at the next level up.
@@ -115,7 +115,7 @@ Frame  ⊑  Loop(n)  ⊑  Region(r)  ⊑  Call  ⊑  Module  ⊑  Escapes
 - `Loop(n)` — confined to loop body `n` (watermark-reset candidate).
 - `Region(r)` — confined to region `r` (the `region:` copy-out / reclaim story).
 - `Call` — may be returned to the immediate caller but no further by this
-  function (this is `local unique`'s confinement — see [0026](./0026-unique-qualifier.md)).
+  function (this is `local unique`'s confinement — see [0026](./0167-witchy-language-contract.md#4-unique-and-frozen)).
 - `Module` / `Escapes` — stored somewhere globally reachable / passed to an
   unknown callee.
 
@@ -178,7 +178,7 @@ this collects them behind one interface.
 ## Alternatives
 
 - **Do nothing / keep adding bespoke passes.** Each new knob
-  ([0025](0025-frozen-deep-immutability.md)–[0027](0027-packed-layouts-sroa.md))
+  ([0025](0167-witchy-language-contract.md#4-unique-and-frozen)–[0027](0027-packed-layouts-sroa.md))
   reimplements escape. The drift between six escape notions is already a latent
   source of soundness bugs (e.g. an escape the lambda scan sees but the region
   rule doesn't); more consumers make it worse. Rejected.
@@ -202,9 +202,9 @@ this collects them behind one interface.
 
 ## Prior art
 
-- [ownership-analysis.md](ownership-analysis.md) — the prior consolidation
+- [ownership-analysis.md](0167-witchy-language-contract.md#4-unique-and-frozen) — the prior consolidation
   (three whitelists → one pass) this RFC generalizes.
-- [performance-modes.md](performance-modes.md) §"The unified escape/fact analysis
+- [performance-modes.md](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) §"The unified escape/fact analysis
   framework" — proposes exactly this; this RFC is its detailed form.
 - Abstract interpretation (Cousot & Cousot): the analysis/transformation split.
 - Perceus (Koka) and Lean 4 FBIP: facts-driven reuse, the model for "optimization

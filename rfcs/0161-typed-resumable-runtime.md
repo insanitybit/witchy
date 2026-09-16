@@ -6,15 +6,15 @@ created: 2026-08-26
 supersedes:
   - "0152 (deterministic CSP ready paths), upon acceptance"
 predecessors:
-  - "[0129](0129-concurrency-tasks-and-channels.md) (current public concurrency contract)"
+  - "[0129](0167-witchy-language-contract.md#7-resources-effects-and-suspension) (current public concurrency contract)"
   - "[0059](0059-state-machine-async.md) (defunctionalized async segments and the typed-frame destination)"
-  - "[0055](0055-channel-message-types.md) (typed endpoints and the erased materialization boundary)"
+  - "[0055](0167-witchy-language-contract.md#7-resources-effects-and-suspension) (typed endpoints and the erased materialization boundary)"
 related:
   - "[0032](0032-multi-core-execution.md) (deterministic single-VM tasks and isolated parallel workers)"
   - "[0036](0036-bounding-the-async-executor.md) (capture ownership and recursive-drop constraints)"
   - "[0114](0114-must-consume-obligations.md) (static lifecycle obligations)"
-  - "[0127](0127-ownership-and-opt-mode.md) (value, move, and suspension ownership)"
-  - "[0130](0130-generators-and-iterators.md) (owned resumable frames and no-replay generator work)"
+  - "[0127](0167-witchy-language-contract.md#3-owned-values-and-calls) (value, move, and suspension ownership)"
+  - "[0130](0167-witchy-language-contract.md#7-resources-effects-and-suspension) (owned resumable frames and no-replay generator work)"
   - "[0135](0135-stable-semantics-converge.md) (interpreter and Wasm convergence)"
   - "[0154](0154-call-graph-specialization.md) (general closure and call specialization)"
 tracking: >
@@ -25,6 +25,12 @@ tracking: >
 ---
 
 # RFC-0161: Typed Resumable Runtime
+
+> 2026-09-16 consolidation: RFC-0167 retains the existing quiescence-based
+> surface and defers this proposal's must-start Task, scoped Child, explicit
+> channel-owner close, and selectable-operation changes. They are not parallel
+> normative language rules. Adoption must first amend RFC-0167 section 7.
+> The technical proposal and its acceptance obligations remain preserved.
 
 ## Summary
 

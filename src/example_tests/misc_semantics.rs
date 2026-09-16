@@ -24,7 +24,7 @@ use crate::{codegen, interpreter, parser, typeck};
         for root in ["std", "examples"] {
             collect(std::path::Path::new(root), ".witchy", &mut paths);
         }
-        for root in ["README.md", "book", "spec", "rfcs/performance-modes.md"] {
+        for root in ["README.md", "book", "spec", "rfcs/0167-witchy-language-contract.md"] {
             collect(std::path::Path::new(root), ".md", &mut paths);
         }
         paths.sort();

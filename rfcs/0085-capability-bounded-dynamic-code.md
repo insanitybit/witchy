@@ -23,8 +23,8 @@ authority remains granted, auditable, and enforceable.
 
 ## Motivation
 
-[RFC-0080](0080-structured-hygienic-metaprogramming.md) supplies deterministic compile-time generation.
-[RFC-0081](0081-existential-trait-values.md) and [RFC-0082](0082-runtime-dynamic-values.md)
+[RFC-0080](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) supplies deterministic compile-time generation.
+[RFC-0081](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction) and [RFC-0082](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)
 provide runtime polymorphism once code is linked. General-purpose dynamic systems
 also need to load implementations that were not part of the original compilation:
 
@@ -69,9 +69,9 @@ loader.load(l: ModuleLoader, module: CompiledModule,
             expected: Interface(T)) -> Result(Loaded(T), LoadError)
 ```
 
-`Interface(T)` is produced from an [RFC-0081](0081-existential-trait-values.md) existential trait or another closed
+`Interface(T)` is produced from an [RFC-0081](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction) existential trait or another closed
 typed export description through `meta.interface(T)`, a compile-time-resolved
-type-position operation analogous to [RFC-0082](0082-runtime-dynamic-values.md)'s `meta.runtime_type(T)`. Types do
+type-position operation analogous to [RFC-0082](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)'s `meta.runtime_type(T)`. Types do
 not become ordinary runtime values. Loading a bag of untyped global names is not
 the base API.
 
@@ -92,7 +92,7 @@ still omits every ungranted import, so analysis and runtime enforcement are
 independent layers.
 
 Passing data to loaded code grants no authority. Passing a capability is allowed
-only when the expected interface names its type and rights. [RFC-0082](0082-runtime-dynamic-values.md) `Dynamic`
+only when the expected interface names its type and rights. [RFC-0082](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) `Dynamic`
 cannot carry capabilities and therefore cannot smuggle one through an untyped
 argument.
 
@@ -109,7 +109,7 @@ is not observable and cannot weaken the grant. The default remains isolation.
 
 `Loaded(T)` owns the instance lifecycle. Dropping it closes resources and
 invalidates outstanding calls. Borrowed values cannot escape the instance unless
-materialized; [RFC-0083](0083-opt-mode-lifetimes.md) lifetimes describe synchronous borrowed call results only
+materialized; [RFC-0083](0167-witchy-language-contract.md#5-references-and-lifetimes) lifetimes describe synchronous borrowed call results only
 after a separate ABI design proves them safe.
 
 ### Provenance, reproducibility, and policy

@@ -420,8 +420,8 @@ built.
   by the `externref`'s backing grant unchanged.
 - [`secrets-design.md`](./secrets-design.md) — the `Secret` handle model whose
   `signing@0` fallback this RFC removes (#1).
-- [`ownership-analysis.md`](./ownership-analysis.md) /
-  [`performance-modes.md`](./performance-modes.md) — the in-place optimizer and
+- [`ownership-analysis.md`](./0167-witchy-language-contract.md#4-unique-and-frozen) /
+  [`performance-modes.md`](./0167-witchy-language-contract.md#6-normal-and-opt-interoperation) — the in-place optimizer and
   `mode opt` whose soundness this RFC removes from the security boundary.
 - The object-capability model (unforgeable references as the unit of authority);
   WASM reference types and the GC proposal (capabilities as host references the

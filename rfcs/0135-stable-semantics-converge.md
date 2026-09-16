@@ -250,7 +250,7 @@ implementation cut should update them together.
 
 - [RFC-0031](0031-simd-stdlib-hot-loops.md) already keeps the interpreter
   scalar and checks SIMD Wasm against the scalar result.
-- [RFC-0122](0122-uniform-borrow-relations.md) and
+- [RFC-0122](0167-witchy-language-contract.md#5-references-and-lifetimes) and
   `docs/agile-agent-playbook.md` already iterate Wasm-first with a named
   interpreter debt.
 - [oracle-only-migration](oracle-only-migration.md) already removed the

@@ -86,8 +86,8 @@ states as law for optimizations: **facts must live in local, typed
 declarations — not global censuses, allowlists, or string heuristics.** Here
 the fact is "what type is this expression", the declaration is typeck's
 inference judgment, and the string encoding is the heuristic to delete.
-[RFC-0043](0043-declared-mutation-writeback.md) applies the thesis to
-write-back; [RFC-0050](0050-method-call-generalization.md) to method syntax.
+[RFC-0043](0167-witchy-language-contract.md#3-owned-values-and-calls) applies the thesis to
+write-back; [RFC-0050](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction) to method syntax.
 
 ## Motivation
 
@@ -244,7 +244,7 @@ acceptance tests below:
    `index_of`/`position` `where a: Eq` bounds; they now monomorphize for
    record types on WASM. Gate: acceptance (c). The deletion of the `cmp.*`
    quadruplet is then a follow-up *cut* owned by
-   [RFC-0049](0049-naming-lexicon.md)/[RFC-0044](0044-std-error-policy.md)
+   [RFC-0049](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)/[RFC-0044](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)
    (shapes and bounds land here; names and deletions land there — 0044:136
    already freezes the quadruplet against double churn).
 4. **String-machinery deletion** + the misleading fallback error replaced by
@@ -278,7 +278,7 @@ by `at_loc`, and the LSP regexes line numbers back out of the message
 (`extract_line`, [`src/lsp.rs:359`](../src/lsp.rs)). Dispatch-on-the-table makes span-carrying
 errors *possible* (the table key is the expression; the expression knows its
 line), but threading spans through `TypeError` touches every error site and
-the LSP protocol surface — that is [RFC-0054](0054-structured-errors.md)'s
+the LSP protocol surface — that is [RFC-0054](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction)'s
 compiler-diagnostics half and is deliberately **out of scope** here, so this
 RFC's risk stays confined to dispatch. This RFC only commits to not making
 locations worse: diagnostics raised from dispatch carry at least the enclosing
@@ -341,7 +341,7 @@ say so:
 - Rust's trait resolution operates on the inference context's `Ty`, never on
   rendered type strings; the "shadow type system that re-parses its own
   pretty-printer" is a known anti-pattern this RFC exits.
-- The project's own typed-lowering keystone ([rfcs/language-evolution.md](language-evolution.md)
+- The project's own typed-lowering keystone ([rfcs/language-evolution.md](0167-witchy-language-contract.md#9-deliberate-changes-and-tradeoffs)
   Phase 0) built `annotate` for exactly this consumption; the five existing
   table fallback sites in traits.rs are its proof of concept.
 - CLAUDE.md's no-special-casing rule (and rfcs/0016's thesis): one general

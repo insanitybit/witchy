@@ -92,7 +92,7 @@ threads in the host; the executor schedules tasks onto a thread pool.
   "one owner, no other observer." Shared mutable linear memory across threads
   voids that proof globally unless every cross-thread value is provably immutable
   or uniquely transferred — i.e. it would require `frozen`/`unique`
-  ([0025](0025-frozen-deep-immutability.md)/[0026](0026-unique-qualifier.md)) to
+  ([0025](0167-witchy-language-contract.md#4-unique-and-frozen)/[0026](0167-witchy-language-contract.md#4-unique-and-frozen)) to
   become load-bearing *safety* qualifiers, not just contracts.
 - **Breaks the scalar/deterministic oracle.** The interpreter (the parity oracle)
   is single-threaded; there is no obvious way for it to reproduce true-parallel
@@ -146,7 +146,7 @@ the **type system** — i.e. Rust's `Send`/`Sync` or Pony's reference capabiliti
 for which witchy already has the machinery.
 
 - **Immutable data is shared by pointer across cores — zero races, zero copies.**
-  A `frozen` value ([0025](0025-frozen-deep-immutability.md)), or any value the
+  A `frozen` value ([0025](0167-witchy-language-contract.md#4-unique-and-frozen)), or any value the
   escape oracle ([0024](0024-unified-facts-lattice.md)) already proves is never
   mutated, is safe to read from many threads. That is most of a program's data.
 - **Mutable in-place buffers stay task-local — for free.** The uniqueness/escape
@@ -156,7 +156,7 @@ for which witchy already has the machinery.
   in-place / RC-floor / packed optimizations sound with no new proof obligation —
   they simply don't apply to cross-task values, which is correct.
 - **Channels move ownership** (`unique`/`own`,
-  [0026](0026-unique-qualifier.md)) to hand a mutable buffer between tasks.
+  [0026](0167-witchy-language-contract.md#4-unique-and-frozen)) to hand a mutable buffer between tasks.
 
 The mapping is exact: witchy `frozen` ≈ Pony `val` / Rust `Sync`; `unique`/`own`
 ≈ Pony `iso` / Rust `Send`; `var`/`let` ≈ `ref`/`box`. The qualifiers, today used

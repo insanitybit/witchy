@@ -82,13 +82,13 @@ the slowest run and the ground truth every other setting is diffed against.
 
 | name | optimization | off ⇒ | owning RFC |
 |---|---|---|---|
-| `inplace` | uniqueness-driven in-place mutation | copy-per-update | [ownership-analysis.md](ownership-analysis.md) |
-| `views` | confined zero-copy borrows | materialize to a copy | [RFC-0028](./0028-ergonomic-mutable-value-semantics.md) |
+| `inplace` | uniqueness-driven in-place mutation | copy-per-update | [ownership-analysis.md](0167-witchy-language-contract.md#4-unique-and-frozen) |
+| `views` | confined zero-copy borrows | materialize to a copy | [RFC-0028](./0167-witchy-language-contract.md#3-owned-values-and-calls) |
 | `sroa` | non-escaping aggregates in locals | heap-allocate | [RFC-0027](./0027-packed-layouts-sroa.md) |
 | `unbox` | packed/unboxed layouts | uniform boxed slot | [RFC-0027](./0027-packed-layouts-sroa.md) |
 | `rc-elide` | RC inc/dec/free elision to the floor | full RC every op | [RFC-0016](./0016-reference-counted-memory.md) |
-| `region` | region / loop-watermark reclamation | no early reclaim | [regions.md](regions.md) |
-| `fold` | AST const-fold + propagation | evaluate at runtime | [performance-modes.md](performance-modes.md) |
+| `region` | region / loop-watermark reclamation | no early reclaim | [regions.md](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) |
+| `fold` | AST const-fold + propagation | evaluate at runtime | [performance-modes.md](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) |
 | `wasm-opt` | Binaryen post-pass | skip it | [spec/performance.md](../spec/performance.md) |
 | `direct-call` | direct call when target is statically known | `call_indirect` | [spec/performance.md](../spec/performance.md) |
 
@@ -121,7 +121,7 @@ for each program P in the differential corpus:
 - Generalizes the existing forced-copy oracle from one optimization to all of
   them with no new env vars.
 - A new optimization is **not done** until it is in the registry and passes
-  `-O == all`. This is the gate clause [RFC-0029](./0029-performance-tier-contract.md) step 0 enforces.
+  `-O == all`. This is the gate clause [RFC-0029](./0167-witchy-language-contract.md#6-normal-and-opt-interoperation) step 0 enforces.
 - **Mode-opt equivalence** rides the same harness: an `opt`-mode program and its
   normal-mode twin must produce identical output (a mode changes implementation,
   never behavior).
@@ -146,7 +146,7 @@ assert stats(opt_centroid).allocs == 0             # SROA + packed worked
 assert stats(server_soak).peak_heap < BUDGET       # never-OOM holds
 ```
 
-This is what turns [RFC-0029](./0029-performance-tier-contract.md)'s scorecard from a hope into a regression suite, and it
+This is what turns [RFC-0029](./0167-witchy-language-contract.md#6-normal-and-opt-interoperation)'s scorecard from a hope into a regression suite, and it
 is immune to the flakiness that wall-clock benchmarks suffer.
 
 ### 4. Gated benchmarking, soak tests, and checked-heap for RC

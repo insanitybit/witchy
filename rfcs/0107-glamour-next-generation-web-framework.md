@@ -7,7 +7,7 @@ updated: 2026-08-13
 superseded-by:
 tracking: "Design accepted. RFC-0107 has now recorded PROVEN evidence for all remaining acceptance buckets via `projects/glamour/acceptance/rfc0107-public-closeout-2026-08-12.json` (release CI browser artifacts `9032180144`, `9032180819`, `9032181061`; deployed-host artifact `9032223449`; deployed doctor/vitals artifacts: `doctor-gh-pages-2026-08-14.json`, `doctor-local-2026-08-13.json`, `vitals/docs-vitals-2026-08-10T18-33-13-223Z.json`, `vitals/docs-vitals-cold-mobile-reference-2026-08-12T13-10-13Z.json`; WebAuthn relying-party payload proof `webauthn-rp-payload-alignment-2026-08-12.log`). `node scripts/audit-browser-runnable.mjs` reports 150/150 complete examples; `node scripts/validate_book_examples.mjs` reports 165 runnable / 59 non-runnable blocks and 0 divergence."
 predecessors:
-  - "[0006](0006-compile-time-tagged-literals.md) (typed and hygienic `html` literals)"
+  - "[0006](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) (typed and hygienic `html` literals)"
   - "[0008](0008-frontend-framework-rune.md) (capability-pure model/update/view architecture)"
   - "[0015](0015-secure-web-by-construction.md) (secure web applications by construction)"
   - "[0039](0039-glamour-capability-safe-effects.md) (Glamour's grantable and narrowed UI authority)"

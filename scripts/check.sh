@@ -223,7 +223,7 @@ nightly_excl="not ($nightly_excl_positive)"
 # Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
 # coordinator from the batch diff (see merge-queue.sh). `docs` means every
 # changed path is documentation that NO test or gate stage reads (rfcs/ minus
-# rfcs/performance-modes.md — which example_tests::
+# rfcs/0167-witchy-language-contract.md — which example_tests::
 # public_sources_do_not_call_legacy_render_intrinsic reads — wiki/, bugs/,
 # docs/ (agent playbook; example_tests walks README/CONTRIBUTING/spec/book
 # only), and the gitignored scratch//security-eval/):

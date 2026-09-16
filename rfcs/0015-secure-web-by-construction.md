@@ -312,7 +312,7 @@ stay as the trust boundary; the four views, Model/Msg/update, and search become 
 
 ## Prior art
 
-- [RFC-0006](./0006-compile-time-tagged-literals.md) (`html` tagged literal), [RFC-0007](./0007-witchy-wasm-browser-target.md) (browser/WASM target), [RFC-0008](./0008-frontend-framework-rune.md) (glamour, effects-as-data) —
+- [RFC-0006](./0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) (`html` tagged literal), [RFC-0007](./0007-witchy-wasm-browser-target.md) (browser/WASM target), [RFC-0008](./0008-frontend-framework-rune.md) (glamour, effects-as-data) —
   this builds directly on them; the additions are the attribute hardening, Trusted Types, and `Js`.
 - [RFC-0004](./0004-self-hosted-cli.md) / [RFC-0012](./0012-file-capability.md) (`Exec`) — `Js` is the browser sibling: a named, footprinted spawn with a grant,
   and the same "confinement ends at the boundary" caveat — *improved*, because the browser confines.

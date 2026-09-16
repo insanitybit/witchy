@@ -125,7 +125,7 @@ namespaced under a type name."
 ### 2. `NetPolicy` / `DirPolicy` are owned by their capability
 
 The policy types move out of `std/confine` to sit with the capability whose policy
-they are. Under [RFC-0042](0042-module-namespaces.md)'s type→module ownership, the
+they are. Under [RFC-0042](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction)'s type→module ownership, the
 natural home is the module that owns the capability surface (the prelude for the
 host primitives `Net`/`Dir`/`File`). The associated functions that build them live
 in that same `impl Net:` / `impl Dir:` block, so a reader finds a capability's

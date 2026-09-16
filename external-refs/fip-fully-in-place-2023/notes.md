@@ -9,4 +9,4 @@ This is the *theory* under witchy's in-place ambition. Where the cap-token decid
 
 ## Informs
 
-- [`rfcs/performance-modes.md`](../../rfcs/performance-modes.md) — tier 3 (`unique`/`unshared` type) and tier 5 (reuse/FBIP); the "error on de-opt" precision requirement.
+- [`rfcs/performance-modes.md`](../../rfcs/0167-witchy-language-contract.md#6-normal-and-opt-interoperation) — tier 3 (`unique`/`unshared` type) and tier 5 (reuse/FBIP); the "error on de-opt" precision requirement.

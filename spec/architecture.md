@@ -236,11 +236,10 @@ lifetimes the compiler can prove (or the user declares):
   the region dies at its end; the block's VALUE escapes by a shape-directed
   copy-out that short-circuits on parent-side data (a passthrough result
   copies zero bytes - asserted in tests via the exported
-  `__region_copy_bytes` counter). See [regions.md](../rfcs/regions.md).
+  `__region_copy_bytes` counter).
 
 On top of reclamation, hot mutation paths avoid allocating at all. The
-**uniqueness pass** (`crates/witchy-lower/src/analysis.rs`, design in
-[ownership-analysis.md](../rfcs/ownership-analysis.md)) drives in-place mutation of
+**uniqueness pass** (`crates/witchy-lower/src/analysis.rs`) drives in-place mutation of
 typed `var` accumulation (`xs.push(e)`, `d.insert(k, v)`) and ordinary linear
 updates (`s = s <> p`, `x = f(move x)`) through a runtime ownership
 token: the analysis finds every statement that can create a live whole-alias

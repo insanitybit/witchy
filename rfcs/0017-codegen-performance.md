@@ -10,7 +10,7 @@ tracking:
 # RFC-0017: Codegen performance — the constant-factor roadmap and its ceilings
 
 This umbrella is superseded by the focused contracts in
-[RFC-0029](0029-performance-tier-contract.md),
+[RFC-0029](0167-witchy-language-contract.md#6-normal-and-opt-interoperation),
 [RFC-0034](0034-closing-the-compute-gap.md), and
 [RFC-0031](0031-simd-stdlib-hot-loops.md); current performance behavior is
 tracked in [`spec/performance.md`](../spec/performance.md).

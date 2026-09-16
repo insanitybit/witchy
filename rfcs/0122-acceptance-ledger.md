@@ -1,5 +1,11 @@
 # RFC-0122 acceptance ledger
 
+> 2026-09-16 consolidation: this is historical evidence for the original
+> contract and recorded revisions, not the current language authority. See
+> [RFC-0167](0167-witchy-language-contract.md) and its
+> [open acceptance ledger](0167-acceptance-ledger.md). Old PROVEN labels do not
+> establish acceptance on the current canonical compiler route.
+
 This is the integration authority for RFC-0122. “PROVEN” requires current
 `master` plus the named evidence. A green queue item is not acceptance. The
 historical snapshots below are retained for delivery history; the final

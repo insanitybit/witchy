@@ -168,7 +168,7 @@ The host keeps the actual secret bytes; the rune receives only non-sensitive fac
 (`Empty | NonEmpty | Acceptable`) or an opaque `SecretRef`. The raw password never
 becomes a `String` in the message or model. A `SecretRef` may optionally be
 one-shot (consumed on submit) by threading it as `own`/`unique`
-([RFC-0026](0026-unique-qualifier.md)/[RFC-0033](0033-place-based-uniqueness.md)).
+([RFC-0026](0167-witchy-language-contract.md#4-unique-and-frozen)/[RFC-0033](0033-place-based-uniqueness.md)).
 
 ### 5. Component privacy
 

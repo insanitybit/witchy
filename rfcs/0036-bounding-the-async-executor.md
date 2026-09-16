@@ -247,7 +247,7 @@ recursive drop. A SOUND implementation is a large matched-pair change:
   so closure drop needs a DEFUNCTIONALIZED per-code-index drop — a drop table parallel to
   the `$__lamw{i}` call table, each `$__lamdrop{i}` dropping its captures' statically-known
   kinds. The executor's dominant leak IS closures, so this is required, not optional.
-- **erased `__Msg` ([RFC-0055](./0055-channel-message-types.md))** — the executor's `List(__Msg)` buffers carry values of
+- **erased `__Msg` ([RFC-0055](./0167-witchy-language-contract.md#7-resources-effects-and-suspension))** — the executor's `List(__Msg)` buffers carry values of
   OPAQUE kind; recursive drop must LEAVE them undropped (a sound leak), never guess, or a
   heap message payload is a UAF. Sound for the Int-message DoD (scalar); leaky-but-safe
   for heap messages.

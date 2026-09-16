@@ -1,5 +1,11 @@
 # RFC-0122 migration report
 
+> 2026-09-16 consolidation: this is historical evidence for the original
+> contract and recorded revisions, not the current language authority. See
+> [RFC-0167](0167-witchy-language-contract.md) and its
+> [open acceptance ledger](0167-acceptance-ledger.md). Old PROVEN labels do not
+> establish acceptance on the current canonical compiler route.
+
 This report records the repository-source census used by acceptance row 21.
 It is deliberately separate from the migrator's unit fixtures: a successful
 fixture does not establish that the checked repository needs no rewrite.

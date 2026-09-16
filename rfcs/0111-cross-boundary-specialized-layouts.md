@@ -7,9 +7,9 @@ updated: 2026-08-03
 tracking: "All eleven acceptance criteria PROVEN in rfcs/0110-0112-acceptance-ledger.md. Criteria 1-8,11 (canonical LayoutId descriptors, cross-boundary packed values, physical generic specialization, callable-layout identity, host-import metadata, destination forwarding, header elision, closed-sum layouts, specs). Criterion 9: reviewed pinned-ARM report committed at bench/rust-class/reports/arm64-reference.json (geomean 0.92x, all cases within caps), timing gate activated in scripts/check.sh. Criterion 10: example_tests::rfc0111_layout::cross_lever_specialized_layout_slice_is_green_on_every_lever_and_backend (parity + always-on checked heap + full de-opt sweep)."
 predecessors:
   - "[0027](0027-packed-layouts-sroa.md) (confined packed record lists and SROA)"
-  - "[0029](0029-performance-tier-contract.md) (`mode opt` performance contract)"
+  - "[0029](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) (`mode opt` performance contract)"
   - "[0030](0030-perf-correctness-infra.md) (de-opt and deterministic firing evidence)"
-  - "[0110](0110-opt-ownership-access-abi.md) (uniform ownership/access envelopes)"
+  - "[0110](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) (uniform ownership/access envelopes)"
 related:
   - "[0005](0005-unforgeable-capabilities.md) (capability representation boundary)"
   - "[0016](0016-reference-counted-memory.md) (RC, reuse, and header-elision ladder)"

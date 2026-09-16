@@ -325,7 +325,7 @@ executes, not its seed counts, optimizer matrix, or sanitizer coverage.
 
 **Diff-scoped gate (docs-only).** The same classification also sets
 `WITCHY_GATE_SCOPE`: when EVERY changed path in the batch diff is documentation
-no test or gate stage reads — `rfcs/` (except `rfcs/performance-modes.md`,
+no test or gate stage reads — `rfcs/` (except `rfcs/0167-witchy-language-contract.md`,
 which `example_tests::public_sources_do_not_call_legacy_render_intrinsic`
 reads), `wiki/`, `bugs/`, and `docs/` (tracked but read by nothing;
 example_tests walks README/CONTRIBUTING/spec/book only), and the gitignored

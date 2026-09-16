@@ -31,10 +31,10 @@ three actionable tiers based on architectural dependencies and precursor effort.
 
 ## Current Standing & Benchmark Reality
 
-With the landing of `mode opt` ([RFC-0127](0127-ownership-and-opt-mode.md)),
-in-place value mutators ([RFC-0087](0087-fused-mutators.md)), guaranteed tail
+With the landing of `mode opt` ([RFC-0127](0167-witchy-language-contract.md#3-owned-values-and-calls)),
+in-place value mutators ([RFC-0087](0167-witchy-language-contract.md#3-owned-values-and-calls)), guaranteed tail
 calls ([RFC-0090](0090-proper-tail-calls.md)), and collection discard
-elimination ([RFC-0123](0123-expression-boundaries.md)), Witchy demonstrates
+elimination ([RFC-0123](0167-witchy-language-contract.md#1-core-syntax)), Witchy demonstrates
 clear architectural advantages over tracing-GC runtimes on memory-heavy and
 tree-recursive workloads, while retaining constant-factor gaps on tight
 iterative arithmetic and array kernels:
@@ -57,8 +57,8 @@ Witchy's performance architecture builds on several foundational RFCs:
 1. **Memory & Mutation Foundation**:
    - [RFC-0027](0027-packed-layouts-sroa.md): Packed struct representations and scalar replacement of aggregates.
    - [RFC-0033](0033-place-based-uniqueness.md) & [RFC-0089](0089-functional-in-place.md): Place-based uniqueness and fully in-place functional mutators.
-   - [RFC-0087](0087-fused-mutators.md): Uniform var write-backs and capacity-passing list mutators.
-   - [RFC-0123](0123-expression-boundaries.md): Discarded return value elimination for collection modifiers (subsumed RFC-0124).
+   - [RFC-0087](0167-witchy-language-contract.md#3-owned-values-and-calls): Uniform var write-backs and capacity-passing list mutators.
+   - [RFC-0123](0167-witchy-language-contract.md#1-core-syntax): Discarded return value elimination for collection modifiers (subsumed RFC-0124).
 
 2. **Control Flow & Execution Foundation**:
    - [RFC-0090](0090-proper-tail-calls.md): Guaranteed proper tail calls (TCO) with constant control stack on both interpreter and Wasm backends.
@@ -67,7 +67,7 @@ Witchy's performance architecture builds on several foundational RFCs:
 
 3. **Ownership & Type Systems**:
    - [RFC-0111](0111-cross-boundary-specialized-layouts.md): Cross-boundary layout specialization and unboxed floats.
-   - [RFC-0122](0122-uniform-borrow-relations.md) & [RFC-0127](0127-ownership-and-opt-mode.md): Explicit borrow relations, references, and `mode opt` verification.
+   - [RFC-0122](0167-witchy-language-contract.md#5-references-and-lifetimes) & [RFC-0127](0167-witchy-language-contract.md#3-owned-values-and-calls): Explicit borrow relations, references, and `mode opt` verification.
 
 ## Prioritized Implementation Tracks
 

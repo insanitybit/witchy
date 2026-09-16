@@ -19,7 +19,7 @@ aren't "WASM is slow"; they are specific and addressable:
 | Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** - warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API |
 | Allocation-heavy (lists, strings) | **Phase 1 complete** - capacity-growth + ownership-driven in-place mutation (was: OOM trap, copy-per-push O(n²)) | **Yes, done** - GC-free throughput; the 300k-push bench runs in constant memory (see Phase 1 below) |
 | Long-running request loops | arena grows until the cap | **Yes** - arena reset points reclaim in bulk with no pauses |
-| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there's no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
+| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there's no pointer-cycle tail to concede. |
 
 The honest summary: witchy should not add a *tracing GC*. Its
 value semantics + ownership conventions + region-scoped arenas, with reference
@@ -30,8 +30,7 @@ state - that general-purpose runtimes take for
 granted. Two properties make this work without a collector: value semantics
 admits no reference cycles, so RC is complete with no tracer; and graphs are
 expressed with index-arena handles rather than shared pointers, so even cyclic
-*structure* is just integers reclaimed with its arena. The two-tier contract
-over this model is [RFC-0029](../rfcs/0029-performance-tier-contract.md).
+*structure* is just integers reclaimed with its arena.
 
 ## "You're I/O-bound" is false - assume CPU/allocation-bound until measured
 
@@ -98,7 +97,7 @@ rejects a missing proof and reports the statement that aliased, moved, or loaned
 the owner. Normal mode remains value-correct through operation-level
 copy-on-write when storage is shared. Fresh storage, a typed call returning a
 `unique` collection, and `var` parameters typed `unique` / `local unique`
-satisfy the contract; an active [RFC-0083](../rfcs/0083-opt-mode-lifetimes.md) loan
+satisfy the contract; an active reference loan
 never does. A typed `unique` result carries its capacity token as part of the
 compiled result envelope. Fresh list/dict tails and typed `unique` calls
 establish that token; control-flow results spell an explicit `return` on each
@@ -213,7 +212,7 @@ resolved (overflow wraps by definition on both backends). The 300k-push
 bench went from an OOM trap to constant-memory, native-class throughput.
 
 **Superseded (2026-06-11, later):** item 2's eligibility scan was replaced
-wholesale by the **uniqueness pass** ([ownership-analysis.md](../rfcs/ownership-analysis.md)):
+wholesale by the **uniqueness pass**:
 share-event/dirty-site analysis with function summaries, so aliases cost one
 re-own instead of disqualifying, read-only calls don't break accumulation,
 `d.update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,

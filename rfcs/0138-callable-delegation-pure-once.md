@@ -6,9 +6,9 @@ created: 2026-08-21
 superseded-by:
 tracking: "Implemented with parser, type/access/runtime identity, purity and affine checking, capability-footprint, interpreter/Wasm parity, Dynamic descriptor, documentation, and adversarial acceptance evidence."
 related:
-  - "[0125](0125-core-language-contract.md) (functions and function values)"
+  - "[0125](0167-witchy-language-contract.md#1-core-syntax) (functions and function values)"
   - "[0126](0126-capability-effects-contract.md) (explicit authority and effects)"
-  - "[0127](0127-ownership-and-opt-mode.md) and [0114](0114-must-consume-obligations.md) (own, move, and disposition obligations)"
+  - "[0127](0167-witchy-language-contract.md#3-owned-values-and-calls) and [0114](0114-must-consume-obligations.md) (own, move, and disposition obligations)"
   - "[0005](0005-unforgeable-capabilities.md) (reference-safe capability-bearing closure environments)"
 ---
 

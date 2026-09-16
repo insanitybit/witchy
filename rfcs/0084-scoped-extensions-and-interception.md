@@ -66,7 +66,7 @@ capability intrinsic operations cannot be extended.
 
 ### Interceptable interfaces
 
-Interception operates on [RFC-0081](0081-existential-trait-values.md) existential trait values or [RFC-0082](0082-runtime-dynamic-values.md) dynamic
+Interception operates on [RFC-0081](0167-witchy-language-contract.md#2-functions-control-flow-and-abstraction) existential trait values or [RFC-0082](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) dynamic
 methods, never on arbitrary statically bound free functions:
 
 ```witchy

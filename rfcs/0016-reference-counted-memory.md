@@ -30,7 +30,7 @@ in-place token are not a rival memory identity; they are reframed as a single
 **RC-elision ladder** sitting on top of one analysis oracle. Each rung *removes*
 inc/dec/free traffic the oracle can prove redundant, so the fast paths witchy has
 today are recovered exactly, on top of a floor that is finally bounded. This
-resolves the open non-goal in [`performance-modes.md`](performance-modes.md)
+resolves the open non-goal in [`performance-modes.md`](0167-witchy-language-contract.md#6-normal-and-opt-interoperation)
 ("pick one memory identity … not both") **for RC, with the arena demoted to an
 optimization of it.** Tracing GC is rejected with cause.
 

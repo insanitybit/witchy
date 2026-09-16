@@ -6,7 +6,7 @@ created: 2026-08-20
 superseded-by:
 tracking:
 predecessors:
-  - "[0006](0006-compile-time-tagged-literals.md) (compile-time tagged literals)"
+  - "[0006](0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) (compile-time tagged literals)"
   - "[0008](0008-frontend-framework-rune.md) (frontend framework rune)"
   - "[0015](0015-secure-web-by-construction.md) (secure web applications by construction)"
   - "[0039](0039-glamour-capability-safe-effects.md) (Glamour capability-safe effects)"

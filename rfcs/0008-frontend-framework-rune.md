@@ -41,7 +41,7 @@ frontend, [`projects/coven-web/`](../projects/coven-web/)) is the proving ground
 This RFC is the *design*; the build milestone is **WS-I** in
 [`projects/coven-web/PLAN.md`](../projects/coven-web/PLAN.md). It is the capstone
 of a three-RFC set and **depends on** both
-[`RFC-0006`](./0006-compile-time-tagged-literals.md) — *Compile-time tagged
+[`RFC-0006`](./0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) — *Compile-time tagged
 literals* (the `html` ergonomics) — and
 [`RFC-0007`](./0007-witchy-wasm-browser-target.md) — *witchy-WASM in the browser:
 a pure-compute target* (the execution target). Neither stands alone here: 0006
@@ -168,7 +168,7 @@ The rune computes; the shell acts.
 
 ### Ergonomic views via RFC-0006's `html`
 
-Constructing `VNode` trees by hand is verbose. [`RFC-0006`](./0006-compile-time-tagged-literals.md)'s
+Constructing `VNode` trees by hand is verbose. [`RFC-0006`](./0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)'s
 compile-time `html` tagged literal lowers a familiar markup syntax to `VNode`
 constructors at compile time:
 
@@ -327,7 +327,7 @@ the sandbox where they belong. Conflating the two would be a security regression
 
 ## Dependencies
 
-- [`RFC-0006`](./0006-compile-time-tagged-literals.md) — *Compile-time tagged
+- [`RFC-0006`](./0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries) — *Compile-time tagged
   literals*. Supplies the `html` literal that lowers to `VNode` and makes text
   holes inert. **Optional for an MVP** (alternative (a) hand-builds `VNode`),
   **required** for the ergonomic surface this RFC describes.

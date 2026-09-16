@@ -1,5 +1,11 @@
 # RFC-0087 RFC-0051 performance preservation report
 
+> 2026-09-16 consolidation: this is historical evidence for the original
+> contract and recorded revisions, not the current language authority. See
+> [RFC-0167](0167-witchy-language-contract.md) and its
+> [open acceptance ledger](0167-acceptance-ledger.md). Old PROVEN labels do not
+> establish acceptance on the current canonical compiler route.
+
 Date: 2026-07-16
 
 Compiler source baseline: canonical `master` at `714df0a5`. The release binary

@@ -531,7 +531,7 @@ error (the value is the only pointer escape; scalar assignments are fine), and
 `yield` is rejected. A region never changes observable behavior - only when
 memory is reclaimed - so the interpreter runs it as a plain block. The
 optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
-when inference cannot see it. See [RFC-0128](../rfcs/0128-regions-and-reclamation.md).
+when inference cannot see it.
 
 The compiler warns on every `region:` use. Its value semantics remain safe and
 interpreter/Wasm parity remains required, but the keyword, boundary rules, and
@@ -1020,7 +1020,7 @@ change observable behavior; they only let the checker enforce, and a library
 | `frozen T` | deeply immutable - sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
 | `unique T` | the sole reference - may be mutated in place and returned as `unique` |
 | `local unique T` | unique within this call only - may be mutated but **may not escape** (returning it's a check-time error) |
-| `&'a T` / `&'a mut T` | shared / exclusive reference with explicit lifetime `'a`; available in `mode opt` ([RFC-0122](../rfcs/0122-uniform-borrow-relations.md)) |
+| `&'a T` / `&'a mut T` | shared / exclusive reference with explicit lifetime `'a`; available in `mode opt` |
 
 ```witchy
 import show
@@ -1058,7 +1058,7 @@ rejected.
 
 ### Borrowed views and reference types
 
-In `mode opt` ([RFC-0122](../rfcs/0122-uniform-borrow-relations.md)), functions may accept and return first-class shared (`&'a T`) or exclusive mutable (`&'a mut T`) references tied to an explicit lifetime `'a`. Legacy `let('a) T` parameter bounds and `View(T, 'a)` return types remain supported through the migration compatibility path:
+In `mode opt`, functions may accept and return first-class shared (`&'a T`) or exclusive mutable (`&'a mut T`) references tied to an explicit lifetime `'a`. Legacy `let('a) T` parameter bounds and `View(T, 'a)` return types remain supported through the migration compatibility path:
 
 ```witchy
 mode opt
@@ -1221,7 +1221,7 @@ composes with an explicit `where` clause. The std library uses it for
 module is preluded; `from show import say` is needed only when you want the bare
 `say(...)` spelling.
 
-### Existential trait types - `dyn Trait` ([RFC-0081](../rfcs/0081-existential-trait-values.md))
+### Existential trait types - `dyn Trait`
 
 `dyn Render` / `dyn Convert(Int)` is an existential trait type: a value whose
 concrete type is hidden behind a trait's callable surface. It's an owned value:

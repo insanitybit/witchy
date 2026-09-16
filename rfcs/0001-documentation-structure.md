@@ -9,6 +9,12 @@ tracking:
 
 # RFC-0001: Documentation structure
 
+> 2026-09-16: The user-authorized language consolidation amends the frozen-file
+> policy below. Superseded bodies may be removed with an indexed Git recovery
+> revision and preserved decisions/evidence. See [the RFC index](README.md).
+> The remainder records the original documentation split, not a prohibition
+> against that consolidation.
+
 ## Summary
 
 Split the single `docs/` directory into four layers, separated by **mutability**
@@ -156,7 +162,7 @@ a doc can be part-spec, part-rfc and may need splitting.
 > Three `(verify)` docs landed in `rfcs/` rather than the `spec/` cell proposed
 > above, on inspection: **`capability-rights.md`** (it is a *design* doc — the
 > user-facing model lives in [`spec/capabilities.md`](../spec/capabilities.md)),
-> **[`regions.md`](./regions.md)** and **[`ownership-analysis.md`](./ownership-analysis.md)** (both phased *design/analysis*
+> **[`regions.md`](./0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)** and **[`ownership-analysis.md`](./0167-witchy-language-contract.md#4-unique-and-frozen)** (both phased *design/analysis*
 > records of shipped
 > machinery, not current-state reference). `local-registry.md` stayed `spec/`
 > (it's a how-to). No docs were split; any genuinely mixed doc can be split in a

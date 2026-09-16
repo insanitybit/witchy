@@ -38,8 +38,10 @@ External sources that informed this (link to `external-refs/` entries).
 ---
 
 <!--
-  Once this RFC is implemented/rejected/superseded it is FROZEN.
-  - To change the decision: write a NEW RFC that supersedes this one.
+  Read README.md for the lifecycle and consolidation policy.
+  - Language changes amend the single language contract and its ledger.
+  - Authorized consolidation may retire bodies with indexed Git recovery,
+    replacement decisions, preserved evidence, and repaired links.
   - Allowed edits after freeze: the `status:`/`superseded-by:` fields, and
     appending dated change-notes below (e.g. "> 2026-07-01: clarified X").
   - The current behavior lives in spec/ and the code — NOT here.

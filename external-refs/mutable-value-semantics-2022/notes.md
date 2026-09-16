@@ -9,7 +9,7 @@
 
 ## Informs
 
-- The whole value model; [`rfcs/ownership-analysis.md`](../../rfcs/ownership-analysis.md), param conventions, the no-shared-aliasing argument for RC.
+- The whole value model; [`rfcs/ownership-analysis.md`](../../rfcs/0167-witchy-language-contract.md#4-unique-and-frozen), param conventions, the no-shared-aliasing argument for RC.
 
 ## Caution
 

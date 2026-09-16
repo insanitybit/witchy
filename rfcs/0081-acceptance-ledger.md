@@ -1,5 +1,11 @@
 # RFC-0081 current-truth and acceptance ledger
 
+> 2026-09-16 consolidation: this is historical evidence for the original
+> contract and recorded revisions, not the current language authority. See
+> [RFC-0167](0167-witchy-language-contract.md) and its
+> [open acceptance ledger](0167-acceptance-ledger.md). Old PROVEN labels do not
+> establish acceptance on the current canonical compiler route.
+
 Audit date: 2026-07-18; implementation closeout: 2026-07-18
 
 Original audit baseline: `172f901cffe302ba1feff374e6d329fe0a19858d`

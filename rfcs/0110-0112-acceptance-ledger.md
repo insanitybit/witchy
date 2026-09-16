@@ -1,5 +1,11 @@
 # RFC-0110 / RFC-0111 / RFC-0112 acceptance ledger
 
+> 2026-09-16 consolidation: this is historical evidence for the original
+> contract and recorded revisions, not the current language authority. See
+> [RFC-0167](0167-witchy-language-contract.md) and its
+> [open acceptance ledger](0167-acceptance-ledger.md). Old PROVEN labels do not
+> establish acceptance on the current canonical compiler route.
+
 Audit target: integration commit `4bdebf5cb4a9f5d3765a4b08351bf3ef67a2bbe1`
 (the queued RFC-0110/0111/0112 batch), pending its serialized gate landing.
 

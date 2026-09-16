@@ -59,7 +59,7 @@ object. That uniformity buys simple codegen and one equality/format/copy story �
 but it is the dominant cost on cache-bound workloads (nsieve, fannkuch,
 knucleotide in the bench suite), costing up to 8× the memory traffic and
 defeating SIMD. Every other knob in this cluster
-([0025](0025-frozen-deep-immutability.md), [0026](0026-unique-qualifier.md))
+([0025](0167-witchy-language-contract.md#4-unique-and-frozen), [0026](0167-witchy-language-contract.md#4-unique-and-frozen))
 reduces *copying* and *allocation*; none changes *layout*, which is where the
 order-of-magnitude on numeric/struct-heavy code actually lives.
 
@@ -128,17 +128,17 @@ fn dist(a: Point, b: Point) -> Int:
   follow-on noted in [0024](0024-unified-facts-lattice.md).)
 - Risk is low: the lambda-capture escape scan and uniqueness pass already supply
   the needed facts; this is medium effort, low risk per
-  [performance-modes.md](performance-modes.md) tier 2.
+  [performance-modes.md](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) tier 2.
 
 ### Interaction with the rest of the cluster
 
 - **SROA needs no new analysis** — it is the first real consumer that proves
   [RFC-0024](./0024-unified-facts-lattice.md) pays for itself, so it should land first
   in this RFC.
-- **`packed` composes with [RFC-0026](./0026-unique-qualifier.md)**: a `unique
+- **`packed` composes with [RFC-0026](./0167-witchy-language-contract.md#4-unique-and-frozen)**: a `unique
   packed List(Point)` is the near-Rust case — flat layout, in-place reuse,
   cache-dense, SIMD-eligible — and is the headline `mode opt` capability.
-- **`packed` composes with [RFC-0025](./0025-frozen-deep-immutability.md)**: a `frozen
+- **`packed` composes with [RFC-0025](./0167-witchy-language-contract.md#4-unique-and-frozen)**: a `frozen
   packed` table is a shareable, cache-dense, read-only array — the ideal lookup
   structure.
 
@@ -180,7 +180,7 @@ fn dist(a: Point, b: Point) -> Int:
 
 - [RFC-0017](0017-codegen-performance.md) §O1 (unboxed/monomorphized layouts) —
   this RFC is its concrete proposal.
-- [performance-modes.md](performance-modes.md) "representation tiers" — tiers 1
+- [performance-modes.md](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) "representation tiers" — tiers 1
   (unboxing) and 2 (SROA); this RFC realizes both.
 - Rust `repr(C)`/`repr(packed)` and Swift `@frozen` — declared layout as a
   performance/ABI contract.

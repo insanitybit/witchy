@@ -13,7 +13,7 @@ The shipped L1–L4 levers are implemented across
 measurements in [`src/stats.rs`](../src/stats.rs); L5/L6 remain deferred as stated.
 
 - Status: implemented (L1-L4; L5/L6 deferred)
-- Predecessors: [RFC-0029](0029-performance-tier-contract.md) (perf tier contract),
+- Predecessors: [RFC-0029](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) (perf tier contract),
   [RFC-0033](0033-place-based-uniqueness.md) (in-place through user types),
   [spec/performance.md](../spec/performance.md) (the perf thesis)
 
