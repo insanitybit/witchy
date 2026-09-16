@@ -1,7 +1,7 @@
 //! Independent checked-source binding for opaque closure constructors.
 //! Candidate IDs and field maps are claims, never capability authority.
 use super::authority::*;
-use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SourceConstructor};
+use super::closure_owner_contract::{CaptureStorage, CaptureTransfer, OwnerConstructor, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor, SourceConstructor};
 use super::{CanonicalModule, ModuleStage, Operation, ValueId, ValueType};
 use std::collections::{BTreeMap, BTreeSet};
 use witchy_types::canonical_closure::ClosureBindingPathStep;
@@ -24,12 +24,19 @@ pub(super) fn validate<S: ModuleStage>(
         }
     }
     for family in candidate.owner_families() {
-        if let OwnerFamilySource::Aggregate(source_type) = &family.source {
-            if !aggregate_types.insert(source_type.clone()) {
-                return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+        match &family.source {
+            OwnerFamilySource::Aggregate(source_type) => {
+                if !aggregate_types.insert(source_type.clone()) {
+                    return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+                }
+                validate_aggregate_family(candidate, family, source_type, &records, &layouts)?;
+                continue;
             }
-            validate_aggregate_family(candidate, family, source_type, &records, &layouts)?;
-            continue;
+            OwnerFamilySource::SharedReference(source_type) => {
+                validate_shared_reference_family(family, source_type, &layouts)?;
+                continue;
+            }
+            OwnerFamilySource::Closure => {}
         }
         let mut source_key = None;
         let mut observed = BTreeSet::new();
@@ -133,7 +140,7 @@ pub(super) fn validate<S: ModuleStage>(
                         let family = candidate.owner_families().iter().find(|family|
                             family.constructors.iter().any(|entry| entry.id == *constructor))
                             .ok_or(CandidateAbiBindingError::MissingClosureWitness { closure: constructor.0 })?;
-                        if matches!(family.source, OwnerFamilySource::Aggregate(_)) {
+                        if matches!(family.source, OwnerFamilySource::Aggregate(_) | OwnerFamilySource::SharedReference(_)) {
                             continue;
                         }
                         let declared = family.constructors.iter().find(|entry| entry.id == *constructor)
@@ -256,7 +263,66 @@ pub(super) fn validate<S: ModuleStage>(
                             return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
                         }
                     }
+                    Operation::ClosureOwner(OwnerOperation::ReadSharedPlace { family, .. }) => {
+                        if candidate.owner_families().iter().find(|entry| entry.signature == *family)
+                            .is_none_or(|entry| !matches!(entry.source, OwnerFamilySource::SharedReference(_)))
+                        {
+                            return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
+                        }
+                    }
                     _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    matches!(source_type,
+        witchy_syntax::ast::Type::Qualified(
+            witchy_syntax::ast::TypeQual::Borrow(lifetime), inner,
+        ) if !lifetime.is_empty()
+            && matches!(inner.as_ref(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty()))
+}
+
+fn validate_shared_reference_family(
+    family: &OwnerFamily,
+    source_type: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+) -> Result<(), CandidateAbiBindingError> {
+    let refuse = || CandidateAbiBindingError::MissingCanonicalLayouts;
+    if !is_shared_int_reference(source_type) || family.constructors.is_empty() {
+        return Err(refuse());
+    }
+    let mut kinds = BTreeSet::new();
+    for constructor in &family.constructors {
+        if constructor.witness.is_some() {
+            return Err(refuse());
+        }
+        let kind = constructor.shared_reference_constructor().ok_or_else(refuse)?;
+        let root = constructor.captures.first().ok_or_else(refuse)?;
+        let ValueType::Ref(root_layout) = root.value_type else { return Err(refuse()) };
+        let physical = layouts.resolve_nominal(root_layout).map_err(|_| refuse())?;
+        match kind {
+            SharedReferenceConstructor::WholeIntCell { root } => {
+                if root.0 != 0 || !kinds.insert(0_u8)
+                    || !matches!(layouts.get(physical).map(|descriptor| descriptor.kind()),
+                        Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int)))
+                {
+                    return Err(refuse());
+                }
+            }
+            SharedReferenceConstructor::ListIntElement { root, index, bounds: _ } => {
+                let Some(crate::layout::LayoutKind::PackedList { element, .. }) =
+                    layouts.get(physical).map(|descriptor| descriptor.kind())
+                else { return Err(refuse()) };
+                if root.0 != 0 || index.0 != 1 || !kinds.insert(1_u8)
+                    || !matches!(layouts.get(*element).map(|descriptor| descriptor.kind()),
+                        Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int)))
+                {
+                    return Err(refuse());
                 }
             }
         }
@@ -549,5 +615,59 @@ mod tests {
         let mut context = CorrespondenceContext::with_owners(&candidate);
         assert!(!value_type_matches_source(ValueType::Gc(family.owner_type), &mismatch, &layouts,
             candidate.signatures(), &mut context, &records, candidate.closure_layouts()));
+    }
+
+    #[test]
+    fn shared_reference_family_binds_exact_source_type_root_layouts_and_bounds_obligation() {
+        use super::super::closure_owner_contract::{OwnerCapture, SharedPlaceBounds};
+        use witchy_syntax::ast::TypeQual;
+
+        let mut layouts = LayoutInterner::new();
+        let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let list = layouts.intern_packed_list(int, crate::layout::RcHeader::Required).unwrap();
+        let source = Type::Qualified(TypeQual::Borrow("a".into()), Box::new(Type::Named("Int".into(), Vec::new())));
+        let constructor = |id, captures| OwnerConstructor {
+            id: ConstructorId(id),
+            function: super::super::FunctionId::new(u32::MAX),
+            witness: None,
+            environment_tag: i64::from(id),
+            captures,
+        };
+        let whole = constructor(1, vec![OwnerCapture {
+            value_type: ValueType::Ref(int),
+            storage: CaptureStorage::EnvironmentField(1),
+            transfer: CaptureTransfer::CloneManaged,
+        }]);
+        let element = constructor(2, vec![
+            OwnerCapture {
+                value_type: ValueType::Ref(list),
+                storage: CaptureStorage::EnvironmentField(1),
+                transfer: CaptureTransfer::CloneManaged,
+            },
+            OwnerCapture {
+                value_type: ValueType::Size,
+                storage: CaptureStorage::EnvironmentField(2),
+                transfer: CaptureTransfer::CopyScalar,
+            },
+        ]);
+        assert!(matches!(element.shared_reference_constructor(), Some(
+            SharedReferenceConstructor::ListIntElement { bounds: SharedPlaceBounds::CurrentLogicalLength, .. }
+        )));
+        let family = OwnerFamily {
+            source: OwnerFamilySource::SharedReference(source.clone()),
+            owner_type: GcTypeId::new(800),
+            list_type: GcTypeId::new(801),
+            signature: FunctionSignatureId::new(802),
+            declaration_signature: FunctionSignatureId::new(803),
+            environment: int,
+            constructors: vec![whole, element],
+        };
+        validate_shared_reference_family(&family, &source, &layouts).unwrap();
+
+        let mutable = Type::Qualified(TypeQual::BorrowMut("a".into()), Box::new(Type::Named("Int".into(), Vec::new())));
+        assert!(validate_shared_reference_family(&family, &mutable, &layouts).is_err());
+        let mut wrong = family;
+        wrong.constructors[1].captures[0].value_type = ValueType::Ref(int);
+        assert!(validate_shared_reference_family(&wrong, &source, &layouts).is_err());
     }
 }

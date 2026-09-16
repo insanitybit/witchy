@@ -182,6 +182,10 @@ owner_operations! {
     /// Reads an immutable nested owner field and returns one retained token of
     /// the field's exact registered GC type.
     ReadOwner { destination: ValueId, owner: ValueId, constructor: ConstructorId, capture: CaptureOrdinal },
+    /// Reads an Int through an opaque, read-only place-reference family. The
+    /// authenticated constructor metadata selects the root/projection; no
+    /// guest operand can select a layout or reinterpret the carrier.
+    ReadSharedPlace { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     /// Reads the authenticated constructor/environment tag without selecting
     /// or granting access to constructor-specific payload fields.
     ReadTag { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
@@ -214,6 +218,31 @@ owner_operations! {
 pub enum OwnerFamilySource {
     Closure,
     Aggregate(witchy_syntax::ast::Type),
+    /// The exact checked source reference type carried by this opaque family.
+    /// The initial slice admits only `&'a Int`; mutable references are distinct
+    /// source types and cannot acquire this authority.
+    SharedReference(witchy_syntax::ast::Type),
+}
+
+/// A list-element reference must recheck its captured index against the
+/// root's current logical length when it is read. Construction-time bounds do
+/// not grant authority over a subsequently mutated collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedPlaceBounds {
+    CurrentLogicalLength,
+}
+
+/// Static interpretation of a shared-reference constructor. This is derived
+/// exclusively from the registered constructor schema; it is never encoded as
+/// a guest tag, pointer, layout ID, or projection selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedReferenceConstructor {
+    WholeIntCell { root: CaptureOrdinal },
+    ListIntElement {
+        root: CaptureOrdinal,
+        index: CaptureOrdinal,
+        bounds: SharedPlaceBounds,
+    },
 }
 
 /// Candidate schema, not authority. Admission independently binds the source
@@ -248,6 +277,37 @@ pub struct OwnerCapture {
     pub transfer: CaptureTransfer,
 }
 
+impl OwnerConstructor {
+    /// Recognize the only two authenticated constructor schemas in the first
+    /// shared-place slice. Layout identity is checked independently by source
+    /// authority and the initial checker.
+    pub fn shared_reference_constructor(&self) -> Option<SharedReferenceConstructor> {
+        match self.captures.as_slice() {
+            [OwnerCapture {
+                value_type: ValueType::Ref(_),
+                storage: CaptureStorage::EnvironmentField(1),
+                transfer: CaptureTransfer::CloneManaged,
+            }] => Some(SharedReferenceConstructor::WholeIntCell {
+                root: CaptureOrdinal(0),
+            }),
+            [OwnerCapture {
+                value_type: ValueType::Ref(_),
+                storage: CaptureStorage::EnvironmentField(1),
+                transfer: CaptureTransfer::CloneManaged,
+            }, OwnerCapture {
+                value_type: ValueType::Size,
+                storage: CaptureStorage::EnvironmentField(2),
+                transfer: CaptureTransfer::CopyScalar,
+            }] => Some(SharedReferenceConstructor::ListIntElement {
+                root: CaptureOrdinal(0),
+                index: CaptureOrdinal(1),
+                bounds: SharedPlaceBounds::CurrentLogicalLength,
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureStorage {
     EnvironmentField(u32),
@@ -260,7 +320,8 @@ impl OwnerOperation {
     pub fn destinations(&self) -> Vec<ValueId> {
         match self {
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
-            | Self::ReadOwner { destination, .. } | Self::ReadTag { destination, .. }
+            | Self::ReadOwner { destination, .. } | Self::ReadSharedPlace { destination, .. }
+            | Self::ReadTag { destination, .. }
             | Self::ReadCallable { destination, .. } | Self::Clone { destination, .. }
             | Self::CloneEnvironment { destination, .. } | Self::NewList { destination, .. }
             | Self::ListGet { destination, .. } | Self::ListLength { destination, .. }
@@ -275,6 +336,7 @@ impl OwnerOperation {
             Self::Construct { captures, .. } => captures.clone(),
             Self::NewList { elements, .. } => elements.clone(),
             Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
+            | Self::ReadSharedPlace { owner, .. }
             | Self::ReadTag { owner, .. }
             | Self::ReadCallable { owner, .. }
             | Self::Clone { owner, .. } | Self::CloneEnvironment { owner, .. } | Self::Drop { owner, .. } => vec![*owner],
@@ -303,6 +365,7 @@ mod tests {
             (OwnerOperation::Construct { destination, constructor, captures: vec![owner, index] }, vec![owner, index], vec![destination]),
             (OwnerOperation::ReadCapability { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadOwner { destination, owner, constructor, capture }, vec![owner], vec![destination]),
+            (OwnerOperation::ReadSharedPlace { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::ReadTag { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::ReadCallable { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Clone { destination, owner, family }, vec![owner], vec![destination]),

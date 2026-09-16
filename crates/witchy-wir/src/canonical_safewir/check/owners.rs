@@ -1,7 +1,7 @@
 //! Affine ownership of opaque GC values. These tokens have no linear-memory
 //! address, extent, allocation class, or pointer-slot authority.
 use super::*;
-use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerFamilySource, OwnerOperation};
+use crate::canonical_safewir::closure_owner_contract::{CaptureStorage, CaptureTransfer, ConstructorId, OwnerCapture, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor};
 use crate::canonical_safewir::{GcTypeId, Ownership, ResultContract};
 
 type Live = BTreeSet<ValueId>;
@@ -13,11 +13,18 @@ pub(super) struct Registry<'a> {
 impl<'a> Registry<'a> {
     pub(super) fn new<S: ModuleStage>(module: &'a CanonicalModule<S>) -> Result<Self, InitialCheckError> {
         let registry = Self { families: module.owner_families() };
+        let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
+            .map_err(|_| InitialCheckError::UnsupportedMemoryOperation {
+                function: FunctionId::new(u32::MAX),
+                operation: "ClosureOwner invalid layout catalog",
+            })?;
         let mut types = BTreeSet::new();
         let mut signatures = BTreeSet::new();
         let mut constructors = BTreeSet::new();
         for family in registry.families {
-            if !types.insert(family.owner_type) || !types.insert(family.list_type)
+            let shared_reference = matches!(family.source, OwnerFamilySource::SharedReference(_));
+            if !types.insert(family.owner_type)
+                || !shared_reference && !types.insert(family.list_type)
                 || !signatures.insert(family.signature)
             {
                 return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
@@ -39,6 +46,39 @@ impl<'a> Registry<'a> {
             }
             if family.constructors.is_empty() {
                 return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
+            }
+            if let OwnerFamilySource::SharedReference(source_type) = &family.source {
+                if !shared_int_reference(source_type) {
+                    return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
+                }
+                let mut kinds = BTreeSet::new();
+                for constructor in &family.constructors {
+                    let Some(kind) = constructor.shared_reference_constructor() else {
+                        return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
+                    };
+                    let Some(OwnerCapture { value_type: ValueType::Ref(root), .. }) = constructor.captures.first() else {
+                        return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
+                    };
+                    let physical = layouts.resolve_nominal(*root).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
+                    let valid = match kind {
+                        SharedReferenceConstructor::WholeIntCell { root } => root.0 == 0
+                            && kinds.insert(0_u8)
+                            && matches!(layouts.get(physical).map(|descriptor| descriptor.kind()),
+                                Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))),
+                        SharedReferenceConstructor::ListIntElement { root, index, bounds: _ } => {
+                            let element = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
+                                Some(crate::layout::LayoutKind::PackedList { element, .. }) => Some(*element),
+                                _ => None,
+                            };
+                            root.0 == 0 && index.0 == 1 && kinds.insert(1_u8)
+                                && element.is_some_and(|element| matches!(layouts.get(element).map(|descriptor| descriptor.kind()),
+                                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))))
+                        }
+                    };
+                    if !valid {
+                        return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
+                    }
+                }
             }
             for constructor in &family.constructors {
                 if !constructors.insert(constructor.id.0)
@@ -85,7 +125,8 @@ impl<'a> Registry<'a> {
     }
 
     fn registered(&self, id: GcTypeId) -> bool {
-        self.families.iter().any(|family| family.owner_type == id || family.list_type == id)
+        self.families.iter().any(|family| family.owner_type == id
+            || !matches!(family.source, OwnerFamilySource::SharedReference(_)) && family.list_type == id)
     }
 
     fn family(&self, id: FunctionSignatureId) -> Result<&OwnerFamily, InitialCheckError> {
@@ -110,6 +151,9 @@ impl<'a> Registry<'a> {
             }
             O::ReadCapability { destination, owner, constructor, capture } => {
                 let (family, constructor) = self.constructor(function, *constructor)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadCapability shared-reference family" });
+                }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 let field = constructor.captures.get(capture.0 as usize).ok_or(InitialCheckError::InvalidOwnership { function: function.id, object: *owner })?;
                 let CaptureTransfer::CopyCapability(kind) = field.transfer else {
@@ -119,6 +163,9 @@ impl<'a> Registry<'a> {
             }
             O::ReadOwner { destination, owner, constructor, capture } => {
                 let (family, constructor) = self.constructor(function, *constructor)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadOwner shared-reference family" });
+                }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 let field = constructor.captures.get(capture.0 as usize)
                     .ok_or(InitialCheckError::InvalidOwnership { function: function.id, object: *owner })?;
@@ -129,12 +176,30 @@ impl<'a> Registry<'a> {
                 };
                 require_type(function, *destination, ValueType::Gc(nested_type))?;
             }
+            O::ReadSharedPlace { destination, owner, family } => {
+                let family = self.family(*family)?;
+                if !matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation {
+                        function: function.id,
+                        operation: "ReadSharedPlace non-reference family",
+                    });
+                }
+                require_type(function, *owner, ValueType::Gc(family.owner_type))?;
+                require_type(function, *destination, ValueType::Int)?;
+            }
             O::ReadTag { destination, owner, family } => {
-                require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?;
+                let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ReadTag shared-reference family" });
+                }
+                require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 require_type(function, *destination, ValueType::Int)?;
             }
             O::CloneEnvironment { destination, owner, constructor } => {
                 let (family, _) = self.constructor(function, *constructor)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneEnvironment shared-reference family" });
+                }
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 require_type(function, *destination, ValueType::Ref(family.environment))?;
             }
@@ -154,38 +219,64 @@ impl<'a> Registry<'a> {
             O::Drop { owner, family } => require_type(function, *owner, ValueType::Gc(self.family(*family)?.owner_type))?,
             O::NewList { destination, family, elements } => {
                 let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "NewList shared-reference family" });
+                }
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 for element in elements { require_type(function, *element, ValueType::Gc(family.owner_type))?; }
             }
             O::ListGet { destination, list, index, family } => {
                 let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListGet shared-reference family" });
+                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *destination, ValueType::Gc(family.owner_type))?;
             }
             O::ListLength { destination, list, family } => {
-                require_type(function, *list, ValueType::Gc(self.family(*family)?.list_type))?;
+                let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListLength shared-reference family" });
+                }
+                require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Size)?;
             }
             O::CloneList { destination, list, family } => {
-                let ty = ValueType::Gc(self.family(*family)?.list_type);
+                let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "CloneList shared-reference family" });
+                }
+                let ty = ValueType::Gc(family.list_type);
                 require_type(function, *list, ty)?;
                 require_type(function, *destination, ty)?;
             }
             O::ListPush { destination, list, value, family } => {
                 let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListPush shared-reference family" });
+                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 require_type(function, *value, ValueType::Gc(family.owner_type))?;
             }
             O::ListSet { destination, list, index, value, family } => {
                 let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "ListSet shared-reference family" });
+                }
                 require_type(function, *list, ValueType::Gc(family.list_type))?;
                 require_type(function, *destination, ValueType::Gc(family.list_type))?;
                 require_type(function, *index, ValueType::Size)?;
                 require_type(function, *value, ValueType::Gc(family.owner_type))?;
             }
-            O::DropList { list, family } => require_type(function, *list, ValueType::Gc(self.family(*family)?.list_type))?,
+            O::DropList { list, family } => {
+                let family = self.family(*family)?;
+                if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation { function: function.id, operation: "DropList shared-reference family" });
+                }
+                require_type(function, *list, ValueType::Gc(family.list_type))?;
+            }
         }
         Ok(())
     }
@@ -269,6 +360,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                         OwnerOperation::Construct { .. }
                         | OwnerOperation::ReadCapability { .. }
                         | OwnerOperation::ReadOwner { .. }
+                        | OwnerOperation::ReadSharedPlace { .. }
                         | OwnerOperation::ReadTag { .. }
                         | OwnerOperation::ReadCallable { .. }
                         | OwnerOperation::Clone { .. }
@@ -362,6 +454,15 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
         }
     }
     Ok(())
+}
+
+fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    matches!(source_type,
+        witchy_syntax::ast::Type::Qualified(
+            witchy_syntax::ast::TypeQual::Borrow(lifetime), inner,
+        ) if !lifetime.is_empty()
+            && matches!(inner.as_ref(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty()))
 }
 
 #[cfg(test)]
@@ -571,5 +672,48 @@ mod tests {
             Registry { families: std::slice::from_ref(&family) }.operation(&function, &callable),
             Err(InitialCheckError::UnsupportedMemoryOperation { operation: "ReadCallable aggregate family", .. })
         ));
+    }
+
+    #[test]
+    fn shared_place_read_requires_exact_opaque_family_and_int_result() {
+        use witchy_syntax::ast::{Type, TypeQual};
+
+        let owner_type = GcTypeId::new(0xc5000000);
+        let family_token = FunctionSignatureId::new(50);
+        let family = OwnerFamily {
+            source: OwnerFamilySource::SharedReference(Type::Qualified(
+                TypeQual::Borrow("a".into()),
+                Box::new(Type::Named("Int".into(), Vec::new())),
+            )),
+            owner_type,
+            list_type: GcTypeId::new(0xc5000001),
+            signature: family_token,
+            declaration_signature: FunctionSignatureId::new(51),
+            environment: crate::layout::LayoutId::from_bytes([5; 32]),
+            constructors: Vec::new(),
+        };
+        let owner = ValueId::new(0);
+        let destination = ValueId::new(1);
+        let mut function = Function {
+            id: FunctionId::new(52),
+            signature: FunctionSignatureId::new(999),
+            entry: BlockId::new(0),
+            value_types: BTreeMap::from([
+                (owner, ValueType::Gc(owner_type)),
+                (destination, ValueType::Int),
+            ]),
+            blocks: Vec::new(),
+        };
+        let operation = OwnerOperation::ReadSharedPlace { destination, owner, family: family_token };
+        Registry { families: std::slice::from_ref(&family) }.operation(&function, &operation).unwrap();
+
+        function.value_types.insert(destination, ValueType::Size);
+        assert!(matches!(Registry { families: std::slice::from_ref(&family) }.operation(&function, &operation),
+            Err(InitialCheckError::TypeMismatch { .. })));
+
+        function.value_types.insert(destination, ValueType::Int);
+        let closure_family = OwnerFamily { source: OwnerFamilySource::Closure, ..family };
+        assert!(matches!(Registry { families: std::slice::from_ref(&closure_family) }.operation(&function, &operation),
+            Err(InitialCheckError::UnsupportedMemoryOperation { operation: "ReadSharedPlace non-reference family", .. })));
     }
 }
