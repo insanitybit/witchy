@@ -708,6 +708,7 @@ impl CanonicalWriter {
             // twelve operations and receives the next unused value.
             O::ReadOwner { constructor, capture, .. } => (12, Some(*constructor), Some(*capture), None),
             O::ReadTag { family, .. } => (13, None, None, Some(*family)),
+            O::ReadSharedPlace { family, .. } => (15, None, None, Some(*family)),
             O::ReadCallable { family, .. } => (2, None, None, Some(*family)),
             O::Clone { family, .. } => (3, None, None, Some(*family)),
             O::Drop { family, .. } => (4, None, None, Some(*family)),
@@ -736,6 +737,10 @@ impl CanonicalWriter {
                 OwnerFamilySource::Closure => self.u8(0),
                 OwnerFamilySource::Aggregate(source) => {
                     self.u8(1);
+                    self.source_type(source);
+                }
+                OwnerFamilySource::SharedReference(source) => {
+                    self.u8(2);
                     self.source_type(source);
                 }
             }

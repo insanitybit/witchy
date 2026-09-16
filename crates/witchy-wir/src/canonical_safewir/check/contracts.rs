@@ -463,6 +463,7 @@ fn propagate_operation_origins(
                     O::Construct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadSharedPlace { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -725,6 +726,7 @@ fn derive_operation(
                     O::Clone { .. } | O::CloneList { .. } | O::Construct { .. } | O::NewList { .. } => MemoryEffect::Retain,
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadSharedPlace { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::CloneEnvironment { .. }
@@ -738,6 +740,7 @@ fn derive_operation(
                     O::Construct { .. } | O::NewList { .. } | O::ListPush { .. } | O::ListSet { .. } => true,
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadSharedPlace { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -761,6 +764,7 @@ fn derive_operation(
                     O::Construct { .. }
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
+                    | O::ReadSharedPlace { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }

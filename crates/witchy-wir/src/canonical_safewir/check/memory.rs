@@ -2676,6 +2676,7 @@ impl<'a> MemoryChecker<'a> {
                     }
                     OwnerOperation::ReadCapability { .. }
                     | OwnerOperation::ReadOwner { .. }
+                    | OwnerOperation::ReadSharedPlace { .. }
                     | OwnerOperation::ReadTag { .. }
                     | OwnerOperation::ReadCallable { .. }
                     | OwnerOperation::Clone { .. }

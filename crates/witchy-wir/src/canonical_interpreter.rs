@@ -15,7 +15,8 @@ use crate::canonical_safewir::{
     ValidatedSafeWir, ValueId, ValueType, FunctionSignature, FunctionSignatureId,
 };
 use crate::canonical_safewir::closure_owner_contract::{
-    CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerOperation,
+    CaptureStorage, CaptureTransfer, ConstructorId, OwnerFamily, OwnerFamilySource, OwnerOperation,
+    SharedPlaceBounds, SharedReferenceConstructor,
 };
 use crate::layout::{HeaderLayout, LayoutBundle, LayoutId, LayoutInterner, LayoutKind, ScalarKind};
 
@@ -1211,6 +1212,73 @@ impl<'a> Engine<'a> {
                     return Err(InterpretError::TypeMismatch("nested owner family"));
                 }
                 values.insert(*destination, retained);
+            }
+            OwnerOperation::ReadSharedPlace { destination, owner, family } => {
+                let family_info = self.owner_family(*family)?;
+                if !matches!(family_info.source, OwnerFamilySource::SharedReference(_)) {
+                    return Err(InterpretError::UnsupportedOperation("non-reference shared-place family"));
+                }
+                let owner = self.owner_value(*owner, values)?;
+                let (environment, constructor) = {
+                    let state = self.owners.get(&owner)
+                        .ok_or(InterpretError::UnsupportedOperation("released owner"))?;
+                    if state.family != *family {
+                        return Err(InterpretError::TypeMismatch("owner family"));
+                    }
+                    let (constructor_family, constructor) = self.owner_constructor(state.constructor)?;
+                    if constructor_family.signature != *family {
+                        return Err(InterpretError::TypeMismatch("owner constructor family"));
+                    }
+                    (state.environment, constructor.clone())
+                };
+                let projection = constructor.shared_reference_constructor()
+                    .ok_or(InterpretError::UnsupportedOperation("shared-place constructor schema"))?;
+                self.retain(environment)?;
+                let read = (|| {
+                    let capture = |ordinal: crate::canonical_safewir::closure_owner_contract::CaptureOrdinal|
+                        -> Result<InterpreterValue, InterpretError> {
+                        let capture = constructor.captures.get(ordinal.0 as usize)
+                            .ok_or(InterpretError::UnsupportedOperation("shared-place capture ordinal"))?;
+                        let CaptureStorage::EnvironmentField(field) = capture.storage else {
+                            return Err(InterpretError::TypeMismatch("shared-place capture storage"));
+                        };
+                        self.object(environment)?.cells.get(&CellKey::Field(field)).cloned()
+                            .ok_or(InterpretError::UninitializedPlace)
+                    };
+                    let (root, index) = match projection {
+                        SharedReferenceConstructor::WholeIntCell { root } => (capture(root)?, None),
+                        SharedReferenceConstructor::ListIntElement { root, index, bounds: SharedPlaceBounds::CurrentLogicalLength } => {
+                            let InterpreterValue::Size(index) = capture(index)? else {
+                                return Err(InterpretError::TypeMismatch("shared-place index"));
+                            };
+                            (capture(root)?, Some(index))
+                        }
+                    };
+                    let InterpreterValue::ObjectRef(root) = root else {
+                        return Err(InterpretError::TypeMismatch("shared-place root"));
+                    };
+                    self.retain(root)?;
+                    let value = match index {
+                        None => self.object(root)?.cells.get(&CellKey::Field(0)).cloned()
+                            .ok_or(InterpretError::UninitializedPlace),
+                        Some(index) => {
+                            self.check_element(root, index)?;
+                            self.object(root)?.cells.get(&CellKey::Element(index)).cloned()
+                                .ok_or(InterpretError::UninitializedPlace)
+                        }
+                    };
+                    let release = self.release(root);
+                    let value = value?;
+                    release?;
+                    if !matches!(value, InterpreterValue::Int(_)) {
+                        return Err(InterpretError::TypeMismatch("shared-place Int"));
+                    }
+                    Ok(value)
+                })();
+                let release = self.release(environment);
+                let value = read?;
+                release?;
+                values.insert(*destination, value);
             }
             OwnerOperation::ReadTag { destination, owner, family } => {
                 self.owner_family(*family)?;

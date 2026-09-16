@@ -104,7 +104,7 @@ use EvidenceFile::{Authority, Backend, Check, Interpreter, Launch, Memory, Owner
 /// Reviewed nested operation census. The declaration generates the comparison
 /// list, not these entries, so a new variant requires a manifest decision.
 pub const OWNER_OPERATION_VARIANTS: &[&str] = &[
-    "Construct", "ReadCapability", "ReadOwner", "ReadTag", "ReadCallable", "Clone", "Drop",
+    "Construct", "ReadCapability", "ReadOwner", "ReadSharedPlace", "ReadTag", "ReadCallable", "Clone", "Drop",
     "CloneEnvironment", "NewList", "ListGet", "ListLength", "CloneList",
     "ListPush", "ListSet", "DropList",
 ];

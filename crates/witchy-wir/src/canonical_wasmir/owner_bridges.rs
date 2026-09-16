@@ -29,6 +29,9 @@ impl OwnerBridgeRecipe {
             O::Construct { constructor, .. } => Self::Construct(*constructor),
             O::ReadCapability { constructor, capture, .. } => Self::ReadCapability(*constructor, *capture),
             O::ReadOwner { constructor, capture, .. } => Self::ReadOwner(*constructor, *capture),
+            // The operation is implemented from this family-authenticated tag
+            // bridge plus one admitted CloneEnvironment bridge per constructor.
+            O::ReadSharedPlace { family, .. } => Self::ReadTag(*family),
             O::ReadTag { family, .. } => Self::ReadTag(*family),
             O::ReadCallable { family, .. } => Self::ReadCallable(*family),
             O::Clone { family, .. } => Self::Clone(*family),
@@ -203,6 +206,40 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
             } else {
                 admitted.insert(id, result.len());
                 result.push(bridge);
+            }
+
+            if matches!(operation, OwnerOperation::ReadSharedPlace { .. }) {
+                for constructor in &family.constructors {
+                    if constructor.shared_reference_constructor().is_none() {
+                        return Err(error("shared-place constructor schema"));
+                    }
+                    let recipe = OwnerBridgeRecipe::CloneEnvironment(constructor.id);
+                    let dependency = AdmittedOwnerBridge {
+                        recipe,
+                        family: family.clone(),
+                        parameters: vec![ValueType::Gc(family.owner_type)],
+                        results: Vec::new(),
+                        callable_indices: Vec::new(),
+                        payload_result: true,
+                        cleanup_result: false,
+                        payload_type_index: 0,
+                        cleanup_item_type_index: 0,
+                        cleanup_type_index: 0,
+                        cleanup_families: Vec::new(),
+                    };
+                    let dependency_id = dependency.id();
+                    if import_ids.contains(&dependency_id) {
+                        return Err(error("private owner import collision"));
+                    }
+                    if let Some(&index) = admitted.get(&dependency_id) {
+                        if result[index] != dependency {
+                            return Err(error("private owner recipe collision"));
+                        }
+                    } else {
+                        admitted.insert(dependency_id, result.len());
+                        result.push(dependency);
+                    }
+                }
             }
         }
     }
