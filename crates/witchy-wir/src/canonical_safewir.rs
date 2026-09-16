@@ -317,6 +317,9 @@ pub enum CallArgument {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ParameterOwnership {
+    /// With `ValueType::Ref`, an explicit source `&'a T`: one
+    /// owner-retaining, read-only handle. The checker accepts the call only
+    /// when another live token for the same storage remains with the caller.
     Value,
     Unique,
     Shared,

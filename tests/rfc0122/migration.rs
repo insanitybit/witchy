@@ -95,12 +95,12 @@ fn main(console: Console):
 "#;
 
 fn compiled_output(checked: &witchy_types::pipeline::CheckedModule) -> Vec<String> {
-    let bytes = codegen::compile_checked_module_binary(checked)
+    let artifact = codegen::compile_checked_module_artifact(checked)
         .expect_lowered("compile migrated RFC-0122 fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &bytes,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,

@@ -1073,6 +1073,8 @@ fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffe
     needs.iter().all(|need| match (parameter.ownership, need) {
         (ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::WriteBack, _) => true,
         (ParameterOwnership::Shared, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release) => true,
+        (ParameterOwnership::Value, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release)
+            if parameter.value_type.is_linear_memory_ref() => true,
         _ => false,
     })
 }

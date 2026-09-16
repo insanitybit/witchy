@@ -204,6 +204,7 @@ enum SlotIdentity {
 
 pub(super) struct MemoryChecker<'a> {
     function: &'a Function,
+    signature: &'a FunctionSignature,
     layouts: &'a LayoutInterner,
     /// The module's closure-object registry: the signature slot 0 of each
     /// closure layout carries. It is the only source of a callable lane's
@@ -220,11 +221,12 @@ impl<'a> MemoryChecker<'a> {
     pub(super) fn new(
         function: &'a Function,
         layouts: &'a LayoutInterner,
-        signature: &FunctionSignature,
+        signature: &'a FunctionSignature,
         closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
     ) -> Result<Self, InitialCheckError> {
         let mut checker = Self {
             function,
+            signature,
             layouts,
             closure_layouts,
             state: MemoryState {
@@ -891,7 +893,7 @@ impl<'a> MemoryChecker<'a> {
         if needs_prefix {
             // Managed/Unit consolidation can change range/slot facts and can
             // fail. Keep its existing transactional scratch path intact.
-            let mut scratch = MemoryChecker { function: self.function, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
+            let mut scratch = MemoryChecker { function: self.function, signature: self.signature, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
             scratch.promote_header_extent(object).ok()?;
             return scratch.state.objects.get(&object).cloned();
         }
@@ -928,20 +930,16 @@ impl<'a> MemoryChecker<'a> {
                 })?;
             let ownership = match contract.ownership {
                 ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => Ownership::Unique,
-                ParameterOwnership::Shared | ParameterOwnership::WriteBack => Ownership::Shared,
-                ParameterOwnership::Value => {
-                    continue;
-                }
+                ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value => Ownership::Shared,
             };
             let extent = self.parameter_extent(layout)?;
             let (allocation_class, shared_immutable) = match contract.ownership {
                 ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack => (Some(AllocationClass::ReferenceCounted), false),
-                ParameterOwnership::Shared | ParameterOwnership::WriteBack => (None, true),
-                ParameterOwnership::Value => unreachable!(),
+                ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value => (None, true),
             };
             let initialized_owned_slots = matches!(
                 contract.ownership,
-                ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack
+                ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value
             );
             self.state.objects.insert(
                 parameter.value,
@@ -978,12 +976,14 @@ impl<'a> MemoryChecker<'a> {
         destinations: &[ValueId],
         results: &[ResultContract],
     ) -> Result<(), InitialCheckError> {
+        let mut argument_states = Vec::with_capacity(arguments.len());
         for (argument, parameter) in arguments.iter().zip(parameters) {
             let value = match argument {
                 CallArgument::Value(value) | CallArgument::Move(value) => *value,
             };
             let actual = value_type(self.function, value)?;
             if matches!(actual, ValueType::Gc(_)) {
+                argument_states.push(None);
                 // The separate opaque-token CFG judgment consumes this lane.
                 // It has no linear address, extent, or allocation class.
                 if !matches!(argument, CallArgument::Move(_)) || parameter.ownership != ParameterOwnership::Shared {
@@ -992,11 +992,13 @@ impl<'a> MemoryChecker<'a> {
                 continue;
             }
             if !actual.is_linear_memory_ref() {
+                argument_states.push(None);
                 if !matches!(argument, CallArgument::Value(_)) {
                     return self.unsupported("Call(non-memory ownership)");
                 }
                 continue;
             }
+            argument_states.push(Some(self.live_object(value)?.clone()));
             match argument {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
@@ -1069,6 +1071,35 @@ impl<'a> MemoryChecker<'a> {
                             initialized_owned_slots: true,
                         },
                     );
+                }
+                ResultContract::AliasesParameter { parameter, layout } => {
+                    let index = usize::try_from(*parameter).map_err(|_| {
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                    })?;
+                    let contract = parameters.get(index).ok_or(
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                    )?;
+                    if contract.ownership != ParameterOwnership::Value
+                        || contract.value_type != ValueType::Ref(*layout)
+                    {
+                        return self.unsupported("Call(borrowed alias contract)");
+                    }
+                    let mut state = argument_states.get(index).and_then(Option::as_ref).cloned()
+                        .ok_or(InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id })?;
+                    if state.layout != *layout {
+                        return self.unsupported("Call(borrowed alias layout)");
+                    }
+                    self.require_ref_type(*destination, *layout)?;
+                    state.ownership = Ownership::Shared;
+                    self.state.objects.insert(*destination, state);
+                    if arguments.get(index).is_some_and(|argument| {
+                        let value = match argument {
+                            CallArgument::Value(value) | CallArgument::Move(value) => value,
+                        };
+                        self.state.static_data_objects.contains(value)
+                    }) {
+                        self.state.static_data_objects.insert(*destination);
+                    }
                 }
                 ResultContract::StaticData { layout } => {
                     self.require_ref_type(*destination, *layout)?;
@@ -1197,6 +1228,38 @@ impl<'a> MemoryChecker<'a> {
                         });
                     }
                     self.require_complete_value_initialized(*value, "Return(uninitialized owned slot)")?;
+                }
+                ResultContract::AliasesParameter { parameter, layout } => {
+                    let index = usize::try_from(*parameter).map_err(|_| {
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                    })?;
+                    let contract = self.signature.contract.parameters.get(index).ok_or(
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                    )?;
+                    let entry = self.function.blocks.iter().find(|block| block.id == self.function.entry)
+                        .ok_or(InitialCheckError::MissingBlock {
+                            function: self.function.id,
+                            block: self.function.entry,
+                        })?;
+                    let parameter_value = entry.parameters.get(index).ok_or(
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                    )?.value;
+                    let state = self.live_object(*value)?;
+                    let parameter_state = self.state.objects.get(&parameter_value).ok_or(
+                        InitialCheckError::InvalidOwnership { function: self.function.id, object: *value },
+                    )?;
+                    if contract.ownership != ParameterOwnership::Value
+                        || contract.value_type != ValueType::Ref(*layout)
+                        || state.layout != *layout
+                        || state.identity != parameter_state.identity
+                        || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                    self.require_complete_value_initialized(*value, "Return(borrowed alias)")?;
                 }
                 _ => return self.unsupported("Return(memory result contract)"),
             }
@@ -2539,7 +2602,11 @@ impl<'a> MemoryChecker<'a> {
             ParameterOwnership::Shared | ParameterOwnership::WriteBack => {
                 matches!(state.ownership, Ownership::Unique | Ownership::Shared)
             }
-            _ => false,
+            ParameterOwnership::Value => {
+                matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+                    && self.is_shared_immutable_storage(source, state)
+                    && !self.is_sole_live_token(source, state.identity)
+            }
         };
         if !permitted {
             return Err(InitialCheckError::InvalidOwnership {
@@ -2547,7 +2614,7 @@ impl<'a> MemoryChecker<'a> {
                 object: source,
             });
         }
-        if matches!(parameter, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+        if matches!(parameter, ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Value)
             && self.is_shared_immutable_storage(source, state) {
             self.invalidate_full_current_prefixes(source);
             self.state.objects
@@ -5408,7 +5475,7 @@ mod tests {
     fn assert_promotion_matches_scratch(checker: &MemoryChecker<'_>, expected: bool) {
         let edge = checker.snapshot();
         let mut scratch = MemoryChecker {
-            function: checker.function, layouts: checker.layouts,
+            function: checker.function, signature: checker.signature, layouts: checker.layouts,
             closure_layouts: checker.closure_layouts, state: edge.clone(),
         };
         let old_result = scratch.promote_header_extent(SOURCE).ok()
@@ -6085,6 +6152,22 @@ mod tests {
             checker.drop_ref(DESTINATION).expect("drop destination token");
             assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
             assert_eq!(checker.state.objects[&DESTINATION].ownership, Ownership::Consumed);
+        });
+    }
+
+    #[test]
+    fn shared_borrow_call_requires_a_distinct_live_owner_token() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            assert!(matches!(
+                checker.consume_call_move(SOURCE, ParameterOwnership::Value),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+
+            checker.clone_ref(DESTINATION, SOURCE).expect("construct owner-retaining borrow");
+            checker.consume_call_move(DESTINATION, ParameterOwnership::Value)
+                .expect("borrow handle transfers while its owner remains live");
+            assert_ne!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
         });
     }
 

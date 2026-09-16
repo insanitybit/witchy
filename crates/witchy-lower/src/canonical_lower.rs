@@ -1386,6 +1386,8 @@ fn signature_from_type(
         // observable semantics; its no-escape rule is the type checker's. Under
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
         let ownership = match (value_type, convention) {
+            (ValueType::Ref(_), Convention::Let | Convention::Borrow)
+                if shared_reference_parts(parameter).is_some() => ParameterOwnership::Value,
             (ValueType::Ref(_) | ValueType::Gc(_), Convention::Let | Convention::Borrow | Convention::Own) => {
                 ParameterOwnership::Shared
             }
@@ -1410,12 +1412,27 @@ fn signature_from_type(
         value_parameters.push(value_type);
         contract_parameters.push(ParameterContract { value_type, ownership });
     }
-    let result = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
-    let mut results = (!is_unit(result)).then_some(result).into_iter().collect::<Vec<_>>();
-    let mut result_contracts = results.iter().copied().map(|result| match result {
-        ValueType::Ref(layout) => ResultContract::Shared { layout },
-        result => ResultContract::Value(result),
-    }).collect::<Vec<_>>();
+    let result_type = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
+    let mut results = (!is_unit(result_type)).then_some(result_type).into_iter().collect::<Vec<_>>();
+    let mut result_contracts = if let Some((lifetime, inner)) = shared_reference_parts(result) {
+        let ValueType::Ref(layout) = result_type else {
+            return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone()));
+        };
+        let parameter = parameters.iter().position(|parameter| {
+            shared_reference_parts(parameter).is_some_and(|(candidate, parameter_inner)| {
+                candidate == lifetime && parameter_inner.unqualified() == inner.unqualified()
+            })
+        }).ok_or_else(|| CanonicalLoweringError::UnsupportedType(result.as_ref().clone()))?;
+        vec![ResultContract::AliasesParameter {
+            parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            layout,
+        }]
+    } else {
+        results.iter().copied().map(|result| match result {
+            ValueType::Ref(layout) => ResultContract::Shared { layout },
+            result => ResultContract::Value(result),
+        }).collect::<Vec<_>>()
+    };
     for parameter in contract_parameters.iter().filter(|parameter| matches!(parameter.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack)) {
         results.push(parameter.value_type);
         // A write-back transfers the replacement value's owned token. It need
@@ -1447,10 +1464,11 @@ fn var_parameter_type(ty: &Type, convention: Convention) -> Type {
 fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
+        Type::Qualified(TypeQual::Borrow(_), inner) if is_direct_shared_string(inner) => false,
+        Type::Qualified(TypeQual::Borrow(_), _) => true,
         Type::Qualified(
             TypeQual::Unique
             | TypeQual::LocalUnique
-            | TypeQual::Borrow(_)
             | TypeQual::LegacyBorrow(_)
             | TypeQual::BorrowMut(_),
             _,
@@ -1468,6 +1486,18 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
                 || contains_deferred_v1_qualifier(result)
         }
     }
+}
+
+fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
+    let Type::Qualified(TypeQual::Borrow(lifetime), inner) = ty else { return None };
+    Some((lifetime, inner))
+}
+
+fn is_direct_shared_string(ty: &Type) -> bool {
+    matches!(
+        ty.unqualified(),
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+    )
 }
 
 fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<Type> {
@@ -6991,6 +7021,15 @@ impl FunctionLowerer<'_> {
                     // spelled out: one owned token, cloned before a non-tail
                     // call and moved at a tail edge.
                     Convention::Let | Convention::Borrow => match contract.ownership {
+                        ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
+                            let source_type = self.expression_type(argument)?;
+                            if shared_reference_parts(&source_type).is_none() {
+                                return Err(CanonicalLoweringError::UnsupportedCallOwnership {
+                                    callee: callee.to_owned(), parameter, ownership: contract.ownership,
+                                });
+                            }
+                            Ok(CallArgument::Move(value))
+                        }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
                         // A string literal cannot be cloned or moved as a token;
                         // the callee receives a fresh reference-counted copy.
@@ -10360,13 +10399,13 @@ impl FunctionLowerer<'_> {
             (UnOp::Neg | UnOp::Not | UnOp::BitNot, _) => {
                 Err(CanonicalLoweringError::UnsupportedExpression("unary operand type"))
             }
-            (UnOp::Borrow, _) => {
-                Err(CanonicalLoweringError::UnsupportedExpression("shared borrow"))
-            }
+            (UnOp::Borrow, ValueType::Ref(_)) => self.clone_reference_token(operand),
+            (UnOp::Borrow, _) => Err(CanonicalLoweringError::UnsupportedExpression("shared borrow operand")),
             (UnOp::BorrowMut, _) => {
                 Err(CanonicalLoweringError::UnsupportedExpression("mutable borrow"))
             }
-            (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference")),
+            (UnOp::Deref, ValueType::Ref(_)) => self.clone_reference_token(operand),
+            (UnOp::Deref, _) => Err(CanonicalLoweringError::UnsupportedExpression("dereference operand")),
             // Checked source establishes consumption; SafeWIR forwards the same token,
             // and the affine checker rejects any duplicate use.
             (UnOp::Move, _) => Ok(operand),
