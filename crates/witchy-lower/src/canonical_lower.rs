@@ -5199,7 +5199,7 @@ impl FunctionLowerer<'_> {
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
         // the existing conservative path unless source semantics rebind them.
-        let invariant_names = outer
+        let invariant_candidates = outer
             .iter()
             .filter_map(|(name, object)| {
                 (!names.contains(name)
@@ -5208,6 +5208,7 @@ impl FunctionLowerer<'_> {
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
+        let invariant_names = crate::analysis::loop_mentions(condition, body, &invariant_candidates);
         names.extend(invariant_names);
         names.sort();
         let list_names = names
@@ -16482,6 +16483,15 @@ fn main() -> Int:
         }));
         let result = check_initial(candidate);
         assert!(result.is_ok(), "dynamic list push rejected: {result:?}");
+    }
+
+    #[test]
+    fn while_does_not_phi_an_unused_dynamic_alias() {
+        let candidate = lower_with_derived_layouts(
+            "fn scan(s: String) -> Int:\n    var rest = s\n    var index = 0\n    while index < string.length(rest):\n        rest = string.substring(rest, 1, string.length(rest))\n        index = index + 1\n    index\n",
+        );
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "unused outer alias acquired a competing loop extent: {result:?}");
     }
 
     #[test]
