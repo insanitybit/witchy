@@ -31,13 +31,20 @@ elif command -v nice >/dev/null 2>&1; then
     agent_priority=(nice -n 10)
 fi
 
+# `cargo` inside the agent env resolves to scripts/bin/cargo, which routes
+# build subcommands through the mbx build cache when it is installed and not
+# disabled (WITCHY_BUILD_CACHE=off). The wrapper clears below stay: they
+# neutralise the global sccache config for the plain-cargo fallback, and the
+# shim ignores them.
 run_in_agent_env() {
     if [ "$agent_target_from_gate" -eq 1 ] && [ -z "${CARGO_PROFILE_TEST_STRIP+x}" ]; then
         env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
+            "PATH=$PWD/scripts/bin:$PATH" \
             CARGO_PROFILE_TEST_STRIP=symbols CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
             "${agent_priority[@]}" "$@"
     else
-        env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
+        env -u RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER= \
+            "PATH=$PWD/scripts/bin:$PATH" CARGO_TARGET_DIR="$AGENT_TARGET_DIR" \
             "${agent_priority[@]}" "$@"
     fi
 }

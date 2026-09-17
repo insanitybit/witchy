@@ -119,13 +119,28 @@ verification; it does not reduce scope. The merge queue serializes landing, not
 implementation. If independent work is becoming serial, change the execution
 plan and report the bottleneck.
 
-## Per-agent target dirs
+## Per-agent target dirs and the build cache
 
 ```sh
 CARGO_TARGET_DIR=target-claude cargo nextest run --workspace
 CARGO_TARGET_DIR=target-codex cargo test --workspace
 CARGO_TARGET_DIR=target-codex cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -D unused_must_use
 ```
+
+Compiler outputs are shared across worktrees and target dirs by the
+**mr-boxington (`mbx`) build cache**. `scripts/mbx-install.sh` (run by the
+SessionStart hook) installs the pinned binary under `state/mbx/`;
+`scripts/bin/cargo` is a `cargo` shim that routes build subcommands through it
+with the store at `state/mbx/store-<version>`. `agent-check.sh` and the
+scripts it drives already use the shim; for ad hoc commands put
+`scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`. The
+gate (`WITCHY_GATE_SCOPE`) always uses plain cargo. `WITCHY_BUILD_CACHE=off`
+is the kill switch; `WITCHY_MBX_MODE=restore` restores workspace crates too
+for a build-only flow (default keeps Cargo incremental on, so edits cost what
+they cost under plain cargo). Never run `mbx setup`: it rewrites machine-wide
+Cargo, mise, and rust-analyzer configuration for every agent. Measurements and
+the two reproducibility fixes it depends on:
+`scratch/build-cache-eval-2026-09-17.md`.
 
 `./scripts/check.sh` in the shared `target/` tree is still authoritative, but
 coordinate before running it there. While another agent is active, prefer

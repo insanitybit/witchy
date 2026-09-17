@@ -278,7 +278,11 @@ worktree, `target/`, master, and the merge queue as shared state:
   only artifacts you created.
 - Don't kill Cargo, nextest, dev-server, or browser processes you didn't start.
 - Use a per-agent target dir for long commands:
-  `CARGO_TARGET_DIR=target-claude cargo nextest run --workspace`.
+  `CARGO_TARGET_DIR=target-claude cargo nextest run --workspace`. Run ad hoc
+  cargo through the repo shim (`./scripts/bin/cargo`, or `scripts/bin` first
+  on `PATH`): it routes builds through the `mbx` build cache so a fresh
+  target dir restores dependencies instead of recompiling them.
+  `agent-check.sh` does this for you. `WITCHY_BUILD_CACHE=off` turns it off.
 
 **Keep the blocking suite fast.** Treat roughly two seconds per ordinary test
 as a useful optimization target: first measure the slowest tests, then reduce
@@ -331,7 +335,8 @@ Only the coordinator fast-forwards it. In particular:
   dodge that is the same crime.
 
 Fresh worktrees need a seeded build cache: agent worktrees get it
-automatically via the `WorktreeCreate` hook, but for a manual
+automatically via the `WorktreeCreate` hook (an APFS clone of `target/`; the
+`mbx` cache then restores whatever the new path invalidates), but for a manual
 `git worktree add` run `./scripts/worktree-warm.sh <path>` (it APFS-CoW-clones
 `target/`, so dependencies come up warm). Don't point `CARGO_TARGET_DIR` at
 a shared dir — cargo's build lock would serialize concurrent agents.

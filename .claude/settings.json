@@ -5,6 +5,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/mbx-install.sh || true",
+            "timeout": 120,
+            "statusMessage": "Installing the mbx build cache"
+          },
+          {
+            "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/worktree-warm.sh || true",
             "timeout": 120,
             "statusMessage": "Warming worktree build cache"
