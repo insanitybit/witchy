@@ -248,7 +248,7 @@ pub(crate) mod tests {
     #[test]
     fn normal_caller_prepares_owned_value_for_opt_export_without_changing_value_semantics() {
         let api = "mode opt\n\npub fn append(own values: List(Int), value: Int) -> List(Int):\n    values.push(value)\n    values\n";
-        let main = "import api\n\nfn main() -> Int:\n    let values = [1, 2]\n    let extended = api.append(values, 3)\n    extended.length() * 10 + values[0]\n";
+        let main = "import api\n\nfn main() -> Int:\n    let values = [1, 2]\n    let before = values[0]\n    let extended = api.append(values, 3)\n    extended.length() * 10 + before\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![
                 ("api".to_string(), api.as_bytes().to_vec()),
@@ -276,7 +276,7 @@ pub(crate) mod tests {
         assert_eq!(
             main.call(&mut store, ()).expect("run normal-to-opt entry"),
             31,
-            "the opt callee receives an owned value while the normal caller retains its value"
+            "the opt callee receives the owned value while the caller retains only a copied observation"
         );
     }
 
