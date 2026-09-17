@@ -666,6 +666,10 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0152_semantic_matrix::/)'"
             path_has_early=1 ;;
+        tests/misc/rfc0167_mode_interop.rs)
+            any_rust=1
+            add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'"
+            path_has_early=1 ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1
@@ -905,6 +909,8 @@ if [ "$edit_loop" -eq 1 ] && [ "${#paths[@]}" -eq 1 ]; then
             cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/^rfc0165_project_run::/)'" ) ;;
         tests/misc/rfc0165_owner_adapters.rs)
             cmds=("cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'") ;;
+        tests/misc/rfc0167_mode_interop.rs)
+            cmds=("./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'") ;;
         *) ;;
     esac
 fi

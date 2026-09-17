@@ -1207,6 +1207,21 @@ fn async_region_edits_run_complete_rfc0152_modules() {
 }
 
 #[test]
+fn mode_interop_edits_run_only_the_known_reference_free_probe() {
+    let commands = selected(&["--edit-loop", "tests/misc/rfc0167_mode_interop.rs"]);
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert_eq!(
+        commands[0],
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'"
+    );
+    assert_ne!(
+        commands[0],
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc",
+        "mode interop edit expanded to every misc test: {commands:?}"
+    );
+}
+
+#[test]
 fn direct_fetch_fixture_edits_run_the_complete_fetch_module() {
     let commands = selected(&["--edit-loop", "tests/misc/rfc0165_fetch.rs"]);
     assert_eq!(commands.len(), 1, "{commands:?}");
