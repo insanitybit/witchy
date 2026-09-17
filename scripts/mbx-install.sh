@@ -24,7 +24,13 @@ set -euo pipefail
 MBX_VERSION="1.12.0"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-state_dir="$repo_root/state/mbx"
+# Install under the MAIN checkout's state/ so every worktree shares one binary
+# and one store (see scripts/bin/cargo for the same resolution).
+state_root="$repo_root"
+if common="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    state_root="$(dirname "$common")"
+fi
+state_dir="$state_root/state/mbx"
 bin_dir="$state_dir/bin"
 install_dir="$state_dir/$MBX_VERSION"
 binary="$install_dir/mbx"

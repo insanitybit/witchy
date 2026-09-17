@@ -31,6 +31,14 @@ set -u
 
 self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$self_dir/../.." && pwd)"
+# The store and the installed binary live under the MAIN checkout's state/,
+# not this worktree's: a linked worktree resolving `../..` from its own
+# scripts/bin would get a private store and never share with its siblings.
+# `--git-common-dir` is the main .git for every worktree.
+state_root="$repo_root"
+if common="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    state_root="$(dirname "$common")"
+fi
 
 # Resolve the real cargo: first PATH entry that is not this shim's directory.
 real_cargo=""
@@ -66,7 +74,7 @@ export CARGO="$real_cargo"
 [ -z "${WITCHY_GATE_SCOPE+x}" ] || passthrough "$@"
 [ "${MBX_DISABLE:-0}" != "1" ] || passthrough "$@"
 
-mbx="$repo_root/state/mbx/bin/mbx"
+mbx="$state_root/state/mbx/bin/mbx"
 [ -x "$mbx" ] || passthrough "$@"
 
 # `cargo +toolchain ...` selects a toolchain; leave it to the real cargo.
@@ -80,7 +88,7 @@ case "${1:-}" in
 esac
 
 mbx_version="$(basename "$(dirname "$(readlink "$mbx" 2>/dev/null || echo "$mbx")")")"
-export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$repo_root/state/mbx/store-$mbx_version}"
+export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$state_root/state/mbx/store-$mbx_version}"
 
 case "${WITCHY_MBX_MODE:-edit}" in
     restore) ;;
