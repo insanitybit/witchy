@@ -4569,26 +4569,49 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn same_scalar_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
+        Self::same_scalar_with(facts, &Self::header_length_pairs(facts), left, right)
+    }
+
+    /// Every `(loaded, count)` pair where `loaded` is a `Length` header load
+    /// of an object whose extent is counted by `count`: the header loads that
+    /// prove a logical length. A capacity load is deliberately absent. Shared
+    /// meets may retain only capacity >= count, not equality with the physical
+    /// capacity header, so a capacity load must never become a logical-length
+    /// proof.
+    ///
+    /// Building the set is one pass over `header_values`. Callers that answer
+    /// many `same_scalar` questions against one state (the `less_equal_in`
+    /// worklist, the full-prefix scan over objects) build it once instead of
+    /// rescanning every header load per question, which made a straight-line
+    /// program with many string temporaries take minutes to check.
+    fn header_length_pairs(facts: &MemoryState) -> BTreeSet<(ValueId, ValueId)> {
+        facts
+            .header_values
+            .iter()
+            .filter_map(|((object, field), loaded)| {
+                if *field != HeaderField::Length {
+                    return None;
+                }
+                let Extent::Counted { count, .. } = facts.objects.get(object)?.extent else {
+                    return None;
+                };
+                Some((*loaded, count))
+            })
+            .collect()
+    }
+
+    /// `same_scalar_in` with the header-length pairs already collected.
+    fn same_scalar_with(
+        facts: &MemoryState,
+        header_lengths: &BTreeSet<(ValueId, ValueId)>,
+        left: ValueId,
+        right: ValueId,
+    ) -> bool {
         left == right
             || facts.constants.get(&left).zip(facts.constants.get(&right))
                 .is_some_and(|(left, right)| left == right)
-            || facts.header_values.iter().any(|((object, field), loaded)| {
-                let Some(state) = facts.objects.get(object) else {
-                    return false;
-                };
-                let Extent::Counted { count, .. } = state.extent else {
-                    return false;
-                };
-                let authoritative = match field {
-                    HeaderField::Length => count,
-                    // Shared meets may retain only capacity >= count, not
-                    // equality with the physical capacity header. A capacity
-                    // load must never become a logical-length proof here.
-                    HeaderField::Capacity => return false,
-                };
-                (*loaded == left && authoritative == right)
-                    || (*loaded == right && authoritative == left)
-            })
+            || header_lengths.contains(&(left, right))
+            || header_lengths.contains(&(right, left))
     }
 
     /// A zero-start range is semantically rooted at zero. Its SSA start may
@@ -4692,13 +4715,17 @@ impl<'a> MemoryChecker<'a> {
     }
 
     fn less_equal_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
+        // One header scan per query, not one per (visited value x guard x
+        // exact addition): the worklist below asks `same_scalar` for every
+        // guard and addition it walks past.
+        let header_lengths = Self::header_length_pairs(facts);
         let mut pending = vec![left];
         let mut visited = BTreeSet::new();
         while let Some(value) = pending.pop() {
             if !visited.insert(value) {
                 continue;
             }
-            if Self::same_scalar_in(facts, value, right)
+            if Self::same_scalar_with(facts, &header_lengths, value, right)
                 || Self::constant_relation_in(facts, value, right, |left, right| left <= right)
                 || facts.constants.get(&value) == Some(&0)
             {
@@ -4707,14 +4734,14 @@ impl<'a> MemoryChecker<'a> {
             for (operator, guarded_left, guarded_right) in &facts.guards {
                 if matches!(operator,
                     ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
-                    && Self::same_scalar_in(facts, value, *guarded_left)
+                    && Self::same_scalar_with(facts, &header_lengths, value, *guarded_left)
                 {
                     pending.push(*guarded_right);
                 }
             }
             for (sum, (addend_left, addend_right)) in &facts.exact_additions {
-                if Self::same_scalar_in(facts, value, *addend_left)
-                    || Self::same_scalar_in(facts, value, *addend_right)
+                if Self::same_scalar_with(facts, &header_lengths, value, *addend_left)
+                    || Self::same_scalar_with(facts, &header_lengths, value, *addend_right)
                 {
                     pending.push(*sum);
                 }
@@ -5198,6 +5225,7 @@ fn range_is_full_current_prefix(
         return false;
     }
     let Some(root) = facts.objects.get(&identity.object) else { return false; };
+    let header_lengths = MemoryChecker::header_length_pairs(facts);
     // MoveValue can leave the range under a consumed SSA root. Only a live
     // token for that very allocation can retain its proof; overlapping Shared
     // phi origin sets are deliberately not storage identity.
@@ -5206,7 +5234,7 @@ fn range_is_full_current_prefix(
             && matches!(object.ownership, Ownership::Unique | Ownership::Shared)
             && match object.extent {
                 Extent::Counted { count, .. } => {
-                    MemoryChecker::same_scalar_in(facts, identity.length, count)
+                    MemoryChecker::same_scalar_with(facts, &header_lengths, identity.length, count)
                         && (!range.zero_width || facts.constants.get(&count) == Some(&0))
                 }
                 Extent::HeaderPrefix { .. } => facts.full_current_prefixes.contains(identity),
