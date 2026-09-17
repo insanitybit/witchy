@@ -205,3 +205,15 @@ opt-level = 2
 # key still binds the Wasm bytes, compiler revision, target, and configuration.
 [profile.dev.package.wasmtime-internal-cache]
 debug-assertions = false
+
+
+# aws-lc-sys's build script compiles C probe executables with the package's
+# debug setting; on macOS a `-g` executable link leaves a `.dSYM` bundle in
+# OUT_DIR whose contents differ on every build. Cargo passes that OUT_DIR to
+# every dependent as `-L native=`, so a content-addressed build cache that
+# hashes native search directories (mr-boxington does) sees a new key for
+# witchy-wir/-lower/-interp/-runtime in every target directory. Nobody debugs
+# into AWS-LC from here; drop debug info for that one package so its OUT_DIR is
+# reproducible.
+[profile.dev.package.aws-lc-sys]
+debug = false
