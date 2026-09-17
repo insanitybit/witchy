@@ -91,7 +91,7 @@ wasm-encoder = "0.251"
 # Rust, so the binary codegen path (WIR -> wasm) runs on the wasm playground too.
 wasmparser = "0.251"
 # Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
-wasmtime = { version = "45.0.0", optional = true }
+wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","async","backtrace","cache","gc","gc-copying","gc-drc","gc-null","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","threads","stack-switching","std","debug","compile-time-builtins"] }
 # Diagnostic disassembly of already-admitted bytes, matching the encoder/parser.
 wasmprinter = { version = "0.251", optional = true }
 # Global allocator for the native binary + every test binary that links this

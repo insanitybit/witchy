@@ -25,7 +25,7 @@ sha2 = "0.11.0"
 wasmparser = "0.251"
 
 [dev-dependencies]
-wasmtime = "45.0.0"
+wasmtime = { version = "45.0.0", default-features = false, features = ["anyhow","async","backtrace","cache","gc","gc-copying","gc-drc","gc-null","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","threads","stack-switching","std","debug","compile-time-builtins"] }
 # Integration tests (tests/) compile the lib WITHOUT cfg(test); enable the
 # raw-module test surface for them via a self-dependency.
 witchy-lower = { path = ".", features = ["raw-module-test-api"] }
