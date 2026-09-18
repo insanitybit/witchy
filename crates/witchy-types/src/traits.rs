@@ -2284,12 +2284,22 @@ impl Ctx<'_> {
                         // perform a write-back. Otherwise retain the public `var`
                         // call so the ordinary checker can enforce its live
                         // receiver reservation before any storage rewrite.
-                        if let Some(writeback) = discarded_std_var_writeback(
+                        if let Some(mut writeback) = discarded_std_var_writeback(
                             e,
                             self.var_calls,
                             self.returns_nil,
                             scope,
                         ) {
+                            // `desugar_place_assign` leaves an indexed rebuild as
+                            // `base.__set_at(index, value)` until the receiver type
+                            // selects List versus Dict. This rewrite is created after
+                            // the call above was resolved, so resolve its synthetic
+                            // method before installing the assignment; otherwise it
+                            // escapes the final pass as a user-visible `__set_at`
+                            // method error.
+                            if let Stmt::Assign { value, .. } = &mut writeback {
+                                self.rewrite_expr(value, scope);
+                            }
                             *stmt = writeback;
                         }
                     }

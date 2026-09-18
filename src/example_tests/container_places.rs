@@ -83,6 +83,21 @@ use super::*;
         );
     }
 
+    /// (BUG-637) A method mutator on an indexed place resolves the mutator
+    /// before its enclosing List write-back is synthesized. The module form is
+    /// the matching control: both must update only the selected inner list.
+    #[test]
+    fn indexed_list_mutators_write_back_on_both_backends() {
+        let src = "fn main(console: Console):\n    var method_rows = [[1], [2]]\n    let method_inner = method_rows[0]\n    method_rows[0].push(9)\n    console.print(\"${method_inner} ${method_rows}\")\n\n    var module_rows = [[1], [2]]\n    let module_inner = module_rows[0]\n    list.push(module_rows[0], 9)\n    console.print(\"${module_inner} ${module_rows}\")\n";
+        let expected = ["[1] [[1, 9], [2]]", "[1] [[1, 9], [2]]"];
+        assert_eq!(link_run(src), expected, "interp: indexed list mutators");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: indexed list mutators",
+        );
+    }
+
     /// Dict and Set carry the same mutator-method rule as List: module
     /// functions remain the function-value surface, while statement-form methods
     /// on `var self` write back to the receiver.
