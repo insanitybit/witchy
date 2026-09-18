@@ -137,7 +137,10 @@ scripts it drives already use the shim; for ad hoc commands put
 gate (`WITCHY_GATE_SCOPE`) always uses plain cargo. `WITCHY_BUILD_CACHE=off`
 is the kill switch; `WITCHY_MBX_MODE=restore` restores workspace crates too
 for a build-only flow (default keeps Cargo incremental on, so edits cost what
-they cost under plain cargo). Never run `mbx setup`: it rewrites machine-wide
+they cost under plain cargo). Every shim build leaves a small JSON report
+under `state/mbx/reports/`; `scripts/mbx-report.py --since 24h --by worktree`
+turns them into hit rates and compiler time avoided, which is how to answer
+"is the cache helping" with numbers. Never run `mbx setup`: it rewrites machine-wide
 Cargo, mise, and rust-analyzer configuration for every agent. Measurements and
 the two reproducibility fixes it depends on:
 `scratch/build-cache-eval-2026-09-17.md`.

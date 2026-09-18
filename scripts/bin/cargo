@@ -90,6 +90,18 @@ esac
 mbx_version="$(basename "$(dirname "$(readlink "$mbx" 2>/dev/null || echo "$mbx")")")"
 export MBX_CACHE_DIR="${MBX_CACHE_DIR:-$state_root/state/mbx/store-$mbx_version}"
 
+# One small versioned JSON report per build (mbx's MBX_STATS_REPORT), named
+# so the summarizer can group by mode, subcommand, and worktree without the
+# report itself carrying that context: <utc-time>-<pid>-<mode>-<subcommand>-<worktree>.json
+# `scripts/mbx-report.py` reads them. Reports are ~2 KB each and live under
+# the shared state/ with the store.
+if [ -z "${MBX_STATS_REPORT+x}" ]; then
+    reports_dir="$state_root/state/mbx/reports"
+    mkdir -p "$reports_dir" 2>/dev/null || true
+    worktree_tag="$(basename "$repo_root" | tr -c 'A-Za-z0-9._-\n' '_')"
+    export MBX_STATS_REPORT="$reports_dir/$(date -u +%Y%m%dT%H%M%SZ)-$$-${WITCHY_MBX_MODE:-edit}-${1}-${worktree_tag}.json"
+fi
+
 case "${WITCHY_MBX_MODE:-edit}" in
     restore) ;;
     *) export MBX_INCREMENTAL="${MBX_INCREMENTAL:-1}" ;;
