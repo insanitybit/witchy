@@ -5505,7 +5505,7 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(body);
+        let rebound = self.loop_rebindings_with_write_backs(Some(scrutinee), body);
         let mut names = loop_lane_names(&outer, &rebound);
         let list_names = names
             .iter()
@@ -5629,7 +5629,7 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(body);
+        let rebound = self.loop_rebindings_with_write_backs(None, body);
         let mut names = loop_lane_names(&outer, &rebound);
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
@@ -5816,7 +5816,7 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(body)
+        let rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
         let names = loop_lane_names(&outer, &rebound);
         let list_names = names
@@ -5994,7 +5994,7 @@ impl FunctionLowerer<'_> {
         // in an `if` arm counts) is loop state; a top-level-only scan once
         // dropped a nested `n = n + 1` and the loop silently kept the entry
         // value.
-        let rebound = self.loop_rebindings_with_write_backs(body)
+        let rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
         let names = loop_lane_names(&outer, &rebound);
         if matches!(iterable, Expr::Var(name) if names.contains(name)) {
@@ -6519,14 +6519,18 @@ impl FunctionLowerer<'_> {
     /// string is a unique phi when it owns its token and a shared phi when it
     /// came from a shared source (the checker weakens a fresh concat result to
     /// shared at that phi). Untracked references stay unspecified.
-    /// The loop body's rebindings plus every `var` name the body passes to
-    /// a write-back parameter: the call mutates that value in place and
-    /// hands it back, as a push does, so the lane is planned like a pushed
+    /// The loop body's rebindings plus every `var` name its header or body
+    /// passes to a write-back parameter: the call mutates that value in place
+    /// and hands it back, as a push does, so the lane is planned like a pushed
     /// one (a unique phi when the entry value is a token); a shared value
     /// arriving on the back edge still demotes it to a shared phi.
-    fn loop_rebindings_with_write_backs(&self, body: &witchy_syntax::ast::Block) -> LoopRebindings {
+    fn loop_rebindings_with_write_backs(
+        &self,
+        header: Option<&Expr>,
+        body: &witchy_syntax::ast::Block,
+    ) -> LoopRebindings {
         let mut rebound = loop_rebindings(body);
-        let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut |expression| {
+        let mut observe = |expression: &Expr| {
             if let Expr::Call { name, args } = expression {
                 if witchy_syntax::intrinsics::is_list_pop_extract(name)
                     && let Some(root) = args.first().and_then(source_place_root)
@@ -6557,7 +6561,11 @@ impl FunctionLowerer<'_> {
                 }
             }
             Ok(())
-        });
+        };
+        if let Some(header) = header {
+            let _ = witchy_syntax::ast::visit::visit_expr::<()>(header, &mut observe);
+        }
+        let _ = witchy_syntax::ast::visit::visit_block::<()>(body, &mut observe);
         rebound
     }
 

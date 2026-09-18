@@ -1,6 +1,38 @@
 use super::*;
 use crate::{codegen, interpreter, parser, typeck};
 
+    /// Run a naturally terminating loop under the runtime's epoch watchdog so
+    /// a stale loop-carried lane is a prompt test failure rather than a hung
+    /// test process.
+    fn wasm_run_with_budget(src: &str, budget: std::time::Duration) -> Vec<String> {
+        use crate::runtime::Capabilities;
+        let linked = prepared_module(src);
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers this program");
+        let mut runtime = crate::runtime::Runtime::new().expect("preemptible runtime");
+        let mut actor = runtime
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    clock: true,
+                    env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("spawn");
+        runtime.run_with_budget(&mut actor, budget).expect("run within budget");
+        actor.output()
+    }
+
     /// The parameter conventions (`var`/`let`/`own` + `move`) behave identically
     /// on both the interpreter and WASM backends — value semantics are
     /// preserved regardless of which knob the author reaches for. `var` writes
@@ -12,6 +44,37 @@ use crate::{codegen, interpreter, parser, typeck};
         let expected = ["2", "60", "20", "3", "4"];
         assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// BUG-635: a `var` call in a `while let` scrutinee executes at the loop
+    /// header, so its repaired caller place must be carried on the backedge.
+    /// The bounded case exposes a silent wrong answer; the two unguarded cases
+    /// must terminate from their own `None` result rather than relying on a
+    /// body `break` to hide a stale header lane.
+    #[test]
+    fn while_let_scrutinee_var_writebacks_are_loop_carried() {
+        let bounded_scalar = "fn step(var cursor: Int) -> Option(Int):\n    cursor = cursor + 1\n    if cursor <= 3:\n        Some(cursor)\n    else:\n        None\n\nfn main(console: Console):\n    var cursor = 0\n    var seen = 0\n    while let Some(value) = step(cursor):\n        seen = seen + value\n        if seen >= 3:\n            break\n    console.print(\"${seen}\")\n    console.print(\"${cursor}\")\n";
+        let bounded_expected = ["3", "2"];
+        assert_eq!(link_run(bounded_scalar), bounded_expected, "interpreter bounded scalar");
+        assert_eq!(wasm_run(bounded_scalar), bounded_expected, "compiled bounded scalar");
+
+        let unguarded_scalar = "fn step(var cursor: Int) -> Option(Int):\n    cursor = cursor + 1\n    if cursor <= 3:\n        Some(cursor)\n    else:\n        None\n\nfn main(console: Console):\n    var cursor = 0\n    var total = 0\n    while let Some(value) = step(cursor):\n        total = total + value\n    console.print(\"${total}\")\n    console.print(\"${cursor}\")\n";
+        let unguarded_expected = ["6", "4"];
+        assert_eq!(link_run(unguarded_scalar), unguarded_expected, "interpreter unguarded scalar");
+        assert_eq!(
+            wasm_run_with_budget(unguarded_scalar, std::time::Duration::from_secs(1)),
+            unguarded_expected,
+            "compiled unguarded scalar",
+        );
+
+        let projected_collection = "type Holder:\n    values: List(Int)\n\nfn take(var values: List(Int)) -> Option(Int):\n    match values:\n        [] -> None\n        [head, ..tail] ->\n            values = tail\n            Some(head)\n\nfn main(console: Console):\n    var holder = Holder([1, 2, 3])\n    var total = 0\n    while let Some(value) = take(holder.values):\n        total = total + value\n    console.print(\"${total}\")\n    console.print(\"${list.length(holder.values)}\")\n";
+        let projected_expected = ["6", "0"];
+        assert_eq!(link_run(projected_collection), projected_expected, "interpreter projected collection");
+        assert_eq!(
+            wasm_run_with_budget(projected_collection, std::time::Duration::from_secs(1)),
+            projected_expected,
+            "compiled projected collection",
+        );
     }
 
     /// `let` borrows extend past `List` to the other heap types: a `String`
