@@ -56,9 +56,9 @@ mod nullable_tests {
             transfer: LoadTransfer::ClonePresent,
         };
         let mut owned = Values::from([parent]);
-        operation_flow(&function, &init, &mut owned, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        operation_flow(&function, &init, &mut owned, &Values::new(), &BTreeMap::new(), &BTreeMap::new()).unwrap();
         assert_eq!(owned, Values::from([parent]));
-        operation_flow(&function, &load, &mut owned, &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        operation_flow(&function, &load, &mut owned, &Values::new(), &BTreeMap::new(), &BTreeMap::new()).unwrap();
         assert_eq!(owned, Values::from([parent, child]));
         let mut drops = vec![];
         release_dead(&mut owned, &Values::new(), &mut drops);
@@ -264,20 +264,32 @@ fn call_flow(
     Ok(())
 }
 
+/// The values a function binds to static data segments. Such a value is
+/// immortal: it carries no releasable token, and a clone of it needs none.
+fn static_data_values(function: &Function) -> Values {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| block.operations.iter())
+        .filter_map(|operation| match operation {
+            Operation::StaticData { destination, .. } => Some(*destination),
+            _ => None,
+        })
+        .collect()
+}
+
 fn operation_flow(
     function: &Function,
     operation: &Operation,
     owned: &mut Values,
+    immortal: &Values,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     callees: &BTreeMap<FunctionId, FunctionSignatureId>,
 ) -> Result<(), ReleasePlacementError> {
     match operation {
         Operation::ClosureOwner(owner) => {
             for value in owner.operands() {
-                let immortal = function.blocks.iter().any(|block| block.operations.iter().any(|op| {
-                    matches!(op, Operation::StaticData { destination, .. } if *destination == value)
-                }));
-                if is_reference(function, value) && !owned.contains(&value) && !immortal {
+                if is_reference(function, value) && !owned.contains(&value) && !immortal.contains(&value) {
                     return Err(ReleasePlacementError::MissingToken(value));
                 }
             }
@@ -311,13 +323,10 @@ fn operation_flow(
             if is_reference(function, *destination) { owned.insert(*destination); }
         }
         Operation::CloneRef { destination, source } => {
-            let immortal = function.blocks.iter().any(|block| block.operations.iter().any(|operation| {
-                matches!(operation, Operation::StaticData { destination, .. } if destination == source)
-            }));
             // StaticData has no releasable source token. A clone still creates
             // an explicit reference value for ordinary call/store accounting;
             // the independent checker authenticates the static segment.
-            if !owned.contains(source) && !immortal { return Err(ReleasePlacementError::MissingToken(*source)); }
+            if !owned.contains(source) && !immortal.contains(source) { return Err(ReleasePlacementError::MissingToken(*source)); }
             owned.insert(*destination);
         }
         Operation::MoveValue { destination, source } if is_reference(function, *source) => {
@@ -392,6 +401,7 @@ pub(super) fn insert_releases(
             .then_some(parameter.value)
     }).collect::<Values>();
     let live_in = liveness(function);
+    let immortal = static_data_values(function);
     let mut incoming = BTreeMap::from([(function.entry, owned)]);
     let mut pending = VecDeque::from([function.entry]);
     let mut rewritten = BTreeMap::new();
@@ -422,7 +432,7 @@ pub(super) fn insert_releases(
         let mut output = Vec::new();
         release_dead(&mut owned, &live, &mut output);
         for (operation, dead) in block.operations.iter().zip(dead_after) {
-            operation_flow(function, operation, &mut owned, &signatures, &callees)?;
+            operation_flow(function, operation, &mut owned, &immortal, &signatures, &callees)?;
             output.push(operation.clone());
             release_values(&mut owned, &dead, &mut output);
         }

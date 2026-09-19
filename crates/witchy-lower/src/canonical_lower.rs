@@ -1910,6 +1910,8 @@ fn lower_function(
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
         token_join_parameters: BTreeSet::new(),
+        graph_version: 0,
+        token_facts: std::cell::RefCell::new(None),
         mutable_bindings: HashSet::new(),
         loop_contexts: Vec::new(),
         lambda_names,
@@ -2389,6 +2391,13 @@ struct BlockBuilder {
     terminator: Option<Terminator>,
 }
 
+/// `carries_token`'s view of the graph at one `graph_version`.
+struct TokenFacts {
+    version: u64,
+    direct: BTreeSet<ValueId>,
+    incoming: BTreeMap<ValueId, Vec<ValueId>>,
+}
+
 struct FunctionLowerer<'a> {
     function: String,
     function_id: FunctionId,
@@ -2425,6 +2434,10 @@ struct FunctionLowerer<'a> {
     /// Join parameters whose every lane carried a reference-count token, so
     /// the parameter carries one too (see `carries_token`).
     token_join_parameters: BTreeSet<ValueId>,
+    /// Bumped by every mutation of `blocks` or `token_join_parameters`, so
+    /// `carries_token` can reuse its scan of the graph until it changes.
+    graph_version: u64,
+    token_facts: std::cell::RefCell<Option<TokenFacts>>,
     /// Source name of each entry parameter, so an exit drop targets the
     /// token under its current binding (a loop threads parameters through
     /// block parameters) rather than the entry value.
@@ -3987,6 +4000,7 @@ impl FunctionLowerer<'_> {
                     parameter_index += 2;
                 }
                 if plan.all_tokens {
+                    self.graph_version += 1;
                     self.token_join_parameters.insert(parameter);
                 }
             } else if matches!(self.values[&parameter], ValueType::Ref(_)) {
@@ -4001,6 +4015,7 @@ impl FunctionLowerer<'_> {
                 else_arguments.push(else_value);
                 let result = join_parameters[parameter_index].value;
                 if all_tokens {
+                    self.graph_version += 1;
                     self.token_join_parameters.insert(result);
                 }
                 if let Some((then_lane, else_lane)) = shared_result_extents {
@@ -4058,10 +4073,12 @@ impl FunctionLowerer<'_> {
             }
             parameter_index += 1;
         }
+        self.graph_version += 1;
         self.blocks[then_end.get() as usize].terminator = Some(Terminator::Branch {
             target: join_id,
             arguments: then_arguments,
         });
+        self.graph_version += 1;
         self.blocks[else_end.get() as usize].terminator = Some(Terminator::Branch {
             target: join_id,
             arguments: else_arguments,
@@ -4434,6 +4451,7 @@ impl FunctionLowerer<'_> {
             self.blocks[join.get() as usize].parameters[result_parameter_index].ownership = Some(phi);
             if phi == Ownership::Unique {
                 let result = self.blocks[join.get() as usize].parameters[result_parameter_index].value;
+                self.graph_version += 1;
                 self.token_join_parameters.insert(result);
             }
         }
@@ -4457,6 +4475,7 @@ impl FunctionLowerer<'_> {
                     parameter_index += 2;
                 }
                 if plan.all_tokens {
+                    self.graph_version += 1;
                     self.token_join_parameters.insert(parameter);
                 }
             }
@@ -4480,6 +4499,7 @@ impl FunctionLowerer<'_> {
                     arguments.extend([count, capacity]);
                 }
             }
+            self.graph_version += 1;
             self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
                 target: join,
                 arguments,
@@ -4652,6 +4672,7 @@ impl FunctionLowerer<'_> {
                     arguments.extend([extents[edge].0, extents[edge].1]);
                 }
             }
+            self.graph_version += 1;
             self.blocks[block.get() as usize].terminator = Some(Terminator::Branch { target: join, arguments });
         }
         self.restore_facts(facts, join);
@@ -6222,6 +6243,7 @@ impl FunctionLowerer<'_> {
                 })
             })
             .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+        self.graph_version += 1;
         self.blocks.push(BlockBuilder {
             id,
             parameters,
@@ -6287,6 +6309,7 @@ impl FunctionLowerer<'_> {
                 self.push_operation(Operation::DropRef { object });
             }
         }
+        self.graph_version += 1;
         let block = &mut self.blocks[self.current.get() as usize];
         if block.terminator.replace(terminator).is_some() {
             return Err(CanonicalLoweringError::UnsupportedStatement("duplicate block terminator"));
@@ -6295,6 +6318,7 @@ impl FunctionLowerer<'_> {
     }
 
     fn push_operation(&mut self, operation: Operation) {
+        self.graph_version += 1;
         self.blocks[self.current.get() as usize].operations.push(operation);
     }
 
@@ -6316,6 +6340,17 @@ impl FunctionLowerer<'_> {
     /// element, or a join parameter all of whose lanes carried one. Static
     /// data and join parameters over static data carry none.
     fn carries_token(&self, value: ValueId) -> bool {
+        let mut facts = self.token_facts.borrow_mut();
+        if facts.as_ref().is_none_or(|facts| facts.version != self.graph_version) {
+            *facts = Some(self.scan_token_facts());
+        }
+        let facts = facts.as_ref().expect("token facts were just scanned");
+        self.carries_token_seen(value, &facts.direct, &facts.incoming, &mut BTreeSet::new())
+    }
+
+    /// One scan of the graph for `carries_token`: the values that mint or
+    /// transfer a token, and each block parameter's incoming arguments.
+    fn scan_token_facts(&self) -> TokenFacts {
         let mut direct = self.token_join_parameters.clone();
         if let Some(entry) = self.blocks.first() {
             direct.extend(entry.parameters.iter().filter_map(|parameter| {
@@ -6359,7 +6394,7 @@ impl FunctionLowerer<'_> {
                 _ => {}
             }
         }
-        self.carries_token_seen(value, &direct, &incoming, &mut BTreeSet::new())
+        TokenFacts { version: self.graph_version, direct, incoming }
     }
 
     /// Token-ness follows the explicit CFG: an owned entry parameter, an

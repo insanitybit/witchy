@@ -75,6 +75,7 @@ fn with_graph_terminal(edges: &[&[u32]], terminal: Terminator, test: impl FnOnce
         loop_headers: RefCell::new(BTreeMap::new()), loop_exit_targets: RefCell::new(BTreeMap::new()),
         back_edge_source_facts: RefCell::new(BTreeMap::new()), natural_loop_facts: RefCell::new(BTreeMap::new()),
         reaches_avoiding_facts: RefCell::new(BTreeMap::new()), path_facts: RefCell::new(BTreeMap::new()),
+        immediate_dominators: std::cell::OnceCell::new(),
     };
     let planner = PlanEmitter {
         source_function: &function, blocks_by_id: function.blocks.iter().map(|block| (block.id, block)).collect(),
@@ -85,6 +86,7 @@ fn with_graph_terminal(edges: &[&[u32]], terminal: Terminator, test: impl FnOnce
         loop_headers: RefCell::new(BTreeMap::new()), loop_exit_targets: RefCell::new(BTreeMap::new()),
         back_edge_source_facts: RefCell::new(BTreeMap::new()), natural_loop_facts: RefCell::new(BTreeMap::new()),
         reaches_avoiding_facts: RefCell::new(BTreeMap::new()), path_facts: RefCell::new(BTreeMap::new()),
+        immediate_dominators: std::cell::OnceCell::new(),
     };
     test(&encoder, &planner);
 }

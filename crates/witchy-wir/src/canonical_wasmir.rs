@@ -3292,6 +3292,105 @@ enum StructuredLabel {
     If,
 }
 
+/// Immediate dominators of every block reachable from `entry`
+/// (Cooper-Harvey-Kennedy over a reverse postorder). Unreachable blocks are
+/// absent. Computed once per emitter; both the encoder and the plan mirror
+/// answer `dominates` from it, so they keep choosing identical loops.
+fn immediate_dominators(
+    entry: crate::canonical_safewir::BlockId,
+    successors_by_block: &BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
+) -> BTreeMap<crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId> {
+    // Reverse postorder by an explicit DFS: an 11k-block executor must not
+    // recurse on the host stack.
+    let mut postorder = Vec::new();
+    let mut seen = BTreeSet::from([entry]);
+    let mut stack = vec![(entry, 0usize)];
+    while let Some((block, next)) = stack.last_mut() {
+        let successors = successors_by_block.get(block).map(Vec::as_slice).unwrap_or(&[]);
+        if *next < successors.len() {
+            let successor = successors[*next];
+            *next += 1;
+            if seen.insert(successor) {
+                stack.push((successor, 0));
+            }
+        } else {
+            postorder.push(*block);
+            stack.pop();
+        }
+    }
+    let order: BTreeMap<_, _> = postorder.iter().rev().enumerate().map(|(index, block)| (*block, index)).collect();
+    let mut predecessors: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for (block, successors) in successors_by_block {
+        if !order.contains_key(block) {
+            continue;
+        }
+        for successor in successors {
+            predecessors.entry(*successor).or_default().push(*block);
+        }
+    }
+    let mut idom = BTreeMap::from([(entry, entry)]);
+    let intersect = |idom: &BTreeMap<_, _>, mut left, mut right| {
+        while left != right {
+            while order[&left] > order[&right] {
+                left = idom[&left];
+            }
+            while order[&right] > order[&left] {
+                right = idom[&right];
+            }
+        }
+        left
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in postorder.iter().rev().copied() {
+            if block == entry {
+                continue;
+            }
+            let mut candidate = None;
+            for predecessor in predecessors.get(&block).map(Vec::as_slice).unwrap_or(&[]) {
+                if !idom.contains_key(predecessor) {
+                    continue;
+                }
+                candidate = Some(match candidate {
+                    None => *predecessor,
+                    Some(current) => intersect(&idom, current, *predecessor),
+                });
+            }
+            let Some(candidate) = candidate else { continue };
+            if idom.get(&block) != Some(&candidate) {
+                idom.insert(block, candidate);
+                changed = true;
+            }
+        }
+    }
+    idom.remove(&entry);
+    idom
+}
+
+/// `dominator` lies on every path from `entry` to `node`. A block the entry
+/// does not reach has no path at all, so every block dominates it.
+fn dominates_in(
+    idom: &BTreeMap<crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId>,
+    entry: crate::canonical_safewir::BlockId,
+    dominator: crate::canonical_safewir::BlockId,
+    node: crate::canonical_safewir::BlockId,
+) -> bool {
+    if node != entry && !idom.contains_key(&node) {
+        return true;
+    }
+    let mut current = node;
+    loop {
+        if current == dominator {
+            return true;
+        }
+        if current == entry {
+            return false;
+        }
+        current = idom[&current];
+    }
+}
+
 fn reverse_loop_members(
     header: crate::canonical_safewir::BlockId,
     back_edge_sources: Vec<crate::canonical_safewir::BlockId>,
@@ -3339,6 +3438,7 @@ struct StructuredEmitter<'a> {
     back_edge_source_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>>,
     natural_loop_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, BTreeSet<crate::canonical_safewir::BlockId>>>,
     reaches_avoiding_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId), bool>>,
+    immediate_dominators: std::cell::OnceCell<BTreeMap<crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId>>,
     /// Memoized path judgments keyed by the exact normalized merge set.
     /// Both answers are reusable: a cut cycle proves a path from `start`
     /// avoids every merge and terminal, independent of which caller first
@@ -3805,7 +3905,11 @@ impl StructuredEmitter<'_> {
         dominator: crate::canonical_safewir::BlockId,
         node: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        Ok(node == dominator || !self.reaches_avoiding(self.target_function.entry, node, dominator)?)
+        let entry = self.target_function.entry;
+        let idom = self
+            .immediate_dominators
+            .get_or_init(|| immediate_dominators(entry, &self.successors_by_block));
+        Ok(dominates_in(idom, entry, dominator, node))
     }
 
     /// Predecessors of `header` that it dominates: the sources of its back edges.
@@ -4323,6 +4427,7 @@ fn encode_function(
         back_edge_source_facts: RefCell::new(BTreeMap::new()),
         natural_loop_facts: RefCell::new(BTreeMap::new()),
         reaches_avoiding_facts: RefCell::new(BTreeMap::new()),
+        immediate_dominators: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(entry, None)?;
@@ -6032,6 +6137,7 @@ struct PlanEmitter<'a> {
     back_edge_source_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>>,
     natural_loop_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, BTreeSet<crate::canonical_safewir::BlockId>>>,
     reaches_avoiding_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId), bool>>,
+    immediate_dominators: std::cell::OnceCell<BTreeMap<crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId>>,
     /// Memoized path judgments keyed by the exact normalized merge set. This
     /// mirrors the encoder's bounded graph decision, including cached cyclic
     /// refusals, without weakening the independent plan comparison.
@@ -6408,7 +6514,11 @@ impl<'a> PlanEmitter<'a> {
     }
 
     fn dominates(&self, dominator: crate::canonical_safewir::BlockId, node: crate::canonical_safewir::BlockId) -> Result<bool, CanonicalAdmissionError> {
-        Ok(node == dominator || !self.reaches_avoiding(self.source_function.entry, node, dominator)?)
+        let entry = self.source_function.entry;
+        let idom = self
+            .immediate_dominators
+            .get_or_init(|| immediate_dominators(entry, &self.successors_by_block));
+        Ok(dominates_in(idom, entry, dominator, node))
     }
 
     fn back_edge_sources(&self, header: crate::canonical_safewir::BlockId) -> Result<Vec<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
@@ -6897,6 +7007,7 @@ fn expected_function_plan(
         back_edge_source_facts: RefCell::new(BTreeMap::new()),
         natural_loop_facts: RefCell::new(BTreeMap::new()),
         reaches_avoiding_facts: RefCell::new(BTreeMap::new()),
+        immediate_dominators: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(function.entry, None)?;
@@ -11937,5 +12048,80 @@ mod tests {
         let duplicate = target.functions[0].blocks[0].instructions[0].clone();
         target.functions[0].blocks[0].instructions.push(duplicate);
         assert!(matches!(check_correspondence(source.module(), &target), Err(CorrespondenceError::DuplicateSourceItem(_))));
+    }
+}
+
+#[cfg(test)]
+mod dominance_tests {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    use super::{dominates_in, immediate_dominators};
+    use crate::canonical_safewir::BlockId;
+
+    /// The definition both emitters used before the dominator tree: a
+    /// breadth-first search from the entry that never enters `avoid`.
+    fn dominates_by_search(
+        successors: &BTreeMap<BlockId, Vec<BlockId>>,
+        entry: BlockId,
+        dominator: BlockId,
+        node: BlockId,
+    ) -> bool {
+        if node == dominator {
+            return true;
+        }
+        let mut seen = BTreeSet::new();
+        let mut pending = VecDeque::from([entry]);
+        while let Some(id) = pending.pop_front() {
+            if id == dominator || !seen.insert(id) {
+                continue;
+            }
+            if id == node {
+                return false;
+            }
+            pending.extend(successors.get(&id).into_iter().flatten().copied());
+        }
+        true
+    }
+
+    fn graph(edges: &[(u32, &[u32])]) -> BTreeMap<BlockId, Vec<BlockId>> {
+        edges
+            .iter()
+            .map(|(from, to)| (BlockId::new(*from), to.iter().map(|id| BlockId::new(*id)).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn dominator_tree_matches_the_path_definition() {
+        // A diamond feeding a loop with a nested loop and two exits, a
+        // self-loop, a terminal sink shared by both arms, and an unreachable
+        // island (7 -> 8) that nothing enters.
+        let successors = graph(&[
+            (0, &[1, 2]),
+            (1, &[3]),
+            (2, &[3]),
+            (3, &[4, 9]),
+            (4, &[5, 6]),
+            (5, &[5, 4]),
+            (6, &[3, 9]),
+            (7, &[8]),
+            (8, &[7, 9]),
+            (9, &[]),
+        ]);
+        let entry = BlockId::new(0);
+        let idom = immediate_dominators(entry, &successors);
+        assert_eq!(idom.get(&BlockId::new(3)), Some(&entry));
+        assert_eq!(idom.get(&BlockId::new(5)), Some(&BlockId::new(4)));
+        assert_eq!(idom.get(&BlockId::new(9)), Some(&BlockId::new(3)));
+        assert!(!idom.contains_key(&BlockId::new(7)));
+        for dominator in 0..10 {
+            for node in 0..10 {
+                let (dominator, node) = (BlockId::new(dominator), BlockId::new(node));
+                assert_eq!(
+                    dominates_in(&idom, entry, dominator, node),
+                    dominates_by_search(&successors, entry, dominator, node),
+                    "dominates({dominator:?}, {node:?})"
+                );
+            }
+        }
     }
 }
