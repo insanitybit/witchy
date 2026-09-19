@@ -387,7 +387,117 @@ pub fn concrete_aggregate_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
-    concrete_identity_at(ty, definitions, 0, &mut MAX_AGGREGATE_SHAPE_NODES)
+    if !shape_memo::worth_memoizing(ty, definitions) {
+        return concrete_identity_at(ty, definitions, 0, &mut MAX_AGGREGATE_SHAPE_NODES);
+    }
+    if let Some(known) = shape_memo::identity(definitions, ty) {
+        return known;
+    }
+    let identity = concrete_identity_at(ty, definitions, 0, &mut MAX_AGGREGATE_SHAPE_NODES);
+    shape_memo::remember_identity(definitions, ty, &identity);
+    identity
+}
+
+/// Run `body` with the shape and identity judgments for `definitions`
+/// memoized on this thread.
+///
+/// Both judgments are pure functions of a type and the definitions, but the
+/// proof behind them (`definition_fields_ok`) starts from an empty memo on
+/// every call and explores the type graph within its budget, and a lowering
+/// asks for the same few shapes thousands of times (every list update of the
+/// std executor rebuilds an aggregate). The scope is keyed by the address of
+/// the borrowed map, which cannot move or change while the borrow lives, and
+/// it is popped when `body` returns, so a map created afterwards at the same
+/// address never sees its entries. A call with a map that is not the scoped
+/// one is answered without the memo.
+pub fn with_shape_memo<R>(definitions: &BTreeMap<String, TypeDef>, body: impl FnOnce() -> R) -> R {
+    shape_memo::scoped(definitions, body)
+}
+
+mod shape_memo {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    use foldhash::HashMap;
+    use witchy_syntax::ast::{Type, TypeDef};
+
+    use super::ScalarAggregateShape;
+
+    struct Scope {
+        definitions: usize,
+        shapes: HashMap<String, Option<ScalarAggregateShape>>,
+        identities: HashMap<String, Option<Type>>,
+    }
+
+    thread_local! {
+        static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Only a user-defined aggregate reaches the shape proof; a scalar, a
+    /// builtin container, or a tuple is judged structurally in less time
+    /// than rendering a key would take.
+    pub(super) fn worth_memoizing(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+        matches!(ty.unqualified(), Type::Named(name, _) if definitions.contains_key(name))
+    }
+
+    fn address(definitions: &BTreeMap<String, TypeDef>) -> usize {
+        std::ptr::from_ref(definitions) as usize
+    }
+
+    /// The memo key: the derived rendering of the type, which spells every
+    /// constructor, argument, and qualifier.
+    fn key(ty: &Type) -> String {
+        format!("{ty:?}")
+    }
+
+    pub(super) fn scoped<R>(definitions: &BTreeMap<String, TypeDef>, body: impl FnOnce() -> R) -> R {
+        SCOPES.with(|scopes| {
+            scopes.borrow_mut().push(Scope {
+                definitions: address(definitions),
+                shapes: HashMap::default(),
+                identities: HashMap::default(),
+            });
+        });
+        struct Pop;
+        impl Drop for Pop {
+            fn drop(&mut self) {
+                SCOPES.with(|scopes| {
+                    scopes.borrow_mut().pop();
+                });
+            }
+        }
+        let _pop = Pop;
+        body()
+    }
+
+    fn with_scope<R>(definitions: &BTreeMap<String, TypeDef>, read: impl FnOnce(&mut Scope) -> R) -> Option<R> {
+        let wanted = address(definitions);
+        SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+            let scope = scopes.iter_mut().rev().find(|scope| scope.definitions == wanted)?;
+            Some(read(scope))
+        })
+    }
+
+    pub(super) fn shape(definitions: &BTreeMap<String, TypeDef>, ty: &Type) -> Option<Option<ScalarAggregateShape>> {
+        with_scope(definitions, |scope| scope.shapes.get(&key(ty)).cloned()).flatten()
+    }
+
+    pub(super) fn remember_shape(definitions: &BTreeMap<String, TypeDef>, ty: &Type, shape: &Option<ScalarAggregateShape>) {
+        with_scope(definitions, |scope| {
+            scope.shapes.insert(key(ty), shape.clone());
+        });
+    }
+
+    pub(super) fn identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type) -> Option<Option<Type>> {
+        with_scope(definitions, |scope| scope.identities.get(&key(ty)).cloned()).flatten()
+    }
+
+    pub(super) fn remember_identity(definitions: &BTreeMap<String, TypeDef>, ty: &Type, identity: &Option<Type>) {
+        with_scope(definitions, |scope| {
+            scope.identities.insert(key(ty), identity.clone());
+        });
+    }
 }
 
 fn aggregate_declaration<'a>(
@@ -546,6 +656,42 @@ fn shape_from_instantiation(
         fields.extend(variant.fields.iter().map(|field| substitute_type(field, &substitutions)).collect::<Option<Vec<_>>>()?);
     }
     Some(ScalarAggregateShape { name, fields, variants, tagged: true, packed: false })
+}
+
+#[cfg(test)]
+mod shape_memo_tests {
+    use super::*;
+
+    fn record(name: &str, fields: Vec<Type>) -> TypeDef {
+        ScalarAggregateShape { name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false }
+            .packed_view()
+    }
+
+    #[test]
+    fn scoped_memo_answers_like_the_uncached_judgment_and_ignores_other_maps() {
+        let point = Type::Named("Point".into(), Vec::new());
+        let mut definitions = BTreeMap::new();
+        definitions.insert("Point".to_string(), record("Point", vec![int_type(), int_type()]));
+        let mut other = BTreeMap::new();
+        other.insert("Point".to_string(), record("Point", vec![int_type()]));
+
+        let uncached = scalar_aggregate_shape(&point, &definitions);
+        let uncached_other = scalar_aggregate_shape(&point, &other);
+        assert_ne!(uncached, uncached_other);
+        with_shape_memo(&definitions, || {
+            assert_eq!(scalar_aggregate_shape(&point, &definitions), uncached);
+            assert_eq!(scalar_aggregate_shape(&point, &definitions), uncached);
+            assert_eq!(concrete_aggregate_identity(&point, &definitions), Some(point.clone()));
+            // A map the scope does not cover is judged afresh, not from the memo.
+            assert_eq!(scalar_aggregate_shape(&point, &other), uncached_other);
+            with_shape_memo(&other, || {
+                assert_eq!(scalar_aggregate_shape(&point, &other), uncached_other);
+                assert_eq!(scalar_aggregate_shape(&point, &definitions), uncached);
+            });
+            assert_eq!(scalar_aggregate_shape(&point, &definitions), uncached);
+        });
+        assert_eq!(scalar_aggregate_shape(&point, &definitions), uncached);
+    }
 }
 
 #[cfg(test)]
@@ -788,6 +934,21 @@ mod recursive_shape_tests {
 /// The shape of a source type: a scalar `Option`/`Result` instantiation or
 /// a declared scalar aggregate.
 pub fn scalar_aggregate_shape(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ScalarAggregateShape> {
+    if !shape_memo::worth_memoizing(ty, definitions) {
+        return scalar_aggregate_shape_uncached(ty, definitions);
+    }
+    if let Some(known) = shape_memo::shape(definitions, ty) {
+        return known;
+    }
+    let shape = scalar_aggregate_shape_uncached(ty, definitions);
+    shape_memo::remember_shape(definitions, ty, &shape);
+    shape
+}
+
+fn scalar_aggregate_shape_uncached(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {

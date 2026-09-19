@@ -226,185 +226,525 @@ pub fn lower_typed_module(
         std::iter::once((definition.name.clone(), definition)).chain(qualified)
     }).collect::<HashMap<_, _>>();
     let definitions = witchy_types::canonical_aggregates::type_definitions(typed.module());
-    let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
-        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-    let tail_manifest = source.proper_tail_manifest();
-    let closure_families = crate::canonical_layouts::closure_families(source)
-        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-    let aggregate_families = crate::canonical_layouts::opaque_aggregate_families(source)
-        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-    let shared_reference_layout = crate::canonical_layouts::shared_int_reference_layout(source)
-        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-    let closure_layouts = ClosureValueLayouts {
-        linear: closure_families.iter().map(|(signature, family)| (signature.clone(), family.closure)).collect(),
-        owners: closure_families.iter().filter_map(|(signature, family)|
-            family.owner_type.map(|owner| (signature.clone(), owner))).collect(),
-        aggregate_owners: aggregate_families.iter().map(|(source, family)|
-            (source.clone(), (family.owner_type, family.list_type))).collect(),
-        shared_int_reference: crate::canonical_layouts::shared_int_reference_owner_type(),
-    };
-    let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
-    let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
-    let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
-    string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
-    if requires_secret {
-        string_payloads.extend(registry_hosts::REQUIRED_SECRET_MESSAGE_PARTS.map(|part| part.as_bytes().to_vec()));
-    }
-    string_payloads.sort();
-    string_payloads.dedup();
-    let string_data_ids = string_payloads
-        .iter()
-        .enumerate()
-        .map(|(index, bytes)| {
-            Ok((
-                bytes.clone(),
-                witchy_wir::canonical_safewir::StaticDataId::new(
-                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                ),
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
-    // Callable identity is structural.  Intern every concrete checked `Fn`
-    // type, including types which occur only in parameters or lambda
-    // expressions, before assigning any declaration/function IDs.  A source
-    // name is never part of a callable ABI identity.
-    let mut callable_types = Vec::new();
-    for item in &typed.module().items {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
+    // Shape and identity judgments recur for every value of the same type;
+    // memoize them for this map for the rest of the lowering.
+    witchy_types::canonical_aggregates::with_shape_memo(&definitions, || {
+        let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
+            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+        let tail_manifest = source.proper_tail_manifest();
+        let closure_families = crate::canonical_layouts::closure_families(source)
+            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+        let aggregate_families = crate::canonical_layouts::opaque_aggregate_families(source)
+            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+        let shared_reference_layout = crate::canonical_layouts::shared_int_reference_layout(source)
+            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+        let closure_layouts = ClosureValueLayouts {
+            linear: closure_families.iter().map(|(signature, family)| (signature.clone(), family.closure)).collect(),
+            owners: closure_families.iter().filter_map(|(signature, family)|
+                family.owner_type.map(|owner| (signature.clone(), owner))).collect(),
+            aggregate_owners: aggregate_families.iter().map(|(source, family)|
+                (source.clone(), (family.owner_type, family.list_type))).collect(),
+            shared_int_reference: crate::canonical_layouts::shared_int_reference_owner_type(),
+        };
+        let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
+        let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
+        let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
+        string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
+        if requires_secret {
+            string_payloads.extend(registry_hosts::REQUIRED_SECRET_MESSAGE_PARTS.map(|part| part.as_bytes().to_vec()));
         }
-        if let Some(function_type) = source.callable_signature(&function.name) {
-            collect_callable_types(function_type, &mut callable_types);
+        string_payloads.sort();
+        string_payloads.dedup();
+        let string_data_ids = string_payloads
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                Ok((
+                    bytes.clone(),
+                    witchy_wir::canonical_safewir::StaticDataId::new(
+                        u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    ),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
+        // Callable identity is structural.  Intern every concrete checked `Fn`
+        // type, including types which occur only in parameters or lambda
+        // expressions, before assigning any declaration/function IDs.  A source
+        // name is never part of a callable ABI identity.
+        let mut callable_types = Vec::new();
+        for item in &typed.module().items {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            if let Some(function_type) = source.callable_signature(&function.name) {
+                collect_callable_types(function_type, &mut callable_types);
+            }
         }
-    }
-    for item in &typed.module().items {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
+        for item in &typed.module().items {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
+                &function.body,
+                &mut |expression| {
+                    if let Some(checked_type) = typed.table().type_of(expression)
+                        .and_then(witchy_types::typeck::ty_to_ast)
+                    {
+                        collect_callable_types(&checked_type, &mut callable_types);
+                    }
+                    Ok(())
+                },
+            );
         }
-        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
-            &function.body,
-            &mut |expression| {
-                if let Some(checked_type) = typed.table().type_of(expression)
-                    .and_then(witchy_types::typeck::ty_to_ast)
-                {
-                    collect_callable_types(&checked_type, &mut callable_types);
+        // Layout projection also reaches callable fields nested inside concrete
+        // aggregate families. Those types may have no standalone expression node
+        // in the monomorphized module, but their projected closure layouts still
+        // require the same authenticated declaration and closure signatures.
+        callable_types.extend(closure_families.keys().cloned());
+        callable_types.sort_by_key(|ty| format!("{ty:?}"));
+        callable_types.dedup();
+        let function_types = callable_types
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| {
+                Ok((
+                    ty.clone(),
+                    FunctionSignatureId::new(
+                        u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    ),
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, CanonicalLoweringError>>()?;
+        let mut signatures = callable_types
+            .iter()
+            .map(|ty| {
+                let id = function_types[ty];
+                signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions).map_err(|error| {
+                    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+                        eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
+                    }
+                    error
+                })
+            })
+            .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+        // Every `fn` type also has its closure signature: the declaration
+        // signature with the closure record prepended as a shared parameter.
+        // The code slot of a closure record holds a function of that shape.
+        let mut closure_signatures: HashMap<Type, FunctionSignatureId> = HashMap::new();
+        let mut closure_context = ClosureContext {
+            layouts: closure_layouts.clone(),
+            families: closure_families,
+            aggregate_families,
+            signature_by_layout: HashMap::new(),
+            declaration_by_layout: HashMap::new(),
+            lambda_captures: HashMap::new(),
+            adapters: HashMap::new(),
+            owners: Vec::new(),
+        };
+        for ty in &callable_types {
+            let declaration_id = function_types[ty];
+            let key = crate::canonical_layouts::canonical_closure_key(ty, &definitions);
+            // A `fn` type that is only ever a declaration's shape has no
+            // closure layout and needs no closure signature.
+            let Some(&layout) = closure_layouts.get(&key) else { continue };
+            if let Some(&id) = closure_signatures.get(&key) {
+                closure_signatures.insert(ty.clone(), id);
+                continue;
+            }
+            let id = FunctionSignatureId::new(
+                u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            );
+            let declaration = signatures[declaration_id.get() as usize].clone();
+            signatures.push(closure_signature(id, layout, &declaration, closure_layouts.owners.get(&key).copied()));
+            closure_signatures.insert(key, id);
+            closure_signatures.insert(ty.clone(), id);
+            closure_context.signature_by_layout.insert(layout, id);
+            closure_context.declaration_by_layout.insert(layout, declaration_id);
+        }
+        let mut functions_by_name = HashMap::new();
+        let mut fresh_list_push_signatures = HashMap::new();
+        for item in &typed.module().items {
+            let Item::Function(function) = item else {
+                match item {
+                    Item::Type(_) => continue,
+                    Item::Trait(_) => return Err(CanonicalLoweringError::UnsupportedItem("trait")),
+                    Item::Impl(_) => return Err(CanonicalLoweringError::UnsupportedItem("impl")),
+                    Item::Const { .. } => return Err(CanonicalLoweringError::UnsupportedItem("const")),
+                    Item::TypeAlias { .. } => {
+                        return Err(CanonicalLoweringError::UnsupportedItem("type alias"));
+                    }
+                    Item::Comptime(_) => {
+                        return Err(CanonicalLoweringError::UnsupportedItem("comptime"));
+                    }
+                    Item::Function(_) => unreachable!(),
+                }
+            };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            let Some(function_type) = source.callable_signature(&function.name).cloned() else {
+                // A generic source template has no concrete checked callable body.
+                // The sealed frontend witness lists only generated instances.
+                continue;
+            };
+            let function_id = FunctionId::new(
+                u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            );
+            let source_signature_id = *function_types
+                .get(function_type.unqualified())
+                .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
+            // A monomorphized list.push helper always allocates its replacement
+            // list before dropping the input. Its result therefore carries a
+            // unique token even though the public source type conservatively says
+            // only `List(T)`. Keep that stronger fact on a private signature so a
+            // `var unique` caller can tail-forward its checked write-back contract
+            // without weakening it to Shared.
+            let signature_id = if function.name.starts_with("list.push__")
+                || function.name.starts_with("list.__push__")
+            {
+                if let Some(signature_id) = fresh_list_push_signatures.get(&source_signature_id) {
+                    *signature_id
+                } else {
+                    let mut signature = signatures[source_signature_id.get() as usize].clone();
+                    let [ValueType::Ref(layout)] = signature.results.as_slice() else {
+                        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                            function.name.clone(),
+                        ));
+                    };
+                    let [result] = signature.contract.results.as_mut_slice() else {
+                        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                            function.name.clone(),
+                        ));
+                    };
+                    *result = ResultContract::Unique { layout: *layout };
+                    signature.id = FunctionSignatureId::new(
+                        u32::try_from(signatures.len())
+                            .map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    );
+                    let signature_id = signature.id;
+                    signatures.push(signature);
+                    fresh_list_push_signatures.insert(source_signature_id, signature_id);
+                    signature_id
+                }
+            } else {
+                source_signature_id
+            };
+            functions_by_name.insert(function.name.clone(), (function_id, signature_id));
+        }
+        // Lambdas become functions of their own, bound to their closure
+        // witness: the closure record is their leading parameter and every
+        // `Int` capture is loaded from it at entry. Each is met again by node
+        // address when its function body is lowered.
+        let sites = lambda_sites(typed)
+            .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
+        let witnesses = source.closure_witness().entries();
+        let mut lambda_names: HashMap<usize, String> = HashMap::new();
+        let mut lambda_functions: Vec<LambdaFunction<'_>> = Vec::new();
+        let source_function_names = functions_by_name.keys().cloned().collect::<HashSet<String>>();
+        for (item_index, item) in typed.module().items.iter().enumerate() {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            let item_index = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+            let mut visit_error = None;
+            let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                let Expr::Lambda { params, body, qualifiers, .. } = expression else { return Ok(()) };
+                let address = expression as *const Expr as usize;
+                let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
+                let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
+                let captures = witnesses[witness_index].captures();
+                let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
+                let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
+                let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
+                let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions)) else { return Ok(()) };
+                let key = crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions);
+                let Some(family) = closure_context.families.get(&key) else {
+                    visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
+                    return Err(());
+                };
+                let witness_index = match u32::try_from(witness_index) {
+                    Ok(index) => index,
+                    Err(_) => { visit_error = Some(CanonicalLoweringError::IdOverflow); return Err(()); }
+                };
+                let Some((tag, variant)) = family.variants.iter().enumerate()
+                    .find(|(_, variant)| variant.witness == Some(witness_index)) else {
+                    visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness family"));
+                    return Err(());
+                };
+                if variant.fields.len() != capture_names.len() {
+                    visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness fields"));
+                    return Err(());
+                }
+                let mut capture_fields = Vec::with_capacity(capture_names.len());
+                for (index, (name, ty)) in capture_names.iter().zip(&variant.fields).enumerate() {
+                    let field = match variant.storage.get(index) {
+                        Some(CaptureStorage::EnvironmentField(field)) => *field,
+                        Some(CaptureStorage::OwnerField(_)) => 0,
+                        None => { visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure capture storage")); return Err(()); }
+                    };
+                    capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field });
+                }
+                let name = format!("{}#lambda{}", function.name, lambda_functions.len());
+                let params = std::iter::once(closure_environment_param())
+                    .chain(params
+                        .iter()
+                        .zip(parameter_types)
+                        .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() }))
+                    .collect::<Vec<_>>();
+                let synthesized = witchy_syntax::ast::Function {
+                    line: 0,
+                    public: false,
+                    pure: qualifiers.pure,
+                    comptime_only: false,
+                    attributes: Vec::new(),
+                    name: name.clone(),
+                    params,
+                    ret: Some((**result_type).clone()),
+                    body: body.clone(),
+                    bounds: Vec::new(),
+                    is_gen: false,
+                    is_async: false,
+                };
+                let function_id = match u32::try_from(functions_by_name.len()) {
+                    Ok(index) => FunctionId::new(index),
+                    Err(_) => {
+                        visit_error = Some(CanonicalLoweringError::IdOverflow);
+                        return Err(());
+                    }
+                };
+                functions_by_name.insert(name.clone(), (function_id, signature_id));
+                lambda_names.insert(address, name);
+                // Variant zero is exclusively the named-function adapter. `tag`
+                // is the authenticated physical family variant, so source
+                // witnesses already begin at one.
+                let environment_tag = i64::try_from(tag).expect("closure tag fits i64");
+                closure_context.lambda_captures.insert(address, ClosureEnvironment {
+                    tag: environment_tag,
+                    captures: capture_fields.clone(),
+                });
+                lambda_functions.push(LambdaFunction {
+                    synthesized,
+                    body,
+                    function_id,
+                    item_index,
+                    lambda_path: site.id.lambda_path.clone(),
+                    signature_id,
+                    witness_index,
+                    environment_tag,
+                    captures: capture_fields,
+                });
+                Ok(())
+            });
+            if let Some(error) = visit_error {
+                return Err(error);
+            }
+        }
+        // A named function used as a value is a closure whose code is an
+        // adapter: the function's own signature behind the closure record.
+        let mut adapters: Vec<AdapterFunction> = Vec::new();
+        let mut adapter_function_names = HashSet::new();
+        let mut adapter_targets = BTreeSet::new();
+        for item in &typed.module().items {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                if let Expr::Var(name) = expression && source_function_names.contains(name) {
+                    adapter_targets.insert(name.clone());
                 }
                 Ok(())
-            },
-        );
-    }
-    // Layout projection also reaches callable fields nested inside concrete
-    // aggregate families. Those types may have no standalone expression node
-    // in the monomorphized module, but their projected closure layouts still
-    // require the same authenticated declaration and closure signatures.
-    callable_types.extend(closure_families.keys().cloned());
-    callable_types.sort_by_key(|ty| format!("{ty:?}"));
-    callable_types.dedup();
-    let function_types = callable_types
-        .iter()
-        .enumerate()
-        .map(|(index, ty)| {
-            Ok((
-                ty.clone(),
-                FunctionSignatureId::new(
-                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                ),
-            ))
-        })
-        .collect::<Result<HashMap<_, _>, CanonicalLoweringError>>()?;
-    let mut signatures = callable_types
-        .iter()
-        .map(|ty| {
-            let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions).map_err(|error| {
-                if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
-                    eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
-                }
-                error
-            })
-        })
-        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-    // Every `fn` type also has its closure signature: the declaration
-    // signature with the closure record prepended as a shared parameter.
-    // The code slot of a closure record holds a function of that shape.
-    let mut closure_signatures: HashMap<Type, FunctionSignatureId> = HashMap::new();
-    let mut closure_context = ClosureContext {
-        layouts: closure_layouts.clone(),
-        families: closure_families,
-        aggregate_families,
-        signature_by_layout: HashMap::new(),
-        declaration_by_layout: HashMap::new(),
-        lambda_captures: HashMap::new(),
-        adapters: HashMap::new(),
-        owners: Vec::new(),
-    };
-    for ty in &callable_types {
-        let declaration_id = function_types[ty];
-        let key = crate::canonical_layouts::canonical_closure_key(ty, &definitions);
-        // A `fn` type that is only ever a declaration's shape has no
-        // closure layout and needs no closure signature.
-        let Some(&layout) = closure_layouts.get(&key) else { continue };
-        if let Some(&id) = closure_signatures.get(&key) {
-            closure_signatures.insert(ty.clone(), id);
-            continue;
+            });
         }
-        let id = FunctionSignatureId::new(
-            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-        );
-        let declaration = signatures[declaration_id.get() as usize].clone();
-        signatures.push(closure_signature(id, layout, &declaration, closure_layouts.owners.get(&key).copied()));
-        closure_signatures.insert(key, id);
-        closure_signatures.insert(ty.clone(), id);
-        closure_context.signature_by_layout.insert(layout, id);
-        closure_context.declaration_by_layout.insert(layout, declaration_id);
-    }
-    let mut functions_by_name = HashMap::new();
-    let mut fresh_list_push_signatures = HashMap::new();
-    for item in &typed.module().items {
-        let Item::Function(function) = item else {
-            match item {
-                Item::Type(_) => continue,
-                Item::Trait(_) => return Err(CanonicalLoweringError::UnsupportedItem("trait")),
-                Item::Impl(_) => return Err(CanonicalLoweringError::UnsupportedItem("impl")),
-                Item::Const { .. } => return Err(CanonicalLoweringError::UnsupportedItem("const")),
-                Item::TypeAlias { .. } => {
-                    return Err(CanonicalLoweringError::UnsupportedItem("type alias"));
+        for target in adapter_targets {
+            let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
+            let Some(fn_type) = source.callable_signature(&target) else { continue };
+            let fn_type = crate::canonical_layouts::canonical_closure_key(fn_type, &definitions);
+            let Some(&signature_id) = closure_signatures.get(&fn_type) else { continue };
+            let adapter_id = FunctionId::new(
+                u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            );
+            let adapter_name = format!("{target}#adapter");
+            functions_by_name.insert(adapter_name.clone(), (adapter_id, signature_id));
+            adapter_function_names.insert(adapter_name);
+            closure_context.adapters.insert(target.clone(), (adapter_id, signature_id, fn_type));
+            adapters.push(AdapterFunction { id: adapter_id, signature_id, target: target_id, target_signature });
+        }
+        for family in closure_context.families.values() {
+            let Some(owner_type) = family.owner_type else { continue };
+            let signature = closure_context.signature_by_layout[&family.closure];
+            let declaration_signature = closure_context.declaration_by_layout[&family.closure];
+            let mut constructors = Vec::new();
+            for lambda in lambda_functions.iter().filter(|lambda| lambda.signature_id == signature) {
+                let source_constructor = SourceConstructor::from_checked(source, ConstructorId(lambda.witness_index))
+                    .map_err(|_| CanonicalLoweringError::UnsupportedExpression("checked opaque capture contract"))?;
+                let variant = family.variants.iter().find(|variant| variant.witness == Some(lambda.witness_index))
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque capture variant"))?;
+                if variant.fields.len() != source_constructor.transfers().len() || variant.storage.len() != variant.fields.len() {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("opaque capture arity"));
                 }
-                Item::Comptime(_) => {
-                    return Err(CanonicalLoweringError::UnsupportedItem("comptime"));
-                }
-                Item::Function(_) => unreachable!(),
+                let captures = variant.fields.iter().zip(&variant.storage).zip(source_constructor.transfers())
+                    .map(|((ty, storage), transfer)| Ok(OwnerCapture {
+                        value_type: source_value_type(ty, &layouts, &layout_catalog, &closure_layouts, &definitions)?,
+                        storage: *storage,
+                        transfer: *transfer,
+                    })).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+                constructors.push(OwnerConstructor { id: ConstructorId(lambda.witness_index), function: lambda.function_id,
+                    witness: Some(lambda.witness_index), environment_tag: lambda.environment_tag, captures });
             }
-        };
-        if !scope.contains(&function.name) {
-            continue;
+            for (ordinal, adapter) in adapters.iter().enumerate().filter(|(_, adapter)| adapter.signature_id == signature) {
+                let id = witnesses.len().checked_add(ordinal).and_then(|id| u32::try_from(id).ok())
+                    .ok_or(CanonicalLoweringError::IdOverflow)?;
+                constructors.push(OwnerConstructor { id: ConstructorId(id), function: adapter.id,
+                    witness: None, environment_tag: 0, captures: Vec::new() });
+            }
+            constructors.sort_by_key(|constructor| constructor.id.0);
+            closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure,
+                owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
+                signature, declaration_signature, environment: family.environment, constructors });
         }
-        let Some(function_type) = source.callable_signature(&function.name).cloned() else {
-            // A generic source template has no concrete checked callable body.
-            // The sealed frontend witness lists only generated instances.
-            continue;
-        };
-        let function_id = FunctionId::new(
-            u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-        );
-        let source_signature_id = *function_types
-            .get(function_type.unqualified())
-            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
-        // A monomorphized list.push helper always allocates its replacement
-        // list before dropping the input. Its result therefore carries a
-        // unique token even though the public source type conservatively says
-        // only `List(T)`. Keep that stronger fact on a private signature so a
-        // `var unique` caller can tail-forward its checked write-back contract
-        // without weakening it to Shared.
-        let signature_id = if function.name.starts_with("list.push__")
-            || function.name.starts_with("list.__push__")
-        {
-            if let Some(signature_id) = fresh_list_push_signatures.get(&source_signature_id) {
-                *signature_id
-            } else {
-                let mut signature = signatures[source_signature_id.get() as usize].clone();
+        let mut next_constructor = closure_context.owners.iter().flat_map(|family| &family.constructors)
+            .map(|constructor| constructor.id.0).max().unwrap_or(0).checked_add(1)
+            .ok_or(CanonicalLoweringError::IdOverflow)?;
+        let mut aggregate_families = closure_context.aggregate_families.values().cloned().collect::<Vec<_>>();
+        aggregate_families.sort_by_key(|family| family.owner_type);
+        for family in aggregate_families {
+            let family_token = FunctionSignatureId::new(family.owner_type.get());
+            let mut constructors = Vec::with_capacity(family.variants.len());
+            for variant in &family.variants {
+                let captures = variant.fields.iter().zip(&variant.storage).map(|(field, storage)| {
+                    let value_type = source_value_type(field, &layouts, &layout_catalog, &closure_layouts, &definitions)?;
+                    let transfer = match value_type {
+                        ValueType::Capability(kind) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyCapability(kind),
+                        ValueType::Ref(_) | ValueType::Gc(_) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CloneManaged,
+                        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size =>
+                            witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar,
+                        _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+                    };
+                    Ok(OwnerCapture { value_type, storage: *storage, transfer })
+                }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+                constructors.push(OwnerConstructor {
+                    id: ConstructorId(next_constructor),
+                    function: FunctionId::new(u32::MAX),
+                    witness: None,
+                    environment_tag: variant.environment_tag,
+                    captures,
+                });
+                next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+            }
+            closure_context.owners.push(OwnerFamily {
+                source: OwnerFamilySource::Aggregate(family.source.clone()),
+                owner_type: family.owner_type,
+                list_type: family.list_type,
+                signature: family_token,
+                declaration_signature: family_token,
+                environment: family.environment,
+                constructors,
+            });
+        }
+        if let Some(shared_layout) = shared_reference_layout {
+            let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
+            let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
+            let whole_constructor = ConstructorId(next_constructor);
+            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+            let mut constructors = vec![OwnerConstructor {
+                id: whole_constructor,
+                function: FunctionId::new(u32::MAX),
+                witness: None,
+                environment_tag: 0,
+                captures: vec![OwnerCapture {
+                    value_type: ValueType::Ref(shared_layout.scalar_root),
+                    storage: CaptureStorage::EnvironmentField(1),
+                    transfer: CaptureTransfer::CloneManaged,
+                }],
+            }];
+            if let Some(list_root) = shared_layout.list_root {
+                constructors.push(OwnerConstructor {
+                    id: ConstructorId(next_constructor),
+                    function: FunctionId::new(u32::MAX),
+                    witness: None,
+                    environment_tag: 1,
+                    captures: vec![
+                        OwnerCapture {
+                            value_type: ValueType::Ref(list_root),
+                            storage: CaptureStorage::EnvironmentField(2),
+                            transfer: CaptureTransfer::CloneManaged,
+                        },
+                        OwnerCapture {
+                            value_type: ValueType::Size,
+                            storage: CaptureStorage::EnvironmentField(3),
+                            transfer: CaptureTransfer::CopyScalar,
+                        },
+                    ],
+                });
+            }
+            closure_context.owners.push(OwnerFamily {
+                source: OwnerFamilySource::SharedReference(Type::Qualified(
+                    TypeQual::Borrow("a".into()),
+                    Box::new(Type::Named("Int".into(), Vec::new())),
+                )),
+                owner_type: shared_reference_owner,
+                list_type: GcTypeId::new(shared_reference_owner.get() + 1),
+                signature: shared_reference_token,
+                declaration_signature: shared_reference_token,
+                environment: shared_layout.environment,
+                constructors,
+            });
+        }
+        closure_context.owners.sort_by_key(|family| family.owner_type);
+        let checked_parameter_conventions = callable_types
+            .iter()
+            .filter_map(|ty| {
+                let Type::Fn(parameters, _, conventions, _) = ty.unqualified() else {
+                    return None;
+                };
+                let conventions = if conventions.is_empty() {
+                    vec![Convention::Let; parameters.len()]
+                } else {
+                    conventions.clone()
+                };
+                Some((function_types[ty], conventions))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut checked_parameter_conventions = checked_parameter_conventions;
+        for (source_signature, fresh_signature) in &fresh_list_push_signatures {
+            let conventions = checked_parameter_conventions
+                .get(source_signature)
+                .cloned()
+                .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(
+                    *source_signature,
+                ))?;
+            checked_parameter_conventions.insert(*fresh_signature, conventions);
+        }
+        for ty in &callable_types {
+            let (Some(conventions), Some(&closure_signature)) = (checked_parameter_conventions.get(&function_types[ty]).cloned(), closure_signatures.get(ty)) else { continue };
+            let mut with_environment = vec![Convention::Let];
+            with_environment.extend(conventions);
+            checked_parameter_conventions.insert(closure_signature, with_environment);
+        }
+        for item in &typed.module().items {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
+                continue;
+            };
+            let mut signature = checked_signature(
+                source,
+                function,
+                signature_id,
+                &layouts,
+                &layout_catalog,
+                &closure_layouts,
+                &definitions,
+            )?;
+            if function.name.starts_with("list.push__")
+                || function.name.starts_with("list.__push__")
+            {
                 let [ValueType::Ref(layout)] = signature.results.as_slice() else {
                     return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
                         function.name.clone(),
@@ -416,828 +756,492 @@ pub fn lower_typed_module(
                     ));
                 };
                 *result = ResultContract::Unique { layout: *layout };
-                signature.id = FunctionSignatureId::new(
-                    u32::try_from(signatures.len())
-                        .map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                );
-                let signature_id = signature.id;
-                signatures.push(signature);
-                fresh_list_push_signatures.insert(source_signature_id, signature_id);
-                signature_id
             }
-        } else {
-            source_signature_id
-        };
-        functions_by_name.insert(function.name.clone(), (function_id, signature_id));
-    }
-    // Lambdas become functions of their own, bound to their closure
-    // witness: the closure record is their leading parameter and every
-    // `Int` capture is loaded from it at entry. Each is met again by node
-    // address when its function body is lowered.
-    let sites = lambda_sites(typed)
-        .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
-    let witnesses = source.closure_witness().entries();
-    let mut lambda_names: HashMap<usize, String> = HashMap::new();
-    let mut lambda_functions: Vec<LambdaFunction<'_>> = Vec::new();
-    let source_function_names = functions_by_name.keys().cloned().collect::<HashSet<String>>();
-    for (item_index, item) in typed.module().items.iter().enumerate() {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
+            signatures[signature_id.get() as usize] = signature;
         }
-        let item_index = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-        let mut visit_error = None;
-        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-            let Expr::Lambda { params, body, qualifiers, .. } = expression else { return Ok(()) };
-            let address = expression as *const Expr as usize;
-            let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
-            let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
-            let captures = witnesses[witness_index].captures();
-            let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
-            let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
-            let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
-            let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions)) else { return Ok(()) };
-            let key = crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions);
-            let Some(family) = closure_context.families.get(&key) else {
-                visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
-                return Err(());
-            };
-            let witness_index = match u32::try_from(witness_index) {
-                Ok(index) => index,
-                Err(_) => { visit_error = Some(CanonicalLoweringError::IdOverflow); return Err(()); }
-            };
-            let Some((tag, variant)) = family.variants.iter().enumerate()
-                .find(|(_, variant)| variant.witness == Some(witness_index)) else {
-                visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness family"));
-                return Err(());
-            };
-            if variant.fields.len() != capture_names.len() {
-                visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness fields"));
-                return Err(());
-            }
-            let mut capture_fields = Vec::with_capacity(capture_names.len());
-            for (index, (name, ty)) in capture_names.iter().zip(&variant.fields).enumerate() {
-                let field = match variant.storage.get(index) {
-                    Some(CaptureStorage::EnvironmentField(field)) => *field,
-                    Some(CaptureStorage::OwnerField(_)) => 0,
-                    None => { visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure capture storage")); return Err(()); }
-                };
-                capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field });
-            }
-            let name = format!("{}#lambda{}", function.name, lambda_functions.len());
-            let params = std::iter::once(closure_environment_param())
-                .chain(params
-                    .iter()
-                    .zip(parameter_types)
-                    .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() }))
-                .collect::<Vec<_>>();
-            let synthesized = witchy_syntax::ast::Function {
-                line: 0,
-                public: false,
-                pure: qualifiers.pure,
-                comptime_only: false,
-                attributes: Vec::new(),
-                name: name.clone(),
-                params,
-                ret: Some((**result_type).clone()),
-                body: body.clone(),
-                bounds: Vec::new(),
-                is_gen: false,
-                is_async: false,
-            };
-            let function_id = match u32::try_from(functions_by_name.len()) {
-                Ok(index) => FunctionId::new(index),
-                Err(_) => {
-                    visit_error = Some(CanonicalLoweringError::IdOverflow);
-                    return Err(());
-                }
-            };
-            functions_by_name.insert(name.clone(), (function_id, signature_id));
-            lambda_names.insert(address, name);
-            // Variant zero is exclusively the named-function adapter. `tag`
-            // is the authenticated physical family variant, so source
-            // witnesses already begin at one.
-            let environment_tag = i64::try_from(tag).expect("closure tag fits i64");
-            closure_context.lambda_captures.insert(address, ClosureEnvironment {
-                tag: environment_tag,
-                captures: capture_fields.clone(),
-            });
-            lambda_functions.push(LambdaFunction {
-                synthesized,
-                body,
-                function_id,
-                item_index,
-                lambda_path: site.id.lambda_path.clone(),
-                signature_id,
-                witness_index,
-                environment_tag,
-                captures: capture_fields,
-            });
-            Ok(())
-        });
-        if let Some(error) = visit_error {
-            return Err(error);
-        }
-    }
-    // A named function used as a value is a closure whose code is an
-    // adapter: the function's own signature behind the closure record.
-    let mut adapters: Vec<AdapterFunction> = Vec::new();
-    let mut adapter_function_names = HashSet::new();
-    let mut adapter_targets = BTreeSet::new();
-    for item in &typed.module().items {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
-        }
-        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-            if let Expr::Var(name) = expression && source_function_names.contains(name) {
-                adapter_targets.insert(name.clone());
-            }
-            Ok(())
-        });
-    }
-    for target in adapter_targets {
-        let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
-        let Some(fn_type) = source.callable_signature(&target) else { continue };
-        let fn_type = crate::canonical_layouts::canonical_closure_key(fn_type, &definitions);
-        let Some(&signature_id) = closure_signatures.get(&fn_type) else { continue };
-        let adapter_id = FunctionId::new(
-            u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-        );
-        let adapter_name = format!("{target}#adapter");
-        functions_by_name.insert(adapter_name.clone(), (adapter_id, signature_id));
-        adapter_function_names.insert(adapter_name);
-        closure_context.adapters.insert(target.clone(), (adapter_id, signature_id, fn_type));
-        adapters.push(AdapterFunction { id: adapter_id, signature_id, target: target_id, target_signature });
-    }
-    for family in closure_context.families.values() {
-        let Some(owner_type) = family.owner_type else { continue };
-        let signature = closure_context.signature_by_layout[&family.closure];
-        let declaration_signature = closure_context.declaration_by_layout[&family.closure];
-        let mut constructors = Vec::new();
-        for lambda in lambda_functions.iter().filter(|lambda| lambda.signature_id == signature) {
-            let source_constructor = SourceConstructor::from_checked(source, ConstructorId(lambda.witness_index))
-                .map_err(|_| CanonicalLoweringError::UnsupportedExpression("checked opaque capture contract"))?;
-            let variant = family.variants.iter().find(|variant| variant.witness == Some(lambda.witness_index))
-                .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque capture variant"))?;
-            if variant.fields.len() != source_constructor.transfers().len() || variant.storage.len() != variant.fields.len() {
-                return Err(CanonicalLoweringError::UnsupportedExpression("opaque capture arity"));
-            }
-            let captures = variant.fields.iter().zip(&variant.storage).zip(source_constructor.transfers())
-                .map(|((ty, storage), transfer)| Ok(OwnerCapture {
-                    value_type: source_value_type(ty, &layouts, &layout_catalog, &closure_layouts, &definitions)?,
-                    storage: *storage,
-                    transfer: *transfer,
-                })).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-            constructors.push(OwnerConstructor { id: ConstructorId(lambda.witness_index), function: lambda.function_id,
-                witness: Some(lambda.witness_index), environment_tag: lambda.environment_tag, captures });
-        }
-        for (ordinal, adapter) in adapters.iter().enumerate().filter(|(_, adapter)| adapter.signature_id == signature) {
-            let id = witnesses.len().checked_add(ordinal).and_then(|id| u32::try_from(id).ok())
-                .ok_or(CanonicalLoweringError::IdOverflow)?;
-            constructors.push(OwnerConstructor { id: ConstructorId(id), function: adapter.id,
-                witness: None, environment_tag: 0, captures: Vec::new() });
-        }
-        constructors.sort_by_key(|constructor| constructor.id.0);
-        closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure,
-            owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
-            signature, declaration_signature, environment: family.environment, constructors });
-    }
-    let mut next_constructor = closure_context.owners.iter().flat_map(|family| &family.constructors)
-        .map(|constructor| constructor.id.0).max().unwrap_or(0).checked_add(1)
-        .ok_or(CanonicalLoweringError::IdOverflow)?;
-    let mut aggregate_families = closure_context.aggregate_families.values().cloned().collect::<Vec<_>>();
-    aggregate_families.sort_by_key(|family| family.owner_type);
-    for family in aggregate_families {
-        let family_token = FunctionSignatureId::new(family.owner_type.get());
-        let mut constructors = Vec::with_capacity(family.variants.len());
-        for variant in &family.variants {
-            let captures = variant.fields.iter().zip(&variant.storage).map(|(field, storage)| {
-                let value_type = source_value_type(field, &layouts, &layout_catalog, &closure_layouts, &definitions)?;
-                let transfer = match value_type {
-                    ValueType::Capability(kind) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyCapability(kind),
-                    ValueType::Ref(_) | ValueType::Gc(_) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CloneManaged,
-                    ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size =>
-                        witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar,
-                    _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
-                };
-                Ok(OwnerCapture { value_type, storage: *storage, transfer })
-            }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-            constructors.push(OwnerConstructor {
-                id: ConstructorId(next_constructor),
-                function: FunctionId::new(u32::MAX),
-                witness: None,
-                environment_tag: variant.environment_tag,
-                captures,
-            });
-            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
-        }
-        closure_context.owners.push(OwnerFamily {
-            source: OwnerFamilySource::Aggregate(family.source.clone()),
-            owner_type: family.owner_type,
-            list_type: family.list_type,
-            signature: family_token,
-            declaration_signature: family_token,
-            environment: family.environment,
-            constructors,
-        });
-    }
-    if let Some(shared_layout) = shared_reference_layout {
-        let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
-        let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
-        let whole_constructor = ConstructorId(next_constructor);
-        next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
-        let mut constructors = vec![OwnerConstructor {
-            id: whole_constructor,
-            function: FunctionId::new(u32::MAX),
-            witness: None,
-            environment_tag: 0,
-            captures: vec![OwnerCapture {
-                value_type: ValueType::Ref(shared_layout.scalar_root),
-                storage: CaptureStorage::EnvironmentField(1),
-                transfer: CaptureTransfer::CloneManaged,
-            }],
-        }];
-        if let Some(list_root) = shared_layout.list_root {
-            constructors.push(OwnerConstructor {
-                id: ConstructorId(next_constructor),
-                function: FunctionId::new(u32::MAX),
-                witness: None,
-                environment_tag: 1,
-                captures: vec![
-                    OwnerCapture {
-                        value_type: ValueType::Ref(list_root),
-                        storage: CaptureStorage::EnvironmentField(2),
-                        transfer: CaptureTransfer::CloneManaged,
-                    },
-                    OwnerCapture {
-                        value_type: ValueType::Size,
-                        storage: CaptureStorage::EnvironmentField(3),
-                        transfer: CaptureTransfer::CopyScalar,
-                    },
-                ],
-            });
-        }
-        closure_context.owners.push(OwnerFamily {
-            source: OwnerFamilySource::SharedReference(Type::Qualified(
-                TypeQual::Borrow("a".into()),
-                Box::new(Type::Named("Int".into(), Vec::new())),
-            )),
-            owner_type: shared_reference_owner,
-            list_type: GcTypeId::new(shared_reference_owner.get() + 1),
-            signature: shared_reference_token,
-            declaration_signature: shared_reference_token,
-            environment: shared_layout.environment,
-            constructors,
-        });
-    }
-    closure_context.owners.sort_by_key(|family| family.owner_type);
-    let checked_parameter_conventions = callable_types
-        .iter()
-        .filter_map(|ty| {
-            let Type::Fn(parameters, _, conventions, _) = ty.unqualified() else {
-                return None;
-            };
-            let conventions = if conventions.is_empty() {
-                vec![Convention::Let; parameters.len()]
-            } else {
-                conventions.clone()
-            };
-            Some((function_types[ty], conventions))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut checked_parameter_conventions = checked_parameter_conventions;
-    for (source_signature, fresh_signature) in &fresh_list_push_signatures {
-        let conventions = checked_parameter_conventions
-            .get(source_signature)
-            .cloned()
-            .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(
-                *source_signature,
-            ))?;
-        checked_parameter_conventions.insert(*fresh_signature, conventions);
-    }
-    for ty in &callable_types {
-        let (Some(conventions), Some(&closure_signature)) = (checked_parameter_conventions.get(&function_types[ty]).cloned(), closure_signatures.get(ty)) else { continue };
-        let mut with_environment = vec![Convention::Let];
-        with_environment.extend(conventions);
-        checked_parameter_conventions.insert(closure_signature, with_environment);
-    }
-    for item in &typed.module().items {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
-        }
-        let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
-            continue;
-        };
-        let mut signature = checked_signature(
-            source,
-            function,
-            signature_id,
-            &layouts,
-            &layout_catalog,
-            &closure_layouts,
-            &definitions,
-        )?;
-        if function.name.starts_with("list.push__")
-            || function.name.starts_with("list.__push__")
-        {
-            let [ValueType::Ref(layout)] = signature.results.as_slice() else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                    function.name.clone(),
-                ));
-            };
-            let [result] = signature.contract.results.as_mut_slice() else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                    function.name.clone(),
-                ));
-            };
-            *result = ResultContract::Unique { layout: *layout };
-        }
-        signatures[signature_id.get() as usize] = signature;
-    }
 
-    let mut imports = Vec::new();
-    let mut abi_catalog = None;
-    let mut host_imports = HostImports::default();
-    let print_at = source.is_console_fixture();
-    let print_name = if print_at { "console_print_at" } else { "console_print" };
-    let prints = contains_console_print(typed.module());
-    let floats = renders_float(typed.module(), typed.table(), &definitions);
-    let mut capability_imports = collect_capability_imports(typed.module(), typed.table());
-    capability_imports.extend(registry_imports);
-    // Clock has no guest-memory lane. Register it independently of the
-    // buffer-host catalog, which requires a concrete String layout.
-    let clock_needed = capability_imports.remove("clock_now");
-    let compiler_imports = collect_compiler_imports(typed.module());
-    let regex_spans = regex::is_needed(typed.module());
-    // RFC-0165 Net import registration (Net track).
-    let net_imports = net::collect_imports(typed.module());
-    let exec_needed = exec::is_needed(typed.module());
-    let crypto_needed = crypto::is_needed(typed.module());
-    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
-        let string_layout = string_layout(
-            &Type::Named("String".into(), Vec::new()),
-            &layouts,
-            &layout_catalog,
-        )?;
-        let signature_id = FunctionSignatureId::new(
-            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-        );
-        signatures.push(FunctionSignature {
-            id: signature_id,
-            parameters: vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)), ValueType::Ref(string_layout)],
-            results: Vec::new(),
-            contract: CallableContract {
-                parameters: vec![
-                    ParameterContract {
-                        value_type: ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
-                        ownership: ParameterOwnership::Value,
-                    },
-                    ParameterContract {
-                        value_type: ValueType::Ref(string_layout),
-                        // Host buffer roles authorize read-only string access.
-                        ownership: ParameterOwnership::Value,
-                    },
-                ],
-                results: Vec::new(),
-                parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read])]),
-            },
-        });
-        let float_signature_id = FunctionSignatureId::new(
-            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-        );
-        signatures.push(FunctionSignature {
-            id: float_signature_id,
-            parameters: vec![ValueType::Float, ValueType::Ref(string_layout)],
-            results: vec![ValueType::Size],
-            contract: CallableContract {
-                parameters: vec![
-                    ParameterContract { value_type: ValueType::Float, ownership: ParameterOwnership::Value },
-                    ParameterContract {
-                        value_type: ValueType::Ref(string_layout),
-                        // The host buffer role, not callable ownership,
-                        // authorizes this import's bounded write.
-                        ownership: ParameterOwnership::Value,
-                    },
-                ],
-                results: vec![ResultContract::Value(ValueType::Size)],
-                parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
-            },
-        });
-        let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
-            .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
-            let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
-            let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
-            let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
-            let text = ValueType::Ref(string_layout);
-            let mut push_import_signature = |parameters: Vec<ValueType>, results: Vec<ValueType>, writes: Option<usize>| {
-                let id = FunctionSignatureId::new(
-                    u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                );
-                let mut parameter_effects = BTreeMap::new();
-                for (index, parameter) in parameters.iter().enumerate() {
-                    if matches!(parameter, ValueType::Ref(_)) {
-                        let effect = if writes == Some(index) { MemoryEffect::Write } else { MemoryEffect::Read };
-                        parameter_effects.insert(u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, vec![effect]);
-                    }
-                }
-                signatures.push(FunctionSignature {
-                    id,
-                    parameters: parameters.clone(),
-                    results: results.clone(),
-                    contract: CallableContract {
-                        // Host buffer roles, not callable ownership, authorize
-                        // each import's slice access.
-                        parameters: parameters
-                            .iter()
-                            .map(|value_type| ParameterContract { value_type: *value_type, ownership: ParameterOwnership::Value })
-                            .collect(),
-                        results: results.iter().map(|result| ResultContract::Value(*result)).collect(),
-                        parameter_effects,
-                    },
-                });
-                Ok::<_, CanonicalLoweringError>(id)
-            };
-            let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
-                dir_read_into: push_import_signature(vec![dir, text, text], vec![ValueType::Size], Some(2))?,
-                dir_list_into: push_import_signature(vec![dir, text], vec![ValueType::Size], Some(1))?,
-                dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
-                dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
-                dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
-                file_read_into: push_import_signature(vec![file, text], vec![ValueType::Size], Some(1))?,
-                env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
-                env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
-            };
-            catalog = catalog
-                .with_capability_imports(capability_signatures, string_layout)
-                .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            if capability_imports.contains("dir_is_dir_at") {
-                let signature = push_import_signature(vec![dir, text], vec![ValueType::Bool], None)?;
-                catalog = catalog.with_dir_is_dir_import(signature, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-if capability_imports.contains("build_out_write_at") {
-    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND);
-    let signature = push_import_signature(vec![build, text, text], Vec::new(), None)?;
-    catalog = catalog.with_build_out_import(signature, string_layout)
-        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-}
-            if capability_imports.contains("build_read_at") {
-                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![build, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                ];
-                catalog = catalog.with_build_read_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if capability_imports.contains("build_env_at") {
-                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![build, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Bool], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                ];
-                catalog = catalog.with_build_env_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if capability_imports.contains("build_net_fetch") {
-                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![build, text, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                ];
-                catalog = catalog.with_build_net_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if capability_imports.contains("net_fetch_at") || capability_imports.contains("fetch_send_at") || capability_imports.contains("fetch_only_at") {
-                let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
-                let fetch = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![net, text], vec![fetch], None)?,
-                    push_import_signature(vec![fetch, text, text, text, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    push_import_signature(vec![fetch, text], vec![fetch], None)?,
-                ];
-                catalog = catalog.with_fetch_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if capability_imports.contains("build_exec_run") {
-                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![build, text, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                ];
-                catalog = catalog.with_build_exec_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![dir, text, text], vec![ValueType::Bool], None)?,
-                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                    push_import_signature(vec![dir, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                    push_import_signature(vec![dir, text], Vec::new(), None)?,
-                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                ];
-                catalog = catalog.with_dir_storage_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if witchy_wir::canonical_safewir::REGISTRY_HOST_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
-                let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
-                let store = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND);
-                let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
-                let optional = ValueType::NullableCapability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
-                let ids = [
-                    push_import_signature(vec![clock], vec![ValueType::Int], None)?,
-                    push_import_signature(vec![dir, text], Vec::new(), None)?,
-                    push_import_signature(vec![store, text], vec![optional], None)?,
-                    push_import_signature(vec![secret, text, text], vec![ValueType::Size], Some(2))?,
-                    push_import_signature(vec![secret, text], vec![ValueType::Size], Some(1))?,
-                ];
-                catalog = catalog.with_registry_host_imports(ids, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if !compiler_imports.is_empty() {
-                let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
-                    footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
-                    diff_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
-                    doc_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
-                    doc_result_json_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
-                };
-                catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-            if regex_spans {
-                let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
-                catalog = catalog.with_regex_spans_import(signature, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            }
-        }
-        if print_at && prints {
-            let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
-            let parameters = vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
-                ValueType::Ref(string_layout), ValueType::Ref(string_layout), ValueType::Size];
+        let mut imports = Vec::new();
+        let mut abi_catalog = None;
+        let mut host_imports = HostImports::default();
+        let print_at = source.is_console_fixture();
+        let print_name = if print_at { "console_print_at" } else { "console_print" };
+        let prints = contains_console_print(typed.module());
+        let floats = renders_float(typed.module(), typed.table(), &definitions);
+        let mut capability_imports = collect_capability_imports(typed.module(), typed.table());
+        capability_imports.extend(registry_imports);
+        // Clock has no guest-memory lane. Register it independently of the
+        // buffer-host catalog, which requires a concrete String layout.
+        let clock_needed = capability_imports.remove("clock_now");
+        let compiler_imports = collect_compiler_imports(typed.module());
+        let regex_spans = regex::is_needed(typed.module());
+        // RFC-0165 Net import registration (Net track).
+        let net_imports = net::collect_imports(typed.module());
+        let exec_needed = exec::is_needed(typed.module());
+        let crypto_needed = crypto::is_needed(typed.module());
+        if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
+            let string_layout = string_layout(
+                &Type::Named("String".into(), Vec::new()),
+                &layouts,
+                &layout_catalog,
+            )?;
+            let signature_id = FunctionSignatureId::new(
+                u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            );
             signatures.push(FunctionSignature {
-                id, parameters: parameters.clone(), results: Vec::new(),
+                id: signature_id,
+                parameters: vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)), ValueType::Ref(string_layout)],
+                results: Vec::new(),
                 contract: CallableContract {
-                    parameters: parameters.into_iter().map(|value_type| ParameterContract {
-                        value_type, ownership: ParameterOwnership::Value,
-                    }).collect(), results: Vec::new(),
-                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read]), (2, vec![MemoryEffect::Read])]),
+                    parameters: vec![
+                        ParameterContract {
+                            value_type: ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
+                            ownership: ParameterOwnership::Value,
+                        },
+                        ParameterContract {
+                            value_type: ValueType::Ref(string_layout),
+                            // Host buffer roles authorize read-only string access.
+                            ownership: ParameterOwnership::Value,
+                        },
+                    ],
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read])]),
                 },
             });
-            catalog = catalog.with_console_print_at(id, string_layout)
+            let float_signature_id = FunctionSignatureId::new(
+                u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            );
+            signatures.push(FunctionSignature {
+                id: float_signature_id,
+                parameters: vec![ValueType::Float, ValueType::Ref(string_layout)],
+                results: vec![ValueType::Size],
+                contract: CallableContract {
+                    parameters: vec![
+                        ParameterContract { value_type: ValueType::Float, ownership: ParameterOwnership::Value },
+                        ParameterContract {
+                            value_type: ValueType::Ref(string_layout),
+                            // The host buffer role, not callable ownership,
+                            // authorizes this import's bounded write.
+                            ownership: ParameterOwnership::Value,
+                        },
+                    ],
+                    results: vec![ResultContract::Value(ValueType::Size)],
+                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
+                },
+            });
+            let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
                 .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        }
-        // RFC-0165 Net catalog registration (Net track).
+            if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
+                let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
+                let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
+                let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
+                let text = ValueType::Ref(string_layout);
+                let mut push_import_signature = |parameters: Vec<ValueType>, results: Vec<ValueType>, writes: Option<usize>| {
+                    let id = FunctionSignatureId::new(
+                        u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    );
+                    let mut parameter_effects = BTreeMap::new();
+                    for (index, parameter) in parameters.iter().enumerate() {
+                        if matches!(parameter, ValueType::Ref(_)) {
+                            let effect = if writes == Some(index) { MemoryEffect::Write } else { MemoryEffect::Read };
+                            parameter_effects.insert(u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, vec![effect]);
+                        }
+                    }
+                    signatures.push(FunctionSignature {
+                        id,
+                        parameters: parameters.clone(),
+                        results: results.clone(),
+                        contract: CallableContract {
+                            // Host buffer roles, not callable ownership, authorize
+                            // each import's slice access.
+                            parameters: parameters
+                                .iter()
+                                .map(|value_type| ParameterContract { value_type: *value_type, ownership: ParameterOwnership::Value })
+                                .collect(),
+                            results: results.iter().map(|result| ResultContract::Value(*result)).collect(),
+                            parameter_effects,
+                        },
+                    });
+                    Ok::<_, CanonicalLoweringError>(id)
+                };
+                let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
+                    dir_read_into: push_import_signature(vec![dir, text, text], vec![ValueType::Size], Some(2))?,
+                    dir_list_into: push_import_signature(vec![dir, text], vec![ValueType::Size], Some(1))?,
+                    dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
+                    dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
+                    dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
+                    file_read_into: push_import_signature(vec![file, text], vec![ValueType::Size], Some(1))?,
+                    env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
+                    env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
+                };
+                catalog = catalog
+                    .with_capability_imports(capability_signatures, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                if capability_imports.contains("dir_is_dir_at") {
+                    let signature = push_import_signature(vec![dir, text], vec![ValueType::Bool], None)?;
+                    catalog = catalog.with_dir_is_dir_import(signature, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+    if capability_imports.contains("build_out_write_at") {
+        let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND);
+        let signature = push_import_signature(vec![build, text, text], Vec::new(), None)?;
+        catalog = catalog.with_build_out_import(signature, string_layout)
+            .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    }
+                if capability_imports.contains("build_read_at") {
+                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND);
+                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                    let ids = [
+                        push_import_signature(vec![build, text], vec![response], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    ];
+                    catalog = catalog.with_build_read_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if capability_imports.contains("build_env_at") {
+                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND);
+                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                    let ids = [
+                        push_import_signature(vec![build, text], vec![response], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Bool], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    ];
+                    catalog = catalog.with_build_env_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if capability_imports.contains("build_net_fetch") {
+                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND);
+                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                    let ids = [
+                        push_import_signature(vec![build, text, text], vec![response], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    ];
+                    catalog = catalog.with_build_net_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if capability_imports.contains("net_fetch_at") || capability_imports.contains("fetch_send_at") || capability_imports.contains("fetch_only_at") {
+                    let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
+                    let fetch = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND);
+                    let response = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_RESPONSE_KIND);
+                    let ids = [
+                        push_import_signature(vec![net, text], vec![fetch], None)?,
+                        push_import_signature(vec![fetch, text, text, text, text], vec![response], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                        push_import_signature(vec![fetch, text], vec![fetch], None)?,
+                    ];
+                    catalog = catalog.with_fetch_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if capability_imports.contains("build_exec_run") {
+                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND);
+                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                    let ids = [
+                        push_import_signature(vec![build, text, text], vec![response], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    ];
+                    catalog = catalog.with_build_exec_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                    let response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND);
+                    let ids = [
+                        push_import_signature(vec![dir, text, text], vec![ValueType::Bool], None)?,
+                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                        push_import_signature(vec![dir, text], vec![response], None)?,
+                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                        push_import_signature(vec![dir, text], Vec::new(), None)?,
+                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    ];
+                    catalog = catalog.with_dir_storage_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if witchy_wir::canonical_safewir::REGISTRY_HOST_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                    let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+                    let store = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND);
+                    let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                    let optional = ValueType::NullableCapability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                    let ids = [
+                        push_import_signature(vec![clock], vec![ValueType::Int], None)?,
+                        push_import_signature(vec![dir, text], Vec::new(), None)?,
+                        push_import_signature(vec![store, text], vec![optional], None)?,
+                        push_import_signature(vec![secret, text, text], vec![ValueType::Size], Some(2))?,
+                        push_import_signature(vec![secret, text], vec![ValueType::Size], Some(1))?,
+                    ];
+                    catalog = catalog.with_registry_host_imports(ids, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if !compiler_imports.is_empty() {
+                    let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
+                        footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
+                        diff_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                        doc_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                        doc_result_json_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                    };
+                    catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+                if regex_spans {
+                    let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
+                    catalog = catalog.with_regex_spans_import(signature, string_layout)
+                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+                }
+            }
+            if print_at && prints {
+                let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+                let parameters = vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
+                    ValueType::Ref(string_layout), ValueType::Ref(string_layout), ValueType::Size];
+                signatures.push(FunctionSignature {
+                    id, parameters: parameters.clone(), results: Vec::new(),
+                    contract: CallableContract {
+                        parameters: parameters.into_iter().map(|value_type| ParameterContract {
+                            value_type, ownership: ParameterOwnership::Value,
+                        }).collect(), results: Vec::new(),
+                        parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read]), (2, vec![MemoryEffect::Read])]),
+                    },
+                });
+                catalog = catalog.with_console_print_at(id, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            // RFC-0165 Net catalog registration (Net track).
 
-        if exec_needed { catalog = exec::catalog(catalog, &mut signatures, string_layout)?; }
-        if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
-        if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
-        if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
-        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
-        // The module declares only the imports its functions reach; the
-        // catalog still authenticates each one it declares.
-        let projected = catalog
-            .imports()
-            .into_iter()
-            .filter(|import| {
-                (import.name == print_name && prints)
-                    || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
-                    || (import.name == "float_to_str" && floats)
-                    || capability_imports.contains(import.name.as_str())
-                    || compiler_imports.contains(import.name.as_str())
-                    || (regex_spans && import.name == "regex_match_spans_into")
-                    || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
-                    || (crypto_needed && crypto::is_host_import(&import.name))
-                    || net_imports.contains(import.name.as_str()) // Net track
-                    || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
-            })
-            .collect::<Vec<_>>();
-        host_imports = HostImports {
-            abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
-            bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
-            abort_sites,
-            vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
-            vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
-            // RFC-0165 Net import registration (Net track).
-            exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
-            ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
-            rsa_pkcs1_sha256_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT).map(|import| import.id),
-            sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
-            rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
-            crypto_extensions: witchy_wir::canonical_safewir::CRYPTO_EXTENSION_IMPORT_NAMES.iter()
-                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
-            net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
-            regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
-            compiler: compiler_imports.iter()
-                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
-                .collect(),
-            print_at,
-            print: projected.iter().find(|import| import.name == print_name).map(|import| import.id),
-            float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
-            capabilities: CAPABILITY_IMPORTS
-                .iter()
-                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
-                .collect(),
-        };
-        imports = projected;
-        abi_catalog = Some(catalog);
-    }
-
-    if clock_needed {
-        let id = FunctionSignatureId::new(u32::try_from(signatures.len())
-            .map_err(|_| CanonicalLoweringError::IdOverflow)?);
-        let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
-        signatures.push(FunctionSignature {
-            id, parameters: vec![clock], results: vec![ValueType::Int],
-            contract: CallableContract {
-                parameters: vec![ParameterContract { value_type: clock, ownership: ParameterOwnership::Value }],
-                results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new(),
-            },
-        });
-        let catalog = match abi_catalog.take() {
-            Some(catalog) => catalog.with_clock_import(id),
-            None => CanonicalAbiCatalog::from_authenticated_clock(id),
-        }.map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        let import = catalog.imports().into_iter().find(|import| import.name == "clock_now")
-            .expect("authenticated Clock catalog contains its import");
-        host_imports.capabilities.insert("clock_now", import.id);
-        imports.push(import);
-        abi_catalog = Some(catalog);
-    }
-
-    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
-        let mut names = functions_by_name.keys().collect::<Vec<_>>();
-        names.sort();
-        eprintln!("canonical scope: {names:?}");
-    }
-    let mut functions = Vec::new();
-    let mut proper_tail_locations = BTreeMap::new();
-    for (item_index, item) in typed.module().items.iter().enumerate() {
-        let Item::Function(function) = item else { continue };
-        if !scope.contains(&function.name) {
-            continue;
-        }
-        let Some((function_id, signature_id)) = functions_by_name.get(&function.name).copied() else {
-            continue;
-        };
-        let signature = &signatures[signature_id.get() as usize];
-        functions.push(lower_function(
-            function,
-            &function.body,
-            function_id,
-            u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            is_opt_function(&function.name, &typed.module().modes),
-            Vec::new(),
-            &lambda_names,
-            signature,
-            &functions_by_name,
-            &checked_parameter_conventions,
-            &signatures,
-            &tail_manifest,
-            &mut proper_tail_locations,
-            typed.table(),
-            source.dictionary_key_comparators(),
-            &layouts,
-            &layout_catalog,
-            &string_data_ids,
-            &host_imports,
-            &packed_records,
-            &definitions,
-            &closure_context,
-            None,
-        )?);
-    }
-
-    let static_data_segments = string_payloads
-        .iter()
-        .enumerate()
-        .map(|(index, payload)| {
-            let length = u32::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-            let mut bytes = Vec::with_capacity(4 + payload.len());
-            bytes.extend_from_slice(&length.to_le_bytes());
-            bytes.extend_from_slice(payload);
-            Ok(witchy_wir::canonical_safewir::StaticDataSegment::new(
-                witchy_wir::canonical_safewir::StaticDataId::new(
-                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                ),
-                bytes,
-            ))
-        })
-        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-
-    let mut closure_bindings = Vec::new();
-    for lambda in &lambda_functions {
-        let signature = &signatures[lambda.signature_id.get() as usize];
-        functions.push(lower_function(
-            &lambda.synthesized,
-            lambda.body,
-            lambda.function_id,
-            lambda.item_index,
-            is_opt_function(&lambda.synthesized.name, &typed.module().modes),
-            lambda.lambda_path.clone(),
-            &lambda_names,
-            signature,
-            &functions_by_name,
-            &checked_parameter_conventions,
-            &signatures,
-            &tail_manifest,
-            &mut proper_tail_locations,
-            typed.table(),
-            source.dictionary_key_comparators(),
-            &layouts,
-            &layout_catalog,
-            &string_data_ids,
-            &host_imports,
-            &packed_records,
-            &definitions,
-            &closure_context,
-            Some(&ClosureEnvironment { tag: lambda.environment_tag, captures: lambda.captures.clone() }),
-        )?);
-        closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
-    }
-    let mut adapter_bindings = Vec::new();
-    for adapter in &adapters {
-        functions.push(synthesize_adapter(adapter, &signatures, &closure_context));
-        adapter_bindings.push(CandidateAdapterBinding::new(adapter.id, adapter.target));
-    }
-    let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
-    let lambda_callables = lambda_functions
-        .iter()
-        .map(|lambda| {
-            (ProperTailCallableId { item: lambda.item_index, method: None, lambda_path: lambda.lambda_path.clone() }, lambda.function_id)
-        })
-        .collect::<HashMap<_, _>>();
-    let mut abi_bindings = functions_by_name
-        .iter()
-        .filter(|(name, _)| !lambda_function_names.contains(*name) && !adapter_function_names.contains(*name))
-        .map(|(name, (function, _signature))| {
-            let source_abi = source.closed_callable_abi(name)
-                .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
-            let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.clone()));
+            if exec_needed { catalog = exec::catalog(catalog, &mut signatures, string_layout)?; }
+            if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
+            if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
+            if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
+            if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
+            // The module declares only the imports its functions reach; the
+            // catalog still authenticates each one it declares.
+            let projected = catalog
+                .imports()
+                .into_iter()
+                .filter(|import| {
+                    (import.name == print_name && prints)
+                        || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
+                        || (import.name == "float_to_str" && floats)
+                        || capability_imports.contains(import.name.as_str())
+                        || compiler_imports.contains(import.name.as_str())
+                        || (regex_spans && import.name == "regex_match_spans_into")
+                        || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
+                        || (crypto_needed && crypto::is_host_import(&import.name))
+                        || net_imports.contains(import.name.as_str()) // Net track
+                        || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
+                })
+                .collect::<Vec<_>>();
+            host_imports = HostImports {
+                abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
+                bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
+                abort_sites,
+                vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
+                vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
+                // RFC-0165 Net import registration (Net track).
+                exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
+                ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
+                rsa_pkcs1_sha256_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT).map(|import| import.id),
+                sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
+                rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
+                crypto_extensions: witchy_wir::canonical_safewir::CRYPTO_EXTENSION_IMPORT_NAMES.iter()
+                    .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
+                net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
+                regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
+                compiler: compiler_imports.iter()
+                    .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
+                    .collect(),
+                print_at,
+                print: projected.iter().find(|import| import.name == print_name).map(|import| import.id),
+                float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
+                capabilities: CAPABILITY_IMPORTS
+                    .iter()
+                    .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
+                    .collect(),
             };
-            Ok(CandidateAbiBinding::new(
-                *function,
-                target.function_ordinal,
-            ))
-        })
-        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-    abi_bindings.sort_by_key(|binding| binding.source_declaration_ordinal());
+            imports = projected;
+            abi_catalog = Some(catalog);
+        }
 
-    let vm_services = service_sites.iter().map(|site| {
-        let binding = |ordinal| abi_bindings.iter().find(|binding| binding.source_declaration_ordinal() == ordinal)
-            .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing service declaration binding"));
-        Ok(witchy_wir::canonical_safewir::CandidateVmService::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
-    }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-    let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
-        revision: Revision::new(0),
-        checked_source: CheckedSourceIdentity::from_digest(
-            source.source_witness().source_bundle_digest(),
-        ),
-        layouts,
-        signatures,
-        imports,
-        functions,
-        proper_tail_sites: canonical_tail_sites(
-            tail_manifest,
-            typed.module(),
-            &functions_by_name,
-            &lambda_callables,
-            &proper_tail_locations,
-        )?,
-    }, static_data_segments)
-        .with_proper_tail_locations(proper_tail_locations.into_values().collect())
-        .with_vm_services(vm_services)
-        .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
-        .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
-        .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
-        .with_closure_layouts(closure_context.signature_by_layout.iter()
-            .filter(|(layout, _)| !closure_context.families.values().any(|family| family.closure == **layout && family.owner_type.is_some()))
-            .map(|(layout, signature)| (*layout, *signature)).collect())
-        .with_owner_families(closure_context.owners.clone());
-    Ok(match abi_catalog {
-        Some(catalog) => candidate.with_abi_catalog(catalog),
-        None => candidate,
+        if clock_needed {
+            let id = FunctionSignatureId::new(u32::try_from(signatures.len())
+                .map_err(|_| CanonicalLoweringError::IdOverflow)?);
+            let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+            signatures.push(FunctionSignature {
+                id, parameters: vec![clock], results: vec![ValueType::Int],
+                contract: CallableContract {
+                    parameters: vec![ParameterContract { value_type: clock, ownership: ParameterOwnership::Value }],
+                    results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new(),
+                },
+            });
+            let catalog = match abi_catalog.take() {
+                Some(catalog) => catalog.with_clock_import(id),
+                None => CanonicalAbiCatalog::from_authenticated_clock(id),
+            }.map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            let import = catalog.imports().into_iter().find(|import| import.name == "clock_now")
+                .expect("authenticated Clock catalog contains its import");
+            host_imports.capabilities.insert("clock_now", import.id);
+            imports.push(import);
+            abi_catalog = Some(catalog);
+        }
+
+        if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+            let mut names = functions_by_name.keys().collect::<Vec<_>>();
+            names.sort();
+            eprintln!("canonical scope: {names:?}");
+        }
+        let mut functions = Vec::new();
+        let mut proper_tail_locations = BTreeMap::new();
+        for (item_index, item) in typed.module().items.iter().enumerate() {
+            let Item::Function(function) = item else { continue };
+            if !scope.contains(&function.name) {
+                continue;
+            }
+            let Some((function_id, signature_id)) = functions_by_name.get(&function.name).copied() else {
+                continue;
+            };
+            let signature = &signatures[signature_id.get() as usize];
+            functions.push(lower_function(
+                function,
+                &function.body,
+                function_id,
+                u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                is_opt_function(&function.name, &typed.module().modes),
+                Vec::new(),
+                &lambda_names,
+                signature,
+                &functions_by_name,
+                &checked_parameter_conventions,
+                &signatures,
+                &tail_manifest,
+                &mut proper_tail_locations,
+                typed.table(),
+                source.dictionary_key_comparators(),
+                &layouts,
+                &layout_catalog,
+                &string_data_ids,
+                &host_imports,
+                &packed_records,
+                &definitions,
+                &closure_context,
+                None,
+            )?);
+        }
+
+        let static_data_segments = string_payloads
+            .iter()
+            .enumerate()
+            .map(|(index, payload)| {
+                let length = u32::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+                let mut bytes = Vec::with_capacity(4 + payload.len());
+                bytes.extend_from_slice(&length.to_le_bytes());
+                bytes.extend_from_slice(payload);
+                Ok(witchy_wir::canonical_safewir::StaticDataSegment::new(
+                    witchy_wir::canonical_safewir::StaticDataId::new(
+                        u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    ),
+                    bytes,
+                ))
+            })
+            .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+
+        let mut closure_bindings = Vec::new();
+        for lambda in &lambda_functions {
+            let signature = &signatures[lambda.signature_id.get() as usize];
+            functions.push(lower_function(
+                &lambda.synthesized,
+                lambda.body,
+                lambda.function_id,
+                lambda.item_index,
+                is_opt_function(&lambda.synthesized.name, &typed.module().modes),
+                lambda.lambda_path.clone(),
+                &lambda_names,
+                signature,
+                &functions_by_name,
+                &checked_parameter_conventions,
+                &signatures,
+                &tail_manifest,
+                &mut proper_tail_locations,
+                typed.table(),
+                source.dictionary_key_comparators(),
+                &layouts,
+                &layout_catalog,
+                &string_data_ids,
+                &host_imports,
+                &packed_records,
+                &definitions,
+                &closure_context,
+                Some(&ClosureEnvironment { tag: lambda.environment_tag, captures: lambda.captures.clone() }),
+            )?);
+            closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
+        }
+        let mut adapter_bindings = Vec::new();
+        for adapter in &adapters {
+            functions.push(synthesize_adapter(adapter, &signatures, &closure_context));
+            adapter_bindings.push(CandidateAdapterBinding::new(adapter.id, adapter.target));
+        }
+        let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
+        let lambda_callables = lambda_functions
+            .iter()
+            .map(|lambda| {
+                (ProperTailCallableId { item: lambda.item_index, method: None, lambda_path: lambda.lambda_path.clone() }, lambda.function_id)
+            })
+            .collect::<HashMap<_, _>>();
+        let mut abi_bindings = functions_by_name
+            .iter()
+            .filter(|(name, _)| !lambda_function_names.contains(*name) && !adapter_function_names.contains(*name))
+            .map(|(name, (function, _signature))| {
+                let source_abi = source.closed_callable_abi(name)
+                    .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
+                let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
+                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.clone()));
+                };
+                Ok(CandidateAbiBinding::new(
+                    *function,
+                    target.function_ordinal,
+                ))
+            })
+            .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+        abi_bindings.sort_by_key(|binding| binding.source_declaration_ordinal());
+
+        let vm_services = service_sites.iter().map(|site| {
+            let binding = |ordinal| abi_bindings.iter().find(|binding| binding.source_declaration_ordinal() == ordinal)
+                .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing service declaration binding"));
+            Ok(witchy_wir::canonical_safewir::CandidateVmService::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
+        }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+        let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest(
+                source.source_witness().source_bundle_digest(),
+            ),
+            layouts,
+            signatures,
+            imports,
+            functions,
+            proper_tail_sites: canonical_tail_sites(
+                tail_manifest,
+                typed.module(),
+                &functions_by_name,
+                &lambda_callables,
+                &proper_tail_locations,
+            )?,
+        }, static_data_segments)
+            .with_proper_tail_locations(proper_tail_locations.into_values().collect())
+            .with_vm_services(vm_services)
+            .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
+            .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
+            .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
+            .with_closure_layouts(closure_context.signature_by_layout.iter()
+                .filter(|(layout, _)| !closure_context.families.values().any(|family| family.closure == **layout && family.owner_type.is_some()))
+                .map(|(layout, signature)| (*layout, *signature)).collect())
+            .with_owner_families(closure_context.owners.clone());
+        Ok(match abi_catalog {
+            Some(catalog) => candidate.with_abi_catalog(catalog),
+            None => candidate,
+        })
     })
 }
 
