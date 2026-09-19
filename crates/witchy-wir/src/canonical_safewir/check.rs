@@ -300,6 +300,7 @@ fn check_candidate<S: ModuleStage>(
         let discharged = match key.as_ref().and_then(cache::lookup) {
             Some(replayed) => replayed,
             None => {
+                let stopwatch = cache::Stopwatch::start();
                 let mut discharged = BTreeSet::new();
                 check_function(
                     function,
@@ -314,7 +315,7 @@ fn check_candidate<S: ModuleStage>(
                 )?;
                 let discharged = std::sync::Arc::new(discharged);
                 if let Some(key) = key {
-                    cache::record(key, std::sync::Arc::clone(&discharged));
+                    cache::record(key, std::sync::Arc::clone(&discharged), stopwatch.elapsed());
                 }
                 discharged
             }

@@ -22,3 +22,14 @@ RUST_MIN_STACK = "16777216"
 # cache. A target-specific CC_<target>/CXX_<target> still overrides these.
 CC = "sccache cc"
 CXX = "sccache c++"
+# The SafeWIR checker memoizes admitted per-function verdicts in-process and,
+# when this directory is set, persists the expensive ones across processes
+# (`crates/witchy-wir/src/canonical_safewir/check/cache.rs`). The store is
+# opt-in because a verdict read from disk is trusted the way the compiler
+# binary is; every process cargo or nextest launches -- test binaries and the
+# `witchy` binaries they spawn -- is de facto trusted, so they opt in here. A
+# `witchy` run from a shell does not inherit this and checks everything. The
+# path is per checkout (gitignored `state/`); entries are keyed under a
+# digest of witchy-wir's sources, so an edited checker never replays old
+# verdicts.
+WITCHY_SAFEWIR_CHECK_CACHE_DIR = { value = "state/safewir-check-cache", relative = true }

@@ -88,6 +88,10 @@ Measured on a loaded machine (minimum of alternating runs, user seconds):
    library function (the async executor's 11,039-block scheduler is the
    expensive case) be checked once per process rather than once per
    program. `WITCHY_SAFEWIR_CHECK_CACHE=off` restores the full second pass.
+   Verdicts that cost at least 10 ms are additionally persisted across
+   processes when `WITCHY_SAFEWIR_CHECK_CACHE_DIR` is set (opt-in; the
+   repo's cargo config sets it for tests, which are de facto trusted),
+   under a directory named by a digest of witchy-wir's sources.
 2. **Checker state cloning.** `transfer_edge` and `meet` clone whole
    `MemoryState` maps per edge, and `promoted_object` still clones the state
    for objects that do have a loaded length. Persistent maps or copy-on-write

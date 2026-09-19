@@ -21,12 +21,27 @@
 //! the caller can replay them into the module-level completeness check. A
 //! rejected function is rechecked and reports its diagnostic every time.
 //!
-//! The memo is process-local and bounded. `WITCHY_SAFEWIR_CHECK_CACHE=off`
-//! disables it, so every function is checked on every pass.
+//! The in-process memo is bounded. `WITCHY_SAFEWIR_CHECK_CACHE=off` disables
+//! memoization entirely, so every function is checked on every pass.
+//!
+//! # The persistent store
+//!
+//! With `WITCHY_SAFEWIR_CHECK_CACHE_DIR` set, verdicts that took at least
+//! [`PERSIST_THRESHOLD`] to establish are also written to that directory and
+//! read back by later processes, so the executor is checked once per checkout
+//! rather than once per test process. This is opt-in because a verdict read
+//! from disk is trusted the way the compiler binary on disk is: whoever can
+//! write the directory can make a function pass. The repo's cargo config opts
+//! every cargo- and nextest-launched process in (tests are de facto trusted);
+//! a `witchy` run from a shell is not opted in. Entries live under a digest of
+//! this crate's sources (`build.rs`), so a changed checker never sees an older
+//! checker's verdicts, and each file carries its key and an integrity digest
+//! so a truncated or misnamed file is a miss, never a verdict.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use super::super::identity::{CanonicalWriter, References};
 use super::super::{
@@ -39,6 +54,9 @@ use crate::layout::{FieldKind, LayoutDescriptor, LayoutId, LayoutInterner, Layou
 const SERIALIZATION_VERSION: u32 = 1;
 const DOMAIN: &[u8] = b"witchy/canonical-safewir/function-check/v1";
 const MAX_ENTRIES: usize = 1 << 16;
+/// Verdicts cheaper than this are not worth a file: re-checking them costs
+/// less than the open would.
+pub(super) const PERSIST_THRESHOLD: Duration = Duration::from_millis(10);
 
 /// The digest of every input `check_function` reads for one function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,6 +69,7 @@ static VERDICTS: OnceLock<Mutex<HashMap<FunctionCheckKey, Discharged, foldhash::
     OnceLock::new();
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
+static STORE_HITS: AtomicU64 = AtomicU64::new(0);
 
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -266,14 +285,72 @@ fn nested_layouts(descriptor: &LayoutDescriptor) -> BTreeSet<LayoutId> {
 pub(super) fn lookup(key: &FunctionCheckKey) -> Option<Discharged> {
     let verdicts = VERDICTS.get_or_init(Default::default);
     let found = verdicts.lock().ok().and_then(|verdicts| verdicts.get(key).cloned());
-    match &found {
-        Some(_) => HITS.fetch_add(1, Ordering::Relaxed),
-        None => MISSES.fetch_add(1, Ordering::Relaxed),
-    };
-    found
+    if let Some(found) = found {
+        HITS.fetch_add(1, Ordering::Relaxed);
+        return Some(found);
+    }
+    if let Some(discharged) = store::dir().and_then(|dir| store::read(dir, key)) {
+        STORE_HITS.fetch_add(1, Ordering::Relaxed);
+        if debug() {
+            eprintln!("safewir-check-cache: replayed {} from the store", key.hex());
+        }
+        let discharged = Arc::new(discharged);
+        remember(*key, Arc::clone(&discharged));
+        return Some(discharged);
+    }
+    MISSES.fetch_add(1, Ordering::Relaxed);
+    None
 }
 
-pub(super) fn record(key: FunctionCheckKey, discharged: Discharged) {
+/// Wall-clock cost of one fresh check; zero where the target has no clock.
+pub(super) struct Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
+
+impl Stopwatch {
+    pub(super) fn start() -> Self {
+        Self(
+            #[cfg(not(target_arch = "wasm32"))]
+            std::time::Instant::now(),
+        )
+    }
+
+    pub(super) fn elapsed(&self) -> Duration {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.0.elapsed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Duration::ZERO
+        }
+    }
+}
+
+/// Keep an admitted verdict that took `elapsed` to establish.
+pub(super) fn record(key: FunctionCheckKey, discharged: Discharged, elapsed: Duration) {
+    remember(key, Arc::clone(&discharged));
+    if elapsed >= PERSIST_THRESHOLD
+        && let Some(dir) = store::dir()
+    {
+        if debug() {
+            eprintln!("safewir-check-cache: stored {} after {elapsed:?}", key.hex());
+        }
+        store::write(dir, key, &discharged);
+    }
+}
+
+/// `WITCHY_SAFEWIR_CHECK_CACHE_DEBUG` reports store traffic on stderr.
+fn debug() -> bool {
+    static DEBUG: OnceLock<bool> = OnceLock::new();
+    *DEBUG.get_or_init(|| std::env::var_os("WITCHY_SAFEWIR_CHECK_CACHE_DEBUG").is_some())
+}
+
+impl FunctionCheckKey {
+    fn hex(&self) -> String {
+        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
+fn remember(key: FunctionCheckKey, discharged: Discharged) {
     let verdicts = VERDICTS.get_or_init(Default::default);
     if let Ok(mut verdicts) = verdicts.lock() {
         if verdicts.len() >= MAX_ENTRIES {
@@ -283,8 +360,210 @@ pub(super) fn record(key: FunctionCheckKey, discharged: Discharged) {
     }
 }
 
-/// Lifetime (hits, misses) of this process's memo.
+/// Lifetime (hits, misses) of this process's memo; a store hit counts as a hit.
 #[cfg(test)]
 pub(super) fn stats() -> (u64, u64) {
-    (HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
+    (
+        HITS.load(Ordering::Relaxed) + STORE_HITS.load(Ordering::Relaxed),
+        MISSES.load(Ordering::Relaxed),
+    )
+}
+
+/// Verdict files: `<dir>/<source stamp>/<key hex>`, written whole under a
+/// temporary name and renamed into place, so a reader sees a complete file
+/// or none. Concurrent writers of one key race benignly: same bytes.
+#[cfg(not(target_arch = "wasm32"))]
+mod store {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    use super::super::super::TailSiteId;
+    use super::FunctionCheckKey;
+
+    const MAGIC: &[u8] = b"WITCHY-SAFEWIR-VERDICT\0";
+    const FORMAT_VERSION: u32 = 1;
+    const MAX_SITES: u64 = 1 << 16;
+    /// Stamp directories of checkers not built for this long are removed
+    /// the first time a process writes.
+    const STALE_STAMP_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+    /// Digest of this crate's sources at build time, stamped by `build.rs`.
+    pub(super) const SOURCE_STAMP: &str = env!("WITCHY_WIR_SOURCE_DIGEST");
+
+    /// The stamp directory for this checker build, when the store is opted in.
+    pub(super) fn dir() -> Option<&'static Path> {
+        static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+        DIR.get_or_init(|| {
+            let root = std::env::var_os("WITCHY_SAFEWIR_CHECK_CACHE_DIR")
+                .filter(|value| !value.is_empty())?;
+            Some(stamp_dir(Path::new(&root)))
+        })
+        .as_deref()
+    }
+
+    pub(super) fn stamp_dir(root: &Path) -> PathBuf {
+        root.join(&SOURCE_STAMP[..16])
+    }
+
+    pub(super) fn read(dir: &Path, key: &FunctionCheckKey) -> Option<BTreeSet<TailSiteId>> {
+        let bytes = fs::read(dir.join(file_name(key))).ok()?;
+        decode(key, &bytes)
+    }
+
+    pub(super) fn write(dir: &Path, key: FunctionCheckKey, discharged: &BTreeSet<TailSiteId>) {
+        static PRUNED: OnceLock<()> = OnceLock::new();
+        if fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        PRUNED.get_or_init(|| prune_stale_stamps(dir));
+        let bytes = encode(key, discharged);
+        let temporary = dir.join(format!(".{}.{}", file_name(&key), std::process::id()));
+        if fs::write(&temporary, bytes).is_err() || fs::rename(&temporary, dir.join(file_name(&key))).is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+    }
+
+    fn file_name(key: &FunctionCheckKey) -> String {
+        key.hex()
+    }
+
+    fn encode(key: FunctionCheckKey, discharged: &BTreeSet<TailSiteId>) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(MAGIC.len() + 4 + 32 + 8 + 32 * discharged.len() + 32);
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&key.0);
+        bytes.extend_from_slice(&(discharged.len() as u64).to_le_bytes());
+        for site in discharged {
+            bytes.extend_from_slice(&site.digest());
+        }
+        let integrity = blake3::hash(&bytes);
+        bytes.extend_from_slice(integrity.as_bytes());
+        bytes
+    }
+
+    fn decode(key: &FunctionCheckKey, bytes: &[u8]) -> Option<BTreeSet<TailSiteId>> {
+        let header = MAGIC.len() + 4 + 32 + 8;
+        if bytes.len() < header + 32 || !bytes.starts_with(MAGIC) {
+            return None;
+        }
+        let (body, integrity) = bytes.split_at(bytes.len() - 32);
+        if blake3::hash(body).as_bytes() != integrity {
+            return None;
+        }
+        let mut cursor = MAGIC.len();
+        let version = u32::from_le_bytes(body[cursor..cursor + 4].try_into().ok()?);
+        cursor += 4;
+        if version != FORMAT_VERSION || body[cursor..cursor + 32] != key.0 {
+            return None;
+        }
+        cursor += 32;
+        let count = u64::from_le_bytes(body[cursor..cursor + 8].try_into().ok()?);
+        cursor += 8;
+        if count > MAX_SITES || body.len() - cursor != usize::try_from(count).ok()? * 32 {
+            return None;
+        }
+        let mut discharged = BTreeSet::new();
+        for site in body[cursor..].chunks_exact(32) {
+            let mut digest = [0; 32];
+            digest.copy_from_slice(site);
+            discharged.insert(TailSiteId::from_digest(digest));
+        }
+        Some(discharged)
+    }
+
+    fn prune_stale_stamps(dir: &Path) {
+        let Some(root) = dir.parent() else { return };
+        let Ok(entries) = fs::read_dir(root) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == dir || !path.is_dir() {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age > STALE_STAMP_AGE);
+            if stale {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::collections::BTreeSet;
+        use std::fs;
+
+        use super::super::super::super::TailSiteId;
+        use super::super::FunctionCheckKey;
+        use super::{read, stamp_dir, write};
+
+        fn scratch(name: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir()
+                .join(format!("witchy-safewir-verdicts-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            dir
+        }
+
+        #[test]
+        fn verdict_files_round_trip_and_reject_damage() {
+            let root = scratch("roundtrip");
+            let dir = stamp_dir(&root);
+            let key = FunctionCheckKey([7; 32]);
+            let sites = [[1; 32], [2; 32]].into_iter().map(TailSiteId::from_digest).collect::<BTreeSet<_>>();
+            assert!(read(&dir, &key).is_none());
+            write(&dir, key, &sites);
+            assert_eq!(read(&dir, &key), Some(sites.clone()));
+            assert!(read(&dir, &FunctionCheckKey([8; 32])).is_none());
+
+            // A file under another key's name is not that key's verdict.
+            let stored = fs::read_dir(&dir).unwrap().flatten().next().unwrap().path();
+            let other = dir.join("ff".repeat(32));
+            fs::copy(&stored, &other).unwrap();
+            assert!(read(&dir, &FunctionCheckKey([0xff; 32])).is_none());
+
+            // Truncation and a flipped byte are misses.
+            let bytes = fs::read(&stored).unwrap();
+            fs::write(&stored, &bytes[..bytes.len() - 1]).unwrap();
+            assert!(read(&dir, &key).is_none());
+            let mut flipped = bytes.clone();
+            flipped[40] ^= 1;
+            fs::write(&stored, &flipped).unwrap();
+            assert!(read(&dir, &key).is_none());
+            fs::write(&stored, &bytes).unwrap();
+            assert_eq!(read(&dir, &key), Some(sites));
+
+            // Another checker build's stamp directory is invisible.
+            let foreign = root.join("0000000000000000");
+            fs::create_dir_all(&foreign).unwrap();
+            fs::copy(&stored, foreign.join(stored.file_name().unwrap())).unwrap();
+            assert!(read(&foreign, &key).is_some());
+            assert_ne!(foreign, dir);
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod store {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use super::super::super::TailSiteId;
+    use super::FunctionCheckKey;
+
+    pub(super) fn dir() -> Option<&'static Path> {
+        None
+    }
+
+    pub(super) fn read(_: &Path, _: &FunctionCheckKey) -> Option<BTreeSet<TailSiteId>> {
+        None
+    }
+
+    pub(super) fn write(_: &Path, _: FunctionCheckKey, _: &BTreeSet<TailSiteId>) {}
 }

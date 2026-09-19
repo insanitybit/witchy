@@ -145,6 +145,16 @@ Cargo, mise, and rust-analyzer configuration for every agent. Measurements and
 the two reproducibility fixes it depends on:
 `scratch/build-cache-eval-2026-09-17.md`.
 
+The SafeWIR checker keeps a **verdict memo** as well: admitted per-function
+verdicts are memoized in-process, and every cargo/nextest-launched process
+(tests and the `witchy` binaries they spawn) also persists the expensive ones
+under `state/safewir-check-cache/` via `[env]` in `.cargo/config.toml`, so the
+std async executor is checked once per checkout instead of once per test
+process. A shell `witchy` run is not opted in. `WITCHY_SAFEWIR_CHECK_CACHE=off`
+disables memoization; the store is keyed under a digest of `witchy-wir`'s
+sources, so an edited checker never replays old verdicts. Design and trust
+boundary: `crates/witchy-wir/src/canonical_safewir/check/cache.rs`.
+
 `./scripts/check.sh` in the shared `target/` tree is still authoritative, but
 coordinate before running it there. While another agent is active, prefer
 `CARGO_TARGET_DIR=target-<agent> ./scripts/check.sh --fast`.
