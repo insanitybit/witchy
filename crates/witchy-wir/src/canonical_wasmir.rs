@@ -3368,6 +3368,20 @@ fn immediate_dominators(
     idom
 }
 
+/// One more than the largest block id an emitter's edge map names: block
+/// ids are minted densely by lowering and release placement, so a `Vec`
+/// indexed by id is a cheap visited set for the emitter's walks.
+fn block_slot_count(
+    successors_by_block: &BTreeMap<crate::canonical_safewir::BlockId, Vec<crate::canonical_safewir::BlockId>>,
+) -> usize {
+    successors_by_block
+        .iter()
+        .flat_map(|(block, successors)| std::iter::once(*block).chain(successors.iter().copied()))
+        .map(|id| id.get() as usize + 1)
+        .max()
+        .unwrap_or(0)
+}
+
 /// `dominator` lies on every path from `entry` to `node`. A block the entry
 /// does not reach has no path at all, so every block dominates it.
 fn dominates_in(
@@ -3439,6 +3453,7 @@ struct StructuredEmitter<'a> {
     natural_loop_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, BTreeSet<crate::canonical_safewir::BlockId>>>,
     reaches_avoiding_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId), bool>>,
     immediate_dominators: std::cell::OnceCell<BTreeMap<crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId>>,
+    block_slots: std::cell::OnceCell<usize>,
     /// Memoized path judgments keyed by the exact normalized merge set.
     /// Both answers are reusable: a cut cycle proves a path from `start`
     /// avoids every merge and terminal, independent of which caller first
@@ -3530,38 +3545,46 @@ impl StructuredEmitter<'_> {
         Ok(false)
     }
 
-    /// `start` is a terminal block, or a straight chain of unconditional
-    /// branches (the release placer's drop edge blocks) that ends in one
-    /// without touching any block the other side reaches: such a side never
-    /// reaches a merge and needs none.
-    fn reachable_avoiding(
-        &self,
-        start: crate::canonical_safewir::BlockId,
-        avoid: crate::canonical_safewir::BlockId,
-    ) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, EncodeError> {
-        let mut seen = BTreeSet::new();
-        let mut pending = VecDeque::from([start]);
-        while let Some(id) = pending.pop_front() {
-            if id == avoid || !seen.insert(id) {
-                continue;
-            }
-            pending.extend(self.successors(id)?);
-        }
-        Ok(seen)
+    /// One slot per block id, for dense visited marks in the walks below.
+    fn block_slots(&self) -> usize {
+        *self.block_slots.get_or_init(|| block_slot_count(&self.successors_by_block))
     }
 
     /// A side only terminates when every path from it ends in a terminal
     /// block (structured loops included: their bodies return to their
     /// headers or leave through their exits, and the exits terminate) and it
-    /// shares no block with the other side: such a side never reaches a merge
-    /// and needs none.
-    fn only_terminates(
+    /// shares no block with the other side, where the other side is what
+    /// `other` reaches without passing back through `avoid` (the branching
+    /// block: a loop back edge would otherwise make a returning arm look
+    /// reachable from the continuing side). Such a side never reaches a
+    /// merge and needs none.
+    fn only_terminates_avoiding(
         &self,
         start: crate::canonical_safewir::BlockId,
-        other_side: &BTreeSet<crate::canonical_safewir::BlockId>,
+        other: crate::canonical_safewir::BlockId,
+        avoid: crate::canonical_safewir::BlockId,
     ) -> Result<bool, EncodeError> {
-        let reach = self.distances_from(start)?;
-        if reach.keys().any(|id| other_side.contains(id)) {
+        let slots = self.block_slots();
+        let mut other_side = vec![false; slots];
+        let mut pending = VecDeque::from([other]);
+        while let Some(id) = pending.pop_front() {
+            if id == avoid || std::mem::replace(&mut other_side[id.get() as usize], true) {
+                continue;
+            }
+            pending.extend(self.successors(id)?);
+        }
+        let mut visited = vec![false; slots];
+        let mut shared = false;
+        pending.push_back(start);
+        while let Some(id) = pending.pop_front() {
+            if std::mem::replace(&mut visited[id.get() as usize], true) {
+                continue;
+            }
+            self.block(id)?;
+            shared |= other_side[id.get() as usize];
+            pending.extend(self.successors(id)?);
+        }
+        if shared {
             return Ok(false);
         }
         self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())
@@ -4004,8 +4027,8 @@ impl StructuredEmitter<'_> {
         // region, even if execution eventually returns beyond that boundary.
         let then_reaches_stop = match stop { Some(stop) => self.reaches(then_target, stop)?, None => false };
         let else_reaches_stop = match stop { Some(stop) => self.reaches(else_target, stop)?, None => false };
-        let then_terminal = !then_reaches_stop && self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
-        let else_terminal = !else_reaches_stop && self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
+        let then_terminal = !then_reaches_stop && self.only_terminates_avoiding(then_target, else_target, current)?;
+        let else_terminal = !else_reaches_stop && self.only_terminates_avoiding(else_target, then_target, current)?;
         // Rank every candidate by the score the selection below minimizes
         // before running the path check, so the check runs cheapest-first and
         // stops at the first admissible candidate: that is the minimum, and
@@ -4436,6 +4459,7 @@ fn encode_function(
         natural_loop_facts: RefCell::new(BTreeMap::new()),
         reaches_avoiding_facts: RefCell::new(BTreeMap::new()),
         immediate_dominators: std::cell::OnceCell::new(),
+        block_slots: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(entry, None)?;
@@ -6146,6 +6170,7 @@ struct PlanEmitter<'a> {
     natural_loop_facts: RefCell<BTreeMap<crate::canonical_safewir::BlockId, BTreeSet<crate::canonical_safewir::BlockId>>>,
     reaches_avoiding_facts: RefCell<BTreeMap<(crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId), bool>>,
     immediate_dominators: std::cell::OnceCell<BTreeMap<crate::canonical_safewir::BlockId, crate::canonical_safewir::BlockId>>,
+    block_slots: std::cell::OnceCell<usize>,
     /// Memoized path judgments keyed by the exact normalized merge set. This
     /// mirrors the encoder's bounded graph decision, including cached cyclic
     /// refusals, without weakening the independent plan comparison.
@@ -6211,21 +6236,46 @@ impl<'a> PlanEmitter<'a> {
         Ok(false)
     }
 
-    fn reachable_avoiding(&self, start: crate::canonical_safewir::BlockId, avoid: crate::canonical_safewir::BlockId) -> Result<BTreeSet<crate::canonical_safewir::BlockId>, CanonicalAdmissionError> {
-        let mut seen = BTreeSet::new();
-        let mut pending = VecDeque::from([start]);
+    /// One slot per block id, for dense visited marks in the walks below.
+    fn block_slots(&self) -> usize {
+        *self.block_slots.get_or_init(|| block_slot_count(&self.successors_by_block))
+    }
+
+    /// A side only terminates when every path from it ends in a terminal
+    /// block (structured loops included: their bodies return to their
+    /// headers or leave through their exits, and the exits terminate) and it
+    /// shares no block with the other side, where the other side is what
+    /// `other` reaches without passing back through `avoid` (the branching
+    /// block: a loop back edge would otherwise make a returning arm look
+    /// reachable from the continuing side). Such a side never reaches a
+    /// merge and needs none.
+    fn only_terminates_avoiding(
+        &self,
+        start: crate::canonical_safewir::BlockId,
+        other: crate::canonical_safewir::BlockId,
+        avoid: crate::canonical_safewir::BlockId,
+    ) -> Result<bool, CanonicalAdmissionError> {
+        let slots = self.block_slots();
+        let mut other_side = vec![false; slots];
+        let mut pending = VecDeque::from([other]);
         while let Some(id) = pending.pop_front() {
-            if id == avoid || !seen.insert(id) {
+            if id == avoid || std::mem::replace(&mut other_side[id.get() as usize], true) {
                 continue;
             }
             pending.extend(self.successors(id)?);
         }
-        Ok(seen)
-    }
-
-    fn only_terminates(&self, start: crate::canonical_safewir::BlockId, other_side: &BTreeSet<crate::canonical_safewir::BlockId>) -> Result<bool, CanonicalAdmissionError> {
-        let reach = self.distances_from(start)?;
-        if reach.keys().any(|id| other_side.contains(id)) {
+        let mut visited = vec![false; slots];
+        let mut shared = false;
+        pending.push_back(start);
+        while let Some(id) = pending.pop_front() {
+            if std::mem::replace(&mut visited[id.get() as usize], true) {
+                continue;
+            }
+            self.block(id)?;
+            shared |= other_side[id.get() as usize];
+            pending.extend(self.successors(id)?);
+        }
+        if shared {
             return Ok(false);
         }
         self.all_paths_reach_or_terminate(start, &[], &mut BTreeSet::new())
@@ -6601,8 +6651,8 @@ impl<'a> PlanEmitter<'a> {
         // Mirror the enclosing-continuation boundary used by the encoder.
         let then_reaches_stop = match stop { Some(stop) => self.reaches(then_target, stop)?, None => false };
         let else_reaches_stop = match stop { Some(stop) => self.reaches(else_target, stop)?, None => false };
-        let then_terminal = !then_reaches_stop && self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
-        let else_terminal = !else_reaches_stop && self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
+        let then_terminal = !then_reaches_stop && self.only_terminates_avoiding(then_target, else_target, current)?;
+        let else_terminal = !else_reaches_stop && self.only_terminates_avoiding(else_target, then_target, current)?;
         // Rank every candidate by the score the selection below minimizes
         // before running the path check, so the check runs cheapest-first and
         // stops at the first admissible candidate: that is the minimum, and
@@ -7026,6 +7076,7 @@ fn expected_function_plan(
         natural_loop_facts: RefCell::new(BTreeMap::new()),
         reaches_avoiding_facts: RefCell::new(BTreeMap::new()),
         immediate_dominators: std::cell::OnceCell::new(),
+        block_slots: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
     };
     emitter.emit_path(function.entry, None)?;
