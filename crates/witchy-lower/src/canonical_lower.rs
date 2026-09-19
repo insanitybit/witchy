@@ -1916,6 +1916,7 @@ fn lower_function(
         token_join_parameters: BTreeSet::new(),
         graph_version: 0,
         token_facts: std::cell::RefCell::new(None),
+        shared_facts: std::cell::RefCell::new(None),
         mutable_bindings: HashSet::new(),
         loop_contexts: Vec::new(),
         lambda_names,
@@ -2402,6 +2403,13 @@ struct TokenFacts {
     incoming: BTreeMap<ValueId, Vec<ValueId>>,
 }
 
+/// `known_shared_value`'s view of the graph at one `graph_version`.
+struct SharedFacts {
+    version: u64,
+    direct: BTreeSet<ValueId>,
+    unspecified_incoming: BTreeMap<ValueId, Vec<ValueId>>,
+}
+
 struct FunctionLowerer<'a> {
     function: String,
     function_id: FunctionId,
@@ -2442,6 +2450,7 @@ struct FunctionLowerer<'a> {
     /// `carries_token` can reuse its scan of the graph until it changes.
     graph_version: u64,
     token_facts: std::cell::RefCell<Option<TokenFacts>>,
+    shared_facts: std::cell::RefCell<Option<SharedFacts>>,
     /// Source name of each entry parameter, so an exit drop targets the
     /// token under its current binding (a loop threads parameters through
     /// block parameters) rather than the entry value.
@@ -3973,9 +3982,11 @@ impl FunctionLowerer<'_> {
         );
         let join_id = self.new_block(&parameter_types)?;
         if shared_result_extents.is_some() {
+            self.graph_version += 1;
             self.blocks[join_id.get() as usize].parameters[binding_parameters].ownership =
                 Some(Ownership::Shared);
         } else if let Some(phi) = fixed_result_phi {
+            self.graph_version += 1;
             self.blocks[join_id.get() as usize].parameters[binding_parameters].ownership = Some(phi);
         }
         let join_parameters = self.blocks[join_id.get() as usize].parameters.clone();
@@ -6634,63 +6645,107 @@ impl FunctionLowerer<'_> {
         if !visited.insert(value) {
             return true;
         }
-        self.blocks.iter().any(|block| {
-            block.parameters.iter().any(|parameter| {
-                parameter.value == value && parameter.ownership == Some(Ownership::Shared)
-            }) || block.operations.iter().any(|operation| match operation {
-                Operation::StaticData { destination, .. } => *destination == value,
-                // Retaining a snapshot demotes both tokens. Preparation must
-                // recognize the original binding, not only the new alias.
-                Operation::CloneRef { destination, source } => *destination == value || *source == value,
-                Operation::Load {
-                    destination,
-                    transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
-                    ..
-                } => *destination == value,
-                // A call's reference result is a shared token (its result
-                // contract), never a unique one.
-                Operation::Call { destinations, callee, .. } => {
-                    destinations.iter().position(|v| *v == value).is_some_and(|index| {
-                        let signature = self.functions.values().find(|(function, _)| function == callee)
-                            .and_then(|(_, signature)| self.signatures.get(signature.get() as usize));
-                        !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. })))
-                    })
-                }
-                Operation::VarCall { destinations, signature, .. } => {
-                    destinations.iter().position(|v| *v == value).is_some_and(|index| {
-                        !self.signatures.get(signature.get() as usize).is_some_and(|signature|
-                            matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. })))
-                    })
-                }
-                Operation::HostCall { destinations, .. } => destinations.contains(&value),
-                _ => false,
-            })
-        }) || self.blocks.iter().any(|block| {
-            let Some(index) = block.parameters.iter().position(|parameter| {
-                parameter.value == value && parameter.ownership.is_none()
-            }) else {
-                return false;
-            };
-            let mut incoming = Vec::new();
-            for predecessor in &self.blocks {
-                match &predecessor.terminator {
-                    Some(Terminator::Branch { target, arguments }) if *target == block.id => {
-                        incoming.extend(arguments.get(index).copied());
-                    }
-                    Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
-                        if *then_target == block.id {
-                            incoming.extend(then_arguments.get(index).copied());
-                        }
-                        if *else_target == block.id {
-                            incoming.extend(else_arguments.get(index).copied());
-                        }
-                    }
-                    _ => {}
-                }
+        {
+            let mut facts = self.shared_facts.borrow_mut();
+            if facts.as_ref().is_none_or(|facts| facts.version != self.graph_version) {
+                *facts = Some(self.scan_shared_facts());
             }
+        }
+        // Release the memo before recursing: the recursion borrows it again.
+        let incoming = {
+            let facts = self.shared_facts.borrow();
+            let facts = facts.as_ref().expect("shared facts were just scanned");
+            if facts.direct.contains(&value) {
+                return true;
+            }
+            facts.unspecified_incoming.get(&value).cloned()
+        };
+        incoming.is_some_and(|incoming| {
             !incoming.is_empty() && incoming.iter().all(|argument| self.known_shared_value_via(*argument, visited))
         })
     }
+
+    /// One scan of the graph for `known_shared_value`: the values shared by
+    /// their definition, and each unspecified block parameter's incoming
+    /// arguments in block order.
+    fn scan_shared_facts(&self) -> SharedFacts {
+        let mut direct = BTreeSet::new();
+        for block in &self.blocks {
+            for parameter in &block.parameters {
+                if parameter.ownership == Some(Ownership::Shared) {
+                    direct.insert(parameter.value);
+                }
+            }
+            for operation in &block.operations {
+                match operation {
+                    Operation::StaticData { destination, .. } => { direct.insert(*destination); }
+                    // Retaining a snapshot demotes both tokens. Preparation must
+                    // recognize the original binding, not only the new alias.
+                    Operation::CloneRef { destination, source } => {
+                        direct.insert(*destination);
+                        direct.insert(*source);
+                    }
+                    Operation::Load {
+                        destination,
+                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast,
+                        ..
+                    } => { direct.insert(*destination); }
+                    // A call's reference result is a shared token (its result
+                    // contract), never a unique one.
+                    Operation::Call { destinations, callee, .. } => {
+                        let signature = self.functions.values().find(|(function, _)| function == callee)
+                            .and_then(|(_, signature)| self.signatures.get(signature.get() as usize));
+                        for (index, destination) in destinations.iter().enumerate() {
+                            if !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. }))) {
+                                direct.insert(*destination);
+                            }
+                        }
+                    }
+                    Operation::VarCall { destinations, signature, .. } => {
+                        let signature = self.signatures.get(signature.get() as usize);
+                        for (index, destination) in destinations.iter().enumerate() {
+                            if !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. }))) {
+                                direct.insert(*destination);
+                            }
+                        }
+                    }
+                    Operation::HostCall { destinations, .. } => { direct.extend(destinations.iter().copied()); }
+                    _ => {}
+                }
+            }
+        }
+        let mut unspecified_incoming: BTreeMap<ValueId, Vec<ValueId>> = BTreeMap::new();
+        for block in &self.blocks {
+            for parameter in &block.parameters {
+                if parameter.ownership.is_none() {
+                    unspecified_incoming.entry(parameter.value).or_default();
+                }
+            }
+        }
+        let mut record_edge = |target: BlockId, arguments: &[ValueId]| {
+            if let Some(block) = self.blocks.get(target.get() as usize) {
+                for (parameter, argument) in block.parameters.iter().zip(arguments) {
+                    if parameter.ownership.is_none()
+                        && let Some(incoming) = unspecified_incoming.get_mut(&parameter.value)
+                    {
+                        incoming.push(*argument);
+                    }
+                }
+            }
+        };
+        for block in &self.blocks {
+            match &block.terminator {
+                Some(Terminator::Branch { target, arguments }) => record_edge(*target, arguments),
+                Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
+                    record_edge(*then_target, then_arguments);
+                    record_edge(*else_target, else_arguments);
+                }
+                _ => {}
+            }
+        }
+        SharedFacts { version: self.graph_version, direct, unspecified_incoming }
+    }
+
 
     fn dynamic_extent_lanes(&self, value: ValueId) -> Option<(ValueId, ValueId)> {
         if let (Some(length), Some(capacity)) = (
