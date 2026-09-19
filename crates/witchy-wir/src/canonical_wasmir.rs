@@ -4006,7 +4006,12 @@ impl StructuredEmitter<'_> {
         let else_reaches_stop = match stop { Some(stop) => self.reaches(else_target, stop)?, None => false };
         let then_terminal = !then_reaches_stop && self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
         let else_terminal = !else_reaches_stop && self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
-        let mut best = None;
+        // Rank every candidate by the score the selection below minimizes
+        // before running the path check, so the check runs cheapest-first and
+        // stops at the first admissible candidate: that is the minimum, and
+        // an executor-sized region no longer walks every reachable block per
+        // candidate.
+        let mut scored = Vec::new();
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             // A side's own first block can be the merge: when the other side
             // only terminates (`if c: return x` then fall through) or flows
@@ -4027,18 +4032,21 @@ impl StructuredEmitter<'_> {
                 None if else_terminal => 0,
                 None => continue,
             };
+            scored.push((then_distance + else_distance, candidate));
+        }
+        scored.sort_unstable();
+        scored.dedup();
+        let mut best = None;
+        for score @ (_, candidate) in scored {
             // Inside a loop a path may also leave through the loop's exit or
             // back edge (a `br`) instead of reaching the merge.
             let mut merges = self.escape_targets();
             merges.push(candidate);
-            if !self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
-                || !self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
+            if self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
+                && self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
             {
-                continue;
-            }
-            let score = (then_distance + else_distance, candidate);
-            if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
                 best = Some(score);
+                break;
             }
         }
         if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
@@ -6595,7 +6603,12 @@ impl<'a> PlanEmitter<'a> {
         let else_reaches_stop = match stop { Some(stop) => self.reaches(else_target, stop)?, None => false };
         let then_terminal = !then_reaches_stop && self.only_terminates(then_target, &self.reachable_avoiding(else_target, current)?)?;
         let else_terminal = !else_reaches_stop && self.only_terminates(else_target, &self.reachable_avoiding(then_target, current)?)?;
-        let mut best = None;
+        // Rank every candidate by the score the selection below minimizes
+        // before running the path check, so the check runs cheapest-first and
+        // stops at the first admissible candidate: that is the minimum, and
+        // an executor-sized region no longer walks every reachable block per
+        // candidate.
+        let mut scored = Vec::new();
         for candidate in then_distances.keys().chain(else_distances.keys()).copied() {
             // Mirror of the encoder's rule: a side's own first block can be
             // the merge; loop headers and exits never are.
@@ -6612,16 +6625,21 @@ impl<'a> PlanEmitter<'a> {
                 None if else_terminal => 0,
                 None => continue,
             };
+            scored.push((then_distance + else_distance, candidate));
+        }
+        scored.sort_unstable();
+        scored.dedup();
+        let mut best = None;
+        for score @ (_, candidate) in scored {
+            // Inside a loop a path may also leave through the loop's exit or
+            // back edge (a `br`) instead of reaching the merge.
             let mut merges = self.escape_targets();
             merges.push(candidate);
-            if !self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
-                || !self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
+            if self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
+                && self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
             {
-                continue;
-            }
-            let score = (then_distance + else_distance, candidate);
-            if best.is_none_or(|previous: (usize, crate::canonical_safewir::BlockId)| score < previous) {
                 best = Some(score);
+                break;
             }
         }
         best.map(|(_, block)| Some(block)).ok_or(CanonicalAdmissionError::UnsupportedPlan)
