@@ -15,9 +15,9 @@ one boundary whenever possible.
    normalization and symbol/linkage work.
 3. **Diagnostics** (`crates/witchy-types`): explicit error expectations and
    message-level intent.
-4. **Backend conformance** (`crates/witchy-lower`, optionally
-   `crates/witchy-interp`, `src/example_tests.rs`): behavior alignment and
-   observable result parity at the feature's declared stabilization point.
+4. **Canonical conformance** (`crates/witchy-lower`, `crates/witchy-wir`,
+   `src/example_tests.rs`): independent expectation, canonical SafeWIR
+   interpretation, and admitted-Wasm execution.
 5. **Docs/spec and tests** (`spec/*`, `book/*`, `rfcs/*`, `README.md`): update
    runnable examples and acceptance notes at the same time as behavior changes.
 
@@ -28,46 +28,33 @@ Boundary ownership is explicit in every task handoff:
   `crates/witchy-syntax` + `crates/witchy-types`.
 - `typeck`: `crates/witchy-types` type relation and error surface.
 - `lower`: `crates/witchy-lower` lowering and ABI boundaries.
-- `interp`: `crates/witchy-interp` behavior implementation.
+- `canonical-interp`: `crates/witchy-wir` SafeWIR interpreter behavior and
+  canonical-runtime acceptance evidence.
+- `source-interp`: frozen `crates/witchy-interp` compiler-service compatibility
+  only; never a new language-semantics implementation or acceptance oracle.
 - `spec`: `spec/*` and runnable docs artifacts.
 - `tests`: `src/example_tests.rs`, `tests/*`, and any touched fixture.
 
-### Wasm-first iteration for unsettled runtime representations
+### Canonical runtime policy
 
-[RFC-0135](../rfcs/0135-stable-semantics-converge.md) is the policy: stable
-observable semantics converge before support. Compiled Wasm is the delivery
-backend. During active design of a new runtime representation or ABI
-(opt-mode references, async frames, `Dynamic` carriers, host ABI
-experiments), implement and validate the Wasm path first. Do not require a
-matching interpreter implementation for every intermediate carrier, lowering,
-or optimization experiment. Pure optimizations (SIMD, SROA, bounds elision)
-never enter the interpreter at all.
+RFC-0167 supersedes RFC-0135's dual source-runtime policy. Checked canonical
+SafeWIR is the sole executable language contract; every semantic
+slice carries:
 
-Each Wasm-first slice must instead carry:
+- an independently derived observable result or expected diagnostic;
+- a focused canonical SafeWIR interpreter check;
+- an admitted unoptimized-Wasm check; and
+- heap, authority, provenance, or structural audits required by the boundary.
 
-- a language-level fixture with the intended observable result;
-- a focused compiled-Wasm check for that fixture; and
-- an explicit **interpreter parity debt** in the RFC acceptance ledger or task
-  handoff: fixture name, missing interpreter boundary, and the milestone when
-  it must converge.
+The source tree walker is frozen for language semantics. Compatibility and
+security repairs may preserve its temporary comptime/build responsibilities,
+but new syntax and runtime behavior must not be implemented there. Eventually
+comptime/build evaluation lowers through the canonical route too; until then,
+any source-walker debt is compiler-service debt, not language-semantics debt.
 
-The interpreter must loudly error, reject, or be unreachable for that
-surface until the debt is paid. A different answer is a bug.
-
-Interpreter work becomes required when the representation and surface contract
-are stable, before the RFC row is marked **PROVEN**, before the feature exits
-experimental status, or when an interpreter-only consumer (`comptime`,
-`witchy test`, effectful build steps) needs it. At that
-point the same fixture becomes a differential interpreter/Wasm check. Do not
-duplicate a changing backend design merely to keep parity green during
-iteration.
-
-Capability, confinement, and ABI security still require strict differential
-coverage in the same change. No debt there.
-
-Focused `witchy parity` on a *stable* semantic change stays in the inner
-loop. The full parity corpus belongs at stabilization, release, and
-periodic CI, not on every experimental carrier slice.
+Pure optimizations compare optimized Wasm with admitted unoptimized Wasm, the
+canonical interpreter, and the independent expectation. Capability,
+confinement, and ABI security remain fail-closed on the canonical route.
 
 ## 2) Required artifacts per task
 
@@ -81,41 +68,6 @@ For each task, include:
    - One focused shard plus one cross-boundary artifact update where needed.
 4. **Task handoff**
    - `branch`, `files`, `boundaries`, and `verifying commands`.
-
-### RFC-0122 experimental opt-mode policy: Wasm first
-
-RFC-0122 is the first instance of the RFC-0135 Wasm-first rule. While the
-explicit-reference carrier ABI is changing, RFC-0122 aggregate,
-list, and exclusive-reference fixtures are **compiled-Wasm-first**. A focused
-fixture must execute through `wasm_run_reowns`; do not hold a lowering slice
-for interpreter parity. The interpreter remains the source-level
-convergence target at support, but parity is mandatory only after the
-carrier contract is stable, and before an RFC-0122 acceptance row is marked
-`PROVEN` or experimental opt mode exits.
-
-Every Wasm-first row carries an explicit interpreter debt until its named
-convergence milestone. Record the same fixture, missing boundary, and milestone
-in the acceptance ledger; the fixture may then be marked converged only after it
-passes on both backends.
-
-| fixture | missing interpreter boundary | convergence milestone | state |
-| --- | --- | --- | --- |
-| `direct_shared_reference_return_preserves_the_runtime_place_on_both_backends` | direct borrowed call/return carrier | `ReferenceKind` call ABI frozen | converged |
-| `mutable_to_shared_reference_return_preserves_the_runtime_place_on_both_backends` | mutable-to-shared reborrow carrier | reborrow representation frozen | converged |
-| `shared_reference_return_preserves_the_runtime_place_on_both_backends` | direct shared return root | root/provenance ABI frozen | converged |
-| `function_value_shared_reference_return_preserves_the_runtime_place_on_wasm` | function-value reference result | callable carrier ABI frozen | converged |
-| `closure_shared_reference_return_preserves_the_runtime_place_on_wasm` | closure reference result | callable carrier ABI frozen | converged |
-| `function_value_exclusive_reference_return_writes_the_owner_on_wasm` | function-value exclusive result/write | callable direct-place ABI frozen | converged |
-| `function_value_mutable_to_shared_reborrow_preserves_the_owner_on_wasm` | function-value mutable-to-shared reborrow | callable reborrow ABI frozen | converged |
-| `shared_reference_tuple_preserves_each_owner_root_on_both_backends` | tuple construction, copy, destructure, field projection | aggregate carrier ABI frozen | converged |
-| `shared_reference_list_preserves_each_owner_root_on_both_backends` | list construction, return, index projection | list carrier ABI frozen | converged |
-| `exclusive_reference_list_projection_writes_the_selected_owner_on_both_backends` | indexed exclusive reference write | direct-place write ABI frozen | converged |
-| `exclusive_reference_tuple_destructure_writes_the_selected_owner_on_both_backends` | destructured exclusive reference write | aggregate write ABI frozen | converged |
-
-Keep active debts in the RFC-0122 acceptance ledger as `WASM PROVEN /
-INTERPRETER DEBT`; replace each with named interpreter-plus-Wasm evidence during
-the convergence milestone. No fixture may be weakened or removed to defer a
-debt.
 
 ## 3) Focused checks by boundary
 
@@ -246,15 +198,13 @@ Rejection is only terminal when it has:
   with `./scripts/agent-check.sh syntax` green and a targeted negative test.
 - Rewrite/link change in syntax+types with required `target --package witchy-types`
   check and a regression fixture in `src/example_tests.rs` when behavior is visible.
-- Stable parity-sensitive backend change with `./scripts/agent-check.sh parity`
-  and a matching example test update; an unsettled runtime Wasm-first slice
-  instead records interpreter parity debt as above (RFC-0135).
+- Stable semantic change with a matching independent expectation, canonical
+  SafeWIR interpreter check, admitted-Wasm check, and required boundary audits.
 
 ### Rejected
 
-- Changing `crates/witchy-lower` without either a corresponding interpreter
-  slice or an explicit, time-bounded interpreter parity debt for an unsettled
-  runtime representation (RFC-0135).
+- Changing `crates/witchy-lower` without canonical validation/interpreter and
+  admitted-Wasm evidence for the affected semantic boundary.
 - Editing multiple ownership boundaries without updating the handoff block.
 - Running only docs edits and skipping merge-queue submission while the branch is
   already green.
