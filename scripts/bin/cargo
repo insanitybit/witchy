@@ -53,6 +53,36 @@ for dir in "${path_entries[@]}"; do
 done
 [ -n "$real_cargo" ] || { echo "scripts/bin/cargo: no real cargo found on PATH" >&2; exit 127; }
 
+# A cross build needs the target's standard library in the compiler's own
+# sysroot; PATH cannot supply it. When the resolved cargo's toolchain lacks
+# the requested target (Homebrew's rust ships none) but rustup's stable has
+# it, build with rustup's toolchain instead, the way scripts/check.sh's wasm
+# leg does. Native builds are untouched, so nothing here changes which
+# compiler the gate and the build cache see for ordinary work.
+cross_target=""
+for arg in "$@"; do
+    case "$arg" in
+        --target=*) cross_target="${arg#--target=}" ;;
+        wasm32-*|aarch64-*|x86_64-*) [ "$prev" = "--target" ] && cross_target="$arg" ;;
+    esac
+    prev="$arg"
+done
+if [ -n "$cross_target" ] && command -v rustup >/dev/null 2>&1; then
+    have_sysroot="$("$(dirname "$real_cargo")/rustc" --print sysroot 2>/dev/null || true)"
+    if [ -n "$have_sysroot" ] && [ ! -d "$have_sysroot/lib/rustlib/$cross_target" ]; then
+        stable_rustc="$(rustup which --toolchain stable rustc 2>/dev/null || true)"
+        if [ -n "$stable_rustc" ] && [ -d "$("$stable_rustc" --print sysroot)/lib/rustlib/$cross_target" ]; then
+            tc_bin="$(dirname "$stable_rustc")"
+            real_cargo="$tc_bin/cargo"
+            export PATH="$tc_bin:$PATH"
+            # Name the compiler absolutely: a rustc-wrapper (sccache) resolves
+            # a bare `rustc` on its own PATH, not this one.
+            export RUSTC="$stable_rustc"
+            unset RUSTFLAGS
+        fi
+    fi
+fi
+
 passthrough() { exec "$real_cargo" "$@"; }
 
 # Re-entry guard. mbx runs cargo itself; if that resolved back to this shim we
