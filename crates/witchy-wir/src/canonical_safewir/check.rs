@@ -10,6 +10,7 @@ use super::{
     ValueType,
 };
 
+mod cache;
 mod memory;
 use memory::MemoryChecker;
 mod contracts;
@@ -283,17 +284,46 @@ fn check_candidate<S: ModuleStage>(
     let closure_layouts = candidate.closure_layouts();
 
     for function in candidate.functions() {
-        check_function(
+        // A verdict is a pure function of what the key digests, so an
+        // admitted function is checked once per process and replayed
+        // afterwards; see `cache`. Rejections are never replayed.
+        let key = cache::key(
             function,
             &signatures,
             &imports,
             catalog,
             &functions,
             &tail_obligations,
-            &mut observed_tail_sites,
             &layouts,
             closure_layouts,
-        )?;
+        );
+        let discharged = match key.as_ref().and_then(cache::lookup) {
+            Some(replayed) => replayed,
+            None => {
+                let mut discharged = BTreeSet::new();
+                check_function(
+                    function,
+                    &signatures,
+                    &imports,
+                    catalog,
+                    &functions,
+                    &tail_obligations,
+                    &mut discharged,
+                    &layouts,
+                    closure_layouts,
+                )?;
+                let discharged = std::sync::Arc::new(discharged);
+                if let Some(key) = key {
+                    cache::record(key, std::sync::Arc::clone(&discharged));
+                }
+                discharged
+            }
+        };
+        for site in discharged.iter() {
+            if !observed_tail_sites.insert(*site) {
+                return Err(InitialCheckError::DuplicateTailObligation(*site));
+            }
+        }
     }
 
     for site in tail_obligations.keys() {
@@ -5970,5 +6000,133 @@ mod tests {
                 object: shared,
             }
         );
+    }
+
+    fn function_keys(
+        module: &CanonicalModule<super::super::LoweredCandidate>,
+    ) -> Vec<super::cache::FunctionCheckKey> {
+        let (_, layouts) =
+            LayoutBundle::decode_canonical(&module.layouts().canonical_bytes()).unwrap();
+        let signatures = super::index_signatures(module.signatures()).unwrap();
+        let imports = super::index_imports(module.imports()).unwrap();
+        let functions = super::index_functions(module.functions()).unwrap();
+        let tail_obligations = super::index_tail_obligations(
+            module.proper_tail_sites(),
+            module.proper_tail_locations(),
+        )
+        .unwrap();
+        module
+            .functions()
+            .iter()
+            .map(|function| {
+                super::cache::key(
+                    function,
+                    &signatures,
+                    &imports,
+                    module.abi_catalog(),
+                    &functions,
+                    &tail_obligations,
+                    &layouts,
+                    module.closure_layouts(),
+                )
+                .expect("the verdict memo is enabled")
+            })
+            .collect()
+    }
+
+    fn scalar_module(
+        value: i64,
+        extra_signatures: Vec<FunctionSignature>,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        let mut signatures = vec![FunctionSignature {
+            id: SIGNATURE,
+            parameters: Vec::new(),
+            results: vec![ValueType::Int],
+            contract: contract(vec![ResultContract::Value(ValueType::Int)]),
+        }];
+        signatures.extend(extra_signatures);
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts: empty_layouts(),
+            signatures,
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, ValueType::Int)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: Vec::new(),
+                    operations: vec![Operation::ConstInt { destination: VALUE, value }],
+                    terminator: Terminator::Return { values: vec![VALUE] },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn memo_key_is_a_function_of_the_inputs_a_verdict_reads() {
+        let base = function_keys(&scalar_module(42, Vec::new()));
+        assert_eq!(base, function_keys(&scalar_module(42, Vec::new())));
+        assert_ne!(base, function_keys(&scalar_module(43, Vec::new())));
+
+        // A module item the function never names is not one of its inputs:
+        // that is what lets one program's verdict serve another program.
+        let unrelated = FunctionSignature {
+            id: FunctionSignatureId::new(99),
+            parameters: vec![ValueType::Bool],
+            results: Vec::new(),
+            contract: contract(Vec::new()),
+        };
+        assert_eq!(base, function_keys(&scalar_module(42, vec![unrelated])));
+
+        // The closure table is consulted per layout, so registering the
+        // closure layout changes the key of every function naming it.
+        let registered = function_keys(&admitted_closure_module());
+        let unregistered = function_keys(&closure_module(
+            callable_place(AccessMode::Write, ENV_SIGNATURE),
+            FUNCTION_VALUE,
+            callable_place(AccessMode::Read, ENV_SIGNATURE),
+            ValueType::Callable(ENV_SIGNATURE),
+            false,
+        ));
+        assert_eq!(registered.len(), 2);
+        assert!(registered.iter().zip(&unregistered).all(|(with, without)| with != without));
+    }
+
+    #[test]
+    fn admitted_verdicts_replay_from_the_memo() {
+        let functions = admitted_closure_module().functions().len() as u64;
+        assert!(check_initial(admitted_closure_module()).is_ok());
+        let (hits_before, _) = super::cache::stats();
+        assert!(check_initial(admitted_closure_module()).is_ok());
+        let (hits_after, _) = super::cache::stats();
+        assert!(
+            hits_after - hits_before >= functions,
+            "expected {functions} replayed verdicts, saw {}",
+            hits_after - hits_before
+        );
+    }
+
+    #[test]
+    fn rejections_are_never_replayed() {
+        let rejected = || {
+            closure_module(
+                callable_place(AccessMode::Write, ENV_SIGNATURE),
+                FUNCTION_VALUE,
+                callable_place(AccessMode::Read, ENV_SIGNATURE),
+                ValueType::Callable(ENV_SIGNATURE),
+                false,
+            )
+        };
+        let first = check_initial(rejected()).unwrap_err();
+        let (_, misses_before) = super::cache::stats();
+        let second = check_initial(rejected()).unwrap_err();
+        let (_, misses_after) = super::cache::stats();
+        assert_eq!(first, second);
+        assert!(misses_after > misses_before);
     }
 }

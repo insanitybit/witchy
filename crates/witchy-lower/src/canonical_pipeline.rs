@@ -92,7 +92,9 @@ pub(crate) fn validate_checked_source(
             .map_err(CanonicalPipelineError::FinalValidation)
     } else {
         // Ordinary mode remains the zero-pass baseline. The final validator
-        // consumes and independently rechecks this exact sealed graph.
+        // consumes and rechecks this exact sealed graph; functions whose
+        // checker inputs are byte-identical to the initial pass replay their
+        // admitted verdict from the per-function memo (`check::cache`).
         validate_final(checked, source).map_err(CanonicalPipelineError::FinalValidation)
     }
 }

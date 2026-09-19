@@ -1,12 +1,14 @@
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use super::{AccessMode, AllocationClass, ArithmeticOperator, BasicBlock,
     CallArgument, CallableContract, CanonicalModule, ComparisonOperator, Extent,
-    Function, FunctionSignature, HostBufferExtent,
+    Function, FunctionId, FunctionSignature, FunctionSignatureId, HostBufferExtent,
     HostCallArgument, HostMutation, HostParameterRole, HostReentrancy, HostResultRole,
-    GuardKind, HeaderField, ImportContract, ImportContractIdentity, LoadTransfer, MemoryEffect, ModuleStage,
+    GuardKind, HeaderField, ImportContract, ImportContractIdentity, ImportId, LoadTransfer, MemoryEffect, ModuleStage,
     Operation, Ownership, ParameterContract, ParameterOwnership,
-    Place, Projection, ProperTailSite, ResultContract, StoreTransfer, Terminator,
+    Place, Projection, ProperTailSite, ResultContract, StoreTransfer, TailSiteId, Terminator,
     ValueId, ValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,24 +78,52 @@ const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v6"
 /// Deterministic, tagged serialization for the fields that define a
 /// CanonicalModule's identity. This deliberately does not use `Debug`: a
 /// formatting change must never silently change or omit security semantics.
-struct CanonicalWriter {
+pub(super) struct CanonicalWriter {
     bytes: Vec<u8>,
+    references: Option<References>,
+}
+
+/// The module items an encoded item names outside itself. Collected (when
+/// asked for) by the same encoders that produce the bytes, so the set can
+/// never disagree with the serialization: an id that reaches the bytes
+/// reaches the set. The per-function verdict memo (`check::cache`) closes
+/// its key over exactly these.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct References {
+    pub(super) layouts: BTreeSet<crate::layout::LayoutId>,
+    pub(super) signatures: BTreeSet<FunctionSignatureId>,
+    pub(super) functions: BTreeSet<FunctionId>,
+    pub(super) imports: BTreeSet<ImportId>,
+    pub(super) tail_sites: BTreeSet<TailSiteId>,
 }
 
 impl CanonicalWriter {
     fn new(version: u32, domain: &[u8]) -> Self {
-        let mut writer = Self { bytes: Vec::new() };
+        let mut writer = Self { bytes: Vec::new(), references: None };
         writer.bytes(b"WITCHY-SAFEWIR\0");
         writer.u32(version);
         writer.bytes(domain);
         writer
     }
 
-    fn finish(self) -> Vec<u8> {
+    /// A writer that also records every foreign id it encodes.
+    pub(super) fn collecting(version: u32, domain: &[u8]) -> Self {
+        let mut writer = Self::new(version, domain);
+        writer.references = Some(References::default());
+        writer
+    }
+
+    /// The ids recorded so far; empty for a non-collecting writer. Clears
+    /// the record, so successive calls partition what was encoded between.
+    pub(super) fn take_references(&mut self) -> References {
+        self.references.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    pub(super) fn finish(self) -> Vec<u8> {
         self.bytes
     }
 
-    fn u8(&mut self, value: u8) {
+    pub(super) fn u8(&mut self, value: u8) {
         self.bytes.push(value);
     }
 
@@ -101,7 +131,7 @@ impl CanonicalWriter {
         self.u8(u8::from(value));
     }
 
-    fn u32(&mut self, value: u32) {
+    pub(super) fn u32(&mut self, value: u32) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
@@ -113,7 +143,7 @@ impl CanonicalWriter {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn fixed_bytes(&mut self, bytes: &[u8]) {
+    pub(super) fn fixed_bytes(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
     }
 
@@ -122,7 +152,7 @@ impl CanonicalWriter {
         self.fixed_bytes(bytes);
     }
 
-    fn len(&mut self, length: usize) {
+    pub(super) fn len(&mut self, length: usize) {
         self.u64(u64::try_from(length).expect("canonical collection length fits u64"));
     }
 
@@ -131,7 +161,38 @@ impl CanonicalWriter {
     }
 
     fn layout_id(&mut self, layout: crate::layout::LayoutId) {
+        if let Some(references) = &mut self.references {
+            references.layouts.insert(layout);
+        }
         self.fixed_bytes(layout.as_bytes());
+    }
+
+    fn function_ref(&mut self, function: FunctionId) {
+        if let Some(references) = &mut self.references {
+            references.functions.insert(function);
+        }
+        self.u32(function.get());
+    }
+
+    fn signature_ref(&mut self, signature: FunctionSignatureId) {
+        if let Some(references) = &mut self.references {
+            references.signatures.insert(signature);
+        }
+        self.u32(signature.get());
+    }
+
+    fn import_ref(&mut self, import: ImportId) {
+        if let Some(references) = &mut self.references {
+            references.imports.insert(import);
+        }
+        self.u32(import.get());
+    }
+
+    fn tail_site_ref(&mut self, site: TailSiteId) {
+        if let Some(references) = &mut self.references {
+            references.tail_sites.insert(site);
+        }
+        self.fixed_bytes(&site.digest());
     }
 
     fn value_type(&mut self, value_type: ValueType) {
@@ -160,7 +221,7 @@ impl CanonicalWriter {
             }
             ValueType::Callable(signature) => {
                 self.u8(9);
-                self.u32(signature.get());
+                self.signature_ref(signature);
             }
             ValueType::InlineAggregate(layout) => {
                 self.u8(10);
@@ -452,7 +513,7 @@ impl CanonicalWriter {
         }
     }
 
-    fn signature(&mut self, signature: &FunctionSignature) {
+    pub(super) fn signature(&mut self, signature: &FunctionSignature) {
         self.u32(signature.id.get());
         self.len(signature.parameters.len());
         for parameter in &signature.parameters {
@@ -472,9 +533,9 @@ impl CanonicalWriter {
         }
     }
 
-    fn import(&mut self, import: &ImportContract) {
+    pub(super) fn import(&mut self, import: &ImportContract) {
         self.u32(import.id.get());
-        self.u32(import.signature.get());
+        self.signature_ref(import.signature);
         match &import.abi_identity {
             ImportContractIdentity::AuthenticatedAbi(identity) => {
                 self.u8(0);
@@ -668,25 +729,25 @@ impl CanonicalWriter {
             Operation::FunctionValue { destination, function } => {
                 self.u8(24);
                 self.value_id(*destination);
-                self.u32(function.get());
+                self.function_ref(*function);
             }
             Operation::Call { destinations, callee, arguments } => {
                 self.u8(21);
                 self.value_ids(destinations);
-                self.u32(callee.get());
+                self.function_ref(*callee);
                 self.arguments(arguments);
             }
             Operation::VarCall { destinations, callee, signature, arguments } => {
                 self.u8(22);
                 self.value_ids(destinations);
                 self.value_id(*callee);
-                self.u32(signature.get());
+                self.signature_ref(*signature);
                 self.arguments(arguments);
             }
             Operation::HostCall { destinations, import, arguments } => {
                 self.u8(23);
                 self.value_ids(destinations);
-                self.u32(import.get());
+                self.import_ref(*import);
                 self.host_arguments(arguments);
             }
         }
@@ -859,15 +920,15 @@ impl CanonicalWriter {
             }
             Terminator::TailCall { site, callee, arguments } => {
                 self.u8(3);
-                self.fixed_bytes(&site.digest());
-                self.u32(callee.get());
+                self.tail_site_ref(*site);
+                self.function_ref(*callee);
                 self.arguments(arguments);
             }
             Terminator::VarTailCall { site, callee, signature, arguments } => {
                 self.u8(4);
-                self.fixed_bytes(&site.digest());
+                self.tail_site_ref(*site);
                 self.value_id(*callee);
-                self.u32(signature.get());
+                self.signature_ref(*signature);
                 self.arguments(arguments);
             }
             Terminator::Trap => self.u8(5),
@@ -900,7 +961,7 @@ impl CanonicalWriter {
         self.terminator(&block.terminator);
     }
 
-    fn function(&mut self, function: &Function) {
+    pub(super) fn function(&mut self, function: &Function) {
         self.u32(function.id.get());
         self.u32(function.signature.get());
         self.u32(function.entry.get());

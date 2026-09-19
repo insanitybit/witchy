@@ -73,6 +73,21 @@ Measured on a loaded machine (minimum of alternating runs, user seconds):
    the recheck is a required independent re-validation or a redundancy is an
    RFC-0165 design decision, not a performance one; if it stays, it should be
    named in the memory-mode boundary as deliberate.
+
+   **Resolved 2026-09-19 (`check::cache`).** The recheck stays and still
+   runs every module-level check (contracts, owners, host imports, static
+   data, tail-site completeness). What changed is the per-function
+   `check_function` verdict: it is a pure function of the function's
+   canonical bytes plus the signatures, imports and catalog entries,
+   layouts (with nominal bindings and closure entries), and tail
+   obligations it names, so an admitted verdict is memoized per process
+   under a BLAKE3 key over exactly those inputs and replayed when they
+   recur. The final recheck therefore replays every function whose inputs
+   are byte-identical to the initial pass and rechecks any that are not;
+   rejections are never memoized. The same key lets a lowered standard
+   library function (the async executor's 11,039-block scheduler is the
+   expensive case) be checked once per process rather than once per
+   program. `WITCHY_SAFEWIR_CHECK_CACHE=off` restores the full second pass.
 2. **Checker state cloning.** `transfer_edge` and `meet` clone whole
    `MemoryState` maps per edge, and `promoted_object` still clones the state
    for objects that do have a loaded length. Persistent maps or copy-on-write
