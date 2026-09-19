@@ -110,6 +110,15 @@ Measured on a loaded machine (minimum of alternating runs, user seconds):
    compare against the encoder's output; sharing the control-flow decisions
    and re-deriving only the instruction tokens is a design question of the
    same kind as the second checker pass.
+
+   **Partly resolved 2026-09-19.** `dominates` now answers from a dominator
+   tree computed once per emitter (`immediate_dominators`), and `find_join`
+   ranks its candidates by the score it minimizes before running
+   `all_paths_reach_or_terminate`, stopping at the first admissible one
+   (the same minimum, far fewer walks). Both changes are made identically in
+   the encoder and the plan mirror. Warm async compile: 20.3 s -> 9.5 s.
+   The post-dominator precompute and the shared control-flow decisions
+   remain open.
 4. `canonical_bytes()` re-encodes the layout bundle on every call; the few
    remaining decode sites pay an encode plus a digest per call.
 5. The parity command's oracle leg re-lowers and re-validates the module
