@@ -5,7 +5,6 @@ use std::fmt;
 use foldhash::HashSet;
 
 use crate::ast::*;
-use crate::intrinsics;
 use crate::lexer::{tokenize, Tok, Token};
 use crate::origin::SourcePosition;
 
@@ -62,7 +61,18 @@ pub struct ExpressionSyntaxSpan {
 }
 
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
-    parse_module_internal(src, false).map(|(module, _)| module)
+    parse_module_internal(src, false, false).map(|(module, _)| module)
+}
+
+/// Historical reference spellings are accepted only by the explicit migration
+/// tool. Ordinary source, quoted syntax, and generated source use `parse_module`.
+///
+/// This is intentionally hidden from generated documentation: it is a
+/// compatibility boundary for migration tooling and historical fixtures, not
+/// an alternate ordinary-language parser.
+#[doc(hidden)]
+pub fn parse_reference_migration(src: &str) -> Result<Module, ParseError> {
+    parse_module_internal(src, false, true).map(|(module, _)| module)
 }
 
 /// Parse a module while retaining exact source ranges for expression roots.
@@ -72,12 +82,13 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
 pub fn parse_module_with_expression_spans(
     src: &str,
 ) -> Result<(Module, Vec<ExpressionSyntaxSpan>), ParseError> {
-    parse_module_internal(src, true)
+    parse_module_internal(src, true, false)
 }
 
 fn parse_module_internal(
     src: &str,
     capture_expression_spans: bool,
+    legacy_reference_migration: bool,
 ) -> Result<(Module, Vec<ExpressionSyntaxSpan>), ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
         message: e.message,
@@ -89,6 +100,7 @@ fn parse_module_internal(
     let tokens = crate::lexer::apply_layout(tokens);
     let mut parser = Parser::new(tokens);
     parser.capture_expression_spans = capture_expression_spans;
+    parser.legacy_reference_migration = legacy_reference_migration;
     let mut module = parser.module()?;
     // Each anonymous struct `.{…}` becomes a generic synthetic record carrying
     // `derive(Reflect)`, prepended to the module. The synthetic type name is
@@ -193,6 +205,8 @@ struct Parser {
     capture_expression_spans: bool,
     expression_spans: Vec<ExpressionSyntaxSpan>,
     current_statement_line: Option<u32>,
+    /// Set only by the migration entry point, never by source mode or imports.
+    legacy_reference_migration: bool,
 }
 
 /// Maximum nesting depth of the recursive-descent parser. Exceeding it is a clean
@@ -252,6 +266,7 @@ impl Parser {
             capture_expression_spans: false,
             expression_spans: Vec::new(),
             current_statement_line: None,
+            legacy_reference_migration: false,
         }
     }
 
@@ -732,6 +747,7 @@ impl Parser {
             return Err(self.error("named methods are reusable; `once fn` is only valid for function values and function types"));
         }
         let name = self.ident()?;
+        let type_params = self.function_type_params()?;
         self.expect(&Tok::LParen)?;
         let params = self.params(true)?;
         self.expect(&Tok::RParen)?;
@@ -748,6 +764,7 @@ impl Parser {
         Ok(MethodSig {
             pure: qualifiers.pure,
             name,
+            type_params,
             params,
             ret,
             default,
@@ -897,9 +914,14 @@ impl Parser {
                         self.advance();
                         params.push(name);
                     }
-                    Tok::Lifetime(name) => {
+                    Tok::Lifetime(name) if self.legacy_reference_migration => {
                         self.advance();
                         params.push(format!("'{name}"));
+                    }
+                    Tok::Lifetime(_) => {
+                        return Err(self.error(
+                            "lifetime parameters are retired; immutable views do not name lifetimes",
+                        ));
                     }
                     other => {
                         return Err(self.error(format!(
@@ -1211,6 +1233,7 @@ impl Parser {
             return Err(self.error("named functions are reusable; `once fn` is only valid for function values and function types"));
         }
         let name = self.ident()?;
+        let type_params = self.function_type_params()?;
         self.expect(&Tok::LParen)?;
         self.pending_impl_bounds.clear();
         let params = self.params(true)?;
@@ -1247,6 +1270,7 @@ impl Parser {
             comptime_only,
             attributes,
             name,
+            type_params,
             params,
             ret,
             body,
@@ -1254,6 +1278,46 @@ impl Parser {
             is_gen,
             is_async,
         })
+    }
+
+    /// Parse explicit declaration type parameters: `fn first[a, b](…)`.
+    /// This is deliberately distinct from nominal `Type(a)` parameters and
+    /// never admits lifetime tokens: rooted immutable views carry no lifetime
+    /// relation in normal source.
+    fn function_type_params(&mut self) -> Result<Vec<String>, ParseError> {
+        if !self.eat(&Tok::LBracket) {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        while !self.at(&Tok::RBracket) {
+            match self.kind().clone() {
+                Tok::Ident(name) => {
+                    self.advance();
+                    if params.contains(&name) {
+                        return Err(self.error(format!("duplicate function type parameter `{name}`")));
+                    }
+                    params.push(name);
+                }
+                Tok::Lifetime(_) => {
+                    return Err(self.error(
+                        "lifetime parameters are retired; immutable views do not name lifetimes",
+                    ));
+                }
+                other => {
+                    return Err(self.error(format!(
+                        "expected a function type parameter, found `{other}`"
+                    )));
+                }
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RBracket)?;
+        if params.is_empty() {
+            return Err(self.error("function type parameter brackets must declare at least one parameter"));
+        }
+        Ok(params)
     }
 
     /// An optional `where a: Trait, b: Trait2` clause after a function signature.
@@ -1295,12 +1359,16 @@ impl Parser {
             // `var` mutates in place and writes back; `own` consumes (takes
             // ownership).
             let mut legacy_var_lifetime = None;
+            let mut legacy_let_lifetime = None;
             let convention = if self.eat(&Tok::Var) {
                 // RFC-0122 migration input: `var('a) value: T` was the old
                 // spelling for a mutable borrowed parameter. Preserve its
                 // relation in the parsed type so the migration can print the
                 // canonical `value: &'a mut T` form.
                 if self.eat(&Tok::LParen) {
+                    if !self.legacy_reference_migration {
+                        return Err(self.error("`var('a)` is retired; use ordinary `var value: T`; immutable views have no mutable-reference form"));
+                    }
                     legacy_var_lifetime = Some(self.lifetime_name()?);
                     self.expect(&Tok::RParen)?;
                 }
@@ -1310,6 +1378,13 @@ impl Parser {
             } else if self.eat(&Tok::Let) {
                 // An explicit `let` opts into an immutable borrow (native passes it
                 // `&T`, no clone). Bare params remain owned values.
+                if self.eat(&Tok::LParen) {
+                    if !self.legacy_reference_migration {
+                        return Err(self.error("`let('a)` is retired; write `value: &T`"));
+                    }
+                    legacy_let_lifetime = Some(self.lifetime_name()?);
+                    self.expect(&Tok::RParen)?;
+                }
                 Convention::Borrow
             } else {
                 Convention::Let
@@ -1339,6 +1414,13 @@ impl Parser {
                 (Some(_), None) => {
                     return Err(self.error("`var('a)` requires a parameter type"));
                 }
+                (None, ty) => ty,
+            };
+            let ty = match (legacy_let_lifetime, ty) {
+                (Some(lifetime), Some(ty)) => Some(Type::Qualified(
+                    TypeQual::LegacyBorrow(lifetime), Box::new(ty),
+                )),
+                (Some(_), None) => return Err(self.error("`let('a)` requires a parameter type")),
                 (None, ty) => ty,
             };
             // (RFC-0056) An optional closed-constant default: `port: Int = 443`.
@@ -1396,38 +1478,58 @@ impl Parser {
         if self.at(&Tok::QuoteHoleStart) {
             return self.quote_type_hole();
         }
-        // RFC-0112 symbolic lifetime arguments use the existing lifetime token.
-        // They remain a distinct AST spelling (`Named("'a", [])`) until the
-        // nominal kind checker verifies the receiving parameter is a lifetime.
-        // No runtime type is ever created for this sentinel.
+        // Historical lifetime arguments remain available only to the explicit
+        // migration parser. Canonical rooted views carry no source lifetime.
         if matches!(self.kind(), Tok::Lifetime(_)) {
+            if !self.legacy_reference_migration {
+                return Err(self.error(
+                    "lifetime arguments are retired; immutable views do not name lifetimes",
+                ));
+            }
             let life = self.lifetime_name()?;
             return Ok(Type::Named(format!("'{life}"), Vec::new()));
         }
-        // RFC-0122 explicit references. `&'a T` is the source spelling for a
-        // shared loan and `&'a mut T` reserves a distinct AST qualifier for the
-        // affine exclusive-reference track. A lifetime is deliberately required:
-        // public relations are never inferred from an omitted source name.
+        // RFC-0167 rooted immutable views. `&T` and `&[T]` work in both modes.
+        // Historical lifetime-bearing and mutable references are migration-only.
         if self.eat(&Tok::Amp) {
-            let life = self.lifetime_name().map_err(|_| self.error(
-                "a reference type needs an explicit lifetime: write `&'a T` or `&'a mut T`"
-            ))?;
-            let mutable = if self.at_ident("mut") {
+            if matches!(self.kind(), Tok::Lifetime(_)) {
+                if !self.legacy_reference_migration {
+                    return Err(self.error("explicit reference lifetimes are retired; write `&T`"));
+                }
+                let life = self.lifetime_name()?;
+                let mutable = if self.at_ident("mut") {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                let inner = self.ty()?;
+                let qualifier = if mutable { TypeQual::BorrowMut(life) } else { TypeQual::Borrow(life) };
+                return Ok(Type::Qualified(qualifier, Box::new(inner)));
+            }
+            if self.at_ident("mut") {
+                if !self.legacy_reference_migration {
+                    return Err(self.error("`&mut` is retired; views are immutable, use `var` for mutation or `&T` for observation"));
+                }
                 self.advance();
-                true
-            } else {
-                false
-            };
+                return Ok(Type::Qualified(TypeQual::BorrowMut("migration".into()), Box::new(self.ty()?)));
+            }
             let inner = self.ty()?;
-            let qualifier = if mutable {
-                TypeQual::BorrowMut(life)
-            } else {
-                TypeQual::Borrow(life)
-            };
-            return Ok(Type::Qualified(qualifier, Box::new(inner)));
+            // The migration grammar presents historical reference fixtures to
+            // the retired loan checker. Canonical source still takes the
+            // rooted-view branch above (`parse_module` never enters here).
+            if self.legacy_reference_migration {
+                return Ok(Type::Qualified(TypeQual::Borrow("migration".into()), Box::new(inner)));
+            }
+            return Ok(Type::Qualified(TypeQual::View, Box::new(inner)));
         }
-        // Ownership/immutability qualifiers (RFC-0025/0026): `frozen T`, `unique T`,
-        // `local unique T`. Contextual — only a qualifier keyword FOLLOWED BY a type
+        if self.at_ident("local")
+            && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::Ident(n)) if n == "unique")
+        {
+            return Err(self.error("`local unique` is retired; use `unique T` and an explicit call or loan contract"));
+        }
+        // Ownership/immutability qualifiers: `frozen T`, `unique T`.
+        // Contextual — only a qualifier keyword FOLLOWED BY a type
         // is one; a bare `frozen` (nothing following) stays an ordinary type variable.
         if let Some(q) = self.eat_type_qual() {
             return Ok(Type::Qualified(q, Box::new(self.ty()?)));
@@ -1441,6 +1543,9 @@ impl Parser {
             && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::LParen))
             && matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::Lifetime(_)))
         {
+            if !self.legacy_reference_migration {
+                return Err(self.error("`let('a) T` is retired; write `&T`"));
+            }
             self.advance(); // `let`
             self.expect(&Tok::LParen)?;
             let life = self.lifetime_name()?;
@@ -1498,6 +1603,12 @@ impl Parser {
             let mut params = Vec::new();
             let mut conventions = Vec::new();
             while !self.at(&Tok::RParen) {
+                if matches!(self.kind(), Tok::Let | Tok::Var)
+                    && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::LParen))
+                    && matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::Lifetime(_)))
+                {
+                    return Err(self.error("lifetime-bearing parameter conventions are retired; write `&T` or use ordinary `var`"));
+                }
                 let convention = if self.eat(&Tok::Var) {
                     Convention::Var
                 } else if self.eat(&Tok::Own) {
@@ -1539,11 +1650,17 @@ impl Parser {
             }
             self.expect(&Tok::RParen)?;
             if types.is_empty() {
-                return Ok(Type::Named("Nil".into(), Vec::new()));
+                // Unit has one source spelling.  Keep the parsed structural
+                // tuple so later checked/generative paths cannot recreate the
+                // retired `Nil` alias merely by round-tripping `()`.
+                return Ok(Type::Tuple(Vec::new()));
             }
             return Ok(Type::Tuple(types));
         }
         let mut name = self.ident()?;
+        if name == "Nil" {
+            return Err(self.error("`Nil` is retired; write `()`"));
+        }
         // (RFC-0042) A module-qualified type: `iter.Step`, `json.Json`. A lowercase
         // first segment (a module name) followed by `.` and an uppercase segment (a
         // type name) is a qualified type reference; the linker validates and keeps
@@ -1558,21 +1675,6 @@ impl Parser {
             let ty = self.ident()?;
             name = format!("{name}.{ty}");
         }
-        // (RFC-0083) The borrowed-result surface `View(T, 'a)` — a named type whose
-        // second argument is a lifetime, which the general type-argument loop below
-        // cannot parse. Desugars to the same `Qualified(Borrow('a), T)` as
-        // `let('a) T`.
-        if name == "View"
-            && self.at(&Tok::LParen)
-            && !matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::RParen))
-        {
-            self.expect(&Tok::LParen)?;
-            let inner = self.ty()?;
-            self.expect(&Tok::Comma)?;
-            let life = self.lifetime_name()?;
-            self.expect(&Tok::RParen)?;
-            return Ok(Type::Qualified(TypeQual::LegacyBorrow(life), Box::new(inner)));
-        }
         if self.at(&Tok::Lt) {
             // `List<Int>` is the Rust/TS spelling; witchy writes type arguments in
             // parentheses. Catch the `<` here and suggest the right form, instead
@@ -1584,6 +1686,16 @@ impl Parser {
             )));
         }
         let mut args = Vec::new();
+        if name == "View"
+            && self.at(&Tok::LParen)
+            && !self.legacy_reference_migration
+            && self.toks[self.pos + 1..]
+                .iter()
+                .take_while(|token| token.kind != Tok::RParen)
+                .any(|token| matches!(token.kind, Tok::Lifetime(_)))
+        {
+            return Err(self.error("`View(T, 'a)` is retired; write `&T`"));
+        }
         if self.eat(&Tok::LParen) {
             while !self.at(&Tok::RParen) {
                 args.push(self.ty()?);
@@ -1603,11 +1715,25 @@ impl Parser {
             }
             self.expect(&Tok::RBracket)?;
         }
+        // Reserve only the retired builtin shape, not a nominal `View('a)` or
+        // an unrelated ordinary type named View. Nominal lifetime arguments
+        // retain their normal kind-checking path.
+        if name == "View" && args.len() == 2
+            && let Type::Named(lifetime, nested) = &args[1]
+            && nested.is_empty()
+            && let Some(lifetime) = lifetime.strip_prefix('\'')
+        {
+            if !self.legacy_reference_migration {
+                return Err(self.error("`View(T, 'a)` is retired; write `&T`"));
+            }
+            let qualifier = TypeQual::LegacyBorrow(lifetime.to_string());
+            return Ok(Type::Qualified(qualifier, Box::new(args.remove(0))));
+        }
         Ok(Type::Named(name, args))
     }
 
-    /// Consume a leading ownership/immutability qualifier (`frozen` / `unique` /
-    /// `local unique`) if one is present AND is followed by a type — so a bare
+    /// Consume a leading ownership/immutability qualifier (`frozen` / `unique`)
+    /// if one is present AND is followed by a type — so a bare
     /// lowercase type variable that happens to be spelled like a qualifier is
     /// unaffected. `None` when no qualifier applies.
     fn eat_type_qual(&mut self) -> Option<TypeQual> {
@@ -1622,15 +1748,6 @@ impl Parser {
                     | Some(Tok::DotLBracket)
             )
         };
-        // `local unique T`
-        if self.at_ident("local")
-            && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::Ident(n)) if n == "unique")
-            && starts_type(self.toks.get(self.pos + 2).map(|t| &t.kind))
-        {
-            self.advance();
-            self.advance();
-            return Some(TypeQual::LocalUnique);
-        }
         for (kw, q) in [("frozen", TypeQual::Frozen), ("unique", TypeQual::Unique)] {
             if self.at_ident(kw) && starts_type(self.toks.get(self.pos + 1).map(|t| &t.kind)) {
                 self.advance();
@@ -1897,7 +2014,13 @@ impl Parser {
             });
         }
         if self.eat(&Tok::Amp) {
-            let mutable = if self.at_ident("mut") { self.advance(); true } else { false };
+            let mutable = if self.at_ident("mut") {
+                if !self.legacy_reference_migration {
+                    return Err(self.error("`&mut` is retired; `&place` creates an immutable view and `var` is the only mutation syntax"));
+                }
+                self.advance();
+                true
+            } else { false };
             let expr = self.prefix()?;
             return Ok(Expr::Unary {
                 op: if mutable { UnOp::BorrowMut } else { UnOp::Borrow },
@@ -2052,64 +2175,7 @@ impl Parser {
                             e = if args.iter().any(|(l, _)| l.is_some()) {
                                 Expr::LabeledCall { name, args }
                             } else {
-                                let args = unlabel(args);
-                                if name == "meta.item"
-                                    && let [Expr::Str(source)] = args.as_slice()
-                                    && let Some(owned) =
-                                        self.compiler_owned_item_literal(source, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.item_join_syntax"
-                                    && let Some(owned) =
-                                        self.compiler_owned_item_join(&args, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.expr_raw"
-                                    && let [Expr::Str(source)] = args.as_slice()
-                                    && let Some(owned) =
-                                        self.compiler_owned_expr_literal(source, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.expr_join_syntax"
-                                    && let Some(owned) =
-                                        self.compiler_owned_expr_join(&args, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.type_join"
-                                    && let Some(owned) =
-                                        self.compiler_owned_type_join(&args, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.pattern_join"
-                                    && let Some(owned) =
-                                        self.compiler_owned_pattern_join(&args, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.stmt_raw"
-                                    && let [Expr::Str(source)] = args.as_slice()
-                                    && let Some(owned) =
-                                        self.compiler_owned_stmt_literal(source, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.stmt_join_syntax"
-                                    && let Some(owned) =
-                                        self.compiler_owned_stmt_join(&args, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.block_raw"
-                                    && let [Expr::Str(source)] = args.as_slice()
-                                    && let Some(owned) =
-                                        self.compiler_owned_block_literal(source, member_line)
-                                {
-                                    owned
-                                } else if name == "meta.block_join_syntax"
-                                    && let Some(owned) =
-                                        self.compiler_owned_block_join(&args, member_line)
-                                {
-                                    owned
-                                } else {
-                                    Expr::Call { name, args }
-                                }
+                                Expr::Call { name, args: unlabel(args) }
                             };
                         }
                         // `receiver.method(args)` — UFCS method call: sugar for
@@ -2180,7 +2246,13 @@ impl Parser {
             Tok::TagLit { tag, parts, holes, hole_spans } => {
                 let line = self.cur().line;
                 self.advance();
-                Ok(Expr::TaggedLit { tag, parts, holes, hole_spans, line })
+                Ok(Expr::TaggedLit {
+                    tag,
+                    parts,
+                    holes: holes.into_iter().map(TaggedHole::Source).collect(),
+                    hole_spans,
+                    line,
+                })
             }
             Tok::True => {
                 self.advance();
@@ -2202,7 +2274,10 @@ impl Parser {
             Tok::LParen => {
                 self.advance();
                 if self.eat(&Tok::RParen) {
-                    return Ok(Expr::Ctor { name: "Nil".into(), args: Vec::new() });
+                    // The canonical unit spelling is structurally the empty
+                    // tuple. Do not synthesize the legacy `Nil` constructor
+                    // while parsing it.
+                    return Ok(Expr::Tuple(Vec::new()));
                 }
                 let first = self.expr(0)?;
                 if self.at(&Tok::Comma) {
@@ -2341,6 +2416,9 @@ impl Parser {
             Tok::Region => self.region_block(),
             Tok::Ident(name) => {
                 self.advance();
+                if name == "Nil" {
+                    return Err(self.error("`Nil` is retired; write `()`"));
+                }
                 self.name_application(name)
             }
             other => Err(self.error(format!("expected an expression, found `{other}`"))),
@@ -2662,112 +2740,6 @@ impl Parser {
         (handle, source)
     }
 
-    fn compiler_owned_expr_literal(
-        &mut self,
-        source: &str,
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let mut wrapper = String::new();
-        let mut imports: Vec<&str> = self.imports.iter().map(String::as_str).collect();
-        imports.sort_unstable();
-        for import in imports {
-            wrapper.push_str("import ");
-            wrapper.push_str(import);
-            wrapper.push('\n');
-        }
-        wrapper.push_str("fn __witchy_expr_syntax_payload():\n");
-        for line in source.lines() {
-            wrapper.push_str("    ");
-            wrapper.push_str(line);
-            wrapper.push('\n');
-        }
-        // Parse without `parse_module`'s synthetic anonymous-record insertion;
-        // merge those shapes into the enclosing parser instead. This lets a
-        // formatted `meta.expr_raw(".{x: 1}")` reconstruct the same owned AST
-        // and causes the enclosing module to emit the required structural type.
-        let tokens = tokenize(&wrapper).ok()?;
-        let tokens = crate::lexer::apply_layout(tokens);
-        let mut payload_parser = Parser::new(tokens);
-        let mut parsed = payload_parser.module().ok()?;
-        let [Item::Function(function)] = parsed.items.as_slice() else {
-            return None;
-        };
-        let [Stmt::Expr(expr)] = function.body.stmts.as_slice() else {
-            return None;
-        };
-        let expr = expr.clone();
-        for fields in payload_parser.anon_records {
-            if !self.anon_records.contains(&fields) {
-                self.anon_records.push(fields);
-            }
-        }
-        self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
-        self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
-        self.compiler_type_syntax.append(&mut parsed.compiler_type_syntax);
-        self.compiler_pattern_syntax.append(&mut parsed.compiler_pattern_syntax);
-        self.compiler_stmt_syntax.append(&mut parsed.compiler_stmt_syntax);
-        self.compiler_block_syntax.append(&mut parsed.compiler_block_syntax);
-        Some(self.compiler_owned_expr(expr, source.to_string(), definition_line))
-    }
-
-    fn compiler_owned_expr_join(
-        &mut self,
-        args: &[Expr],
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        if parts.len() != holes.len() + 1 {
-            return None;
-        }
-        let source = Self::compiler_owned_mixed_join_source(args)?;
-        let owned = self.compiler_owned_expr_literal(&source, definition_line)?;
-        let Expr::Call { name, args: owned_args } = owned else {
-            return None;
-        };
-        if name != crate::intrinsics::COMPILER_QUOTE_EXPR {
-            return None;
-        }
-        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
-            return None;
-        };
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES.into(),
-            args: vec![
-                Expr::Str(handle.clone()),
-                Expr::List(parts.clone()),
-                Expr::List(holes.clone()),
-            ],
-        })
-    }
-
-    fn compiler_owned_type_literal(
-        &mut self,
-        source: &str,
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let wrapper = format!("type TypeSyntaxPayload = {source}\n");
-        let tokens = tokenize(&wrapper).ok()?;
-        let tokens = crate::lexer::apply_layout(tokens);
-        let mut payload_parser = Parser::new(tokens);
-        let parsed = payload_parser.module().ok()?;
-        let [Item::TypeAlias { ty, .. }] = parsed.items.as_slice() else {
-            return None;
-        };
-        let ty = ty.clone();
-        for fields in payload_parser.anon_records {
-            if !self.anon_records.contains(&fields) {
-                self.anon_records.push(fields);
-            }
-        }
-        let handle = self.register_type_syntax(ty, source, definition_line);
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
-        })
-    }
-
     fn register_type_syntax(
         &mut self,
         ty: Type,
@@ -2815,80 +2787,6 @@ impl Parser {
         })
     }
 
-    fn compiler_owned_type_join(
-        &mut self,
-        args: &[Expr],
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        if parts.len() != holes.len() + 1 {
-            return None;
-        }
-        if holes.is_empty() {
-            let [Expr::Str(source)] = parts.as_slice() else {
-                return None;
-            };
-            return self.compiler_owned_type_literal(source, definition_line);
-        }
-        let mut source = String::new();
-        for (index, part) in parts.iter().enumerate() {
-            let Expr::Str(part) = part else {
-                return None;
-            };
-            source.push_str(part);
-            if index < holes.len() {
-                source.push_str(&format!("{QUOTE_TYPE_HOLE_PREFIX}{index}"));
-            }
-        }
-        let owned = self.compiler_owned_type_literal(&source, definition_line)?;
-        let Expr::Call { name, args: owned_args } = owned else {
-            return None;
-        };
-        if name != crate::intrinsics::COMPILER_QUOTE_TYPE {
-            return None;
-        }
-        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
-            return None;
-        };
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES.into(),
-            args: vec![
-                Expr::Str(handle.clone()),
-                Expr::List(parts.clone()),
-                Expr::List(holes.clone()),
-            ],
-        })
-    }
-
-    fn compiler_owned_pattern_literal(
-        &mut self,
-        source: &str,
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let wrapper = format!("fn pattern_syntax_payload(value: Int):\n    match value:\n        {source} -> 1\n        _ -> 0\n");
-        let tokens = tokenize(&wrapper).ok()?;
-        let tokens = crate::lexer::apply_layout(tokens);
-        let mut payload_parser = Parser::new(tokens);
-        let parsed = payload_parser.module().ok()?;
-        let [Item::Function(function)] = parsed.items.as_slice() else {
-            return None;
-        };
-        let [Stmt::Expr(Expr::Match { arms, .. })] = function.body.stmts.as_slice() else {
-            return None;
-        };
-        let [arm, _fallback] = arms.as_slice() else {
-            return None;
-        };
-        let pattern = arm.pattern.clone();
-        let handle = self.register_pattern_syntax(pattern, source, definition_line);
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_PATTERN.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
-        })
-    }
-
     fn register_pattern_syntax(
         &mut self,
         pattern: Pattern,
@@ -2904,77 +2802,6 @@ impl Parser {
         handle
     }
 
-    fn compiler_owned_pattern_join(
-        &mut self,
-        args: &[Expr],
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        if parts.len() != holes.len() + 1 {
-            return None;
-        }
-        if holes.is_empty() {
-            let [Expr::Str(source)] = parts.as_slice() else {
-                return None;
-            };
-            return self.compiler_owned_pattern_literal(source, definition_line);
-        }
-        let mut source = String::new();
-        for (index, part) in parts.iter().enumerate() {
-            let Expr::Str(part) = part else {
-                return None;
-            };
-            source.push_str(part);
-            if index < holes.len() {
-                source.push_str(&format!("{QUOTE_PATTERN_HOLE_PREFIX}{index}"));
-            }
-        }
-        let owned = self.compiler_owned_pattern_literal(&source, definition_line)?;
-        let Expr::Call { name, args: owned_args } = owned else {
-            return None;
-        };
-        if name != crate::intrinsics::COMPILER_QUOTE_PATTERN {
-            return None;
-        }
-        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
-            return None;
-        };
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES.into(),
-            args: vec![
-                Expr::Str(handle.clone()),
-                Expr::List(parts.clone()),
-                Expr::List(holes.clone()),
-            ],
-        })
-    }
-
-    fn compiler_owned_stmt_literal(
-        &mut self,
-        source: &str,
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let mut wrapper = "fn stmt_syntax_payload():\n".to_string();
-        Self::push_indented_source(&mut wrapper, source);
-        wrapper.push_str("    0\n");
-        let (parsed, payload_parser) = Self::parse_payload_module(&wrapper)?;
-        let [Item::Function(function)] = parsed.items.as_slice() else {
-            return None;
-        };
-        let [stmt, Stmt::Expr(Expr::Int(0))] = function.body.stmts.as_slice() else {
-            return None;
-        };
-        let stmt = stmt.clone();
-        self.merge_payload_parser(parsed, payload_parser);
-        let (handle, source) = self.register_stmt_syntax(stmt, definition_line);
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_STMT.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source)],
-        })
-    }
-
     fn register_stmt_syntax(&mut self, stmt: Stmt, definition_line: u32) -> (String, String) {
         let source = crate::format::stmt_str(&stmt);
         let handle = self.compiler_syntax_handle("stmt", &source);
@@ -2986,57 +2813,6 @@ impl Parser {
         (handle, source)
     }
 
-    fn compiler_owned_stmt_join(&mut self, args: &[Expr], definition_line: u32) -> Option<Expr> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        if holes.is_empty() {
-            let [Expr::Str(source)] = parts.as_slice() else {
-                return None;
-            };
-            return self.compiler_owned_stmt_literal(source, definition_line);
-        }
-        let source = Self::compiler_owned_mixed_join_source(args)?;
-        let owned = self.compiler_owned_stmt_literal(&source, definition_line)?;
-        let Expr::Call { name, args: owned_args } = owned else {
-            return None;
-        };
-        if name != crate::intrinsics::COMPILER_QUOTE_STMT {
-            return None;
-        }
-        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
-            return None;
-        };
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_STMT_HOLES.into(),
-            args: vec![
-                Expr::Str(handle.clone()),
-                Expr::List(parts.clone()),
-                Expr::List(holes.clone()),
-            ],
-        })
-    }
-
-    fn compiler_owned_block_literal(
-        &mut self,
-        source: &str,
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let mut wrapper = "fn block_syntax_payload():\n".to_string();
-        Self::push_indented_source(&mut wrapper, source);
-        let (parsed, payload_parser) = Self::parse_payload_module(&wrapper)?;
-        let [Item::Function(function)] = parsed.items.as_slice() else {
-            return None;
-        };
-        let block = function.body.clone();
-        self.merge_payload_parser(parsed, payload_parser);
-        let (handle, source) = self.register_block_syntax(block, definition_line);
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_BLOCK.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source)],
-        })
-    }
-
     fn register_block_syntax(&mut self, block: Block, definition_line: u32) -> (String, String) {
         let source = crate::format::block_str(&block);
         let handle = self.compiler_syntax_handle("block", &source);
@@ -3046,67 +2822,6 @@ impl Parser {
             definition_line,
         });
         (handle, source)
-    }
-
-    fn compiler_owned_block_join(&mut self, args: &[Expr], definition_line: u32) -> Option<Expr> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        if holes.is_empty() {
-            let [Expr::Str(source)] = parts.as_slice() else {
-                return None;
-            };
-            return self.compiler_owned_block_literal(source, definition_line);
-        }
-        let source = Self::compiler_owned_mixed_join_source(args)?;
-        let owned = self.compiler_owned_block_literal(&source, definition_line)?;
-        let Expr::Call { name, args: owned_args } = owned else {
-            return None;
-        };
-        if name != crate::intrinsics::COMPILER_QUOTE_BLOCK {
-            return None;
-        }
-        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
-            return None;
-        };
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES.into(),
-            args: vec![
-                Expr::Str(handle.clone()),
-                Expr::List(parts.clone()),
-                Expr::List(holes.clone()),
-            ],
-        })
-    }
-
-    fn push_indented_source(wrapper: &mut String, source: &str) {
-        for line in source.lines() {
-            wrapper.push_str("    ");
-            wrapper.push_str(line);
-            wrapper.push('\n');
-        }
-    }
-
-    fn parse_payload_module(source: &str) -> Option<(Module, Parser)> {
-        let tokens = tokenize(source).ok()?;
-        let tokens = crate::lexer::apply_layout(tokens);
-        let mut parser = Parser::new(tokens);
-        let module = parser.module().ok()?;
-        Some((module, parser))
-    }
-
-    fn merge_payload_parser(&mut self, mut parsed: Module, payload_parser: Parser) {
-        for fields in payload_parser.anon_records {
-            if !self.anon_records.contains(&fields) {
-                self.anon_records.push(fields);
-            }
-        }
-        self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
-        self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
-        self.compiler_type_syntax.append(&mut parsed.compiler_type_syntax);
-        self.compiler_pattern_syntax.append(&mut parsed.compiler_pattern_syntax);
-        self.compiler_stmt_syntax.append(&mut parsed.compiler_stmt_syntax);
-        self.compiler_block_syntax.append(&mut parsed.compiler_block_syntax);
     }
 
     fn quote_hole_parts(
@@ -3266,93 +2981,6 @@ impl Parser {
         handle.push('\0');
         handle.push_str(source);
         handle
-    }
-
-    fn compiler_owned_item_literal(
-        &mut self,
-        source: &str,
-        definition_line: u32,
-    ) -> Option<Expr> {
-        let mut parsed = parse_module(source).ok()?;
-        if !parsed.modes.is_empty()
-            || !parsed.imports.is_empty()
-            || !parsed.from_imports.is_empty()
-            || parsed.items.len() != 1
-        {
-            return None;
-        }
-        self.compiler_item_syntax
-            .append(&mut parsed.compiler_item_syntax);
-        Some(self.item_syntax_expr(parsed.items.remove(0), definition_line))
-    }
-
-    fn compiler_owned_item_join(&mut self, args: &[Expr], definition_line: u32) -> Option<Expr> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        let source = Self::compiler_owned_mixed_join_source(args)?;
-        let mut parsed = parse_module(&source).ok()?;
-        if !parsed.modes.is_empty()
-            || !parsed.imports.is_empty()
-            || !parsed.from_imports.is_empty()
-            || parsed.items.len() != 1
-        {
-            return None;
-        }
-        self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
-        let (handle, _) = self.register_item_syntax(parsed.items.remove(0), definition_line);
-        Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES.into(),
-            args: vec![Expr::Str(handle), Expr::List(parts.clone()), Expr::List(holes.clone())],
-        })
-    }
-
-    fn compiler_owned_mixed_join_source(args: &[Expr]) -> Option<String> {
-        let [Expr::List(parts), Expr::List(holes)] = args else {
-            return None;
-        };
-        if parts.len() != holes.len() + 1 {
-            return None;
-        }
-        let mut expr_index = 0;
-        let mut type_index = 0;
-        let mut pattern_index = 0;
-        let mut source = String::new();
-        for (index, part) in parts.iter().enumerate() {
-            let Expr::Str(part) = part else {
-                return None;
-            };
-            source.push_str(part);
-            let Some(hole) = holes.get(index) else {
-                continue;
-            };
-            let Expr::Call { name, args } = hole else {
-                return None;
-            };
-            if args.len() != 1 {
-                return None;
-            }
-            let marker = match name.as_str() {
-                "meta.expr_hole" => {
-                    let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{expr_index}");
-                    expr_index += 1;
-                    marker
-                }
-                "meta.type_hole" => {
-                    let marker = format!("{QUOTE_TYPE_HOLE_PREFIX}{type_index}");
-                    type_index += 1;
-                    marker
-                }
-                "meta.pattern_hole" => {
-                    let marker = format!("{QUOTE_PATTERN_HOLE_PREFIX}{pattern_index}");
-                    pattern_index += 1;
-                    marker
-                }
-                _ => return None,
-            };
-            source.push_str(&marker);
-        }
-        Some(source)
     }
 
     fn item_syntax_expr_with_holes(
@@ -4444,10 +4072,10 @@ pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
     fn desugar(place: Expr, value: Expr, place_depth: u32) -> Result<Stmt, String> {
         match place {
             Expr::Var(name) => Ok(Stmt::Assign { name, value, place_depth }),
-            Expr::Unary { op: UnOp::Deref, expr } => Ok(Stmt::Expr(Expr::Call {
-                name: intrinsics::REFERENCE_WRITE.to_string(),
-                args: vec![*expr, value],
-            })),
+            Expr::Unary { op: UnOp::Deref, .. } => Err(
+                "write-through dereference is retired; immutable views cannot be dereferenced for mutation"
+                    .to_string(),
+            ),
             Expr::Index { base, index } => {
                 let new_base = Expr::MethodCall {
                     receiver: base.clone(),
@@ -4862,6 +4490,12 @@ fn lower_sugar_expr(e: &mut Expr) {
                 lower_sugar_expr(a);
             }
         }
+        // `&items[i]` and `&items[lo..hi]` are rooted-view formations, not
+        // ordinary value reads.  Keep their projection syntax intact until
+        // checking authenticates the root and projection facts; lowering an
+        // index here would turn it into `list.at`, whose by-value contract is
+        // intentionally unavailable to immutable slice carriers.
+        Expr::Unary { op: UnOp::Borrow, expr } => lower_sugar_rooted_view_place(expr),
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
@@ -4924,6 +4558,31 @@ fn lower_sugar_expr(e: &mut Expr) {
         }
         Expr::Lambda { body, .. } => lower_sugar_block(body),
         Expr::Block(b) => lower_sugar_block(b),
+    }
+}
+
+/// Lower ordinary nested syntax in a place used to form an immutable rooted
+/// view, while retaining the `Index`/`Range` nodes that checker-side view facts
+/// authenticate.  These nodes are not general runtime sugar in this position:
+/// they specify the retained root projection of `&place`.
+fn lower_sugar_rooted_view_place(e: &mut Expr) {
+    match e {
+        Expr::Index { base, index } => {
+            lower_sugar_rooted_view_place(base);
+            lower_sugar_rooted_view_projection(index);
+        }
+        Expr::Field { base, .. } => lower_sugar_rooted_view_place(base),
+        _ => lower_sugar_expr(e),
+    }
+}
+
+fn lower_sugar_rooted_view_projection(e: &mut Expr) {
+    match e {
+        Expr::Range { lo, hi, .. } => {
+            lower_sugar_expr(lo);
+            lower_sugar_expr(hi);
+        }
+        _ => lower_sugar_expr(e),
     }
 }
 

@@ -1,7 +1,7 @@
 ---
 rfc: 0161
 title: "Typed Resumable Runtime: Structured Tasks, Owned Channels, and Deterministic Select"
-status: proposed
+status: deferred
 created: 2026-08-26
 supersedes:
   - "0152 (deterministic CSP ready paths), upon acceptance"
@@ -18,7 +18,10 @@ related:
   - "[0135](0135-stable-semantics-converge.md) (interpreter and Wasm convergence)"
   - "[0154](0154-call-graph-specialization.md) (general closure and call specialization)"
 tracking: >
-  Proposed replacement for the RFC-0152 implementation program. The live
+  Surface changes deferred by RFC-0167 section 7. Revival requires an explicit
+  amendment adopting those changes; representation work preserving RFC-0167
+  may proceed independently. This remains a replacement proposal for the
+  RFC-0152 implementation program. The preserved
   acceptance state is recorded in 0161-acceptance-ledger.md. Existing RFC-0152
   compiler facts, tests, counters, and measurement tools are inputs, not proof
   that this RFC is implemented.

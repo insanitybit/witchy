@@ -479,7 +479,7 @@ message, not merely on the fact of erroring.
 
 ### Admitted Console-output fixture recipe v1
 
-The compiler derives a fresh explicit-`Nil` fixture entry from retained raw
+The compiler derives a fresh explicitly unit-returning fixture entry from retained raw
 sources and an exact selected local test declaration. Its source identity binds
 those original bytes separately from the versioned Console-output recipe and
 selected declaration ordinal. Provider plans supply data, never source, entry,
@@ -498,7 +498,7 @@ runs report checked zero live objects; aborted runs report no leak measurement.
 BuildOut recipe v1 accepts retained source bytes and loader-authenticated module
 ownership, not an AST or a supplied digest. It selects the unique own-entry
 `build` declaration with one default-convention, checked BuildOut parameter.
-An explicit-Nil compiler wrapper is freshly checked with that source; ordinary
+An explicit-() compiler wrapper is freshly checked with that source; ordinary
 `main` still cannot receive build capabilities. The original raw identity is
 retained separately from the versioned recipe identity.
 

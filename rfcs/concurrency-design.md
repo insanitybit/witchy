@@ -1,9 +1,17 @@
 ---
-status: implemented
-note: Imported from docs/ under RFC-0001. Frozen design record — current behavior lives in spec/ and the code.
+status: superseded
+superseded-by: 0167
+note: Historical executor rationale; current language decisions are in RFC-0167 section 7.
 ---
 
 # Concurrency design: async/await + spawn + channels
+
+> 2026-09-16: [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension)
+> supersedes this early source design. The one-message-type restriction,
+> `Task(m, a)`, prefix `await`, and unsupported-loop claims below are historical,
+> not current limits. This file remains for existing architecture links and
+> executor rationale; [the inherited evidence index](0167-acceptance-ledger.md#inherited-evidence-index-historical-not-rfc-0167-acceptance)
+> preserves the later typed-channel and generator acceptance records.
 
 witchy's concurrency is **stackless async/await** with **`spawn`** for concurrency
 and **first-class channels** for communication — the Go/CSP family, shaped by

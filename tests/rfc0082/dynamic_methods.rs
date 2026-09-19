@@ -3,10 +3,10 @@
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
 
-use super::authenticated::checked_result;
+use super::authenticated::checked_source_result;
 
-fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
-    checked_result(source).expect("authenticated checked link")
+fn checked_source(source: &str) -> witchy_types::pipeline::CheckedModule {
+    checked_source_result(source).expect("authenticated exact-source link")
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn main(console: Console):
             console.print("argument-${index}-${dynamic.type_name(expected)}-${dynamic.type_name(actual)}")
         _ -> console.print("unexpected-argument")
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret authenticated dynamic method fixture");
     let expected = [
@@ -57,12 +57,12 @@ fn main(console: Console):
     ];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile authenticated dynamic method fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit authenticated dynamic method fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
@@ -97,18 +97,18 @@ fn main(console: Console):
         Ok(_) -> console.print("called")
         Err(_) -> console.print("call-failed")
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret explicit capability fixture");
     let expected = ["denied-announce", "cap-ok", "called"];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile explicit capability fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit explicit capability fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
@@ -200,18 +200,18 @@ fn main(console: Console):
             console.print("mismatch-${dynamic.type_name(trait_type)}")
         _ -> console.print("unexpected-missing-view")
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret authenticated dynamic trait fixture");
     let expected = ["label-true", "missing-false", "view-9", "mismatch-dyn Missing"];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile authenticated dynamic trait fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit authenticated dynamic trait fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
@@ -267,7 +267,7 @@ fn main(console: Console):
                                 dynamic.AccessUnique -> console.print("result-${list.length(path)}-${output}")
                                 _ -> console.print("wrong-result-qualifier")
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret logical access reflection fixture");
     let expected = [
@@ -279,12 +279,12 @@ fn main(console: Console):
     ];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile logical access reflection fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit logical access reflection fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
@@ -304,7 +304,7 @@ fn main(console: Console):
     console.print(dynamic.type_name(dynamic.runtime_type(once fn(Int) -> Int)))
     console.print(dynamic.type_name(dynamic.runtime_type(pure once fn(Int) -> Int)))
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let expected = [
         "fn(Int) -> Int",
         "pure fn(Int) -> Int",
@@ -315,12 +315,12 @@ fn main(console: Console):
         .expect("interpret qualified callable descriptors");
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile qualified callable descriptors");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit qualified callable descriptors");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
@@ -346,7 +346,7 @@ impl Reflect for Widget:
         reflect.MNil
 
 @dynamic
-pub fn view(self: Widget, text: View(frozen String, 'source)) -> View(frozen String, 'source):
+pub fn view(self: Widget, text: &'source frozen String) -> &'source frozen String:
     text
 
 fn main(console: Console):
@@ -356,19 +356,25 @@ fn main(console: Console):
     let storage_site = list.at(dynamic.borrow_relation_storage_qualifiers(relation), 0)
     let qualifier = list.at(dynamic.qualifier_site_qualifiers(storage_site), 0)
     console.print("relation-${dynamic.borrow_relation_lifetime(relation)}-${list.length(dynamic.borrow_relation_output(relation))}-${dynamic.type_name(dynamic.borrow_relation_storage(relation))}|owner-${dynamic.borrow_owner_parameter(owner)}-${list.length(dynamic.borrow_owner_input(owner))}|storage-${list.length(dynamic.qualifier_site_path(storage_site))}-${qualifier}")
+    match dynamic.call(dynamic.dynamic(Widget(1)), "view", [dynamic.dynamic("not-called")]):
+        Err(dynamic.BorrowedResult(name)) -> console.print("borrowed-result-${name}")
+        _ -> console.print("borrowed-result-missed")
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret borrow storage reflection fixture");
-    let expected = ["relation-0-0-frozen String|owner-1-0|storage-0-AccessFrozen"];
+    let expected = [
+        "relation-0-0-frozen String|owner-1-0|storage-0-AccessFrozen",
+        "borrowed-result-view",
+    ];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile borrow storage reflection fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit borrow storage reflection fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
@@ -394,7 +400,7 @@ impl Reflect for Widget:
         reflect.MNil
 
 @dynamic
-pub fn view(self: Widget, text: View(frozen String, 'source)) -> View(frozen String, 'source):
+pub fn view(self: Widget, text: &'source frozen String) -> &'source frozen String:
     text
 
 fn main(console: Console):
@@ -414,7 +420,7 @@ fn main(console: Console):
                                 dynamic.AccessFrozen -> console.print("storage-${list.length(path)}-frozen")
                                 _ -> console.print("wrong-storage-qualifier")
 "#;
-    let checked = checked(source);
+    let checked = checked_source(source);
     let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret nested borrow storage reflection fixture");
     let expected = [
@@ -424,12 +430,12 @@ fn main(console: Console):
     ];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile nested borrow storage reflection fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit nested borrow storage reflection fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )

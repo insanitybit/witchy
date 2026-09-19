@@ -59,21 +59,22 @@ Each substantial test group should have at least one concrete reason to exist:
 - **regression**: a demonstrated historical defect;
 - **independent oracle**: expected behavior is derived independently of the
   implementation under test;
-- **parity**: interpreter and compiled Wasm are compared; or
+- **canonical conformance**: the SafeWIR interpreter and admitted Wasm are
+  compared to the same independent expectation; or
 - **fixture support**: a small shared helper deletes more setup than it adds.
 
 Delete obsolete representation/compatibility tests and weaker duplicates.
-Prefer one semantic oracle plus parity over backend-specific copies, but never
-let parity replace an independent expected value: both backends can share the
-same bug. Keep expected diagnostics, capability traces, ABI shapes, and source
-locations explicit.
+Prefer one independent expectation plus canonical conformance over
+executor-specific copies. Agreement cannot replace the expectation: both
+executors can share the same bug. Keep expected diagnostics, capability traces,
+ABI shapes, and source locations explicit.
 
 The intended layers are:
 
-- parser, formatter, type checker, WIR, interpreter, and runtime unit tests for
-  local contracts and fault localization;
+- parser, formatter, type checker, WIR, canonical-interpreter, and runtime unit
+  tests for local contracts and fault localization;
 - `src/example_tests/` for independently expected language semantics and
-  interpreter/Wasm differential behavior;
+  canonical-interpreter/admitted-Wasm conformance;
 - `tests/e2e.rs` for real-process package, publishing, confinement, and
   lifecycle boundaries;
 - `tests/browser.rs` and `book/examples.json` for the browser host and runnable
@@ -92,11 +93,13 @@ macro DSL or test framework to save superficial lines.
 `scripts/test-for-paths.sh` is the authority mapping changed paths to focused
 shards. When moving or extracting tests, update that mapping in the same change
 and confirm `--run` selects every required shard. The merge coordinator remains
-the authority for the serialized full workspace, e2e, parity, and browser gate.
+the authority for the serialized full workspace, e2e, canonical-conformance,
+compatibility-parity, and browser gate.
 
 `scripts/e2e-full.sh` is the whole-system acceptance run: it builds from
-scratch, then asserts one program produces identical output on all three
-backends, exercises the formatter, the in-language test framework, capability
+scratch, checks the canonical interpreter and admitted-Wasm result plus the
+temporary source-walker compatibility path, exercises the formatter, the
+in-language test framework, capability
 auditing (`caps`/`caps-diff`), sandbox enforcement (confinement + allowlist
 denials), a complete registry lifecycle (trusted publish → staged → 2FA
 promote → verified add → the capability-widening gate → namespace binding), a
@@ -104,42 +107,27 @@ multi-rune example project, and doc extraction - ~30 asserted checks.
 `--quick` skips its test stage, which is redundant once `check.sh` has run the
 suite.
 
-## The one rule: converge before support
+## The one rule: one checked language implementation
 
-Stable observable semantics converge before support
-([RFC-0135](rfcs/0135-stable-semantics-converge.md)). Independent expected
-results adjudicate correctness; interpreter/Wasm agreement proves the
-backends match. A silent split is a bug. Before opening a PR that changes
-*stable* semantics:
+RFC-0167 supersedes RFC-0135's dual source-runtime requirement. Checked
+canonical SafeWIR is the sole executable language contract. If you add
+observable stable behavior, state an independent expected result and prove it
+with both the canonical SafeWIR interpreter and admitted unoptimized Wasm. The
+source tree walker is frozen for language semantics; preserve only its temporary
+comptime/build compatibility duties and do not add new syntax or runtime
+semantics to it.
 
-```sh
-witchy parity path/to/program.witchy  # one program, both backends
-just parity-sweep                     # the maintained CI-shaped example sweep
-```
+Pure optimizations compare optimized Wasm with admitted unoptimized Wasm, the
+canonical interpreter, and the independent expectation. Capability,
+confinement, and ABI security remain fail-closed on the canonical route. A
+silent split is always a bug.
 
-`parity-sweep` selects runnable `examples/*/src/*.witchy` programs containing
-`fn main`, fails closed on any non-zero parity result, and runs a positive
-control proving divergence is detected. Library modules and in-language
-`*_test.witchy` suites have no runnable `main`; `witchy test` and the Rust
-example matrix cover them instead.
-
-If you add observable *stable* behavior (a builtin, an operator, a stdlib
-function), implement it on the interpreter AND the WASM backend in the same
-change, with a differential test that states the expected result
-(`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src), ...)`
-in `src/example_tests.rs`). Experimental runtime representations may land
-Wasm-first with a named interpreter debt (fixture, missing boundary,
-convergence milestone); the interpreter must **loudly error** until that
-debt is paid. Pure optimizations never enter the interpreter: compare
-optimized Wasm to scalar Wasm and the expected result. Capability,
-confinement, and ABI security still require both backends in the same
-change. Never a silently different answer.
-
-Behavior that errors on a *supported* path should error on *both* backends (the parity tool checks
-error paths too) - and with the **same complete diagnostic** ([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
+Behavior that errors on a supported path must error in both canonical
+executors, with the **same complete diagnostic**
+([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
 runtime abort (out-of-bounds index, integer division/modulo failure,
-`string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the interpreter's
-exact text on the compiled backend via the always-linked, authority-free
+`string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the canonical
+diagnostic text on admitted Wasm via the always-linked, authority-free
 `__witchy_abort` import. The harness compares that diagnostic byte-for-byte,
 including lexical function and source line. Improving an abort's wording is
 therefore a shared-template change in
@@ -189,8 +177,8 @@ Runnable ` ```witchy ` examples in the markdown docs (`README.md`, `spec/*.md`,
 playground engine (`web/witchy.wasm` + `web/witchy-host.js` - the same engine a
 reader's Run button uses), and for each entry in the `book/examples.json`
 manifest it locates the referenced ` ```witchy ` block, runs the ones marked
-`runnable`, and asserts the block's output equals the interpreter output the
-manifest recorded - so an in-book run can never diverge from the toolchain that
+`runnable`, and asserts the block's output equals the canonical SafeWIR
+interpreter output the manifest recorded - so an in-book run can never diverge from the toolchain that
 produced the manifest. A divergence, or a manifest block that no longer exists,
 fails the gate. So a runnable example in the docs must be a **complete, correct
 program** - when you change the language, the examples that demonstrate it fail
@@ -202,8 +190,8 @@ the manifest marks non-runnable are recorded but not executed.
 
 See [spec/architecture.md](spec/architecture.md) for the pipeline and the
 workspace layout (the compiler is split into stage-aligned crates under
-`crates/`). Quick orientation: the interpreter
-(`crates/witchy-interp/src/interpreter.rs`) defines semantics; codegen
+`crates/`). Quick orientation: the canonical SafeWIR interpreter defines
+executable semantics; codegen
 (`crates/witchy-lower/src/codegen/`) must match it; typeck
 (`crates/witchy-types/src/typeck.rs`) rejects what can't be made to agree; the
 wasmtime sandbox (`crates/witchy-runtime/src/runtime.rs`) is the security
@@ -235,16 +223,17 @@ Carry the authority change across the whole pipeline in one commit series:
 
 1. syntax/AST and formatter if the surface changes;
 2. type checking, including capability rights and trait/protocol obligations;
-3. interpreter semantics, because it is the oracle;
-4. lowering, WIR kind/layout helpers, and wasm encoding;
+3. checked canonical SafeWIR plus its canonical interpreter oracle;
+4. lowering, WIR kind/layout helpers, and admitted-Wasm encoding;
 5. runtime host import or trap plumbing when authority or host state is involved;
 6. shared diagnostics/templates for any new error text;
-7. differential coverage in `src/example_tests.rs` or the fuzzer;
+7. independent expected-result and canonical-conformance coverage in
+   `src/example_tests.rs` or the fuzzer;
 8. spec/book examples, plus generated docs if `std/` changes.
 
 Use [spec/value-model.md](spec/value-model.md) as the compiled representation
 checklist. If the new semantic does not fit that table, update the table and
-make both backends prove the new representation with tests.
+make both canonical executors prove the new representation with tests.
 
 ## Generated and derived docs
 

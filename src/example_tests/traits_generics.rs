@@ -623,7 +623,7 @@ type Stack(a):
 impl Stack(a):
     fn empty() -> Stack(a):
         Stack([])
-    fn push(var self, x: a) -> Nil:
+    fn push(var self, x: a) -> ():
         list.push(self.items, x)
     fn howbig(self) -> Int:
         list.length(self.items)

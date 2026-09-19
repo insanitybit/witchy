@@ -114,28 +114,28 @@ fn build_recipe_rejects_wrong_source_binding_and_missing_grant() {
 fn build_recipe_rejects_unsupported_and_imported_targets() {
     let folder = Folder::new();
     for source in [
-        "fn ordinary() -> Nil:\n    Nil\n",
-        "fn build(out: BuildOut, net: Net) -> Nil:\n    Nil\n",
-        "fn build(var out: BuildOut) -> Nil:\n    Nil\n",
-        "fn build(own out: BuildOut) -> Nil:\n    Nil\n",
-        "fn build(value: String) -> Nil:\n    Nil\n",
+        "fn ordinary() -> ():\n    ()\n",
+        "fn build(out: BuildOut, net: Net) -> ():\n    ()\n",
+        "fn build(var out: BuildOut) -> ():\n    ()\n",
+        "fn build(own out: BuildOut) -> ():\n    ()\n",
+        "fn build(value: String) -> ():\n    ()\n",
         "fn build(out: BuildOut) -> Int:\n    7\n",
-        "async fn build(out: BuildOut) -> Nil:\n    Nil\n",
+        "async fn build(out: BuildOut) -> ():\n    ()\n",
     ] {
         assert!(link_build_file(folder.source(source).to_str().unwrap()).is_err(), "must refuse {source}");
     }
-    std::fs::write(folder.0.join("helper.witchy"), "pub fn build(out: BuildOut) -> Nil:\n    Nil\n").unwrap();
+    std::fs::write(folder.0.join("helper.witchy"), "pub fn build(out: BuildOut) -> ():\n    ()\n").unwrap();
     let error = link_build_file(folder.source("import helper\n").to_str().unwrap()).unwrap_err();
     assert!(error.contains("own entry source"), "{error}");
     // A source declaration with the generated spelling never becomes the
     // selected entry. It is refused, not overwritten, renamed, or invoked.
     for declaration in ["fn", "pub fn"] {
-        let source = format!("{declaration} witchy_build_recipe_entry(out: BuildOut) -> Nil:\n    out.write_out(\"forged.txt\", \"never\")\nfn build(out: BuildOut) -> Nil:\n    Nil\n");
+        let source = format!("{declaration} witchy_build_recipe_entry(out: BuildOut) -> ():\n    out.write_out(\"forged.txt\", \"never\")\nfn build(out: BuildOut) -> ():\n    ()\n");
         let error = link_build_file(folder.source(&source).to_str().unwrap()).unwrap_err();
         assert!(error.contains("collides with the compiler recipe entry"), "{error}");
     }
     let error = link_build_file(folder.source(
-        "fn witchy_build_recipe_entry(out: BuildOut) -> Nil:\n    Nil\n",
+        "fn witchy_build_recipe_entry(out: BuildOut) -> ():\n    ()\n",
     ).to_str().unwrap()).unwrap_err();
     assert!(error.contains("collides with the compiler recipe entry"), "{error}");
 }
@@ -368,6 +368,6 @@ fn build_read_recipe_binds_order_and_remains_unavailable_to_ordinary_main() {
     assert_ne!(first.identity().derived_source_digest(), second.identity().derived_source_digest());
     let validated = crate::codegen::validate_checked_build_recipe_for_oracle(&first).unwrap();
     assert!(witchy_wir::admit_canonical(validated, second.canonical_source()).is_err());
-    let path = folder.source("fn main(input: BuildRead) -> Nil:\n    Nil\n");
+    let path = folder.source("fn main(input: BuildRead) -> ():\n    ()\n");
     assert!(crate::link_file_checked(path.to_str().unwrap()).is_err(), "ordinary main cannot request BuildRead");
 }

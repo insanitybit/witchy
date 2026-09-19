@@ -81,12 +81,12 @@ identity, arity, ownership, or meaning.
 | Effective nominal type parameters | `witchy-syntax::ast::effective_type_params` | Type checking, reflection, storage, traits, and codegen delegate rather than infer separate parameter order. |
 | Runtime declaration identity and closed shapes | `witchy-types::runtime_type` | Backends consume authenticated declaration catalogs; they don't reconstruct ownership from names. |
 | Trait dispatch and monomorphization | `witchy-types::traits` over `TypeTable` | Backends consume resolved calls; string-shape fallback must not become a second type system. |
-| AST-to-WIR lowering and representation | `witchy-lower::codegen` plus `witchy-wir::layout` | The interpreter defines observable semantics, but doesn't define compiled layout. |
+| AST-to-WIR lowering and representation | `witchy-lower::codegen` plus `witchy-wir::layout` | The canonical SafeWIR interpreter defines executable semantics; it doesn't define compiled layout. |
 | Runtime values and host ABI | `witchy-runtime::{value,native}` with WIR representation constants | Host adapters consume the shared ABI instead of maintaining parallel layouts. |
 | Capability footprint | `witchy-caps::capabilities` | Grants are checked against recomputed source footprint, never trusted metadata. |
 | Confinement policy | `witchy-confinement` | Native providers consume normalized policy; they don't reinterpret source grants. |
-| User execution path | compiled Wasm through `src/commands/{compile,execution,wasm_exec}` | Interpreter execution remains oracle/comptime/test/build infrastructure, not a second user runtime. |
-| Differential oracle | `witchy-interp` | Parity proves backend agreement after shared frontend stages; independent conformance evidence must cover common-mode semantics. |
+| User execution path | compiled Wasm through `src/commands/{compile,execution,wasm_exec}` | Admitted Wasm is the production runtime; the source walker remains temporary comptime/test/build infrastructure. |
+| Canonical conformance | `witchy-wir` SafeWIR interpreter plus admitted Wasm | Independent expected results must agree with both canonical executors; the source walker is not RFC-0167 acceptance evidence. |
 | Runtime diagnostic wording and ABI IDs | `witchy-syntax::diag::DiagTemplate` | Interpreter, native Wasm host, and browser mirror share stable identities and exact rendering; existing IDs are never renumbered. |
 | Compiler diagnostic stage identity and provenance | owning structured errors wrapped by `witchy-types::pipeline::PipelineError`, plus `OriginTable` | Preserve the typed stage variant, source location, and generated-node ancestry. A unified cross-stage diagnostic value remains open; don't flatten errors to `String` at new boundaries. |
 

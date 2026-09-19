@@ -55,8 +55,8 @@ use crate::{interpreter, typeck};
     /// type after linking, while equal shapes may still share one definition.
     #[test]
     fn anonymous_record_shapes_do_not_collide_across_modules() {
-        let left = "pub fn make():\n    .{a: 1}\n";
-        let right = "pub fn make():\n    .{a: 3}\n";
+        let left = "pub fn make() -> .{a: Int}:\n    .{a: 1}\n";
+        let right = "pub fn make() -> .{a: Int}:\n    .{a: 3}\n";
         let main = "import left\nimport right\n\nfn main(console: Console):\n    let local = .{b: 2}\n    let l = left.make()\n    let r = right.make()\n    console.print(\"${l.a}\")\n    console.print(\"${r.a}\")\n    console.print(\"${local.b}\")\n";
         let sources = [("left", left), ("right", right), ("main", main)];
         let expected = ["1", "3", "2"];
@@ -299,7 +299,7 @@ fn main(console: Console):
     console.print(reflect.debug(summary))
     console.print("${summary == expected}")
     var keyed = dict.new()
-    keyed.insert(summary, "hit")
+    let _ = keyed.insert(summary, "hit")
     console.print("${keyed.contains_key(expected)}")
     console.print("${detailed}")
 "#;

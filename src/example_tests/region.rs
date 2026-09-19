@@ -92,7 +92,7 @@ use crate::{ast, codegen, parser, typeck};
     #[test]
     fn rc_floor_last_use_drop_is_differential_and_bounds_the_leak() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "import list\nimport dict\nfn main(console: Console):\n    var acc = dict.new()\n    var i = 0\n    let base = [1, 2, 3, 4, 5]\n    while i < 2000:\n        let scratch = list.concat(base, base)\n        let n = list.length(scratch)\n        dict.insert(acc, i % 8, n)\n        i = i + 1\n    console.print(\"${dict.length(acc)}\")\n";
+        let src = "import list\nimport dict\nfn main(console: Console):\n    var acc = dict.new()\n    var i = 0\n    let base = [1, 2, 3, 4, 5]\n    while i < 2000:\n        let scratch = list.concat(base, base)\n        let n = list.length(scratch)\n        let _ = dict.insert(acc, i % 8, n)\n        i = i + 1\n    console.print(\"${dict.length(acc)}\")\n";
         let oracle = link_run(src);
 
         // rc-floor OFF (explicit — it is default-on now): correct, but the scratch leaks each iteration.
@@ -170,7 +170,7 @@ use crate::{ast, codegen, parser, typeck};
         // Pin the load-bearing optimizer judgment independently of allocator
         // reuse order: an ordinary call result is not authenticated fresh
         // storage, even when the call is direct and its result stays confined.
-        let analysis_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> Nil:\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let analysis_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> ():\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
         let module = parser::parse_module(analysis_src).expect("parse SEC-078 analysis fixture");
         let summaries = witchy_lower::analysis::Summaries::of_module(&module);
         let damage = module
@@ -203,7 +203,7 @@ use crate::{ast, codegen, parser, typeck};
         opt::set_for_tests(None);
         assert_eq!(optimized, oracle, "SEC-078: COW casing result freed publisher storage");
 
-        let analysis_src = "fn damage(x: String) -> Nil:\n    var working = string.to_lower(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let analysis_src = "fn damage(x: String) -> ():\n    var working = string.to_lower(x)\n    working = string.substring(working, 1, string.length(working))\n";
         let module = parser::parse_module(analysis_src).expect("parse COW analysis fixture");
         let summaries = witchy_lower::analysis::Summaries::of_module(&module);
         let damage = module
@@ -235,7 +235,7 @@ use crate::{ast, codegen, parser, typeck};
         opt::set_for_tests(None);
         assert_eq!(optimized, oracle, "SEC-078: later alias assignment freed publisher storage");
 
-        let analysis_src = "fn damage(trusted: String) -> Nil:\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
+        let analysis_src = "fn damage(trusted: String) -> ():\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
         let module = parser::parse_module(analysis_src).expect("parse later-alias analysis fixture");
         let summaries = witchy_lower::analysis::Summaries::of_module(&module);
         let damage = module
@@ -271,7 +271,7 @@ use crate::{ast, codegen, parser, typeck};
     /// through shared, all agreeing with the interpreter.
     #[test]
     fn region_copy_out_shapes_agree_on_both_backends() {
-        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    console.print(\"${st == Push(1, Push(2, Empty))}\")\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    console.print(r.sensor)\n    console.print(\"${list.at(r.values, 49)}\")\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            dict.insert(m, \"k\" + \"${i}\", i)\n        m\n    console.print(\"${dict.get_or(d, \"k42\", 0 - 1)}\")\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    console.print(s)\n    let nested = region -> Int:\n        let inner: String = region -> String:\n            \"abc\" + \"def\"\n        inner.length()\n    console.print(\"${nested}\")\n";
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    console.print(\"${st == Push(1, Push(2, Empty))}\")\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    console.print(r.sensor)\n    console.print(\"${list.at(r.values, 49)}\")\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            let _ = dict.insert(m, \"k\" + \"${i}\", i)\n        m\n    console.print(\"${dict.get_or(d, \"k42\", 0 - 1)}\")\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    console.print(s)\n    let nested = region -> Int:\n        let inner: String = region -> String:\n            \"abc\" + \"def\"\n        inner.length()\n    console.print(\"${nested}\")\n";
         let want: Vec<String> = ["true", "t0", "2401", "42", "parent-side", "6"]
             .iter()
             .map(|s| s.to_string())
@@ -354,6 +354,172 @@ use crate::{ast, codegen, parser, typeck};
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("outer pointer assign must be rejected");
         assert!(err.to_string().contains("inside `region:`"), "{err}");
+    }
+
+    /// RFC-0167 row L is deliberately three-routed.  The interpreter is the
+    /// source-value oracle; the legacy binary copy counters above cover its
+    /// historical forced-copy path; this test alone covers the admitted
+    /// canonical artifact.  A canonical region may promote scalars and a
+    /// supported normal-mode owned result, but opt must not turn a region-born
+    /// pointer into a hidden copy. Fixed packed values carry an exact
+    /// source-derived descriptor, and a must result may leave only as the
+    /// one fresh constructor obligation the checker retained.
+    #[test]
+    fn rfc0167_region_canonical_matrix_admits_supported_copy_out_and_refuses_hidden_copy() {
+        use crate::runtime::{Capabilities, Runtime};
+
+        for (label, source, expected) in [
+            (
+                "ordinary scalar region",
+                "fn main(console: Console):\n    let value = region -> Int:\n        42\n    console.print(\"${value}\")\n",
+                vec!["42".to_string()],
+            ),
+            (
+                "normal owned pointer copy-out",
+                "fn main(console: Console):\n    let value: String = region -> String:\n        \"copy\" + \"-out\"\n    console.print(value)\n",
+                vec!["copy-out".to_string()],
+            ),
+            (
+                "normal aliased input keeps a snapshot across promotion",
+                "fn main(console: Console):\n    let parent = [1]\n    let value: List(Int) = region -> List(Int):\n        var local = parent\n        list.push(local, 2)\n        local\n    console.print(\"${list.length(parent)}\")\n    console.print(\"${list.length(value)}\")\n",
+                vec!["1".to_string(), "2".to_string()],
+            ),
+            (
+                "nested scalar promotion",
+                "fn main(console: Console):\n    let value = region -> Int:\n        region -> Int:\n            42\n    console.print(\"${value}\")\n",
+                vec!["42".to_string()],
+            ),
+            (
+                "opt parent-owned pointer pass-through",
+                "mode opt\n\nfn main(console: Console):\n    let parent = \"parent-owned\"\n    let value: String = region -> String:\n        parent\n    console.print(value)\n",
+                vec!["parent-owned".to_string()],
+            ),
+            (
+                "opt packed region result uses its admitted descriptor",
+                "mode opt\n\ntype Point packed:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let point: Point = region -> Point:\n        Point(40, 2)\n    console.print(\"${point.x + point.y}\")\n",
+                vec!["42".to_string()],
+            ),
+            (
+                "normal must region transfers one fresh constructor result",
+                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        Ticket(42)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
+                Vec::new(),
+            ),
+        ] {
+            let checked = witchy::resolve_std_only_checked(source)
+                .unwrap_or_else(|error| panic!("{label}: source must check: {error}"));
+            let source_output = link_run(source);
+            assert_eq!(source_output, expected, "{label}: interpreter");
+            let artifact = codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered(label);
+            let mut runtime = Runtime::batch().expect("runtime");
+            let mut vm = runtime
+                .spawn_admitted(
+                    &artifact,
+                    Capabilities { print: true, quiet: true, ..Default::default() },
+                    256,
+                )
+                .unwrap_or_else(|error| panic!("{label}: admitted spawn: {error}"));
+            vm.run().unwrap_or_else(|error| panic!("{label}: admitted run: {error}"));
+            assert!(
+                vm.canonical_heap_leaks().expect("canonical heap audit") == Some(0),
+                "{label}: admitted canonical result must not leak",
+            );
+            assert_eq!(vm.output(), source_output, "{label}: admitted canonical output");
+        }
+
+        for (label, source, required_terms) in [
+            (
+                "opt region-born pointer needs a copy-free proof",
+                "mode opt\n\nfn main(console: Console):\n    let value: String = region -> String:\n        \"must-not-hide\" + \"-copy\"\n    console.print(value)\n",
+                ["region", "copy-free"],
+            ),
+            (
+                "must-bearing region local lacks an exact must-transfer identity",
+                "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    region -> Ticket:\n        let ticket = Ticket(1)\n        ticket\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn main():\n    finish(make())\n",
+                ["region", "must-bearing"],
+            ),
+        ] {
+            let checked = witchy::resolve_std_only_checked(source)
+                .unwrap_or_else(|error| panic!("{label}: source must check before canonical refusal: {error}"));
+            let refusal = codegen::compile_checked_module_artifact(&checked).expect_unsupported(label);
+            assert!(
+                required_terms.iter().all(|term| refusal.message.contains(*term)),
+                "{label}: refusal must state its exact unsupported proof boundary, got: {}",
+                refusal.message,
+            );
+        }
+    }
+
+    /// The type contract distinguishes the source cases before lowering: a
+    /// region may return an owner borrowed from its parent and may transfer a
+    /// fresh unique/frozen value, but it may neither export a reference rooted
+    /// in region storage nor suspend that storage past the rewind.  Capability
+    /// aggregates are likewise not a copy-out fallback.
+    #[test]
+    fn rfc0167_region_type_matrix_keeps_parent_owners_and_rejects_escapes() {
+        for (label, source) in [
+            (
+                "parent-owned shared reference",
+                "mode opt\n\nfn relay(parent: &Int) -> &Int:\n    region -> &Int:\n        parent\n",
+            ),
+            (
+                "region-local handle rooted in parent reference",
+                "mode opt\n\nfn relay(parent: &Int) -> &Int:\n    region -> &Int:\n        let handle = parent\n        handle\n",
+            ),
+            (
+                "fresh unique owner",
+                "mode opt\n\nfn make() -> unique List(Int):\n    region -> unique List(Int):\n        [1, 2, 3]\n",
+            ),
+            (
+                "frozen transfer",
+                "mode opt\n\nfn keep(own parent: frozen String) -> frozen String:\n    region -> frozen String:\n        parent\n",
+            ),
+        ] {
+            typeck::check_str(source)
+                .unwrap_or_else(|error| panic!("{label}: valid region relation rejected: {error}"));
+        }
+
+        let local_reference = typeck::check_str(
+            "mode opt\n\nfn bad() -> &String:\n    region:\n        let local = \"region-owned\"\n        let view = &local\n        view\n",
+        )
+        .expect_err("a region-born owner cannot satisfy the returned rooted view");
+        assert!(
+            local_reference.to_string().contains("region-born view"),
+            "the rooted-view escape must be rejected at the region boundary, got: {local_reference}",
+        );
+
+        let retired_lifetime = typeck::check_str(
+            "fn bad(value: &'a Int) -> &'a Int:\n    value\n",
+        )
+        .expect_err("explicit reference lifetimes are outside the rooted-view contract");
+        assert!(
+            retired_lifetime.to_string().contains("explicit reference lifetimes")
+                && retired_lifetime.to_string().contains("&T"),
+                "legacy lifetime syntax must be rejected explicitly, got: {retired_lifetime}",
+        );
+
+        let suspension = typeck::check_str(
+            "async fn ready() -> Int:\n    7\n\nasync fn main(console: Console):\n    region:\n        let resumed = ready().await\n        console.print(\"${resumed}\")\n",
+        )
+        .expect_err("a suspension cannot carry region storage beyond the lexical rewind");
+        assert!(
+            suspension.to_string().contains("region:")
+                && suspension.to_string().contains("async"),
+            "the suspension rejection must name the region boundary, got: {suspension}",
+        );
+
+        let capability_source =
+            "fn main(console: Console):\n    let escaped = region:\n        [console]\n    let _ = escaped\n";
+        let checked = witchy::resolve_std_only_checked(capability_source)
+            .expect("capability aggregate remains source-valid before canonical admission");
+        let refusal = codegen::compile_checked_module_artifact(&checked)
+            .expect_unsupported("capability authority cannot cross canonical region copy-out");
+        assert!(
+            refusal.message.contains("capability") || refusal.message.contains("region"),
+            "the canonical refusal must name the capability/region boundary, got: {}",
+            refusal.message,
+        );
+
     }
 
     /// IN-PLACE SET_AT: `xs = list.set_at(xs, i, v)` mutates the owned buffer's
@@ -476,7 +642,7 @@ use crate::{ast, codegen, parser, typeck};
             ),
             (
                 "dict.insert",
-                "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        dict.insert(d, \"k\" + \"${i}\", i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    console.print(\"${dict.get_or(m, \"k499\", 0 - 1)}\")\n    console.print(\"${dict.length(m)}\")\n",
+                "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        let _ = dict.insert(d, \"k\" + \"${i}\", i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    console.print(\"${dict.get_or(m, \"k499\", 0 - 1)}\")\n    console.print(\"${dict.length(m)}\")\n",
                 vec!["499".to_string(), "500".to_string()],
             ),
             (
@@ -486,7 +652,7 @@ use crate::{ast, codegen, parser, typeck};
             ),
             (
                 "dict.update",
-                "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        dict.update(d, \"k\" + \"${i % 10}\", 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    console.print(\"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    console.print(\"${dict.length(d)}\")\n",
+                "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        let _ = dict.update(d, \"k\" + \"${i % 10}\", 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    console.print(\"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    console.print(\"${dict.length(d)}\")\n",
                 vec!["50".to_string(), "10".to_string()],
             ),
         ];

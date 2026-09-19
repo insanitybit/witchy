@@ -189,7 +189,7 @@ fn runnable_markdown(md: String) -> VNode(Msg):
         other -> other
 
 fn embed_region(interactive: Interactive) -> VNode(Msg):
-    let mapped = glamour.ui(glamour.embed(interactive)).map(fn(_never: Nil): Route(""))
+    let mapped = glamour.ui(glamour.embed(interactive)).map(fn(_never: ()): Route(""))
     glamour.ui_node(mapped)
 
 fn to_runnable(block: VNode(Msg)) -> VNode(Msg):

@@ -25,25 +25,25 @@ fn update(m: Model, msg: Msg) -> (Model, Cmd(Msg)):
         Dec -> (Model(m.n - 1), NoCmd)
         Reset -> (Model(0), NoCmd)
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Model:
     Model(0)
 
-fn start(_auth: Nil, _model: Model) -> Cmd(Msg):
+fn start(_auth: (), _model: Model) -> Cmd(Msg):
     NoCmd
 
-fn program_update(_auth: Nil, model: Model, message: Msg) -> (Model, Cmd(Msg)):
+fn program_update(_auth: (), model: Model, message: Msg) -> (Model, Cmd(Msg)):
     update(model, message)
 
 fn program_view(model: Model) -> Ui(Msg):
     glamour.ui(view(model))
 
-fn subscriptions(_auth: Nil, _model: Model) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Model) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Model, Msg):
+fn app() -> Program((), Model, Msg):
     glamour.program(authorize, initial, start, program_update, program_view, subscriptions)
 
 pub fn interactive_counter() -> Interactive:

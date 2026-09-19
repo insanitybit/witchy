@@ -30,6 +30,13 @@ tracking: "IMPLEMENTED (2026-06-29). The std `vm` module delivers true multi-cor
 
 # RFC-0032: Multi-core execution — true parallelism vs the deterministic executor
 
+> 2026-09-16 scope: [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension)
+> selects deterministic cooperative tasks and explicitly isolated worker VMs.
+> The shared-heap Tier C and borrowed-parent nursery alternatives below are
+> research history, not admitted source contracts. `frozen` does not confer
+> copyability or worker transport authority, and `own` does not imply unique
+> storage. Historical `Nil`/prefix-await examples are not current syntax.
+
 The shipped isolated-worker surface is implemented in
 [`std/vm.witchy`](../std/vm.witchy) and the native worker runtime in
 [`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs),

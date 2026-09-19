@@ -138,11 +138,23 @@ pub struct SourceAsyncOperation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceAsyncControlFlow {
     pub callable: AsyncCallableId,
+    /// Checked origin mode retained from the pre-CPS source module.  An async
+    /// caller cannot silently lose its normal/opt boundary while its states
+    /// are assigned physical lanes.
+    pub mode: AsyncSourceMode,
     pub controls: Vec<SourceAsyncControl>,
     pub bindings: Vec<SourceAsyncBinding>,
     pub binding_uses: Vec<SourceAsyncBindingUse>,
     pub expression_spans: Vec<SourceExpressionSpan>,
     pub operations: Vec<SourceAsyncOperation>,
+}
+
+/// The source mode of an async callable.  This is a checked source-origin
+/// fact, not a backend pass selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncSourceMode {
+    Normal,
+    Opt,
 }
 
 impl SourceAsyncControlFlow {
@@ -185,6 +197,11 @@ impl SourceAsyncControlFlowInventory {
                 let (bindings, binding_uses, expression_spans) = collect_bindings(function);
                 callables.push(SourceAsyncControlFlow {
                     callable: AsyncCallableId { module: module.module.clone(), surface: item.id.clone() },
+                    mode: if module.modes.iter().any(|mode| mode == "opt") {
+                        AsyncSourceMode::Opt
+                    } else {
+                        AsyncSourceMode::Normal
+                    },
                     controls,
                     bindings,
                     binding_uses,

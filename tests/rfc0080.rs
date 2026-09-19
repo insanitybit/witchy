@@ -62,5 +62,15 @@ mod structural_type_holes;
 mod tag_definition_site;
 #[path = "rfc0080/structural_leaf_builders.rs"]
 mod structural_leaf_builders;
+#[path = "rfc0080/structural_string_binary_builders.rs"]
+mod structural_string_binary_builders;
+#[path = "rfc0080/structural_collection_record_builders.rs"]
+mod structural_collection_record_builders;
 #[path = "rfc0080/structural_item_builders.rs"]
 mod structural_item_builders;
+#[path = "rfc0080/structural_tag_holes.rs"]
+mod structural_tag_holes;
+#[path = "rfc0080/raw_codegen_retired.rs"]
+mod raw_codegen_retired;
+#[path = "rfc0080/derive_boundary_witnesses.rs"]
+mod derive_boundary_witnesses;

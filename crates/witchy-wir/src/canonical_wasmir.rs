@@ -31,8 +31,8 @@ use crate::canonical_safewir::{
     ComparisonOperator, Extent, Function, FunctionId, FunctionSignature, HeaderField,
     HostCallArgument, HostBufferExtent, HostMutation, HostParameterRole, HostResultRole,
     ImportContract, ImportContractIdentity, ImportId, LoadTransfer, MemoryEffect, ModuleStage,
-    Operation, InitialValid, ParameterOwnership, Place, Projection, StoreTransfer, Terminator,
-    ValidatedSafeWir, ValueId, ValueType,
+    Operation, InitialValid, ParameterContract, ParameterOwnership, Place, Projection,
+    ResultContract, StoreTransfer, Terminator, ValidatedSafeWir, ValueId, ValueType,
 };
 use crate::layout::{
     HeaderLayout, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, RcHeader, ScalarKind,
@@ -67,6 +67,7 @@ enum TargetItemId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScalarInstruction {
+    ProofNoop,
     ClosureOwner(crate::canonical_safewir::closure_owner_contract::OwnerOperation),
     IntConst { destination: ValueId, value: i64 },
     FloatConst { destination: ValueId, bits: u64 },
@@ -118,6 +119,10 @@ enum ScalarInstruction {
     Release { object: ValueId },
     Reclaim { object: ValueId },
     Call { destinations: Vec<ValueId>, callee: FunctionId, arguments: Vec<ValueId> },
+    /// A direct call to an authenticated separately compiled scalar Wasm
+    /// export.  It has a distinct source operation and encoder path from a
+    /// host call: no host role or linear-memory adapter is available.
+    ExternalCall { destinations: Vec<ValueId>, import: ImportId, arguments: Vec<ValueId> },
     HostCall { destinations: Vec<ValueId>, import: ImportId, arguments: Vec<HostCallArgument> },
     VarCall {
         destinations: Vec<ValueId>,
@@ -257,6 +262,7 @@ pub(crate) enum CorrespondenceRule {
     MemoryUpdateCount,
     MemoryOwnership,
     ScalarCall,
+    ExternalCall,
     HostCall,
     Control,
     ClosureOwner,
@@ -527,6 +533,54 @@ fn validate_host_call_lowering(
     Ok(())
 }
 
+fn validate_external_call_lowering(
+    function: FunctionId,
+    value_types: &BTreeMap<ValueId, ValueType>,
+    import: &ImportContract,
+    signature: &FunctionSignature,
+    arguments: &[CallArgument],
+    destinations: &[ValueId],
+) -> Result<(), LoweringError> {
+    let scalar = |value| matches!(value, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit);
+    if !matches!(import.abi_identity, ImportContractIdentity::AuthenticatedExternal(_))
+        || !import.parameter_roles.is_empty()
+        || !import.result_roles.is_empty()
+        || !matches!(import.mutation, HostMutation::ReadOnly)
+        || signature.parameters.len() != arguments.len()
+        || signature.results.len() != destinations.len()
+        || signature.contract.parameters.len() != signature.parameters.len()
+        || signature.contract.results.len() != signature.results.len()
+        || !signature.parameters.iter().copied().all(scalar)
+        || !signature.results.iter().copied().all(scalar)
+        || !signature.contract.parameter_effects.is_empty()
+    {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "ExternalCall contract" });
+    }
+    for ((argument, expected), contract) in arguments.iter().zip(&signature.parameters).zip(&signature.contract.parameters) {
+        let CallArgument::Value(value) = argument else {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "ExternalCall move argument" });
+        };
+        if value_types.get(value) != Some(expected)
+            || contract.value_type != *expected
+            || contract.ownership != ParameterOwnership::Value
+        {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "ExternalCall argument" });
+        }
+        wasm_value_type(function, *value, *expected)
+            .map_err(|_| LoweringError::UnsupportedOperation { function, operation: "ExternalCall scalar argument" })?;
+    }
+    for ((destination, expected), contract) in destinations.iter().zip(&signature.results).zip(&signature.contract.results) {
+        if value_types.get(destination) != Some(expected)
+            || !matches!(contract, crate::canonical_safewir::ResultContract::Value(value) if value == expected)
+        {
+            return Err(LoweringError::UnsupportedOperation { function, operation: "ExternalCall result" });
+        }
+        wasm_value_type(function, *destination, *expected)
+            .map_err(|_| LoweringError::UnsupportedOperation { function, operation: "ExternalCall scalar result" })?;
+    }
+    Ok(())
+}
+
 fn host_import_wasm_signature(
     function: FunctionId,
     import: &ImportContract,
@@ -554,6 +608,48 @@ fn host_import_wasm_signature(
         }
     }
     Ok((parameters, results))
+}
+
+fn external_import_wasm_signature(
+    function: FunctionId,
+    signature: &FunctionSignature,
+) -> Result<(Vec<ValType>, Vec<ValType>), LoweringError> {
+    let scalar = |value| matches!(value, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit);
+    if !signature.parameters.iter().copied().all(scalar)
+        || !signature.results.iter().copied().all(scalar)
+    {
+        return Err(LoweringError::UnsupportedOperation { function, operation: "ExternalCall import signature" });
+    }
+    // Unit is source-level evidence only at this ABI: it consumes and
+    // produces no Wasm lane.  In particular, an exported `() -> ()` has an
+    // empty result vector rather than an invented i32 result.
+    let parameters = signature.parameters.iter().enumerate()
+        .filter(|(_, value)| **value != ValueType::Unit)
+        .map(|(index, value)| wasm_value_type(function, ValueId::new(index as u32), *value)
+            .map_err(|_| LoweringError::UnsupportedOperation { function, operation: "ExternalCall import parameter" }))
+        .collect::<Result<Vec<_>, _>>()?;
+    let results = signature.results.iter().enumerate()
+        .filter(|(_, value)| **value != ValueType::Unit)
+        .map(|(index, value)| wasm_value_type(function, ValueId::new(index as u32), *value)
+            .map_err(|_| LoweringError::UnsupportedOperation { function, operation: "ExternalCall import result" }))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((parameters, results))
+}
+
+fn import_wasm_signature(
+    function: FunctionId,
+    import: &ImportContract,
+    signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
+) -> Result<(Vec<ValType>, Vec<ValType>), LoweringError> {
+    match &import.abi_identity {
+        ImportContractIdentity::AuthenticatedAbi(_) => host_import_wasm_signature(function, import),
+        ImportContractIdentity::AuthenticatedExternal(_) => {
+            let signature = signatures.get(&import.signature)
+                .ok_or(LoweringError::UnsupportedOperation { function, operation: "ExternalCall missing signature" })?;
+            external_import_wasm_signature(function, signature)
+        }
+        ImportContractIdentity::Unknown => Err(LoweringError::UnsupportedOperation { function, operation: "unknown import identity" }),
+    }
 }
 
 fn collection_layout(
@@ -855,14 +951,103 @@ fn is_indirect_parameter(signature: &FunctionSignature, index: usize, value_type
             .is_none_or(|effects| effects.is_empty());
     }
     matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_))
-        && matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::Shared | ParameterOwnership::WriteBack))
-        && (matches!(signature.contract.parameters.get(index).map(|parameter| parameter.ownership), Some(ParameterOwnership::WriteBack))
-            || signature.contract.parameter_effects.get(&(index as u32)).is_none_or(|effects| {
-                effects.iter().all(|effect| matches!(
-                    effect,
-                    MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release
-                ))
-            }))
+        && signature.contract.parameters.get(index).is_some_and(|parameter| {
+            let effects = signature.contract.parameter_effects.get(&(index as u32));
+            match parameter.ownership {
+                ParameterOwnership::Shared
+                | ParameterOwnership::WriteBack
+                | ParameterOwnership::Unique => effects
+                    .is_none_or(|effects| effects.iter().all(|effect| matches!(
+                        effect,
+                        MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release,
+                    ))),
+                // A `var unique` function-value lane has a checked write-back
+                // contract.  Its caller still has to move the exact token and
+                // the final SafeWIR checks the replacement token; accepting a
+                // broader targetless effect summary here would be unsound.
+                ParameterOwnership::UniqueWriteBack => effects.is_some_and(|effects| {
+                    effects.iter().any(|effect| *effect == MemoryEffect::Write)
+                        && effects.iter().all(|effect| matches!(
+                            effect,
+                            MemoryEffect::Read
+                                | MemoryEffect::Retain
+                                | MemoryEffect::Release
+                                | MemoryEffect::Write,
+                        ))
+                }),
+                ParameterOwnership::Value => is_authenticated_indirect_shared_alias(signature, index),
+            }
+        })
+}
+
+/// The non-escaping shared-reference closure lane: one closure environment,
+/// one moved `&'a String` token, and one result aliasing exactly that source
+/// parameter. Initial SafeWIR validation and canonical lowering have already
+/// tied this shape to the pointer-bound source callable identity.
+fn is_authenticated_indirect_shared_alias(signature: &FunctionSignature, index: usize) -> bool {
+    let ([environment, ValueType::Ref(parameter)], [ValueType::Ref(result)]) =
+        (signature.parameters.as_slice(), signature.results.as_slice())
+    else { return false };
+    index == 1
+        && *parameter == *result
+        && matches!(environment, ValueType::Ref(_))
+        && matches!(signature.contract.parameters.as_slice(), [
+            ParameterContract { value_type: ValueType::Ref(environment_layout), ownership: ParameterOwnership::Shared },
+            ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Value },
+        ] if *environment == ValueType::Ref(*environment_layout) && *layout == *parameter)
+        && matches!(signature.contract.results.as_slice(), [
+            ResultContract::AliasesParameter { parameter: 1, layout },
+        ] if *layout == *parameter)
+        && matches!(signature.contract.parameter_effects.get(&0), Some(effects)
+            if effects.as_slice() == [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release])
+        && matches!(signature.contract.parameter_effects.get(&1), Some(effects)
+            if effects.as_slice() == [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release])
+        && signature.contract.parameter_effects.len() == 2
+}
+
+/// The one memory-bearing indirect ABI this encoder admits.  Its authority is
+/// not inferred here: initial SafeWIR validation has already bound the
+/// closure-layout adapter to the checked source declaration and its exact
+/// access identity.  This merely preserves that one physical lane through
+/// `call_indirect`; every other write-bearing reference signature remains
+/// refused.
+fn is_authenticated_indirect_callable_writeback(signature: &FunctionSignature) -> bool {
+    let ([environment, ValueType::Ref(parameter)], [ordinary, write_back]) =
+        (signature.parameters.as_slice(), signature.results.as_slice())
+    else {
+        return false;
+    };
+    *ordinary == ValueType::Ref(*parameter)
+        && *write_back == ValueType::Ref(*parameter)
+        && matches!(environment, ValueType::Ref(_))
+        && matches!(signature.contract.parameters.as_slice(), [
+            ParameterContract {
+                value_type: ValueType::Ref(environment_layout),
+                ownership: ParameterOwnership::Shared,
+            },
+            ParameterContract {
+                value_type: ValueType::Ref(layout),
+                ownership: ParameterOwnership::WriteBack,
+            },
+        ] if *environment == ValueType::Ref(*environment_layout) && *layout == *parameter)
+        && matches!(signature.contract.results.as_slice(), [
+            ResultContract::Shared { layout: ordinary_layout },
+            ResultContract::Shared { layout: write_back_layout },
+        ] if *ordinary_layout == *parameter && *write_back_layout == *parameter)
+        && matches!(signature.contract.parameter_effects.get(&0), Some(effects)
+            if effects.as_slice() == [
+                MemoryEffect::Read,
+                MemoryEffect::Retain,
+                MemoryEffect::Release,
+            ])
+        && matches!(signature.contract.parameter_effects.get(&1), Some(effects)
+            if effects.as_slice() == [
+                MemoryEffect::Read,
+                MemoryEffect::Retain,
+                MemoryEffect::Release,
+                MemoryEffect::Write,
+            ])
+        && signature.contract.parameter_effects.len() == 2
 }
 
 fn checked_table_index(
@@ -895,6 +1080,7 @@ fn lower_operation(
 ) -> Result<WasmInstruction, LoweringError> {
     let source = SourceItemId::Operation { function, block, index };
     let operation = match operation {
+        Operation::ReauthenticateRawHeaderExtent { .. } => ScalarInstruction::ProofNoop,
         Operation::ClosureOwner(operation) => ScalarInstruction::ClosureOwner(operation.clone()),
         Operation::ConstUnit { destination } => ScalarInstruction::UnitConst { destination: *destination },
         Operation::ConstInt { destination, value } => ScalarInstruction::IntConst { destination: *destination, value: *value },
@@ -1048,10 +1234,14 @@ fn lower_operation(
                 function,
                 operation: "VarCall signature",
             })?;
+            let callable_writeback = is_authenticated_indirect_callable_writeback(signature_def);
             if value_types.get(callee) != Some(&ValueType::Callable(*signature))
                 || signature_def.parameters.len() != arguments.len()
                 || signature_def.results.len() != destinations.len()
-                || signature_def.parameters.iter().copied().enumerate().any(|(index, value_type)| !is_indirect_parameter(signature_def, index, value_type))
+                || signature_def.parameters.iter().copied().enumerate().any(|(index, value_type)| {
+                    !is_indirect_parameter(signature_def, index, value_type)
+                        && !(callable_writeback && index == 1 && value_type == signature_def.parameters[1])
+                })
                 || signature_def.results.iter().copied().any(|value_type| !is_indirect_result(value_type))
             {
                 return Err(LoweringError::UnsupportedOperation {
@@ -1085,6 +1275,22 @@ fn lower_operation(
                 destinations: destinations.clone(),
                 callee: *callee,
                 signature: *signature,
+                arguments: scalar_arguments(function, arguments)?,
+            }
+        }
+        Operation::ExternalCall { destinations, import, arguments } => {
+            let contract = imports.get(import).ok_or(LoweringError::UnsupportedOperation {
+                function,
+                operation: "ExternalCall contract",
+            })?;
+            let signature = signatures.get(&contract.signature).ok_or(LoweringError::UnsupportedOperation {
+                function,
+                operation: "ExternalCall signature",
+            })?;
+            validate_external_call_lowering(function, value_types, contract, signature, arguments, destinations)?;
+            ScalarInstruction::ExternalCall {
+                destinations: destinations.clone(),
+                import: *import,
                 arguments: scalar_arguments(function, arguments)?,
             }
         }
@@ -1153,6 +1359,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::WidenSize { .. } => "WidenSize",
         Operation::FloatUnary { .. } => "FloatUnary",
         Operation::Guard { .. } => "Guard",
+        Operation::ReauthenticateRawHeaderExtent { .. } => "ReauthenticateRawHeaderExtent",
         Operation::Alloc { .. } => "Alloc",
         Operation::StaticData { .. } => "StaticData",
         Operation::InitNullableOwned { .. } => "InitNullableOwned",
@@ -1173,6 +1380,7 @@ fn operation_name(operation: &Operation) -> &'static str {
         Operation::Reclaim { .. } => "Reclaim",
         Operation::Call { .. } => "Call",
         Operation::VarCall { .. } => "VarCall",
+        Operation::ExternalCall { .. } => "ExternalCall",
         Operation::HostCall { .. } => "HostCall",
     }
 }
@@ -1379,6 +1587,7 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> R
         Rule::Compare => RuleBackend::Receipt(CorrespondenceRule::ScalarComparison),
         Rule::NarrowSize | Rule::WidenSize | Rule::FloatUnary => RuleBackend::Receipt(CorrespondenceRule::ScalarConversion),
         Rule::Guard => RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        Rule::ReauthenticateRawHeaderExtent => RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
         Rule::MoveValue | Rule::MakeInlineAggregate | Rule::ExtractInlineField => RuleBackend::Receipt(CorrespondenceRule::ScalarMove),
         Rule::Alloc => RuleBackend::Receipt(CorrespondenceRule::MemoryAlloc),
         Rule::StaticData => RuleBackend::Receipt(CorrespondenceRule::MemoryStaticData),
@@ -1390,6 +1599,7 @@ pub(crate) fn rule_backend(rule: crate::canonical_safewir::CanonicalRuleId) -> R
         Rule::MoveRange | Rule::CloneRef | Rule::Release | Rule::DropRef | Rule::Reclaim => RuleBackend::Receipt(CorrespondenceRule::MemoryOwnership),
         Rule::UpdateCount => RuleBackend::Receipt(CorrespondenceRule::MemoryUpdateCount),
         Rule::Call | Rule::VarCall => RuleBackend::Receipt(CorrespondenceRule::ScalarCall),
+        Rule::ExternalCall => RuleBackend::Receipt(CorrespondenceRule::ExternalCall),
         Rule::HostCall => RuleBackend::Receipt(CorrespondenceRule::HostCall),
         // v1 has no standalone retain: a second owner comes from `CloneRef`.
         Rule::Retain => RuleBackend::Refused,
@@ -1409,6 +1619,7 @@ fn operation_rule(operation: &Operation) -> Option<CorrespondenceRule> {
 
 fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool {
     match (operation, target) {
+        (Operation::ReauthenticateRawHeaderExtent { .. }, ScalarInstruction::ProofNoop) => true,
         (Operation::ClosureOwner(source), ScalarInstruction::ClosureOwner(target)) => source == target,
         (Operation::ConstUnit { destination }, ScalarInstruction::UnitConst { destination: actual }) => destination == actual,
         (Operation::ConstInt { destination, value }, ScalarInstruction::IntConst { destination: actual, value: actual_value }) => destination == actual && value == actual_value,
@@ -1443,6 +1654,7 @@ fn matches_operation(operation: &Operation, target: &ScalarInstruction) -> bool 
         | (Operation::DropRef { object }, ScalarInstruction::Release { object: actual_object })
         | (Operation::Reclaim { object }, ScalarInstruction::Reclaim { object: actual_object }) => object == actual_object,
         (Operation::Call { destinations, callee, arguments }, ScalarInstruction::Call { destinations: actual_destinations, callee: actual_callee, arguments: actual_arguments }) => *callee == *actual_callee && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
+        (Operation::ExternalCall { destinations, import, arguments }, ScalarInstruction::ExternalCall { destinations: actual_destinations, import: actual_import, arguments: actual_arguments }) => import == actual_import && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
         (Operation::HostCall { destinations, import, arguments }, ScalarInstruction::HostCall { destinations: actual_destinations, import: actual_import, arguments: actual_arguments }) => import == actual_import && destinations == actual_destinations && arguments == actual_arguments,
         (Operation::VarCall { destinations, callee, signature, arguments }, ScalarInstruction::VarCall { destinations: actual_destinations, callee: actual_callee, signature: actual_signature, arguments: actual_arguments }) => *callee == *actual_callee && *signature == *actual_signature && destinations == actual_destinations && scalar_argument_values(arguments) == Some(actual_arguments.clone()),
         _ => false,
@@ -1612,9 +1824,27 @@ impl AdmittedVmService {
     pub fn callback_export(&self) -> &str { &self.callback_export }
 }
 
+/// One externally linked Wasm function required by an admitted caller.  This
+/// record is derived from final SafeWIR, not from the raw Wasm import section;
+/// the launcher matches the full authenticated identity before it considers
+/// the textual Wasm module/export names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedExternalWasmImport {
+    module: String,
+    name: String,
+    identity: crate::canonical_safewir::ExternalWasmIdentity,
+}
+
+impl AdmittedExternalWasmImport {
+    pub fn module(&self) -> &str { &self.module }
+    pub fn name(&self) -> &str { &self.name }
+    pub fn identity(&self) -> crate::canonical_safewir::ExternalWasmIdentity { self.identity }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct AdmittedCanonicalArtifact {
     vm_services: Vec<AdmittedVmService>,
+    external_imports: Vec<AdmittedExternalWasmImport>,
     owner_bridges: Vec<AdmittedOwnerBridge>,
     bytes: Vec<u8>,
     checked_source: crate::canonical_safewir::CheckedSourceIdentity,
@@ -1827,6 +2057,11 @@ impl CanonicalEntry {
 
 impl AdmittedCanonicalArtifact {
     pub fn vm_services(&self) -> &[AdmittedVmService] { &self.vm_services }
+    /// Exact separately compiled scalar Wasm imports the launcher must bind.
+    /// An empty list is not permission to supply arbitrary external modules.
+    pub fn external_imports(&self) -> &[AdmittedExternalWasmImport] {
+        &self.external_imports
+    }
     pub fn owner_bridges(&self) -> &[AdmittedOwnerBridge] { &self.owner_bridges }
     /// Borrow the exact admitted Wasm bytes without transferring ownership.
     pub fn wasm(&self) -> &[u8] {
@@ -1915,7 +2150,7 @@ fn wasm_value_type(
 #[derive(Clone)]
 struct LocalLayout<'a> {
     memory_helpers: Option<std::sync::Arc<outlined_memory::Helpers>>,
-    owner_scratch: Option<[u32; 3]>,
+    owner_scratch: Option<[u32; 4]>,
     // Immutable admitted recipes are module-wide, not per-function state.
     // Copy only references: cleanup recipes contain the complete owner family
     // graph and deep-cloning them here multiplies that graph by function count.
@@ -1979,8 +2214,18 @@ fn local_layout<'a>(
 // inspecting only that block's operations would shift every allocator local.
 let owner_scratch = if function.value_types.values().any(|value| matches!(value, ValueType::Gc(_))) {
     let base = entry.parameters.len() as u32 + extra_types.len() as u32;
-    extra_types.extend([ValType::I32, ValType::I32, ValType::Ref(RefType::ANYREF)]);
-    Some([base, base + 1, base + 2])
+    // The first two slots are linear-reference temporaries. The third holds
+    // an opaque Gc token (for example a nested rooted-slice ReadOwner result)
+    // and must therefore be externref. The fourth preserves the local slice
+    // coordinate across linear-environment cleanup, which consumes the
+    // ordinary worklist scratch slots.
+    extra_types.extend([
+        ValType::I32,
+        ValType::I32,
+        ValType::Ref(RefType::EXTERNREF),
+        ValType::I32,
+    ]);
+    Some([base, base + 1, base + 2, base + 3])
 } else { None };
 let mut scratch = vec![0; drop_worklist::SCRATCH];
 
@@ -3136,6 +3381,44 @@ fn emit_host_call(
     Ok(())
 }
 
+fn emit_external_call(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    destinations: &[ValueId],
+    import: ImportId,
+    arguments: &[ValueId],
+    import_indices: &BTreeMap<ImportId, u32>,
+) -> Result<(), EncodeError> {
+    for argument in arguments {
+        if function.value_types.get(argument) != Some(&ValueType::Unit) {
+            emit_get(body, layout, function.id, *argument)?;
+        }
+    }
+    let index = import_indices.get(&import).copied().ok_or(
+        EncodeError::Lowering(LoweringError::UnsupportedOperation {
+            function: function.id,
+            operation: "ExternalCall import",
+        }),
+    )?;
+    body.instruction(&wasm_encoder::Instruction::Call(index));
+    // Only non-unit results arrived on the Wasm operand stack.  Materialize
+    // source unit destinations locally after draining them, preserving the
+    // source-level value map without exporting a physical unit lane.
+    for destination in destinations.iter().rev() {
+        if function.value_types.get(destination) != Some(&ValueType::Unit) {
+            emit_set(body, layout, function.id, *destination)?;
+        }
+    }
+    for destination in destinations {
+        if function.value_types.get(destination) == Some(&ValueType::Unit) {
+            body.instruction(&wasm_encoder::Instruction::I32Const(0));
+            emit_set(body, layout, function.id, *destination)?;
+        }
+    }
+    Ok(())
+}
+
 fn emit_results(
     body: &mut wasm_encoder::Function,
     layout: &LocalLayout,
@@ -3162,6 +3445,7 @@ fn emit_instruction(
     owner_cleanup_function: Option<u32>,
 ) -> Result<(), EncodeError> {
     match instruction {
+        ScalarInstruction::ProofNoop => {}
         ScalarInstruction::ClosureOwner(operation) => { owner_operation_kernel::emit(body, function, layout, layouts, operation, import_indices, owner_cleanup_function)?; }
         ScalarInstruction::UnitConst { destination } => { body.instruction(&wasm_encoder::Instruction::I32Const(0)); emit_set(body, layout, function.id, *destination)?; }
         ScalarInstruction::IntConst { destination, value } => { body.instruction(&wasm_encoder::Instruction::I64Const(*value)); emit_set(body, layout, function.id, *destination)?; }
@@ -3272,6 +3556,9 @@ fn emit_instruction(
             let index = function_indices.get(callee).copied().ok_or(EncodeError::MissingFunction(*callee))?;
             body.instruction(&wasm_encoder::Instruction::Call(index));
             emit_results(body, layout, function.id, destinations)?;
+        }
+        ScalarInstruction::ExternalCall { destinations, import, arguments } => {
+            emit_external_call(body, function, layout, destinations, *import, arguments, import_indices)?;
         }
         ScalarInstruction::HostCall { destinations, import, arguments } => emit_host_call(body, function, layout, destinations, *import, arguments, imports, import_indices, layouts)?,
         ScalarInstruction::VarCall { destinations, callee, signature, arguments } => {
@@ -4549,6 +4836,8 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     for (index, bridge) in target.owner_bridges.iter().enumerate() { import_indices.insert(bridge.id(), source.imports().len() as u32 + index as u32); }
     let import_contracts: BTreeMap<_, _> = source.imports().iter().map(|import| (import.id, import.clone())).collect();
     let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate().map(|(index, signature)| (signature.id, index as u32)).collect();
+    let signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
+        .map(|signature| (signature.id, signature.clone())).collect();
     let mut types = TypeSection::new();
     for signature in source.signatures() {
         let parameters = signature.parameters.iter().enumerate().map(|(index, value_type)| wasm_value_type(FunctionId::new(u32::MAX), ValueId::new(index as u32), *value_type));
@@ -4559,7 +4848,7 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     }
     let mut import_type_indices = BTreeMap::new();
     for (index, import) in source.imports().iter().enumerate() {
-        let (parameters, results) = host_import_wasm_signature(FunctionId::new(u32::MAX), import)
+        let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), import, &signatures_by_id)
             .map_err(EncodeError::Lowering)?;
         let type_index = u32::try_from(source.signatures().len() + index)
             .map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import type count" }))?;
@@ -5829,6 +6118,10 @@ fn expected_block_operations_plan(
     let mut plan = Vec::new();
     for operation in &block.operations {
         match operation {
+            // Checker-only proof transition: admission records the source
+            // correspondence, but the validated Wasm plan intentionally
+            // emits no instruction.
+            Operation::ReauthenticateRawHeaderExtent { .. } => {}
             Operation::ClosureOwner(operation) => { owner_operation_kernel::plan(&mut plan, function, layouts, &layout, operation, import_indices, owner_cleanup_function)?; }
             Operation::ConstInt { destination, value } => {
                 plan.push(PlanToken::I64Const(*value));
@@ -6113,6 +6406,26 @@ fn expected_block_operations_plan(
                 plan.push(PlanToken::Call(index));
                 for destination in destinations.iter().rev() {
                     push_set(&mut plan, &layout, *destination)?;
+                }
+            }
+            Operation::ExternalCall { destinations, import, arguments } => {
+                for argument in arguments {
+                    let value = plan_call_argument(argument)?;
+                    if function.value_types.get(&value) != Some(&ValueType::Unit) {
+                        push_get(&mut plan, &layout, value)?;
+                    }
+                }
+                plan.push(PlanToken::Call(*import_indices.get(import).ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
+                for destination in destinations.iter().rev() {
+                    if function.value_types.get(destination) != Some(&ValueType::Unit) {
+                        push_set(&mut plan, &layout, *destination)?;
+                    }
+                }
+                for destination in destinations {
+                    if function.value_types.get(destination) == Some(&ValueType::Unit) {
+                        plan.push(PlanToken::I32Const(0));
+                        push_set(&mut plan, &layout, *destination)?;
+                    }
                 }
             }
             Operation::VarCall { destinations, callee, signature: call_signature, arguments } => {
@@ -7109,7 +7422,9 @@ fn expected_metadata_prefix(
     for (index, import) in target.imports.iter().enumerate() {
         let contract = source.imports().iter().find(|candidate| candidate.id == import.id)
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-        let (parameters, results) = host_import_wasm_signature(FunctionId::new(u32::MAX), contract)
+        let signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
+            .map(|signature| (signature.id, signature.clone())).collect();
+        let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), contract, &signatures_by_id)
             .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
         let type_index = u32::try_from(source.signatures().len() + index)
             .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -7525,6 +7840,16 @@ fn admit_parts(
         vm_services: _source.vm_services().iter().map(|site| AdmittedVmService {
             id: site.id(), callback_export: format!("f{}", site.callback().get()),
         }).collect(),
+        external_imports: _source.imports().iter().filter_map(|import| {
+            let crate::canonical_safewir::ImportContractIdentity::AuthenticatedExternal(identity) = &import.abi_identity else {
+                return None;
+            };
+            Some(AdmittedExternalWasmImport {
+                module: import.module.clone(),
+                name: import.name.clone(),
+                identity: *identity,
+            })
+        }).collect(),
         owner_bridges: _target.owner_bridges,
         bytes,
         checked_source,
@@ -7826,12 +8151,33 @@ mod tests {
     use super::*;
     use crate::canonical_safewir::{
         BasicBlock, BlockId, BlockParameter, CallableContract, CheckedSourceIdentity,
-        FunctionSignature, FunctionSignatureId,
+        FunctionSignature, FunctionSignatureId, GcTypeId,
         GuardKind,
         LoweredCandidate, LoweredModuleParts, OverflowBehavior, ParameterContract,
         ParameterOwnership, Revision, ResultContract, check_initial_with_test_witness,
         validate_final_for_test,
     };
+
+    #[test]
+    fn external_unit_signature_has_zero_physical_wasm_lanes() {
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(91),
+            parameters: vec![ValueType::Unit],
+            results: vec![ValueType::Unit],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Unit,
+                    ownership: ParameterOwnership::Value,
+                }],
+                results: vec![ResultContract::Value(ValueType::Unit)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        assert_eq!(
+            super::external_import_wasm_signature(FunctionId::new(91), &signature),
+            Ok((Vec::new(), Vec::new())),
+        );
+    }
     use crate::layout::{LayoutBundle, LayoutInterner, PointerSlot, RcHeader, ScalarKind};
 
     fn checked_scalar() -> ValidatedSafeWir {
@@ -8115,6 +8461,31 @@ mod tests {
             }],
             proper_tail_sites: Vec::new(),
         }))
+    }
+
+    #[test]
+    fn owner_gc_scratch_uses_exact_externref_type() {
+        let interner = LayoutInterner::new();
+        let owner = ValueId::new(1);
+        let signature = scalar_signature_with(FunctionSignatureId::new(991), Vec::new(), Vec::new());
+        let function = Function {
+            id: FunctionId::new(991),
+            signature: signature.id,
+            entry: BlockId::new(991),
+            value_types: [(owner, ValueType::Gc(GcTypeId::new(991)))].into_iter().collect(),
+            blocks: vec![BasicBlock {
+                id: BlockId::new(991),
+                parameters: Vec::new(),
+                operations: Vec::new(),
+                terminator: Terminator::Return { values: Vec::new() },
+            }],
+        };
+        let layout = local_layout(&function, &signature, &interner).expect("Gc local layout");
+        let scratch = layout.owner_scratch.expect("synthetic Gc scratch");
+        assert_eq!(layout.extra_types[scratch[0] as usize], ValType::I32);
+        assert_eq!(layout.extra_types[scratch[1] as usize], ValType::I32);
+        assert_eq!(layout.extra_types[scratch[2] as usize], ValType::Ref(RefType::EXTERNREF));
+        assert_eq!(layout.extra_types[scratch[3] as usize], ValType::I32);
     }
 
     #[cfg(feature = "native")]
@@ -9009,6 +9380,81 @@ mod tests {
                 assert!(lower_capability_indirect_for_test(&parts).is_err());
             }
         }
+    }
+
+    #[test]
+    fn indirect_callable_writeback_requires_the_exact_hidden_lane() {
+        let layout = crate::layout::LayoutId::from_bytes([0x67; 32]);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(67),
+            parameters: vec![ValueType::Ref(layout), ValueType::Ref(layout)],
+            results: vec![ValueType::Ref(layout), ValueType::Ref(layout)],
+            contract: CallableContract {
+                parameters: vec![
+                    ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared },
+                    ParameterContract { value_type: ValueType::Ref(layout), ownership: ParameterOwnership::WriteBack },
+                ],
+                results: vec![
+                    ResultContract::Shared { layout },
+                    ResultContract::Shared { layout },
+                ],
+                parameter_effects: BTreeMap::from([
+                    (0, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release]),
+                    (1, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release, MemoryEffect::Write]),
+                ]),
+            },
+        };
+        assert!(is_authenticated_indirect_callable_writeback(&signature));
+
+        let mut absent = signature.clone();
+        absent.results.pop();
+        absent.contract.results.pop();
+        assert!(!is_authenticated_indirect_callable_writeback(&absent));
+
+        let mut mismatched = signature.clone();
+        mismatched.contract.parameter_effects.get_mut(&1).unwrap().pop();
+        assert!(!is_authenticated_indirect_callable_writeback(&mismatched));
+
+        let mut widened = signature;
+        widened.parameters.push(ValueType::Ref(layout));
+        widened.contract.parameters.push(ParameterContract {
+            value_type: ValueType::Ref(layout), ownership: ParameterOwnership::Shared,
+        });
+        assert!(!is_authenticated_indirect_callable_writeback(&widened));
+    }
+
+    #[test]
+    fn unique_reference_indirect_parameter_accepts_only_non_mutating_effects() {
+        let mut interner = LayoutInterner::new();
+        let element = interner.intern_scalar(ScalarKind::U32).unwrap();
+        let layout = interner.intern_packed_list(element, RcHeader::Required).unwrap();
+        let value_type = ValueType::Ref(layout);
+        let mut signature = FunctionSignature {
+            id: FunctionSignatureId::new(22),
+            parameters: vec![value_type],
+            results: vec![value_type],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type,
+                    ownership: ParameterOwnership::Unique,
+                }],
+                results: vec![ResultContract::Unique { layout }],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+
+        assert!(is_indirect_parameter(&signature, 0, value_type));
+        for effect in [MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release] {
+            signature.contract.parameter_effects.insert(0, vec![effect]);
+            assert!(is_indirect_parameter(&signature, 0, value_type));
+        }
+        for effect in [MemoryEffect::Write, MemoryEffect::Reclaim] {
+            signature.contract.parameter_effects.insert(0, vec![effect]);
+            assert!(!is_indirect_parameter(&signature, 0, value_type));
+        }
+        signature.contract.parameters[0].ownership = ParameterOwnership::Value;
+        signature.contract.parameter_effects.clear();
+        assert!(!is_indirect_parameter(&signature, 0, value_type));
     }
 
     #[test]

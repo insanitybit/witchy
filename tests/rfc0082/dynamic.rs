@@ -1,15 +1,49 @@
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::codegen;
 
-use super::authenticated::checked_result;
+use super::authenticated::{checked_result, checked_source_result};
 
 fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
     checked_result(source).expect("authenticated checked link")
 }
 
+fn checked_source(source: &str) -> witchy_types::pipeline::CheckedModule {
+    checked_source_result(source).expect("authenticated exact-source link")
+}
+
+#[test]
+fn derived_public_field_projection_and_missing_interpret_authenticated() {
+    let checked = checked(
+        r#"
+import dynamic
+import reflect
+
+type User derive(Reflect):
+    name: String
+    age: Int
+
+fn main(console: Console):
+    let user = dynamic.dynamic(User("Ada", 42))
+    match dynamic.field(user, "name"):
+        Ok(field) ->
+            let value: Option(String) = dynamic.try_decode(field)
+            match value:
+                Some(name) -> console.print("name-${name}")
+                None -> console.print("decode-error")
+        Err(_) -> console.print("projection-error")
+    match dynamic.field(user, "missing"):
+        Err(dynamic.MissingField(name)) -> console.print("missing-${name}")
+        _ -> console.print("wrong-missing-error")
+"#,
+    );
+    let interpreted = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("interpret authenticated Dynamic fields");
+    assert_eq!(interpreted, ["name-Ada", "missing-missing"]);
+}
+
 #[test]
 fn derived_public_field_projection_runs_on_wasm() {
-    let checked = checked(
+    let checked = checked_source(
         r#"
 import dynamic
 import reflect
@@ -41,12 +75,12 @@ fn main(console: Console):
         _ -> console.print("wrong-sealed-error")
 "#,
     );
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile authenticated Dynamic fields");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit authenticated Dynamic fields");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             128,
         )
@@ -60,7 +94,7 @@ fn main(console: Console):
 
 #[test]
 fn mixed_explicit_and_inferred_reflection_agrees_on_both_backends() {
-    let checked = checked(
+    let checked = checked_source(
         r#"
 import dynamic
 import reflect
@@ -83,12 +117,12 @@ fn main(console: Console):
         .expect("run authenticated Dynamic reflection on interpreter");
     assert_eq!(interpreted, ["mixed-true"]);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile mixed explicit and inferred reflection");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit mixed explicit and inferred reflection");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             128,
         )

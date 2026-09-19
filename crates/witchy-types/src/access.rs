@@ -52,7 +52,9 @@ impl From<Convention> for AccessKind {
 pub enum AccessQualifier {
     Frozen,
     Unique,
-    LocalUnique,
+    /// RFC-0167 rooted immutable snapshot carrier.  Unlike `Borrow`, it has
+    /// no lifetime relation and cannot become an exclusive write-back lane.
+    View,
     Borrow(String),
     BorrowMut(String),
 }
@@ -62,7 +64,7 @@ impl From<&TypeQual> for AccessQualifier {
         match qualifier {
             TypeQual::Frozen => Self::Frozen,
             TypeQual::Unique => Self::Unique,
-            TypeQual::LocalUnique => Self::LocalUnique,
+            TypeQual::View => Self::View,
             TypeQual::Borrow(lifetime) => Self::Borrow(lifetime.clone()),
             TypeQual::LegacyBorrow(lifetime) => Self::Borrow(lifetime.clone()),
             TypeQual::BorrowMut(lifetime) => Self::BorrowMut(lifetime.clone()),
@@ -102,6 +104,9 @@ pub struct LoanProjection {
 pub enum CheckedPlaceStep {
     Field(String),
     Index(i64),
+    /// A literal slice projection. Dynamic range endpoints are retained in a
+    /// `CheckedViewFact`; this structural path never re-reads source syntax.
+    Range { lo: i64, hi: i64, inclusive: bool },
     DynamicIndex,
 }
 
@@ -163,6 +168,13 @@ pub(crate) fn checked_place(expression: &Expr) -> Option<CheckedPlace> {
                 let root = walk(base, steps)?;
                 steps.push(match index.as_ref() {
                     Expr::Int(value) => CheckedPlaceStep::Index(*value),
+                    Expr::Range { lo, hi, inclusive }
+                        if matches!(lo.as_ref(), Expr::Int(_)) && matches!(hi.as_ref(), Expr::Int(_)) =>
+                    {
+                        let Expr::Int(lo) = lo.as_ref() else { unreachable!() };
+                        let Expr::Int(hi) = hi.as_ref() else { unreachable!() };
+                        CheckedPlaceStep::Range { lo: *lo, hi: *hi, inclusive: *inclusive }
+                    }
                     _ => CheckedPlaceStep::DynamicIndex,
                 });
                 Some(root)
@@ -214,6 +226,16 @@ pub(crate) fn checked_assignment_place(
                 });
                 current = &args[2];
             }
+            Expr::Call { name, args }
+                if name == intrinsics::DICT_INSERT && args.len() == 3 =>
+            {
+                // A dictionary key is never a statically disjoint place, but
+                // the enclosing value projection remains authenticated.  The
+                // caller can therefore continue checking a nested field for a
+                // frozen contract; loan overlap still treats this as dynamic.
+                steps.push(CheckedPlaceStep::DynamicIndex);
+                current = &args[2];
+            }
             Expr::MethodCall { method, args, .. }
                 if method == "__set_at" && args.len() == 2 =>
             {
@@ -237,12 +259,13 @@ pub(crate) fn checked_assignment_place(
 /// The producer recognizes only the place forms accepted by type checking. A
 /// later access-verification error does not erase these identities, allowing
 /// fail-closed diagnostic consumers to retain roots without re-parsing syntax.
-pub struct CheckedPlaceFacts<'module> {
-    owner: &'module Module,
+#[derive(Debug)]
+pub struct CheckedPlaceFacts {
+    owner: *const Module,
     places: HashMap<usize, CheckedPlace>,
 }
 
-impl CheckedPlaceFacts<'_> {
+impl CheckedPlaceFacts {
     fn owns(&self, module: &Module) -> bool {
         std::ptr::eq(self.owner, module)
     }
@@ -258,14 +281,14 @@ impl CheckedPlaceFacts<'_> {
 /// Publish assignable-place facts for one exact module. Full callable-access
 /// verification embeds this authority, while diagnostic-only consumers may
 /// retain it independently when another access contract rejects.
-pub fn checked_place_facts(module: &Module) -> CheckedPlaceFacts<'_> {
+pub fn checked_place_facts(module: &Module) -> CheckedPlaceFacts {
     let mut places = HashMap::new();
     visit_place_module(module, &mut |expression| {
         if let Some(place) = checked_place(expression) {
             places.insert(expression as *const Expr as usize, place);
         }
     });
-    CheckedPlaceFacts { owner: module, places }
+    CheckedPlaceFacts { owner: std::ptr::from_ref(module), places }
 }
 
 fn visit_place_module(module: &Module, visitor: &mut impl FnMut(&Expr)) {
@@ -949,6 +972,10 @@ pub enum OwnershipStateClass {
     LinearMemoryObject,
     /// Static access/uniqueness state for a Wasm reference value.
     GcReference,
+    /// An authenticated immutable root-plus-projection carrier.  The type
+    /// layer records only this requirement; lowering must consume a matching
+    /// checked view fact before it may construct or transport the carrier.
+    RootedViewCarrier,
     /// An owner-root relation, never an owning-object token for the viewed data.
     BorrowedOwnerRoot { lifetime: String },
     /// A tuple, nominal, or generic representation that must be refined by
@@ -1102,6 +1129,13 @@ pub const ACCESS_IDENTITY_SCHEMA_VERSION: u32 = 2;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AccessIdentityKey(Vec<u8>);
 
+impl AccessIdentityKey {
+    /// The canonical, alpha-normalized checked access bytes.  Export metadata
+    /// may bind these bytes to a signed declaration envelope; it must not
+    /// reconstruct them from an import-site type.
+    pub fn as_bytes(&self) -> &[u8] { &self.0 }
+}
+
 impl AccessSignature {
     /// Return the stable identity of this exact checked access signature.
     /// Lifetime spellings are normalized by first occurrence across the entire
@@ -1133,7 +1167,7 @@ impl AccessSignature {
             let qualifier = match qualifier {
                 AccessQualifier::Frozen => TypeQual::Frozen,
                 AccessQualifier::Unique => TypeQual::Unique,
-                AccessQualifier::LocalUnique => TypeQual::LocalUnique,
+                AccessQualifier::View => TypeQual::View,
                 AccessQualifier::Borrow(lifetime) => TypeQual::Borrow(lifetime.clone()),
                 AccessQualifier::BorrowMut(lifetime) => TypeQual::BorrowMut(lifetime.clone()),
             };
@@ -1318,7 +1352,7 @@ impl AccessSignature {
         }
 
         let mut access_params = Vec::with_capacity(params.len());
-        for (position, (ty, convention)) in params.into_iter().zip(conventions).enumerate() {
+        for (ty, convention) in params.into_iter().zip(conventions) {
             let qualifiers = leading_qualifiers(&ty);
             // An explicit `&'a mut T` carries the same write-back effect as a
             // `var T` parameter in the current forced-copy ABI. Keeping that
@@ -1333,23 +1367,15 @@ impl AccessSignature {
             } else {
                 AccessKind::from(convention)
             };
-            if matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
-                && qualifiers.contains(&AccessQualifier::Frozen)
-            {
-                return Err(AccessSignatureError::FrozenMutableParameter { position });
-            }
-            if convention == Convention::Var
-                && qualifiers
-                    .iter()
-                    .any(|qualifier| matches!(qualifier, AccessQualifier::Borrow(_)))
-            {
-                return Err(AccessSignatureError::MutableBorrowedView { position });
-            }
+            // Conventions govern the value/reference handle, while `frozen`
+            // governs deep mutation of its payload. A `var frozen T` may replace
+            // the whole value and `var &'a T` may replace the shared handle; both
+            // retain their qualifier identity below.
 
             let borrow_lifetimes = catalog.borrow_lifetimes(&ty);
             let state = ownership_state_class(&ty)?;
             let requires_state = matches!(kind, AccessKind::ExclusiveWriteback | AccessKind::Consuming)
-                || type_has_ownership_qualifier(&ty);
+                || type_requires_ownership_state(&ty);
             let input = requires_state.then_some(state.clone()).flatten();
             let writeback = matches!(kind, AccessKind::ExclusiveWriteback)
                 .then_some(state)
@@ -1364,15 +1390,10 @@ impl AccessSignature {
         }
 
         let result_qualifiers = leading_qualifiers(&result);
-        if type_has_qualifier(&result, |qualifier| {
-            matches!(qualifier, TypeQual::LocalUnique)
-        }) {
-            return Err(AccessSignatureError::LocalUniqueResult);
-        }
         let result_slots = catalog.slots(&result);
         let result_lifetimes = slot_lifetimes(&result_slots);
         let result_state = ownership_state_class(&result)?;
-        let returns_state = type_has_ownership_qualifier(&result);
+        let returns_state = type_requires_ownership_state(&result);
         let ownership_output = returns_state.then_some(result_state).flatten();
 
         let mut borrow_relations = Vec::with_capacity(result_slots.len());
@@ -1618,7 +1639,8 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
             match qualifier {
                 AccessQualifier::Frozen => self.tag(0),
                 AccessQualifier::Unique => self.tag(1),
-                AccessQualifier::LocalUnique => self.tag(2),
+                AccessQualifier::View => self.tag(5),
+                // Tag 2 is retired; surviving qualifier identities remain stable.
                 AccessQualifier::Borrow(lifetime) => {
                     self.tag(3);
                     self.lifetime(lifetime);
@@ -1713,6 +1735,7 @@ fn encode_access_identity(signature: &AccessSignature) -> Vec<u8> {
             match state {
                 OwnershipStateClass::LinearMemoryObject => self.tag(0),
                 OwnershipStateClass::GcReference => self.tag(1),
+                OwnershipStateClass::RootedViewCarrier => self.tag(4),
                 OwnershipStateClass::BorrowedOwnerRoot { lifetime } => {
                     self.tag(2);
                     self.lifetime(lifetime);
@@ -1831,6 +1854,7 @@ pub fn ownership_state_class(
     ty: &Type,
 ) -> Result<Option<OwnershipStateClass>, AccessSignatureError> {
     match ty {
+        Type::Qualified(TypeQual::View, _) => Ok(Some(OwnershipStateClass::RootedViewCarrier)),
         Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), _) => {
             Ok(Some(OwnershipStateClass::BorrowedOwnerRoot {
                 lifetime: lifetime.clone(),
@@ -1879,9 +1903,6 @@ pub enum AccessSignatureError {
     MissingParameterType { position: usize },
     MissingResultType,
     ConventionArity { params: usize, conventions: usize },
-    FrozenMutableParameter { position: usize },
-    MutableBorrowedView { position: usize },
-    LocalUniqueResult,
     UnboundResultLifetime { lifetime: String },
     UnnormalizedRecordCompose,
 }
@@ -1901,17 +1922,6 @@ impl fmt::Display for AccessSignatureError {
                 formatter,
                 "function type has {params} parameter(s) but {conventions} convention(s)"
             ),
-            Self::FrozenMutableParameter { position } => write!(
-                formatter,
-                "parameter {position} is frozen but grants mutable access"
-            ),
-            Self::MutableBorrowedView { position } => write!(
-                formatter,
-                "parameter {position} is a borrowed view but grants mutable access"
-            ),
-            Self::LocalUniqueResult => {
-                write!(formatter, "a local unique result would escape its activation")
-            }
             Self::UnboundResultLifetime { lifetime } => write!(
                 formatter,
                 "borrowed result lifetime '{lifetime} has no owner parameter"
@@ -2004,10 +2014,22 @@ fn leading_qualifiers(ty: &Type) -> Vec<AccessQualifier> {
 
 fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
     match declared {
-        Type::Qualified(qualifier, inner) => Type::Qualified(
-            qualifier.clone(),
-            Box::new(apply_declared_contract(inner, resolved)),
-        ),
+        Type::Qualified(qualifier, inner) => {
+            // Finalized checker types ordinarily erase declaration access
+            // qualifiers, but a checked expression context may retain one.
+            // Apply the source contract exactly once: recursively feeding the
+            // same retained qualifier to a generic leaf would manufacture
+            // `&&a` from a declared `&a`.
+            let resolved = match resolved {
+                Type::Qualified(resolved_qualifier, resolved_inner)
+                    if resolved_qualifier == qualifier => resolved_inner.as_ref(),
+                _ => resolved,
+            };
+            Type::Qualified(
+                qualifier.clone(),
+                Box::new(apply_declared_contract(inner, resolved)),
+            )
+        }
         // Lifetime markers are declaration binders, not checker type holes. Keep
         // one alpha-consistent spelling across qualifiers and nominal arguments.
         Type::Named(name, arguments) if arguments.is_empty() && name.starts_with('\'') => {
@@ -2102,49 +2124,32 @@ fn apply_declared_contract(declared: &Type, resolved: &Type) -> Type {
     }
 }
 
-fn type_has_qualifier(ty: &Type, predicate: impl Copy + Fn(&TypeQual) -> bool) -> bool {
-    match ty {
-        Type::Qualified(qualifier, inner) => {
-            predicate(qualifier) || type_has_qualifier(inner, predicate)
-        }
-        Type::Slice(inner) => type_has_qualifier(inner, predicate),
-        Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
-            arguments
-                .iter()
-                .any(|argument| type_has_qualifier(argument, predicate))
-        }
-        Type::RecordCompose { base, fields } => {
-            type_has_qualifier(base, predicate)
-                || fields
-                    .iter()
-                    .any(|(_, field)| type_has_qualifier(field, predicate))
-        }
-        // A nested callable owns its activation-local result contract. Returning
-        // the callable does not return a value produced by invoking it.
-        Type::Fn(..) => false,
-    }
-}
-
-fn type_has_ownership_qualifier(ty: &Type) -> bool {
+/// Whether crossing this access boundary must preserve representation state.
+///
+/// This is deliberately distinct from affine/unique-storage classification.
+/// A canonical view is copyable, but every copied carrier still retains an
+/// authenticated root and therefore needs shared retain/drop state at ordinary
+/// input and output boundaries.
+fn type_requires_ownership_state(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
             TypeQual::Unique
-            | TypeQual::LocalUnique
             | TypeQual::Borrow(_)
             | TypeQual::LegacyBorrow(_)
             | TypeQual::BorrowMut(_),
             _,
         ) => true,
-        Type::Qualified(TypeQual::Frozen, inner) => type_has_ownership_qualifier(inner),
-        Type::Slice(inner) => type_has_ownership_qualifier(inner),
+        Type::Qualified(TypeQual::View, _) => true,
+        Type::Qualified(TypeQual::Frozen, inner) => type_requires_ownership_state(inner),
+        Type::Slice(inner) => type_requires_ownership_state(inner),
         Type::Named(_, arguments) | Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
-            arguments.iter().any(type_has_ownership_qualifier)
+            arguments.iter().any(type_requires_ownership_state)
         }
         Type::RecordCompose { base, fields } => {
-            type_has_ownership_qualifier(base)
+            type_requires_ownership_state(base)
                 || fields
                     .iter()
-                    .any(|(_, field)| type_has_ownership_qualifier(field))
+                    .any(|(_, field)| type_requires_ownership_state(field))
         }
         // A nested callable's parameter/result ownership belongs to that
         // callable's own access signature, not to the function value which
@@ -2184,6 +2189,9 @@ fn compare_type(
     lifetimes: &mut LifetimeBijection,
 ) -> Result<(), AccessMismatchKind> {
     match (required, candidate) {
+        (Type::Qualified(TypeQual::View, left_inner), Type::Qualified(TypeQual::View, right_inner)) => {
+            compare_type(left_inner, right_inner, lifetimes)
+        }
         (
             Type::Qualified(TypeQual::Borrow(left) | TypeQual::LegacyBorrow(left), left_inner),
             Type::Qualified(TypeQual::Borrow(right) | TypeQual::LegacyBorrow(right), right_inner),
@@ -2379,6 +2387,10 @@ enum AccessFlow {
     /// side at an ascription or control-flow join; it is never evidence that a
     /// present callable may erase its contract.
     Unknown,
+    /// This control-flow path does not reach the value join. It is neutral
+    /// there: it supplies no callable value and therefore cannot weaken the
+    /// authenticated contract of a completing alternative.
+    Diverges,
     Callable(AccessSignature),
     Product(Vec<AccessFlow>),
     Sequence(Box<AccessFlow>),
@@ -2394,7 +2406,7 @@ impl AccessFlow {
             Self::Named { arguments, .. } => {
                 arguments.iter().any(Self::has_callable_contract)
             }
-            Self::None | Self::Unknown => false,
+            Self::None | Self::Unknown | Self::Diverges => false,
         }
     }
 
@@ -2610,6 +2622,12 @@ impl AccessFlow {
     }
 
     fn join(&self, other: &Self, context: &str) -> Result<Self, AccessFlowError> {
+        if matches!(self, Self::Diverges) {
+            return Ok(other.clone());
+        }
+        if matches!(other, Self::Diverges) {
+            return Ok(self.clone());
+        }
         if matches!(self, Self::Unknown) {
             return Ok(other.clone());
         }
@@ -2650,15 +2668,16 @@ impl AccessFlow {
 /// Finalized access-signature facts keyed to the exact typed AST used to build
 /// them. The owning [`crate::typeck::TypedModule`] must remain alive while these
 /// address-keyed queries are used.
-pub struct CheckedAccessFacts<'module> {
-    owner: &'module Module,
+#[derive(Debug)]
+pub struct CheckedAccessFacts {
+    owner: *const Module,
     values: HashMap<usize, AccessFlow>,
     declarations: HashMap<String, AccessSignature>,
     calls: HashMap<usize, AccessSignature>,
-    places: CheckedPlaceFacts<'module>,
+    places: CheckedPlaceFacts,
 }
 
-impl CheckedAccessFacts<'_> {
+impl CheckedAccessFacts {
     fn owns(&self, module: &Module) -> bool {
         std::ptr::eq(self.owner, module)
     }
@@ -2751,7 +2770,7 @@ struct AccessVerifier<'a> {
     types: HashMap<String, TypeDef>,
     variants: HashMap<String, Vec<(String, Variant)>>,
     borrow_catalog: BorrowRelationCatalog,
-    facts: CheckedAccessFacts<'a>,
+    facts: CheckedAccessFacts,
     return_frames: Vec<Vec<AccessFlow>>,
     expression_type_hints: HashMap<usize, Type>,
 }
@@ -2792,7 +2811,7 @@ impl<'a> AccessVerifier<'a> {
             variants,
             borrow_catalog,
             facts: CheckedAccessFacts {
-                owner: module,
+                owner: std::ptr::from_ref(module),
                 values: HashMap::new(),
                 declarations: HashMap::new(),
                 calls: HashMap::new(),
@@ -2803,7 +2822,7 @@ impl<'a> AccessVerifier<'a> {
         }
     }
 
-    fn verify(mut self) -> Result<CheckedAccessFacts<'a>, AccessFlowError> {
+    fn verify(mut self) -> Result<CheckedAccessFacts, AccessFlowError> {
         for item in &self.module.items {
             let Item::Function(function) = item else { continue };
             self.verify_function(function)?;
@@ -3629,7 +3648,7 @@ impl<'a> AccessVerifier<'a> {
                         frame.push(actual.clone());
                     }
                     actual.verify_directed(return_expected, "returned function value")?;
-                    AccessFlow::None
+                    return Ok(AccessFlow::Diverges);
                 }
                 Stmt::Yield(value) => self.eval_expr(value, environment, return_expected)?,
                 Stmt::Expr(value) => self.eval_expr_with_hint(
@@ -3640,7 +3659,7 @@ impl<'a> AccessVerifier<'a> {
                     environment,
                     return_expected,
                 )?,
-                Stmt::Break | Stmt::Continue => AccessFlow::None,
+                Stmt::Break | Stmt::Continue => return Ok(AccessFlow::Diverges),
             };
             if index + 1 != block.stmts.len() {
                 tail = AccessFlow::None;
@@ -4316,11 +4335,13 @@ impl<'a> AccessVerifier<'a> {
                 } else {
                     (AccessFlow::None, environment.clone())
                 };
-                Self::merge_environments(
-                    environment,
-                    &[then_environment, else_environment],
-                    "if branches",
-                )?;
+                let completing_environments = [(&then_flow, then_environment), (&else_flow, else_environment)]
+                    .into_iter()
+                    .filter_map(|(flow, environment)| {
+                        (!matches!(flow, AccessFlow::Diverges)).then_some(environment)
+                    })
+                    .collect::<Vec<_>>();
+                Self::merge_environments(environment, &completing_environments, "if branches")?;
                 then_flow.join(&else_flow, "if-expression branches")?
             }
             Expr::Match { scrutinee, arms } => {
@@ -4341,7 +4362,9 @@ impl<'a> AccessVerifier<'a> {
                 let flows = branches.iter().map(|(flow, _)| flow.clone());
                 let branch_environments = branches
                     .iter()
-                    .map(|(_, environment)| environment.clone())
+                    .filter_map(|(flow, environment)| {
+                        (!matches!(flow, AccessFlow::Diverges)).then_some(environment.clone())
+                    })
                     .collect::<Vec<_>>();
                 Self::merge_environments(environment, &branch_environments, "match arms")?;
                 Self::join_flows(flows, "match-expression arms")?
@@ -4430,10 +4453,10 @@ impl<'a> AccessVerifier<'a> {
 /// Build the checked access-signature query for an already type-checked module.
 /// The supplied table is authoritative for every inferred and use-site
 /// specialized type; this pass propagates only ownership/access contracts.
-pub fn checked_facts<'module>(
-    module: &'module Module,
-    table: &'module TypeTable,
-) -> Result<CheckedAccessFacts<'module>, AccessFlowError> {
+pub fn checked_facts(
+    module: &Module,
+    table: &TypeTable,
+) -> Result<CheckedAccessFacts, AccessFlowError> {
     AccessVerifier::new(module, table).verify()
 }
 
@@ -4444,5 +4467,7 @@ pub fn verify_module(module: &Module) -> Result<(), AccessFlowError> {
     let typed = crate::typeck::annotate_checked(module.clone()).map_err(|error| {
         AccessFlowError { message: error.message }
     })?;
-    checked_facts(typed.module(), typed.table()).map(|_| ())
+    typed.access_facts().map(|_| ()).map_err(|error| AccessFlowError {
+        message: error.to_string(),
+    })
 }

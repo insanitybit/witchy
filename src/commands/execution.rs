@@ -1,15 +1,15 @@
-//! Compiled execution and interpreter/Wasm parity command services.
+//! Compiled execution and canonical-SafeWIR/Wasm parity command services.
 
 use witchy::enforce_performance_modes;
 use witchy_syntax::ast;
 use witchy_caps::capabilities;
 use witchy_lower::codegen;
-use witchy_interp::interpreter;
 use witchy_runtime::runtime::{self, Runtime};
 use crate::{
-    commands, link_file_checked, linked_has_main, run_admitted_artifact, run_wasm_bytes,
+    commands, link_file_checked, linked_has_main, run_admitted_artifact,
     RUN_MEMORY_PAGES,
 };
+use crate::source::PrecompiledCheckedModule;
 
 /// Run `witchy parity` when it is the requested command.
 ///
@@ -147,17 +147,23 @@ impl ParityOutcome {
     }
 }
 
-/// Run `path` on both backends and classify the result into one of the four
-/// `ParityOutcome`s. The compiled and interpreter runs happen regardless of either
-/// failing (a trap on one side and a value on the other is itself a divergence), and
-/// exact error comparison closes the routed-diagnostic gap (RFC-0045). This is the
-/// oracle the differential fuzzer and the example sweep drive as `witchy parity`.
+/// Run `path` through the canonical SafeWIR interpreter and admitted Wasm, then
+/// classify the result into one of the four `ParityOutcome`s. Both runs happen
+/// regardless of either failing (a trap on one side and a value on the other is
+/// itself a divergence), and exact error comparison closes the routed-diagnostic
+/// gap (RFC-0045). Independent fixture expectations remain the primary semantic
+/// evidence; this command checks that both executable forms of canonical SafeWIR
+/// agree with that contract without invoking the frozen source evaluator.
 pub(crate) fn parity_check(path: &str) -> ParityOutcome {
-    use std::path::Path;
     macro_rules! unexpected {
         ($($arg:tt)*) => {
             return ParityOutcome::Unexpected { message: format!($($arg)*) }
         };
+    }
+    match crate::source::project_declares_precompiled_dependencies(path, None) {
+        Ok(true) => unexpected!("parity cannot execute authenticated precompiled external libraries"),
+        Ok(false) => {}
+        Err(error) => unexpected!("cannot select project inputs for parity: {error}"),
     }
     let (checked, stem) = match link_file_checked(path) {
         Ok(v) => v,
@@ -174,7 +180,6 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
     if !linked_has_main(linked) {
         unexpected!("`{path}` has no `main` to run");
     }
-    // Compile first (borrows `linked`), then run the interpreter (consumes it).
     let artifact = match codegen::compile_checked_module_artifact(&checked) {
         codegen::LoweringOutcome::Lowered(artifact) => artifact,
         codegen::LoweringOutcome::Unsupported(reason) => {
@@ -184,30 +189,27 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
             unexpected!("cannot compile to WASM: {error}")
         }
     };
-    // Run BOTH backends regardless of either failing: a program that errors on
-    // one backend but produces a value on the other is itself a divergence (a
-    // trap and a clean result are not the same behavior), so we must not return
-    // early on the interpreter's error before observing what WASM does.
+    // Run BOTH canonical executors regardless of either failing: a program that
+    // errors on one side but produces a value on the other is itself a divergence.
     // The compiled run export surfaces an Int-returning `main` as a final
     // print_int line (the sandbox/CLI turn it into the process exit code); the
-    // interpreter's output has no such line, so drop it before comparing.
+    // canonical interpreter's output has no such line, so drop it before comparing.
     let main_returns_int = linked.items.iter().any(|it| {
         matches!(it, ast::Item::Function(f) if f.name == "main"
             && matches!(&f.ret, Some(ast::Type::Named(n, _)) if n == "Int"))
     });
-    // The root grant is concrete on BOTH backends (spec §13): if `main` binds a
-    // `Secret` and `verify` was given no signing key, neither backend may run.
-    // The interpreter already refuses (in `root_cap_for`); make the compiled side
-    // refuse identically so they AGREE (both error) instead of diverging — the
-    // interpreter rejecting while WASM mints a null secret was a real parity hole.
+    // The root grant is concrete on BOTH executors (spec §13): if `main` binds a
+    // `Secret` and no signing key exists, neither executor may run.
     let unmintable = linked.items.iter().find_map(|it| match it {
         ast::Item::Function(f) if f.name == "main" => {
             capabilities::unmintable_main_cap(&f.params, false)
         }
         _ => None,
     });
-    let interp = interpreter::run_checked_module(&checked, Path::new("."), Vec::new())
-        .map_err(|e| e.to_string());
+    let oracle = match &unmintable {
+        Some(msg) => Err(witchy_syntax::diag::runtime_error("", 0, msg)),
+        None => run_safewir_oracle(&checked, &artifact, &[]),
+    };
     let compiled = match &unmintable {
         Some(msg) => Err(witchy_syntax::diag::runtime_error("", 0, msg)),
         None => run_admitted_artifact(&artifact).map(|mut lines| {
@@ -217,16 +219,6 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
             lines
         }),
     };
-    // Third leg (RFC-0135): the executable SafeWIR oracle runs the same
-    // validated graph admission encoded, with the checker's semantics. Its
-    // output must match the compiled run line for line, and it must return
-    // with no live reference-counted object. Any disagreement, including the
-    // oracle refusing a program the backend ran, is loud.
-    if unmintable.is_none() {
-        if let Err(message) = safewir_oracle_agrees(&checked, &artifact, &[], &compiled) {
-            unexpected!("SafeWIR oracle: {message}");
-        }
-    }
     // Positive control (RFC-0058 §1): when armed, deliberately perturb the COMPILED
     // side so the oracle MUST report a divergence — proving the gate can fail. An
     // `Ok` gains an impossible sentinel line; an `Err` becomes an `Ok` carrying only
@@ -243,11 +235,11 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
     } else {
         compiled
     };
-    match (interp, compiled) {
+    match (oracle, compiled) {
         (Ok(i), Ok(c)) if i == c => ParityOutcome::Agree {
             compared: i.len(),
             message: format!(
-                "\u{2713} {path}: interpreter and compiled WASM agree ({} line(s) of output)",
+                "\u{2713} {path}: canonical SafeWIR interpreter and admitted WASM agree ({} line(s) of output)",
                 i.len()
             ),
             output: i,
@@ -257,7 +249,7 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
             ParityOutcome::Diverge {
                 compared,
                 message: format!(
-                    "\u{2717} {path}: the two backends DIVERGE\n  interpreter: {i:?}\n  compiled:    {c:?}"
+                    "\u{2717} {path}: canonical execution DIVERGES\n  SafeWIR: {i:?}\n  Wasm:    {c:?}"
                 ),
             }
         }
@@ -269,25 +261,25 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
                 return ParityOutcome::Diverge {
                     compared: 0,
                     message: format!(
-                        "\u{2717} {path}: the two backends DIVERGE on the error diagnostic\n  \
-                         interpreter: {i:?}\n  compiled:    {c:?}"
+                        "\u{2717} {path}: canonical execution DIVERGES on the error diagnostic\n  \
+                         SafeWIR: {i:?}\n  Wasm:    {c:?}"
                     ),
                 };
             }
             ParityOutcome::BothErrorAgree {
-                message: format!("\u{2713} {path}: interpreter and compiled WASM agree (both error)"),
+                message: format!("\u{2713} {path}: canonical SafeWIR interpreter and admitted WASM agree (both error)"),
             }
         }
         (Ok(i), Err(c)) => ParityOutcome::Diverge {
             compared: 0,
             message: format!(
-                "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Ok({i:?})\n  compiled:    Err({c})"
+                "\u{2717} {path}: canonical execution DIVERGES\n  SafeWIR: Ok({i:?})\n  Wasm:    Err({c})"
             ),
         },
         (Err(i), Ok(c)) => ParityOutcome::Diverge {
             compared: 0,
             message: format!(
-                "\u{2717} {path}: the two backends DIVERGE\n  interpreter: Err({i})\n  compiled:    Ok({c:?})"
+                "\u{2717} {path}: canonical execution DIVERGES\n  SafeWIR: Err({i})\n  Wasm:    Ok({c:?})"
             ),
         },
     }
@@ -422,6 +414,51 @@ pub(crate) fn run_checked_compiled(
     )
 }
 
+/// Launch a checked module whose declaration environment admitted exact
+/// separately compiled libraries. This is intentionally not used by `parity`,
+/// the interpreter, or packaged-output routes: those routes have no source ABI
+/// for external callable Wasm.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_precompiled_checked_compiled(
+    linked: &PrecompiledCheckedModule,
+    dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
+    exec_allow: Option<Vec<String>>,
+    exec_child_paths: Vec<std::path::PathBuf>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<runtime::SecretGrant>,
+    user_cap_fields: Vec<Vec<String>>,
+    strict_dir: bool,
+    confinement: witchy_confinement::EnforcementMode,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let artifact = match codegen::compile_checked_module_artifact(&linked.checked) {
+        codegen::LoweringOutcome::Lowered(artifact) => artifact,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+    };
+    run_compiled(
+        linked.checked.module(),
+        CompiledWasm::AdmittedWithExternalLibraries(artifact, linked.external_libraries.clone()),
+        dir_roots,
+        file_grants,
+        net_allow,
+        fetch_origins,
+        env_allow,
+        exec_allow,
+        exec_child_paths,
+        args,
+        signing_key,
+        named_secrets,
+        user_cap_fields,
+        strict_dir,
+        confinement,
+    )
+}
+
 /// Run a generated test driver through its task-specific checked boundary.
 /// Unlike `run_checked_compiled`, this cannot accept or manufacture a general
 /// production `CheckedModule` from the post-link AST rewrite.
@@ -468,6 +505,10 @@ pub(crate) fn run_checked_test_driver_compiled(
 
 enum CompiledWasm {
     Admitted(witchy_wir::AdmittedCanonicalArtifact),
+    AdmittedWithExternalLibraries(
+        witchy_wir::AdmittedCanonicalArtifact,
+        Vec<runtime::AuthenticatedExternalLibrary>,
+    ),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -636,6 +677,9 @@ fn run_compiled(
         CompiledWasm::Admitted(artifact) => {
             rt.spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
         }
+        CompiledWasm::AdmittedWithExternalLibraries(artifact, libraries) => {
+            rt.spawn_admitted_with_external_libraries(artifact, caps, RUN_MEMORY_PAGES, libraries)
+        }
     }
     .map_err(|e| e.to_string())?;
     // Surface the *root cause*, not wasmtime's outer "error while executing at
@@ -675,18 +719,17 @@ fn run_compiled(
     Ok((lines, exit_code))
 }
 
-/// Run the admitted program through the executable SafeWIR interpreter and
-/// compare with the compiled run. `Ok(())` means agreement (both produced the
-/// same lines, or both failed); `Err` names the divergence.
-fn safewir_oracle_agrees(
+/// Run the checked canonical graph through the executable SafeWIR interpreter.
+/// The oracle consumes the same authenticated lowering product as admission and
+/// refuses any run that leaves a live managed root behind.
+fn run_safewir_oracle(
     checked: &witchy_types::pipeline::CheckedModule,
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     launch_arguments: &[String],
-    compiled: &Result<Vec<String>, String>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
     let Some(entry) = artifact.entry() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let validated = codegen::validate_checked_module_for_oracle(checked)?;
     let function = entry
@@ -710,15 +753,28 @@ fn safewir_oracle_agrees(
             ..Default::default()
         },
     });
-    let output = run.map_err(|error| format!("{error:?}")).and_then(|run| {
+    run.map_err(|error| format!("{error:?}")).and_then(|run| {
         if run.leaked_objects > 0 {
             return Err(format!("{} reference-counted object(s) survived the entry", run.leaked_objects));
         }
         Ok(run.output)
-    });
-    compare_safewir_oracle_outcomes(output, compiled)
+    })
 }
 
+#[cfg(test)]
+fn safewir_oracle_agrees(
+    checked: &witchy_types::pipeline::CheckedModule,
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    launch_arguments: &[String],
+    compiled: &Result<Vec<String>, String>,
+) -> Result<(), String> {
+    compare_safewir_oracle_outcomes(
+        run_safewir_oracle(checked, artifact, launch_arguments),
+        compiled,
+    )
+}
+
+#[cfg(test)]
 fn compare_safewir_oracle_outcomes(
     oracle: Result<Vec<String>, String>,
     compiled: &Result<Vec<String>, String>,

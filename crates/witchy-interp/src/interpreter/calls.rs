@@ -20,6 +20,14 @@ fn parameter_writes_back(param: &Param) -> bool {
     param.convention == Convention::Var || is_exclusive_reference(param)
 }
 
+/// A `var` reference writes its *handle* back to the caller.  This is distinct
+/// from the executable place carried by every `&mut` parameter: a plain
+/// exclusive reborrow needs that place for `*r = value`, but must not replace
+/// the caller's handle when the callee merely rebinds its local parameter.
+fn parameter_replaces_handle(param: &Param) -> bool {
+    param.convention == Convention::Var && is_exclusive_reference(param)
+}
+
 fn parameter_binds_mutable(param: &Param) -> bool {
     param.convention.binds_mutable() || is_exclusive_reference(param)
 }
@@ -169,10 +177,9 @@ impl Interpreter {
             .params
             .iter()
             .enumerate()
-            // Exclusive references retain the caller's place directly. They
-            // must not be treated as a legacy `var` copy/write-back result by
-            // closure calls, because a returned/projected carrier has no
-            // mutable caller place to reconstruct.
+            // Function-value reference write-back remains unsupported: the
+            // direct named-call ABI below is deliberately narrower than the
+            // callable-reference track.
             .filter(|(_, param)| parameter_writes_back(param) && !is_exclusive_reference(param))
             .map(|(index, param)| {
                 let value = outcome
@@ -251,7 +258,28 @@ impl Interpreter {
                     // that stores the parameter in a tuple/list loses the
                     // selected owner.
                     values.push(value);
-                    places.push(None);
+                    // `var r: &'a mut T` replaces the caller's handle.  It
+                    // therefore needs an assignable caller binding in addition
+                    // to the reference carrier used for referent writes.
+                    let handle_is_place = match arg {
+                        Expr::Var(_) | Expr::Field { .. } | Expr::Index { .. } => true,
+                        Expr::Call { name, .. } => {
+                            matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                        }
+                        _ => false,
+                    };
+                    let handle_place = if param.is_some_and(parameter_replaces_handle)
+                        && handle_is_place
+                    {
+                        Some(self.capture_place(arg, env)?)
+                    } else {
+                        // `replace(&mut owner)` has no separately bindable
+                        // handle to replace.  It remains valid for referent
+                        // writes; a named reference binding is required to
+                        // observe a replacement handle.
+                        None
+                    };
+                    places.push(handle_place);
                 } else {
                     let place = self.capture_place(arg, env)?;
                     let value = self.read_place_value(&place, env)?;

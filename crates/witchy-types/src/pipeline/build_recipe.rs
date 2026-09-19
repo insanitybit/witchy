@@ -113,7 +113,7 @@ pub fn check_build_recipe_from_source_bundle(
     for kind in &parameter_kinds {
         parameter_abi.extend_from_slice(&[*kind, 1]); // private Write or Read right
     }
-    let original_digest = checked_source_digest(&sources, entry);
+    let original_digest = checked_source_digest(&sources, entry, &PrecompiledDeclarationEnvironment::default());
     let mut hash = blake3::Hasher::new();
     hash.update(b"witchy.checked-build-recipe.production.build-io\0");
     hash.update(&VERSION.to_le_bytes());
@@ -130,7 +130,7 @@ pub fn check_build_recipe_from_source_bundle(
     // compiler wrapper is checked as an ordinary callable; only the sealed
     // recipe's entry selector lets admission expose it as the launch target.
     let mut generated = witchy_syntax::parser::parse_module(
-        "fn witchy_build_recipe_entry() -> Nil:\n    Nil\n",
+        "fn witchy_build_recipe_entry() -> ():\n    ()\n",
     ).map_err(|error| refused(format!("invalid compiler build recipe: {error}")))?;
     let Item::Function(wrapper) = &mut generated.items[0] else { return Err(refused("invalid build wrapper")); };
     wrapper.params = parameters;
@@ -166,11 +166,11 @@ pub fn check_build_recipe_from_source_bundle(
                         | (Some(typeck::Ty::BuildEnv), 14) | (Some(typeck::Ty::BuildExec), 15)
                         | (Some(typeck::Ty::BuildNet), 16))
         })
-        || !matches!(wrapper.ret.as_ref(), Some(Type::Named(name, args)) if name == "Nil" && args.is_empty())
+        || !wrapper.ret.as_ref().is_some_and(is_unit_type)
     {
-        return Err(refused("build recipe requires exact checked BuildOut/BuildRead/BuildEnv/BuildExec/BuildNet parameters in source order and Nil result; other providers are unsupported"));
+        return Err(refused("build recipe requires exact checked BuildOut/BuildRead/BuildEnv/BuildExec/BuildNet parameters in source order and `()` result; other providers are unsupported"));
     }
-    let mut checked = finish_canonical_source(checked, typed, identity.derived)?;
+    let mut checked = finish_canonical_source(checked, typed, identity.derived, PrecompiledDeclarationEnvironment::default())?;
     let source = checked.canonical_source.as_mut().ok_or_else(|| refused("build recipe source missing"))?;
     let abi = source.closed_callable_abi(&entry_name)
         .ok_or_else(|| refused("build wrapper missing from fresh callable census"))?;

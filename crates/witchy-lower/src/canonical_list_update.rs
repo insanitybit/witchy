@@ -145,14 +145,14 @@ impl FunctionLowerer<'_> {
         // the completed output list instead crosses the join with all lanes.
         self.current = replace_block;
         let value = if pointer { self.owned_for_storage(replacement, element_source_type)? } else { replacement };
-        self.store_replacement_element(output, cursor, value, next, element_type);
+        self.store_replacement_element(output, cursor, output_capacity, value, next, element_type)?;
         self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, output_capacity] })?;
 
         self.restore_facts(selection_facts.clone(), copy_block);
         self.current = copy_block;
         let value = self.load_list_element(source, cursor, element_type)?;
         let value = if pointer { self.owned_for_storage(value, element_source_type)? } else { value };
-        self.store_replacement_element(output, cursor, value, next, element_type);
+        self.store_replacement_element(output, cursor, output_capacity, value, next, element_type)?;
         self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, output_capacity] })?;
 
         self.restore_facts(selection_facts, selected);
@@ -259,7 +259,7 @@ impl FunctionLowerer<'_> {
             } else {
                 value
             };
-            self.store_replacement_element(output, cursor, value, next, element_type);
+            self.store_replacement_element(output, cursor, capacity, value, next, element_type)?;
             self.finish_current(Terminator::Branch { target: selected, arguments: vec![output, next, capacity] })?;
         }
         self.restore_facts(selection_facts, selected);
@@ -274,7 +274,21 @@ impl FunctionLowerer<'_> {
         Ok(result[0])
     }
 
-    fn store_replacement_element(&mut self, output: ValueId, index: ValueId, value: ValueId, next: ValueId, element_type: ValueType) {
+    fn store_replacement_element(
+        &mut self,
+        output: ValueId,
+        index: ValueId,
+        capacity: ValueId,
+        value: ValueId,
+        next: ValueId,
+        element_type: ValueType,
+    ) -> Result<(), CanonicalLoweringError> {
+        // This arm can be revisited after the output loop's backedge has
+        // advanced its owner epoch. Establish the write bound in the arm,
+        // immediately before the Store, rather than relying on a guard before
+        // the selection branch.
+        let fits = self.push_compare(ComparisonOperator::LessUnsigned, index, capacity)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_operation(Operation::Store {
             place: witchy_wir::canonical_safewir::Place::projected(
                 output, Projection::Element { index }, element_type, AccessMode::Write,
@@ -284,5 +298,6 @@ impl FunctionLowerer<'_> {
                 else { witchy_wir::canonical_safewir::StoreTransfer::CopyScalar },
         });
         self.push_operation(Operation::UpdateCount { object: output, count: next });
+        Ok(())
     }
 }

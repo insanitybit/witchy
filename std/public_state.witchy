@@ -16,29 +16,29 @@ pub fn to_json(value: a) -> json.Json where a: PublicState, a: Reflect:
     check(value)
     json.from_value(value)
 
-impl PublicState for Nil:
+impl PublicState for ():
     fn public_state_proof(self):
-        Nil
+        ()
 
 impl PublicState for Bool:
     fn public_state_proof(self):
-        Nil
+        ()
 
 impl PublicState for Int:
     fn public_state_proof(self):
-        Nil
+        ()
 
 impl PublicState for Float:
     fn public_state_proof(self):
-        Nil
+        ()
 
 impl PublicState for Duration:
     fn public_state_proof(self):
-        Nil
+        ()
 
 impl PublicState for String:
     fn public_state_proof(self):
-        Nil
+        ()
 
 impl PublicState for List(a) where a: PublicState:
     fn public_state_proof(self):
@@ -49,7 +49,7 @@ impl PublicState for Option(a) where a: PublicState:
     fn public_state_proof(self):
         match self:
             Some(value) -> check(value)
-            None -> Nil
+            None -> ()
 
 impl PublicState for Result(a, e) where a: PublicState, e: PublicState:
     fn public_state_proof(self):

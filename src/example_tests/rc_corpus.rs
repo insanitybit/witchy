@@ -73,7 +73,7 @@ use super::*;
     /// DIFFERENT negative offset than a plain record. Read into a binding that outlives the set_at.
     #[test]
     fn rc_corpus_dict_element_survives_set_at() {
-        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, mkd(9))\n    console.print(\"${held.get(\"k\")}\")\n    let replaced: Dict(String, Int) = list.at(xs, 1)\n    console.print(\"${replaced.get(\"k\")}\")\n";
+        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    let _ = dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, mkd(9))\n    console.print(\"${held.get(\"k\")}\")\n    let replaced: Dict(String, Int) = list.at(xs, 1)\n    console.print(\"${replaced.get(\"k\")}\")\n";
         assert_rc_corpus_stable(src, &["Some(2)", "Some(9)"]);
     }
 
@@ -114,7 +114,7 @@ use super::*;
         if !is_nightly() {
             return;
         }
-        let src = "import chan\nfrom chan import Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        let _ = chan.done(v)\n    console.print(\"100\")";
+        let src = "import chan\nfrom chan import Sender\nasync fn producer(tx: Sender(Int), n: Int) -> ():\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    chan.spawn(producer(tx, 100)).await\n    for await v in rx:\n        let _ = chan.done(v)\n    console.print(\"100\")";
         assert_rc_corpus_stable(src, &["100"]);
     }
 

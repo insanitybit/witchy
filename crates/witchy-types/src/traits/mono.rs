@@ -14,6 +14,12 @@ use witchy_syntax::ast::*;
 use super::*;
 
 impl Mono<'_> {
+    fn report_bound_failure(&mut self, message: String) {
+        if !self.bound_diagnostics.contains(&message) {
+            self.bound_diagnostics.push(message);
+        }
+    }
+
     fn type_carries_once_identity(&self, ty: &Type) -> bool {
         fn go(mono: &Mono<'_>, ty: &Type, seen: &mut HashSet<String>) -> bool {
             match ty {
@@ -289,6 +295,39 @@ impl Mono<'_> {
         // the `where`-bound variables for a bounded generic, otherwise the free
         // type variables of the signature.
         let subst: HashMap<String, Type> = type_parameters.into_iter().zip(type_args).collect();
+        // `f.bounds` are about to be erased from the concrete specialization.
+        // Discharge each one while its type variable still has the exact
+        // source-level substitution. Looking only at the lowered impl table
+        // would accept `impl Eq for Box(a) where a: Eq` for `Box(Float)`.
+        for (variable, trait_name, trait_args) in &f.bounds {
+            let Some(concrete) = subst.get(variable) else {
+                self.diagnostics.push(format!(
+                    "cannot infer `{variable}` required by `{name}: {trait_name}`"
+                ));
+                continue;
+            };
+            let obligation = Type::Dyn(
+                trait_name.clone(),
+                trait_args
+                    .iter()
+                    .map(|argument| subst_trait_params(argument, &subst))
+                    .collect(),
+            );
+            match self.witness_catalog.implements(concrete, &obligation) {
+                Ok(true) => {}
+                Ok(false) => self.report_bound_failure(format!(
+                    "`{}` requires `{}: {}` at this call to `{name}`",
+                    bare(name),
+                    display_type(concrete),
+                    bare(trait_name),
+                )),
+                Err(message) => self.report_bound_failure(format!(
+                    "cannot prove `{}: {}` at this call to `{name}`: {message}",
+                    display_type(concrete),
+                    bare(trait_name),
+                )),
+            }
+        }
         for p in &mut f.params {
             if let Some(t) = &p.ty {
                 p.ty = Some(subst_trait_params(t, &subst));
@@ -457,7 +496,12 @@ impl Mono<'_> {
             self.current_line = b.lines.get(index).copied().unwrap_or(0);
             match stmt {
                 Stmt::Let { name, ty, value, mutable } => {
-                    self.walk_expr(value, scope);
+                    // A bounded generic whose only type variable appears in its
+                    // result cannot be inferred from arguments.  An annotation on
+                    // THIS initializer is the explicit evidence the diagnostic
+                    // requests.  Keep it root-only: a surrounding annotation must
+                    // not become speculative inference for nested calls.
+                    self.walk_expr_with_initializer_result(value, scope, ty.as_ref());
                     // Prefer the type ascription (`var items: List(a) = []`): it
                     // carries the element type an empty/ambiguous value loses. The
                     // value's inferred type is the fallback.
@@ -492,6 +536,19 @@ impl Mono<'_> {
     }
 
     fn walk_expr(&mut self, e: &mut Expr, scope: &mut Scope<Type>) {
+        self.walk_expr_with_initializer_result(e, scope, None);
+    }
+
+    /// Walk an expression whose enclosing `let` has an optional ascribed type.
+    /// The ascription is considered only for a bounded generic at this exact
+    /// expression root; recursive calls use `walk_expr` and therefore retain
+    /// table-derived facts alone.
+    fn walk_expr_with_initializer_result(
+        &mut self,
+        e: &mut Expr,
+        scope: &mut Scope<Type>,
+        initializer_result: Option<&Type>,
+    ) {
         let result_ty = table_ast_type(self.table, e);
         match e {
             Expr::Call { name, args } => {
@@ -550,7 +607,10 @@ impl Mono<'_> {
                 if !scope.is_local(name)
                     && let Some(template) = self.templates.get(name.as_str()).cloned()
                 {
-                    match self.resolve_type_args(&template, args, scope, result_ty.as_ref()) {
+                    let specialization_result = result_ty.as_ref().or_else(|| {
+                        (!template.bounds.is_empty()).then_some(initializer_result).flatten()
+                    });
+                    match self.resolve_type_args(&template, args, scope, specialization_result) {
                         Some(type_args) => {
                             let subst: HashMap<String, Type> = type_var_list(&template)
                                 .into_iter()
@@ -576,7 +636,7 @@ impl Mono<'_> {
                             if std::env::var_os("WITCHY_DEBUG_MONO").is_some() {
                                 eprintln!(
                                     "mono: `{name}` unresolved; result_ty={:?}; vars={:?}",
-                                    result_ty,
+                                    specialization_result,
                                     type_var_list(&template)
                                 );
                             }

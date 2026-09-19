@@ -109,24 +109,16 @@ pub(crate) fn type_info_expr(t: &TypeDef) -> Expr {
 fn type_expr(t: &Type) -> Expr {
     let s = |v: &str| Expr::Str(v.to_string());
     match t {
-        // RFC-0112 nominal reflection must retain the compile-time owner relation
-        // even though the runtime value still has the viewed inner shape. Keeping
-        // it structured lets generators distinguish `View(T, 'left)` from
-        // `View(T, 'right)` without treating either lifetime as a runtime type.
-        Type::Qualified(TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime), inner) => {
-            Expr::Ctor {
-                name: "meta.TReference".into(),
-                args: vec![Expr::Str("shared".into()), type_expr(inner), s(lifetime)],
-            }
-        }
-        Type::Qualified(TypeQual::BorrowMut(lifetime), inner) => Expr::Ctor {
-            name: "meta.TReference".into(),
-            args: vec![
-                Expr::Str("mut".into()),
-                type_expr(inner),
-                Expr::Str(lifetime.clone()),
-            ],
+        Type::Qualified(TypeQual::View, inner) => Expr::Ctor {
+            name: "meta.TView".into(),
+            args: vec![type_expr(inner)],
         },
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) => {
+            panic!("cannot reflect a legacy lifetime-bearing borrow as a rooted view")
+        }
+        Type::Qualified(TypeQual::BorrowMut(_), _) => {
+            panic!("cannot reflect a migration-only mutable reference as a rooted view")
+        }
         Type::Qualified(q, inner) => Expr::Ctor {
             name: "meta.TQualified".into(),
             args: vec![s(q.as_str()), type_expr(inner)],
@@ -221,71 +213,42 @@ mod tests {
     }
 
     #[test]
-    fn normalized_typeinfo_preserves_nominal_lifetime_kinds_and_order() {
+    #[should_panic(expected = "lifetime parameters are retired")]
+    fn ordinary_parser_rejects_lifetime_bearing_reflection_input() {
         let definition = parsed_type(
-            "mode opt\n\ntype Pair(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n    metadata: b\n",
+            "mode opt\n\ntype Pair(a, 'left, 'right):\n    first: &'left a\n    second: &'right a\n    metadata: b\n",
             "Pair",
         );
-        let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
-            .expect("normalize lifetime-bearing reflected type");
-        assert_eq!(normalized.params, ["a", "'left", "'right", "b"]);
-
-        let info = type_info_expr(&normalized);
-        let Expr::Ctor { args, .. } = info else {
-            panic!("expected TypeInfo constructor")
-        };
-        let Expr::List(parameters) = &args[2] else {
-            panic!("expected parameter list")
-        };
-        assert_eq!(
-            parameters,
-            &vec![
-                Expr::Str("a".into()),
-                Expr::Str("'left".into()),
-                Expr::Str("'right".into()),
-                Expr::Str("b".into()),
-            ]
-        );
-        let Expr::List(fields) = &args[3] else {
-            panic!("expected reflected fields")
-        };
-        let Expr::Ctor {
-            args: first_field, ..
-        } = &fields[0]
-        else {
-            panic!("expected first reflected field")
-        };
-        let Expr::Ctor {
-            name, args: borrow, ..
-        } = &first_field[1]
-        else {
-            panic!("expected structured borrowed field relation")
-        };
-        assert_eq!(name, "meta.TReference");
-        assert_eq!(borrow[0], Expr::Str("shared".into()));
-        assert_eq!(borrow[2], Expr::Str("left".into()));
+        let _ = normalized_type_for_typeinfo(&definition, &HashMap::default());
     }
 
     #[test]
-    fn reflected_mutable_reference_uses_structured_reference_metadata() {
+    fn rfc0167_reflection_preserves_lifetime_free_rooted_view_access() {
+        let definition = parsed_type(
+            "type Access(a):\n    shared: &a\n    items: &[a]\n",
+            "Access",
+        );
+        let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
+            .expect("normalize canonical rooted-view fields");
+        assert_eq!(normalized.params, ["a"]);
+        let Expr::Ctor { args, .. } = type_info_expr(&normalized) else { panic!("TypeInfo") };
+        let Expr::List(fields) = &args[3] else { panic!("fields") };
+        for field in fields {
+            let Expr::Ctor { args: field_args, .. } = field else { panic!("field") };
+            let Expr::Ctor { name, args: view, .. } = &field_args[1] else { panic!("view") };
+            assert_eq!(name, "meta.TView");
+            assert_eq!(view.len(), 1);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot reflect a migration-only mutable reference")]
+    fn reflected_mutable_reference_cannot_be_emitted_as_a_rooted_view() {
         let reference = Type::Qualified(
             TypeQual::BorrowMut("owner".into()),
             Box::new(Type::Named("String".into(), Vec::new())),
         );
-        assert_eq!(
-            type_expr(&reference),
-            Expr::Ctor {
-                name: "meta.TReference".into(),
-                args: vec![
-                    Expr::Str("mut".into()),
-                    Expr::Ctor {
-                        name: "meta.TNamed".into(),
-                        args: vec![Expr::Str("String".into()), Expr::List(Vec::new())],
-                    },
-                    Expr::Str("owner".into()),
-                ],
-            }
-        );
+        let _ = type_expr(&reference);
     }
 
     #[test]
@@ -329,5 +292,56 @@ mod tests {
         let normalized = normalized_type_for_typeinfo(definition, &aliases)
             .expect("normalize aliased reflected type");
         assert_eq!(normalized.params, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rfc0167_reflection_uses_a_lifetime_free_rooted_view_descriptor() {
+        let view = Type::Qualified(
+            TypeQual::View,
+            Box::new(Type::Slice(Box::new(Type::Named("Int".into(), Vec::new())))),
+        );
+        assert_eq!(type_expr(&view), Expr::Ctor {
+            name: "meta.TView".into(),
+            args: vec![Expr::Ctor {
+                name: "meta.TNamed".into(),
+                args: vec![Expr::Str("[Int]".into()), Expr::List(vec![Expr::Ctor {
+                    name: "meta.TNamed".into(),
+                    args: vec![Expr::Str("Int".into()), Expr::List(Vec::new())],
+                }])],
+            }],
+        });
+        assert_eq!(crate::format::type_str(&view), "&[Int]");
+    }
+
+    #[test]
+    fn rfc0167_reflection_keeps_nested_aggregate_views_structural() {
+        let nested = Type::Qualified(
+            TypeQual::View,
+            Box::new(Type::Tuple(vec![
+                Type::Named("Header".into(), Vec::new()),
+                Type::Qualified(
+                    TypeQual::View,
+                    Box::new(Type::Slice(Box::new(Type::Named("Int".into(), Vec::new())))),
+                ),
+            ])),
+        );
+        let Expr::Ctor { name, args } = type_expr(&nested) else { panic!("outer view") };
+        assert_eq!(name, "meta.TView");
+        let Expr::Ctor { name, args } = &args[0] else { panic!("tuple") };
+        assert_eq!(name, "meta.TTuple");
+        let Expr::List(items) = &args[0] else { panic!("tuple items") };
+        let Expr::Ctor { name, args } = &items[1] else { panic!("nested view") };
+        assert_eq!(name, "meta.TView");
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot reflect a legacy lifetime-bearing borrow")]
+    fn legacy_borrow_ast_cannot_be_rewritten_into_rooted_view_metadata() {
+        let legacy = Type::Qualified(
+            TypeQual::Borrow("owner".into()),
+            Box::new(Type::Named("String".into(), Vec::new())),
+        );
+        let _ = type_expr(&legacy);
     }
 }

@@ -60,7 +60,7 @@ yourself. After committing the exact tip you intend to submit, run
 `./scripts/agent-check.sh edit`; it selects focused checks from the committed
 diff and records the commit-keyed receipt consumed by the merge queue. The
 coordinator owns the serialized full gate. CI (`.github/workflows/ci.yml`) runs
-build/clippy/nextest, heap-check fuzz, parity sweep, e2e, docs, and fmt. For
+build/clippy/nextest, canonical-conformance sweep, heap-check fuzz, e2e, docs, and fmt. For
 anything user-visible, add a runnable `book/` example alongside the differential
 test.
 

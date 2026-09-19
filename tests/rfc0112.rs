@@ -16,27 +16,27 @@ const CALLABLE_OWNER_MATRIX: &str = r#"
 mode opt
 
 type Holder('a):
-    view: View(String, 'a)
+    view: &'a String
 
 type Catalog:
     marker: Int
 
 trait SuppliesCallable:
-    fn callable() -> fn(let View(String, 'supplied), let View(Holder('supplied), 'supplied)) -> View(String, 'supplied)
+    fn callable() -> fn(let &'supplied String, let &'supplied Holder('supplied)) -> &'supplied String
 
 impl SuppliesCallable for Catalog:
-    fn callable() -> fn(let View(String, 'supplied), let View(Holder('supplied), 'supplied)) -> View(String, 'supplied):
+    fn callable() -> fn(let &'supplied String, let &'supplied Holder('supplied)) -> &'supplied String:
         direct
 
-fn direct(let owner: let('a) String, let holder: let('a) Holder('a)) -> View(String, 'a):
+fn direct(let owner: &'a String, let holder: &'a Holder('a)) -> &'a String:
     owner
 
 fn matrix() -> Int:
-    let direct_value: fn(let View(String, 'direct), let View(Holder('direct), 'direct)) -> View(String, 'direct) = direct
-    let alpha_value: fn(let View(String, 'renamed), let View(Holder('renamed), 'renamed)) -> View(String, 'renamed) = direct
-    let closure_value: fn(let View(String, 'closure), let View(Holder('closure), 'closure)) -> View(String, 'closure) = fn(let owner: let('inner) String, let holder: let('inner) Holder('inner)) -> View(String, 'inner):
+    let direct_value: fn(let &'direct String, let &'direct Holder('direct)) -> &'direct String = direct
+    let alpha_value: fn(let &'renamed String, let &'renamed Holder('renamed)) -> &'renamed String = direct
+    let closure_value: fn(let &'closure String, let &'closure Holder('closure)) -> &'closure String = fn(let owner: &'inner String, let holder: &'inner Holder('inner)) -> &'inner String:
         owner
-    let static_value: fn(let View(String, 'static), let View(Holder('static), 'static)) -> View(String, 'static) = Catalog.callable()
+    let static_value: fn(let &'static String, let &'static Holder('static)) -> &'static String = Catalog.callable()
 
     let direct_observed = direct_value
     let alpha_observed = alpha_value
@@ -49,13 +49,13 @@ const RELATION_CHANGING_ASCRIPTION: &str = r#"
 mode opt
 
 type Holder('a):
-    view: View(String, 'a)
+    view: &'a String
 
-fn direct(let owner: let('a) String, let holder: let('a) Holder('a)) -> View(String, 'a):
+fn direct(let owner: &'a String, let holder: &'a Holder('a)) -> &'a String:
     owner
 
 fn matrix() -> Int:
-    let wrong: fn(let View(String, 'left), let View(Holder('right), 'right)) -> View(String, 'left) = direct
+    let wrong: fn(let &'left String, let &'right Holder('right)) -> &'left String = direct
     0
 "#;
 
@@ -323,24 +323,24 @@ fn with_runtime_check_env<R>(env: RuntimeCheckEnv, action: impl FnOnce() -> R) -
 
 const PARSER_ITERATOR_WORKLOAD: &str = r#"mode opt
 type Parser('a):
-    input: View(String, 'a)
+    input: &'a String
     offset: Int
 
 type TokenIter('a):
-    input: View(String, 'a)
+    input: &'a String
     index: Int
 
 type Token('a):
-    text: View(String, 'a)
+    text: &'a String
     width: Int
 
-fn parser(input: let('a) String) -> Parser('a):
+fn parser(input: &'a String) -> Parser('a):
     Parser(input, 2)
 
-fn tokens(input: let('a) String) -> TokenIter('a):
+fn tokens(input: &'a String) -> TokenIter('a):
     TokenIter(input, 3)
 
-fn scan(input: let('a) String) -> Int:
+fn scan(input: &'a String) -> Int:
     let p = parser(input)
     let it = tokens(p.input)
     let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]
@@ -355,23 +355,23 @@ fn main(console: Console):
 
 const ROOT_LIFECYCLE_WORKLOAD: &str = r#"mode opt
 type Cursor('a):
-    view: View(String, 'a)
+    view: &'a String
     offset: Int
 
-fn make(input: let('a) String) -> Cursor('a):
+fn make(input: &'a String) -> Cursor('a):
     Cursor(input, 7)
 
-fn early(input: let('a) String) -> Int:
+fn early(input: &'a String) -> Int:
     var cursor = make(input)
     return cursor.offset
 
-fn branch(input: let('a) String, take: Bool) -> Int:
+fn branch(input: &'a String, take: Bool) -> Int:
     var cursor = make(input)
     if take:
         return cursor.offset
     cursor.offset
 
-fn looped(input: let('a) String) -> Int:
+fn looped(input: &'a String) -> Int:
     var cursor = make(input)
     var i = 0
     while (i < 3):
@@ -381,7 +381,7 @@ fn looped(input: let('a) String) -> Int:
 fn fail() -> Result(Int, String):
     Err("stop")
 
-fn finish(input: let('a) String) -> Result(Int, String):
+fn finish(input: &'a String) -> Result(Int, String):
     var cursor = make(input)
     let value = fail()?
     Ok(cursor.offset + value)

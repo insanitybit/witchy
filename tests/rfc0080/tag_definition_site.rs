@@ -110,9 +110,7 @@ pub comptime fn alias_hidden(parts: List(String), holes: List(String)) -> meta.E
         )(HiddenValue(41))
 
 pub comptime fn preserve_hole(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    let value = meta.expr_raw(list.at(holes, 0))
-    quote expr:
-        ${value}
+    meta.expr_tag_hole(holes.at(0))
 
 pub comptime fn imported_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
@@ -429,7 +427,7 @@ pub fn token() -> Token:
     Token(value: 1)
 
 pub comptime fn mutate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    let token = meta.expr_raw(list.at(holes, 0))
+    let token = meta.expr_tag_hole(holes.at(0))
     quote expr:
         (fn(token: Token) -> Token:
             var copy = token

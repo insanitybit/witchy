@@ -362,6 +362,35 @@ pub enum ResultContract {
     /// A complete exclusive RC token, not a claim of fresh allocation.
     Unique { layout: LayoutId },
     AliasesParameter { parameter: u32, layout: LayoutId },
+    /// A checked exclusive result carrier. Unlike `AliasesParameter`, this
+    /// requires a declaration-derived `WriteBack` input and retains its
+    /// independent replacement lane after the ordinary alias result. A
+    /// projected carrier records its sole fixed record-field index here; it
+    /// is never widened to a root alias.
+    AliasesWriteBackParameter {
+        parameter: u32,
+        layout: LayoutId,
+        projection: Option<u32>,
+    },
+    /// A checked direct-exclusive result selected from exactly one of several
+    /// direct write-back inputs.  The ordered candidate list is source/access
+    /// authority, not an ABI-shape heuristic; each candidate retains its own
+    /// hidden replacement lane.
+    AliasesOneOfWriteBackParameters {
+        parameters: Vec<u32>,
+        layout: LayoutId,
+    },
+    /// The authenticated Bool discriminator paired with the leading
+    /// `AliasesOneOfWriteBackParameters` result.  It is an ABI-only carrier:
+    /// `carrier_result` and `parameters` must exactly match that leading
+    /// result, while `selector_parameter` is the checked source Bool input
+    /// whose true arm selects `parameters[0]` and false arm `parameters[1]`.
+    /// No caller may manufacture a selector from a same-shaped Bool value.
+    DisjunctiveWriteBackSelector {
+        carrier_result: u32,
+        parameters: Vec<u32>,
+        selector_parameter: u32,
+    },
     ReallocatesParameter { parameter: u32, layout: LayoutId },
     StaticData { layout: LayoutId },
 }
@@ -392,11 +421,27 @@ pub struct FunctionSignature {
     pub contract: CallableContract,
 }
 
+/// Package-authenticated identity of a separately compiled scalar Wasm
+/// library.  These are commitments from the signed library manifest and its
+/// bounded export sidecar, never custom-section metadata or an import-site
+/// declaration.  The runtime compares this exact triple before linking an
+/// instance into an admitted caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExternalWasmIdentity {
+    pub library_binding_digest: [u8; 32],
+    pub wasm_sha256: [u8; 32],
+    pub sidecar_sha256: [u8; 32],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportContractIdentity {
     /// The canonical catalog authenticates the ABI contract only. Host
     /// implementation authentication remains a launch-context dependency.
     AuthenticatedAbi([u8; 32]),
+    /// A separately compiled scalar-library function. This is intentionally
+    /// disjoint from the host ABI catalog: it carries no host authority,
+    /// buffer access, reentrancy, or capability role.
+    AuthenticatedExternal(ExternalWasmIdentity),
     Unknown,
 }
 
@@ -1041,6 +1086,7 @@ pub enum CanonicalRuleId {
     WidenSize,
     FloatUnary,
     Guard,
+    ReauthenticateRawHeaderExtent,
     Alloc,
     StaticData,
     Load,
@@ -1066,6 +1112,7 @@ pub enum CanonicalRuleId {
     FunctionValue,
     Call,
     VarCall,
+    ExternalCall,
     HostCall,
     Branch,
     BranchIf,
@@ -1112,6 +1159,9 @@ pub enum Operation {
     /// to a `Float`.
     FloatUnary { destination: ValueId, operator: FloatUnaryOperator, value: ValueId },
     Guard { condition: ValueId, kind: GuardKind },
+    /// Proof-only: establish a current counted extent for a raw byte buffer
+    /// after the checker verifies the explicit fresh-header proof sequence.
+    ReauthenticateRawHeaderExtent { object: ValueId, header: ValueId },
     Alloc {
         destination: ValueId,
         layout: LayoutId,
@@ -1180,6 +1230,14 @@ pub enum Operation {
         signature: FunctionSignatureId,
         arguments: Vec<CallArgument>,
     },
+    /// Direct invocation of an authenticated separately compiled scalar Wasm
+    /// export. This is not `HostCall`: no host capability or caller-memory
+    /// buffer can cross this boundary.
+    ExternalCall {
+        destinations: Vec<ValueId>,
+        import: ImportId,
+        arguments: Vec<CallArgument>,
+    },
     HostCall {
         destinations: Vec<ValueId>,
         import: ImportId,
@@ -1233,6 +1291,7 @@ impl Operation {
             Self::WidenSize { .. } => CanonicalRuleId::WidenSize,
             Self::FloatUnary { .. } => CanonicalRuleId::FloatUnary,
             Self::Guard { .. } => CanonicalRuleId::Guard,
+            Self::ReauthenticateRawHeaderExtent { .. } => CanonicalRuleId::ReauthenticateRawHeaderExtent,
             Self::Alloc { .. } => CanonicalRuleId::Alloc,
             Self::StaticData { .. } => CanonicalRuleId::StaticData,
             Self::Load { .. } => CanonicalRuleId::Load,
@@ -1253,6 +1312,7 @@ impl Operation {
             Self::FunctionValue { .. } => CanonicalRuleId::FunctionValue,
             Self::Call { .. } => CanonicalRuleId::Call,
             Self::VarCall { .. } => CanonicalRuleId::VarCall,
+            Self::ExternalCall { .. } => CanonicalRuleId::ExternalCall,
             Self::HostCall { .. } => CanonicalRuleId::HostCall,
         }
     }

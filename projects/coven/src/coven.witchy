@@ -17,6 +17,7 @@
 
 import server
 import crypto
+import bytes
 import encoding
 import secretstore
 import fs
@@ -245,6 +246,10 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .get("/coven/artifact", c.route_artifact())
         .get("/coven/artifact/bytes", c.route_artifact_bytes())
         .post("/coven/artifact/bytes", c.route_upload_artifact_bytes())
+        .get("/coven/library/wasm", c.route_precompiled_wasm())
+        .post("/coven/library/wasm", c.route_upload_precompiled_wasm())
+        .get("/coven/library/opt", c.route_precompiled_sidecar())
+        .post("/coven/library/opt", c.route_upload_precompiled_sidecar())
         .get("/coven/source", c.route_source())
         .get("/coven/doc", c.route_doc())
         .get("/coven/compartments", c.route_compartments())
@@ -342,7 +347,10 @@ impl Coven:
 
     fn route_catalog(self) -> fn(Request) -> Response:
         fn(req: Request):
-            var runes = []
+            // An empty list's element type is otherwise unresolved. This record
+            // crosses a reflected response boundary, so it must never carry a
+            // bare generic `List` into generated reflection code.
+            var runes: List(.{name: String, released_at: Int, runtime_footprint: List(String), state: String, uploaded_by: String, version: String}) = []
             for name in coven_store.all_names(self.store):
                 if let Some(r) = coven_store.latest_record(self.store, name):
                     runes.push(.{name: name, version: r.version, state: r.state, runtime_footprint: r.runtime_footprint, uploaded_by: r.uploaded_by, released_at: r.released_at})
@@ -467,6 +475,93 @@ impl Coven:
                             None -> Err(CovenError(404, "the manifest for ${name}@${version} has no target `${target}`"))
                             Some(entry) -> Ok(entry.sha256)
 
+    // RFC-0167 library artifacts are selected by a logical module plus the one
+    // admitted package kind. Neither a URL path nor a client-supplied digest can
+    // choose bytes. The signed artifact manifest remains the sole selector.
+    fn precompiled_reference(self, req: Request) -> Result((String, String, String), CovenError):
+        let name = coven_validate.unwire(server.query_or(req, "name", ""))
+        let version = server.query_or(req, "version", "")
+        let module = coven_validate.unwire(server.query_or(req, "module", ""))
+        let kind = server.query_or(req, "kind", "")
+        self.validate_ref(name, version)?
+        require(coven_artifact.valid_library_module(module), 400, "invalid library module `${module}`")?
+        require(kind == "precompiled", 400, "unsupported library kind `${kind}`")?
+        let _entry = self.precompiled_entry(name, version, module)?
+        Ok((name, version, module))
+
+    fn precompiled_entry(self, name: String, version: String, module: String) -> Result(coven_artifact.LibraryEntry, CovenError):
+        match coven_store.read_artifact_manifest(self.store, name, version):
+            None -> Err(CovenError(404, "${name}@${version} has no artifact manifest"))
+            Some(text) ->
+                match coven_artifact.parse(text):
+                    Err(e) -> Err(CovenError(500, "stored artifact manifest is corrupt: ${coven_artifact.artifact_error_message(e)}"))
+                    Ok(manifest) ->
+                        match coven_artifact.select_precompiled_library(manifest, module):
+                            None -> Err(CovenError(404, "${name}@${version} has no admitted precompiled library `${module}`"))
+                            Some(entry) -> Ok(entry)
+
+    fn route_precompiled_wasm(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError): self.read_precompiled_blob(req, true))
+
+    fn route_precompiled_sidecar(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError): self.read_precompiled_blob(req, false))
+
+    fn read_precompiled_blob(self, req: Request, wasm: Bool) -> Result(Response, CovenError):
+        let reference = self.precompiled_reference(req)?
+        let (name, version, module) = reference
+        let idx = server.query_or(req, "chunk", "0").parse_int() ?? 0
+        require(idx >= 0, 400, "library chunk index must not be negative")?
+        let present = if wasm: coven_store.precompiled_wasm_exists(self.store, name, version, module) else: coven_store.precompiled_sidecar_exists(self.store, name, version, module)
+        require(present, 404, "no uploaded precompiled library bytes for ${name}@${version} `${module}`")?
+        let part = if wasm: coven_store.read_precompiled_wasm_part(self.store, name, version, module, idx) else: coven_store.read_precompiled_sidecar_part(self.store, name, version, module, idx)
+        match part:
+            Some(bytes) -> Ok(server.text(200, encoding.base64_encode_bytes(bytes)))
+            None -> Ok(server.text(200, ""))
+
+    fn route_upload_precompiled_wasm(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError): self.upload_precompiled_blob(req, true))
+
+    fn route_upload_precompiled_sidecar(self) -> fn(Request) -> Response:
+        guard(fn(req: Request) -> Result(Response, CovenError): self.upload_precompiled_blob(req, false))
+
+    fn upload_precompiled_blob(self, req: Request, wasm: Bool) -> Result(Response, CovenError):
+        let reference = self.precompiled_reference(req)?
+        let (name, version, module) = reference
+        let entry = self.precompiled_entry(name, version, module)?
+        let seq = server.query_or(req, "seq", "0").parse_int() ?? -1
+        let chunk = encoding.base64_decode_bytes_string(server.request_body(req)).map_err(fn(e: String): CovenError(400, "library chunk is not valid base64: ${e}"))?
+        let expected_size = if wasm: entry.wasm_size else: entry.opt_callable_export_size
+        let part_size = 6291456
+        let expected_parts = (expected_size + part_size - 1) / part_size
+        require(seq >= 0 && seq < expected_parts, 400, "library chunk index is outside the signed size")?
+        require(bytes.length(chunk) <= part_size, 400, "library chunk exceeds the fixed transport limit")?
+        if seq == 0:
+            if wasm:
+                coven_store.begin_precompiled_wasm_upload(self.store, name, version, module)
+            else:
+                coven_store.begin_precompiled_sidecar_upload(self.store, name, version, module)
+        if wasm:
+            coven_store.stage_precompiled_wasm_part(self.store, name, version, module, seq, chunk)
+        else:
+            coven_store.stage_precompiled_sidecar_part(self.store, name, version, module, seq, chunk)
+        if server.query_or(req, "last", "true") == "true":
+            require(seq + 1 == expected_parts, 400, "library upload ended before the signed byte count")?
+            let staged_size = if wasm: coven_store.precompiled_wasm_staged_size(self.store, name, version, module, expected_parts) else: coven_store.precompiled_sidecar_staged_size(self.store, name, version, module, expected_parts)
+            require(staged_size == expected_size, 400, "library upload is incomplete or does not match the signed byte count")?
+            let staged = if wasm: coven_store.precompiled_wasm_staged_bytes(self.store, name, version, module, expected_parts) else: coven_store.precompiled_sidecar_staged_bytes(self.store, name, version, module, expected_parts)
+            let expected_digest = if wasm: entry.wasm_sha256 else: entry.opt_callable_export_sha256
+            match staged:
+                None -> return Err(CovenError(500, "library upload parts disappeared before finalization"))
+                Some(data) -> require(crypto.sha256_bytes(data) == expected_digest, 400, "library upload does not match the signed digest")?
+
+            if wasm:
+                coven_store.commit_precompiled_wasm_parts(self.store, name, version, module, expected_parts)
+            else:
+                coven_store.commit_precompiled_sidecar_parts(self.store, name, version, module, expected_parts)
+            Ok(server.text(200, "stored precompiled ${module}"))
+        else:
+            Ok(server.text(200, "stored precompiled chunk ${seq}"))
+
     fn route_source(self) -> fn(Request) -> Response:
         guard(fn(req: Request) -> Result(Response, CovenError):
             let name = coven_validate.unwire(server.query_or(req, "name", ""))
@@ -509,15 +604,15 @@ impl Coven:
     // catch a fat-fingered `add`/`install`. Only the FIRST version of a name is
     // gated (a new version of an existing name is unaffected). Reject at
     // edit-distance 1 (a transposition, dropped letter, or adjacent-key swap).
-    fn typosquat_gate(self, name: String) -> Result(Nil, CovenError):
+    fn typosquat_gate(self, name: String) -> Result((), CovenError):
         if list.length(coven_store.versions_of(self.store, name)) > 0:
-            Ok(Nil)
+            Ok(())
         else:
             let (other, dist) = coven_typo.nearest(name, coven_typo.same_namespace(name, coven_store.all_names(self.store)))
             if other != "" && dist <= 1:
                 Err(CovenError(409, "package name `${name}` is edit-distance ${dist} from the existing `${other}` — too similar (possible typosquat); choose a more distinct name"))
             else:
-                Ok(Nil)
+                Ok(())
 
     fn do_publish(self, doc: Json) -> Result(Response, CovenError):
         let req = coven_proto.publish_of(doc).map_err(fn(e: String): CovenError(400, e))?
@@ -562,7 +657,7 @@ impl Coven:
         // under the same claimed coordinate). Absent for a source-only release.
         match artifact:
             Some(m) -> coven_store.store_artifact_manifest(self.store, name, version, m)
-            None -> Nil
+            None -> ()
 
         let rec = coven_record.sign_record(self.key, name, version, Staged, hash, computed, uploaded_by, "", "", provenance, 0, artifact_digest)
         // Finalize the claimed placeholder with the real signed record (atomic replace).

@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn read_before_later_shadow_remains_an_authority_capture() {
         let scanned = scan(
-            "fn factory(console: Console) -> fn() -> Nil:\n    fn():\n        console.print(\"effect\")\n        let console = 0\n",
+            "fn factory(console: Console) -> fn() -> ():\n    fn():\n        console.print(\"effect\")\n        let console = 0\n",
         );
         assert_eq!(scanned.captures(), ["console"]);
     }

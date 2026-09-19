@@ -148,12 +148,16 @@ pub struct CallOwnershipFact {
     own_capacity_param: Option<usize>,
     var_capacity_params: Vec<usize>,
     no_copy_var_params: Vec<usize>,
-    // (RFC-0110 criterion 2) `own unique` (Consuming + Unique/LocalUnique)
+    // (RFC-0110 criterion 2) `own unique` (Consuming + Unique)
     // parameter indices. Kept SEPARATE from `no_copy_var_params` (which codegen
     // consumes for var write-back capacity-slot decisions) so widening the
     // uniqueness-miss detector to consuming params cannot change owned-argument
     // lowering. Only the no-copy miss detector reads this.
     own_unique_params: Vec<usize>,
+    /// Logical source-level result ownership. This remains true for a nominal
+    /// or GC result with no legacy collection-capacity ABI channel.
+    unique_ownership_result: bool,
+    /// Legacy collection-capacity result channel, consumed by codegen only.
     unique_capacity_result: bool,
 }
 
@@ -203,6 +207,12 @@ impl CallOwnershipFact {
 
     pub fn unique_capacity_result(&self) -> bool {
         self.unique_capacity_result
+    }
+
+    /// A checked source-level unique owner, independent of the legacy trailing
+    /// collection-capacity result ABI.
+    pub fn unique_ownership_result(&self) -> bool {
+        self.unique_ownership_result
     }
 
     fn argument_may_alias_out(&self, index: usize) -> bool {
@@ -276,7 +286,7 @@ pub fn call_ownership_fact(
         .filter_map(|(index, param)| {
             (param.kind() == AccessKind::ExclusiveWriteback
                 && param.qualifiers().iter().any(|qualifier| {
-                    matches!(qualifier, AccessQualifier::Unique | AccessQualifier::LocalUnique)
+                    matches!(qualifier, AccessQualifier::Unique)
                 }))
             .then_some(index)
         })
@@ -292,25 +302,33 @@ pub fn call_ownership_fact(
         .filter_map(|(index, param)| {
             (param.kind() == AccessKind::Consuming
                 && param.qualifiers().iter().any(|qualifier| {
-                    matches!(qualifier, AccessQualifier::Unique | AccessQualifier::LocalUnique)
+                    matches!(qualifier, AccessQualifier::Unique)
                 }))
             .then_some(index)
         })
         .collect();
-    // Result uniqueness remains a logical proof for both legacy containers and
-    // layout-dependent values. Codegen refines an exact layout result through
-    // `signature_has_unique_layout_result`; erasing this fact here would break
-    // the next no-copy proof even when no trailing capacity result is emitted.
-    let unique_capacity_result = signature
+    // Generic function-value calls can specialize `unique a` to an exact-layout
+    // nominal or GC reference result. That remains an ownership proof, even
+    // when it has no legacy i32 collection-capacity result channel. A borrowed
+    // owner root is intentionally not transferable ownership proof.
+    let unique_ownership_result = signature
         .result()
         .ownership_output()
         .is_some_and(|state| {
             matches!(
                 state,
                 OwnershipStateClass::LinearMemoryObject
+                    | OwnershipStateClass::GcReference
                     | OwnershipStateClass::LayoutDependent { .. }
             )
         })
+        && signature
+            .result()
+            .qualifiers()
+            .contains(&witchy_types::access::AccessQualifier::Unique);
+    // Preserve the narrow ABI channel. Named-layout lowering uses its exact
+    // result representation rather than this collection compatibility value.
+    let unique_capacity_result = unique_ownership_result
         && type_is_unique_capacity_shape(signature.result().ty());
     CallOwnershipFact {
         consuming_state_param,
@@ -318,13 +336,14 @@ pub fn call_ownership_fact(
         var_capacity_params,
         no_copy_var_params,
         own_unique_params,
+        unique_ownership_result,
         unique_capacity_result,
     }
 }
 
 fn checked_call_ownership_fact(
     module: &Module,
-    access: &witchy_types::access::CheckedAccessFacts<'_>,
+    access: &witchy_types::access::CheckedAccessFacts,
     expression: &Expr,
 ) -> Option<CallOwnershipFact> {
     let signature = access.call_at(module, expression)?;
@@ -342,7 +361,6 @@ fn checked_call_ownership_fact(
                     matches!(
                         qualifier,
                         witchy_types::access::AccessQualifier::Unique
-                            | witchy_types::access::AccessQualifier::LocalUnique
                     )
                 })
         })
@@ -360,7 +378,7 @@ fn checked_call_ownership_fact(
 #[derive(Clone, Copy)]
 struct CheckedCallContext<'facts, 'module> {
     module: &'module Module,
-    access: &'facts witchy_types::access::CheckedAccessFacts<'module>,
+    access: &'facts witchy_types::access::CheckedAccessFacts,
 }
 
 impl CheckedCallContext<'_, '_> {
@@ -1129,7 +1147,7 @@ pub fn analyze_with_access(
     body: &Block,
     summaries: &Summaries,
     module: &Module,
-    access: &witchy_types::access::CheckedAccessFacts<'_>,
+    access: &witchy_types::access::CheckedAccessFacts,
 ) -> Facts {
     analyze_with_calls(body, summaries, Some(CheckedCallContext { module, access }))
 }
@@ -3228,7 +3246,7 @@ mod last_use_tests {
     fn returned_view_makes_explicit_borrow_argument_leak() {
         let module = parser::parse_module(
             "mode opt\n\n\
-             fn view(let xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+             fn view(xs: &List(Int)) -> &List(Int):\n    xs\n\n\
              fn read(let xs: List(Int)) -> Int:\n    list.length(xs)\n",
         )
         .expect("parse");
@@ -3268,8 +3286,8 @@ mod last_use_tests {
     fn returned_view_relation_invalidates_the_uniqueness_token() {
         let module = parser::parse_module(
             "mode opt\n\n\
-             fn view(let xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
-             fn use() -> Nil:\n    var xs = [1]\n    let w = view(xs)\n    list.push(xs, 2)\n    let _ = w\n    return\n",
+             fn view(xs: &List(Int)) -> &List(Int):\n    xs\n\n\
+             fn use() -> ():\n    var xs = [1]\n    let w = view(xs)\n    list.push(xs, 2)\n    let _ = w\n    return\n",
         )
         .expect("parse");
         let summaries = Summaries::of_module(&module);
@@ -3303,7 +3321,7 @@ mod last_use_tests {
 // `witchy check` and the LSP.
 // ---------------------------------------------------------------------------
 
-/// A `unique` / `local unique` `var` argument whose ownership token is not
+/// A `unique` `var` argument whose ownership token is not
 /// statically available at a promised no-copy call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoCopyMiss {
@@ -3810,7 +3828,7 @@ fn no_copy_qualified_type(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Qualified(
-            witchy_syntax::ast::TypeQual::Unique | witchy_syntax::ast::TypeQual::LocalUnique,
+            witchy_syntax::ast::TypeQual::Unique,
             _
         )
     )
@@ -3827,12 +3845,12 @@ fn no_copy_contract(
     signature: &witchy_types::access::AccessSignature,
 ) -> (Vec<usize>, bool) {
     let fact = call_ownership_fact(signature);
-    (fact.unique_params_to_check(), fact.unique_capacity_result())
+    (fact.unique_params_to_check(), fact.unique_ownership_result())
 }
 
 fn no_copy_requirements(
     module: &Module,
-    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+    access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> HashMap<String, Vec<usize>> {
     use witchy_types::access::AccessQualifier;
 
@@ -3853,7 +3871,7 @@ fn no_copy_requirements(
                         param.qualifiers().iter().any(|qualifier| {
                             matches!(
                                 qualifier,
-                                AccessQualifier::Unique | AccessQualifier::LocalUnique
+                                AccessQualifier::Unique
                             )
                         })
                     })
@@ -3871,7 +3889,7 @@ fn no_copy_requirements(
 
 fn unique_capacity_results(
     module: &Module,
-    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+    access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> HashSet<String> {
     module
         .items
@@ -3988,8 +4006,8 @@ fn merge_no_copy_env(
 #[derive(Clone, Copy)]
 struct NoCopyInputs<'facts, 'module> {
     module: &'module Module,
-    access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
-    places: &'facts witchy_types::access::CheckedPlaceFacts<'module>,
+    access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
+    places: &'facts witchy_types::access::CheckedPlaceFacts,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
     summaries: &'facts Summaries,
@@ -3999,8 +4017,8 @@ struct NoCopyInputs<'facts, 'module> {
 struct NoCopyWalker<'facts, 'module> {
     function: String,
     module: &'module Module,
-    access: Option<&'facts witchy_types::access::CheckedAccessFacts<'module>>,
-    places: &'facts witchy_types::access::CheckedPlaceFacts<'module>,
+    access: Option<&'facts witchy_types::access::CheckedAccessFacts>,
+    places: &'facts witchy_types::access::CheckedPlaceFacts,
     required: &'facts HashMap<String, Vec<usize>>,
     unique_results: &'facts HashSet<String>,
     summaries: &'facts Summaries,
@@ -4120,7 +4138,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     )
                 } else {
                     format!(
-                        "parameter `{}` is not declared `unique` or `local unique`",
+                        "parameter `{}` is not declared `unique`",
                         param.name
                     )
                 };
@@ -4268,7 +4286,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 let (required, unique_result) = checked
                     .as_ref()
                     .map(|fact| {
-                        (fact.unique_params_to_check(), fact.unique_capacity_result())
+                        (fact.unique_params_to_check(), fact.unique_ownership_result())
                     })
                     .or(legacy)
                     .unwrap_or_default();
@@ -4334,7 +4352,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                 let (required, unique_result) = checked
                     .as_ref()
                     .map(|fact| {
-                        (fact.unique_params_to_check(), fact.unique_capacity_result())
+                        (fact.unique_params_to_check(), fact.unique_ownership_result())
                     })
                     .or(legacy)
                     .unwrap_or_default();
@@ -4378,7 +4396,7 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
                     "existential dispatch",
                     expr as *const Expr as usize,
                 );
-                if fact.is_some_and(|fact| fact.unique_capacity_result()) {
+                if fact.is_some_and(|fact| fact.unique_ownership_result()) {
                     NoCopyProof::Available
                 } else {
                     NoCopyProof::Unavailable(
@@ -4751,7 +4769,7 @@ pub fn module_boundary_repairs(module: &Module) -> Vec<BoundaryRepair> {
 /// increment per repaired boundary call.
 pub fn module_boundary_repair_ptrs(
     module: &Module,
-    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+    access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> foldhash::HashSet<usize> {
     use foldhash::HashSetExt as _;
     let mut ptrs = foldhash::HashSet::new();
@@ -4768,15 +4786,30 @@ pub fn module_boundary_repair_ptrs(
 /// proof in either form is an opt contract failure, never a normal-mode repair
 /// entry.
 pub fn function_is_opt(module: &Module, function: &str) -> bool {
-    function
-        .rsplit_once('.')
-        .map(|(owner, _)| {
-            module
-                .modes
-                .iter()
-                .any(|mode| mode == &format!("@opt:{owner}"))
-        })
-        .unwrap_or_else(|| module.modes.iter().any(|mode| mode == "opt"))
+    if !function.contains('.') {
+        return module.modes.iter().any(|mode| mode == "opt");
+    }
+    module.modes.iter().any(|mode| {
+        mode.strip_prefix("@opt:")
+            .and_then(|owner| function.strip_prefix(owner))
+            .is_some_and(|suffix| suffix.starts_with('.'))
+    })
+}
+
+#[cfg(test)]
+mod performance_mode_tests {
+    use super::*;
+    use witchy_syntax::parser;
+
+    #[test]
+    fn generated_trait_names_retain_their_linked_opt_owner() {
+        let mut module = parser::parse_module("").expect("empty module");
+        module.modes = vec!["@opt:worker".into(), "@opt:pkg.nested".into()];
+
+        assert!(function_is_opt(&module, "worker.Advance__worker.Packet__advance"));
+        assert!(function_is_opt(&module, "pkg.nested.Trait__pkg.nested.Type__method"));
+        assert!(!function_is_opt(&module, "normal.Advance__worker.Packet__advance"));
+    }
 }
 
 /// Derive the one conventional-call entry selection consumed by lowering.  The
@@ -4785,7 +4818,7 @@ pub fn function_is_opt(module: &Module, function: &str) -> bool {
 /// from spelling or a separate ownership heuristic.
 pub fn boundary_entry_selection(
     module: &Module,
-    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+    access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> BoundaryEntrySelection {
     let repair_sites = module_boundary_repair_ptrs(module, access);
     let Some(access) = access else {
@@ -4814,7 +4847,7 @@ pub fn boundary_entry_selection(
 
 fn module_no_copy_misses_with_access(
     module: &Module,
-    access: Option<&witchy_types::access::CheckedAccessFacts<'_>>,
+    access: Option<&witchy_types::access::CheckedAccessFacts>,
 ) -> Vec<NoCopyMiss> {
     let places = witchy_types::access::checked_place_facts(module);
     let required = no_copy_requirements(module, access);
@@ -4867,8 +4900,24 @@ mod fip_tests {
     use super::*;
     use witchy_syntax::parser;
 
+    fn runtime_module(source: &str) -> Module {
+        let parsed = parser::parse_module(source).expect("parse");
+        let checked = witchy_syntax::source_check::check(parsed).expect("source check");
+        let generators = witchy_syntax::generators::lower(checked).expect("generator lowering");
+        let asynchronous = witchy_syntax::async_lower::lower(generators).expect("async lowering");
+        let records = witchy_syntax::records::lower(asynchronous)
+            .expect("record lowering")
+            .into_module();
+        let mut lowered = witchy_types::traits::lower(records);
+        parser::lower_sugar_module(&mut lowered);
+        lowered
+    }
+
     fn misses(source: &str) -> Vec<FipMiss> {
-        let module = parser::parse_module(source).expect("parse");
+        // Keep these structural checks on the exact runtime-shaped module: in
+        // particular, named record construction is normalized before direct
+        // type checking and before FIP inspects its owner root.
+        let module = runtime_module(source);
         witchy_types::typeck::check(&module).expect("type check");
         module_fip_misses(&module)
     }
@@ -4879,9 +4928,6 @@ mod fip_tests {
     fn canonical_owner_threaded_tail_kernel_satisfies_contract() {
         let source = format!(
             "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
-             \x20   if n == 0:\n\
-             \x20       return state\n\
-             \x20   state.count = state.count + 1\n\
              \x20   run(state, n - 1)\n"
         );
         assert!(misses(&source).is_empty());
@@ -4963,8 +5009,23 @@ mod no_copy_tests {
     use super::*;
     use witchy_syntax::parser;
 
+    fn runtime_module(source: &str) -> Module {
+        let parsed = parser::parse_module(source).expect("parse");
+        let checked = witchy_syntax::source_check::check(parsed).expect("source check");
+        let generators = witchy_syntax::generators::lower(checked).expect("generator lowering");
+        let asynchronous = witchy_syntax::async_lower::lower(generators).expect("async lowering");
+        let records = witchy_syntax::records::lower(asynchronous)
+            .expect("record lowering")
+            .into_module();
+        let mut lowered = witchy_types::traits::lower(records);
+        parser::lower_sugar_module(&mut lowered);
+        lowered
+    }
+
     fn misses(source: &str) -> Vec<NoCopyMiss> {
-        let module = parser::parse_module(source).expect("parse");
+        // The no-copy walker is a runtime-lowering consumer, so keep it on the
+        // same record-normalized module that the production checker consumes.
+        let module = runtime_module(source);
         witchy_types::typeck::check(&module).expect("type check");
         module_no_copy_misses(&module)
     }
@@ -5037,8 +5098,8 @@ mod no_copy_tests {
         }
 
         let repaired = adapter(
-            "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
-             fn caller() -> Nil:\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
+            "fn take(own xs: unique List(Int)) -> ():\n    return\n\n\
+             fn caller() -> ():\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
         );
         assert_eq!(
             repaired.entry(),
@@ -5046,8 +5107,8 @@ mod no_copy_tests {
             "an aliased unique value selects the normal repair adapter"
         );
         let proven = adapter(
-            "fn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
-             fn caller() -> Nil:\n    take([1])\n",
+            "fn take(own xs: unique List(Int)) -> ():\n    return\n\n\
+             fn caller() -> ():\n    take([1])\n",
         );
         assert_eq!(
             proven.entry(),
@@ -5061,8 +5122,8 @@ mod no_copy_tests {
         );
 
         let opt = adapter(
-            "mode opt\n\nfn take(own xs: unique List(Int)) -> Nil:\n    return\n\n\
-             fn caller() -> Nil:\n    var xs = [1]\n    let alias = xs\n    take(xs)\n",
+            "mode opt\n\nfn take(own xs: unique List(Int)) -> ():\n    return\n\n\
+             fn caller() -> ():\n    var xs: unique List(Int) = [1]\n    take(xs)\n",
         );
         assert_eq!(
             opt.entry(),
@@ -5074,9 +5135,9 @@ mod no_copy_tests {
     #[test]
     fn fresh_local_and_unique_parameter_satisfy_contract() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn forward(var xs: unique List(Int)) -> Nil:\n    take(xs)\n    return\n\
-             \nfn fresh() -> Nil:\n    var xs = [1]\n    take(xs)\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn forward(var xs: unique List(Int)) -> ():\n    take(xs)\n    return\n\
+             \nfn fresh() -> ():\n    var xs = [1]\n    take(xs)\n    return\n",
         );
         assert!(found.is_empty(), "available proofs should pass: {found:?}");
     }
@@ -5085,8 +5146,8 @@ mod no_copy_tests {
     fn checked_fixed_field_place_reports_its_owner_root() {
         let found = misses(
             "type State:\n    items: unique List(Int)\n\n\
-             fn take(var xs: unique List(Int)) -> Nil:\n    return\n\n\
-             fn caller() -> Nil:\n    var state = State([1])\n    take(state.items)\n    return\n",
+             fn take(var xs: unique List(Int)) -> ():\n    return\n\n\
+             fn caller() -> ():\n    var state = State([1])\n    take(state.items)\n    return\n",
         );
         assert_eq!(found.len(), 1, "the field needs its own capacity token: {found:?}");
         assert_eq!(found[0].var, "state");
@@ -5101,8 +5162,8 @@ mod no_copy_tests {
     #[test]
     fn checked_dynamic_index_place_still_fails_closed() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\n\
-             fn caller(i: Int) -> Nil:\n    var grid: List(unique List(Int)) = [[1]]\n    take(grid[i])\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\n\
+             fn caller(i: Int) -> ():\n    var grid: List(unique List(Int)) = [[1]]\n    take(grid[i])\n    return\n",
         );
         assert_eq!(found.len(), 1, "the dynamic coordinate cannot name a fixed token: {found:?}");
         assert_eq!(found[0].var, "grid");
@@ -5117,9 +5178,9 @@ mod no_copy_tests {
     #[test]
     fn unique_value_without_a_threaded_capacity_token_is_rejected() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn direct(own xs: unique List(Int)) -> Nil:\n    take(xs)\n    return\n\
-             \nfn rebound(own xs: unique List(Int)) -> Nil:\n    var ys = move xs\n    take(ys)\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn direct(own xs: unique List(Int)) -> ():\n    take(xs)\n    return\n\
+             \nfn rebound(own xs: unique List(Int)) -> ():\n    var ys = move xs\n    take(ys)\n    return\n",
         );
         assert_eq!(found.len(), 2, "both missing-token paths must reject: {found:?}");
         assert!(found.iter().any(|miss| miss.reason.contains("`own` convention")), "{found:?}");
@@ -5129,8 +5190,8 @@ mod no_copy_tests {
     #[test]
     fn ordinary_inplace_mutator_can_reestablish_the_token() {
         let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn repaired() -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    list.push(xs, 2)\n    take(xs)\n    let _ = snapshot\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn repaired() -> ():\n    var xs = [1]\n    let snapshot = xs\n    list.push(xs, 2)\n    take(xs)\n    let _ = snapshot\n    return\n",
         );
         assert!(found.is_empty(), "the copying push re-owns before the promise: {found:?}");
     }
@@ -5138,8 +5199,8 @@ mod no_copy_tests {
     #[test]
     fn alias_reports_the_statement_that_invalidated_uniqueness() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn bad() -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    take(xs)\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn bad() -> ():\n    var xs = [1]\n    let snapshot = xs\n    take(xs)\n    return\n",
         );
         assert_eq!(found.len(), 1, "one aliased call: {found:?}");
         assert_eq!(found[0].var, "xs");
@@ -5150,8 +5211,8 @@ mod no_copy_tests {
     #[test]
     fn loop_back_edge_catches_alias_after_first_call() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn bad() -> Nil:\n    var xs = [1]\n    var i = 0\n    while i < 2:\n        take(xs)\n        let snapshot = xs\n        i = i + 1\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn bad() -> ():\n    var xs = [1]\n    var i = 0\n    while i < 2:\n        take(xs)\n        let snapshot = xs\n        i = i + 1\n    return\n",
         );
         assert_eq!(found.len(), 1, "second-iteration miss is deduplicated: {found:?}");
         assert_eq!(found[0].line, 8);
@@ -5159,21 +5220,23 @@ mod no_copy_tests {
     }
 
     #[test]
-    fn completed_loan_explains_why_the_capacity_proof_was_lost() {
+    fn completed_view_retains_a_snapshot_without_losing_root_capacity() {
         let found = misses(
-            "mode opt\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\
-             \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn bad() -> Nil:\n    var xs = [1]\n    let w = view(xs)\n    let _ = list.length(w)\n    take(xs)\n    return\n",
+            "mode opt\n\nfn view(value: &Int) -> &Int:\n    value\n\
+             \nfn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn bad() -> ():\n    var xs: unique List(Int) = [1]\n    let w = view(&xs[0])\n    let _ = w\n    take(xs)\n    return\n",
         );
-        assert_eq!(found.len(), 1, "the ended loan still invalidated the cap: {found:?}");
-        assert!(found[0].reason.contains("loaned to view `w` by `view`"), "{found:?}");
+        assert!(
+            found.is_empty(),
+            "a rooted immutable view keeps its snapshot while the owner retains the capacity proof: {found:?}"
+        );
     }
 
     #[test]
     fn nested_shadow_does_not_poison_the_outer_proof() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn scoped() -> Nil:\n    var xs = [1]\n    if true:\n        var xs = [2]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n    take(xs)\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn scoped() -> ():\n    var xs = [1]\n    if true:\n        var xs = [2]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n    take(xs)\n    return\n",
         );
         assert_eq!(found.len(), 1, "only the aliased inner binding must reject: {found:?}");
         assert_eq!(found[0].line, 9);
@@ -5182,8 +5245,8 @@ mod no_copy_tests {
     #[test]
     fn untracked_binding_fails_closed() {
         let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn destructured() -> Nil:\n    let (xs,) = ([1],)\n    take(xs)\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn destructured() -> ():\n    let (xs,) = ([1],)\n    take(xs)\n    return\n",
         );
         assert_eq!(found.len(), 1, "an untracked binding must not imply uniqueness: {found:?}");
         assert!(found[0].reason.contains("destructured binding"), "{found:?}");
@@ -5192,8 +5255,8 @@ mod no_copy_tests {
     #[test]
     fn indirect_no_copy_call_preserves_capacity_proof() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn indirect() -> Nil:\n    var xs = [1]\n    let f = take\n    f(xs)\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn indirect() -> ():\n    var xs = [1]\n    let f = take\n    f(xs)\n    return\n",
         );
         assert!(found.is_empty(), "the indirect ABI carries the proof: {found:?}");
     }
@@ -5201,8 +5264,8 @@ mod no_copy_tests {
     #[test]
     fn indirect_no_copy_call_still_rejects_an_alias() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn indirect() -> Nil:\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn indirect() -> ():\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n    return\n",
         );
         assert_eq!(found.len(), 1, "the alias must invalidate the proof: {found:?}");
         assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
@@ -5212,8 +5275,8 @@ mod no_copy_tests {
     fn checked_no_copy_boundary_does_not_suppress_access_errors() {
         let module = parser::parse_module(
             "mode opt\n\nfn plain(xs: List(Int)) -> Int:\n    0\n\n\
-             fn require(callback: fn(unique List(Int)) -> Int) -> Nil:\n    return\n\n\
-             fn main() -> Nil:\n    require(plain)\n    return\n",
+             fn require(callback: fn(unique List(Int)) -> Int) -> ():\n    return\n\n\
+             fn main() -> ():\n    require(plain)\n    return\n",
         )
         .expect("parse invalid callable contract");
         let error = try_module_no_copy_misses(&module)
@@ -5224,19 +5287,19 @@ mod no_copy_tests {
     #[test]
     fn lambda_body_misses_keep_the_enclosing_function_name() {
         let found = misses(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn main() -> Int:\n    let work = fn() -> Nil:\n        var xs = [1]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n        return\n    work()\n    0\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn main() -> Int:\n    let work = fn() -> ():\n        var xs = [1]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n        return\n    work()\n    0\n",
         );
         assert_eq!(found.len(), 1, "the lambda miss must remain visible: {found:?}");
         assert!(found[0].function.starts_with("main::<lambda>"), "{found:?}");
     }
 
     #[test]
-    fn inferred_lambda_var_uses_its_checked_unique_contract() {
+    fn annotated_lambda_var_uses_its_checked_unique_contract() {
         let found = misses(
-            "mode opt\n\nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn invoke(f: fn(var unique List(Int)) -> Nil) -> Nil:\n    var xs = [1]\n    f(xs)\n    return\n\
-             \nfn main() -> Nil:\n    invoke(fn(var xs): take(xs))\n    return\n",
+            "mode opt\n\nfn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn invoke(f: fn(var unique List(Int)) -> ()) -> ():\n    var xs: unique List(Int) = [1]\n    f(xs)\n    return\n\
+             \nfn main() -> ():\n    invoke(fn(var xs: unique List(Int)): take(xs))\n    return\n",
         );
         assert!(
             found.is_empty(),
@@ -5247,8 +5310,8 @@ mod no_copy_tests {
     #[test]
     fn unreachable_reown_after_continue_does_not_repair_the_backedge() {
         let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn bad() -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    var i = 0\n    while i < 2:\n        take(xs)\n        i = i + 1\n        continue\n        xs = [2]\n    let _ = snapshot\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn bad() -> ():\n    var xs = [1]\n    let snapshot = xs\n    var i = 0\n    while i < 2:\n        take(xs)\n        i = i + 1\n        continue\n        xs = [2]\n    let _ = snapshot\n    return\n",
         );
         assert_eq!(found.len(), 1, "unreachable code must not repair the next iteration: {found:?}");
         assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
@@ -5257,8 +5320,8 @@ mod no_copy_tests {
     #[test]
     fn exhaustive_reown_branches_restore_the_proof() {
         let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn repaired(flag: Bool) -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    if flag:\n        list.push(xs, 2)\n    else:\n        list.push(xs, 3)\n    take(xs)\n    let _ = snapshot\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn repaired(flag: Bool) -> ():\n    var xs = [1]\n    let snapshot = xs\n    if flag:\n        list.push(xs, 2)\n    else:\n        list.push(xs, 3)\n    take(xs)\n    let _ = snapshot\n    return\n",
         );
         assert!(found.is_empty(), "every runtime branch re-owns the list: {found:?}");
     }
@@ -5267,8 +5330,8 @@ mod no_copy_tests {
     fn declared_unique_result_supplies_the_next_no_copy_proof() {
         let found = misses(
             "fn build() -> unique List(Int):\n    [1, 2]\n\
-             \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn composed() -> Nil:\n    var xs = build()\n    take(xs)\n    return\n",
+             \nfn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn composed() -> ():\n    var xs = build()\n    take(xs)\n    return\n",
         );
         assert!(found.is_empty(), "a unique result is a reusable ownership proof: {found:?}");
     }
@@ -5277,17 +5340,31 @@ mod no_copy_tests {
     fn indirect_unique_result_supplies_the_next_no_copy_proof() {
         let found = misses(
             "fn build() -> unique List(Int):\n    [1]\n\
-             \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn indirect() -> Nil:\n    let f = build\n    var xs = f()\n    take(xs)\n    return\n",
+             \nfn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn indirect() -> ():\n    let f = build\n    var xs = f()\n    take(xs)\n    return\n",
         );
         assert!(found.is_empty(), "the indirect result carries ownership state: {found:?}");
     }
 
     #[test]
+    fn generic_function_value_preserves_a_unique_nominal_result_proof() {
+        let found = misses(
+            "type Packet:\n    value: Int\n\
+             \nfn retain(own value: unique a) -> unique a:\n    value\n\
+             \nfn advance(var packet: unique Packet) -> ():\n    packet = Packet(value: 1)\n\
+             \nfn relay(own packet: unique Packet) -> ():\n    let keep = retain\n    var current = keep(packet)\n    advance(current)\n    return\n",
+        );
+        assert!(
+            found.is_empty(),
+            "the specialized generic function value must retain the checked unique nominal result proof: {found:?}"
+        );
+    }
+
+    #[test]
     fn same_statement_alias_cannot_precede_a_promised_call() {
         let found = misses_unchecked(
-            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
-             \nfn bad() -> Nil:\n    var xs = [1]\n    let pair = (xs, take(xs))\n    let _ = pair\n    return\n",
+            "fn take(var xs: unique List(Int)) -> ():\n    return\n\
+             \nfn bad() -> ():\n    var xs = [1]\n    let pair = (xs, take(xs))\n    let _ = pair\n    return\n",
         );
         assert_eq!(found.len(), 1, "the tuple alias exists before the call: {found:?}");
         assert!(found[0].reason.contains("same statement") || found[0].reason.contains("this statement"), "{found:?}");

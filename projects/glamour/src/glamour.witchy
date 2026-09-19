@@ -493,7 +493,7 @@ pub fn keyed_plan(old_keys: List(Int), new_keys: List(Int)) -> Result(List(Keyed
             return Err("glamour keyed plan: keys must be positive")
         if old_positions.contains_key(key):
             return Err("glamour keyed plan: duplicate old key ${key}")
-        old_positions.insert(key, old_index)
+        let _ = old_positions.insert(key, old_index)
         old_index = old_index + 1
 
     for key in new_keys:
@@ -501,14 +501,14 @@ pub fn keyed_plan(old_keys: List(Int), new_keys: List(Int)) -> Result(List(Keyed
             return Err("glamour keyed plan: keys must be positive")
         if new_members.contains_key(key):
             return Err("glamour keyed plan: duplicate new key ${key}")
-        new_members.insert(key, true)
+        let _ = new_members.insert(key, true)
 
     var retained_keys: List(Int) = []
     var retained_positions: List(Int) = []
     var retained_indices: Dict(Int, Int) = dict.new()
     for key in new_keys:
         if old_positions.contains_key(key):
-            retained_indices.insert(key, retained_keys.length())
+            let _ = retained_indices.insert(key, retained_keys.length())
             retained_keys.push(key)
             retained_positions.push(old_positions.at(key))
 
@@ -542,7 +542,7 @@ pub fn keyed_plan(old_keys: List(Int), new_keys: List(Int)) -> Result(List(Keyed
     if tails_indices.length() > 0:
         var cursor = tails_indices.at(tails_indices.length() - 1)
         while cursor >= 0:
-            stable_indices.insert(cursor, true)
+            let _ = stable_indices.insert(cursor, true)
             cursor = predecessors.at(cursor)
 
     var edits: List(KeyedEdit) = []
@@ -1052,7 +1052,7 @@ pub fn match_route(graph: RouteGraph, path: String) -> Option(RouteMatch):
             var found: Option(RouteMatch) = None
             for item in routes:
                 match found:
-                    Some(_) -> Nil
+                    Some(_) -> ()
                     None -> found = match_route_def(item, normalize_route_path(path))
             found
 
@@ -1537,7 +1537,7 @@ pub fn form_secret(schema: FormSchema, name: String, input: SecretInput, on_read
                         if field_name == name:
                             match kind:
                                 FormSecret -> allowed = true
-                                _ -> Nil
+                                _ -> ()
 
             if allowed:
                 Some(secret_input(input, on_ready))
@@ -1690,7 +1690,7 @@ pub fn island_capture_int_value(value: IslandCapture) -> Int:
 
 pub fn island_capture_nil_value(value: IslandCapture):
     match value:
-        IslandCaptureNil -> Nil
+        IslandCaptureNil -> ()
         _ -> island_capture_abort()
 
 pub fn island_capture_float_value(value: IslandCapture) -> Float:
@@ -1933,13 +1933,13 @@ type Cmd(msg):
 // `Ui` is a nominal wrapper around the compatibility VNode tree. Keeping the
 // wrapper nominal lets the implementation change from a full tree to a static
 // template plan without changing every application's Program signature.
-// (`View(T, 'a)` is already Witchy's borrowed-view type.)
+// (`&'a T` is already Witchy's borrowed-view type.)
 // ---------------------------------------------------------------------------
 type Ui(msg):
     Ui(VNode(msg))
 
 sealed type StaticUi:
-    StaticUi(VNode(Nil))
+    StaticUi(VNode(()))
 
 pub fn ui(node: VNode(msg)) -> Ui(msg):
     Ui(node)
@@ -1948,21 +1948,21 @@ pub fn ui_node(rendered: Ui(msg)) -> VNode(msg):
     match rendered:
         Ui(node) -> node
 
-pub fn static_ui(node: VNode(Nil)) -> StaticUi:
+pub fn static_ui(node: VNode(())) -> StaticUi:
     check_static_ui_node(node)
     StaticUi(node)
 
-fn check_static_ui_node(node: VNode(Nil)):
+fn check_static_ui_node(node: VNode(())):
     match node:
         Planned(_plan, inner) -> check_static_ui_node(inner)
-        Text(_value) -> Nil
+        Text(_value) -> ()
         Keyed(_key, inner) -> check_static_ui_node(inner)
         Branch(_id, _active, inner) -> check_static_ui_node(inner)
         ChildRegion(_id, template, child) ->
             check_static_ui_node(template)
             match child:
                 Some(inner) -> check_static_ui_node(inner)
-                None -> Nil
+                None -> ()
         Element(_tag, attrs, children) ->
             for attr in attrs:
                 match attr:
@@ -1971,7 +1971,7 @@ fn check_static_ui_node(node: VNode(Nil)):
                     On(_event, _message) -> fail("glamour StaticUi: event bindings are not allowed")
                     OnInput(_event, _tag) -> fail("glamour StaticUi: event bindings are not allowed")
                     OnDecoded(_id, _event, _decoder) -> fail("glamour StaticUi: event bindings are not allowed")
-                    _ -> Nil
+                    _ -> ()
 
             for child in children:
                 check_static_ui_node(child)
@@ -2117,8 +2117,8 @@ pub fn program(authorize: fn(UiRoot) -> auth, initial: fn(Start) -> model, start
     Program(authorize, initial, start, update, render, subscriptions)
 
 // A zero-ceremony program constructor for data-only state machines without side effects (RFC-0136).
-pub fn simple_program(initial_model: model, update_fn: fn(model, msg) -> model, render_fn: fn(model) -> Ui(msg)) -> Program(Nil, model, msg):
-    Program(fn(_root: UiRoot): Nil, fn(_start: Start): initial_model, fn(_auth: Nil, _model: model): NoCmd, fn(_auth: Nil, model: model, msg: msg): (update_fn(model, msg), NoCmd), render_fn, fn(_auth: Nil, _model: model): NoSub)
+pub fn simple_program(initial_model: model, update_fn: fn(model, msg) -> model, render_fn: fn(model) -> Ui(msg)) -> Program((), model, msg):
+    Program(fn(_root: UiRoot): (), fn(_start: Start): initial_model, fn(_auth: (), _model: model): NoCmd, fn(_auth: (), model: model, msg: msg): (update_fn(model, msg), NoCmd), render_fn, fn(_auth: (), _model: model): NoSub)
 
 // An ergonomic program constructor for command-driven state machines without subscriptions (RFC-0136).
 pub fn command_program(authorize_fn: fn(UiRoot) -> auth, initial_model: model, update_fn: fn(auth, model, msg) -> (model, Cmd(msg)), render_fn: fn(model) -> Ui(msg)) -> Program(auth, model, msg):
@@ -2129,7 +2129,7 @@ fn media_query_literal(source: String) -> MediaQuery:
     if valid_media_query(query):
         MediaQuery(query)
     else:
-        fail("glamour media: expected a bounded static CSS media condition")
+        let _ = fail("glamour media: expected a bounded static CSS media condition")
         MediaQuery("")
 
 fn valid_media_query(query: String) -> Bool:
@@ -2213,7 +2213,7 @@ impl Interactive:
         match self:
             Interactive(IslandPlan(key, source_origin, activation, _prefetch, name, start, markup)) -> Interactive(IslandPlan(key, source_origin, activation, prefetch, name, start, markup))
 
-pub fn embed(interactive_value: Interactive) -> VNode(Nil):
+pub fn embed(interactive_value: Interactive) -> VNode(()):
     match interactive_value:
         Interactive(plan) -> InteractiveBoundary(plan)
 
@@ -2249,7 +2249,7 @@ fn island_resume_node(node: VNode(msg)) -> Json:
                         events.push(JsonObject([("id", JsonString(id)), ("event", JsonString(event)), ("kind", JsonString(decoder_kind(decoder))), ("preventDefault", JsonBool(decoder_prevents_default(decoder))), ("stopPropagation", JsonBool(decoder_stops_propagation(decoder)))]))
                     On(_event, _message) -> fail("glamour island: resumable events must use typed glamour.on_event")
                     OnInput(_event, _tag) -> fail("glamour island: resumable input events must use typed glamour.on_event")
-                    _ -> Nil
+                    _ -> ()
 
             var child_records: List(Json) = []
             for child in children:
@@ -2286,7 +2286,7 @@ fn island_template_node(node: VNode(msg)) -> Json:
                             match assignment:
                                 CssAssignment(name, category, value) -> attributes.push(JsonObject([("kind", JsonString("css-" + category)), ("name", JsonString(name)), ("value", JsonString(value)), ("enabled", JsonBool(true))]))
                     Prop(name, value) -> attributes.push(JsonObject([("kind", JsonString("prop")), ("name", JsonString(name)), ("value", JsonString(value)), ("enabled", JsonBool(true))]))
-                    OnDecoded(_id, _event, _decoder) -> Nil
+                    OnDecoded(_id, _event, _decoder) -> ()
                     On(_event, _message) -> fail("glamour island: resumable events must use typed glamour.on_event")
                     OnInput(_event, _tag) -> fail("glamour island: resumable input events must use typed glamour.on_event")
 
@@ -3299,7 +3299,7 @@ fn find_decoder(node: VNode(msg), id: String) -> Option(Decoder(msg)):
                         found = Some(decoder)
             for child in children:
                 match found:
-                    Some(_) -> Nil
+                    Some(_) -> ()
                     None -> found = find_decoder(child, id)
             found
         _ -> None
@@ -3499,7 +3499,7 @@ fn find_island_decoder(node: VNode(msg), id: String, event: String, kind: String
                         match found:
                             Some(_) -> fail("glamour island: live render duplicates an event identity")
                             None -> found = Some(decoder)
-                    None -> Nil
+                    None -> ()
 
             found
         _ -> None
@@ -3520,7 +3520,7 @@ fn island_event_count(node: VNode(msg)) -> Int:
                     OnDecoded(_id, _event, _decoder) -> count = count + 1
                     On(_event, _message) -> fail("glamour island: live render introduced a legacy event")
                     OnInput(_event, _tag) -> fail("glamour island: live render introduced a legacy input event")
-                    _ -> Nil
+                    _ -> ()
 
             for child in children:
                 count = count + island_event_count(child)
@@ -3537,7 +3537,7 @@ fn island_validate_events(node: VNode(msg), descriptors: List(IslandEventDescrip
             IslandEventDescriptor(_plan, _node, _event_class, id, event, kind, prevent_default, stop_propagation) ->
                 match find_island_decoder(node, id, event, kind, prevent_default, stop_propagation):
                     Some(_decoder) -> live = live + 1
-                    None -> Nil
+                    None -> ()
 
     if island_event_count(node) != live:
         fail("glamour island: live event graph disagrees with its authenticated plan")
@@ -3847,7 +3847,7 @@ fn island_collect_live_owner_instances(node: VNode(msg), path: List(Int), region
                         Some(inner) ->
                             owners.push(instance)
                             island_collect_live_owner_instances(inner, child_path, regions, owners)
-                        None -> Nil
+                        None -> ()
                 _ -> fail("glamour island: optional child resolved to a non-child owner scope")
         Element(_tag, _attrs, children) ->
             match island_region_option_at(regions, path):
@@ -3861,13 +3861,13 @@ fn island_collect_live_owner_instances(node: VNode(msg), path: List(Int), region
                                         owners.push(instance)
                                         island_collect_live_owner_instances(inner, child_path, regions, owners)
                                     None -> fail("glamour island: authenticated keyed owner is not live")
-                            None -> Nil
+                            None -> ()
                 Some(_) | None ->
                     var index = 0
                     for child in children:
                         island_collect_live_owner_instances(child, list.concat(path, [index]), regions, owners)
                         index = index + 1
-        _ -> Nil
+        _ -> ()
 
 pub fn island_live_owner_instances(rendered: Ui(msg), regions: List(IslandRegion), root: Int) -> List(Int):
     if !island_wire_u32(root, false):
@@ -3902,7 +3902,7 @@ fn island_live_key_at(children: List(VNode(msg)), source: String) -> Option(VNod
                     match found:
                         Some(_) -> fail("glamour island: live render duplicates a keyed child")
                         None -> found = Some(node)
-            _ -> Nil
+            _ -> ()
 
     found
 
@@ -3958,7 +3958,7 @@ fn island_data_attributes(attrs: List(Attr(msg))) -> List(IslandDataAttribute):
                             custom_names.push(name)
                             output.push(IslandDataAttribute("css-" + category, name, value, true))
             Prop(name, value) -> output.push(IslandDataAttribute("prop", name, value, true))
-            OnDecoded(_id, _event, _decoder) -> Nil
+            OnDecoded(_id, _event, _decoder) -> ()
             On(_event, _message) -> fail("glamour island: live render introduced a legacy event")
             OnInput(_event, _tag) -> fail("glamour island: live render introduced a legacy input event")
 
@@ -3997,7 +3997,7 @@ fn island_element_events(attrs: List(Attr(msg)), descriptors: List(IslandEventDe
                         output.push(descriptor)
             On(_event, _message) -> fail("glamour island: live render introduced a legacy event")
             OnInput(_event, _tag) -> fail("glamour island: live render introduced a legacy input event")
-            _ -> Nil
+            _ -> ()
 
     output
 
@@ -4028,7 +4028,7 @@ fn island_collect_event_changes(old_attrs: List(Attr(msg)), new_attrs: List(Attr
         match new_descriptor:
             IslandEventDescriptor(new_plan, new_node, event_class, _new_id, _new_event, _new_kind, _new_prevent, _new_stop) ->
                 match island_event_for_class(old_events, event_class):
-                    Some(_) -> Nil
+                    Some(_) -> ()
                     None ->
                         if emit_changes:
                             changes.push(IslandPatchSetEventPlan(new_node, event_class, new_plan))
@@ -4052,10 +4052,10 @@ fn island_collect_template_slot_values(node: VNode(msg), path: List(Int), slots:
     match node:
         Planned(_plan, inner) ->
             island_collect_template_slot_values(inner, path, slots, values)
-            Nil
+            ()
         Keyed(_key, inner) ->
             island_collect_template_slot_values(inner, path, slots, values)
-            Nil
+            ()
         Branch(_id, active, inner) ->
             if active:
                 island_collect_template_slot_values(inner, path, slots, values)
@@ -4063,20 +4063,20 @@ fn island_collect_template_slot_values(node: VNode(msg), path: List(Int), slots:
             match child:
                 Some(inner) ->
                     island_collect_template_slot_values(inner, path, slots, values)
-                    Nil
-                None -> Nil
+                    ()
+                None -> ()
         Text(value) ->
             for slot in slots:
                 match slot:
                     IslandTemplateTextSlot(id, candidate) ->
                         if candidate == path:
                             values.push(IslandSlotValue(id, value))
-                    IslandTemplateAttributeSlot(_id, _candidate, _index, _kind, _name) -> Nil
+                    IslandTemplateAttributeSlot(_id, _candidate, _index, _kind, _name) -> ()
         Element(_tag, attrs, children) ->
             let data = island_data_attributes(attrs)
             for slot in slots:
                 match slot:
-                    IslandTemplateTextSlot(_id, _candidate) -> Nil
+                    IslandTemplateTextSlot(_id, _candidate) -> ()
                     IslandTemplateAttributeSlot(id, candidate, index, kind, name) ->
                         if candidate == path:
                             if index < 0 || index >= data.length():
@@ -4086,7 +4086,7 @@ fn island_collect_template_slot_values(node: VNode(msg), path: List(Int), slots:
             for child in children:
                 island_collect_template_slot_values(child, list.concat(path, [index]), slots, values)
                 index = index + 1
-        _ -> Nil
+        _ -> ()
 
 fn island_template_slot_values(node: VNode(msg), path: List(Int), slots: List(IslandTemplateSlot)) -> List(IslandSlotValue):
     var values: List(IslandSlotValue) = []
@@ -4151,7 +4151,7 @@ fn island_validate_dynamic_shape(template: VNode(msg), node: VNode(msg), var val
                     valid = false
             Text(_value) ->
                 match node:
-                    Text(_other) -> Nil
+                    Text(_other) -> ()
                     _ -> valid = false
             Element(template_tag, template_attrs, template_children) ->
                 if let Element(node_tag, node_attrs, node_children) = node:
@@ -4238,7 +4238,7 @@ fn island_collect_keyed_changes(baseline_children: List(VNode(msg)), old_items: 
                                             if !island_slot_values_equal(old_slots, new_slots):
                                                 changes.push(IslandPatchDynamicSlots(region_id, source, new_slots))
                                         None -> fail("glamour island: dynamic keyed child disappeared during reconciliation")
-                                None -> Nil
+                                None -> ()
                     else:
                         if old_items.length() > keys.length() || new_items.length() > keys.length():
                             fail("glamour island: keyed region exceeds its authenticated key set")
@@ -4339,7 +4339,7 @@ fn island_collect_patch_changes(baseline: VNode(msg), old: VNode(msg), new: VNod
                                                             Some(new_inner) ->
                                                                 changes.push(IslandPatchMountChild(region_id, template, instance, island_template_slot_values(new_inner, child_path, slots)))
                                                                 pending.push(IslandPatchWork(baseline_template, baseline_template, new_inner, child_path))
-                                                            None -> Nil
+                                                            None -> ()
                                             _ -> fail("glamour island: optional child resolved to a non-child region")
                                     _ -> fail("glamour island: rendered structure changed at an optional child")
                             _ -> fail("glamour island: previous render changed at an optional child")
@@ -4396,11 +4396,11 @@ fn island_collect_patch_changes(baseline: VNode(msg), old: VNode(msg), new: VNod
                                             None ->
                                                 match island_live_keys(old_children):
                                                     Some(_old_items) -> fail("glamour island: previous render introduced a keyed region")
-                                                    None -> Nil
+                                                    None -> ()
 
                                                 match island_live_keys(new_children):
                                                     Some(_new_items) -> fail("glamour island: rendered structure introduced a keyed region")
-                                                    None -> Nil
+                                                    None -> ()
 
                                                 if baseline_children.length() != old_children.length() || old_children.length() != new_children.length():
                                                     fail("glamour island: rendered element structure changed without a region plan")
@@ -4789,7 +4789,7 @@ pub fn island_patch_with_work(baseline: Ui(msg), old: Ui(msg), new: Ui(msg), nod
                         IslandSlotValue(_id, value) ->
                             for byte in bytes.from_string(value).to_list():
                                 output.push(byte)
-            _ -> Nil
+            _ -> ()
 
     for operation in work:
         for byte in bytes.from_string(island_host_work_payload(operation)).to_list():
@@ -5133,10 +5133,10 @@ pub fn program_step_with(input: String, root: UiRoot, app: Program(auth, model, 
 // dynamic values use typed custom-property APIs rather than entering stylesheet
 // syntax. The emitted sheet is deterministic and already scoped.
 pub comptime fn css(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
-    css_literal_source(parts, holes, origin, "css_sheet_from_source")
+    css_literal_expression(parts, holes, origin, meta.ident("css_sheet_from_source"))
 
 pub comptime fn global_css(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
-    css_literal_source(parts, holes, origin, "global_css_sheet_from_source")
+    css_literal_expression(parts, holes, origin, meta.ident("global_css_sheet_from_source"))
 
 // Media conditions share one static parser with delivery-policy publication.
 // Dynamic strings cannot construct the sealed MediaQuery boundary.
@@ -5146,23 +5146,27 @@ pub comptime fn media(parts: List(String), holes: List(String), _origin: String)
     let query = parts.at(0).trim()
     if !valid_media_query(query):
         fail("glamour media: expected a bounded static CSS media condition")
-    meta.expr_raw("media_query_literal(\"" + escape_src(query) + "\")")
+    meta.expr_call(meta.expr_name(meta.ident("media_query_literal")), [meta.expr_string(query)])
 
-comptime fn css_literal_source(parts: List(String), holes: List(String), origin: String, builder: String) -> meta.ExprSyntax:
+comptime fn css_literal_expression(parts: List(String), holes: List(String), origin: String, builder: meta.Ident) -> meta.ExprSyntax:
     for part in parts:
         if part.to_lower().contains("url("):
             fail("glamour css: write asset URLs with a typed glamour.css_asset interpolation")
         if part.to_lower().contains("var("):
             fail("glamour css: write custom-property references with a typed glamour.css_var interpolation")
-    var source = "\"" + escape_src(parts.at(0)) + "\""
+    var expression = meta.expr_string(parts.at(0))
     var index = 0
     while index < holes.length():
         let before = parts.at(index)
         let after = parts.at(index + 1)
         let renderer = css_hole_renderer(before, after)
-        source = source + " + " + renderer + "(" + holes.at(index) + ") + \"" + escape_src(after) + "\""
+        // The whitelist below returns source data only; `meta.ident` validates
+        // it as one identifier before it becomes an AST callee.
+        let rendered = generated_call(meta.ident(renderer), [meta.expr_tag_hole(holes.at(index))])
+        expression = meta.expr_binary("+", expression, rendered)
+        expression = meta.expr_binary("+", expression, meta.expr_string(after))
         index = index + 1
-    meta.expr_raw(builder + "(" + source + ", \"" + escape_src(origin) + "\")")
+    generated_call(builder, [expression, meta.expr_string(origin)])
 
 fn css_hole_renderer(before: String, after: String) -> String:
     let block_parts = before.split("{")
@@ -5172,7 +5176,7 @@ fn css_hole_renderer(before: String, after: String) -> String:
     match declaration.index_of(":"):
         None ->
             fail("glamour css: interpolation must be the complete value of a supported property")
-            ""
+            "css_image_text"
         Some(colon) ->
             let property = declaration.substring(0, colon).trim().to_lower()
             let suffix = after.trim()
@@ -5194,7 +5198,7 @@ fn css_hole_renderer(before: String, after: String) -> String:
                 "css_time_text"
             else:
                 fail("glamour css: interpolation is not supported for property `${property}`")
-                ""
+                "css_image_text"
 
 fn validate_css(source: String) -> Bool:
     let lower = source.to_lower()
@@ -5344,9 +5348,9 @@ fn render_css_blocks(source: String, scope: String, scoped: Bool, allow_media: B
 // value, and namespaced/SVG tags.
 // ===========================================================================
 pub comptime fn html(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
-    meta.expr_raw(template_literal_source(parts, holes, origin))
+    template_literal_expression(parts, holes, origin)
 
-fn template_literal_source(parts: List(String), holes: List(String), origin: String) -> String:
+comptime fn template_literal_expression(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
     // A source `\0` escape is legal in a tagged literal's static parts, but NUL
     // is the private hole-marker delimiter below. Reject it before weaving so
     // static text can never be parsed as a synthetic hole (BUG-439).
@@ -5359,7 +5363,7 @@ fn template_literal_source(parts: List(String), holes: List(String), origin: Str
     let _accessible = check_template_accessibility(toks)
     // Parse one top-level node (the RFC's examples are single-rooted).
     let parsed = parse_node(toks, 0, holes)
-    let (src, next) = parsed
+    let (node, next) = parsed
     // (BUG-227) A template must have exactly ONE root: reject any content after it.
     let _checked = no_trailing_tokens(toks, next)
     // The plan identity depends only on normalized static structure and slot
@@ -5367,14 +5371,14 @@ fn template_literal_source(parts: List(String), holes: List(String), origin: Str
     // literal, or runtime hole values. Identical templates intentionally share
     // one host plan. `origin` remains separate diagnostic metadata.
     let slots = emit_template_slots(toks)
-    let id = "glamour-tp1-" + crypto.sha256(src + "|" + slots)
-    "planned(\"" + id + "\", \"" + escape_src(origin) + "\", [" + slots + "], " + src + ")"
+    let id = "glamour-tp1-" + crypto.sha256(template_identity(toks))
+    generated_call(meta.ident("planned"), [meta.expr_string(id), meta.expr_string(origin), meta.expr_list(slots), node])
 
 // JSX-shaped authoring through Witchy's existing general tagged-literal
 // mechanism. This is a library tag, not a lexer mode: it deliberately shares
 // html's parser, hygiene, positional typing, and XSS guarantees.
 pub comptime fn jsx(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:
-    meta.expr_raw(template_literal_source(parts, holes, origin))
+    template_literal_expression(parts, holes, origin)
 
 fn reject_static_nul(parts: List(String)) -> Bool:
     let nul = string.from_code(0)
@@ -5449,7 +5453,7 @@ fn template_has_attr(attrs: List(HAttr), wanted: String) -> Bool:
             HProp(name, _index) ->
                 if name == wanted:
                     found = true
-            _ -> Nil
+            _ -> ()
 
     found
 
@@ -5486,7 +5490,7 @@ fn template_region_has_name(toks: List(HtmlTok), start: Int, closing: String) ->
                         done = true
                     else:
                         depth = depth - 1
-            _ -> Nil
+            _ -> ()
 
         i = i + 1
     named
@@ -5742,45 +5746,49 @@ fn lex_attr_value(cs: List(String), start: Int, nul: String) -> (String, Int):
             i = i + 1
         (v, i)
 
-// ---- the parser: tokens -> witchy expression source building a VNode ----
+// ---- the parser: tokens -> compiler-owned VNode expression ----
 
-// Parse the node starting at token `at`. Returns (source, index after the node).
-fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int):
+// No generated fragment is reparsed. Names, calls, lists, literals, and the
+// compiler-issued hole sentinel all remain separate AST nodes through expansion.
+comptime fn generated_call(callee: meta.Ident, args: List(meta.ExprSyntax)) -> meta.ExprSyntax:
+    meta.expr_named_call(callee, args)
+
+// Parse the node starting at token `at`. Returns (expression, index after the node).
+comptime fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (meta.ExprSyntax, Int):
     let n = toks.length()
     if at >= n:
         fail("glamour html: empty template — expected a single root element")
-        ("", at)
+        (meta.expr_string(""), at)
     else:
         match toks.at(at):
             TextRun(s) -> (emit_text_literal(s), at + 1)
             HoleNode(idx) -> (emit_text_hole(idx, holes), at + 1)
             Close(name) ->
                 let _bad = fail("glamour html: unexpected closing tag </${name}>")
-                ("", at + 1)
+                (meta.expr_string(""), at + 1)
             Open(name, attrs, self_close) -> parse_element(toks, at, name, attrs, self_close, holes)
 
-fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (String, Int):
-    // idiom-exempt: this parser emits Witchy source and must preserve quoting byte-for-byte.
+comptime fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (meta.ExprSyntax, Int):
     if name.length() == 0:
         let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
-        ("", at + 1)
+        (meta.expr_string(""), at + 1)
     else if !safe_template_element(name):
         let _bad2 = fail("glamour html: unsupported or unsafe platform element <${name}>")
-        ("", at + 1)
+        (meta.expr_string(""), at + 1)
     else:
-        let attr_src = emit_attrs(attrs, holes)
+        let attribute_nodes = emit_attrs(attrs, holes)
         if self_close:
-            ("element(\"" + escape_src(name) + "\", [" + attr_src + "], [])", at + 1)
+            (generated_call(meta.ident("element"), [meta.expr_string(name), meta.expr_list(attribute_nodes), meta.expr_list([])]), at + 1)
         else:
-            let (kids_src, after) = parse_children(toks, at + 1, name, holes)
-            ("element(\"" + escape_src(name) + "\", [" + attr_src + "], [" + kids_src + "])", after)
+            let (children, after) = parse_children(toks, at + 1, name, holes)
+            (generated_call(meta.ident("element"), [meta.expr_string(name), meta.expr_list(attribute_nodes), meta.expr_list(children)]), after)
 
 // Parse children until the matching `</name>`. Returns (comma-joined child
-// sources, index after the close tag).
-fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String)) -> (String, Int):
+// expressions, index after the close tag).
+comptime fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String)) -> (List(meta.ExprSyntax), Int):
     let n = toks.length()
     var i = at
-    var kids = []
+    var kids: List(meta.ExprSyntax) = []
     var done = false
     var closed = false
     while i < n && !done:
@@ -5796,50 +5804,76 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
             done = true
             i = i + 1
         else:
-            let (src, j) = parse_node(toks, i, holes)
-            kids.push(src)
+            let (child, j) = parse_node(toks, i, holes)
+            kids.push(child)
             i = j
     if !closed:
         let _bad2 = fail("glamour html: unclosed <${name}> — missing its </${name}>")
-    (kids.join(", "), i)
+    (kids, i)
 
-// ---- emitters: produce witchy expression SOURCE ----
-
-// idiom-exempt: these emitters assemble Witchy source and preserve quoting byte-for-byte.
-
-// Static text -> `text("…")` with the literal string-escaped for re-parsing.
-fn emit_text_literal(s: String) -> String:
-    "text(\"" + escape_src(s) + "\")"
+// ---- emitters: build compiler-owned expression nodes ----
+comptime fn emit_text_literal(s: String) -> meta.ExprSyntax:
+    generated_call(meta.ident("text"), [meta.expr_string(s)])
 
 // A text-position hole becomes a stable child region. Compiler lowering admits
 // only inert String text, a checked VNode, or a checked Ui; arbitrary values
 // cannot stringify themselves into markup. `holes.at(idx)` is the opaque
 // compiler expression token substituted without a source round trip.
-fn emit_text_hole(idx: Int, holes: List(String)) -> String:
-    "template_child_region(\"template-child-${idx}\", template_child_value(" + holes.at(idx) + "))"
+comptime fn emit_text_hole(idx: Int, holes: List(String)) -> meta.ExprSyntax:
+    generated_call(meta.ident("template_child_region"), [meta.expr_string("template-child-${idx}"), generated_call(meta.ident("template_child_value"), [meta.expr_tag_hole(holes.at(idx))])])
 
 // Build the compile-time dynamic-slot table in lexical order. Hole indices are
 // assigned by Witchy's tagged-literal parser and remain stable when application
 // code outside the literal is reformatted. The table deliberately records sink
 // categories so the browser host never has to infer whether a dynamic value is
 // text, a URL, a property, an ARIA value, or an event.
-fn emit_template_slots(toks: List(HtmlTok)) -> String:
-    var slots = []
+comptime fn emit_template_slots(toks: List(HtmlTok)) -> List(meta.ExprSyntax):
+    var slots: List(meta.ExprSyntax) = []
     for tok in toks:
         match tok:
             HoleNode(index) ->
-                slots.push("template_slot(${index}, \"child\", \"\")")
+                slots.push(generated_call(meta.ident("template_slot"), [meta.expr_int(index), meta.expr_string("child"), meta.expr_string("")]))
             Open(_name, attrs, _self_close) ->
                 for attr in attrs:
                     match attr:
                         HProp(name, index) ->
-                            slots.push("template_slot(${index}, \"" + template_attr_kind(name) + "\", \"" + escape_src(name) + "\")")
+                            slots.push(generated_call(meta.ident("template_slot"), [meta.expr_int(index), meta.expr_string(template_attr_kind(name)), meta.expr_string(name)]))
                         HOn(event, index) ->
-                            slots.push("template_slot(${index}, \"event\", \"" + escape_src(event) + "\")")
-                        _ -> Nil
-            _ -> Nil
+                            slots.push(generated_call(meta.ident("template_slot"), [meta.expr_int(index), meta.expr_string("event"), meta.expr_string(event)]))
+                        _ -> ()
+            _ -> ()
 
-    slots.join(", ")
+    slots
+
+// The plan key is structural data, not rendered Witchy source. Length-prefix
+// every dynamic/static token so two different template shapes cannot collide by
+// delimiter placement. Hole expressions themselves remain absent: only their
+// compiler-issued positions and typed sink categories participate.
+fn template_identity(toks: List(HtmlTok)) -> String:
+    var parts: List(String) = []
+    for tok in toks:
+        match tok:
+            Open(name, attrs, self_close) ->
+                var attr_parts: List(String) = []
+                for attr in attrs:
+                    attr_parts.push(template_identity_attr(attr))
+                parts.push("open" + template_identity_part(name) + template_identity_part(attr_parts.join("")) + if self_close: "1" else: "0")
+            Close(name) -> parts.push("close" + template_identity_part(name))
+            TextRun(text) -> parts.push("text" + template_identity_part(text))
+            HoleNode(index) -> parts.push("hole${index}")
+
+    parts.join("|")
+
+fn template_identity_attr(attr: HAttr) -> String:
+    match attr:
+        SProp(name, value) -> "static" + template_identity_part(name) + template_identity_part(value)
+        SBool(name, enabled) -> "bool" + template_identity_part(name) + if enabled: "1" else: "0"
+        HProp(name, index) -> "property" + template_identity_part(name) + "${index}"
+        HOn(event, index) -> "event" + template_identity_part(event) + "${index}"
+        Bad(message) -> "bad" + template_identity_part(message)
+
+fn template_identity_part(value: String) -> String:
+    "${value.char_count()}:${value}"
 
 fn template_attr_kind(name: String) -> String:
     if name == "href" || name == "src" || name == "action" || name == "formaction" || name == "poster":
@@ -5855,72 +5889,71 @@ fn template_attr_kind(name: String) -> String:
     else:
         "attribute"
 
-fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
-    var srcs = []
+comptime fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> List(meta.ExprSyntax):
+    var nodes: List(meta.ExprSyntax) = []
     for a in attrs:
-        srcs.push(emit_attr(a, holes))
-    srcs.join(", ")
+        nodes.push(emit_attr(a, holes))
+    nodes
 
-fn emit_attr(a: HAttr, holes: List(String)) -> String:
+comptime fn emit_attr(a: HAttr, holes: List(String)) -> meta.ExprSyntax:
     match a:
         SProp(name, value) ->
             let _name_ok = check_template_attr(name)
             emit_static_attr(name, value)
         SBool(name, enabled) ->
             let _name_ok = check_template_attr(name)
-            let enabled_src = if enabled: "true" else: "false"
-            "boolean_attribute(\"" + escape_src(name) + "\", " + enabled_src + ")"
+            generated_call(meta.ident("boolean_attribute"), [meta.expr_string(name), meta.expr_bool(enabled)])
         HProp(name, idx) ->
             let _name_ok = check_template_attr(name)
-            emit_dynamic_attr(name, holes.at(idx))
+            emit_dynamic_attr(name, meta.expr_tag_hole(holes.at(idx)))
         HOn(event, idx) ->
             let _event_ok = check_template_event(event)
-            "on(\"" + escape_src(event) + "\", " + holes.at(idx) + ")"
+            generated_call(meta.ident("on"), [meta.expr_string(event), meta.expr_tag_hole(holes.at(idx))])
         Bad(msg) ->
             let _bad = fail("glamour html: ${msg}")
-            ""
+            meta.expr_string("")
 
-fn emit_static_attr(name: String, value: String) -> String:
-    let escaped_name = escape_src(name)
-    let escaped_value = escape_src(value)
+comptime fn emit_static_attr(name: String, value: String) -> meta.ExprSyntax:
     if name == "href":
         let _safe = require_static_navigation_url(name, value)
-        "static_url_attribute(\"" + escaped_name + "\", \"" + escaped_value + "\")"
+        generated_call(meta.ident("static_url_attribute"), [meta.expr_string(name), meta.expr_string(value)])
     else if name == "action" || name == "formaction":
         let _safe = require_static_form_url(name, value)
-        "static_form_url_attribute(\"" + escaped_name + "\", \"" + escaped_value + "\")"
+        generated_call(meta.ident("static_form_url_attribute"), [meta.expr_string(name), meta.expr_string(value)])
     else if name == "src" || name == "poster":
         let _safe = require_static_asset_url(name, value)
-        "static_asset_url_attribute(\"" + escaped_name + "\", \"" + escaped_value + "\")"
+        generated_call(meta.ident("static_asset_url_attribute"), [meta.expr_string(name), meta.expr_string(value)])
     else if template_boolean_attr(name):
-        "boolean_attribute(\"" + escaped_name + "\", true)"
+        generated_call(meta.ident("boolean_attribute"), [meta.expr_string(name), meta.expr_bool(true)])
     else if name == "value":
-        "property(\"" + escaped_name + "\", \"" + escaped_value + "\")"
+        generated_call(meta.ident("property"), [meta.expr_string(name), meta.expr_string(value)])
     else if name == "class":
-        "static_class_attribute([\"" + value.split(" ").map(fn(token: String): escape_src(token)).join("\", \"") + "\"])"
+        var classes: List(meta.ExprSyntax) = []
+        for token in value.split(" "):
+            classes.push(meta.expr_string(token))
+        generated_call(meta.ident("static_class_attribute"), [meta.expr_list(classes)])
     else if name.starts_with("aria-"):
-        "aria_attribute(\"" + escaped_name + "\", \"" + escaped_value + "\")"
+        generated_call(meta.ident("aria_attribute"), [meta.expr_string(name), meta.expr_string(value)])
     else:
-        "attribute(\"" + escaped_name + "\", \"" + escaped_value + "\")"
+        generated_call(meta.ident("attribute"), [meta.expr_string(name), meta.expr_string(value)])
 
-fn emit_dynamic_attr(name: String, marker: String) -> String:
-    let escaped_name = escape_src(name)
+comptime fn emit_dynamic_attr(name: String, hole: meta.ExprSyntax) -> meta.ExprSyntax:
     if name == "href":
-        "navigation_url_attribute(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("navigation_url_attribute"), [meta.expr_string(name), hole])
     else if name == "action" || name == "formaction":
-        "form_url_attribute(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("form_url_attribute"), [meta.expr_string(name), hole])
     else if name == "src" || name == "poster":
-        "asset_url_attribute(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("asset_url_attribute"), [meta.expr_string(name), hole])
     else if template_boolean_attr(name):
-        "boolean_attribute(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("boolean_attribute"), [meta.expr_string(name), hole])
     else if name == "value":
-        "property(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("property"), [meta.expr_string(name), hole])
     else if name == "class":
-        "class_attribute(" + marker + ")"
+        generated_call(meta.ident("class_attribute"), [hole])
     else if name.starts_with("aria-"):
-        "aria_attribute(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("aria_attribute"), [meta.expr_string(name), hole])
     else:
-        "attribute(\"" + escaped_name + "\", " + marker + ")"
+        generated_call(meta.ident("attribute"), [meta.expr_string(name), hole])
 
 fn safe_template_element(name: String) -> Bool:
     let elements = "|a|abbr|address|article|aside|b|bdi|bdo|blockquote|br|button|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|fieldset|figcaption|figure|footer|form|h1|h2|h3|h4|h5|h6|header|hgroup|hr|i|img|input|ins|kbd|label|legend|li|main|mark|menu|meter|nav|ol|optgroup|option|output|p|picture|pre|progress|q|rp|rt|ruby|s|samp|section|select|small|source|span|strong|sub|summary|sup|table|tbody|td|textarea|tfoot|th|thead|time|tr|u|ul|var|wbr|"
@@ -5970,10 +6003,3 @@ fn require_static_asset_url(name: String, value: String) -> Bool:
         Err(_) ->
             fail("glamour html: unsafe static URL in `${name}`")
             false
-
-// Escape a string so it can be re-parsed as a witchy string LITERAL (the emitted
-// source is parsed by the compiler). Backslash first, then quote.
-fn escape_src(s: String) -> String:
-    var out = s.replace("\\", "\\\\")
-    out = out.replace("\"", "\\\"")
-    out

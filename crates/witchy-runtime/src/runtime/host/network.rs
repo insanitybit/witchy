@@ -12,6 +12,22 @@ use crate::net::Stream;
 #[path = "canonical_network.rs"]
 mod canonical;
 
+/// Register the checked canonical Net ABI.  Registering these imports does not
+/// grant network authority: every operation first authenticates an opaque,
+/// instance-bound Net, Listener, or Socket reference.  Minting those references
+/// remains gated by the corresponding grant below.  This lets an admitted module
+/// keep an unreachable public Net helper without making instantiation depend on
+/// authority that its entry point did not request.
+pub(in crate::runtime) fn link_canonical(linker: &mut Linker<VmState>) -> Result<()> {
+    canonical::link_connect(linker)?;
+    canonical::link_listen(linker)?;
+    canonical::link_socket_io(linker)?;
+    linker.func_wrap("witchy", "net_accept", host_net_accept)?;
+    linker.func_wrap("witchy", "net_close", host_net_close)?;
+    super::vm_worker::link_serve_pool(linker)?;
+    Ok(())
+}
+
 /// Register the root `Net` grant mint (RFC-0005 stage 3).
 pub(in crate::runtime) fn link_mint(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_net", host_mint_net)?;
@@ -24,7 +40,6 @@ pub(in crate::runtime) fn link_mint(linker: &mut Linker<VmState>) -> Result<()> 
 /// authority — `connect_pinned` re-checks the pinned IP against the same
 /// allowlist.
 pub(in crate::runtime) fn link_connect(linker: &mut Linker<VmState>) -> Result<()> {
-    canonical::link_connect(linker)?;
     linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
     linker.func_wrap("witchy", "net_deny", host_net_deny)?;
     linker.func_wrap("witchy", "net_connect", host_net_connect)?;
@@ -35,15 +50,12 @@ pub(in crate::runtime) fn link_connect(linker: &mut Linker<VmState>) -> Result<(
     Ok(())
 }
 
-/// Register the Listen-right family. HTTPS listen (RFC-0060) uses the same
-/// Listen right plus a Secret externref resolved host-side; null or
-/// wrong-host-data refs fail loudly at use. (`serve_pool` shares this gate but
-/// is worker-pool machinery and registers in the kernel, after these.)
+/// Register the legacy Listen-right family. HTTPS listen (RFC-0060) uses the
+/// same Listen right plus a Secret externref resolved host-side; null or
+/// wrong-host-data refs fail loudly at use.
 pub(in crate::runtime) fn link_listen(linker: &mut Linker<VmState>) -> Result<()> {
-    canonical::link_listen(linker)?;
     linker.func_wrap("witchy", "net_listen", host_net_listen)?;
     linker.func_wrap("witchy", "net_listen_tls", host_net_listen_tls)?;
-    linker.func_wrap("witchy", "net_accept", host_net_accept)?;
     Ok(())
 }
 
@@ -51,13 +63,11 @@ pub(in crate::runtime) fn link_listen(linker: &mut Linker<VmState>) -> Result<()
 /// obtainable through a granted connect or accept), so the caller links it
 /// under either verb.
 pub(in crate::runtime) fn link_socket_io(linker: &mut Linker<VmState>) -> Result<()> {
-    canonical::link_socket_io(linker)?;
     linker.func_wrap("witchy", "net_send_line", host_net_send_line)?;
     linker.func_wrap("witchy", "net_send_bytes", host_net_send_bytes)?;
     linker.func_wrap("witchy", "net_recv_line_len", host_net_recv_line_len)?;
     linker.func_wrap("witchy", "net_recv_all_len", host_net_recv_all_len)?;
     linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
-    linker.func_wrap("witchy", "net_close", host_net_close)?;
     Ok(())
 }
 

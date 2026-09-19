@@ -65,6 +65,9 @@ impl<'a> SourceConstructor<'a> {
         let transfers = witness.captures().iter().map(|capture| match capture.transfer() {
             ClosureCaptureTransfer::CopyScalar => Ok(CaptureTransfer::CopyScalar),
             ClosureCaptureTransfer::ManagedReferenceByValue => Ok(CaptureTransfer::CloneManaged),
+            // The view witness is distinct source authority, while the only
+            // executable transfer is a managed retain of that opaque carrier.
+            ClosureCaptureTransfer::RootedViewByValue => Ok(CaptureTransfer::CloneManaged),
             ClosureCaptureTransfer::ExplicitOwnedMove => Err(ContractError::UnsupportedCapture),
             ClosureCaptureTransfer::CopyCapability => {
                 let Some(CapabilityRepresentation::Direct(kind)) =
@@ -186,6 +189,11 @@ owner_operations! {
     /// authenticated constructor metadata selects the root/projection; no
     /// guest operand can select a layout or reinterpret the carrier.
     ReadSharedPlace { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
+    /// Reads the authenticated logical extent stored by an immutable rooted
+    /// slice carrier.  The result is the carrier's checked projection length,
+    /// never the backing list's current length and never a guest-selected
+    /// environment field.
+    ReadSharedSliceLength { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
     /// Reads the authenticated constructor/environment tag without selecting
     /// or granting access to constructor-specific payload fields.
     ReadTag { destination: ValueId, owner: ValueId, family: FunctionSignatureId },
@@ -218,9 +226,9 @@ owner_operations! {
 pub enum OwnerFamilySource {
     Closure,
     Aggregate(witchy_syntax::ast::Type),
-    /// The exact checked source reference type carried by this opaque family.
-    /// The initial slice admits only `&'a Int`; mutable references are distinct
-    /// source types and cannot acquire this authority.
+    /// The exact checked rooted-view source type carried by this opaque family.
+    /// The initial slice admits only lifetime-free `&Int`; mutable references
+    /// cannot acquire this authority.
     SharedReference(witchy_syntax::ast::Type),
 }
 
@@ -242,6 +250,22 @@ pub enum SharedReferenceConstructor {
         root: CaptureOrdinal,
         index: CaptureOrdinal,
         bounds: SharedPlaceBounds,
+    },
+    /// An `Int` projection from an immutable rooted `[Int]` carrier. The
+    /// carrier is held in an opaque owner field; the local checked coordinate
+    /// cannot select or expose its backing root.
+    ListIntElementFromSlice {
+        slice: CaptureOrdinal,
+        index: CaptureOrdinal,
+        bounds: SharedPlaceBounds,
+    },
+    /// An immutable `[Int]` projection.  `start` and `length` are captured
+    /// checked `Size` values; only the registered length reader may expose
+    /// `length`, and no operation exposes a by-value element.
+    ListIntSlice {
+        root: CaptureOrdinal,
+        start: CaptureOrdinal,
+        length: CaptureOrdinal,
     },
 }
 
@@ -303,6 +327,38 @@ impl OwnerConstructor {
                 index: CaptureOrdinal(1),
                 bounds: SharedPlaceBounds::CurrentLogicalLength,
             }),
+            [OwnerCapture {
+                value_type: ValueType::Gc(_),
+                storage: CaptureStorage::OwnerField(slice_field),
+                transfer: CaptureTransfer::CloneManaged,
+            }, OwnerCapture {
+                value_type: ValueType::Size,
+                storage: CaptureStorage::EnvironmentField(index_field),
+                transfer: CaptureTransfer::CopyScalar,
+            }] if *slice_field >= 2 && *index_field > 0 => Some(SharedReferenceConstructor::ListIntElementFromSlice {
+                slice: CaptureOrdinal(0),
+                index: CaptureOrdinal(1),
+                bounds: SharedPlaceBounds::CurrentLogicalLength,
+            }),
+            [OwnerCapture {
+                value_type: ValueType::Ref(_),
+                storage: CaptureStorage::EnvironmentField(root_field),
+                transfer: CaptureTransfer::CloneManaged,
+            }, OwnerCapture {
+                value_type: ValueType::Size,
+                storage: CaptureStorage::EnvironmentField(start_field),
+                transfer: CaptureTransfer::CopyScalar,
+            }, OwnerCapture {
+                value_type: ValueType::Size,
+                storage: CaptureStorage::EnvironmentField(length_field),
+                transfer: CaptureTransfer::CopyScalar,
+            }] if *root_field > 0 && *start_field > 0 && *length_field > 0
+                && root_field != start_field && root_field != length_field && start_field != length_field =>
+            {
+                Some(SharedReferenceConstructor::ListIntSlice {
+                    root: CaptureOrdinal(0), start: CaptureOrdinal(1), length: CaptureOrdinal(2),
+                })
+            }
             _ => None,
         }
     }
@@ -321,6 +377,7 @@ impl OwnerOperation {
         match self {
             Self::Construct { destination, .. } | Self::ReadCapability { destination, .. }
             | Self::ReadOwner { destination, .. } | Self::ReadSharedPlace { destination, .. }
+            | Self::ReadSharedSliceLength { destination, .. }
             | Self::ReadTag { destination, .. }
             | Self::ReadCallable { destination, .. } | Self::Clone { destination, .. }
             | Self::CloneEnvironment { destination, .. } | Self::NewList { destination, .. }
@@ -337,6 +394,7 @@ impl OwnerOperation {
             Self::NewList { elements, .. } => elements.clone(),
             Self::ReadCapability { owner, .. } | Self::ReadOwner { owner, .. }
             | Self::ReadSharedPlace { owner, .. }
+            | Self::ReadSharedSliceLength { owner, .. }
             | Self::ReadTag { owner, .. }
             | Self::ReadCallable { owner, .. }
             | Self::Clone { owner, .. } | Self::CloneEnvironment { owner, .. } | Self::Drop { owner, .. } => vec![*owner],
@@ -366,6 +424,7 @@ mod tests {
             (OwnerOperation::ReadCapability { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadOwner { destination, owner, constructor, capture }, vec![owner], vec![destination]),
             (OwnerOperation::ReadSharedPlace { destination, owner, family }, vec![owner], vec![destination]),
+            (OwnerOperation::ReadSharedSliceLength { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::ReadTag { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::ReadCallable { destination, owner, family }, vec![owner], vec![destination]),
             (OwnerOperation::Clone { destination, owner, family }, vec![owner], vec![destination]),

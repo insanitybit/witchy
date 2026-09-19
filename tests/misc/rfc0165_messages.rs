@@ -83,7 +83,7 @@ fn canonical_opaque_variant_list_replacement_preserves_old_closure_three_legs() 
     let source = r#"
 type Action:
     Empty
-    Emit(fn() -> Nil)
+    Emit(fn() -> ())
 
 fn make(console: Console, text: String) -> Action:
     Emit(fn(): console.print(text))

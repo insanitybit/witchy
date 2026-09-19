@@ -139,8 +139,8 @@ fn put_moves(var output: List(Int), edits: List(KeyedEdit)):
                 put_u32(output, 13)
                 put_u32(output, key)
                 put_u32(output, before)
-            RemoveKey(_) -> Nil
-            InsertKey(_, _) -> Nil
+            RemoveKey(_) -> ()
+            InsertKey(_, _) -> ()
 
 fn planned_moves(old_keys: List(Int), new_keys: List(Int)) -> List(KeyedEdit):
     match glamour.keyed_plan(old_keys, new_keys):
@@ -205,7 +205,7 @@ pub fn glamour_emit(state: BrowserState) -> Bytes:
 @browser
 pub fn glamour_release(own state: BrowserState):
     match state:
-        BrowserState(_, _) -> Nil
+        BrowserState(_, _) -> ()
 
 fn main(console: Console):
     console.print("${reference_step("{\"model\":0}")}\n")

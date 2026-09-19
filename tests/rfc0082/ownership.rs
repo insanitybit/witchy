@@ -3,10 +3,10 @@
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter};
 
-use super::authenticated::checked_result;
+use super::authenticated::checked_source_result;
 
 fn checked(source: &str) -> witchy_types::pipeline::CheckedModule {
-    checked_result(source).expect("authenticated checked link")
+    checked_source_result(source).expect("authenticated exact-source link")
 }
 
 #[test]
@@ -17,12 +17,12 @@ mode opt
 import borrow
 import dynamic
 
-fn view(text: let('a) String) -> View(String, 'a):
+fn view(text: &'a String) -> &'a String:
     text
 
 fn main(console: Console):
     var owner = "borrowed"
-    let borrowed = view(owner)
+    let borrowed = view(&owner)
     let borrowed_packed = dynamic.dynamic(borrowed.owned())
     let borrowed_decoded: Option(String) = dynamic.try_decode(borrowed_packed)
     match borrowed_decoded:
@@ -51,16 +51,17 @@ fn main(console: Console):
     let expected = ["materialized-borrowed", "unique-3", "alias-shared", "shared-shared"];
     assert_eq!(interpreted, expected);
 
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile Dynamic ownership fixture");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit Dynamic ownership fixture");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities { print: true, quiet: true, ..Default::default() },
             256,
         )
         .expect("spawn compiled Dynamic ownership fixture");
     actor.run().expect("run compiled Dynamic ownership fixture");
     assert_eq!(actor.output(), expected);
+    assert_eq!(actor.canonical_heap_leaks().unwrap(), Some(0));
 }

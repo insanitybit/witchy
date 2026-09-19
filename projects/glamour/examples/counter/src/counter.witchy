@@ -34,7 +34,7 @@ fn view(count: Int) -> Ui(Msg):
 
 // update: a data-only match from (model, msg) to (model, Cmd). No effects — the rune
 // is capability-denied — so the command is always `NoCmd` here.
-fn update(_auth: Nil, count: Int, msg: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), count: Int, msg: Msg) -> (Int, Cmd(Msg)):
     match msg:
         Inc -> (count + 1, NoCmd)
         Dec -> (count - 1, NoCmd)
@@ -71,19 +71,19 @@ fn model_to_json(count: Int) -> Json:
 fn msg_to_json(m: Msg) -> Json:
     json.from_value(m)
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, view, subscriptions)
 
 // The single JS-callable export. `step_with` is glamour's reusable MVU engine:

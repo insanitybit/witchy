@@ -3577,9 +3577,13 @@ impl<'types> Codegen<'types> {
                 }
                 let call_access = self.call_access_signature(e).cloned();
                 let has_var = call_access.as_ref().is_some_and(|signature| {
-                    signature.params().iter().any(|param| {
+                    signature.params().iter().enumerate().any(|(index, param)| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
-                            && !Self::is_explicit_reference_type(param.ty())
+                            && self
+                                .fn_params
+                                .get(name)
+                                .and_then(|params| params.get(index))
+                                .is_some_and(|param| param.convention == Convention::Var)
                     })
                 });
                 // An `var` user call: the callee returns its declared value plus one

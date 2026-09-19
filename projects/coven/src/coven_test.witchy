@@ -311,6 +311,61 @@ fn test_artifact_manifest_rejects_bad_digest():
                 coven_artifact.BadDigest(_d) -> testing.assert(true, "malformed digest refused")
                 _ -> testing.assert(false, "wrong error for a malformed digest")
 
+// RFC-0167: a library's sidecar is external to Wasm and its digest is bound by
+// the record-signed v2 manifest. Missing, malformed, or version-downgraded
+// contracts therefore fail before a compiler may expose an opt export.
+fn test_library_manifest_binds_external_opt_contract_digest():
+    let h = artifact_hex64()
+    let good = "{\"version\":2,\"artifacts\":{},\"libraries\":{\"src/math\":{\"wasm_sha256\":\"" + h + "\",\"opt_callable_export_sha256\":\"" + h + "\"}}}"
+    match coven_artifact.parse(good):
+        Err(e) -> testing.assert(false, "valid library manifest must parse: ${coven_artifact.artifact_error_message(e)}")
+        Ok(m) ->
+            match coven_artifact.select_library(m, "src/math"):
+                None -> testing.assert(false, "library contract entry must be retained")
+                Some(entry) ->
+                    testing.assert_eq(entry.opt_callable_export_sha256, h)
+                    testing.assert(!coven_artifact.manifest_digest(m).is_empty(), "library-only manifest must be signed")
+
+fn test_library_manifest_rejects_missing_or_downgraded_contract():
+    let h = artifact_hex64()
+    let missing = "{\"version\":2,\"artifacts\":{},\"libraries\":{\"src/math\":{\"wasm_sha256\":\"" + h + "\"}}}"
+    let downgraded = "{\"version\":1,\"artifacts\":{},\"libraries\":{}}"
+    testing.assert(coven_artifact.parse(missing).is_err(), "missing opt contract digest must reject")
+    testing.assert(coven_artifact.parse(downgraded).is_err(), "v1 may not smuggle a library contract")
+
+fn test_precompiled_library_v3_binds_kind_and_decoded_limits():
+    let h = artifact_hex64()
+    let good = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"kind\":\"precompiled\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":7,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":9}}}"
+    match coven_artifact.parse(good):
+        Err(e) -> testing.assert(false, "v3 library must parse: ${coven_artifact.artifact_error_message(e)}")
+        Ok(manifest) ->
+            match coven_artifact.select_precompiled_library(manifest, "src/math"):
+                None -> testing.assert(false, "v3 precompiled library must be selected")
+                Some(entry) ->
+                    testing.assert_int_eq(entry.wasm_size, 7)
+                    testing.assert_int_eq(entry.opt_callable_export_size, 9)
+                    testing.assert(!coven_artifact.manifest_digest(manifest).is_empty(), "v3 signed digest retains sizes and kind")
+
+fn test_precompiled_library_v3_rejects_missing_kind_zero_or_unbounded_sidecar():
+    let h = artifact_hex64()
+    let missing = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"wasm_sha256\":\"" + h + "\",\"wasm_size\":7,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":9}}}"
+    let zero_wasm = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"kind\":\"precompiled\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":0,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":9}}}"
+    let zero_sidecar = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"kind\":\"precompiled\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":7,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":0}}}"
+    let oversized = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"kind\":\"precompiled\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":7,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":1048577}}}"
+    testing.assert(coven_artifact.parse(missing).is_err(), "v3 must require the admitted kind")
+    testing.assert(coven_artifact.parse(zero_wasm).is_err(), "v3 must reject an empty signed Wasm body")
+    testing.assert(coven_artifact.parse(zero_sidecar).is_err(), "v3 must reject an empty signed sidecar")
+    testing.assert(coven_artifact.parse(oversized).is_err(), "v3 must refuse a sidecar above the decoder bound")
+
+fn test_precompiled_library_v3_rejects_wrong_kind_module_and_wasm_bound():
+    let h = artifact_hex64()
+    let wrong_kind = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"kind\":\"source\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":7,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":9}}}"
+    let bad_module = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/../escape\":{\"kind\":\"precompiled\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":7,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":9}}}"
+    let oversized_wasm = "{\"version\":3,\"artifacts\":{},\"libraries\":{\"src/math\":{\"kind\":\"precompiled\",\"wasm_sha256\":\"" + h + "\",\"wasm_size\":67108865,\"opt_callable_export_sha256\":\"" + h + "\",\"opt_callable_export_size\":9}}}"
+    testing.assert(coven_artifact.parse(wrong_kind).is_err(), "v3 must reject an unadmitted library kind")
+    testing.assert(coven_artifact.parse(bad_module).is_err(), "v3 must reject a traversal-shaped module")
+    testing.assert(coven_artifact.parse(oversized_wasm).is_err(), "v3 must refuse Wasm above 64 MiB")
+
 // (RFC-0095 typosquat) The name-distance metric catches the confusable edits a
 // typosquat relies on: adjacent transposition, a dropped/added letter, an
 // adjacent-key substitution — each edit-distance 1 from a real name.

@@ -62,18 +62,23 @@ mod short_circuit_tests;
 mod pattern_decision_tests;
 
 use witchy_syntax::ast::{BinOp, Convention, Expr, Item, Pattern, Stmt, Type, TypeDef, TypeQual, UnOp};
-use witchy_types::canonical_aggregates::{concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
+use witchy_types::canonical_aggregates::{canonical_owner_aggregate_identity, concrete_aggregate_identity, dictionary_as_tuple, scalar_aggregate_shape, ScalarAggregateShape, ScalarVariant};
+use witchy_types::access::{AccessIdentityKey, AccessKind, AccessSignature, CheckedAccessFacts, CheckedPlaceStep};
+use witchy_types::loans::LoanFacts;
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::canonical_closure::lambda_sites;
 use witchy_types::typeck::{
     ProperTailCallableId, ProperTailDispatchKind, ProperTailExprKind, ProperTailPathStep,
-    ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, TypeTable,
+    ProperTailSite, ProperTailSiteKey, ProperTailSiteManifest, RegionMustDisposition,
+    RegionPackedLayoutDescriptor, RegionPromotionFact, Ty, TypeTable,
 };
+use witchy_types::views::{CheckedViewFact, CheckedViewFacts};
 use witchy_wir::canonical_safewir::{
     AccessMode, ArithmeticOperator, BasicBlock, BlockId, BlockParameter,
     CallArgument, CallableContract, CanonicalAbiCatalog, CanonicalModule,
     CheckedSourceIdentity, ComparisonOperator, Function, FunctionId, FunctionSignature,
-    FunctionSignatureId, HostBufferExtent, HostCallArgument, LoadTransfer, LoweredCandidate,
+    FunctionSignatureId, HostBufferExtent, HostCallArgument, HostMutation, HostReentrancy,
+    ExternalWasmIdentity, ImportContract, ImportContractIdentity, ImportId, LoadTransfer, LoweredCandidate,
     LoweredModuleParts, CandidateAbiBinding, CandidateAbiBindings, CandidateAdapterBinding, CandidateAdapterBindings, CandidateClosureBinding, CandidateClosureBindings, MemoryEffect, Operation, OverflowBehavior, ParameterContract,
     ParameterOwnership, Projection, ResultContract, Revision,
     Terminator, Ownership, ValueId, ValueType,
@@ -93,6 +98,7 @@ struct ClosureValueLayouts {
     owners: HashMap<Type, GcTypeId>,
     aggregate_owners: HashMap<Type, (GcTypeId, GcTypeId)>,
     shared_int_reference: GcTypeId,
+    rooted_int_slice_view: GcTypeId,
 }
 
 impl std::ops::Deref for ClosureValueLayouts {
@@ -102,8 +108,11 @@ impl std::ops::Deref for ClosureValueLayouts {
 
 impl ClosureValueLayouts {
     fn opaque_type(&self, source: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<GcTypeId> {
-        if shared_reference_parts(source).is_some_and(|(_, inner)| is_direct_shared_int(inner)) {
+        if rooted_view_inner(source).is_some_and(is_direct_shared_int) {
             return Some(self.shared_int_reference);
+        }
+        if rooted_view_inner(source).is_some_and(is_rooted_int_slice) {
+            return Some(self.rooted_int_slice_view);
         }
         match source.unqualified() {
             Type::Fn(..) => self.owners
@@ -119,7 +128,7 @@ impl ClosureValueLayouts {
                 self.aggregate_owners.get(&key).map(|(_, list)| *list)
             }
             _ => {
-                let key = concrete_aggregate_identity(source, definitions)?;
+                let key = canonical_owner_aggregate_identity(source, definitions)?;
                 self.aggregate_owners.get(&key).map(|(owner, _)| *owner)
             }
         }
@@ -164,6 +173,9 @@ pub enum CanonicalLoweringError {
     IdOverflow,
     TailManifest(String),
     InvalidAuthenticatedAbiCatalog(String),
+    InvalidCheckedLoanFacts(String),
+    InvalidCheckedViewFacts(String),
+    InvalidCheckedAccessFacts(String),
 }
 
 impl fmt::Display for CanonicalLoweringError {
@@ -185,6 +197,40 @@ pub fn lower_typed_module(
     let service_sites = witchy_types::canonical_worker::service_sites(source)
         .map_err(CanonicalLoweringError::UnsupportedCanonicalObligation)?;
     let typed = source.typed_module();
+    // Canonical rooted views use their own exact checked product.  Do not
+    // substitute a missing loan graph, and do not fall back to walking the AST
+    // when view facts are missing or stale.  Legacy-only modules continue to
+    // require their checked loan graph.
+    let view_facts = match typed.view_facts() {
+        Ok(facts) => Some(facts),
+        Err(witchy_types::typeck::CheckedViewFactsError::Missing) => None,
+        Err(error) => return Err(CanonicalLoweringError::InvalidCheckedViewFacts(error.to_string())),
+    };
+    let loan_facts = if view_facts.is_none() {
+        let loan_facts = source
+            .loan_facts()
+            .map_err(|error| CanonicalLoweringError::InvalidCheckedLoanFacts(error.to_string()))?;
+        let loan_telemetry = loan_facts.telemetry();
+        if loan_telemetry.active_events > 0 && loan_facts.owner_roots().is_empty() {
+            return Err(CanonicalLoweringError::InvalidCheckedLoanFacts(
+                "loan graph records active events without checked owner roots".to_string(),
+            ));
+        }
+        Some(loan_facts)
+    } else {
+        None
+    };
+    let access_facts = source
+        .access_facts()
+        .map_err(|error| CanonicalLoweringError::InvalidCheckedAccessFacts(error.to_string()))?;
+    let _checked_access_contracts = access_facts.call_contracts().count();
+    // RFC-0167 readiness facts are a production checked-source product. They
+    // enable no pass here, but canonical lowering refuses a stale pairing
+    // rather than letting a later optimizer recover effects from AST syntax.
+    source
+        .optimization_readiness()
+        .validate_source(source)
+        .map_err(|error| CanonicalLoweringError::InvalidCheckedAccessFacts(error.to_string()))?;
     let scope = witchy_types::pipeline::canonical_scope(typed.module());
     // Checked source records what it could not bind as canonical authority
     // (RFC-0165): library specializations, closures the v1 witness cannot
@@ -197,16 +243,45 @@ pub fn lower_typed_module(
             obligations.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
         ));
     }
+    let definitions = witchy_types::canonical_aggregates::type_definitions(typed.module());
     for item in &typed.module().items {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name) {
             continue;
         }
+        // `CanonicalCheckedSource` emits callable witnesses only for runtime
+        // declarations: `pipeline::function_has_free_signature_variables`
+        // omits generic templates.  Do not turn an arbitrary missing final
+        // witness into a skipped scan; only that exact free-variable template
+        // shape remains compile-time input here.
+        if source.callable_signature(&function.name).is_none() {
+            if generic_template_without_callable_witness(function) {
+                continue;
+            }
+            return Err(CanonicalLoweringError::MissingCheckedFunctionType(
+                function.name.clone(),
+            ));
+        }
+        // `&mut Record` is not generally representable in the v1 ABI. The
+        // only early-scan exception is the exact source-derived projected
+        // return carrier, whose record field was resolved against the checked
+        // definition before this syntax-only qualifier scan runs. Its later
+        // callable/access/WIR checks remain mandatory.
+        let projected_parameter = projected_exclusive_source_parameter(function, &definitions)
+            .or_else(|| generic_projected_exclusive_return_alias(source, function, &definitions).ok().flatten().map(|alias| alias.parameter()));
         if let Some(unsupported) = function
             .params
             .iter()
-            .filter_map(|parameter| parameter.ty.as_ref().map(|ty| var_parameter_type(ty, parameter.convention)))
-            .chain(function.ret.iter().cloned())
+            .enumerate()
+            .filter_map(|(index, parameter)| {
+                parameter.ty.as_ref().and_then(|ty| {
+                    let physical = parameter_physical_type(ty, parameter.convention);
+                    (projected_parameter != Some(index)
+                        && contains_deferred_v1_qualifier(&physical))
+                        .then_some(physical)
+                })
+            })
+            .chain(function.ret.iter().map(result_physical_type))
             .find(contains_deferred_v1_qualifier)
             .or_else(|| deferred_v1_qualifier_in_block(&function.body))
         {
@@ -225,1023 +300,1303 @@ pub fn lower_typed_module(
             .map(|entry| (format!("{entry}.{}", definition.name), definition));
         std::iter::once((definition.name.clone(), definition)).chain(qualified)
     }).collect::<HashMap<_, _>>();
-    let definitions = witchy_types::canonical_aggregates::type_definitions(typed.module());
     // Shape and identity judgments recur for every value of the same type;
     // memoize them for this map for the rest of the lowering.
     witchy_types::canonical_aggregates::with_shape_memo(&definitions, || {
-        let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
-            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-        let tail_manifest = source.proper_tail_manifest();
-        let closure_families = crate::canonical_layouts::closure_families(source)
-            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-        let aggregate_families = crate::canonical_layouts::opaque_aggregate_families(source)
-            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-        let shared_reference_layout = crate::canonical_layouts::shared_int_reference_layout(source)
-            .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
-        let closure_layouts = ClosureValueLayouts {
-            linear: closure_families.iter().map(|(signature, family)| (signature.clone(), family.closure)).collect(),
-            owners: closure_families.iter().filter_map(|(signature, family)|
-                family.owner_type.map(|owner| (signature.clone(), owner))).collect(),
-            aggregate_owners: aggregate_families.iter().map(|(source, family)|
-                (source.clone(), (family.owner_type, family.list_type))).collect(),
-            shared_int_reference: crate::canonical_layouts::shared_int_reference_owner_type(),
+    let (_, layout_catalog) = LayoutBundle::decode_canonical(&layouts.canonical_bytes())
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let tail_manifest = source.proper_tail_manifest();
+    let closure_families = crate::canonical_layouts::closure_families(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let aggregate_families = crate::canonical_layouts::opaque_aggregate_families(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let shared_reference_layout = crate::canonical_layouts::shared_int_reference_layout(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let rooted_slice_layout = crate::canonical_layouts::rooted_int_slice_layout(source)
+        .map_err(|error| CanonicalLoweringError::InvalidLayoutBundle(error.to_string()))?;
+    let closure_layouts = ClosureValueLayouts {
+        linear: closure_families.iter().map(|(signature, family)| (signature.clone(), family.closure)).collect(),
+        owners: closure_families.iter().filter_map(|(signature, family)|
+            family.owner_type.map(|owner| (signature.clone(), owner))).collect(),
+        aggregate_owners: aggregate_families.iter().map(|(source, family)|
+            (source.clone(), (family.owner_type, family.list_type))).collect(),
+        shared_int_reference: crate::canonical_layouts::shared_int_reference_owner_type(),
+        rooted_int_slice_view: crate::canonical_layouts::rooted_int_slice_owner_type(),
+    };
+    let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
+    let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
+    let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
+    string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
+    if requires_secret {
+        string_payloads.extend(registry_hosts::REQUIRED_SECRET_MESSAGE_PARTS.map(|part| part.as_bytes().to_vec()));
+    }
+    string_payloads.sort();
+    string_payloads.dedup();
+    let string_data_ids = string_payloads
+        .iter()
+        .enumerate()
+        .map(|(index, bytes)| {
+            Ok((
+                bytes.clone(),
+                witchy_wir::canonical_safewir::StaticDataId::new(
+                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
+    // Callable identity is structural.  Intern every concrete checked `Fn`
+    // type, including types which occur only in parameters or lambda
+    // expressions, before assigning any declaration/function IDs.  A source
+    // name is never part of a callable ABI identity.
+    let mut callable_types = Vec::new();
+    // The type table intentionally represents runtime types and erases
+    // qualifier-only distinctions.  A generated eta lambda still carries an
+    // authenticated declaration annotation, though, and its closure code slot
+    // must use that declaration's contract.  Keep that contract keyed by the
+    // physical closure layout.  Two distinct contracts may not share a code
+    // slot: reject rather than silently choosing either one.
+    let mut lambda_contracts = HashMap::new();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let Some(function_type) = source.callable_signature(&function.name) else {
+            if generic_template_without_callable_witness(function) {
+                continue;
+            }
+            return Err(CanonicalLoweringError::MissingCheckedFunctionType(
+                function.name.clone(),
+            ));
         };
-        let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
-        let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
-        let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
-        string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
-        if requires_secret {
-            string_payloads.extend(registry_hosts::REQUIRED_SECRET_MESSAGE_PARTS.map(|part| part.as_bytes().to_vec()));
+        collect_callable_types(function_type, &mut callable_types);
+    }
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
         }
-        string_payloads.sort();
-        string_payloads.dedup();
-        let string_data_ids = string_payloads
-            .iter()
-            .enumerate()
-            .map(|(index, bytes)| {
-                Ok((
-                    bytes.clone(),
-                    witchy_wir::canonical_safewir::StaticDataId::new(
-                        u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                    ),
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
-        // Callable identity is structural.  Intern every concrete checked `Fn`
-        // type, including types which occur only in parameters or lambda
-        // expressions, before assigning any declaration/function IDs.  A source
-        // name is never part of a callable ABI identity.
-        let mut callable_types = Vec::new();
-        for item in &typed.module().items {
-            let Item::Function(function) = item else { continue };
-            if !scope.contains(&function.name) {
-                continue;
-            }
-            if let Some(function_type) = source.callable_signature(&function.name) {
-                collect_callable_types(function_type, &mut callable_types);
-            }
-        }
-        for item in &typed.module().items {
-            let Item::Function(function) = item else { continue };
-            if !scope.contains(&function.name) {
-                continue;
-            }
-            let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
-                &function.body,
-                &mut |expression| {
-                    if let Some(checked_type) = typed.table().type_of(expression)
-                        .and_then(witchy_types::typeck::ty_to_ast)
-                    {
-                        collect_callable_types(&checked_type, &mut callable_types);
-                    }
-                    Ok(())
-                },
-            );
-        }
-        // Layout projection also reaches callable fields nested inside concrete
-        // aggregate families. Those types may have no standalone expression node
-        // in the monomorphized module, but their projected closure layouts still
-        // require the same authenticated declaration and closure signatures.
-        callable_types.extend(closure_families.keys().cloned());
-        callable_types.sort_by_key(|ty| format!("{ty:?}"));
-        callable_types.dedup();
-        let function_types = callable_types
-            .iter()
-            .enumerate()
-            .map(|(index, ty)| {
-                Ok((
-                    ty.clone(),
-                    FunctionSignatureId::new(
-                        u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                    ),
-                ))
-            })
-            .collect::<Result<HashMap<_, _>, CanonicalLoweringError>>()?;
-        let mut signatures = callable_types
-            .iter()
-            .map(|ty| {
-                let id = function_types[ty];
-                signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions).map_err(|error| {
-                    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
-                        eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
-                    }
-                    error
-                })
-            })
-            .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-        // Every `fn` type also has its closure signature: the declaration
-        // signature with the closure record prepended as a shared parameter.
-        // The code slot of a closure record holds a function of that shape.
-        let mut closure_signatures: HashMap<Type, FunctionSignatureId> = HashMap::new();
-        let mut closure_context = ClosureContext {
-            layouts: closure_layouts.clone(),
-            families: closure_families,
-            aggregate_families,
-            signature_by_layout: HashMap::new(),
-            declaration_by_layout: HashMap::new(),
-            lambda_captures: HashMap::new(),
-            adapters: HashMap::new(),
-            owners: Vec::new(),
-        };
-        for ty in &callable_types {
-            let declaration_id = function_types[ty];
-            let key = crate::canonical_layouts::canonical_closure_key(ty, &definitions);
-            // A `fn` type that is only ever a declaration's shape has no
-            // closure layout and needs no closure signature.
-            let Some(&layout) = closure_layouts.get(&key) else { continue };
-            if let Some(&id) = closure_signatures.get(&key) {
-                closure_signatures.insert(ty.clone(), id);
-                continue;
-            }
-            let id = FunctionSignatureId::new(
-                u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            );
-            let declaration = signatures[declaration_id.get() as usize].clone();
-            signatures.push(closure_signature(id, layout, &declaration, closure_layouts.owners.get(&key).copied()));
-            closure_signatures.insert(key, id);
-            closure_signatures.insert(ty.clone(), id);
-            closure_context.signature_by_layout.insert(layout, id);
-            closure_context.declaration_by_layout.insert(layout, declaration_id);
-        }
-        let mut functions_by_name = HashMap::new();
-        let mut fresh_list_push_signatures = HashMap::new();
-        for item in &typed.module().items {
-            let Item::Function(function) = item else {
-                match item {
-                    Item::Type(_) => continue,
-                    Item::Trait(_) => return Err(CanonicalLoweringError::UnsupportedItem("trait")),
-                    Item::Impl(_) => return Err(CanonicalLoweringError::UnsupportedItem("impl")),
-                    Item::Const { .. } => return Err(CanonicalLoweringError::UnsupportedItem("const")),
-                    Item::TypeAlias { .. } => {
-                        return Err(CanonicalLoweringError::UnsupportedItem("type alias"));
-                    }
-                    Item::Comptime(_) => {
-                        return Err(CanonicalLoweringError::UnsupportedItem("comptime"));
-                    }
-                    Item::Function(_) => unreachable!(),
-                }
-            };
-            if !scope.contains(&function.name) {
-                continue;
-            }
-            let Some(function_type) = source.callable_signature(&function.name).cloned() else {
-                // A generic source template has no concrete checked callable body.
-                // The sealed frontend witness lists only generated instances.
-                continue;
-            };
-            let function_id = FunctionId::new(
-                u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            );
-            let source_signature_id = *function_types
-                .get(function_type.unqualified())
-                .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
-            // A monomorphized list.push helper always allocates its replacement
-            // list before dropping the input. Its result therefore carries a
-            // unique token even though the public source type conservatively says
-            // only `List(T)`. Keep that stronger fact on a private signature so a
-            // `var unique` caller can tail-forward its checked write-back contract
-            // without weakening it to Shared.
-            let signature_id = if function.name.starts_with("list.push__")
-                || function.name.starts_with("list.__push__")
-            {
-                if let Some(signature_id) = fresh_list_push_signatures.get(&source_signature_id) {
-                    *signature_id
-                } else {
-                    let mut signature = signatures[source_signature_id.get() as usize].clone();
-                    let [ValueType::Ref(layout)] = signature.results.as_slice() else {
-                        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                            function.name.clone(),
-                        ));
-                    };
-                    let [result] = signature.contract.results.as_mut_slice() else {
-                        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                            function.name.clone(),
-                        ));
-                    };
-                    *result = ResultContract::Unique { layout: *layout };
-                    signature.id = FunctionSignatureId::new(
-                        u32::try_from(signatures.len())
-                            .map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        let mut contract_conflict = false;
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(
+            &function.body,
+            &mut |expression| {
+                if let Some(contract) = lambda_declared_callable_type(
+                    expression,
+                    typed.table().type_of(expression),
+                ) {
+                    let key = crate::canonical_layouts::canonical_closure_key(
+                        &contract,
+                        &definitions,
                     );
-                    let signature_id = signature.id;
-                    signatures.push(signature);
-                    fresh_list_push_signatures.insert(source_signature_id, signature_id);
-                    signature_id
+                    match lambda_contracts.insert(key.clone(), contract.clone()) {
+                        Some(existing) if existing != contract => {
+                            contract_conflict = true;
+                            return Err(());
+                        }
+                        _ => collect_callable_types(&contract, &mut callable_types),
+                    }
                 }
-            } else {
-                source_signature_id
-            };
-            functions_by_name.insert(function.name.clone(), (function_id, signature_id));
+                if let Some(checked_type) = typed.table().type_of(expression)
+                    .and_then(witchy_types::typeck::ty_to_ast)
+                {
+                    collect_callable_types(&checked_type, &mut callable_types);
+                }
+                Ok(())
+            },
+        );
+        if contract_conflict {
+            return Err(CanonicalLoweringError::UnsupportedCanonicalObligation(
+                "distinct eta callable contracts share one physical closure layout".to_string(),
+            ));
         }
-        // Lambdas become functions of their own, bound to their closure
-        // witness: the closure record is their leading parameter and every
-        // `Int` capture is loaded from it at entry. Each is met again by node
-        // address when its function body is lowered.
-        let sites = lambda_sites(typed)
-            .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
-        let witnesses = source.closure_witness().entries();
-        let mut lambda_names: HashMap<usize, String> = HashMap::new();
-        let mut lambda_functions: Vec<LambdaFunction<'_>> = Vec::new();
-        let source_function_names = functions_by_name.keys().cloned().collect::<HashSet<String>>();
-        for (item_index, item) in typed.module().items.iter().enumerate() {
-            let Item::Function(function) = item else { continue };
-            if !scope.contains(&function.name) {
+    }
+    // Layout projection also reaches callable fields nested inside concrete
+    // aggregate families. Those types may have no standalone expression node
+    // in the monomorphized module, but their projected closure layouts still
+    // require the same authenticated declaration and closure signatures.
+    callable_types.extend(closure_families.keys().cloned());
+    callable_types.sort_by_key(|ty| format!("{ty:?}"));
+    callable_types.dedup();
+    let function_types = callable_types
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| {
+            Ok((
+                ty.clone(),
+                FunctionSignatureId::new(
+                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, CanonicalLoweringError>>()?;
+    let mut signatures = callable_types
+        .iter()
+        .map(|ty| {
+            let id = function_types[ty];
+            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions).map_err(|error| {
+                if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+                    eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
+                }
+                error
+            })
+        })
+        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    // Every `fn` type also has its closure signature: the declaration
+    // signature with the closure record prepended as a shared parameter.
+    // The code slot of a closure record holds a function of that shape.
+    let mut closure_signatures: HashMap<Type, FunctionSignatureId> = HashMap::new();
+    let mut closure_context = ClosureContext {
+        layouts: closure_layouts.clone(),
+        families: closure_families,
+        aggregate_families,
+        signature_by_layout: HashMap::new(),
+        declaration_by_layout: HashMap::new(),
+        reference_carriers: HashMap::new(),
+        lambda_captures: HashMap::new(),
+        adapters: HashMap::new(),
+        owners: Vec::new(),
+    };
+    for ty in &callable_types {
+        let key = crate::canonical_layouts::canonical_closure_key(ty, &definitions);
+        let declaration_ty = lambda_contracts.get(&key).unwrap_or(ty);
+        let declaration_id = function_types[declaration_ty];
+        // A `fn` type that is only ever a declaration's shape has no
+        // closure layout and needs no closure signature.
+        let Some(&layout) = closure_layouts.get(&key) else { continue };
+        if let Some(&id) = closure_signatures.get(&key) {
+            closure_signatures.insert(ty.clone(), id);
+            continue;
+        }
+        let id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        let declaration = signatures[declaration_id.get() as usize].clone();
+        signatures.push(closure_signature(id, layout, &declaration, closure_layouts.owners.get(&key).copied())?);
+        closure_signatures.insert(key, id);
+        closure_signatures.insert(ty.clone(), id);
+        closure_context.signature_by_layout.insert(layout, id);
+        closure_context.declaration_by_layout.insert(layout, declaration_id);
+    }
+    let mut functions_by_name = HashMap::new();
+    // Physical callable types are shared for layout/closure lookup, but a
+    // declaration's ownership and result contracts are not. Retain this map
+    // so the exact declaration ID can inherit only its checked conventions
+    // from the physical type without ever sharing a mutable ABI overlay.
+    let mut declaration_physical_signatures = HashMap::new();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else {
+            match item {
+                Item::Type(_) => continue,
+                Item::Trait(_) => return Err(CanonicalLoweringError::UnsupportedItem("trait")),
+                Item::Impl(_) => return Err(CanonicalLoweringError::UnsupportedItem("impl")),
+                Item::Const { .. } => return Err(CanonicalLoweringError::UnsupportedItem("const")),
+                Item::TypeAlias { .. } => {
+                    return Err(CanonicalLoweringError::UnsupportedItem("type alias"));
+                }
+                Item::Comptime(_) => {
+                    return Err(CanonicalLoweringError::UnsupportedItem("comptime"));
+                }
+                Item::Function(_) => unreachable!(),
+            }
+        };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let Some(function_type) = source.callable_signature(&function.name).cloned() else {
+            if generic_template_without_callable_witness(function) {
                 continue;
             }
-            let item_index = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-            let mut visit_error = None;
-            let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-                let Expr::Lambda { params, body, qualifiers, .. } = expression else { return Ok(()) };
-                let address = expression as *const Expr as usize;
-                let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
-                let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
-                let captures = witnesses[witness_index].captures();
-                let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
-                let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
-                let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
-                let Some(&signature_id) = closure_signatures.get(&crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions)) else { return Ok(()) };
-                let key = crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions);
-                let Some(family) = closure_context.families.get(&key) else {
+            return Err(CanonicalLoweringError::MissingCheckedFunctionType(
+                function.name.clone(),
+            ));
+        };
+        let function_id = FunctionId::new(
+            u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        let source_signature_id = *function_types
+            .get(function_type.unqualified())
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
+        let mut signature = signatures[source_signature_id.get() as usize].clone();
+        // A monomorphized list.push helper always allocates its replacement
+        // list before dropping the input. Its declaration-specific contract
+        // starts with the stronger result fact; later checked-source overlay
+        // revalidates it without coupling any other physical peer.
+        if function.name.starts_with("list.push__")
+            || function.name.starts_with("list.__push__")
+        {
+            let [ValueType::Ref(layout)] = signature.results.as_slice() else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    function.name.clone(),
+                ));
+            };
+            let [result] = signature.contract.results.as_mut_slice() else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    function.name.clone(),
+                ));
+            };
+            *result = ResultContract::Unique { layout: *layout };
+        }
+        signature.id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        let signature_id = signature.id;
+        signatures.push(signature);
+        declaration_physical_signatures.insert(signature_id, source_signature_id);
+        functions_by_name.insert(function.name.clone(), (function_id, signature_id));
+    }
+    // Lambdas become functions of their own, bound to their closure
+    // witness: the closure record is their leading parameter and every
+    // `Int` capture is loaded from it at entry. Each is met again by node
+    // address when its function body is lowered.
+    let sites = lambda_sites(typed)
+        .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
+    let witnesses = source.closure_witness().entries();
+    let mut lambda_names: HashMap<usize, String> = HashMap::new();
+    let mut lambda_functions: Vec<LambdaFunction<'_>> = Vec::new();
+    let source_function_names = functions_by_name.keys().cloned().collect::<HashSet<String>>();
+    for (item_index, item) in typed.module().items.iter().enumerate() {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let item_index = u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        let mut visit_error = None;
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            let Expr::Lambda { params, body, qualifiers, .. } = expression else { return Ok(()) };
+            let address = expression as *const Expr as usize;
+            let Some(site) = sites.iter().find(|site| site.expr_address == address) else { return Ok(()) };
+            let Some(witness_index) = witnesses.iter().position(|witness| witness.id() == &site.id) else { return Ok(()) };
+            let captures = witnesses[witness_index].captures();
+            let capture_names = captures.iter().map(|capture| capture.binding().name().to_owned()).collect::<Vec<_>>();
+            let Some(fn_type) = typed.table().type_of(expression).and_then(witchy_types::typeck::ty_to_ast) else { return Ok(()) };
+            let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
+            let key = crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions);
+            let Some(&signature_id) = closure_signatures.get(&key) else { return Ok(()) };
+            if let Some(carrier) = access_facts
+                .callable_at(typed.module(), expression)
+                .and_then(callable_reference_carrier)
+            {
+                let Some(&layout) = closure_context.layouts.get(&key) else {
                     visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
                     return Err(());
                 };
-                let witness_index = match u32::try_from(witness_index) {
-                    Ok(index) => index,
-                    Err(_) => { visit_error = Some(CanonicalLoweringError::IdOverflow); return Err(()); }
-                };
-                let Some((tag, variant)) = family.variants.iter().enumerate()
-                    .find(|(_, variant)| variant.witness == Some(witness_index)) else {
-                    visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness family"));
-                    return Err(());
-                };
-                if variant.fields.len() != capture_names.len() {
-                    visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness fields"));
+                if let Some(existing) = closure_context.reference_carriers.get(&layout)
+                    && existing != &carrier
+                {
+                    visit_error = Some(CanonicalLoweringError::UnsupportedCanonicalObligation(
+                        "distinct callable reference identities share one closure layout".to_string(),
+                    ));
                     return Err(());
                 }
-                let mut capture_fields = Vec::with_capacity(capture_names.len());
-                for (index, (name, ty)) in capture_names.iter().zip(&variant.fields).enumerate() {
-                    let field = match variant.storage.get(index) {
-                        Some(CaptureStorage::EnvironmentField(field)) => *field,
-                        Some(CaptureStorage::OwnerField(_)) => 0,
-                        None => { visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure capture storage")); return Err(()); }
-                    };
-                    capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field });
-                }
-                let name = format!("{}#lambda{}", function.name, lambda_functions.len());
-                let params = std::iter::once(closure_environment_param())
-                    .chain(params
-                        .iter()
-                        .zip(parameter_types)
-                        .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() }))
-                    .collect::<Vec<_>>();
-                let synthesized = witchy_syntax::ast::Function {
-                    line: 0,
-                    public: false,
-                    pure: qualifiers.pure,
-                    comptime_only: false,
-                    attributes: Vec::new(),
-                    name: name.clone(),
-                    params,
-                    ret: Some((**result_type).clone()),
-                    body: body.clone(),
-                    bounds: Vec::new(),
-                    is_gen: false,
-                    is_async: false,
-                };
-                let function_id = match u32::try_from(functions_by_name.len()) {
-                    Ok(index) => FunctionId::new(index),
-                    Err(_) => {
-                        visit_error = Some(CanonicalLoweringError::IdOverflow);
-                        return Err(());
-                    }
-                };
-                functions_by_name.insert(name.clone(), (function_id, signature_id));
-                lambda_names.insert(address, name);
-                // Variant zero is exclusively the named-function adapter. `tag`
-                // is the authenticated physical family variant, so source
-                // witnesses already begin at one.
-                let environment_tag = i64::try_from(tag).expect("closure tag fits i64");
-                closure_context.lambda_captures.insert(address, ClosureEnvironment {
-                    tag: environment_tag,
-                    captures: capture_fields.clone(),
-                });
-                lambda_functions.push(LambdaFunction {
-                    synthesized,
-                    body,
-                    function_id,
-                    item_index,
-                    lambda_path: site.id.lambda_path.clone(),
-                    signature_id,
-                    witness_index,
-                    environment_tag,
-                    captures: capture_fields,
-                });
-                Ok(())
-            });
-            if let Some(error) = visit_error {
-                return Err(error);
+                closure_context.reference_carriers.insert(layout, carrier);
             }
-        }
-        // A named function used as a value is a closure whose code is an
-        // adapter: the function's own signature behind the closure record.
-        let mut adapters: Vec<AdapterFunction> = Vec::new();
-        let mut adapter_function_names = HashSet::new();
-        let mut adapter_targets = BTreeSet::new();
-        for item in &typed.module().items {
-            let Item::Function(function) = item else { continue };
-            if !scope.contains(&function.name) {
-                continue;
+            let Some(family) = closure_context.families.get(&key) else {
+                visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
+                return Err(());
+            };
+            let witness_index = match u32::try_from(witness_index) {
+                Ok(index) => index,
+                Err(_) => { visit_error = Some(CanonicalLoweringError::IdOverflow); return Err(()); }
+            };
+            let Some((tag, variant)) = family.variants.iter().enumerate()
+                .find(|(_, variant)| variant.witness == Some(witness_index)) else {
+                visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness family"));
+                return Err(());
+            };
+            if variant.fields.len() != capture_names.len() {
+                visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure witness fields"));
+                return Err(());
             }
-            let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-                if let Expr::Var(name) = expression && source_function_names.contains(name) {
-                    adapter_targets.insert(name.clone());
-                }
-                Ok(())
-            });
-        }
-        for target in adapter_targets {
-            let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
-            let Some(fn_type) = source.callable_signature(&target) else { continue };
-            let fn_type = crate::canonical_layouts::canonical_closure_key(fn_type, &definitions);
-            let Some(&signature_id) = closure_signatures.get(&fn_type) else { continue };
-            let adapter_id = FunctionId::new(
-                u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            let mut capture_fields = Vec::with_capacity(capture_names.len());
+            for (index, (name, ty)) in capture_names.iter().zip(&variant.fields).enumerate() {
+                let field = match variant.storage.get(index) {
+                    Some(CaptureStorage::EnvironmentField(field)) => *field,
+                    Some(CaptureStorage::OwnerField(_)) => 0,
+                    None => { visit_error = Some(CanonicalLoweringError::UnsupportedExpression("closure capture storage")); return Err(()); }
+                };
+                capture_fields.push(ClosureCapture { name: name.clone(), ty: ty.clone(), field });
+            }
+            let name = format!("{}#lambda{}", function.name, lambda_functions.len());
+            let declared_contract = lambda_declared_callable_type(
+                expression,
+                typed.table().type_of(expression),
             );
-            let adapter_name = format!("{target}#adapter");
-            functions_by_name.insert(adapter_name.clone(), (adapter_id, signature_id));
-            adapter_function_names.insert(adapter_name);
-            closure_context.adapters.insert(target.clone(), (adapter_id, signature_id, fn_type));
-            adapters.push(AdapterFunction { id: adapter_id, signature_id, target: target_id, target_signature });
-        }
-        for family in closure_context.families.values() {
-            let Some(owner_type) = family.owner_type else { continue };
-            let signature = closure_context.signature_by_layout[&family.closure];
-            let declaration_signature = closure_context.declaration_by_layout[&family.closure];
-            let mut constructors = Vec::new();
-            for lambda in lambda_functions.iter().filter(|lambda| lambda.signature_id == signature) {
-                let source_constructor = SourceConstructor::from_checked(source, ConstructorId(lambda.witness_index))
-                    .map_err(|_| CanonicalLoweringError::UnsupportedExpression("checked opaque capture contract"))?;
-                let variant = family.variants.iter().find(|variant| variant.witness == Some(lambda.witness_index))
-                    .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque capture variant"))?;
-                if variant.fields.len() != source_constructor.transfers().len() || variant.storage.len() != variant.fields.len() {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("opaque capture arity"));
+            let (declared_parameters, declared_result) = declared_contract
+                .as_ref()
+                .and_then(|contract| match contract.unqualified() {
+                    Type::Fn(parameters, result, _, _) => Some((parameters.as_slice(), result.as_ref())),
+                    _ => None,
+                })
+                .unwrap_or((parameter_types.as_slice(), result_type.as_ref()));
+            if declared_parameters.len() != params.len() {
+                visit_error = Some(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    "lambda declaration arity".to_string(),
+                ));
+                return Err(());
+            }
+            let params = std::iter::once(closure_environment_param())
+                .chain(params
+                    .iter()
+                    .zip(declared_parameters)
+                    .map(|(parameter, ty)| witchy_syntax::ast::Param { ty: Some(parameter.ty.clone().unwrap_or_else(|| ty.clone())), ..parameter.clone() }))
+                .collect::<Vec<_>>();
+            let synthesized = witchy_syntax::ast::Function {
+                line: 0,
+                public: false,
+                pure: qualifiers.pure,
+                comptime_only: false,
+                attributes: Vec::new(),
+                name: name.clone(),
+                type_params: Vec::new(),
+                params,
+                ret: Some(declared_result.clone()),
+                body: body.clone(),
+                bounds: Vec::new(),
+                is_gen: false,
+                is_async: false,
+            };
+            let function_id = match u32::try_from(functions_by_name.len()) {
+                Ok(index) => FunctionId::new(index),
+                Err(_) => {
+                    visit_error = Some(CanonicalLoweringError::IdOverflow);
+                    return Err(());
                 }
-                let captures = variant.fields.iter().zip(&variant.storage).zip(source_constructor.transfers())
-                    .map(|((ty, storage), transfer)| Ok(OwnerCapture {
-                        value_type: source_value_type(ty, &layouts, &layout_catalog, &closure_layouts, &definitions)?,
-                        storage: *storage,
-                        transfer: *transfer,
-                    })).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-                constructors.push(OwnerConstructor { id: ConstructorId(lambda.witness_index), function: lambda.function_id,
-                    witness: Some(lambda.witness_index), environment_tag: lambda.environment_tag, captures });
-            }
-            for (ordinal, adapter) in adapters.iter().enumerate().filter(|(_, adapter)| adapter.signature_id == signature) {
-                let id = witnesses.len().checked_add(ordinal).and_then(|id| u32::try_from(id).ok())
-                    .ok_or(CanonicalLoweringError::IdOverflow)?;
-                constructors.push(OwnerConstructor { id: ConstructorId(id), function: adapter.id,
-                    witness: None, environment_tag: 0, captures: Vec::new() });
-            }
-            constructors.sort_by_key(|constructor| constructor.id.0);
-            closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure,
-                owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
-                signature, declaration_signature, environment: family.environment, constructors });
-        }
-        let mut next_constructor = closure_context.owners.iter().flat_map(|family| &family.constructors)
-            .map(|constructor| constructor.id.0).max().unwrap_or(0).checked_add(1)
-            .ok_or(CanonicalLoweringError::IdOverflow)?;
-        let mut aggregate_families = closure_context.aggregate_families.values().cloned().collect::<Vec<_>>();
-        aggregate_families.sort_by_key(|family| family.owner_type);
-        for family in aggregate_families {
-            let family_token = FunctionSignatureId::new(family.owner_type.get());
-            let mut constructors = Vec::with_capacity(family.variants.len());
-            for variant in &family.variants {
-                let captures = variant.fields.iter().zip(&variant.storage).map(|(field, storage)| {
-                    let value_type = source_value_type(field, &layouts, &layout_catalog, &closure_layouts, &definitions)?;
-                    let transfer = match value_type {
-                        ValueType::Capability(kind) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyCapability(kind),
-                        ValueType::Ref(_) | ValueType::Gc(_) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CloneManaged,
-                        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size =>
-                            witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar,
-                        _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
-                    };
-                    Ok(OwnerCapture { value_type, storage: *storage, transfer })
-                }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-                constructors.push(OwnerConstructor {
-                    id: ConstructorId(next_constructor),
-                    function: FunctionId::new(u32::MAX),
-                    witness: None,
-                    environment_tag: variant.environment_tag,
-                    captures,
-                });
-                next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
-            }
-            closure_context.owners.push(OwnerFamily {
-                source: OwnerFamilySource::Aggregate(family.source.clone()),
-                owner_type: family.owner_type,
-                list_type: family.list_type,
-                signature: family_token,
-                declaration_signature: family_token,
-                environment: family.environment,
-                constructors,
+            };
+            functions_by_name.insert(name.clone(), (function_id, signature_id));
+            lambda_names.insert(address, name);
+            // Variant zero is exclusively the named-function adapter. `tag`
+            // is the authenticated physical family variant, so source
+            // witnesses already begin at one.
+            let environment_tag = i64::try_from(tag).expect("closure tag fits i64");
+            closure_context.lambda_captures.insert(address, ClosureEnvironment {
+                tag: environment_tag,
+                captures: capture_fields.clone(),
             });
+            lambda_functions.push(LambdaFunction {
+                synthesized,
+                body,
+                function_id,
+                item_index,
+                lambda_path: site.id.lambda_path.clone(),
+                signature_id,
+                witness_index,
+                environment_tag,
+                captures: capture_fields,
+            });
+            Ok(())
+        });
+        if let Some(error) = visit_error {
+            return Err(error);
         }
-        if let Some(shared_layout) = shared_reference_layout {
-            let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
-            let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
-            let whole_constructor = ConstructorId(next_constructor);
-            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
-            let mut constructors = vec![OwnerConstructor {
-                id: whole_constructor,
+    }
+    // A named function used as a value is a closure whose code is an
+    // adapter: the function's own signature behind the closure record.
+    let mut adapters: Vec<AdapterFunction> = Vec::new();
+    let mut adapter_function_names = HashSet::new();
+    let mut adapter_targets = BTreeSet::new();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let Expr::Var(name) = expression && source_function_names.contains(name) {
+                adapter_targets.insert(name.clone());
+            }
+            Ok(())
+        });
+    }
+    for target in adapter_targets {
+        let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
+        let Some(fn_type) = source.callable_signature(&target) else { continue };
+        let fn_type = crate::canonical_layouts::canonical_closure_key(fn_type, &definitions);
+        let Some(&signature_id) = closure_signatures.get(&fn_type) else { continue };
+        let adapter_id = FunctionId::new(
+            u32::try_from(functions_by_name.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        let adapter_name = format!("{target}#adapter");
+        functions_by_name.insert(adapter_name.clone(), (adapter_id, signature_id));
+        adapter_function_names.insert(adapter_name);
+        closure_context.adapters.insert(target.clone(), (adapter_id, signature_id, fn_type));
+        adapters.push(AdapterFunction {
+            source_name: target,
+            id: adapter_id,
+            signature_id,
+            target: target_id,
+            target_signature,
+        });
+    }
+    for family in closure_context.families.values() {
+        let Some(owner_type) = family.owner_type else { continue };
+        let signature = closure_context.signature_by_layout[&family.closure];
+        let declaration_signature = closure_context.declaration_by_layout[&family.closure];
+        let mut constructors = Vec::new();
+        for lambda in lambda_functions.iter().filter(|lambda| lambda.signature_id == signature) {
+            let source_constructor = SourceConstructor::from_checked(source, ConstructorId(lambda.witness_index))
+                .map_err(|_| CanonicalLoweringError::UnsupportedExpression("checked opaque capture contract"))?;
+            let variant = family.variants.iter().find(|variant| variant.witness == Some(lambda.witness_index))
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque capture variant"))?;
+            if variant.fields.len() != source_constructor.transfers().len() || variant.storage.len() != variant.fields.len() {
+                return Err(CanonicalLoweringError::UnsupportedExpression("opaque capture arity"));
+            }
+            let captures = variant.fields.iter().zip(&variant.storage).zip(source_constructor.transfers())
+                .map(|((ty, storage), transfer)| Ok(OwnerCapture {
+                    value_type: source_value_type(ty, &layouts, &layout_catalog, &closure_layouts, &definitions)?,
+                    storage: *storage,
+                    transfer: *transfer,
+                })).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+            constructors.push(OwnerConstructor { id: ConstructorId(lambda.witness_index), function: lambda.function_id,
+                witness: Some(lambda.witness_index), environment_tag: lambda.environment_tag, captures });
+        }
+        for (ordinal, adapter) in adapters.iter().enumerate().filter(|(_, adapter)| adapter.signature_id == signature) {
+            let id = witnesses.len().checked_add(ordinal).and_then(|id| u32::try_from(id).ok())
+                .ok_or(CanonicalLoweringError::IdOverflow)?;
+            constructors.push(OwnerConstructor { id: ConstructorId(id), function: adapter.id,
+                witness: None, environment_tag: 0, captures: Vec::new() });
+        }
+        constructors.sort_by_key(|constructor| constructor.id.0);
+        closure_context.owners.push(OwnerFamily { source: OwnerFamilySource::Closure,
+            owner_type, list_type: GcTypeId::new(owner_type.get() + 1),
+            signature, declaration_signature, environment: family.environment, constructors });
+    }
+    let mut next_constructor = closure_context.owners.iter().flat_map(|family| &family.constructors)
+        .map(|constructor| constructor.id.0).max().unwrap_or(0).checked_add(1)
+        .ok_or(CanonicalLoweringError::IdOverflow)?;
+    let mut aggregate_families = closure_context.aggregate_families.values().cloned().collect::<Vec<_>>();
+    aggregate_families.sort_by_key(|family| family.owner_type);
+    for family in aggregate_families {
+        let family_token = FunctionSignatureId::new(family.owner_type.get());
+        let mut constructors = Vec::with_capacity(family.variants.len());
+        for variant in &family.variants {
+            let captures = variant.fields.iter().zip(&variant.storage).map(|(field, storage)| {
+                let value_type = source_value_type(field, &layouts, &layout_catalog, &closure_layouts, &definitions)?;
+                let transfer = match value_type {
+                    ValueType::Capability(kind) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyCapability(kind),
+                    ValueType::Ref(_) | ValueType::Gc(_) => witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CloneManaged,
+                    ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size =>
+                        witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar,
+                    _ => return Err(CanonicalLoweringError::UnsupportedType(field.clone())),
+                };
+                Ok(OwnerCapture { value_type, storage: *storage, transfer })
+            }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+            constructors.push(OwnerConstructor {
+                id: ConstructorId(next_constructor),
                 function: FunctionId::new(u32::MAX),
                 witness: None,
-                environment_tag: 0,
-                captures: vec![OwnerCapture {
-                    value_type: ValueType::Ref(shared_layout.scalar_root),
-                    storage: CaptureStorage::EnvironmentField(1),
-                    transfer: CaptureTransfer::CloneManaged,
-                }],
-            }];
-            if let Some(list_root) = shared_layout.list_root {
-                constructors.push(OwnerConstructor {
-                    id: ConstructorId(next_constructor),
-                    function: FunctionId::new(u32::MAX),
-                    witness: None,
-                    environment_tag: 1,
-                    captures: vec![
-                        OwnerCapture {
-                            value_type: ValueType::Ref(list_root),
-                            storage: CaptureStorage::EnvironmentField(2),
-                            transfer: CaptureTransfer::CloneManaged,
-                        },
-                        OwnerCapture {
-                            value_type: ValueType::Size,
-                            storage: CaptureStorage::EnvironmentField(3),
-                            transfer: CaptureTransfer::CopyScalar,
-                        },
-                    ],
-                });
-            }
-            closure_context.owners.push(OwnerFamily {
-                source: OwnerFamilySource::SharedReference(Type::Qualified(
-                    TypeQual::Borrow("a".into()),
-                    Box::new(Type::Named("Int".into(), Vec::new())),
-                )),
-                owner_type: shared_reference_owner,
-                list_type: GcTypeId::new(shared_reference_owner.get() + 1),
-                signature: shared_reference_token,
-                declaration_signature: shared_reference_token,
-                environment: shared_layout.environment,
-                constructors,
+                environment_tag: variant.environment_tag,
+                captures,
             });
+            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
         }
-        closure_context.owners.sort_by_key(|family| family.owner_type);
-        let checked_parameter_conventions = callable_types
-            .iter()
-            .filter_map(|ty| {
-                let Type::Fn(parameters, _, conventions, _) = ty.unqualified() else {
-                    return None;
-                };
-                let conventions = if conventions.is_empty() {
-                    vec![Convention::Let; parameters.len()]
-                } else {
-                    conventions.clone()
-                };
-                Some((function_types[ty], conventions))
-            })
-            .collect::<HashMap<_, _>>();
-        let mut checked_parameter_conventions = checked_parameter_conventions;
-        for (source_signature, fresh_signature) in &fresh_list_push_signatures {
-            let conventions = checked_parameter_conventions
-                .get(source_signature)
-                .cloned()
-                .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(
-                    *source_signature,
-                ))?;
-            checked_parameter_conventions.insert(*fresh_signature, conventions);
-        }
-        for ty in &callable_types {
-            let (Some(conventions), Some(&closure_signature)) = (checked_parameter_conventions.get(&function_types[ty]).cloned(), closure_signatures.get(ty)) else { continue };
-            let mut with_environment = vec![Convention::Let];
-            with_environment.extend(conventions);
-            checked_parameter_conventions.insert(closure_signature, with_environment);
-        }
-        for item in &typed.module().items {
-            let Item::Function(function) = item else { continue };
-            if !scope.contains(&function.name) {
-                continue;
-            }
-            let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
-                continue;
-            };
-            let mut signature = checked_signature(
-                source,
-                function,
-                signature_id,
-                &layouts,
-                &layout_catalog,
-                &closure_layouts,
-                &definitions,
-            )?;
-            if function.name.starts_with("list.push__")
-                || function.name.starts_with("list.__push__")
-            {
-                let [ValueType::Ref(layout)] = signature.results.as_slice() else {
-                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                        function.name.clone(),
-                    ));
-                };
-                let [result] = signature.contract.results.as_mut_slice() else {
-                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                        function.name.clone(),
-                    ));
-                };
-                *result = ResultContract::Unique { layout: *layout };
-            }
-            signatures[signature_id.get() as usize] = signature;
-        }
-
-        let mut imports = Vec::new();
-        let mut abi_catalog = None;
-        let mut host_imports = HostImports::default();
-        let print_at = source.is_console_fixture();
-        let print_name = if print_at { "console_print_at" } else { "console_print" };
-        let prints = contains_console_print(typed.module());
-        let floats = renders_float(typed.module(), typed.table(), &definitions);
-        let mut capability_imports = collect_capability_imports(typed.module(), typed.table());
-        capability_imports.extend(registry_imports);
-        // Clock has no guest-memory lane. Register it independently of the
-        // buffer-host catalog, which requires a concrete String layout.
-        let clock_needed = capability_imports.remove("clock_now");
-        let compiler_imports = collect_compiler_imports(typed.module());
-        let regex_spans = regex::is_needed(typed.module());
-        // RFC-0165 Net import registration (Net track).
-        let net_imports = net::collect_imports(typed.module());
-        let exec_needed = exec::is_needed(typed.module());
-        let crypto_needed = crypto::is_needed(typed.module());
-        if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
-            let string_layout = string_layout(
-                &Type::Named("String".into(), Vec::new()),
-                &layouts,
-                &layout_catalog,
-            )?;
-            let signature_id = FunctionSignatureId::new(
-                u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            );
-            signatures.push(FunctionSignature {
-                id: signature_id,
-                parameters: vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)), ValueType::Ref(string_layout)],
-                results: Vec::new(),
-                contract: CallableContract {
-                    parameters: vec![
-                        ParameterContract {
-                            value_type: ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
-                            ownership: ParameterOwnership::Value,
-                        },
-                        ParameterContract {
-                            value_type: ValueType::Ref(string_layout),
-                            // Host buffer roles authorize read-only string access.
-                            ownership: ParameterOwnership::Value,
-                        },
-                    ],
-                    results: Vec::new(),
-                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read])]),
-                },
-            });
-            let float_signature_id = FunctionSignatureId::new(
-                u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            );
-            signatures.push(FunctionSignature {
-                id: float_signature_id,
-                parameters: vec![ValueType::Float, ValueType::Ref(string_layout)],
-                results: vec![ValueType::Size],
-                contract: CallableContract {
-                    parameters: vec![
-                        ParameterContract { value_type: ValueType::Float, ownership: ParameterOwnership::Value },
-                        ParameterContract {
-                            value_type: ValueType::Ref(string_layout),
-                            // The host buffer role, not callable ownership,
-                            // authorizes this import's bounded write.
-                            ownership: ParameterOwnership::Value,
-                        },
-                    ],
-                    results: vec![ResultContract::Value(ValueType::Size)],
-                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
-                },
-            });
-            let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
-                .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
-                let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
-                let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
-                let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
-                let text = ValueType::Ref(string_layout);
-                let mut push_import_signature = |parameters: Vec<ValueType>, results: Vec<ValueType>, writes: Option<usize>| {
-                    let id = FunctionSignatureId::new(
-                        u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                    );
-                    let mut parameter_effects = BTreeMap::new();
-                    for (index, parameter) in parameters.iter().enumerate() {
-                        if matches!(parameter, ValueType::Ref(_)) {
-                            let effect = if writes == Some(index) { MemoryEffect::Write } else { MemoryEffect::Read };
-                            parameter_effects.insert(u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, vec![effect]);
-                        }
-                    }
-                    signatures.push(FunctionSignature {
-                        id,
-                        parameters: parameters.clone(),
-                        results: results.clone(),
-                        contract: CallableContract {
-                            // Host buffer roles, not callable ownership, authorize
-                            // each import's slice access.
-                            parameters: parameters
-                                .iter()
-                                .map(|value_type| ParameterContract { value_type: *value_type, ownership: ParameterOwnership::Value })
-                                .collect(),
-                            results: results.iter().map(|result| ResultContract::Value(*result)).collect(),
-                            parameter_effects,
-                        },
-                    });
-                    Ok::<_, CanonicalLoweringError>(id)
-                };
-                let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
-                    dir_read_into: push_import_signature(vec![dir, text, text], vec![ValueType::Size], Some(2))?,
-                    dir_list_into: push_import_signature(vec![dir, text], vec![ValueType::Size], Some(1))?,
-                    dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
-                    dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                    dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
-                    dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
-                    file_read_into: push_import_signature(vec![file, text], vec![ValueType::Size], Some(1))?,
-                    env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
-                    env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
-                };
-                catalog = catalog
-                    .with_capability_imports(capability_signatures, string_layout)
-                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                if capability_imports.contains("dir_is_dir_at") {
-                    let signature = push_import_signature(vec![dir, text], vec![ValueType::Bool], None)?;
-                    catalog = catalog.with_dir_is_dir_import(signature, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-    if capability_imports.contains("build_out_write_at") {
-        let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND);
-        let signature = push_import_signature(vec![build, text, text], Vec::new(), None)?;
-        catalog = catalog.with_build_out_import(signature, string_layout)
-            .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        closure_context.owners.push(OwnerFamily {
+            source: OwnerFamilySource::Aggregate(family.source.clone()),
+            owner_type: family.owner_type,
+            list_type: family.list_type,
+            signature: family_token,
+            declaration_signature: family_token,
+            environment: family.environment,
+            constructors,
+        });
     }
-                if capability_imports.contains("build_read_at") {
-                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND);
-                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                    let ids = [
-                        push_import_signature(vec![build, text], vec![response], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    ];
-                    catalog = catalog.with_build_read_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+    if let Some(shared_layout) = shared_reference_layout {
+        let shared_reference_owner = crate::canonical_layouts::shared_int_reference_owner_type();
+        let shared_reference_token = FunctionSignatureId::new(shared_reference_owner.get());
+        let whole_constructor = ConstructorId(next_constructor);
+        next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+        let mut constructors = vec![OwnerConstructor {
+            id: whole_constructor,
+            function: FunctionId::new(u32::MAX),
+            witness: None,
+            environment_tag: 0,
+            captures: vec![OwnerCapture {
+                value_type: ValueType::Ref(shared_layout.scalar_root),
+                storage: CaptureStorage::EnvironmentField(1),
+                transfer: CaptureTransfer::CloneManaged,
+            }],
+        }];
+        if let Some(list_root) = shared_layout.list_root {
+            constructors.push(OwnerConstructor {
+                id: ConstructorId(next_constructor),
+                function: FunctionId::new(u32::MAX),
+                witness: None,
+                environment_tag: 1,
+                captures: vec![
+                    OwnerCapture {
+                        value_type: ValueType::Ref(list_root),
+                        storage: CaptureStorage::EnvironmentField(2),
+                        transfer: CaptureTransfer::CloneManaged,
+                    },
+                    OwnerCapture {
+                        value_type: ValueType::Size,
+                        storage: CaptureStorage::EnvironmentField(3),
+                        transfer: CaptureTransfer::CopyScalar,
+                    },
+                ],
+            });
+            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+        }
+        if rooted_slice_layout.is_some() {
+            constructors.push(OwnerConstructor {
+                id: ConstructorId(next_constructor),
+                function: FunctionId::new(u32::MAX),
+                witness: None,
+                environment_tag: 2,
+                captures: vec![
+                    OwnerCapture {
+                        value_type: ValueType::Gc(crate::canonical_layouts::rooted_int_slice_owner_type()),
+                        storage: CaptureStorage::OwnerField(2),
+                        transfer: CaptureTransfer::CloneManaged,
+                    },
+                    OwnerCapture {
+                        value_type: ValueType::Size,
+                        storage: CaptureStorage::EnvironmentField(3),
+                        transfer: CaptureTransfer::CopyScalar,
+                    },
+                ],
+            });
+            next_constructor = next_constructor.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?;
+        }
+        closure_context.owners.push(OwnerFamily {
+            source: OwnerFamilySource::SharedReference(Type::Qualified(
+                TypeQual::View,
+                Box::new(Type::Named("Int".into(), Vec::new())),
+            )),
+            owner_type: shared_reference_owner,
+            list_type: GcTypeId::new(shared_reference_owner.get() + 1),
+            signature: shared_reference_token,
+            declaration_signature: shared_reference_token,
+            environment: shared_layout.environment,
+            constructors,
+        });
+    }
+    if let Some(slice_layout) = rooted_slice_layout {
+        let owner_type = crate::canonical_layouts::rooted_int_slice_owner_type();
+        let signature = FunctionSignatureId::new(owner_type.get());
+        let constructor = ConstructorId(next_constructor);
+        closure_context.owners.push(OwnerFamily {
+            source: OwnerFamilySource::SharedReference(Type::Qualified(
+                TypeQual::View,
+                Box::new(Type::Slice(Box::new(Type::Named("Int".into(), Vec::new())))),
+            )),
+            owner_type,
+            list_type: GcTypeId::new(owner_type.get() + 1),
+            signature,
+            declaration_signature: signature,
+            environment: slice_layout.environment,
+            constructors: vec![OwnerConstructor {
+                id: constructor,
+                function: FunctionId::new(u32::MAX),
+                witness: None,
+                environment_tag: 2,
+                captures: vec![
+                    OwnerCapture {
+                        value_type: ValueType::Ref(slice_layout.list_root),
+                        storage: CaptureStorage::EnvironmentField(1),
+                        transfer: CaptureTransfer::CloneManaged,
+                    },
+                    OwnerCapture {
+                        value_type: ValueType::Size,
+                        storage: CaptureStorage::EnvironmentField(2),
+                        transfer: CaptureTransfer::CopyScalar,
+                    },
+                    OwnerCapture {
+                        value_type: ValueType::Size,
+                        storage: CaptureStorage::EnvironmentField(3),
+                        transfer: CaptureTransfer::CopyScalar,
+                    },
+                ],
+            }],
+        });
+    }
+    closure_context.owners.sort_by_key(|family| family.owner_type);
+    let checked_parameter_conventions = callable_types
+        .iter()
+        .filter_map(|ty| {
+            let Type::Fn(parameters, _, conventions, _) = ty.unqualified() else {
+                return None;
+            };
+            let conventions = if conventions.is_empty() {
+                vec![Convention::Let; parameters.len()]
+            } else {
+                conventions.clone()
+            };
+            Some((function_types[ty], conventions))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut checked_parameter_conventions = checked_parameter_conventions;
+    for (declaration_signature, physical_signature) in &declaration_physical_signatures {
+        let conventions = checked_parameter_conventions
+            .get(physical_signature)
+            .cloned()
+            .ok_or(CanonicalLoweringError::MissingCheckedCallConventions(
+                *physical_signature,
+            ))?;
+        checked_parameter_conventions.insert(*declaration_signature, conventions);
+    }
+    for ty in &callable_types {
+        let (Some(conventions), Some(&closure_signature)) = (checked_parameter_conventions.get(&function_types[ty]).cloned(), closure_signatures.get(ty)) else { continue };
+        let mut with_environment = vec![Convention::Let];
+        with_environment.extend(conventions);
+        checked_parameter_conventions.insert(closure_signature, with_environment);
+    }
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let Some((_, signature_id)) = functions_by_name.get(&function.name).copied() else {
+            continue;
+        };
+        let checked_signature_result = checked_signature(
+            source,
+            function,
+            signature_id,
+            &layouts,
+            &layout_catalog,
+            &closure_layouts,
+            &definitions,
+        );
+        let mut signature = checked_signature_result?;
+        if function.name.starts_with("list.push__")
+            || function.name.starts_with("list.__push__")
+        {
+            let [ValueType::Ref(layout)] = signature.results.as_slice() else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    function.name.clone(),
+                ));
+            };
+            let [result] = signature.contract.results.as_mut_slice() else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    function.name.clone(),
+                ));
+            };
+            *result = ResultContract::Unique { layout: *layout };
+        }
+        signatures[signature_id.get() as usize] = signature;
+    }
+    // A direct shared alias is callable only through this declaration-specific
+    // map. Generic entries require their sealed specialization identity;
+    // monomorphic entries require the same exact forwarding relation in the
+    // source declaration. This prevents qualifier-erased checked ABI lanes
+    // from admitting a callee by spelling or coincidentally matching layout.
+    let mut direct_shared_alias_callees = HashMap::new();
+    for item in &typed.module().items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        if source.callable_signature(&function.name).is_none()
+            && generic_template_without_callable_witness(function)
+        {
+            continue;
+        }
+        let (_, signature_id) = functions_by_name.get(&function.name).copied().ok_or_else(|| {
+            CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone())
+        })?;
+        let signature = signatures.get(signature_id.get() as usize).ok_or_else(|| {
+            CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone())
+        })?;
+        let direct_alias = if generic_shared_relay_template_candidate(source, &function.name) {
+            let checked = source.callable_signature(&function.name).ok_or_else(|| {
+                CanonicalLoweringError::MissingCheckedFunctionType(function.name.clone())
+            })?;
+            exact_generic_shared_relay_alias(source, function, checked)? == Some(0)
+                && exact_direct_shared_alias_signature(signature)
+        } else {
+            exact_monomorphic_shared_relay_alias(function, signature)
+        };
+        if !direct_alias {
+            continue;
+        }
+        if direct_shared_alias_callees.insert(function.name.clone(), signature_id).is_some() {
+            return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                "duplicate direct shared alias declaration".into(),
+            ));
+        }
+    }
+    // Named-function values use an environment-taking adapter signature. The
+    // checked callable table may erase root ownership qualifiers, while the
+    // target declaration overlay above restores them. Rebind now for lowering
+    // function values; after body-derived write-back contracts are promoted we
+    // repeat this exact checked alignment before emitting adapter bodies.
+    align_named_adapter_contracts(
+        &mut signatures,
+        &adapters,
+        &mut closure_context,
+        access_facts,
+    )?;
+
+    let mut imports = Vec::new();
+    let mut abi_catalog = None;
+    let mut host_imports = HostImports::default();
+    let print_at = source.is_console_fixture();
+    let print_name = if print_at { "console_print_at" } else { "console_print" };
+    let prints = contains_console_print(typed.module());
+    let floats = renders_float(typed.module(), typed.table(), &definitions);
+    let mut capability_imports = collect_capability_imports(typed.module(), typed.table());
+    capability_imports.extend(registry_imports);
+    // Clock has no guest-memory lane. Register it independently of the
+    // buffer-host catalog, which requires a concrete String layout.
+    let clock_needed = capability_imports.remove("clock_now");
+    let compiler_imports = collect_compiler_imports(typed.module());
+    let regex_spans = regex::is_needed(typed.module());
+    // RFC-0165 Net import registration (Net track).
+    let net_imports = net::collect_imports(typed.module());
+    let exec_needed = exec::is_needed(typed.module());
+    let crypto_needed = crypto::is_needed(typed.module());
+    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() {
+        let string_layout = string_layout(
+            &Type::Named("String".into(), Vec::new()),
+            &layouts,
+            &layout_catalog,
+        )?;
+        let signature_id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        signatures.push(FunctionSignature {
+            id: signature_id,
+            parameters: vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)), ValueType::Ref(string_layout)],
+            results: Vec::new(),
+            contract: CallableContract {
+                parameters: vec![
+                    ParameterContract {
+                        value_type: ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
+                        ownership: ParameterOwnership::Value,
+                    },
+                    ParameterContract {
+                        value_type: ValueType::Ref(string_layout),
+                        // Host buffer roles authorize read-only string access.
+                        ownership: ParameterOwnership::Value,
+                    },
+                ],
+                results: Vec::new(),
+                parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read])]),
+            },
+        });
+        let float_signature_id = FunctionSignatureId::new(
+            u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+        );
+        signatures.push(FunctionSignature {
+            id: float_signature_id,
+            parameters: vec![ValueType::Float, ValueType::Ref(string_layout)],
+            results: vec![ValueType::Size],
+            contract: CallableContract {
+                parameters: vec![
+                    ParameterContract { value_type: ValueType::Float, ownership: ParameterOwnership::Value },
+                    ParameterContract {
+                        value_type: ValueType::Ref(string_layout),
+                        // The host buffer role, not callable ownership,
+                        // authorizes this import's bounded write.
+                        ownership: ParameterOwnership::Value,
+                    },
+                ],
+                results: vec![ResultContract::Value(ValueType::Size)],
+                parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Write])]),
+            },
+        });
+        let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
+            .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
+            let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
+            let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
+            let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
+            let text = ValueType::Ref(string_layout);
+            let mut push_import_signature = |parameters: Vec<ValueType>, results: Vec<ValueType>, writes: Option<usize>| {
+                let id = FunctionSignatureId::new(
+                    u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                );
+                let mut parameter_effects = BTreeMap::new();
+                for (index, parameter) in parameters.iter().enumerate() {
+                    if matches!(parameter, ValueType::Ref(_)) {
+                        let effect = if writes == Some(index) { MemoryEffect::Write } else { MemoryEffect::Read };
+                        parameter_effects.insert(u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?, vec![effect]);
+                    }
                 }
-                if capability_imports.contains("build_env_at") {
-                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND);
-                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                    let ids = [
-                        push_import_signature(vec![build, text], vec![response], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Bool], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    ];
-                    catalog = catalog.with_build_env_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if capability_imports.contains("build_net_fetch") {
-                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND);
-                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                    let ids = [
-                        push_import_signature(vec![build, text, text], vec![response], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    ];
-                    catalog = catalog.with_build_net_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if capability_imports.contains("net_fetch_at") || capability_imports.contains("fetch_send_at") || capability_imports.contains("fetch_only_at") {
-                    let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
-                    let fetch = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND);
-                    let response = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_RESPONSE_KIND);
-                    let ids = [
-                        push_import_signature(vec![net, text], vec![fetch], None)?,
-                        push_import_signature(vec![fetch, text, text, text, text], vec![response], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                        push_import_signature(vec![fetch, text], vec![fetch], None)?,
-                    ];
-                    catalog = catalog.with_fetch_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if capability_imports.contains("build_exec_run") {
-                    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND);
-                    let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
-                    let ids = [
-                        push_import_signature(vec![build, text, text], vec![response], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    ];
-                    catalog = catalog.with_build_exec_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
-                    let response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND);
-                    let ids = [
-                        push_import_signature(vec![dir, text, text], vec![ValueType::Bool], None)?,
-                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                        push_import_signature(vec![dir, text], vec![response], None)?,
-                        push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                        push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                        push_import_signature(vec![dir, text], Vec::new(), None)?,
-                        push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                    ];
-                    catalog = catalog.with_dir_storage_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if witchy_wir::canonical_safewir::REGISTRY_HOST_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
-                    let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
-                    let store = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND);
-                    let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
-                    let optional = ValueType::NullableCapability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
-                    let ids = [
-                        push_import_signature(vec![clock], vec![ValueType::Int], None)?,
-                        push_import_signature(vec![dir, text], Vec::new(), None)?,
-                        push_import_signature(vec![store, text], vec![optional], None)?,
-                        push_import_signature(vec![secret, text, text], vec![ValueType::Size], Some(2))?,
-                        push_import_signature(vec![secret, text], vec![ValueType::Size], Some(1))?,
-                    ];
-                    catalog = catalog.with_registry_host_imports(ids, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if !compiler_imports.is_empty() {
-                    let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
-                        footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
-                        diff_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
-                        doc_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
-                        doc_result_json_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
-                    };
-                    catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-                if regex_spans {
-                    let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
-                    catalog = catalog.with_regex_spans_import(signature, string_layout)
-                        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-                }
-            }
-            if print_at && prints {
-                let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
-                let parameters = vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
-                    ValueType::Ref(string_layout), ValueType::Ref(string_layout), ValueType::Size];
                 signatures.push(FunctionSignature {
-                    id, parameters: parameters.clone(), results: Vec::new(),
+                    id,
+                    parameters: parameters.clone(),
+                    results: results.clone(),
                     contract: CallableContract {
-                        parameters: parameters.into_iter().map(|value_type| ParameterContract {
-                            value_type, ownership: ParameterOwnership::Value,
-                        }).collect(), results: Vec::new(),
-                        parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read]), (2, vec![MemoryEffect::Read])]),
+                        // Host buffer roles, not callable ownership, authorize
+                        // each import's slice access.
+                        parameters: parameters
+                            .iter()
+                            .map(|value_type| ParameterContract { value_type: *value_type, ownership: ParameterOwnership::Value })
+                            .collect(),
+                        results: results.iter().map(|result| ResultContract::Value(*result)).collect(),
+                        parameter_effects,
                     },
                 });
-                catalog = catalog.with_console_print_at(id, string_layout)
+                Ok::<_, CanonicalLoweringError>(id)
+            };
+            let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
+                dir_read_into: push_import_signature(vec![dir, text, text], vec![ValueType::Size], Some(2))?,
+                dir_list_into: push_import_signature(vec![dir, text], vec![ValueType::Size], Some(1))?,
+                dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
+                dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
+                dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
+                file_read_into: push_import_signature(vec![file, text], vec![ValueType::Size], Some(1))?,
+                env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
+                env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
+            };
+            catalog = catalog
+                .with_capability_imports(capability_signatures, string_layout)
+                .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            if capability_imports.contains("dir_is_dir_at") {
+                let signature = push_import_signature(vec![dir, text], vec![ValueType::Bool], None)?;
+                catalog = catalog.with_dir_is_dir_import(signature, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
-            // RFC-0165 Net catalog registration (Net track).
-
-            if exec_needed { catalog = exec::catalog(catalog, &mut signatures, string_layout)?; }
-            if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
-            if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
-            if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
-            if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
-            // The module declares only the imports its functions reach; the
-            // catalog still authenticates each one it declares.
-            let projected = catalog
-                .imports()
-                .into_iter()
-                .filter(|import| {
-                    (import.name == print_name && prints)
-                        || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
-                        || (import.name == "float_to_str" && floats)
-                        || capability_imports.contains(import.name.as_str())
-                        || compiler_imports.contains(import.name.as_str())
-                        || (regex_spans && import.name == "regex_match_spans_into")
-                        || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
-                        || (crypto_needed && crypto::is_host_import(&import.name))
-                        || net_imports.contains(import.name.as_str()) // Net track
-                        || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
-                })
-                .collect::<Vec<_>>();
-            host_imports = HostImports {
-                abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
-                bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
-                abort_sites,
-                vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
-                vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
-                // RFC-0165 Net import registration (Net track).
-                exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
-                ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
-                rsa_pkcs1_sha256_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT).map(|import| import.id),
-                sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
-                rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
-                crypto_extensions: witchy_wir::canonical_safewir::CRYPTO_EXTENSION_IMPORT_NAMES.iter()
-                    .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
-                net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
-                regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
-                compiler: compiler_imports.iter()
-                    .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
-                    .collect(),
-                print_at,
-                print: projected.iter().find(|import| import.name == print_name).map(|import| import.id),
-                float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
-                capabilities: CAPABILITY_IMPORTS
-                    .iter()
-                    .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
-                    .collect(),
-            };
-            imports = projected;
-            abi_catalog = Some(catalog);
+if capability_imports.contains("build_out_write_at") {
+    let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND);
+    let signature = push_import_signature(vec![build, text, text], Vec::new(), None)?;
+    catalog = catalog.with_build_out_import(signature, string_layout)
+        .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+}
+            if capability_imports.contains("build_read_at") {
+                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![build, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_build_read_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if capability_imports.contains("build_env_at") {
+                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![build, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Bool], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_build_env_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if capability_imports.contains("build_net_fetch") {
+                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![build, text, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_build_net_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if capability_imports.contains("net_fetch_at") || capability_imports.contains("fetch_send_at") || capability_imports.contains("fetch_only_at") {
+                let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
+                let fetch = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::FETCH_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![net, text], vec![fetch], None)?,
+                    push_import_signature(vec![fetch, text, text, text, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    push_import_signature(vec![fetch, text], vec![fetch], None)?,
+                ];
+                catalog = catalog.with_fetch_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if capability_imports.contains("build_exec_run") {
+                let build = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::BUILD_READ_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![build, text, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_build_exec_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![dir, text, text], vec![ValueType::Bool], None)?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text], Vec::new(), None)?,
+                    push_import_signature(vec![dir, text, text], Vec::new(), None)?,
+                ];
+                catalog = catalog.with_dir_storage_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if witchy_wir::canonical_safewir::REGISTRY_HOST_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+                let store = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND);
+                let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                let optional = ValueType::NullableCapability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                let ids = [
+                    push_import_signature(vec![clock], vec![ValueType::Int], None)?,
+                    push_import_signature(vec![dir, text], Vec::new(), None)?,
+                    push_import_signature(vec![store, text], vec![optional], None)?,
+                    push_import_signature(vec![secret, text, text], vec![ValueType::Size], Some(2))?,
+                    push_import_signature(vec![secret, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_registry_host_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if !compiler_imports.is_empty() {
+                let compiler_signatures = witchy_wir::canonical_safewir::CompilerImportSignatures {
+                    footprint_into: push_import_signature(vec![text, text], vec![ValueType::Size], Some(1))?,
+                    diff_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                    doc_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                    doc_result_json_into: push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?,
+                };
+                catalog = catalog.with_compiler_imports(compiler_signatures, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if regex_spans {
+                let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
+                catalog = catalog.with_regex_spans_import(signature, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
         }
-
-        if clock_needed {
-            let id = FunctionSignatureId::new(u32::try_from(signatures.len())
-                .map_err(|_| CanonicalLoweringError::IdOverflow)?);
-            let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+        if print_at && prints {
+            let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
+            let parameters = vec![ValueType::Capability(witchy_wir::canonical_safewir::CapabilityKindId::new(0)),
+                ValueType::Ref(string_layout), ValueType::Ref(string_layout), ValueType::Size];
             signatures.push(FunctionSignature {
-                id, parameters: vec![clock], results: vec![ValueType::Int],
+                id, parameters: parameters.clone(), results: Vec::new(),
                 contract: CallableContract {
-                    parameters: vec![ParameterContract { value_type: clock, ownership: ParameterOwnership::Value }],
-                    results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new(),
+                    parameters: parameters.into_iter().map(|value_type| ParameterContract {
+                        value_type, ownership: ParameterOwnership::Value,
+                    }).collect(), results: Vec::new(),
+                    parameter_effects: BTreeMap::from([(1, vec![MemoryEffect::Read]), (2, vec![MemoryEffect::Read])]),
                 },
             });
-            let catalog = match abi_catalog.take() {
-                Some(catalog) => catalog.with_clock_import(id),
-                None => CanonicalAbiCatalog::from_authenticated_clock(id),
-            }.map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-            let import = catalog.imports().into_iter().find(|import| import.name == "clock_now")
-                .expect("authenticated Clock catalog contains its import");
-            host_imports.capabilities.insert("clock_now", import.id);
-            imports.push(import);
-            abi_catalog = Some(catalog);
+            catalog = catalog.with_console_print_at(id, string_layout)
+                .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
         }
+        // RFC-0165 Net catalog registration (Net track).
 
-        if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
-            let mut names = functions_by_name.keys().collect::<Vec<_>>();
-            names.sort();
-            eprintln!("canonical scope: {names:?}");
-        }
-        let mut functions = Vec::new();
-        let mut proper_tail_locations = BTreeMap::new();
-        for (item_index, item) in typed.module().items.iter().enumerate() {
-            let Item::Function(function) = item else { continue };
-            if !scope.contains(&function.name) {
-                continue;
+        if exec_needed { catalog = exec::catalog(catalog, &mut signatures, string_layout)?; }
+        if crypto_needed { catalog = crypto::catalog(catalog, &mut signatures, string_layout)?; }
+        if !net_imports.is_empty() { catalog = net::catalog(catalog, &mut signatures, string_layout)?; }
+        if !service_sites.is_empty() { catalog = vm_service::catalog(catalog, &mut signatures, string_layout)?; }
+        if !abort_sites.is_empty() { catalog = abort::catalog(catalog, &mut signatures, string_layout)?; }
+        // The module declares only the imports its functions reach; the
+        // catalog still authenticates each one it declares.
+        let projected = catalog
+            .imports()
+            .into_iter()
+            .filter(|import| {
+                (import.name == print_name && prints)
+                    || (matches!(import.name.as_str(), abort::IMPORT | abort::BOUNDS_IMPORT) && !abort_sites.is_empty())
+                    || (import.name == "float_to_str" && floats)
+                    || capability_imports.contains(import.name.as_str())
+                    || compiler_imports.contains(import.name.as_str())
+                    || (regex_spans && import.name == "regex_match_spans_into")
+                    || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
+                    || (crypto_needed && crypto::is_host_import(&import.name))
+                    || net_imports.contains(import.name.as_str()) // Net track
+                    || (!service_sites.is_empty() && witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.contains(&import.name.as_str()))
+            })
+            .collect::<Vec<_>>();
+        host_imports = HostImports {
+            abort: projected.iter().find(|import| import.name == abort::IMPORT).map(|import| import.id),
+            bounds: projected.iter().find(|import| import.name == abort::BOUNDS_IMPORT).map(|import| import.id),
+            abort_sites,
+            vm_sites: service_sites.iter().map(|site| (site.expression() as *const Expr as usize, site.id())).collect(),
+            vm_service: witchy_wir::canonical_safewir::VM_SERVICE_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
+            // RFC-0165 Net import registration (Net track).
+            exec: witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.iter().filter_map(|name| projected.iter().find(|i| i.name == *name).map(|i| (*name, i.id))).collect(),
+            ed25519_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_ED25519_VERIFY_IMPORT).map(|import| import.id),
+            rsa_pkcs1_sha256_verify: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RSA_PKCS1_SHA256_VERIFY_IMPORT).map(|import| import.id),
+            sha256: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_SHA256_IMPORT).map(|import| import.id),
+            rune_hash: projected.iter().find(|import| import.name == witchy_wir::canonical_safewir::CRYPTO_RUNE_HASH_IMPORT).map(|import| import.id),
+            crypto_extensions: witchy_wir::canonical_safewir::CRYPTO_EXTENSION_IMPORT_NAMES.iter()
+                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
+            net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
+            regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
+            compiler: compiler_imports.iter()
+                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
+                .collect(),
+            print_at,
+            print: projected.iter().find(|import| import.name == print_name).map(|import| import.id),
+            float_to_str: projected.iter().find(|import| import.name == "float_to_str").map(|import| import.id),
+            capabilities: CAPABILITY_IMPORTS
+                .iter()
+                .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
+                .collect(),
+        };
+        imports = projected;
+        abi_catalog = Some(catalog);
+    }
+
+    if clock_needed {
+        let id = FunctionSignatureId::new(u32::try_from(signatures.len())
+            .map_err(|_| CanonicalLoweringError::IdOverflow)?);
+        let clock = ValueType::Capability(witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND);
+        signatures.push(FunctionSignature {
+            id, parameters: vec![clock], results: vec![ValueType::Int],
+            contract: CallableContract {
+                parameters: vec![ParameterContract { value_type: clock, ownership: ParameterOwnership::Value }],
+                results: vec![ResultContract::Value(ValueType::Int)], parameter_effects: BTreeMap::new(),
+            },
+        });
+        let catalog = match abi_catalog.take() {
+            Some(catalog) => catalog.with_clock_import(id),
+            None => CanonicalAbiCatalog::from_authenticated_clock(id),
+        }.map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+        let import = catalog.imports().into_iter().find(|import| import.name == "clock_now")
+            .expect("authenticated Clock catalog contains its import");
+        host_imports.capabilities.insert("clock_now", import.id);
+        imports.push(import);
+        abi_catalog = Some(catalog);
+    }
+
+    // Only the retained authenticated declaration environment may mint an
+    // external import.  This is deliberately after host projection: external
+    // imports have independent identities and never enter the host catalog.
+    let mut external_imports = BTreeMap::new();
+    let mut next_external_import = imports.iter().map(|import| import.id.get()).max()
+        .map(|id| id.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow))
+        .transpose()?
+        .unwrap_or(0);
+    for library in source.precompiled_declarations().libraries() {
+        for (export, _) in library.exports() {
+            let linked_name = library.linked_export_name(export);
+            let (_, signature_id) = functions_by_name.get(&linked_name).copied().ok_or_else(|| {
+                CanonicalLoweringError::MissingCheckedFunctionType(linked_name.clone())
+            })?;
+            let signature = signatures.get(signature_id.get() as usize).ok_or_else(|| {
+                CanonicalLoweringError::MissingCheckedFunctionType(linked_name.clone())
+            })?;
+            if !is_external_scalar_signature(signature) {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(linked_name));
             }
-            let Some((function_id, signature_id)) = functions_by_name.get(&function.name).copied() else {
-                continue;
+            let import = ImportContract {
+                id: ImportId::new(next_external_import),
+                signature: signature_id,
+                abi_identity: ImportContractIdentity::AuthenticatedExternal(ExternalWasmIdentity {
+                    library_binding_digest: library.binding_digest(),
+                    wasm_sha256: library.wasm_sha256(),
+                    sidecar_sha256: library.sidecar_sha256(),
+                }),
+                module: format!("witchy.precompiled.{}", library.alias()),
+                name: export.to_owned(),
+                parameter_roles: Vec::new(),
+                result_roles: Vec::new(),
+                mutation: HostMutation::ReadOnly,
+                reentrancy: HostReentrancy::Forbidden,
             };
-            let signature = &signatures[signature_id.get() as usize];
-            functions.push(lower_function(
-                function,
-                &function.body,
-                function_id,
-                u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                is_opt_function(&function.name, &typed.module().modes),
-                Vec::new(),
-                &lambda_names,
-                signature,
-                &functions_by_name,
-                &checked_parameter_conventions,
-                &signatures,
-                &tail_manifest,
-                &mut proper_tail_locations,
-                typed.table(),
-                source.dictionary_key_comparators(),
-                &layouts,
-                &layout_catalog,
-                &string_data_ids,
-                &host_imports,
-                &packed_records,
-                &definitions,
-                &closure_context,
-                None,
-            )?);
+            if external_imports.insert(linked_name, import.id).is_some() {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+                    "duplicate authenticated external declaration".into(),
+                ));
+            }
+            imports.push(import);
+            next_external_import = next_external_import.checked_add(1)
+                .ok_or(CanonicalLoweringError::IdOverflow)?;
         }
+    }
 
-        let static_data_segments = string_payloads
-            .iter()
-            .enumerate()
-            .map(|(index, payload)| {
-                let length = u32::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?;
-                let mut bytes = Vec::with_capacity(4 + payload.len());
-                bytes.extend_from_slice(&length.to_le_bytes());
-                bytes.extend_from_slice(payload);
-                Ok(witchy_wir::canonical_safewir::StaticDataSegment::new(
-                    witchy_wir::canonical_safewir::StaticDataId::new(
-                        u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-                    ),
-                    bytes,
-                ))
-            })
-            .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-
-        let mut closure_bindings = Vec::new();
-        for lambda in &lambda_functions {
-            let signature = &signatures[lambda.signature_id.get() as usize];
-            functions.push(lower_function(
-                &lambda.synthesized,
-                lambda.body,
-                lambda.function_id,
-                lambda.item_index,
-                is_opt_function(&lambda.synthesized.name, &typed.module().modes),
-                lambda.lambda_path.clone(),
-                &lambda_names,
-                signature,
-                &functions_by_name,
-                &checked_parameter_conventions,
-                &signatures,
-                &tail_manifest,
-                &mut proper_tail_locations,
-                typed.table(),
-                source.dictionary_key_comparators(),
-                &layouts,
-                &layout_catalog,
-                &string_data_ids,
-                &host_imports,
-                &packed_records,
-                &definitions,
-                &closure_context,
-                Some(&ClosureEnvironment { tag: lambda.environment_tag, captures: lambda.captures.clone() }),
-            )?);
-            closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
+    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+        let mut names = functions_by_name.keys().collect::<Vec<_>>();
+        names.sort();
+        eprintln!("canonical scope: {names:?}");
+    }
+    let mut functions = Vec::new();
+    let mut proper_tail_locations = BTreeMap::new();
+    for (item_index, item) in typed.module().items.iter().enumerate() {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
         }
-        let mut adapter_bindings = Vec::new();
-        for adapter in &adapters {
-            functions.push(synthesize_adapter(adapter, &signatures, &closure_context));
-            adapter_bindings.push(CandidateAdapterBinding::new(adapter.id, adapter.target));
+        let Some((function_id, signature_id)) = functions_by_name.get(&function.name).copied() else {
+            continue;
+        };
+        let signature = &signatures[signature_id.get() as usize];
+        if let Some(import) = external_imports.get(&function.name).copied() {
+            functions.push(synthesize_external_wrapper(function_id, signature, import));
+            continue;
         }
-        let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
-        let lambda_callables = lambda_functions
-            .iter()
-            .map(|lambda| {
-                (ProperTailCallableId { item: lambda.item_index, method: None, lambda_path: lambda.lambda_path.clone() }, lambda.function_id)
-            })
-            .collect::<HashMap<_, _>>();
-        let mut abi_bindings = functions_by_name
-            .iter()
-            .filter(|(name, _)| !lambda_function_names.contains(*name) && !adapter_function_names.contains(*name))
-            .map(|(name, (function, _signature))| {
-                let source_abi = source.closed_callable_abi(name)
-                    .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
-                let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
-                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.clone()));
-                };
-                Ok(CandidateAbiBinding::new(
-                    *function,
-                    target.function_ordinal,
-                ))
-            })
-            .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-        abi_bindings.sort_by_key(|binding| binding.source_declaration_ordinal());
+        let lowered = lower_function(
+            function,
+            &function.body,
+            function_id,
+            u32::try_from(item_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            is_opt_function(&function.name, &typed.module().modes),
+            Vec::new(),
+            &lambda_names,
+            signature,
+            &functions_by_name,
+            &direct_shared_alias_callees,
+            &checked_parameter_conventions,
+            &signatures,
+            &tail_manifest,
+            &mut proper_tail_locations,
+            typed.table(),
+            typed.module(),
+            access_facts,
+            loan_facts,
+            view_facts,
+            source.dictionary_key_comparators(),
+            &layouts,
+            &layout_catalog,
+            &string_data_ids,
+            &host_imports,
+            &packed_records,
+            &definitions,
+            &closure_context,
+            None,
+        );
+        functions.push(lowered?);
+    }
 
-        let vm_services = service_sites.iter().map(|site| {
-            let binding = |ordinal| abi_bindings.iter().find(|binding| binding.source_declaration_ordinal() == ordinal)
-                .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing service declaration binding"));
-            Ok(witchy_wir::canonical_safewir::CandidateVmService::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
-        }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
-        let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
-            revision: Revision::new(0),
-            checked_source: CheckedSourceIdentity::from_digest(
-                source.source_witness().source_bundle_digest(),
-            ),
-            layouts,
-            signatures,
-            imports,
-            functions,
-            proper_tail_sites: canonical_tail_sites(
-                tail_manifest,
-                typed.module(),
-                &functions_by_name,
-                &lambda_callables,
-                &proper_tail_locations,
-            )?,
-        }, static_data_segments)
-            .with_proper_tail_locations(proper_tail_locations.into_values().collect())
-            .with_vm_services(vm_services)
-            .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
-            .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
-            .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
-            .with_closure_layouts(closure_context.signature_by_layout.iter()
-                .filter(|(layout, _)| !closure_context.families.values().any(|family| family.closure == **layout && family.owner_type.is_some()))
-                .map(|(layout, signature)| (*layout, *signature)).collect())
-            .with_owner_families(closure_context.owners.clone());
-        Ok(match abi_catalog {
-            Some(catalog) => candidate.with_abi_catalog(catalog),
-            None => candidate,
+    // Lowering needs the complete payload map above so every possible source
+    // literal and diagnostic can resolve an ID.  The candidate, however,
+    // carries only the static bytes its emitted operations actually reference:
+    // rooted views can consume a syntactic index without lowering the ordinary
+    // bounds-diagnostic branch that originally registered its function label.
+    let all_static_data_segments = string_payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            let length = u32::try_from(payload.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+            let mut bytes = Vec::with_capacity(4 + payload.len());
+            bytes.extend_from_slice(&length.to_le_bytes());
+            bytes.extend_from_slice(payload);
+            Ok(witchy_wir::canonical_safewir::StaticDataSegment::new(
+                witchy_wir::canonical_safewir::StaticDataId::new(
+                    u32::try_from(index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                ),
+                bytes,
+            ))
         })
+        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+
+    let mut closure_bindings = Vec::new();
+    for lambda in &lambda_functions {
+        let signature = &signatures[lambda.signature_id.get() as usize];
+        functions.push(lower_function(
+            &lambda.synthesized,
+            lambda.body,
+            lambda.function_id,
+            lambda.item_index,
+            is_opt_function(&lambda.synthesized.name, &typed.module().modes),
+            lambda.lambda_path.clone(),
+            &lambda_names,
+            signature,
+            &functions_by_name,
+            &direct_shared_alias_callees,
+            &checked_parameter_conventions,
+            &signatures,
+            &tail_manifest,
+            &mut proper_tail_locations,
+            typed.table(),
+            typed.module(),
+            access_facts,
+            loan_facts,
+            view_facts,
+            source.dictionary_key_comparators(),
+            &layouts,
+            &layout_catalog,
+            &string_data_ids,
+            &host_imports,
+            &packed_records,
+            &definitions,
+            &closure_context,
+            Some(&ClosureEnvironment { tag: lambda.environment_tag, captures: lambda.captures.clone() }),
+        )?);
+        closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
+    }
+    // Derive fresh replacement provenance from source and lambda bodies before
+    // sealing the adapter ABI.  The second alignment keeps every adapter and
+    // owner family on that exact authenticated target contract.
+    promote_fresh_write_back_result_contracts(&mut signatures, &functions);
+    align_named_adapter_contracts(
+        &mut signatures,
+        &adapters,
+        &mut closure_context,
+        access_facts,
+    )?;
+    let mut adapter_bindings = Vec::new();
+    for adapter in &adapters {
+        functions.push(synthesize_adapter(adapter, &signatures, &closure_context));
+        adapter_bindings.push(CandidateAdapterBinding::new(adapter.id, adapter.target));
+    }
+    let lambda_function_names = lambda_names.values().cloned().collect::<HashSet<_>>();
+    let lambda_callables = lambda_functions
+        .iter()
+        .map(|lambda| {
+            (ProperTailCallableId { item: lambda.item_index, method: None, lambda_path: lambda.lambda_path.clone() }, lambda.function_id)
+        })
+        .collect::<HashMap<_, _>>();
+    let mut abi_bindings = functions_by_name
+        .iter()
+        .filter(|(name, _)| !lambda_function_names.contains(*name) && !adapter_function_names.contains(*name))
+        .map(|(name, (function, _signature))| {
+            let source_abi = source.closed_callable_abi(name)
+                .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.clone()))?;
+            let witchy_types::canonical_abi::CanonicalTargetPolicy::ClosedLocal(target) = source_abi.target_policy else {
+                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.clone()));
+            };
+            Ok(CandidateAbiBinding::new(
+                *function,
+                target.function_ordinal,
+            ))
+        })
+        .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    abi_bindings.sort_by_key(|binding| binding.source_declaration_ordinal());
+
+    let vm_services = service_sites.iter().map(|site| {
+        let binding = |ordinal| abi_bindings.iter().find(|binding| binding.source_declaration_ordinal() == ordinal)
+            .map(|binding| binding.function()).ok_or(CanonicalLoweringError::UnsupportedExpression("missing service declaration binding"));
+        Ok(witchy_wir::canonical_safewir::CandidateVmService::new(site.id(), binding(site.caller_ordinal())?, binding(site.callback_ordinal())?))
+    }).collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
+    let referenced_static_data = functions
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .flat_map(|block| block.operations.iter())
+        .filter_map(|operation| match operation {
+            Operation::StaticData { data, .. } => Some(*data),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let static_data_segments = all_static_data_segments
+        .into_iter()
+        .filter(|segment| referenced_static_data.contains(&segment.id()))
+        .collect();
+    let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
+        revision: Revision::new(0),
+        checked_source: CheckedSourceIdentity::from_digest(
+            source.source_witness().source_bundle_digest(),
+        ),
+        layouts,
+        signatures,
+        imports,
+        functions,
+        proper_tail_sites: canonical_tail_sites(
+            tail_manifest,
+            typed.module(),
+            &functions_by_name,
+            &lambda_callables,
+            &proper_tail_locations,
+        )?,
+    }, static_data_segments)
+        .with_proper_tail_locations(proper_tail_locations.into_values().collect())
+        .with_vm_services(vm_services)
+        .with_source_abi_bindings(CandidateAbiBindings::new(abi_bindings))
+        .with_closure_bindings(CandidateClosureBindings::new(closure_bindings))
+        .with_adapter_bindings(CandidateAdapterBindings::new(adapter_bindings))
+        .with_closure_layouts(closure_context.signature_by_layout.iter()
+            .filter(|(layout, _)| !closure_context.families.values().any(|family| family.closure == **layout && family.owner_type.is_some()))
+            .map(|(layout, signature)| (*layout, *signature)).collect())
+        .with_owner_families(closure_context.owners.clone());
+    Ok(match abi_catalog {
+        Some(catalog) => candidate.with_abi_catalog(catalog),
+        None => candidate,
+    })
     })
 }
 
@@ -1268,6 +1623,7 @@ struct ClosureCapture {
 /// A named function used as a value: its adapter forwards the closure
 /// signature to the function's own.
 struct AdapterFunction {
+    source_name: String,
     id: FunctionId,
     signature_id: FunctionSignatureId,
     target: FunctionId,
@@ -1283,9 +1639,33 @@ struct ClosureContext {
     aggregate_families: HashMap<Type, crate::canonical_layouts::OpaqueAggregateFamilyLayout>,
     signature_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
     declaration_by_layout: HashMap<witchy_wir::layout::LayoutId, FunctionSignatureId>,
+    reference_carriers: HashMap<witchy_wir::layout::LayoutId, CallableReferenceCarrier>,
     lambda_captures: HashMap<usize, ClosureEnvironment>,
     adapters: HashMap<String, (FunctionId, FunctionSignatureId, Type)>,
     owners: Vec<OwnerFamily>,
+}
+
+/// A closure layout is only a physical shell.  These are the narrow
+/// reference lanes whose construction and invocation both carry one opaque
+/// checked access identity; no other nested reference shape is admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CallableReferenceCarrier {
+    ExclusiveWriteBack(AccessIdentityKey),
+    SharedAlias(AccessIdentityKey),
+    /// An immutable root-plus-projection token, not a legacy loan alias.  The
+    /// key covers its exact `&Int -> &Int` source contract, including the
+    /// rooted-view qualifier and payload identity retained by type checking.
+    RootedIntView(AccessIdentityKey),
+}
+
+impl CallableReferenceCarrier {
+    fn identity(&self) -> &AccessIdentityKey {
+        match self {
+            Self::ExclusiveWriteBack(identity)
+            | Self::SharedAlias(identity)
+            | Self::RootedIntView(identity) => identity,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1317,7 +1697,7 @@ fn closure_signature(
     layout: witchy_wir::layout::LayoutId,
     declaration: &FunctionSignature,
     owner: Option<GcTypeId>,
-) -> FunctionSignature {
+) -> Result<FunctionSignature, CanonicalLoweringError> {
     let environment = owner.map(ValueType::Gc).unwrap_or(ValueType::Ref(layout));
     let mut parameters = vec![environment];
     parameters.extend(declaration.parameters.iter().copied());
@@ -1325,16 +1705,153 @@ fn closure_signature(
     contract_parameters.extend(declaration.contract.parameters.iter().cloned());
     let mut parameter_effects = BTreeMap::from([(0, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release])]);
     parameter_effects.extend(declaration.contract.parameter_effects.iter().map(|(index, effects)| (index + 1, effects.clone())));
-    FunctionSignature {
+    Ok(FunctionSignature {
         id,
         parameters,
         results: declaration.results.clone(),
         contract: CallableContract {
             parameters: contract_parameters,
-            results: declaration.contract.results.clone(),
+            results: closure_result_contracts(&declaration.contract.results)?,
             parameter_effects,
         },
+    })
+}
+
+/// The closure environment occupies parameter zero.  Result aliases remain
+/// source-declaration facts, so every alias target must move with the source
+/// parameter lanes rather than accidentally point at the environment record.
+fn closure_result_contracts(
+    results: &[ResultContract],
+) -> Result<Vec<ResultContract>, CanonicalLoweringError> {
+    results
+        .iter()
+        .cloned()
+        .map(|result| match result {
+            ResultContract::AliasesParameter { parameter, layout } => Ok(ResultContract::AliasesParameter {
+                parameter: parameter.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?,
+                layout,
+            }),
+            ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+                Ok(ResultContract::AliasesWriteBackParameter {
+                    parameter: parameter.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?,
+                    layout,
+                    projection,
+                })
+            }
+            ResultContract::ReallocatesParameter { parameter, layout } => {
+                Ok(ResultContract::ReallocatesParameter {
+                    parameter: parameter.checked_add(1).ok_or(CanonicalLoweringError::IdOverflow)?,
+                    layout,
+                })
+            }
+            result => Ok(result),
+        })
+        .collect()
+}
+
+fn signature_lanes_equal(left: &FunctionSignature, right: &FunctionSignature) -> bool {
+    left.parameters == right.parameters
+        && left.results == right.results
+        && left.contract == right.contract
+}
+
+fn align_closure_signature(
+    closure: &mut FunctionSignature,
+    declaration: &FunctionSignature,
+) -> Result<(), CanonicalLoweringError> {
+    let Some(environment) = closure.parameters.first().copied() else {
+        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+            "closure adapter has no environment lane".to_string(),
+        ));
+    };
+    let Some(environment_contract) = closure.contract.parameters.first().cloned() else {
+        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
+            "closure adapter has no environment contract".to_string(),
+        ));
+    };
+    let environment_effects = closure
+        .contract
+        .parameter_effects
+        .get(&0)
+        .cloned()
+        .unwrap_or_default();
+    closure.parameters = std::iter::once(environment)
+        .chain(declaration.parameters.iter().copied())
+        .collect();
+    closure.results.clone_from(&declaration.results);
+    closure.contract.parameters = std::iter::once(environment_contract)
+        .chain(declaration.contract.parameters.iter().cloned())
+        .collect();
+    closure.contract.results = closure_result_contracts(&declaration.contract.results)?;
+    closure.contract.parameter_effects = std::iter::once((0, environment_effects))
+        .chain(declaration.contract.parameter_effects.iter().map(|(index, effects)| {
+            (index + 1, effects.clone())
+        }))
+        .collect();
+    Ok(())
+}
+
+/// Bind each named-function adapter to its declaration's current authenticated
+/// contract. This runs once before body lowering (so function values have a
+/// declared carrier) and once after fresh write-back promotion (before adapter
+/// bodies are synthesized). A shared physical closure layout never relaxes
+/// declaration identity: unequal target lanes still fail closed.
+fn align_named_adapter_contracts(
+    signatures: &mut [FunctionSignature],
+    adapters: &[AdapterFunction],
+    closure_context: &mut ClosureContext,
+    access_facts: &CheckedAccessFacts,
+) -> Result<(), CanonicalLoweringError> {
+    let mut adapter_lane_contracts: HashMap<FunctionSignatureId, FunctionSignature> = HashMap::new();
+    for adapter in adapters {
+        let target = signatures[adapter.target_signature.get() as usize].clone();
+        if let Some(existing) = adapter_lane_contracts.get(&adapter.signature_id)
+            && !signature_lanes_equal(existing, &target)
+        {
+            return Err(CanonicalLoweringError::UnsupportedCanonicalObligation(
+                "distinct named-function contracts share one closure layout".to_string(),
+            ));
+        }
+        adapter_lane_contracts.insert(adapter.signature_id, target.clone());
+        align_closure_signature(
+            &mut signatures[adapter.signature_id.get() as usize],
+            &target,
+        )?;
+        let Some(layout) = closure_context.signature_by_layout.iter()
+            .find_map(|(layout, signature)| (*signature == adapter.signature_id).then_some(*layout))
+        else {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "callable carrier has no registered closure layout",
+            ));
+        };
+        let source_signature = access_facts.declaration(&adapter.source_name).ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedAccessFacts(
+                "named callable carrier lacks its declaration access contract".to_string(),
+            )
+        })?;
+        if let Some(carrier) = callable_reference_carrier(source_signature) {
+            if let Some(existing) = closure_context.reference_carriers.get(&layout)
+                && existing != &carrier
+            {
+                return Err(CanonicalLoweringError::UnsupportedCanonicalObligation(
+                    "distinct callable reference identities share one closure layout".to_string(),
+                ));
+            }
+            closure_context.reference_carriers.insert(layout, carrier);
+        }
+        // The physical closure code follows the authenticated declaration
+        // target regardless of whether that target has a reference carrier.
+        // In particular, a `var List` target may gain a proven fresh
+        // write-back result after its body is lowered; leaving this owner lane
+        // on the qualifier-erased callable type would make the family stale.
+        closure_context.declaration_by_layout.insert(layout, adapter.target_signature);
+        for family in &mut closure_context.owners {
+            if family.signature == adapter.signature_id {
+                family.declaration_signature = adapter.target_signature;
+            }
+        }
     }
+    Ok(())
 }
 
 /// An adapter: one block that forwards the closure signature's parameters
@@ -1399,6 +1916,65 @@ fn synthesize_adapter(adapter: &AdapterFunction, signatures: &[FunctionSignature
     }
 }
 
+/// A compiler-owned local forwarding body for one sealed external declaration.
+/// The sidecar's structural stub is used only to type-check/link its public
+/// signature; it is never lowered as an implementation. Keeping this wrapper
+/// local gives existing closure/function-value adapters a normal target while
+/// the only cross-module edge remains the distinct `ExternalCall` operation.
+fn synthesize_external_wrapper(
+    id: FunctionId,
+    signature: &FunctionSignature,
+    import: ImportId,
+) -> Function {
+    let mut value_types = BTreeMap::new();
+    let mut next = 0u32;
+    let mut fresh = |value_type: ValueType, value_types: &mut BTreeMap<ValueId, ValueType>| {
+        let value = ValueId::new(next);
+        next += 1;
+        value_types.insert(value, value_type);
+        value
+    };
+    let parameters = signature.parameters.iter().map(|value_type| BlockParameter {
+        value: fresh(*value_type, &mut value_types),
+        value_type: *value_type,
+        ownership: None,
+    }).collect::<Vec<_>>();
+    let destinations = signature.results.iter()
+        .map(|value_type| fresh(*value_type, &mut value_types))
+        .collect::<Vec<_>>();
+    Function {
+        id,
+        signature: signature.id,
+        entry: BlockId::new(0),
+        value_types,
+        blocks: vec![BasicBlock {
+            id: BlockId::new(0),
+            parameters: parameters.clone(),
+            operations: vec![Operation::ExternalCall {
+                destinations: destinations.clone(),
+                import,
+                arguments: parameters.iter().map(|parameter| CallArgument::Value(parameter.value)).collect(),
+            }],
+            terminator: Terminator::Return { values: destinations },
+        }],
+    }
+}
+
+fn is_external_scalar_signature(signature: &FunctionSignature) -> bool {
+    let scalar = |value| matches!(value, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit);
+    signature.parameters.len() == signature.contract.parameters.len()
+        && signature.results.len() == signature.contract.results.len()
+        && signature.parameters.iter().copied().all(scalar)
+        && signature.results.iter().copied().all(scalar)
+        && signature.contract.parameters.iter().zip(&signature.parameters).all(|(contract, value)| {
+            contract.value_type == *value && contract.ownership == ParameterOwnership::Value
+        })
+        && signature.contract.results.iter().zip(&signature.results).all(|(contract, value)| {
+            matches!(contract, ResultContract::Value(actual) if actual == value)
+        })
+        && signature.contract.parameter_effects.is_empty()
+}
+
 fn checked_signature(
     source: &CanonicalCheckedSource,
     function: &witchy_syntax::ast::Function,
@@ -1427,20 +2003,19 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions).map_err(|error| {
-        if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
-            eprintln!("canonical signature refused for `{}`: {error}", function.name);
-        }
-        error
-    })?;
-    if function.ret.as_ref().is_some_and(|result| {
-        shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_int(inner))
-    }) {
-        return Err(CanonicalLoweringError::UnsupportedType(
-            function.ret.clone().expect("checked above"),
-        ));
-    }
-    if let Some(result) = function.ret.as_ref().filter(|result| {
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions)?;
+    let generic_shared_alias = exact_generic_shared_relay_alias(source, function, &checked)?;
+    let declared_shared_alias = if generic_shared_relay_template_candidate(source, &function.name) {
+        // The name is not evidence: a monomorphized forwarding carrier is
+        // admitted only through the typechecker's retained specialization
+        // identity and its exact substituted source body.
+        generic_shared_alias.ok_or_else(|| {
+            CanonicalLoweringError::UnsupportedType(
+                function.ret.clone().unwrap_or_else(|| checked.clone()),
+            )
+        })
+        .map(Some)?
+    } else if let Some(result) = function.ret.as_ref().filter(|result| {
         shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
     }) {
         // Authenticate result provenance from the exact source declaration.
@@ -1456,18 +2031,81 @@ fn checked_signature(
                     .ok_or_else(|| CanonicalLoweringError::UnsupportedType(result.clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        unique_shared_alias_parameter(&declared_parameters, result)?;
-    }
+        unique_shared_alias_parameter(&declared_parameters, result)?
+    } else {
+        None
+    };
+    // A direct exclusive result is not a general reference result. Its exact
+    // checked relation must name one direct `&mut String` parameter; the ABI
+    // returns a cloned ordinary handle plus that parameter's separate hidden
+    // write-back lane.
+    let declared_exclusive_alias = if let Some(result) = function.ret.as_ref().filter(|result| {
+        exclusive_reference_parts(result)
+            .is_some_and(|(_, inner)| is_projected_exclusive_leaf(inner))
+    }) {
+        // A concrete trait relay has a call body rather than the selected
+        // field tail. Its own direct witness therefore refuses, after which
+        // (and only after which) the exact selected callee/call witness may
+        // supply the projection.
+        exact_exclusive_return_alias(function, result, definitions)
+            .ok()
+            .flatten()
+            .or(generic_projected_exclusive_return_alias(source, function, definitions)?)
+    } else {
+        None
+    }.or_else(|| {
+        // Monomorphization may leave the generated relay result unannotated
+        // in its AST. Its retained checked callable result is still exact;
+        // accept no inferred place from that fact alone, only the complete
+        // concrete callee/call witness below.
+        let Type::Fn(_, result, _, _) = checked.unqualified() else { return None };
+        exclusive_reference_parts(result)
+            .is_some_and(|(_, inner)| is_projected_exclusive_leaf(inner))
+            .then(|| generic_projected_exclusive_return_alias(source, function, definitions))
+            .transpose()
+            .ok()
+            .flatten()
+            .flatten()
+    });
     let mut value_parameters = checked_signature.parameters;
+    let mut results = checked_signature.results.clone();
     let mut contract_parameters = checked_signature.contract.parameters;
+    let mut result_contracts = checked_signature.contract.results;
     let mut parameter_effects = checked_signature.contract.parameter_effects;
-    for (parameter_index, ((parameter, source), convention)) in
-        parameters.iter().zip(&function.params).zip(conventions).enumerate()
+    if let Some(result) = function.ret.as_ref().filter(|result| {
+        is_direct_rooted_int_view_aggregate_carrier(result, definitions)
+    })
     {
-        if source.ty.as_ref().is_some_and(|ty| {
-            shared_reference_parts(ty).is_some_and(|(_, inner)| is_direct_shared_int(inner))
+        let value_type = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
+        let ValueType::Gc(_) = value_type else {
+            return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+        };
+        results = vec![value_type];
+        result_contracts = vec![ResultContract::Value(value_type)];
+    }
+    // Unlike the direct one-owner alias ABI, an aggregate return has its own
+    // RC shell and explicitly clones each source reference into a field.  Its
+    // source inputs therefore enter with a tracked shared token.  This is
+    // deliberately conditioned on the bounded aggregate result; the ordinary
+    // direct `&T -> &T` alias contract remains a non-owning Value lane.
+    let aggregate_reference_result = function.ret.as_ref().is_some_and(is_aggregate_reference_carrier);
+    for (parameter_index, ((parameter, source), convention)) in
+        parameters.iter().zip(&function.params).zip(&conventions).enumerate()
+    {
+        if source.ty.as_ref().is_some_and(|source_type| {
+            is_direct_rooted_int_view_aggregate_carrier(source_type, definitions)
         }) {
-            let value_type = ValueType::Gc(closure_layouts.shared_int_reference);
+            let source_type = source.ty.as_ref().expect("checked rooted-view aggregate type");
+            let value_type = source_value_type(
+                source_type,
+                layout_bundle,
+                layouts,
+                closure_layouts,
+                definitions,
+            )?;
+            let ValueType::Gc(_) = value_type else {
+                return Err(CanonicalLoweringError::UnsupportedType(source_type.clone()));
+            };
             value_parameters[parameter_index] = value_type;
             contract_parameters[parameter_index] = ParameterContract {
                 value_type,
@@ -1475,8 +2113,66 @@ fn checked_signature(
             };
             parameter_effects.insert(
                 parameter_index as u32,
-                vec![MemoryEffect::Read, MemoryEffect::Release],
+                vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
             );
+        }
+        if source.ty.as_ref().is_some_and(is_admitted_rooted_int_view) {
+            let value_type = ValueType::Gc(rooted_int_view_owner_type(
+                source.ty.as_ref().expect("checked rooted view type"), closure_layouts,
+            ).expect("admitted rooted view owner"));
+            value_parameters[parameter_index] = value_type;
+            let write_back = *convention == Convention::Var;
+            contract_parameters[parameter_index] = ParameterContract {
+                value_type,
+                ownership: if write_back {
+                    ParameterOwnership::WriteBack
+                } else {
+                    ParameterOwnership::Shared
+                },
+            };
+            parameter_effects.insert(
+                parameter_index as u32,
+                if write_back {
+                    vec![
+                        MemoryEffect::Read,
+                        MemoryEffect::Retain,
+                        MemoryEffect::Release,
+                        MemoryEffect::Write,
+                    ]
+                } else {
+                    vec![
+                        MemoryEffect::Read,
+                        MemoryEffect::Retain,
+                        MemoryEffect::Release,
+                    ]
+                },
+            );
+        }
+        if source.ty.as_ref().is_some_and(|ty| {
+            shared_reference_parts(ty)
+                .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
+        }) {
+            let ValueType::Ref(_) = value_parameters[parameter_index] else {
+                return Err(CanonicalLoweringError::UnsupportedType(
+                    source.ty.clone().expect("checked above"),
+                ));
+            };
+            contract_parameters[parameter_index].ownership = if aggregate_reference_result {
+                ParameterOwnership::Shared
+            } else {
+                ParameterOwnership::Value
+            };
+        }
+        if matches!(convention, Convention::Own)
+            && source.ty.as_ref().is_some_and(is_root_unique)
+        {
+            // A root `unique` scalar has no heap token. Its checked affine
+            // transfer is complete at the source boundary, while canonical
+            // SafeWIR carries the ordinary scalar lane. Only owned reference
+            // values need a `Unique` ABI ownership contract.
+            if matches!(value_parameters[parameter_index], ValueType::Ref(_) | ValueType::Gc(_)) {
+                contract_parameters[parameter_index].ownership = ParameterOwnership::Unique;
+            }
         }
         if matches!(convention, Convention::Own)
             && !ordinary_own_type_supported(parameter)
@@ -1485,17 +2181,341 @@ fn checked_signature(
             return Err(CanonicalLoweringError::UnsupportedConvention {
                 function: function.name.clone(),
                 parameter: format!("{} ({parameter:?} as {:?})", source.name, value_parameters[parameter_index]),
-                convention,
+                convention: *convention,
             });
         }
         let _ = parameter;
         let _ = parameter_index;
     }
-    Ok(FunctionSignature { id, parameters: value_parameters, results: checked_signature.results, contract: CallableContract {
+    // A plain, direct `&mut String`/`&mut Int` declaration has one ABI whether
+    // or not this body currently writes: the callee receives the referent
+    // value and returns its replacement in a hidden, declaration-derived
+    // lane. `var` already has that lane from its convention; `own` needs the
+    // same lane when its consumed value is the ephemeral direct handle.  The
+    // caller may then commit the replacement to the separately authenticated
+    // referent place. This does not admit a named handle or an arbitrary owned
+    // value: call lowering rechecks the exact access declaration, call site,
+    // and place fact before using this ABI.
+    let direct_exclusive_parameters = function.params.iter().zip(conventions.iter()).enumerate()
+        .filter_map(|(index, (parameter, convention))| {
+            let direct_declaration = parameter.ty.as_ref().is_some_and(is_direct_exclusive_reference);
+            // The pre-existing `let` ABI additionally owns the one bounded
+            // returned alias relation. An `own` parameter deliberately does
+            // not inherit that carrier: only its direct ephemeral reference
+            // declaration receives this write-back lane.
+            ((*convention == Convention::Let
+                && (direct_declaration
+                    || declared_exclusive_alias.as_ref().is_some_and(|alias| alias.parameter() == index)))
+                || (*convention == Convention::Own && direct_declaration))
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    for parameter_index in direct_exclusive_parameters {
+        let value_type = value_parameters[parameter_index];
+        contract_parameters[parameter_index] = ParameterContract {
+            value_type,
+            ownership: ParameterOwnership::WriteBack,
+        };
+        if matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_)) {
+            parameter_effects.insert(
+                parameter_index as u32,
+                vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release, MemoryEffect::Write],
+            );
+        }
+        results.push(value_type);
+        result_contracts.push(match value_type {
+            ValueType::Ref(layout) => ResultContract::Shared { layout },
+            value_type => ResultContract::Value(value_type),
+        });
+    }
+    if let Some(parameter) = declared_shared_alias {
+        let [ValueType::Ref(layout)] = checked_signature.results.as_slice() else {
+            return Err(CanonicalLoweringError::UnsupportedType(
+                function.ret.clone().expect("checked above"),
+            ));
+        };
+        *result_contracts.first_mut().ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
+        })? = ResultContract::AliasesParameter {
+            parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+            layout: *layout,
+        };
+    } else if let Some(alias) = declared_exclusive_alias {
+        let parameter = alias.parameter();
+        let layout = match checked_signature.results.as_slice() {
+            [ValueType::Ref(layout)] => *layout,
+            // An authenticated projected scalar place is represented by its
+            // retained aggregate root, never by a fabricated scalar address.
+            // The `projection` result contract below is the only authority to
+            // read or write the selected field at later source operations.
+            [ValueType::Int] if alias.projection().is_some() => match value_parameters.get(parameter) {
+                Some(ValueType::Ref(layout)) => {
+                    results[0] = ValueType::Ref(*layout);
+                    *layout
+                }
+                _ => return Err(CanonicalLoweringError::UnsupportedType(
+                        function.ret.clone().expect("checked above"),
+                    )),
+            },
+            _ => return Err(CanonicalLoweringError::UnsupportedType(
+                    function.ret.clone().expect("checked above"),
+                )),
+        };
+        let parameters = alias.parameters();
+        if parameters.iter().any(|parameter| {
+            !matches!(
+                (contract_parameters.get(*parameter), value_parameters.get(*parameter)),
+                (Some(contract), Some(checked_parameter))
+                    if contract.ownership == ParameterOwnership::WriteBack
+                        && contract.value_type == *checked_parameter
+            )
+        }) {
+            return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
+        }
+        *result_contracts.first_mut().ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
+        })? = match alias {
+            ExclusiveReturnAlias::Direct { parameter } => ResultContract::AliasesWriteBackParameter {
+                parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                layout,
+                projection: None,
+            },
+            ExclusiveReturnAlias::DirectOneOf { parameters, selector_parameter } => {
+                // The selector is an authenticated ABI-only ordinary lane.
+                // Keep it immediately after the source result so hidden
+                // write-back lanes remain the final lanes for every caller.
+                let candidates = parameters
+                    .iter()
+                    .map(|parameter| u32::try_from(*parameter).map_err(|_| CanonicalLoweringError::IdOverflow))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carrier_result = 0u32;
+                results.insert(1, ValueType::Bool);
+                result_contracts.insert(1, ResultContract::DisjunctiveWriteBackSelector {
+                    carrier_result,
+                    parameters: candidates.clone(),
+                    selector_parameter: u32::try_from(selector_parameter)
+                        .map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                });
+                ResultContract::AliasesOneOfWriteBackParameters {
+                    parameters: candidates,
+                    layout,
+                }
+            }
+            ExclusiveReturnAlias::ProjectedField { parameter, field } => ResultContract::AliasesWriteBackParameter {
+                parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                layout,
+                projection: Some(field),
+            },
+        };
+    } else if function.ret.as_ref().is_some_and(|result| {
+        is_root_unique(result) || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)
+    }) {
+        // The declaration result remains the leading lane.  `var` parameters
+        // append independent authenticated write-back lanes, so a direct
+        // unique result (including the exact Result-Ok carrier) has two
+        // distinct unique tokens rather than one ambiguous result shape.
+        if let Some(ValueType::Ref(layout)) = checked_signature.results.first() {
+            *result_contracts.first_mut().ok_or_else(|| {
+                CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone())
+            })? = ResultContract::Unique { layout: *layout };
+        } else if !checked_signature.results.iter().all(|value| is_inline_scalar(*value)) {
+            return Err(CanonicalLoweringError::UnsupportedType(
+                function.ret.clone().expect("checked above"),
+            ));
+        }
+    }
+    Ok(FunctionSignature { id, parameters: value_parameters, results, contract: CallableContract {
         parameters: contract_parameters,
-        results: checked_signature.contract.results,
+        results: result_contracts,
         parameter_effects,
     }})
+}
+
+/// The sole generic returned-reference carrier has no generic ABI of its own:
+/// it is a sealed monomorphized instance of `fn relay(&'l a) -> &'l a: value`.
+/// The source template, its concrete type argument, the rechecked instance
+/// declaration, and the forwarding body must all agree before the existing
+/// direct `AliasesParameter` contract may describe it.
+fn exact_generic_shared_relay_alias(
+    source: &CanonicalCheckedSource,
+    function: &witchy_syntax::ast::Function,
+    checked: &Type,
+) -> Result<Option<usize>, CanonicalLoweringError> {
+    // This helper is reached while every concrete generic signature is being
+    // reconstructed. Only the sealed shared-reference template class may
+    // enter its reference-specific proof below; ordinary value/unique generic
+    // instances retain their established lowering path.
+    if !generic_shared_relay_template_candidate(source, &function.name) {
+        return Ok(None);
+    }
+    let Some(identity) = source.generic_specialization(&function.name) else {
+        return Ok(None);
+    };
+    let Some(template) = identity.template() else {
+        return Ok(None);
+    };
+    let [type_parameter] = template.type_parameters() else {
+        return Ok(None);
+    };
+    let [Some(template_parameter)] = template.parameters() else {
+        return Ok(None);
+    };
+    let Some(template_result) = template.result() else {
+        return Ok(None);
+    };
+    let (parameter_lifetime, parameter_inner) = shared_reference_parts(template_parameter)
+        .ok_or_else(|| CanonicalLoweringError::UnsupportedType(template_parameter.clone()))?;
+    let (result_lifetime, result_inner) = shared_reference_parts(template_result)
+        .ok_or_else(|| CanonicalLoweringError::UnsupportedType(template_result.clone()))?;
+    if parameter_lifetime != result_lifetime
+        || !matches!(parameter_inner.unqualified(), Type::Named(name, arguments)
+            if name == type_parameter && arguments.is_empty())
+        || !matches!(result_inner.unqualified(), Type::Named(name, arguments)
+            if name == type_parameter && arguments.is_empty())
+    {
+        return Ok(None);
+    }
+    let [concrete] = identity.concrete_types() else {
+        return Ok(None);
+    };
+    if !is_direct_shared_owned_object(concrete) {
+        return Ok(None);
+    }
+    let concrete_reference = Type::Qualified(
+        TypeQual::Borrow(parameter_lifetime.to_owned()),
+        Box::new(concrete.clone()),
+    );
+    let Type::Fn(checked_parameters, checked_result, checked_conventions, _) = checked.unqualified() else {
+        return Ok(None);
+    };
+    let checked_convention = checked_conventions.first().copied().unwrap_or(Convention::Let);
+    let Some(source_parameter) = function.params.first() else {
+        return Ok(None);
+    };
+    if function.params.len() != 1
+        || source_parameter.convention != Convention::Let
+        // The template and generated declaration retain the `&'l` relation;
+        // the separately checked callable is deliberately its one concrete
+        // storage lane physical ABI.
+        || source_parameter.ty.as_ref() != Some(&concrete_reference)
+        || function.ret.as_ref() != Some(&concrete_reference)
+        || checked_parameters.as_slice() != [concrete.clone()]
+        || checked_result.as_ref() != concrete
+        || checked_conventions.len() > 1
+        || checked_convention != Convention::Let
+        || !matches!(function.body.stmts.as_slice(), [Stmt::Expr(Expr::Var(value))] if value == &source_parameter.name)
+    {
+        return Ok(None);
+    }
+    Ok(Some(0))
+}
+
+/// Authenticate the non-generic half of the direct shared carrier. The
+/// callable signature alone is intentionally insufficient because physical
+/// qualifier erasure makes unrelated `Concrete -> Concrete` declarations look
+/// alike. This source declaration must be one same-lifetime direct reference
+/// whose body forwards its sole parameter unchanged.
+fn exact_monomorphic_shared_relay_alias(
+    function: &witchy_syntax::ast::Function,
+    signature: &FunctionSignature,
+) -> bool {
+    let ([parameter], Some(result)) = (function.params.as_slice(), function.ret.as_ref()) else {
+        return false;
+    };
+    let (Some((parameter_lifetime, parameter_inner)), Some((result_lifetime, result_inner))) = (
+        parameter.ty.as_ref().and_then(shared_reference_parts),
+        shared_reference_parts(result),
+    ) else {
+        return false;
+    };
+    parameter.convention == Convention::Let
+        && parameter_lifetime == result_lifetime
+        && is_direct_shared_owned_object(parameter_inner)
+        && parameter_inner.unqualified() == result_inner.unqualified()
+        && matches!(function.body.stmts.as_slice(), [Stmt::Expr(Expr::Var(value))] if value == &parameter.name)
+        && exact_direct_shared_alias_signature(signature)
+}
+
+/// The physical ABI shape shared by the only direct returned-shared carrier.
+/// Its caller still needs the declaration-specific map above; this helper
+/// solely verifies every local ABI lane before lowering or safety accepts it.
+fn exact_direct_shared_alias_signature(signature: &FunctionSignature) -> bool {
+    let ([ValueType::Ref(parameter_layout)], [ValueType::Ref(result_layout)]) =
+        (signature.parameters.as_slice(), signature.results.as_slice())
+    else {
+        return false;
+    };
+    let ([parameter_contract], [result_contract]) = (
+        signature.contract.parameters.as_slice(),
+        signature.contract.results.as_slice(),
+    ) else {
+        return false;
+    };
+    *parameter_layout == *result_layout
+        && parameter_contract.ownership == ParameterOwnership::Value
+        && parameter_contract.value_type == ValueType::Ref(*parameter_layout)
+        && matches!(
+            result_contract,
+            ResultContract::AliasesParameter { parameter: 0, layout }
+                if *layout == *parameter_layout
+        )
+        && signature.contract.parameter_effects
+            == BTreeMap::from([(0, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release])])
+}
+
+/// Identify only the generic specialization class whose *template* retains
+/// the source-level shared-reference relation. Its finalized callable ABI is
+/// deliberately erased to concrete storage types, so inspecting that ABI here
+/// would silently skip the very carrier this predicate protects.
+fn generic_shared_relay_template_candidate(
+    source: &CanonicalCheckedSource,
+    name: &str,
+) -> bool {
+    let Some(identity) = source.generic_specialization(name) else {
+        return false;
+    };
+    let Some(template) = identity.template() else {
+        return false;
+    };
+    let ([type_parameter], [Some(template_parameter)], Some(template_result), [concrete]) = (
+        template.type_parameters(),
+        template.parameters(),
+        template.result(),
+        identity.concrete_types(),
+    ) else {
+        return false;
+    };
+    let (parameter_lifetime, parameter_inner) = match shared_reference_parts(template_parameter) {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let (result_lifetime, result_inner) = match shared_reference_parts(template_result) {
+        Some(parts) => parts,
+        None => return false,
+    };
+    parameter_lifetime == result_lifetime
+        && matches!(parameter_inner.unqualified(), Type::Named(parameter, arguments)
+            if parameter == type_parameter && arguments.is_empty())
+        && matches!(result_inner.unqualified(), Type::Named(parameter, arguments)
+            if parameter == type_parameter && arguments.is_empty())
+        && is_direct_shared_owned_object(concrete)
+}
+
+/// Mirror the checked-source runtime inventory boundary: a declaration with
+/// free signature variables is a monomorphization template, never a callable
+/// witness. Keeping this local syntax check alongside a missing-witness error
+/// makes every other absent final declaration fail closed.
+fn generic_template_without_callable_witness(function: &witchy_syntax::ast::Function) -> bool {
+    let mut variables = Vec::new();
+    for parameter in &function.params {
+        if let Some(ty) = &parameter.ty {
+            witchy_syntax::ast::collect_type_vars(ty, &mut variables);
+        }
+    }
+    if let Some(result) = &function.ret {
+        witchy_syntax::ast::collect_type_vars(result, &mut variables);
+    }
+    !variables.is_empty()
 }
 
 fn signature_from_type(
@@ -1517,12 +2537,23 @@ fn signature_from_type(
     if conventions.len() != parameters.len() {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
     }
+    let projected_parameter = projected_exclusive_signature_parameter(parameters, result, &conventions);
     if let Some(unsupported) = parameters
         .iter()
         .zip(&conventions)
-        .map(|(ty, convention)| var_parameter_type(ty, *convention))
-        .chain(std::iter::once(result.as_ref().clone()))
-        .find(contains_deferred_v1_qualifier)
+        .enumerate()
+        .map(|(index, (ty, convention))| {
+            let physical = parameter_physical_type(ty, *convention);
+            (projected_parameter == Some(index)).then_some(false)
+                .unwrap_or_else(|| contains_deferred_v1_qualifier(&physical))
+                .then_some(physical)
+        })
+        .chain(std::iter::once(
+            contains_deferred_v1_qualifier(&result_physical_type(result))
+                .then_some(result_physical_type(result)),
+        ))
+        .flatten()
+        .next()
     {
         return Err(CanonicalLoweringError::UnsupportedType(unsupported));
     }
@@ -1549,29 +2580,48 @@ fn signature_from_type(
         // the v1 owned-reference ABI it is one owned token like `let`/`own`.
         let ownership = match (value_type, convention) {
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
-                if shared_reference_parts(parameter)
-                    .is_some_and(|(_, inner)| is_direct_shared_int(inner)) =>
+                if is_admitted_rooted_int_view(parameter) =>
             {
                 ParameterOwnership::Shared
             }
             (ValueType::Ref(_), Convention::Let | Convention::Borrow)
                 if shared_reference_parts(parameter).is_some() => ParameterOwnership::Value,
+            (ValueType::Ref(_) | ValueType::Gc(_), Convention::Own)
+                if is_root_unique(parameter) => ParameterOwnership::Unique,
             (ValueType::Ref(_) | ValueType::Gc(_), Convention::Let | Convention::Borrow | Convention::Own) => {
                 ParameterOwnership::Shared
             }
             // A `var` parameter is written back as an extra result lane. For a
             // reference that lane is the replacement token; for a scalar it is
             // a plain value and the parameter carries no memory token at all.
+            // `var view: &Int` writes back a replacement *carrier* token.
+            // It never grants a write through the retained root/projection.
+            (ValueType::Gc(_), Convention::Var)
+                if is_admitted_rooted_int_view(parameter) =>
+            {
+                ParameterOwnership::WriteBack
+            }
             (ValueType::Gc(_), Convention::Var) => return Err(CanonicalLoweringError::UnsupportedExpression("opaque owner var parameter")),
             (ValueType::Ref(_), Convention::Var) if matches!(parameter, Type::Qualified(TypeQual::Unique, _)) => ParameterOwnership::UniqueWriteBack,
             (_, Convention::Var) => ParameterOwnership::WriteBack,
             (_, Convention::Let | Convention::Borrow | Convention::Own) => ParameterOwnership::Value,
         };
         if matches!(value_type, ValueType::Ref(_) | ValueType::Gc(_)) {
-            let effects = if shared_reference_parts(parameter)
-                .is_some_and(|(_, inner)| is_direct_shared_int(inner))
-            {
-                vec![MemoryEffect::Read, MemoryEffect::Release]
+            let effects = if is_admitted_rooted_int_view(parameter) {
+                if ownership == ParameterOwnership::WriteBack {
+                    vec![
+                        MemoryEffect::Read,
+                        MemoryEffect::Retain,
+                        MemoryEffect::Release,
+                        MemoryEffect::Write,
+                    ]
+                } else {
+                    vec![
+                        MemoryEffect::Read,
+                        MemoryEffect::Retain,
+                        MemoryEffect::Release,
+                    ]
+                }
             } else {
                 vec![
                     MemoryEffect::Read,
@@ -1589,20 +2639,26 @@ fn signature_from_type(
     }
     let result_type = source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?;
     let mut results = (!is_unit(result_type)).then_some(result_type).into_iter().collect::<Vec<_>>();
-    if shared_reference_parts(result).is_some_and(|(_, inner)| is_direct_shared_int(inner)) {
-        // This slice has frame/cell provenance for direct borrowed inputs, but
-        // does not yet transport that provenance in result contracts.
-        return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone()));
-    }
     let alias_parameter = unique_shared_alias_parameter(parameters, result)?;
     let mut result_contracts = if let Some(parameter) = alias_parameter {
-        let ValueType::Ref(layout) = result_type else {
-            return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone()));
-        };
-        vec![ResultContract::AliasesParameter {
-            parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
-            layout,
-        }]
+        match result_type {
+            ValueType::Ref(layout) => vec![ResultContract::AliasesParameter {
+                parameter: u32::try_from(parameter).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                layout,
+            }],
+            _ => return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone())),
+        }
+    } else if is_root_unique(result) {
+        match result_type {
+            // `unique` is a checked ownership fact. A managed value carries
+            // that fact in SafeWIR's unique token; an inline scalar is
+            // already non-aliasable and keeps its ordinary physical lane.
+            ValueType::Ref(layout) => vec![ResultContract::Unique { layout }],
+            value_type if is_inline_scalar(value_type) => {
+                (!is_unit(value_type)).then_some(ResultContract::Value(value_type)).into_iter().collect()
+            }
+            _ => return Err(CanonicalLoweringError::UnsupportedType(result.as_ref().clone())),
+        }
     } else {
         results.iter().copied().map(|result| match result {
             ValueType::Ref(layout) => ResultContract::Shared { layout },
@@ -1613,7 +2669,8 @@ fn signature_from_type(
         results.push(parameter.value_type);
         // A write-back transfers the replacement value's owned token. It need
         // not retain the input's storage identity (the body may replace it).
-        // The return checker establishes layout, initialization, and ownership.
+        // Lowered terminal provenance may strengthen this to an exact
+        // `ReallocatesParameter` relation before initial validation.
         result_contracts.push(match parameter.value_type {
             ValueType::Ref(layout) if parameter.ownership == ParameterOwnership::UniqueWriteBack => ResultContract::Unique { layout },
             ValueType::Ref(layout) => ResultContract::Shared { layout },
@@ -1628,24 +2685,89 @@ fn signature_from_type(
     })
 }
 
-/// The layout of `var unique T` is T; its exclusivity is carried separately
-/// by UniqueWriteBack and independently matched against checked source.
-fn var_parameter_type(ty: &Type, convention: Convention) -> Type {
+/// A type-only prefilter for the bounded projected returned carrier. It merely
+/// keeps its one record parameter representable until `checked_signature` and
+/// canonical authority can bind it to an exact source field relation.
+fn projected_exclusive_signature_parameter(
+    parameters: &[Type],
+    result: &Type,
+    conventions: &[Convention],
+) -> Option<usize> {
+    let (lifetime, referent) = exclusive_reference_parts(result)?;
+    if !is_projected_exclusive_leaf(referent) {
+        return None;
+    }
+    let candidates = parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        let (candidate_lifetime, owner) = exclusive_reference_parts(parameter)?;
+        // Checked access reifies a source `&mut` parameter as the `Var`
+        // write-back ABI convention. This only keeps that exact typed lane
+        // representable; `checked_signature` later binds it to the original
+        // default-Let declaration and source field body.
+        (conventions.get(index) == Some(&Convention::Var)
+            && candidate_lifetime == lifetime
+            && matches!(owner.unqualified(), Type::Named(_, arguments) if arguments.is_empty())
+            && !is_direct_exclusive_owned_object(owner))
+            .then_some(index)
+    }).collect::<Vec<_>>();
+    let [parameter] = candidates.as_slice() else { return None };
+    Some(*parameter)
+}
+
+/// The layout of a root `unique T` is T. Its exclusivity is carried separately
+/// by the callable contract and independently matched against checked source.
+fn parameter_physical_type(ty: &Type, convention: Convention) -> Type {
     match ty {
-        Type::Qualified(TypeQual::Unique, inner) if matches!(convention, Convention::Var) => (**inner).clone(),
+        Type::Qualified(TypeQual::Unique, inner)
+            if matches!(convention, Convention::Own | Convention::Var) => (**inner).clone(),
         _ => ty.clone(),
     }
 }
 
+fn result_physical_type(ty: &Type) -> Type {
+    if let Some(physical) = witchy_syntax::ast::direct_unique_result_ok_collection_physical_type(ty) {
+        return physical;
+    }
+    match ty {
+        Type::Qualified(TypeQual::Unique, inner) => (**inner).clone(),
+        _ => ty.clone(),
+    }
+}
+
+fn is_root_unique(ty: &Type) -> bool {
+    matches!(ty, Type::Qualified(TypeQual::Unique, _))
+}
+
 fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
+    // An aggregate carrier is not an erased reference just because its
+    // references occur below a tuple or list shell.  This syntactic gate only
+    // keeps the bounded physical layout representable; checked_signature and
+    // the canonical authority binding independently require the complete
+    // source-owned BorrowRelation product before it can be admitted.
+    if is_aggregate_reference_carrier(ty) {
+        return false;
+    }
+    // Callable values are closure records, so this narrowly bounded shape has
+    // a physical token carrier already.  It is only a layout prefilter: the
+    // checked source ABI binding and closure witness still have to prove the
+    // exact callable identity and its reference relation at admission.
+    if is_callable_reference_carrier(ty) {
+        return false;
+    }
     match ty {
         Type::Qualified(TypeQual::Frozen, inner) => contains_deferred_v1_qualifier(inner),
-        Type::Qualified(TypeQual::Borrow(_), inner)
-            if is_direct_shared_owned_object(inner) || is_direct_shared_int(inner) => false,
+        Type::Qualified(TypeQual::View, inner) if is_direct_shared_int(inner) || is_rooted_int_slice(inner) => false,
+        Type::Qualified(TypeQual::View, _) => true,
+        // The canonical direct-call ABI already transports an owned object
+        // token.  For a named `&mut String` that token is the authenticated
+        // handle carrier: the checked loan relation supplies exclusivity, and
+        // `var` returns a replacement token in its ordinary write-back lane.
+        // Do not generalize this to scalar cells, projections, aggregates, or
+        // callable values; those need an explicit place-owner ABI.
+        Type::Qualified(TypeQual::BorrowMut(_), inner)
+            if is_direct_exclusive_referent(inner) => false,
         Type::Qualified(TypeQual::Borrow(_), _) => true,
         Type::Qualified(
             TypeQual::Unique
-            | TypeQual::LocalUnique
             | TypeQual::LegacyBorrow(_)
             | TypeQual::BorrowMut(_),
             _,
@@ -1661,13 +2783,162 @@ fn contains_deferred_v1_qualifier(ty: &Type) -> bool {
         // This slice admits shared references only on direct-call signatures.
         // Callable values and indirect calls require a separate authenticated
         // ABI rather than recursively inheriting direct-call authority.
-        Type::Fn(parameters, result, _, _) => {
+        Type::Fn(parameters, result, conventions, _) => {
             parameters.iter().any(contains_reference_qualifier)
                 || contains_reference_qualifier(result)
-                || parameters.iter().any(contains_deferred_v1_qualifier)
-                || contains_deferred_v1_qualifier(result)
+                || parameters.iter().enumerate().any(|(index, parameter)| {
+                    let convention = conventions.get(index).copied().unwrap_or_default();
+                    contains_deferred_v1_qualifier(&parameter_physical_type(parameter, convention))
+                })
+                || contains_deferred_v1_qualifier(&result_physical_type(result))
         }
     }
+}
+
+/// The callable values whose nested reference lane is physically representable
+/// *and* has an installed source-authenticated carrier in this slice.
+/// Shared-result closures and projected trait methods deliberately remain
+/// deferred: neither can inherit a local rooted-view carrier.
+fn is_callable_reference_carrier(ty: &Type) -> bool {
+    let Type::Fn(parameters, result, conventions, _) = ty.unqualified() else {
+        return false;
+    };
+    let exclusive_write_back = matches!(parameters.as_slice(), [parameter]
+        if matches!(conventions.as_slice(), [] | [Convention::Let])
+            && is_direct_exclusive_reference(parameter))
+        && matches!(result.unqualified(),
+            Type::Named(name, arguments) if name == "String" && arguments.is_empty());
+    let rooted_view = matches!(parameters.as_slice(), [parameter]
+        if matches!(conventions.as_slice(), [] | [Convention::Let])
+            && rooted_view_inner(parameter).is_some_and(is_direct_shared_int))
+        && rooted_view_inner(result).is_some_and(is_direct_shared_int);
+    exclusive_write_back || rooted_view
+}
+
+/// The sole nested-reference physical shapes this phase can represent.  This
+/// is intentionally only a layout prefilter: it neither names an owner nor
+/// grants an alias or write-back right.  Those facts remain in the exact
+/// source access signature and are verified at the canonical authority
+/// boundary.
+fn is_aggregate_reference_carrier(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Tuple(items) => !items.is_empty()
+            && items.iter().all(|item| {
+                shared_reference_parts(item)
+                    .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
+                    || exclusive_reference_parts(item)
+                        .is_some_and(|(_, inner)| is_direct_exclusive_owned_object(inner))
+            }),
+        Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
+            shared_reference_parts(&arguments[0])
+                .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
+        }
+        // `Option(&Int)` owns one tagged aggregate shell. Its active `Some`
+        // field is the existing authenticated rooted-view carrier; `None`
+        // has no carrier payload at all. Do not treat the payload as a linear
+        // scalar or synthesize an inactive value.
+        Type::Named(name, arguments) if name == "Option" && arguments.len() == 1 => {
+            rooted_view_inner(&arguments[0]).is_some_and(is_direct_shared_int)
+        }
+        // `Result` has an owned tagged shell.  This bounded carrier admits
+        // only the checked `Ok` tuple of direct shared roots; a mutable,
+        // projected, generic, or non-String error lane remains outside the
+        // aggregate ABI.  The source authority checker independently binds
+        // each tuple slot to its exact `Ok` projection and owner relation.
+        Type::Named(name, arguments) if name == "Result" && arguments.len() == 2 => {
+            is_shared_reference_tuple_carrier(&arguments[0])
+                && is_string_type(&arguments[1])
+        }
+        _ => false,
+    }
+}
+
+/// An aggregate with a direct immutable `&Int` field is represented by its
+/// source-derived opaque owner family.  The checked callable ABI erases view
+/// fields to their scalar payloads, so declaration sites must recover this
+/// exact source shape before accepting the aggregate as a `Gc` value.
+///
+/// Deliberately do not recurse through nested aggregates here.  This first
+/// carrier slice admits only fields whose root/projection contract is the
+/// installed direct `&Int` family; a nested carrier needs its own source
+/// provenance and stays fail-closed rather than inheriting this ABI rewrite.
+fn is_direct_rooted_int_view_aggregate_carrier(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> bool {
+    scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
+        if shape.packed { return false; }
+        let mut seen_direct_view = false;
+        let mut active_definitions = BTreeSet::new();
+        shape.fields.iter().all(|field| {
+            if rooted_view_inner(field).is_some_and(is_direct_shared_int) {
+                seen_direct_view = true;
+                true
+            } else {
+                !contains_rooted_view_descendant(field, definitions, &mut active_definitions)
+            }
+        }) && seen_direct_view
+    })
+}
+
+/// A shallow aggregate carrier may contain ordinary scalar fields beside its
+/// immediate authenticated `&Int` fields, but no nested type can inherit that
+/// carrier merely by containing a view.  Walk named definitions as well as
+/// generic arguments: a decoy direct field must not authorize `Inner`,
+/// `Option(&Int)`, or `fn() -> &Int` elsewhere in the same aggregate.
+fn contains_rooted_view_descendant(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    active_definitions: &mut BTreeSet<String>,
+) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::View, _) => true,
+        Type::Qualified(_, inner) | Type::Slice(inner) => {
+            contains_rooted_view_descendant(inner, definitions, active_definitions)
+        }
+        Type::Named(name, arguments) | Type::Dyn(name, arguments) => {
+            arguments.iter().any(|argument| {
+                contains_rooted_view_descendant(argument, definitions, active_definitions)
+            }) || definitions.get(name).is_some_and(|definition| {
+                if !active_definitions.insert(name.clone()) { return false; }
+                let contains = definition.variants.iter().any(|variant| {
+                    variant.fields.iter().any(|field| {
+                        contains_rooted_view_descendant(field, definitions, active_definitions)
+                    })
+                });
+                active_definitions.remove(name);
+                contains
+            })
+        }
+        Type::Tuple(items) => items.iter().any(|item| {
+            contains_rooted_view_descendant(item, definitions, active_definitions)
+        }),
+        Type::RecordCompose { base, fields } => {
+            contains_rooted_view_descendant(base, definitions, active_definitions)
+                || fields.iter().any(|(_, field)| {
+                    contains_rooted_view_descendant(field, definitions, active_definitions)
+                })
+        }
+        Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(|parameter| {
+                contains_rooted_view_descendant(parameter, definitions, active_definitions)
+            }) || contains_rooted_view_descendant(result, definitions, active_definitions)
+        }
+    }
+}
+
+fn is_shared_reference_tuple_carrier(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Tuple(items)
+        if !items.is_empty()
+            && items.iter().all(|item| {
+                shared_reference_parts(item)
+                    .is_some_and(|(_, inner)| is_direct_shared_owned_object(inner))
+            }))
+}
+
+fn is_string_type(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Named(name, arguments)
+        if name == "String" && arguments.is_empty())
 }
 
 fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
@@ -1675,9 +2946,22 @@ fn shared_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
     Some((lifetime, inner))
 }
 
+/// Canonical rooted views are intentionally separate from the legacy
+/// lifetime-alias family above. Their opaque owner token carries root plus
+/// projection, never a `Ref` alias or lexical-lifetime relation.
+fn rooted_view_inner(ty: &Type) -> Option<&Type> {
+    let Type::Qualified(TypeQual::View, inner) = ty else { return None };
+    Some(inner)
+}
+
+fn exclusive_reference_parts(ty: &Type) -> Option<(&str, &Type)> {
+    let Type::Qualified(TypeQual::BorrowMut(lifetime), inner) = ty else { return None };
+    Some((lifetime, inner))
+}
+
 fn contains_reference_qualifier(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) | Type::Slice(inner) => contains_reference_qualifier(inner),
         Type::Tuple(items) | Type::Named(_, items) | Type::Dyn(_, items) => {
             items.iter().any(contains_reference_qualifier)
@@ -1715,6 +2999,205 @@ fn unique_shared_alias_parameter(
     Ok(Some(parameter))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExclusiveReturnAlias {
+    Direct { parameter: usize },
+    DirectOneOf { parameters: Vec<usize>, selector_parameter: usize },
+    ProjectedField { parameter: usize, field: u32 },
+}
+
+impl ExclusiveReturnAlias {
+    fn parameter(&self) -> usize {
+        match self {
+            Self::Direct { parameter } | Self::ProjectedField { parameter, .. } => *parameter,
+            Self::DirectOneOf { parameters, .. } => parameters[0],
+        }
+    }
+
+    fn parameters(&self) -> Vec<usize> {
+        match self {
+            Self::Direct { parameter } | Self::ProjectedField { parameter, .. } => vec![*parameter],
+            Self::DirectOneOf { parameters, .. } => parameters.clone(),
+        }
+    }
+
+    fn projection(&self) -> Option<u32> {
+        match self {
+            Self::Direct { .. } => None,
+            Self::DirectOneOf { .. } => None,
+            Self::ProjectedField { field, .. } => Some(*field),
+        }
+    }
+}
+
+/// The initial source qualifier scan runs before callable signatures exist.
+/// It may suppress its ordinary `&mut Record` refusal only for the one
+/// source-derived field carrier; signature authority later re-proves this
+/// relation against the checked access product and canonical WIR history.
+fn projected_exclusive_source_parameter(
+    function: &witchy_syntax::ast::Function,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<usize> {
+    let result = function.ret.as_ref()?;
+    if !exclusive_reference_parts(result).is_some_and(|(_, inner)| is_projected_exclusive_leaf(inner)) {
+        return None;
+    }
+    match exact_exclusive_return_alias(function, result, definitions).ok()?? {
+        ExclusiveReturnAlias::ProjectedField { parameter, .. } => Some(parameter),
+        ExclusiveReturnAlias::Direct { .. } | ExclusiveReturnAlias::DirectOneOf { .. } => None,
+    }
+}
+
+/// A generic trait relay cannot reconstruct a selected field from its own
+/// erased `&mut Pair -> &mut Int` shape.  Admit it only when its exact body
+/// call, exact checked call contract, and the concrete selected callee's
+/// independently authenticated field witness all agree.  The returned
+/// projection remains the callee's source witness; no layout offset or trait
+/// spelling is authority here.
+fn generic_projected_exclusive_return_alias(
+    source: &CanonicalCheckedSource,
+    function: &witchy_syntax::ast::Function,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<Option<ExclusiveReturnAlias>, CanonicalLoweringError> {
+    let [Stmt::Expr(call @ Expr::Call { name, args })] = function.body.stmts.as_slice() else {
+        return Ok(None);
+    };
+    let [Expr::Var(receiver), Expr::Var(owner)] = args.as_slice() else { return Ok(None) };
+    let [receiver_parameter, owner_parameter] = function.params.as_slice() else { return Ok(None) };
+    if receiver != &receiver_parameter.name || owner != &owner_parameter.name {
+        return Ok(None);
+    }
+    let Some(callee) = source.typed_module().module().items.iter().find_map(|item| match item {
+        Item::Function(candidate) if candidate.name == *name => Some(candidate),
+        _ => None,
+    }) else { return Ok(None) };
+    let Some(callee_result) = callee.ret.as_ref() else { return Ok(None) };
+    let Some(ExclusiveReturnAlias::ProjectedField { parameter: 1, field }) =
+        exact_exclusive_return_alias(callee, callee_result, definitions)?
+    else { return Ok(None) };
+    let facts = source.access_facts().map_err(|error| {
+        CanonicalLoweringError::InvalidCheckedAccessFacts(error.to_string())
+    })?;
+    let (Some(caller), Some(call_contract), Some(callee_contract)) = (
+        facts.declaration(&function.name),
+        facts.call_at(source.typed_module().module(), call),
+        facts.declaration(name),
+    ) else { return Ok(None) };
+    if caller.verify_exact(call_contract).is_err()
+        || callee_contract.verify_exact(call_contract).is_err()
+    { return Ok(None); }
+    Ok(Some(ExclusiveReturnAlias::ProjectedField { parameter: 1, field }))
+}
+
+/// The sole projected returned-exclusive signature is one concrete record
+/// field in the direct tail expression. Its declaration only selects a
+/// candidate; SafeWIR contract derivation and canonical authority separately
+/// prove the physical field history and checked borrow relation.
+fn exact_exclusive_return_alias(
+    function: &witchy_syntax::ast::Function,
+    result: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<Option<ExclusiveReturnAlias>, CanonicalLoweringError> {
+    let Some((lifetime, inner)) = exclusive_reference_parts(result) else {
+        return Ok(None);
+    };
+    let declared_parameters = function.params.iter().map(|parameter| {
+        parameter.ty.clone().ok_or_else(|| CanonicalLoweringError::UnsupportedType(result.clone()))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let mut direct = declared_parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        exclusive_reference_parts(parameter).and_then(|(candidate, parameter_inner)| {
+            (candidate == lifetime
+                && parameter_inner.unqualified() == inner.unqualified()
+                && is_direct_exclusive_owned_object(parameter_inner))
+                .then_some(index)
+        })
+    });
+    let direct = direct.collect::<Vec<_>>();
+    if let [parameter] = direct.as_slice() {
+        return Ok(Some(ExclusiveReturnAlias::Direct { parameter: *parameter }));
+    }
+    if direct.len() >= 2 {
+        let Some(selector_parameter) = exact_disjunctive_exclusive_selector(function, &direct) else {
+            return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+        };
+        return Ok(Some(ExclusiveReturnAlias::DirectOneOf { parameters: direct, selector_parameter }));
+    }
+
+    let Some(Stmt::Expr(Expr::Unary { op: UnOp::BorrowMut, expr })) = function.body.stmts.last() else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    let Expr::Field { base, field } = expr.as_ref() else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    let Expr::Var(owner) = base.as_ref() else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    let candidates = function.params.iter().enumerate().filter_map(|(index, parameter)| {
+        let parameter_type = parameter.ty.as_ref()?;
+        let (candidate_lifetime, owner_type) = exclusive_reference_parts(parameter_type)?;
+        (parameter.convention == Convention::Let
+            && candidate_lifetime == lifetime
+            && matches!(owner_type.unqualified(), Type::Named(_, arguments) if arguments.is_empty())
+            && parameter.name == *owner)
+            .then_some(index)
+    }).collect::<Vec<_>>();
+    let [parameter] = candidates.as_slice() else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    let Type::Named(record, _) = declared_parameters[*parameter].unqualified() else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    let definition = function_record_definition(record, definitions)
+        .ok_or_else(|| CanonicalLoweringError::UnsupportedType(result.clone()))?;
+    if definition.packed || definition.variants.len() != 1 {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    }
+    let variant = &definition.variants[0];
+    let Some(field_index) = variant.field_names.iter().position(|candidate| candidate == field) else {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    };
+    if !variant.fields.get(field_index).is_some_and(is_projected_exclusive_leaf) {
+        return Err(CanonicalLoweringError::UnsupportedType(result.clone()));
+    }
+    Ok(Some(ExclusiveReturnAlias::ProjectedField {
+        parameter: *parameter,
+        field: u32::try_from(field_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+    }))
+}
+
+/// The disjunctive direct carrier is deliberately smaller than a general
+/// control-flow reference join: exactly two direct parameters, returned by an
+/// exact source `if selector: first else: second`, where selector is itself a
+/// declared Bool parameter.  This is the source authority for the ABI-only
+/// selector lane; neither layouts nor final WIR branch shape can create it.
+fn exact_disjunctive_exclusive_selector(
+    function: &witchy_syntax::ast::Function,
+    candidates: &[usize],
+) -> Option<usize> {
+    let [first, second] = candidates else { return None };
+    let [Stmt::Expr(Expr::If { cond, then_block, else_block: Some(else_block) })] = function.body.stmts.as_slice() else {
+        return None;
+    };
+    let Expr::Var(selector) = cond.as_ref() else { return None };
+    let selector_parameter = function.params.iter().position(|parameter| {
+        parameter.name == *selector
+            && parameter.convention == Convention::Let
+            && matches!(parameter.ty.as_ref().map(Type::unqualified), Some(Type::Named(name, arguments)) if name == "Bool" && arguments.is_empty())
+    })?;
+    let [Stmt::Expr(Expr::Var(then_name))] = then_block.stmts.as_slice() else { return None };
+    let [Stmt::Expr(Expr::Var(else_name))] = else_block.stmts.as_slice() else { return None };
+    (function.params.get(*first).is_some_and(|parameter| parameter.name == *then_name)
+        && function.params.get(*second).is_some_and(|parameter| parameter.name == *else_name))
+        .then_some(selector_parameter)
+}
+
+fn function_record_definition<'a>(
+    name: &str,
+    definitions: &'a BTreeMap<String, TypeDef>,
+) -> Option<&'a TypeDef> {
+    definitions.get(name).or_else(|| name.rsplit('.').next().and_then(|bare| definitions.get(bare)))
+}
+
 fn is_direct_shared_owned_object(ty: &Type) -> bool {
     match ty.unqualified() {
         Type::Named(name, arguments)
@@ -1727,6 +3210,111 @@ fn is_direct_shared_owned_object(ty: &Type) -> bool {
     }
 }
 
+/// The canonical exclusive-reference ABI carries a managed `String` token.
+/// It admits a direct named owner and one separately authenticated local
+/// fixed-field handle (`let h = &mut owner.field`): retained loan/place facts
+/// bind that handle to its mutable aggregate root before a direct call. The
+/// only returned carrier is a direct `&mut String` result tied to one exact
+/// direct `&mut String` parameter and its hidden write-back lane. Aggregate
+/// reference transport, arbitrary projections, callable dispatch, and generic
+/// carrier transport remain outside this ABI.
+fn is_direct_exclusive_owned_object(ty: &Type) -> bool {
+    matches!(
+        ty.unqualified(),
+        Type::Named(name, arguments) if name == "String" && arguments.is_empty()
+    )
+}
+
+/// A projected-return witness may select only one scalar field kind that has
+/// a source-checked write-back representation.  This is intentionally not
+/// the broad direct-reference predicate: the declaration body, access loan,
+/// and result projection still have to name this field exactly.
+fn is_projected_exclusive_leaf(ty: &Type) -> bool {
+    is_direct_exclusive_owned_object(ty) || is_direct_shared_int(ty)
+}
+
+/// The declaration-derived write-back ABI has a managed `String` token carrier
+/// and a scalar replacement lane for `Int`. Its only projected local carrier
+/// is the retained-fact-authenticated fixed-field handle above; returned,
+/// aggregate, callable, alias, generic, `var`, and `own` carriers remain
+/// outside it.
+fn is_direct_exclusive_referent(ty: &Type) -> bool {
+    is_direct_exclusive_owned_object(ty) || is_direct_shared_int(ty)
+}
+
+fn is_direct_exclusive_reference(ty: &Type) -> bool {
+    matches!(ty, Type::Qualified(TypeQual::BorrowMut(_), inner)
+        if is_direct_exclusive_referent(inner))
+}
+
+/// A callable carrier may retain one direct mutable String place.  This is
+/// intentionally defined over checked access facts, not the erased physical
+/// `fn` layout: it requires exactly one exclusive input and no returned
+/// borrow relation for a caller to forge or widen.
+fn exact_callable_exclusive_writeback_contract(signature: &AccessSignature) -> bool {
+    matches!(signature.params(), [parameter]
+        if parameter.kind() == AccessKind::ExclusiveWriteback
+            && is_direct_exclusive_reference(parameter.ty()))
+        && matches!(signature.result().ty().unqualified(),
+            Type::Named(name, arguments) if name == "String" && arguments.is_empty())
+        && signature.borrow_relations().is_empty()
+}
+
+/// The shared callable slice is one non-escaping `&'a String -> &'a String`
+/// relation.  Its exact source relation remains opaque: this recognizes the
+/// finalized checker product, rather than rebuilding a relation from a
+/// closure's layout, annotation spelling, or field offsets.
+fn exact_callable_shared_alias_contract(signature: &AccessSignature) -> bool {
+    let (Some(parameter), Some((lifetime, referent))) = (
+        signature.params().first(),
+        shared_reference_parts(signature.result().ty()),
+    ) else {
+        return false;
+    };
+    signature.params().len() == 1
+        // A source `let` is represented as `OwnedImmutable`; the explicit
+        // `&'a` qualifier and the retained relation below are what make this
+        // a shared-reference lane rather than an ordinary owned parameter.
+        && parameter.kind() == AccessKind::OwnedImmutable
+        && shared_reference_parts(parameter.ty()).is_some_and(|(candidate, inner)| {
+            candidate == lifetime && inner.unqualified() == referent.unqualified()
+                && is_direct_shared_owned_object(inner)
+        })
+        && is_direct_shared_owned_object(referent)
+        && matches!(signature.borrow_relations(), [relation]
+            if relation.lifetime() == lifetime
+                && relation.kind() == witchy_types::access::BorrowKind::Shared
+                && relation.storage_type().unqualified() == referent.unqualified()
+                && relation.output_projection().steps.is_empty()
+                && matches!(relation.owners(), [owner]
+                    if owner.position() == 0 && owner.input_projection().steps.is_empty()))
+}
+
+/// The first rooted callable carrier: one immutable whole-Int view in and
+/// out, with no lexical loan relation.  Its root/projection representation is
+/// authenticated by the type-level view facts and its exact callable identity
+/// is checked at closure construction and indirect invocation.
+fn exact_callable_rooted_int_view_contract(signature: &AccessSignature) -> bool {
+    matches!(signature.params(), [parameter]
+        if parameter.kind() == AccessKind::OwnedImmutable
+            && rooted_view_inner(parameter.ty()).is_some_and(is_direct_shared_int))
+        && rooted_view_inner(signature.result().ty()).is_some_and(is_direct_shared_int)
+        && signature.borrow_relations().is_empty()
+}
+
+fn callable_reference_carrier(signature: &AccessSignature) -> Option<CallableReferenceCarrier> {
+    let identity = signature.identity_key();
+    if exact_callable_exclusive_writeback_contract(signature) {
+        Some(CallableReferenceCarrier::ExclusiveWriteBack(identity))
+    } else if exact_callable_shared_alias_contract(signature) {
+        Some(CallableReferenceCarrier::SharedAlias(identity))
+    } else if exact_callable_rooted_int_view_contract(signature) {
+        Some(CallableReferenceCarrier::RootedIntView(identity))
+    } else {
+        None
+    }
+}
+
 fn is_direct_shared_int(ty: &Type) -> bool {
     matches!(
         ty.unqualified(),
@@ -1734,38 +3322,107 @@ fn is_direct_shared_int(ty: &Type) -> bool {
     )
 }
 
+fn is_rooted_int_slice(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Slice(element) => is_direct_shared_int(element),
+        // The checker preserves the private slice identity as a nominal in
+        // finalized callable signatures. It is the same checked payload as
+        // the surface `&[Int]`, not a second source-level carrier.
+        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => {
+            is_direct_shared_int(&arguments[0])
+        }
+        _ => false,
+    }
+}
+
+fn is_checked_rooted_int_slice_payload(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(name, arguments)
+        if name.as_ref() == "Slice"
+            && arguments.len() == 1
+            && matches!(arguments.get(0), Some(Ty::Int)))
+}
+
+fn is_admitted_rooted_int_view(ty: &Type) -> bool {
+    rooted_view_inner(ty).is_some_and(|inner| is_direct_shared_int(inner) || is_rooted_int_slice(inner))
+}
+
+fn rooted_int_view_owner_type(ty: &Type, layouts: &ClosureValueLayouts) -> Option<GcTypeId> {
+    let inner = rooted_view_inner(ty)?;
+    if is_direct_shared_int(inner) {
+        Some(layouts.shared_int_reference)
+    } else if is_rooted_int_slice(inner) {
+        Some(layouts.rooted_int_slice_view)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod direct_shared_string_scope_tests {
     use super::*;
-    use witchy_syntax::ast::CallableQualifiers;
-
-    fn shared_string() -> Type {
-        Type::Qualified(
-            TypeQual::Borrow("a".to_owned()),
-            Box::new(Type::Named("String".to_owned(), vec![])),
-        )
-    }
 
     #[test]
-    fn ambiguous_shared_alias_result_is_refused() {
-        let shared = shared_string();
-        assert!(matches!(
-            unique_shared_alias_parameter(&[shared.clone(), shared.clone()], &shared),
-            Err(CanonicalLoweringError::UnsupportedType(_))
+    fn projected_return_contract_binds_the_root_relation_to_one_field() {
+        let layout = witchy_wir::layout::LayoutId::from_bytes([7; 32]);
+        let exact = ResultContract::AliasesWriteBackParameter {
+            parameter: 0,
+            layout,
+            projection: Some(1),
+        };
+        assert!(write_back::projected_return_contract_matches_root_relation(
+            Some(&exact), 0, 1,
         ));
+        assert!(!write_back::projected_return_contract_matches_root_relation(
+            Some(&exact), 1, 1,
+        ), "the canonical contract must name the relation owner parameter");
+        assert!(!write_back::projected_return_contract_matches_root_relation(
+            Some(&exact), 0, 0,
+        ), "a different record field cannot reopen this handle");
+        let direct = ResultContract::AliasesWriteBackParameter {
+            parameter: 0,
+            layout,
+            projection: None,
+        };
+        assert!(!write_back::projected_return_contract_matches_root_relation(
+            Some(&direct), 0, 1,
+        ), "a direct alias contract cannot authenticate a projected handle");
+        assert!(!write_back::projected_return_contract_matches_root_relation(
+            None, 0, 1,
+        ), "a missing result contract cannot authenticate a projected handle");
+
+        let root = ValueType::Ref(layout);
+        let wrong_root = ValueType::Ref(witchy_wir::layout::LayoutId::from_bytes([8; 32]));
+        let write_back = ParameterContract {
+            value_type: root,
+            ownership: ParameterOwnership::WriteBack,
+        };
+        assert!(write_back::exact_write_back_root_layout(
+            Some(&write_back), Some(&root), Some(&root),
+        ));
+        assert!(!write_back::exact_write_back_root_layout(
+            Some(&write_back), Some(&root), Some(&wrong_root),
+        ), "the retained caller root must have the callee write-back layout");
+
+        let module = witchy_syntax::parser::parse_module(r#"
+type Pair:
+    value: String
+"#).expect("record fixture parses");
+        let definitions = module.items.iter().filter_map(|item| {
+            let Item::Type(definition) = item else { return None };
+            Some((definition.name.clone(), definition.clone()))
+        }).collect::<BTreeMap<_, _>>();
+        let pair = Type::Named("Pair".to_owned(), vec![]);
+        assert_eq!(
+            write_back::exact_unpacked_string_record_field_name(&pair, &definitions, 0),
+            Some("value".to_owned()),
+        );
+        assert_eq!(
+            write_back::exact_unpacked_string_record_field_name(&pair, &definitions, 1),
+            None,
+            "an out-of-range contract field cannot become a projected place",
+        );
     }
 
-    #[test]
-    fn shared_reference_nested_in_callable_value_is_deferred() {
-        let callable = Type::Fn(
-            vec![shared_string()],
-            Box::new(Type::Named("String".to_owned(), vec![])),
-            vec![Convention::Let],
-            CallableQualifiers::default(),
-        );
-        assert!(contains_deferred_v1_qualifier(&callable));
-        assert!(!contains_deferred_v1_qualifier(&shared_string()));
-    }
 }
 
 fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<Type> {
@@ -1776,7 +3433,7 @@ fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<T
     }
     for statement in &block.stmts {
         if let Stmt::Let { ty: Some(ty), .. } = statement
-            && contains_deferred_v1_qualifier(ty)
+            && contains_deferred_v1_qualifier(binding_physical_layout_type(ty))
         {
             return Some(ty.clone());
         }
@@ -1797,6 +3454,7 @@ fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<T
                     .iter()
                     .filter_map(|parameter| parameter.ty.as_ref())
                     .chain(ret.iter())
+                    .map(lambda_physical_layout_type)
                     .collect(),
                 Expr::As { ty, .. }
                 | Expr::ExistentialPack { ty, .. }
@@ -1823,10 +3481,98 @@ fn deferred_v1_qualifier_in_block(block: &witchy_syntax::ast::Block) -> Option<T
     None
 }
 
+fn canonical_region_value_tail(block: &witchy_syntax::ast::Block) -> Option<&Expr> {
+    match block.stmts.last()? {
+        Stmt::Expr(value) | Stmt::Return(Some(value)) => Some(value),
+        _ => None,
+    }
+}
+
+/// Reconstruct the only packed descriptor this canonical slice can admit from
+/// the checked result and the decoded layout graph.  The type-checker fact
+/// carries the same source identity, but never a caller-provided LayoutId.
+fn canonical_region_packed_descriptor(
+    current_result: &Type,
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<Option<RegionPackedLayoutDescriptor>, CanonicalLoweringError> {
+    let Some(shape) = scalar_aggregate_shape(current_result, definitions) else {
+        return Ok(None);
+    };
+    if !shape.packed {
+        return Ok(None);
+    }
+    let Type::Named(record, arguments) = current_result.unqualified() else {
+        return Err(CanonicalLoweringError::UnsupportedExpression(
+            "region packed promotion result is not a nominal checked type",
+        ));
+    };
+    if !arguments.is_empty() {
+        return Err(CanonicalLoweringError::UnsupportedExpression(
+            "region packed promotion result has no admitted monomorphic descriptor",
+        ));
+    }
+    let descriptor = RegionPackedLayoutDescriptor {
+        record: record.clone(),
+        fields: shape.fields.clone(),
+    };
+    let layout = packed_scalar_layout(&descriptor.fields, layout_bundle, layouts)?;
+    let actual = layouts.get(layout).ok_or(CanonicalLoweringError::MissingLayout(
+        Type::Tuple(descriptor.fields.clone()),
+    ))?;
+    if !matches!(actual.kind(), LayoutKind::PackedRecord { .. })
+        || !matches!(actual.size(), LayoutSize::Fixed(_))
+    {
+        return Err(CanonicalLoweringError::UnsupportedExpression(
+            "region packed promotion layout is not a fixed packed-record descriptor",
+        ));
+    }
+    Ok(Some(descriptor))
+}
+
+/// A local `unique T` declares the root's affine ownership guarantee, not a
+/// distinct storage layout.  The value still has T's physical layout whether
+/// the binding itself is mutable or immutable.  Strip only the outer root:
+/// `unique List(unique T)` still carries an unsupported nested guarantee and
+/// must remain fail-closed until its separate element-token ABI exists.
+fn binding_physical_layout_type(ty: &Type) -> &Type {
+    match ty {
+        Type::Qualified(TypeQual::Unique, inner) => inner,
+        _ => ty,
+    }
+}
+
+/// Lambda annotations carry the checked callable contract, but `unique` and
+/// `frozen` have no distinct physical layout. The generated lambda function
+/// therefore consults the unqualified type only for this layout-support
+/// preflight. Its original annotation remains in the typed AST; the closure
+/// signature and final SafeWIR authority must still prove the corresponding
+/// ownership/write-back contract.
+fn lambda_physical_layout_type(ty: &Type) -> &Type {
+    match ty {
+        Type::Qualified(TypeQual::Frozen | TypeQual::Unique, inner) => inner,
+        _ => ty,
+    }
+}
+
 /// v1 represents scalar consumption and one existing owned token for ordinary
-/// String, callable, and recursively supported List values. Explicit qualifier state,
-/// capabilities, and other reference state remain fail-closed.
+/// String, callable, and recursively supported List values. `()` is the
+/// canonical source spelling of the Unit scalar, including when a generic
+/// `own a` is specialized. Explicit qualifier state, capabilities, and other
+/// reference state remain fail-closed.
 fn ordinary_own_type_supported(ty: &Type) -> bool {
+    let ty = match ty {
+        // Only this outer qualifier is a source ownership fact. Recursing
+        // through nested `unique` would silently erase a future element-token
+        // ABI, so list elements deliberately use the unqualified helper.
+        Type::Qualified(TypeQual::Unique, inner) => inner.as_ref(),
+        _ => ty,
+    };
+    ordinary_unqualified_own_type_supported(ty)
+}
+
+fn ordinary_unqualified_own_type_supported(ty: &Type) -> bool {
     match ty {
         // Callable values use the same owned closure-record token as other
         // references. source_value_type still requires its registered layout.
@@ -1835,8 +3581,9 @@ fn ordinary_own_type_supported(ty: &Type) -> bool {
             matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String")
         }
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            ordinary_own_type_supported(&arguments[0])
+            ordinary_unqualified_own_type_supported(&arguments[0])
         }
+        Type::Tuple(items) if items.is_empty() => true,
         _ => false,
     }
 }
@@ -1848,10 +3595,14 @@ fn write_back_count(signature: &FunctionSignature) -> usize {
 }
 
 fn is_opt_function(name: &str, modes: &[String]) -> bool {
-    if let Some((module, _)) = name.split_once('.') {
-        return modes.iter().any(|mode| mode == &format!("@opt:{module}"));
+    if !name.contains('.') {
+        return modes.iter().any(|mode| mode == "opt");
     }
-    modes.iter().any(|mode| mode == "opt")
+    modes.iter().any(|mode| {
+        mode.strip_prefix("@opt:")
+            .and_then(|owner| name.strip_prefix(owner))
+            .is_some_and(|suffix| suffix.starts_with('.'))
+    })
 }
 
 fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
@@ -1870,9 +3621,172 @@ fn collect_callable_types(ty: &Type, out: &mut Vec<Type>) {
     }
 }
 
+/// Rebuild a lambda's callable declaration from the authenticated AST
+/// annotations while taking any omitted types from the checked expression.
+/// `Ty` deliberately omits qualifier-only state, so lowering must not use its
+/// rendering as the callable contract when eta expansion supplied one.
+fn lambda_declared_callable_type(
+    expression: &Expr,
+    checked: Option<&witchy_types::typeck::Ty>,
+) -> Option<Type> {
+    let Expr::Lambda {
+        params,
+        ret,
+        qualifiers,
+        ..
+    } = expression else {
+        return None;
+    };
+    let checked = checked.and_then(witchy_types::typeck::ty_to_ast)?;
+    let Type::Fn(checked_parameters, checked_result, _, _) = checked.unqualified() else {
+        return None;
+    };
+    if params.len() != checked_parameters.len() {
+        return None;
+    }
+    let parameters = params
+        .iter()
+        .zip(checked_parameters)
+        .map(|(parameter, checked)| parameter.ty.clone().unwrap_or_else(|| checked.clone()))
+        .collect();
+    let result = ret.clone().unwrap_or_else(|| (**checked_result).clone());
+    Some(Type::Fn(
+        parameters,
+        Box::new(result),
+        params.iter().map(|parameter| parameter.convention).collect(),
+        *qualifiers,
+    ))
+}
+
 /// `body` is the block to lower: the function's own for a declaration, the
 /// lambda's original node for a synthesized lambda function (the type table
 /// is keyed by node address, so a clone would carry no types).
+///
+/// A reference `var` result begins as the conservative shared replacement
+/// ABI. Strengthen only the hidden write-back lane whose *every* lowered
+/// terminal derives an exact fresh replacement. A direct allocation is enough;
+/// a tail call also qualifies only after its target has independently acquired
+/// the same relation and is passed that exact fresh token. CFG joins, entry
+/// tokens, shared values, forwarded calls, and unknown SSA definitions are not
+/// evidence and retain the conservative contract.
+fn promote_fresh_write_back_result_contracts(
+    signatures: &mut [FunctionSignature],
+    functions: &[Function],
+) {
+    let by_id = functions.iter().map(|function| (function.id, function)).collect::<BTreeMap<_, _>>();
+    for _ in 0..functions.len() {
+        let mut promotions = Vec::new();
+        for function in functions {
+            let Some(signature) = signatures.get(function.signature.get() as usize) else {
+                continue;
+            };
+            let write_back_parameters = signature.contract.parameters.iter().enumerate()
+                .filter_map(|(parameter, contract)| {
+                    (contract.ownership == ParameterOwnership::WriteBack).then_some(parameter)
+                })
+                .collect::<Vec<_>>();
+            let Some(ordinary_results) = signature.results.len().checked_sub(write_back_parameters.len()) else {
+                continue;
+            };
+            for (ordinal, parameter) in write_back_parameters.into_iter().enumerate() {
+                let result = ordinary_results + ordinal;
+                let (Some(ValueType::Ref(layout)), Some(result_contract)) = (
+                    signature.contract.parameters.get(parameter).map(|contract| contract.value_type),
+                    signature.contract.results.get(result),
+                ) else {
+                    continue;
+                };
+                let result_layout = match result_contract {
+                    ResultContract::Shared { layout } | ResultContract::Unique { layout } => *layout,
+                    _ => continue,
+                };
+                if layout != result_layout || signature.results.get(result) != Some(&ValueType::Ref(layout)) {
+                    continue;
+                }
+                let terminals = function.blocks.iter().filter_map(|block| match &block.terminator {
+                    Terminator::Return { values } => values.get(result).map(|value| {
+                        values.len() == signature.results.len()
+                            && fresh_allocation_in_block(block, *value, layout)
+                    }),
+                    Terminator::TailCall { callee, arguments, .. } => Some(
+                        tail_call_returns_fresh_write_back(
+                            block,
+                            *callee,
+                            arguments,
+                            result,
+                            parameter,
+                            layout,
+                            &by_id,
+                            signatures,
+                        ),
+                    ),
+                    // Indirect tail calls have no declaration-specific
+                    // reallocation proof at this point. They are terminal,
+                    // so treat them as a failed path rather than silently
+                    // dropping them from the all-terminals quantifier.
+                    Terminator::VarTailCall { .. } => Some(false),
+                    _ => None,
+                }).collect::<Vec<_>>();
+                if terminals.is_empty() || !terminals.iter().all(|terminal| *terminal) {
+                    continue;
+                }
+                let Ok(parameter) = u32::try_from(parameter) else {
+                    continue;
+                };
+                promotions.push((function.signature, result, parameter, layout));
+            }
+        }
+        if promotions.is_empty() {
+            break;
+        }
+        let mut changed = false;
+        for (signature_id, result, parameter, layout) in promotions {
+            let Some(signature) = signatures.get_mut(signature_id.get() as usize) else {
+                continue;
+            };
+            if matches!(signature.contract.results.get(result),
+                Some(ResultContract::Shared { .. } | ResultContract::Unique { .. })) {
+                signature.contract.results[result] = ResultContract::ReallocatesParameter { parameter, layout };
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn fresh_allocation_in_block(
+    block: &BasicBlock,
+    value: ValueId,
+    layout: witchy_wir::layout::LayoutId,
+) -> bool {
+    block.operations.iter().any(|operation| matches!(operation,
+        Operation::Alloc { destination, layout: allocation_layout, .. }
+            if *destination == value && *allocation_layout == layout
+    ))
+}
+
+fn tail_call_returns_fresh_write_back(
+    block: &BasicBlock,
+    callee: FunctionId,
+    arguments: &[CallArgument],
+    result: usize,
+    parameter: usize,
+    layout: witchy_wir::layout::LayoutId,
+    functions: &BTreeMap<FunctionId, &Function>,
+    signatures: &[FunctionSignature],
+) -> bool {
+    let Some(callee) = functions.get(&callee) else { return false };
+    let Some(signature) = signatures.get(callee.signature.get() as usize) else { return false };
+    matches!(signature.contract.results.get(result), Some(ResultContract::ReallocatesParameter {
+        parameter: callee_parameter,
+        layout: result_layout,
+    }) if usize::try_from(*callee_parameter).ok() == Some(parameter) && *result_layout == layout)
+        && matches!(arguments.get(parameter), Some(CallArgument::Move(value))
+            if fresh_allocation_in_block(block, *value, layout))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_function(
     function: &witchy_syntax::ast::Function,
@@ -1884,11 +3798,16 @@ fn lower_function(
     lambda_names: &HashMap<usize, String>,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    direct_shared_alias_callees: &HashMap<String, FunctionSignatureId>,
     checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &[FunctionSignature],
     tail_manifest: &ProperTailSiteManifest,
     proper_tail_locations: &mut BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
     type_table: &TypeTable,
+    checked_module: &witchy_syntax::ast::Module,
+    access_facts: &CheckedAccessFacts,
+    loan_facts: Option<&LoanFacts>,
+    view_facts: Option<&CheckedViewFacts>,
     dictionary_comparators: &[(Type, String)],
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
@@ -1899,6 +3818,25 @@ fn lower_function(
     closures: &ClosureContext,
     environment: Option<&ClosureEnvironment>,
 ) -> Result<Function, CanonicalLoweringError> {
+    let entry_exclusive_reference_params = access_facts
+        .declaration(&function.name)
+        .map(|declaration| {
+            function
+                .params
+                .iter()
+                .zip(declaration.params())
+                .enumerate()
+                .filter_map(|(index, (parameter, contract))| {
+                    (contract.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
+                        && (is_direct_exclusive_reference(contract.ty())
+                            || write_back::exact_projected_result_root_relation(
+                                declaration, index,
+                            )))
+                        .then(|| parameter.name.clone())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
         function_id: id,
@@ -1924,18 +3862,31 @@ fn lower_function(
         lambda_path,
         parameter_names: BTreeMap::new(),
         results: Vec::new(),
+        active_region_must_transfers: Vec::new(),
+        completed_region_must_transfers: HashSet::new(),
         write_back_parameters: Vec::new(),
         write_back_parameter_types: HashMap::new(),
+        returned_exclusive_alias_parameters: HashSet::new(),
+        returned_exclusive_projected_aliases: HashMap::new(),
+        projected_scalar_places: HashMap::new(),
+        disjunctive_exclusive_carriers: HashMap::new(),
+        disjunctive_return_selector: None,
+        entry_exclusive_reference_params,
         blocks: Vec::new(),
         current: BlockId::new(0),
         item,
         opt_mode,
         functions,
+        direct_shared_alias_callees,
         checked_parameter_conventions,
         signatures,
         tail_manifest,
         proper_tail_locations,
         type_table,
+        checked_module,
+        access_facts,
+        loan_facts,
+        view_facts,
         dictionary_comparators,
         layout_bundle,
         layouts,
@@ -1982,6 +3933,34 @@ fn lower_function(
         .filter(|(_, contract)| matches!(contract.ownership, ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack))
         .filter_map(|(parameter, _)| parameter.ty.clone().map(|ty| (parameter.name.clone(), ty)))
         .collect();
+    lowerer.returned_exclusive_alias_parameters = signature.contract.results.iter().flat_map(|result| {
+        let parameters = match result {
+            ResultContract::AliasesWriteBackParameter { parameter, .. } => vec![*parameter],
+            ResultContract::AliasesOneOfWriteBackParameters { parameters, .. } => parameters.clone(),
+            _ => Vec::new(),
+        };
+        parameters.into_iter().filter_map(|parameter| {
+            usize::try_from(parameter).ok()
+                .and_then(|index| function.params.get(index))
+                .map(|parameter| parameter.name.clone())
+        })
+    }).collect();
+    lowerer.returned_exclusive_projected_aliases = signature.contract.results.iter().filter_map(|result| {
+        let ResultContract::AliasesWriteBackParameter { parameter, projection: Some(field), .. } = result else {
+            return None;
+        };
+        usize::try_from(*parameter).ok()
+            .and_then(|index| function.params.get(index))
+            .map(|parameter| (parameter.name.clone(), *field))
+    }).collect();
+    lowerer.disjunctive_return_selector = signature.contract.results.iter().find_map(|result| {
+        let ResultContract::DisjunctiveWriteBackSelector { selector_parameter, .. } = result else {
+            return None;
+        };
+        usize::try_from(*selector_parameter).ok()
+            .and_then(|index| function.params.get(index))
+            .map(|parameter| parameter.name.clone())
+    });
     // A lambda receives the uniform closure record.  Its owned environment is
     // a checked tagged family record; the tag must match this exact source
     // witness before any typed capture field is loaded.
@@ -2078,7 +4057,10 @@ fn lower_function(
         }
     }
 
-    let ordinary_results = &signature.results[..signature.results.len() - write_back_count(signature)];
+    let selector_lanes = signature.contract.results.iter()
+        .filter(|result| matches!(result, ResultContract::DisjunctiveWriteBackSelector { .. }))
+        .count();
+    let ordinary_results = &signature.results[..signature.results.len() - write_back_count(signature) - selector_lanes];
     lowerer.lower_body(&body.stmts, ordinary_results).inspect_err(|error| {
         if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
             eprintln!("canonical refused body `{}`: {error:?}", function.name);
@@ -2403,6 +4385,12 @@ struct TokenFacts {
     incoming: BTreeMap<ValueId, Vec<ValueId>>,
 }
 
+#[derive(Debug, Clone)]
+struct DisjunctiveExclusiveCarrier {
+    selector: ValueId,
+    candidates: [u32; 2],
+}
+
 /// `known_shared_value`'s view of the graph at one `graph_version`.
 struct SharedFacts {
     version: u64,
@@ -2459,9 +4447,31 @@ struct FunctionLowerer<'a> {
     /// The source type of each `var` parameter, for the owned copy a result
     /// lane takes when it names the same value as the write-back lane.
     write_back_parameter_types: HashMap<String, Type>,
+    /// A direct returned `&mut String` is a second retained token for the
+    /// exact write-back parameter, never a value-semantics copy. Its distinct
+    /// hidden write-back lane remains the original token.
+    returned_exclusive_alias_parameters: HashSet<String>,
+    /// The sole source-derived returned projection per write-back parameter.
+    /// Its field index is carried in the checked callable contract and is
+    /// matched again against the exact source field before lowering `&mut`.
+    returned_exclusive_projected_aliases: HashMap<String, u32>,
+    projected_scalar_places: HashMap<ValueId, u32>,
+    /// Exact SSA result carriers returned by a declaration-authenticated
+    /// two-root direct-exclusive call.  This map has no shape fallback.
+    disjunctive_exclusive_carriers: HashMap<ValueId, DisjunctiveExclusiveCarrier>,
+    /// The checked Bool parameter returned as the ABI-only selector lane.
+    disjunctive_return_selector: Option<String>,
+    /// Direct immutable `&mut String`/`Int` parameters authenticated by this
+    /// function's checked declaration. A lexical binding of the same spelling
+    /// shadows this entry provenance rather than inheriting it.
+    entry_exclusive_reference_params: HashSet<String>,
     /// The function's ordinary result types, so a `return` nested in a block
     /// can build the same terminator the body tail does.
     results: Vec<ValueType>,
+    /// Exact must-promotion tails currently being lowered. A constructor may
+    /// complete one only while its checked region boundary is active.
+    active_region_must_transfers: Vec<usize>,
+    completed_region_must_transfers: HashSet<usize>,
     blocks: Vec<BlockBuilder>,
     current: BlockId,
     item: u32,
@@ -2470,11 +4480,24 @@ struct FunctionLowerer<'a> {
     /// optimized functions and explicit moves transfer the existing token.
     opt_mode: bool,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
+    /// Declaration-specific direct shared aliases: sealed generic
+    /// specializations or exact monomorphic forwarding declarations.
+    direct_shared_alias_callees: &'a HashMap<String, FunctionSignatureId>,
     checked_parameter_conventions: &'a HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &'a [FunctionSignature],
     tail_manifest: &'a ProperTailSiteManifest,
     proper_tail_locations: &'a mut BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
     type_table: &'a TypeTable,
+    /// The checked module that owns the address-keyed access facts.
+    checked_module: &'a witchy_syntax::ast::Module,
+    /// Exact checked access facts retained by `CanonicalCheckedSource`.
+    access_facts: &'a CheckedAccessFacts,
+    /// Migration-only checked loan graph. Canonical rooted-view modules have
+    /// no such graph and legacy write-back paths must reject if reached.
+    loan_facts: Option<&'a LoanFacts>,
+    /// Exact rooted-view formation facts retained by `CanonicalCheckedSource`.
+    /// `None` is valid only for a module with no canonical view carrier.
+    view_facts: Option<&'a CheckedViewFacts>,
     dictionary_comparators: &'a [(Type, String)],
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
@@ -2490,7 +4513,137 @@ struct FunctionLowerer<'a> {
     result_type: Option<Type>,
 }
 
+/// Validate the retained region-promotion fact at the canonical boundary.
+/// Keeping this separate from `FunctionLowerer` lets the fail-closed missing
+/// and stale-proof cases be unit tested without manufacturing a checked source.
+fn require_region_promotion_contract(
+    fact: Option<&RegionPromotionFact>,
+    current_result: &Type,
+    tail: &Expr,
+    packed: Option<&RegionPackedLayoutDescriptor>,
+    opt_mode: bool,
+) -> Result<Option<usize>, CanonicalLoweringError> {
+    let fact = fact.ok_or(CanonicalLoweringError::UnsupportedExpression(
+        "region promotion lacks an authenticated checked contract",
+    ))?;
+    if current_result != fact.result() {
+        return Err(CanonicalLoweringError::UnsupportedExpression(
+            "region promotion checked fact is stale for this result",
+        ));
+    }
+    if let Some(packed) = packed {
+        return match fact {
+            RegionPromotionFact::PackedInline { descriptor, .. }
+                if descriptor == packed => Ok(None),
+            RegionPromotionFact::PackedInline { .. } => Err(CanonicalLoweringError::UnsupportedExpression(
+                "region packed promotion descriptor does not match the authenticated layout",
+            )),
+            _ => Err(CanonicalLoweringError::UnsupportedExpression(
+                "region packed promotion lacks an admitted descriptor contract",
+            )),
+        };
+    }
+    if matches!(fact, RegionPromotionFact::PackedInline { .. }) {
+        return Err(CanonicalLoweringError::UnsupportedExpression(
+            "region packed promotion descriptor is stale for this result",
+        ));
+    }
+    match fact {
+        RegionPromotionFact::Scalar { .. } => Ok(None),
+        RegionPromotionFact::NormalOwnedSnapshot {
+            must_disposition: RegionMustDisposition::FreshConstructor(transfer), ..
+        } if !opt_mode => {
+            let Expr::Ctor { name, .. } = tail else {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "region must-transfer tail identity is not a constructor",
+                ));
+            };
+            if transfer.tail != tail as *const Expr as usize || transfer.constructor != *name {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "region must-transfer checked disposition is stale",
+                ));
+            }
+            Ok(Some(transfer.tail))
+        }
+        RegionPromotionFact::NormalOwnedSnapshot {
+            must_disposition: RegionMustDisposition::Unproven, ..
+        } if !opt_mode => Err(CanonicalLoweringError::UnsupportedExpression(
+            "region must-bearing promotion requires an admitted must-transfer proof",
+        )),
+        RegionPromotionFact::NormalOwnedSnapshot {
+            must_disposition: RegionMustDisposition::NoObligation, ..
+        } if !opt_mode => Ok(None),
+        // The retained owner-root/qualifier fact, rather than a transient
+        // lexical binding spelling, authenticates a direct parent pass.  This
+        // admits `let h = &parent; h` without treating `h` as its owner.
+        RegionPromotionFact::OptParentPassThrough {
+            owner_root,
+            qualifier: witchy_types::typeck::RegionPromotionQualifier::ExplicitReference,
+            reference_loan: Some(loan),
+            ..
+        } if opt_mode && loan.owner_root == *owner_root => Ok(None),
+        RegionPromotionFact::OptParentPassThrough {
+            qualifier: witchy_types::typeck::RegionPromotionQualifier::ExplicitReference,
+            ..
+        } if opt_mode => Err(CanonicalLoweringError::UnsupportedExpression(
+            "region reference pass-through lacks an exact checked owner loan",
+        )),
+        RegionPromotionFact::OptParentPassThrough { .. } if opt_mode => Ok(None),
+        RegionPromotionFact::OptNeedsCopyFreeProof { .. } => Err(
+            CanonicalLoweringError::UnsupportedExpression(
+                "region managed result requires a copy-free promotion proof in opt mode",
+            ),
+        ),
+        RegionPromotionFact::OptParentPassThrough { .. } => Err(
+            CanonicalLoweringError::UnsupportedExpression(
+                "region copy-free parent pass-through entered non-opt lowering",
+            ),
+        ),
+        RegionPromotionFact::NormalOwnedSnapshot { .. } => Err(
+            CanonicalLoweringError::UnsupportedExpression(
+                "region opt promotion lacks a copy-free proof",
+            ),
+        ),
+        RegionPromotionFact::PackedInline { .. } => Err(
+            CanonicalLoweringError::UnsupportedExpression(
+                "region packed promotion descriptor is stale for this result",
+            ),
+        ),
+    }
+}
+
 impl<'a> FunctionLowerer<'a> {
+    /// A source `region:` is not merely lexical syntax on the admitted route.
+    /// The checker retains an exact-block contract; this boundary consumes it
+    /// before ordinary block lowering can make destination allocation/promotion
+    /// representation-invisible.  In particular, opt has no implicit managed
+    /// copy-out fallback.
+    fn require_region_promotion(
+        &mut self,
+        block: &witchy_syntax::ast::Block,
+    ) -> Result<Option<usize>, CanonicalLoweringError> {
+        if block.region.is_none() {
+            return Ok(None);
+        }
+        let tail = canonical_region_value_tail(block).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("empty region value"),
+        )?;
+        let current_result = self.expression_type(tail)?;
+        let packed = canonical_region_packed_descriptor(
+            &current_result,
+            self.layout_bundle,
+            self.layouts,
+            self.definitions,
+        )?;
+        require_region_promotion_contract(
+            self.type_table.region_promotion(block),
+            &current_result,
+            tail,
+            packed.as_ref(),
+            self.opt_mode,
+        )
+    }
+
     /// The scalar-record definition a type or constructor name denotes; the
     /// checker's entry-qualified spelling and the bare source name both key it.
     fn record_definition(&self, name: &str) -> Option<&'a TypeDef> {
@@ -2510,7 +4663,7 @@ impl<'a> FunctionLowerer<'a> {
     fn shared_int_reference_family(&self) -> Result<&OwnerFamily, CanonicalLoweringError> {
         self.closures.owners.iter().find(|family| {
             matches!(&family.source, OwnerFamilySource::SharedReference(source)
-                if shared_reference_parts(source).is_some_and(|(_, inner)| is_direct_shared_int(inner)))
+                if rooted_view_inner(source).is_some_and(is_direct_shared_int))
         }).ok_or(CanonicalLoweringError::UnsupportedExpression("shared Int reference family"))
     }
 
@@ -2531,6 +4684,32 @@ impl<'a> FunctionLowerer<'a> {
                 | (true, Some(SharedReferenceConstructor::ListIntElement { .. }))
         )).ok_or(CanonicalLoweringError::UnsupportedExpression("shared Int reference constructor"))?;
         Ok((constructor.id, family.owner_type))
+    }
+
+    fn shared_reference_from_slice_constructor(
+        &self,
+    ) -> Result<(ConstructorId, GcTypeId), CanonicalLoweringError> {
+        let family = self.shared_int_reference_family()?;
+        let constructor = family.constructors.iter().find(|constructor| matches!(
+            constructor.shared_reference_constructor(),
+            Some(SharedReferenceConstructor::ListIntElementFromSlice { .. })
+        )).ok_or(CanonicalLoweringError::UnsupportedExpression(
+            "shared Int slice-element reference constructor",
+        ))?;
+        Ok((constructor.id, family.owner_type))
+    }
+
+    fn rooted_int_slice_family(&self) -> Result<&OwnerFamily, CanonicalLoweringError> {
+        self.closures.owners.iter().find(|family| {
+            matches!(&family.source, OwnerFamilySource::SharedReference(source)
+                if rooted_view_inner(source).is_some_and(is_rooted_int_slice))
+        }).ok_or(CanonicalLoweringError::UnsupportedExpression("rooted Int slice reference family"))
+    }
+
+    fn is_rooted_int_slice_view(&self, value: ValueId) -> bool {
+        self.rooted_int_slice_family().is_ok_and(|family| {
+            self.values.get(&value) == Some(&ValueType::Gc(family.owner_type))
+        })
     }
 
     fn materialize_scalar_reference(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
@@ -2566,33 +4745,103 @@ impl<'a> FunctionLowerer<'a> {
         Ok(reference)
     }
 
-    fn lower_projected_shared_int_reference(
+    fn materialize_checked_list_int_view(
         &mut self,
-        base: &Expr,
-        index: &Expr,
+        root: ValueId,
+        index: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        let list_type = self.expression_type(base)?;
-        if !matches!(list_type.unqualified(), Type::Named(name, arguments)
-            if name == "List" && arguments.len() == 1 && is_direct_shared_int(&arguments[0]))
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression("projected shared reference root"));
-        }
-        let root = self.lower_expr(base)?;
-        if !matches!(self.values[&root], ValueType::Ref(_)) {
-            return Err(CanonicalLoweringError::UnsupportedExpression("projected shared reference root type"));
-        }
-        let index = self.lower_expr(index)?;
         if self.values[&index] != ValueType::Int {
-            return Err(CanonicalLoweringError::UnsupportedExpression("projected shared reference index"));
+            return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view fact index is not an Int".to_string(),
+            ));
         }
         let index_size = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+        if self.is_rooted_int_slice_view(root) {
+            let slice_family = self.rooted_int_slice_family()?.signature;
+            let length = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadSharedSliceLength {
+                destination: length,
+                owner: root,
+                family: slice_family,
+            }));
+            let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
+            self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            let (constructor, owner_type) = self.shared_reference_from_slice_constructor()?;
+            let reference = self.fresh(ValueType::Gc(owner_type))?;
+            // The child carrier owns the slice carrier, not a raw list root.
+            // Its registered reader composes this checked local index with the
+            // slice start and rechecks the backing root's current extent.
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::Construct {
+                destination: reference,
+                constructor,
+                captures: vec![root, index_size],
+            }));
+            return Ok(reference);
+        }
+        if !matches!(self.values[&root], ValueType::Ref(_)) {
+            return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view fact root is not an owned list value".to_string(),
+            ));
+        }
+        // Authenticate the formation-time coordinate against this root.  The
+        // owner constructor also makes `ReadSharedPlace` recheck the current
+        // logical length at dereference, so later list mutation cannot turn a
+        // checked coordinate into an unchecked raw address.
+        self.ensure_list_extent(root)?;
+        let count = *self.list_counts.get(&root).ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view fact root has no authenticated list length".to_string(),
+            )
+        })?;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, count)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let (constructor, owner_type) = self.shared_reference_constructor(true)?;
         let reference = self.fresh(ValueType::Gc(owner_type))?;
         self.push_operation(Operation::ClosureOwner(OwnerOperation::Construct {
             destination: reference,
             constructor,
             captures: vec![root, index_size],
+        }));
+        Ok(reference)
+    }
+
+    fn materialize_checked_list_int_slice(
+        &mut self,
+        root: ValueId,
+        start: ValueId,
+        end: ValueId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if !matches!(self.values[&root], ValueType::Ref(_))
+            || self.values[&start] != ValueType::Size || self.values[&end] != ValueType::Size
+        {
+            return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable slice fact lacks an owned List(Int) root and checked Size endpoints".to_string(),
+            ));
+        }
+        self.ensure_list_extent(root)?;
+        let count = *self.list_counts.get(&root).ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable slice fact root has no authenticated list length".to_string(),
+            )
+        })?;
+        let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, end)?;
+        self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, end, count)?;
+        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let length = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Subtract, end, start, OverflowBehavior::Wrap,
+        )?;
+        let family = self.rooted_int_slice_family()?;
+        let owner_type = family.owner_type;
+        let constructor = family.constructors.iter().find(|constructor| matches!(
+            constructor.shared_reference_constructor(), Some(SharedReferenceConstructor::ListIntSlice { .. }),
+        )).ok_or(CanonicalLoweringError::UnsupportedExpression("rooted Int slice constructor"))?.id;
+        let reference = self.fresh(ValueType::Gc(owner_type))?;
+        self.push_operation(Operation::ClosureOwner(OwnerOperation::Construct {
+            destination: reference,
+            constructor,
+            captures: vec![root, start, length],
         }));
         Ok(reference)
     }
@@ -2711,7 +4960,8 @@ impl FunctionLowerer<'_> {
                             let terminator = self.lower_direct_tail_call(
                                 name,
                                 args,
-                                                                self.tail_path(index, ProperTailPathStep::ReturnValue)?,
+                                call,
+                                self.tail_path(index, ProperTailPathStep::ReturnValue)?,
                             )?;
                             self.finish_current(terminator)?;
                         } else {
@@ -2756,6 +5006,16 @@ impl FunctionLowerer<'_> {
                 }
                 Stmt::Expr(value) if final_statement => {
                     if let call @ Expr::Call { name, args } = value {
+                        if name == witchy_syntax::intrinsics::REFERENCE_WRITE {
+                            if !results.is_empty() {
+                                return Err(CanonicalLoweringError::UnsupportedExpression(
+                                    "exclusive reference write in value-returning function",
+                                ));
+                            }
+                            self.lower_direct_exclusive_reference_write(args)?;
+                            self.finish_current(Terminator::Return { values: Vec::new() })?;
+                            return Ok(());
+                        }
                         let path = self.tail_path(index, ProperTailPathStep::Value)?;
                         if !self.has_tail_site(&path, ProperTailExprKind::Call) {
                             return self.lower_tail_expr(call, path);
@@ -2815,7 +5075,8 @@ impl FunctionLowerer<'_> {
                             let terminator = self.lower_direct_tail_call(
                                 name,
                                 args,
-                                                                self.tail_path(index, ProperTailPathStep::Value)?,
+                                call,
+                                self.tail_path(index, ProperTailPathStep::Value)?,
                             )?;
                             self.finish_current(terminator)?;
                         } else {
@@ -2908,6 +5169,9 @@ impl FunctionLowerer<'_> {
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         match expression {
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::REFERENCE_WRITE => {
+                self.lower_direct_exclusive_reference_write(args)
+            }
             Expr::Call { name, args } if registry_hosts::is_intrinsic(name) => self.lower_registry_intrinsic(expression, name, args).map(|_| ()),
             Expr::Call { name, args } if crypto::is_intrinsic(name) => self.lower_crypto(name, args).map(|_| ()),
             Expr::Call { name, args } if name == "vm.serve" => self.lower_vm_service(expression, args).map(|_| ()),
@@ -2942,19 +5206,20 @@ impl FunctionLowerer<'_> {
             Expr::Call { name, args } if matches!(name.as_str(), "list.push" | "list.__push") => {
                 self.lower_list_push(args)
             }
-            // `Nil` as a statement or a unit body's last expression does
-            // nothing.
+            // The legacy spelling remains accepted for old source, but `()`
+            // parses as an empty tuple and never reintroduces `Nil`.
+            Expr::Tuple(items) if items.is_empty() => Ok(()),
             Expr::Ctor { name, args } if name == "Nil" && args.is_empty() => Ok(()),
             Expr::Var(name) if name == "Nil" && !self.bindings.contains_key(name) => Ok(()),
             // A call by a bound name is a call through a closure record.
             Expr::Call { name, args } if self.bindings.contains_key(name) => {
                 let callee = self.bindings[name];
                 let layout = self.closure_layout_for_value(callee)?;
-                self.lower_closure_call(callee, layout, args)?;
+                self.lower_closure_call(callee, layout, name, args, expression)?;
                 Ok(())
             }
             Expr::Call { name, args } if self.functions.contains_key(name) => {
-                self.lower_direct_call(name, args)?;
+                self.lower_direct_call(name, args, expression)?;
                 Ok(())
             }
             // An intrinsic in statement position (`let _ = ys.length()`) is
@@ -2986,10 +5251,111 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    /// Referent mutation is represented by the declaration-derived hidden
+    /// write-back result, never by a fabricated pointer.  The checked loan
+    /// graph proves the source `@reference_write`; this only permits the
+    /// corresponding plain direct parameter ABI.
+    fn lower_direct_exclusive_reference_write(
+        &mut self,
+        arguments: &[Expr],
+    ) -> Result<(), CanonicalLoweringError> {
+        let [Expr::Var(parameter), replacement] = arguments else {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "canonical exclusive write requires its direct parameter",
+            ));
+        };
+        // The result of the one authenticated projected-scalar carrier is a
+        // retained aggregate root plus a compiler-private fixed field.  A
+        // source `*view = value` may use it only at this checked intrinsic;
+        // it cannot choose a projection or turn the root into a raw pointer.
+        if let Some(root) = self.bindings.get(parameter).copied()
+            && let Some(field) = self.projected_scalar_places.get(&root).copied()
+        {
+            let reference = self.expression_type(&arguments[0])?;
+            if !is_direct_shared_int(&reference)
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "projected scalar write has non-Int reference witness",
+                ));
+            }
+            let value = self.lower_expr(replacement)?;
+            if self.values[&value] != ValueType::Int {
+                return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                    callee: witchy_syntax::intrinsics::REFERENCE_WRITE.to_owned(),
+                    parameter: 1,
+                    expected: ValueType::Int,
+                    actual: self.values[&value],
+                });
+            }
+            self.push_operation(Operation::Store {
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    root,
+                    Projection::Field { index: field },
+                    ValueType::Int,
+                    AccessMode::Write,
+                ),
+                value,
+                transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            });
+            return Ok(());
+        }
+        let aggregate_place = if self.write_back_parameter_types.contains_key(parameter) {
+            None
+        } else {
+            let statement = self.source_statement_containing(&arguments[0]).ok_or(
+                CanonicalLoweringError::UnsupportedExpression(
+                    "canonical aggregate exclusive write has no checked source statement",
+                ),
+            )?;
+            if let Some(place) = self.prepare_authenticated_result_ok_exclusive_write_back(parameter, statement)? {
+                Some(place)
+            } else {
+                self.prepare_authenticated_aggregate_tuple_exclusive_write_back(parameter, statement)?
+            }.ok_or(CanonicalLoweringError::UnsupportedExpression(
+                "canonical exclusive write parameter has no declaration-derived lane",
+            )).map(Some)?
+        };
+        let declared = self.write_back_parameter_types.get(parameter).cloned()
+            .unwrap_or(self.expression_type(&arguments[0])?);
+        if aggregate_place.is_none() && !is_direct_exclusive_reference(&declared) {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "canonical exclusive write referent is outside the direct ABI",
+            ));
+        }
+        let expected = match &aggregate_place {
+            Some(place) => self.read_prepared_write_back(place)?,
+            None => *self.bindings.get(parameter)
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(parameter.clone()))?,
+        };
+        let mut value = self.lower_expr(replacement)?;
+        if self.values[&value] != self.values[&expected] {
+            return Err(CanonicalLoweringError::CallArgumentTypeMismatch {
+                callee: witchy_syntax::intrinsics::REFERENCE_WRITE.to_owned(),
+                parameter: 1,
+                expected: self.values[&expected],
+                actual: self.values[&value],
+            });
+        }
+        if matches!(self.values[&value], ValueType::Ref(_)) && self.is_static_string(value) {
+            value = self.owned_for_storage(value, &declared)?;
+        }
+        if let Some(place) = aggregate_place {
+            self.commit_prepared_write_back(&place, value)?;
+        } else {
+            self.bindings.insert(parameter.clone(), value);
+        }
+        Ok(())
+    }
+
     fn lower_block_effect(
         &mut self,
         block: &witchy_syntax::ast::Block,
     ) -> Result<(), CanonicalLoweringError> {
+        if self.require_region_promotion(block)?.is_some() {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "must-bearing region promotion must transfer its result exactly once",
+            ));
+        }
         self.with_binding_scope(|lowerer| lowerer.lower_block_effect_scoped(block))
     }
 
@@ -3100,7 +5466,35 @@ impl FunctionLowerer<'_> {
         &mut self,
         block: &witchy_syntax::ast::Block,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
-        self.with_binding_scope(|lowerer| lowerer.lower_block_flow_value_scoped(block))
+        let must_transfer = self.require_region_promotion(block)?;
+        if let Some(tail) = must_transfer {
+            if self.completed_region_must_transfers.contains(&tail) {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "region must-transfer disposition was consumed more than once",
+                ));
+            }
+            self.active_region_must_transfers.push(tail);
+        }
+        let lowered = self.with_binding_scope(|lowerer| lowerer.lower_block_flow_value_scoped(block));
+        if let Some(tail) = must_transfer {
+            let active = self.active_region_must_transfers.pop();
+            if active != Some(tail) {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "region must-transfer nesting does not match its checked disposition",
+                ));
+            }
+            if lowered.as_ref().ok().and_then(|value| *value).is_none()
+                // Removing this marker consumes only the lowering proof. The
+                // returned SafeWIR reference is still the source `must`
+                // value, whose caller-side `own` disposition remains live.
+                || !self.completed_region_must_transfers.remove(&tail)
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "region must-transfer did not produce its one owned result",
+                ));
+            }
+        }
+        lowered
     }
 
     fn lower_block_flow_value_scoped(
@@ -3438,7 +5832,7 @@ impl FunctionLowerer<'_> {
                     && self.functions.contains_key(name)
                     && self.has_tail_site(&path, ProperTailExprKind::Call) =>
             {
-                let terminator = self.lower_direct_tail_call(name, args, path)?;
+                let terminator = self.lower_direct_tail_call(name, args, expression, path)?;
                 self.finish_current(terminator)
             }
             Expr::Call { name, args }
@@ -3482,6 +5876,11 @@ impl FunctionLowerer<'_> {
         block: &witchy_syntax::ast::Block,
         path: Vec<ProperTailPathStep>,
     ) -> Result<(), CanonicalLoweringError> {
+        if self.require_region_promotion(block)?.is_some() {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "must-bearing region promotion must transfer its result exactly once",
+            ));
+        }
         self.with_binding_scope(|lowerer| lowerer.lower_tail_block_scoped(block, path))
     }
 
@@ -3743,6 +6142,18 @@ impl FunctionLowerer<'_> {
         self.current = then_id;
         self.bindings = outer.clone();
         let then_value = lower_then(self)?;
+        // The exact two-root returned-exclusive carrier has a separate
+        // write-back lane for *each* original root.  Its conditional result
+        // therefore transports a retained token, never moves either root
+        // into the phi and silently leaves the other edge without its hidden
+        // write-back result.  The selector contract is installed only for
+        // the source-authenticated top-level `if selector: first else:
+        // second` shape, so this has no generic control-flow fallback.
+        let then_value = if self.disjunctive_return_selector.is_some() {
+            then_value.map(|value| self.clone_reference_token(value)).transpose()?
+        } else {
+            then_value
+        };
         let then_bindings = self.bindings.clone();
         let then_end = self.current;
         let then_terminated = self.blocks[then_end.get() as usize].terminator.is_some();
@@ -3754,6 +6165,11 @@ impl FunctionLowerer<'_> {
         self.current = else_id;
         self.bindings = outer.clone();
         let else_value = lower_else(self)?;
+        let else_value = if self.disjunctive_return_selector.is_some() {
+            else_value.map(|value| self.clone_reference_token(value)).transpose()?
+        } else {
+            else_value
+        };
         let else_bindings = self.bindings.clone();
         let else_end = self.current;
         let else_terminated = self.blocks[else_end.get() as usize].terminator.is_some();
@@ -3996,6 +6412,8 @@ impl FunctionLowerer<'_> {
         let mut merged = outer;
         let mut rebound_references = Vec::new();
         let mut dynamic_join_parameters = Vec::new();
+        let mut joined_binding_extents = Vec::new();
+        let mut joined_binding_values = BTreeSet::new();
         let mut snapshot_parameters = BTreeSet::new();
         for plan in &plans {
             then_arguments.push(plan.values[0]);
@@ -4009,6 +6427,13 @@ impl FunctionLowerer<'_> {
                     if let Some(family) = plan.family {
                         self.record_joined_dynamic_extent(parameter, join_parameters[parameter_index + 1].value,
                             join_parameters[parameter_index + 2].value, family);
+                        joined_binding_extents.push((
+                            parameter,
+                            join_parameters[parameter_index + 1].value,
+                            join_parameters[parameter_index + 2].value,
+                            family,
+                        ));
+                        joined_binding_values.insert(parameter);
                     } else {
                         dynamic_join_parameters.push(parameter);
                     }
@@ -4100,6 +6525,14 @@ impl FunctionLowerer<'_> {
         });
         self.restore_facts(facts, join_id);
         self.current = join_id;
+        // The fact restore deliberately discards predecessor caches.  Binding
+        // phi lanes are not predecessor facts: their scalar parameters are
+        // the checked join's explicit current extent carrier.  Reattach them
+        // before any post-join source slice is lowered, rather than forcing a
+        // second Header load that disagrees with the counted phi state.
+        for (value, count, capacity, family) in joined_binding_extents {
+            self.record_joined_dynamic_extent(value, count, capacity, family);
+        }
         if let Some((_, _)) = shared_result_extents {
             if let Some(result) = result {
                 let family = shared_result_extents
@@ -4163,7 +6596,8 @@ impl FunctionLowerer<'_> {
             let snapshots = self.bindings.values().copied()
                 .filter(|value| Some(*value) != joined_result && (
                     (self.string_lengths.contains_key(value)
-                        && !authenticated_snapshot_values.contains(value))
+                        && !authenticated_snapshot_values.contains(value)
+                        && !joined_binding_values.contains(value))
                     || (self.list_counts.contains_key(value)
                         && snapshot_parameters.contains(value))
                 ))
@@ -4388,6 +6822,22 @@ impl FunctionLowerer<'_> {
             .cloned()
             .collect::<Vec<_>>();
         changed_names.sort();
+        // Normalize each changed binding before planning its join.  A branch
+        // can retain a static binding while its sibling replaces the binding
+        // with a write-back token (for example after a selected `&mut`
+        // carrier is edited).  Planning first would freeze incompatible edge
+        // ownership and materializing only the match value below cannot repair
+        // that binding phi.
+        for name in &changed_names {
+            let mut lanes = arm_results
+                .iter()
+                .map(|(body_end, bindings, _)| (*body_end, bindings[name]))
+                .collect::<Vec<_>>();
+            self.materialize_mixed_lanes(&mut lanes)?;
+            for ((_, bindings, _), (_, lane)) in arm_results.iter_mut().zip(lanes) {
+                bindings.insert(name.clone(), lane);
+            }
+        }
         let arms = arm_results.iter().map(|(body_end, bindings, _)| (*body_end, bindings)).collect::<Vec<_>>();
         let plans = self.plan_binding_lanes(&arms, &changed_names, &mut continuing_facts)?;
         let mut parameter_types = Vec::new();
@@ -4757,7 +7207,7 @@ impl FunctionLowerer<'_> {
                             )?));
                         }
                         Pattern::Wildcard | Pattern::Var(_) => {}
-                        Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } | Pattern::Or(_) => {
+                        Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::AnonCtor { .. } | Pattern::List { .. } | Pattern::Or(_) => {
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
                             let payload = self.load_source_aggregate_field(
@@ -4766,12 +7216,11 @@ impl FunctionLowerer<'_> {
                             bindings.extend(self.lower_match_pattern(payload, argument, &field_type)?);
                         }
                         Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
-                        _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested tuple pattern")),
                     }
                 }
                 Ok(bindings)
             }
-            Pattern::Ctor { name, args } => {
+            Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
                 // Each named payload is a slot load in the arm the tag test
                 // reached; a nested pattern beyond a name or wildcard is not
                 // in the subset.
@@ -4808,7 +7257,7 @@ impl FunctionLowerer<'_> {
                         // A nested constructor payload binds through its own
                         // slot load; the tag test that reached this arm has
                         // already selected its variant.
-                        Pattern::Ctor { .. } => {
+                        Pattern::Ctor { .. } | Pattern::AnonCtor { .. } => {
                             let slot = variant.first_field + offset;
                             let field_type = shape.fields[slot].clone();
                             let value_type = self.field_value_type(&field_type)?;
@@ -4829,7 +7278,6 @@ impl FunctionLowerer<'_> {
                         // A literal payload binds nothing; its test ran in the
                         // dispatch block.
                         Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
-                        _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested constructor pattern")),
                     }
                 }
                 Ok(bindings)
@@ -4842,7 +7290,6 @@ impl FunctionLowerer<'_> {
             | Pattern::Bool(_)
             | Pattern::Str(_) => Ok(Vec::new()),
             Pattern::List { elems, rest } => self.lower_list_pattern_bindings(scrutinee, scrutinee_type, elems, rest.as_ref()),
-            _ => Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         }
     }
 
@@ -4878,12 +7325,11 @@ impl FunctionLowerer<'_> {
                     bindings.push((name.clone(), value));
                 }
                 Pattern::Wildcard | Pattern::Var(_) => {}
-                Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::List { .. } | Pattern::Or(_) => {
+                Pattern::Tuple(_) | Pattern::Ctor { .. } | Pattern::AnonCtor { .. } | Pattern::List { .. } | Pattern::Or(_) => {
                     let value = self.load_list_element(scrutinee, index, element_type)?;
                     bindings.extend(self.lower_match_pattern(value, pattern, &element_source_type)?);
                 }
                 Pattern::Int(_) | Pattern::Bool(_) | Pattern::Str(_) | Pattern::Duration(_) | Pattern::IntRange { .. } => {}
-                _ => return Err(CanonicalLoweringError::UnsupportedExpression("nested list pattern element")),
             }
         }
         let Some(Some(rest_name)) = rest else { return Ok(bindings) };
@@ -5055,7 +7501,7 @@ impl FunctionLowerer<'_> {
             Pattern::Or(alternatives) => {
                 return self.or_pattern_conditions(scrutinee, alternatives, scrutinee_type);
             }
-            Pattern::Ctor { name, args } => {
+            Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
                 // A sum type's tag selects the arm; a one-variant record's
                 // constructor pattern always matches.
                 let shape = scalar_aggregate_shape(scrutinee_type, self.definitions).ok_or(
@@ -5180,7 +7626,6 @@ impl FunctionLowerer<'_> {
                     )
                 })?));
             }
-            _ => return Err(CanonicalLoweringError::UnsupportedExpression("match pattern")),
         };
         if self.values[&scrutinee] != expected_type {
             return Err(CanonicalLoweringError::UnsupportedExpression("match pattern type"));
@@ -5418,12 +7863,19 @@ impl FunctionLowerer<'_> {
             .iter()
             .map(|name| self.bindings.get(name).copied().ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())))
             .collect::<Result<Vec<_>, _>>()?;
+        let string_layout = self.string_layout_id().ok();
         for name in list_names {
             let object = self.bindings[name];
             // Nested control flow can invalidate an outer lane's cached
-            // extent without changing its current token. Reauthenticate the
-            // actual headers before carrying that lane across this edge.
-            if self.tracked_lanes(object).is_none() {
+            // extent without changing its current token. An invariant String
+            // retains its dominating root instead of receiving a loop phi, so
+            // its edge lanes must come from a fresh authenticated header
+            // observation, rather than stale side-table scalar ids.
+            let invariant_string = !names.contains(name)
+                && matches!(self.values[&object], ValueType::Ref(layout) if Some(layout) == string_layout);
+            if invariant_string {
+                self.refresh_disjunctive_string_extent(object)?;
+            } else if self.tracked_lanes(object).is_none() {
                 self.ensure_list_extent(object)?;
                 self.ensure_string_extent(object)?;
             }
@@ -5633,27 +8085,36 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
+        // The condition's `var` write-backs are loop-carried too (BUG-635).
         let rebound = self.loop_rebindings_with_write_backs(Some(condition), body);
         let mut names = loop_lane_names(&outer, &rebound);
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
         // the existing conservative path unless source semantics rebind them.
+        // An immutable String keeps its dominating root. Only its
+        // authenticated header lanes cross the loop, so the header cannot
+        // create a second shared reference identity for an unchanged value.
+        let string_layout = self.string_layout_id().ok();
         let invariant_candidates = outer
             .iter()
             .filter_map(|(name, object)| {
                 (!names.contains(name)
-                    && self.tracked_lanes(*object).is_some_and(|(count, capacity)| count == capacity)
+                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
                     && self.known_shared_value(*object))
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
         let invariant_names = crate::analysis::loop_mentions(condition, body, &invariant_candidates);
-        names.extend(invariant_names);
-        names.sort();
-        let list_names = names
+        for name in &invariant_names {
+            self.ensure_string_extent(outer[name])?;
+        }
+        let mut list_names = names
             .iter()
             .filter_map(|name| self.tracked_lanes(outer[name]).is_some().then(|| name.clone()))
             .collect::<Vec<_>>();
+        list_names.extend(invariant_names.iter().cloned());
+        list_names.sort();
+        list_names.dedup();
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("while list capacity state"));
         }
@@ -5666,6 +8127,22 @@ impl FunctionLowerer<'_> {
             .filter_map(|name| self.tracked_lanes(outer[name]))
             .flat_map(|(count, capacity)| [count, capacity])
             .collect::<BTreeSet<_>>();
+        // A nested loop can carry a different dynamic owner through a shared
+        // phi. Preserve an unrelated owner's exact lanes: they still name its
+        // unchanged allocation, and dropping just its count forces a later
+        // header reload that cannot cross the shared CFG edge as a checked
+        // range proof. Lanes shared with the loop remain conservative below.
+        let independent_dynamic_lanes = outer
+            .iter()
+            .filter(|(name, _)| !names.contains(name))
+            .filter_map(|(_, object)| {
+                self.tracked_lanes(*object)
+                    .map(|(count, capacity)| (*object, (count, capacity)))
+            })
+            .filter(|(_, (count, capacity))| {
+                !carried_extents.contains(count) && !carried_extents.contains(capacity)
+            })
+            .collect::<BTreeMap<_, _>>();
         let retained_lists = outer
             .iter()
             .filter(|(name, object)| {
@@ -5677,9 +8154,10 @@ impl FunctionLowerer<'_> {
             })
             .map(|(_, object)| *object)
             .collect::<BTreeSet<_>>();
-        for object in retained_lists {
+        for &object in &retained_lists {
             self.known_list_lengths.remove(&object);
             self.reload_dynamic_extent(object)?;
+            facts.list_counts.insert(object, self.list_counts[&object]);
             facts.list_capacities.insert(object, self.list_capacities[&object]);
         }
         let mut state_types = names
@@ -5695,7 +8173,20 @@ impl FunctionLowerer<'_> {
             self.give_exit_header_ownership(header, exit);
         }
         let header_parameters = self.blocks[header.get() as usize].parameters.clone();
-        let header_values = header_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+        // A shared dynamic phi can join a HeaderPrefix predecessor. Its
+        // count/capacity state parameters are scalar data, not implicit
+        // extent authority. Record exactly those header lanes; unique phis
+        // retain their explicit transport contract.
+        let shared_header_names = list_names
+            .iter()
+            .filter(|name| {
+                names.binary_search(name).ok().is_some_and(|index|
+                    header_parameters[index].ownership == Some(Ownership::Shared)
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut header_values = header_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
         let mut entry_state = names.iter().map(|name| outer[name]).collect::<Vec<_>>();
         for name in &list_names {
             let object = outer[name];
@@ -5715,6 +8206,27 @@ impl FunctionLowerer<'_> {
             let object = self.bindings[name];
             self.set_tracked_lanes(object, header_values[metadata_index], header_values[metadata_index + 1]);
             metadata_index += 2;
+        }
+        // HeaderPrefix predecessors carry no count or capacity proof, so the
+        // adjacent state lanes are transport only. Reauthenticate the shared
+        // phi's physical header before the condition or body can use it.
+        for name in &shared_header_names {
+            // A fresh logical length must not replace the allocation-capacity
+            // lane the shared phi explicitly transports. `invalidate_dynamic_count`
+            // clears both string lanes (they are the same physical header
+            // word), while retaining a list's independently authenticated
+            // capacity lane for `ensure_list_extent` to reuse.
+            self.invalidate_dynamic_count(self.bindings[name]);
+            self.ensure_list_extent(self.bindings[name])?;
+            self.ensure_string_extent(self.bindings[name])?;
+            let metadata_index = names.len()
+                + 2 * list_names.iter().position(|tracked| tracked == name)
+                    .expect("shared header lane has metadata");
+            let (count, capacity) = self.tracked_lanes(self.bindings[name])
+                .expect("shared header reload restores dynamic extent lanes");
+            let (count, capacity) = self.split_lanes(count, capacity)?;
+            header_values[metadata_index] = count;
+            header_values[metadata_index + 1] = capacity;
         }
         let condition = self.lower_expr(condition)?;
         if self.values[&condition] != ValueType::Bool {
@@ -5780,11 +8292,27 @@ impl FunctionLowerer<'_> {
         // one of its phis. Keep those untouched facts, including the capacity
         // identity an enclosing shared-phi edge must actually transport.
         if names.iter().any(|name| matches!(self.values[&outer[name]], ValueType::Ref(_))) {
+            let retained_list_lanes = retained_lists.iter().filter_map(|object| {
+                self.list_counts.get(object).zip(self.list_capacities.get(object))
+                    .map(|(count, capacity)| (*object, (*count, *capacity)))
+            }).collect::<BTreeMap<_, _>>();
             for object in outer.values() {
+                if independent_dynamic_lanes.contains_key(object)
+                    || retained_list_lanes.contains_key(object)
+                {
+                    continue;
+                }
                 self.string_lengths.remove(object);
                 self.string_capacities.remove(object);
                 self.list_counts.remove(object);
                 self.known_list_lengths.remove(object);
+            }
+            for (object, (count, capacity)) in independent_dynamic_lanes {
+                self.set_tracked_lanes(object, count, capacity);
+            }
+            for (object, (count, capacity)) in retained_list_lanes {
+                self.list_counts.insert(object, count);
+                self.list_capacities.insert(object, capacity);
             }
         }
         self.current = exit;
@@ -6003,17 +8531,40 @@ impl FunctionLowerer<'_> {
         // value.
         let rebound = self.loop_rebindings_with_write_backs(None, body)
             .without_iteration_binding(variable);
-        let names = loop_lane_names(&outer, &rebound);
+        let mut names = loop_lane_names(&outer, &rebound);
+        // An immutable String used by the body keeps its dominating root.
+        // Only its authenticated header lanes cross the loop, so a branch
+        // cannot manufacture a fresh shared reference identity for it.
+        let string_layout = self.string_layout_id().ok();
+        let invariant_candidates = outer
+            .iter()
+            .filter_map(|(name, object)| {
+                (!names.contains(name)
+                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
+                    && self.known_shared_value(*object))
+                    .then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        // The iterable is evaluated before the header. Only reads in the
+        // body need metadata transport; an iterator-only root stays outside.
+        let invariant_names = crate::analysis::loop_mentions(&Expr::Bool(false), body, &invariant_candidates);
+        for name in &invariant_names {
+            self.ensure_string_extent(outer[name])?;
+        }
+        names.sort();
         if matches!(iterable, Expr::Var(name) if names.contains(name)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for iterator mutation"));
         }
-        let list_names = names
+        let mut list_names = names
             .iter()
             .filter_map(|name| {
                 let object = outer[name];
                 self.tracked_lanes(object).is_some().then(|| name.clone())
             })
             .collect::<Vec<_>>();
+        list_names.extend(invariant_names.iter().cloned());
+        list_names.sort();
+        list_names.dedup();
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
         }
@@ -6041,8 +8592,11 @@ impl FunctionLowerer<'_> {
         for object in retained_lists {
             self.known_list_lengths.remove(&object);
             self.reload_dynamic_extent(object)?;
-            // This preheader definition dominates the body and exit. Do not
-            // restore the old, unauthenticated capacity after the loop.
+            // This preheader definition dominates the body and exit. Restore
+            // the matched live pair after the loop; retaining the old count
+            // beside this refreshed capacity would make later element guards
+            // name a count no longer authenticated for this retained owner.
+            facts.list_counts.insert(object, self.list_counts[&object]);
             facts.list_capacities.insert(object, self.list_capacities[&object]);
         }
 
@@ -6105,7 +8659,16 @@ impl FunctionLowerer<'_> {
             .filter(|(name, object)| !names.contains(name) && self.tracked_lanes(**object).is_some())
             .map(|(_, object)| *object)
             .collect::<BTreeSet<_>>();
+        let preserved_invariant_extents = invariant_extents.iter().filter(|object| {
+            self.tracked_lanes(**object)
+                .is_some_and(|(count, capacity)| {
+                    !carried_extents.contains(&count) && !carried_extents.contains(&capacity)
+                })
+        }).copied().collect::<BTreeSet<_>>();
         for object in &invariant_extents {
+            if preserved_invariant_extents.contains(object) {
+                continue;
+            }
             self.invalidate_dynamic_count(*object);
             self.ensure_list_extent(*object)?;
             self.ensure_string_extent(*object)?;
@@ -6234,6 +8797,9 @@ impl FunctionLowerer<'_> {
         // Do not restore those old scalar ids as evidence for later accesses.
         // The allocation-capacity bound of an unchanged list remains valid.
         for object in invariant_extents {
+            if preserved_invariant_extents.contains(&object) {
+                continue;
+            }
             self.invalidate_dynamic_count(object);
         }
         self.current = exit;
@@ -6278,6 +8844,15 @@ impl FunctionLowerer<'_> {
     fn finish_current(&mut self, terminator: Terminator) -> Result<(), CanonicalLoweringError> {
         let terminator = match terminator {
             Terminator::Return { mut values } => {
+                if let Some(selector) = &self.disjunctive_return_selector {
+                    let selector = *self.bindings.get(selector).ok_or_else(|| {
+                        CanonicalLoweringError::MissingBinding(selector.clone())
+                    })?;
+                    if self.values.get(&selector) != Some(&ValueType::Bool) {
+                        return Err(CanonicalLoweringError::InvalidCheckedFunctionType(self.function.clone()));
+                    }
+                    values.push(selector);
+                }
                 // Source `var` parameters are returned as affine replacement
                 // tokens after the source-level result lanes.  A source-level
                 // result that aliases the same token gets its own RC token.
@@ -6285,12 +8860,18 @@ impl FunctionLowerer<'_> {
                     let value = *self.bindings.get(&name)
                         .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                     if values.contains(&value) && matches!(self.values[&value], ValueType::Ref(_)) {
-                        // The write-back lane keeps the unique token; the
-                        // result lane gets its own owned copy (a shared
-                        // clone would weaken the token the lane must return).
+                        // Ordinary write-back results get an independent
+                        // value copy. The dedicated returned-exclusive
+                        // carrier instead needs a shared clone with the same
+                        // authenticated entry identity; its hidden lane still
+                        // returns the original write-back token.
                         let ty = self.write_back_parameter_types.get(&name).cloned()
                             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
-                        let copy = self.owned_for_storage(value, &ty)?;
+                        let copy = if self.returned_exclusive_alias_parameters.contains(&name) {
+                            self.clone_reference_token(value)?
+                        } else {
+                            self.owned_for_storage(value, &ty)?
+                        };
                         for result in &mut values {
                             if *result == value { *result = copy; }
                         }
@@ -6812,7 +9393,11 @@ impl FunctionLowerer<'_> {
                 }));
             }
         }
-        self.reload_dynamic_extent(value)?;
+        if string_layout == Some(layout) {
+            self.refresh_disjunctive_string_extent(value)?;
+        } else {
+            self.reload_dynamic_extent(value)?;
+        }
         if string_layout == Some(layout) {
             if let (Some(&count), Some(&capacity)) = (
                 self.string_lengths.get(&value),
@@ -6879,6 +9464,7 @@ impl FunctionLowerer<'_> {
         &mut self,
         name: &str,
         arguments: &[Expr],
+        call_site: &Expr,
         path: Vec<ProperTailPathStep>,
     ) -> Result<Terminator, CanonicalLoweringError> {
         let (callee, signature_id) = self
@@ -6908,7 +9494,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let (arguments, _) = self.lower_call_arguments(name, arguments, signature_id, &signature, true)?;
+        let (arguments, _) = self.lower_call_arguments(name, arguments, Some(call_site), signature_id, &signature, true, None)?;
         let site = witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes());
         self.bind_tail_location(site)?;
         Ok(Terminator::TailCall {
@@ -6922,6 +9508,7 @@ impl FunctionLowerer<'_> {
         &mut self,
         name: &str,
         arguments: &[Expr],
+        call_site: &Expr,
     ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
         let (callee, signature_id) = self
             .functions
@@ -6933,7 +9520,7 @@ impl FunctionLowerer<'_> {
             .get(signature_id.get() as usize)
             .cloned()
             .ok_or_else(|| CanonicalLoweringError::MissingCheckedFunctionType(name.to_owned()))?;
-        let (call_arguments, write_backs) = self.lower_call_arguments(name, arguments, signature_id, &signature, false)?;
+        let (call_arguments, write_backs) = self.lower_call_arguments(name, arguments, Some(call_site), signature_id, &signature, false, None)?;
         let destinations = signature
             .results
             .iter()
@@ -6946,7 +9533,58 @@ impl FunctionLowerer<'_> {
             arguments: call_arguments,
         });
         self.rebind_write_backs(&write_backs, &signature, &destinations)?;
-        Ok(destinations[..destinations.len() - write_back_count(&signature)].to_vec())
+        // A projected scalar result is physically the retained aggregate root.
+        // Recover its field only from both the installed result contract and
+        // the exact checked call expression; a matching root layout alone is
+        // never a projected-place capability.
+        if let (
+            Some(destination),
+            Some(ResultContract::AliasesWriteBackParameter { projection: Some(field), .. }),
+            Some(access),
+        ) = (
+            destinations.first().copied(),
+            signature.contract.results.first(),
+            self.access_facts.call_at(self.checked_module, call_site),
+        )
+            && exclusive_reference_parts(access.result().ty())
+                .is_some_and(|(_, leaf)| is_direct_shared_int(leaf))
+        {
+            self.projected_scalar_places.insert(destination, *field);
+        }
+        let ordinary_results = destinations.len() - write_back_count(&signature);
+        let mut source_results = Vec::with_capacity(ordinary_results);
+        for (index, destination) in destinations.iter().take(ordinary_results).enumerate() {
+            let contract = signature.contract.results.get(index).ok_or(
+                CanonicalLoweringError::InvalidCheckedFunctionType(name.to_owned()),
+            )?;
+            if let ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result,
+                parameters,
+                selector_parameter: _,
+            } = contract {
+                let carrier = *destinations.get(*carrier_result as usize).ok_or(
+                    CanonicalLoweringError::InvalidCheckedFunctionType(name.to_owned()),
+                )?;
+                let [first, second] = parameters.as_slice() else {
+                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.to_owned()));
+                };
+                if index != 1
+                    || !matches!(signature.contract.results.first(), Some(ResultContract::AliasesOneOfWriteBackParameters {
+                        parameters: candidates, ..
+                    }) if candidates == parameters)
+                    || self.values.get(destination) != Some(&ValueType::Bool)
+                {
+                    return Err(CanonicalLoweringError::InvalidCheckedFunctionType(name.to_owned()));
+                }
+                self.disjunctive_exclusive_carriers.insert(carrier, DisjunctiveExclusiveCarrier {
+                    selector: *destination,
+                    candidates: [*first, *second],
+                });
+            } else {
+                source_results.push(*destination);
+            }
+        }
+        Ok(source_results)
     }
 
     /// A tail call through a closure record: the record's code slot is the
@@ -7009,7 +9647,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .find(|site| site.key == key)
             .ok_or_else(|| CanonicalLoweringError::MissingProperTailSite(self.function.clone()))?;
-        let (mut arguments, _) = self.lower_call_arguments("<indirect tail>", arguments, declaration_id, &declaration, true)?;
+        let (mut arguments, _) = self.lower_call_arguments("<indirect tail>", arguments, None, declaration_id, &declaration, true, None)?;
         let code = self.closure_callable(callee, signature_id)?;
         let environment = self.clone_reference_token(callee)?;
         arguments.insert(0, CallArgument::Move(environment));
@@ -7052,6 +9690,64 @@ impl FunctionLowerer<'_> {
         }
     }
 
+    /// A physical closure layout is not authority for its nested reference
+    /// lane.  Construction must be tied back to the exact checked expression
+    /// that supplied this callable and to the declaration identity which
+    /// installed the carrier for the layout.
+    fn authenticate_callable_reference_value(
+        &self,
+        expression: &Expr,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<(), CanonicalLoweringError> {
+        let Some(expected) = self.closures.reference_carriers.get(&layout) else {
+            return Ok(());
+        };
+        let actual = self.access_facts.callable_at(self.checked_module, expression).ok_or(
+            CanonicalLoweringError::UnsupportedExpression(
+                "callable reference carrier has no checked callable identity",
+            ),
+        )?;
+        if actual.identity_key() != *expected.identity()
+            || callable_reference_carrier(actual).as_ref() != Some(expected)
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "callable reference carrier identity does not match its closure lane",
+            ));
+        }
+        Ok(())
+    }
+
+    /// At an indirect invocation, require the call-site authority to be the
+    /// same opaque access product that authenticated construction of this
+    /// closure carrier.  The position is checked before the ordinary direct
+    /// place/write-back helper reopens its owner root.
+    fn authenticate_callable_reference_call(
+        &self,
+        call_site: &Expr,
+        callee: &str,
+        layout: witchy_wir::layout::LayoutId,
+        parameter: usize,
+    ) -> Result<Option<CallableReferenceCarrier>, CanonicalLoweringError> {
+        let Some(expected) = self.closures.reference_carriers.get(&layout) else {
+            return Ok(None);
+        };
+        let access = self.access_facts.call_at(self.checked_module, call_site).ok_or(
+            CanonicalLoweringError::UnsupportedExpression(
+                "callable reference call has no checked access contract",
+            ),
+        )?;
+        if !matches!(call_site, Expr::Call { name, .. } if name == callee)
+            || access.identity_key() != *expected.identity()
+            || callable_reference_carrier(access).as_ref() != Some(expected)
+            || parameter != 0
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "callable reference call does not match its authenticated relation",
+            ));
+        }
+        Ok(Some(expected.clone()))
+    }
+
     fn closure_callable(&mut self, owner: ValueId, signature: FunctionSignatureId) -> Result<ValueId, CanonicalLoweringError> {
         if let ValueType::Gc(id) = self.values[&owner] {
             if !self.closures.owners.iter().any(|family| family.owner_type == id && family.signature == signature) {
@@ -7072,7 +9768,7 @@ impl FunctionLowerer<'_> {
         &self,
         source: &Type,
     ) -> Result<(crate::canonical_layouts::OpaqueAggregateFamilyLayout, OwnerFamily), CanonicalLoweringError> {
-        let key = concrete_aggregate_identity(source, self.definitions)
+        let key = canonical_owner_aggregate_identity(source, self.definitions)
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
         let layout = self.closures.aggregate_families.get(&key).cloned()
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
@@ -7329,7 +10025,9 @@ impl FunctionLowerer<'_> {
         &mut self,
         closure: ValueId,
         layout: witchy_wir::layout::LayoutId,
+        callee_name: &str,
         arguments: &[Expr],
+        call_site: &Expr,
     ) -> Result<Vec<ValueId>, CanonicalLoweringError> {
         let signature_id = *self.closures.signature_by_layout.get(&layout).ok_or(
             CanonicalLoweringError::UnsupportedExpression("closure signature"),
@@ -7348,7 +10046,15 @@ impl FunctionLowerer<'_> {
         if let Some(result) = declaration.results.iter().copied().find(|value_type| !is_indirect_result(*value_type)) {
             return Err(CanonicalLoweringError::UnsupportedIndirectResult(result));
         }
-        let (call_arguments, write_backs) = self.lower_call_arguments("<closure>", arguments, declaration_id, &declaration, false)?;
+        let (call_arguments, write_backs) = self.lower_call_arguments(
+            callee_name,
+            arguments,
+            Some(call_site),
+            declaration_id,
+            &declaration,
+            false,
+            Some(layout),
+        )?;
         let destinations = self.emit_closure_call(closure, signature_id, call_arguments)?;
         self.rebind_write_backs(&write_backs, &declaration, &destinations)?;
         Ok(destinations[..destinations.len() - write_back_count(&declaration)].to_vec())
@@ -7406,13 +10112,38 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    /// The checked call lane erases a direct source borrow to its owned
+    /// referent layout. Reopen that one erasure only through an authenticated
+    /// declaration-specific direct-alias map; this deliberately has no name-,
+    /// layout-, or convention-only fallback.
+    fn authenticated_direct_shared_alias_call(
+        &self,
+        callee: &str,
+        signature_id: FunctionSignatureId,
+        signature: &FunctionSignature,
+        conventions: &[Convention],
+        parameter: usize,
+        argument: &Expr,
+    ) -> bool {
+        if parameter != 0
+            || !matches!(argument, Expr::Unary { op: UnOp::Borrow, .. })
+            || self.direct_shared_alias_callees.get(callee) != Some(&signature_id)
+            || conventions != [Convention::Let]
+        {
+            return false;
+        }
+        exact_direct_shared_alias_signature(signature)
+    }
+
     fn lower_call_arguments(
         &mut self,
         callee: &str,
         arguments: &[Expr],
+        call_site: Option<&Expr>,
         signature_id: FunctionSignatureId,
         signature: &FunctionSignature,
         tail: bool,
+        callable_reference_layout: Option<witchy_wir::layout::LayoutId>,
     ) -> Result<(Vec<CallArgument>, Vec<PreparedWriteBack>), CanonicalLoweringError> {
         let parameters = &signature.contract.parameters;
         let conventions = self.checked_parameter_conventions.get(&signature_id)
@@ -7435,7 +10166,58 @@ impl FunctionLowerer<'_> {
             .zip(parameters)
             .enumerate()
             .map(|(parameter, (argument, contract))| {
-                let value = if conventions[parameter] == Convention::Var {
+                // This is deliberately selected from the exact retained call
+                // access type, not the physical `Ref` lane. A source `var`
+                // or `own` direct `&mut` argument is an ephemeral handle: its
+                // own replacement is discarded, but a write through it must
+                // still commit to the authenticated caller place. Ordinary
+                // `var`/`own` values stay on their existing convention paths.
+                let direct_exclusive_write = matches!(conventions[parameter],
+                    Convention::Let | Convention::Var | Convention::Own)
+                    && contract.ownership == ParameterOwnership::WriteBack
+                    && call_site
+                        .and_then(|site| self.access_facts.call_at(self.checked_module, site))
+                        .is_some_and(|access| {
+                            access.params().get(parameter).is_some_and(|parameter_access| {
+                                is_direct_exclusive_reference(parameter_access.ty())
+                                    || write_back::exact_projected_result_root_relation(
+                                        access,
+                                        parameter,
+                                    )
+                            })
+                        });
+                let callable_reference = if let Some(layout) = callable_reference_layout {
+                    let call_site = call_site.ok_or(CanonicalLoweringError::UnsupportedExpression(
+                        "callable reference lane has no source call",
+                    ))?;
+                    self.authenticate_callable_reference_call(
+                        call_site,
+                        callee,
+                        layout,
+                        parameter,
+                    )?
+                } else {
+                    None
+                };
+                let value = if direct_exclusive_write {
+                    if callable_reference.is_some()
+                        && !matches!(callable_reference, Some(CallableReferenceCarrier::ExclusiveWriteBack(_)))
+                    {
+                        return Err(CanonicalLoweringError::UnsupportedExpression(
+                            "callable reference write-back does not match its checked carrier",
+                        ));
+                    }
+                    let place = self.prepare_authenticated_direct_exclusive_write_back(
+                        callee,
+                        call_site,
+                        parameter,
+                        argument,
+                        callable_reference.as_ref(),
+                    )?;
+                    let value = self.read_prepared_write_back(&place)?;
+                    write_backs.push(place);
+                    value
+                } else if conventions[parameter] == Convention::Var {
                     let place = self.prepare_write_back(argument)?;
                     let value = self.read_prepared_write_back(&place)?;
                     write_backs.push(place);
@@ -7466,7 +10248,31 @@ impl FunctionLowerer<'_> {
                 }
                 match conventions[parameter] {
                     Convention::Own => match contract.ownership {
+                        ParameterOwnership::WriteBack if direct_exclusive_write => {
+                            // Consuming an ephemeral `&mut root` consumes the
+                            // handle, not the root place. The callee receives
+                            // an owned referent token and its hidden result is
+                            // committed by `commit_write_backs` below.
+                            if matches!(actual, ValueType::Ref(_)) {
+                                let source_type = self.expression_type(argument)?;
+                                Ok(CallArgument::Move(self.owned_for_storage(value, &source_type)?))
+                            } else {
+                                Ok(CallArgument::Value(value))
+                            }
+                        }
                         ParameterOwnership::Value => Ok(CallArgument::Value(value)),
+                        ParameterOwnership::Unique => {
+                            let moved = if !self.opt_mode
+                                && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
+                            {
+                                let source_type = self.expression_type(argument)?;
+                                self.owned_for_storage(value, &source_type)?
+                            } else {
+                                self.owned_parameters.retain(|owned| *owned != value);
+                                value
+                            };
+                            Ok(CallArgument::Move(moved))
+                        }
                         ParameterOwnership::Shared => {
                         // A string literal has no token to transfer; give the
                         // callee a fresh reference-counted copy instead.
@@ -7496,9 +10302,52 @@ impl FunctionLowerer<'_> {
                     // spelled out: one owned token, cloned before a non-tail
                     // call and moved at a tail edge.
                     Convention::Let | Convention::Borrow => match contract.ownership {
+                        ParameterOwnership::WriteBack if direct_exclusive_write => {
+                            // This is the one declaration-authenticated
+                            // `&mut root` carrier. The call owns a fresh
+                            // referent token (or scalar value) and commits the
+                            // matching hidden result to that exact root.
+                            // The projected-scalar lane is a retained root,
+                            // not an ordinary value-semantics record copy.
+                            // Its exact checked call/result relation was
+                            // required while preparing `place` above, and the
+                            // declared callee contract carries this one fixed
+                            // field.  Preserve that root identity across the
+                            // call so SafeWIR can derive the same owner/token
+                            // relation from the call/hidden-return pair.
+                            let projected_root_lane = matches!(
+                                signature.contract.results.first(),
+                                Some(ResultContract::AliasesWriteBackParameter {
+                                    parameter: result_parameter,
+                                    projection: Some(_),
+                                    ..
+                                }) if usize::try_from(*result_parameter).ok() == Some(parameter)
+                            ) && call_site
+                                .and_then(|site| self.access_facts.call_at(self.checked_module, site))
+                                .is_some_and(|access| write_back::exact_projected_result_root_relation(access, parameter));
+                            if matches!(actual, ValueType::Ref(_)) && projected_root_lane {
+                                self.owned_parameters.retain(|owned| *owned != value);
+                                Ok(CallArgument::Move(value))
+                            } else if matches!(actual, ValueType::Ref(_)) {
+                                let source_type = self.expression_type(argument)?;
+                                Ok(CallArgument::Move(self.owned_for_storage(value, &source_type)?))
+                            } else {
+                                Ok(CallArgument::Value(value))
+                            }
+                        }
                         ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
                             let source_type = self.expression_type(argument)?;
-                            if shared_reference_parts(&source_type).is_none() {
+                            if shared_reference_parts(&source_type).is_none()
+                                && !self.authenticated_direct_shared_alias_call(
+                                    callee,
+                                    signature_id,
+                                    signature,
+                                    conventions,
+                                    parameter,
+                                    argument,
+                                )
+                                && !matches!(callable_reference, Some(CallableReferenceCarrier::SharedAlias(_)))
+                            {
                                 return Err(CanonicalLoweringError::UnsupportedCallOwnership {
                                     callee: callee.to_owned(), parameter, ownership: contract.ownership,
                                 });
@@ -7540,6 +10389,13 @@ impl FunctionLowerer<'_> {
                         let name = &write_backs.last().expect("prepared var argument").root;
                         if !self.bindings.contains_key(name) {
                             return Err(CanonicalLoweringError::MissingBinding(name.clone()));
+                        }
+                        // A `var` view writes back a successor opaque carrier,
+                        // not its referent. Clone the carrier token for the
+                        // callee so the caller's current snapshot remains
+                        // live until the returned replacement is committed.
+                        if matches!(actual, ValueType::Gc(_)) {
+                            return self.clone_reference_token(value).map(CallArgument::Move);
                         }
                         // A scalar `var` argument is a plain value; only a
                         // reference transfers its token to the callee.
@@ -7627,6 +10483,7 @@ impl FunctionLowerer<'_> {
                     // A named function as a value: a closure whose code is
                     // the function's adapter and whose environment is empty.
                     let layout = *self.closures.layouts.get(&fn_type).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                    self.authenticate_callable_reference_value(expression, layout)?;
                     let family = self.closures.families.get(&fn_type)
                         .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
                     self.alloc_closure(layout, signature, adapter, family, 0, Vec::new())?
@@ -7874,10 +10731,10 @@ impl FunctionLowerer<'_> {
                 let results = if let Some(callee) = self.bindings.get(name).copied() {
                     {
                         let layout = self.closure_layout_for_value(callee)?;
-                        self.lower_closure_call(callee, layout, args)?
+                        self.lower_closure_call(callee, layout, name, args, expression)?
                     }
                 } else {
-                    self.lower_direct_call(name, args)?
+                    self.lower_direct_call(name, args, expression)?
                 };
                 match results.as_slice() {
                     [value] => {
@@ -7905,7 +10762,7 @@ impl FunctionLowerer<'_> {
                     }
                     return Err(CanonicalLoweringError::IndirectCalleeType(self.values[&callee]));
                 }
-                let results = self.lower_closure_call(callee, layout, args)?;
+                let results = self.lower_closure_call(callee, layout, "<apply>", args, expression)?;
                 match results.as_slice() {
                     [value] => {
                         let value = *value;
@@ -7923,6 +10780,9 @@ impl FunctionLowerer<'_> {
             Expr::Str(value) => self.lower_string_literal(value),
             Expr::List(items) => self.lower_list_literal(expression, items),
             Expr::Tuple(items) => {
+                if items.is_empty() {
+                    return self.push_zero(ValueType::Unit);
+                }
                 let source_type = self.expression_type(expression)?;
                 let shape = scalar_aggregate_shape(&source_type, self.definitions)
                     .ok_or(CanonicalLoweringError::UnsupportedExpression("tuple type"))?;
@@ -7933,10 +10793,26 @@ impl FunctionLowerer<'_> {
                 self.lower_aggregate_for_source(&source_type, &shape, 0, values)
             }
             Expr::Ctor { name, args } => self.lower_record_constructor(expression, name, args),
-            Expr::AnonCtor { .. } => {
-                Err(CanonicalLoweringError::UnsupportedExpression("constructor"))
+            Expr::AnonCtor { tag, args } => {
+                let source_type = self.expression_type(expression)?;
+                let shape = scalar_aggregate_shape(&source_type, self.definitions).ok_or(
+                    CanonicalLoweringError::UnsupportedExpression("anonymous union constructor"),
+                )?;
+                let (index, variant) = shape
+                    .variant(tag)
+                    .ok_or_else(|| CanonicalLoweringError::MissingBinding(tag.clone()))?;
+                if args.len() != variant.arity {
+                    return Err(CanonicalLoweringError::CallArityMismatch {
+                        callee: format!(".{tag}"), expected: variant.arity, actual: args.len(),
+                    });
+                }
+                let mut values = Vec::with_capacity(args.len());
+                for argument in args {
+                    values.push(self.lower_expr(argument)?);
+                }
+                self.lower_aggregate_for_source(&source_type, &shape, index, values)
             }
-            Expr::Unary { op, expr } => self.lower_unary(*op, expr),
+            Expr::Unary { op, expr } => self.lower_unary(expression, *op, expr),
             Expr::Binary { op, lhs, rhs } => self.lower_binary(*op, lhs, rhs),
             Expr::Field { base, field } => self.lower_record_field(base, field),
             Expr::Lambda { .. } => {
@@ -7950,6 +10826,7 @@ impl FunctionLowerer<'_> {
                 let (function, signature) = *self.functions.get(name).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
                 let fn_type = self.expression_type(expression)?;
                 let layout = *self.closures.layouts.get(&crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions)).ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                self.authenticate_callable_reference_value(expression, layout)?;
                 let environment = self.closures.lambda_captures.get(&address).cloned()
                     .ok_or(CanonicalLoweringError::UnsupportedExpression("closure environment witness"))?;
                 let mut values = Vec::with_capacity(environment.captures.len());
@@ -8075,7 +10952,33 @@ impl FunctionLowerer<'_> {
         for argument in arguments {
             values.push(self.lower_expr(argument)?);
         }
-        self.lower_aggregate_for_source(&source_type, &shape, index, values)
+        let result = self.lower_aggregate_for_source(&source_type, &shape, index, values)?;
+        self.complete_region_must_transfer(expression, result)?;
+        Ok(result)
+    }
+
+    /// A fresh constructor is the one currently admitted must-promotion
+    /// source. It has no lexical alias before the region returns it, and its
+    /// SafeWIR reference lane is the one result consumed by the enclosing
+    /// flow. Any other expression leaves the checked disposition incomplete.
+    fn complete_region_must_transfer(
+        &mut self,
+        expression: &Expr,
+        value: ValueId,
+    ) -> Result<(), CanonicalLoweringError> {
+        let Some(&tail) = self.active_region_must_transfers.last() else { return Ok(()) };
+        if tail != expression as *const Expr as usize {
+            return Ok(());
+        }
+        if !matches!(self.values.get(&value), Some(ValueType::Ref(_) | ValueType::Gc(_)))
+            || self.bindings.values().any(|bound| *bound == value)
+            || !self.completed_region_must_transfers.insert(tail)
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "region must-transfer constructor lacks one fresh owned result",
+            ));
+        }
+        Ok(())
     }
 
     /// Allocate an immutable reference-counted scalar aggregate holding
@@ -8225,11 +11128,15 @@ impl FunctionLowerer<'_> {
         })?;
         self.current = fail;
         let failure_payload = if shape.name == "Result" {
-            let error_type = self.field_value_type(&shape.fields[2])?;
-            if error_type != self.field_value_type(&failure_shape.fields[2])? {
-                return Err(CanonicalLoweringError::UnsupportedExpression("try error type"));
-            }
-            vec![self.load_record_field(object, 2, error_type)?]
+            let source_error = &shape.fields[2];
+            let destination_error = &failure_shape.fields[2];
+            let error = self.load_record_field(object, 2, self.field_value_type(source_error)?)?;
+            let error = if self.field_value_type(source_error)? == self.field_value_type(destination_error)? {
+                error
+            } else {
+                self.rebox_anonymous_union_widening(error, source_error, destination_error)?
+            };
+            vec![error]
         } else {
             Vec::new()
         };
@@ -8240,6 +11147,104 @@ impl FunctionLowerer<'_> {
         self.current = proceed;
         let payload_type = self.field_value_type(&shape.fields[1])?;
         self.load_record_field(object, 1, payload_type)
+    }
+
+    /// Convert a checked anonymous-union subset into its checked widening
+    /// target.  Its physical records may have different slot counts, so this
+    /// is deliberately a fresh destination object rather than an unchecked
+    /// relabel of a `Ref(layout)`.  The type checker proves every source tag
+    /// and payload occurs in the destination before this lowerer is reached;
+    /// we repeat the concrete lookup here and fail closed if source evidence
+    /// and physical lanes disagree.
+    fn rebox_anonymous_union_widening(
+        &mut self,
+        source: ValueId,
+        source_type: &Type,
+        destination_type: &Type,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if witchy_types::typeck::anon_union_synthetic_variants(
+            match source_type.unqualified() {
+                Type::Named(name, _) => name,
+                _ => return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening source")),
+            },
+        ).is_none()
+            || witchy_types::typeck::anon_union_synthetic_variants(
+                match destination_type.unqualified() {
+                    Type::Named(name, _) => name,
+                    _ => return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening destination")),
+                },
+            ).is_none()
+        {
+            return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening"));
+        }
+        let source_shape = scalar_aggregate_shape(source_type, self.definitions)
+            .filter(|shape| shape.tagged)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("anonymous union widening source shape"))?;
+        let destination_shape = scalar_aggregate_shape(destination_type, self.definitions)
+            .filter(|shape| shape.tagged)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("anonymous union widening destination shape"))?;
+        let destination_value = self.field_value_type(destination_type)?;
+        let ValueType::Ref(_) = destination_value else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening destination representation"));
+        };
+        let tag = self.load_record_field(source, 0, ValueType::Int)?;
+        let facts = self.snapshot_facts();
+        let join = self.new_block(&[destination_value])?;
+        self.blocks[join.get() as usize].parameters[0].ownership = Some(Ownership::Unique);
+        let result = self.blocks[join.get() as usize].parameters[0].value;
+        self.token_join_parameters.insert(result);
+        for (source_index, source_variant) in source_shape.variants.iter().enumerate() {
+            let (destination_index, destination_variant) = destination_shape
+                .variant(&source_variant.name)
+                .filter(|(_, destination)| destination.arity == source_variant.arity)
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(source_variant.name.clone()))?;
+            for offset in 0..source_variant.arity {
+                let source_field = &source_shape.fields[source_variant.first_field + offset];
+                let destination_field = &destination_shape.fields[destination_variant.first_field + offset];
+                if self.field_value_type(source_field)? != self.field_value_type(destination_field)? {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("anonymous union widening payload representation"));
+                }
+            }
+            let expected = self.push_const_int(i64::try_from(source_index)
+                .map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
+            let selected = self.push_compare(ComparisonOperator::Equal, tag, expected)?;
+            let next = if source_index + 1 == source_shape.variants.len() {
+                self.push_trap_unless(selected)?;
+                None
+            } else {
+                let arm = self.new_block(&[])?;
+                let next = self.new_block(&[])?;
+                self.finish_current(Terminator::BranchIf {
+                    condition: selected,
+                    then_target: arm,
+                    then_arguments: Vec::new(),
+                    else_target: next,
+                    else_arguments: Vec::new(),
+                })?;
+                self.current = arm;
+                Some(next)
+            };
+            let mut payload = Vec::with_capacity(source_variant.arity);
+            for offset in 0..source_variant.arity {
+                let slot = source_variant.first_field + offset;
+                payload.push(self.load_record_field(
+                    source,
+                    u32::try_from(slot).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    self.field_value_type(&source_shape.fields[slot])?,
+                )?);
+            }
+            let widened = self.lower_aggregate_for_source(
+                destination_type, &destination_shape, destination_index, payload,
+            )?;
+            self.finish_current(Terminator::Branch { target: join, arguments: vec![widened] })?;
+            if let Some(next) = next {
+                self.restore_snapshot(facts.clone());
+                self.current = next;
+            }
+        }
+        self.restore_facts(facts, join);
+        self.current = join;
+        Ok(result)
     }
 
     /// A named-field record literal, with the fields not named taken from the
@@ -8824,6 +11829,26 @@ impl FunctionLowerer<'_> {
             self.guard_dynamic_extent(length, capacity, 4, 1)?;
             return Ok(());
         }
+        // A missing cached lane may follow a shared-root rebase. Recreate it
+        // only through the explicit fresh-header reauthentication sequence;
+        // a bare reload would manufacture a count without current owner
+        // authority for subsequent element access.
+        self.refresh_disjunctive_string_extent(value)
+    }
+
+    /// Reauthenticate an unchanged String root after a control-flow join.
+    /// Unlike ordinary extent discovery, this puts the allocation proof
+    /// before the exact fresh-header guard so SafeWIR can establish a new
+    /// counted fact after a predecessor-specific association was met away.
+    fn refresh_disjunctive_string_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
+        let ValueType::Ref(layout) = self.values[&value] else { return Ok(()) };
+        if Some(layout) != string_layout(
+            &Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts,
+        ).ok() {
+            return Ok(());
+        }
+        self.string_lengths.remove(&value);
+        self.string_capacities.remove(&value);
         let length = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Load {
             destination: length,
@@ -8835,15 +11860,12 @@ impl FunctionLowerer<'_> {
             ),
             transfer: witchy_wir::canonical_safewir::LoadTransfer::CopyScalar,
         });
-        // Allocation capacity is stable for this object even when a control-
-        // flow join invalidates its logical-length fact. Preserve that exact
-        // checker-visible identity and authenticate the refreshed header
-        // against it. A header-prefix value has no prior capacity, so its
-        // logical length remains the conservative capacity bound.
-        let capacity = self.string_capacities.get(&value).copied().unwrap_or(length);
-        self.guard_dynamic_extent(length, capacity, 4, 1)?;
+        self.guard_allocation_capacity(length, 4, 1)?;
+        let exact = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, length)?;
+        self.push_guard(exact, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::ReauthenticateRawHeaderExtent { object: value, header: length });
         self.string_lengths.insert(value, length);
-        self.string_capacities.insert(value, capacity);
+        self.string_capacities.insert(value, length);
         Ok(())
     }
 
@@ -8856,11 +11878,13 @@ impl FunctionLowerer<'_> {
     }
 
     fn reload_dynamic_extent(&mut self, value: ValueId) -> Result<(), CanonicalLoweringError> {
-        self.string_lengths.remove(&value);
-        // String capacity belongs to the allocation identity, not to the
-        // logical header value refreshed below. String operations return a
-        // new object rather than reallocating an existing ValueId.
-        self.list_counts.remove(&value);
+        // A String has one dynamic header word: its checked count and
+        // capacity lanes must be the same fresh observation. Retaining a
+        // pre-join capacity alongside a reloaded length for a shared phi
+        // fabricates a pair the SafeWIR checker cannot associate with either
+        // incoming object. Lists retain their distinct allocation-capacity
+        // lane and are reauthenticated below.
+        self.invalidate_dynamic_count(value);
         self.list_capacities.remove(&value);
         self.ensure_list_extent(value)?;
         self.ensure_string_extent(value)
@@ -9768,6 +12792,11 @@ impl FunctionLowerer<'_> {
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
+        // The source guard above belongs to the source owner. Re-establish
+        // the same exact range bound after allocation so CloneRange's write
+        // side is authenticated by the fresh destination owner.
+        let destination_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, capacity)?;
+        self.push_guard(destination_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let in_bounds = self.push_compare(ComparisonOperator::LessEqualUnsigned, length, length)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_operation(Operation::CloneRange {
@@ -10484,21 +13513,22 @@ impl FunctionLowerer<'_> {
             },
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
+        // Allocation gives the new owner its first generation. The capacity
+        // choice above was only a prospective allocation fact, so establish
+        // the prefix-copy bound again for this live destination.
+        let initial_copy_fits = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            old_length,
+            capacity,
+        )?;
+        self.push_guard(
+            initial_copy_fits,
+            witchy_wir::canonical_safewir::GuardKind::Bounds,
+        );
 
         if pointer_elements {
             let zero = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::ConstSize { destination: zero, value: 0 });
-            let move_fits = self.fresh(ValueType::Bool)?;
-            self.push_operation(Operation::Compare {
-                destination: move_fits,
-                operator: ComparisonOperator::LessEqualUnsigned,
-                left: old_length,
-                right: capacity,
-            });
-            self.push_operation(Operation::Guard {
-                condition: move_fits,
-                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-            });
             // The grown list clones the old prefix (retaining every element)
             // rather than moving it out: the old list may be shared with a
             // callee or a stored copy, and its own drop releases the elements.
@@ -10588,6 +13618,16 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("list.length arguments"));
         };
         let object = self.lower_expr(receiver)?;
+        if self.is_rooted_int_slice_view(object) {
+            let family = self.rooted_int_slice_family()?.signature;
+            let length = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadSharedSliceLength {
+                destination: length, owner: object, family,
+            }));
+            let result = self.fresh(ValueType::Int)?;
+            self.push_operation(Operation::WidenSize { destination: result, value: length });
+            return Ok(result);
+        }
         if let Some(family) = self.owner_list_family(object).map(|family| family.signature) {
             let length = self.owner_list_length(object, family)?;
             let result = self.fresh(ValueType::Int)?;
@@ -10803,15 +13843,202 @@ impl FunctionLowerer<'_> {
         Ok(value)
     }
 
+    fn checked_rooted_view_fact(
+        &self,
+        expression: &Expr,
+    ) -> Result<CheckedViewFact, CanonicalLoweringError> {
+        let facts = self.view_facts.ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view formation has no retained checked view facts".to_string(),
+            )
+        })?;
+        facts.view_for(expression).cloned().ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedViewFacts(
+                "immutable view formation is missing its exact checked root/projection fact".to_string(),
+            )
+        })
+    }
+
+    fn legacy_loan_facts(&self) -> Result<&LoanFacts, CanonicalLoweringError> {
+        self.loan_facts.ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedLoanFacts(
+                "legacy write-back path reached a canonical rooted-view module without loan facts".to_string(),
+            )
+        })
+    }
+
+    fn lower_rooted_view(
+        &mut self,
+        expression: &Expr,
+        operand: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let fact = self.checked_rooted_view_fact(expression)?;
+        let admitted_payload = matches!(fact.payload(), Ty::Int)
+            || is_checked_rooted_int_slice_payload(fact.payload());
+        if !admitted_payload {
+            return Err(CanonicalLoweringError::UnsupportedExpression(
+                "rooted view payload is outside the canonical Int carrier",
+            ));
+        }
+        let root = *self.bindings.get(fact.place().root()).ok_or_else(|| {
+            CanonicalLoweringError::InvalidCheckedViewFacts(format!(
+                "immutable view fact root `{}` is not a live lowering binding",
+                fact.place().root(),
+            ))
+        })?;
+        match fact.place().steps() {
+            [] => {
+                if self.values.get(&root) != Some(&ValueType::Int) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "whole immutable Int view fact does not name an Int root".to_string(),
+                    ));
+                }
+                self.materialize_scalar_reference(root)
+            }
+            [CheckedPlaceStep::Index(index)] => {
+                let Expr::Index { index: source_index, .. } = operand else {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact static projection does not match its source form".to_string(),
+                    ));
+                };
+                if !matches!(source_index.as_ref(), Expr::Int(value) if value == index) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact static index does not match its retained source node".to_string(),
+                    ));
+                }
+                let index = self.push_const_int(*index)?;
+                self.materialize_checked_list_int_view(root, index)
+            }
+            [CheckedPlaceStep::DynamicIndex] => {
+                let Expr::Index { index, .. } = operand else {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact dynamic projection does not match its source form".to_string(),
+                    ));
+                };
+                if let Expr::Range { lo, hi, inclusive } = index.as_ref() {
+                    let dynamic = fact.dynamic_range().ok_or_else(|| {
+                        CanonicalLoweringError::InvalidCheckedViewFacts(
+                            "immutable view fact dynamic range lacks its exact endpoint identities".to_string(),
+                        )
+                    })?;
+                    if !dynamic.matches(lo, hi, *inclusive) {
+                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                            "immutable view fact dynamic range does not match its retained source nodes".to_string(),
+                        ));
+                    }
+                    if !is_checked_rooted_int_slice_payload(fact.payload()) {
+                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                            "dynamic range formation does not produce a rooted Int slice".to_string(),
+                        ));
+                    }
+                    if *inclusive {
+                        return Err(CanonicalLoweringError::UnsupportedExpression(
+                            "inclusive rooted slice endpoints are outside the canonical v1 carrier",
+                        ));
+                    }
+                    let start_int = self.lower_expr(lo)?;
+                    let end_int = self.lower_expr(hi)?;
+                    if self.values[&start_int] != ValueType::Int || self.values[&end_int] != ValueType::Int {
+                        return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                            "dynamic rooted slice endpoints are not Int".to_string(),
+                        ));
+                    }
+                    let start = self.fresh(ValueType::Size)?;
+                    self.push_operation(Operation::NarrowSize { destination: start, value: start_int });
+                    let end = self.fresh(ValueType::Size)?;
+                    self.push_operation(Operation::NarrowSize { destination: end, value: end_int });
+                    return self.materialize_checked_list_int_slice(root, start, end);
+                }
+                let dynamic = fact.dynamic_element().ok_or_else(|| {
+                    CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact dynamic projection lacks its exact index identity".to_string(),
+                    )
+                })?;
+                if !dynamic.matches(index) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable view fact dynamic index does not match its retained source node".to_string(),
+                    ));
+                }
+                let index = self.lower_expr(index)?;
+                self.materialize_checked_list_int_view(root, index)
+            }
+            [CheckedPlaceStep::Range { lo, hi, inclusive }] => {
+                let Expr::Index { index, .. } = operand else {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable slice fact static projection does not match its source form".to_string(),
+                    ));
+                };
+                let Expr::Range { lo: source_lo, hi: source_hi, inclusive: source_inclusive } = index.as_ref() else {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable slice fact static projection is not a range".to_string(),
+                    ));
+                };
+                if !matches!((source_lo.as_ref(), source_hi.as_ref()), (Expr::Int(actual_lo), Expr::Int(actual_hi)) if actual_lo == lo && actual_hi == hi)
+                    || source_inclusive != inclusive
+                {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "immutable slice fact static endpoints do not match retained source".to_string(),
+                    ));
+                }
+                if !is_checked_rooted_int_slice_payload(fact.payload()) {
+                    return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
+                        "static range formation does not produce a rooted Int slice".to_string(),
+                    ));
+                }
+                if *inclusive {
+                    return Err(CanonicalLoweringError::UnsupportedExpression(
+                        "inclusive rooted slice endpoints are outside the canonical v1 carrier",
+                    ));
+                }
+                let start = u64::try_from(*lo).map_err(|_| CanonicalLoweringError::InvalidCheckedViewFacts(
+                    "rooted slice start is negative".to_string(),
+                ))?;
+                let end = u64::try_from(*hi).map_err(|_| CanonicalLoweringError::InvalidCheckedViewFacts(
+                    "rooted slice end is negative".to_string(),
+                ))?;
+                let start = self.push_const_size(start)?;
+                let end = self.push_const_size(end)?;
+                self.materialize_checked_list_int_slice(root, start, end)
+            }
+            _ => Err(CanonicalLoweringError::UnsupportedExpression(
+                "rooted view projection is outside the canonical v1 carrier",
+            )),
+        }
+    }
+
     fn lower_unary(
         &mut self,
+        expression: &Expr,
         operator: UnOp,
         operand: &Expr,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if operator == UnOp::Borrow
-            && let Expr::Index { base, index } = operand
+        if operator == UnOp::Borrow {
+            return self.lower_rooted_view(expression, operand);
+        }
+        let direct_mut_root = operator == UnOp::BorrowMut && matches!(operand, Expr::Var(_));
+        let direct_mut_projected_field = operator == UnOp::BorrowMut
+            && self.authenticated_direct_projected_exclusive_handle_open(operand)?;
+        let returned_mut_projected_field = operator == UnOp::BorrowMut
+            && self.authenticated_returned_projected_exclusive_handle_open(operand)?;
+        let borrowed_mut_source = (operator == UnOp::BorrowMut)
+            .then(|| self.expression_type(operand))
+            .transpose()?;
+        // `&mut root.fixed_int` returns the retained root token.  The result
+        // contract's checked fixed projection is reattached at the call site;
+        // do not materialize a scalar copy or an address derived from layout.
+        if returned_mut_projected_field
+            && borrowed_mut_source.as_ref().is_some_and(is_direct_shared_int)
+            && let Expr::Field { base, .. } = operand
+            && let Expr::Var(owner) = base.as_ref()
+            && let Some(field) = self.returned_exclusive_projected_aliases.get(owner).copied()
         {
-            return self.lower_projected_shared_int_reference(base, index);
+            let root = self.lower_expr(base)?;
+            // Keep the selected field in the checked physical history.  The
+            // result is still the retained root token (there is no scalar
+            // address in Canonical WIR), but SafeWIR derives the projection
+            // only from this exact read followed by the root clone below.
+            let _ = self.load_record_field(root, field, ValueType::Int)?;
+            return self.clone_reference_token(root);
         }
         let operand = self.lower_expr(operand)?;
         let value_type = self.values[&operand];
@@ -10882,6 +14109,22 @@ impl FunctionLowerer<'_> {
             (UnOp::Borrow, ValueType::Int) => self.materialize_scalar_reference(operand),
             (UnOp::Borrow, ValueType::Ref(_)) => self.clone_reference_token(operand),
             (UnOp::Borrow, _) => Err(CanonicalLoweringError::UnsupportedExpression("shared borrow operand")),
+            // A direct `&mut String` is a checked-exclusive handle to the
+            // existing managed object.  The handle needs its own token while
+            // the caller's owner remains live, exactly like a shared direct
+            // object borrow; the source loan facts, not this representation,
+            // establish the exclusive access relation. Scalar cells and all
+            // projected places except the separately retained-fact-authenticated
+            // fixed-field local carrier below remain rejected.
+            (UnOp::BorrowMut, ValueType::Ref(_))
+                if direct_mut_root
+                    && borrowed_mut_source.as_ref().is_some_and(|source| is_direct_exclusive_owned_object(source)) =>
+            {
+                self.clone_reference_token(operand)
+            }
+            (UnOp::BorrowMut, ValueType::Ref(_)) if direct_mut_projected_field || returned_mut_projected_field => {
+                self.clone_reference_token(operand)
+            }
             (UnOp::BorrowMut, _) => {
                 Err(CanonicalLoweringError::UnsupportedExpression("mutable borrow"))
             }
@@ -11214,6 +14457,22 @@ impl FunctionLowerer<'_> {
         total: ValueId,
         layout: witchy_wir::layout::LayoutId,
     ) -> Result<(), CanonicalLoweringError> {
+        // CopyBytes requires a current counted source extent, not merely a
+        // scalar lane preserved through a shared join. Refresh the source
+        // header before deriving the range guard so a HeaderPrefix meet cannot
+        // authorize this copy through stale count/capacity facts.
+        self.invalidate_dynamic_count(source);
+        self.ensure_string_extent(source)?;
+        let source_length = self.string_length_of(source)?;
+        let source_in_bounds = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            length,
+            source_length,
+        )?;
+        self.push_guard(
+            source_in_bounds,
+            witchy_wir::canonical_safewir::GuardKind::Bounds,
+        );
         let in_bounds = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::Compare {
             destination: in_bounds,
@@ -13761,7 +17020,25 @@ impl FunctionLowerer<'_> {
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
         self.push_operation(Operation::UpdateCount { object, count: total });
+        // `UpdateCount` advances the owner's generation even when the
+        // allocation begins at its final logical length. Re-establish the
+        // destination proof after that transition: the earlier seed guard
+        // described only a prospective allocation, not this live owner.
+        let first_seed_is_current = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            digit_table_count,
+            render_limit,
+        )?;
+        self.push_guard(first_seed_is_current, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_byte_copy(object, zero, digits, zero, digit_table_count, layout);
+        // The first seed write advances the generation again, so the second
+        // half must have its own fresh capacity proof.
+        let second_seed_is_current = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            seeded,
+            render_limit,
+        )?;
+        self.push_guard(second_seed_is_current, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_byte_copy(
             object,
             digit_table_count,
@@ -13772,47 +17049,122 @@ impl FunctionLowerer<'_> {
         );
 
         // Sign: copy `sign_len` bytes (zero or one) of `-` to the front.
+        let rendered_length_is_current = self.push_compare(
+            ComparisonOperator::LessEqualUnsigned,
+            total,
+            render_limit,
+        )?;
+        self.push_guard(rendered_length_is_current, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let sign_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, sign_len, total)?;
         self.push_guard(sign_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let sign_in_table = self.push_compare(ComparisonOperator::LessEqualUnsigned, sign_len, minus_count)?;
         self.push_guard(sign_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_byte_copy(object, zero, minus, zero, sign_len, layout);
 
-        // Loop B: write digits from the end down to the sign.
-        let write_state = [ValueType::Int, ValueType::Size];
-        let write_header = self.new_block(&write_state)?;
-        let write_body = self.new_block(&write_state)?;
-        let write_exit = self.new_block(&[])?;
-        let start_position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, zero, OverflowBehavior::Wrap)?;
-        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![value, start_position] })?;
-        let header_values = self.block_parameter_values(write_header);
-        self.current = write_header;
-        let more_positions = self.push_compare(ComparisonOperator::LessUnsigned, sign_len, header_values[1])?;
-        self.finish_current(Terminator::BranchIf {
-            condition: more_positions,
-            then_target: write_body,
-            then_arguments: header_values.clone(),
-            else_target: write_exit,
-            else_arguments: Vec::new(),
-        })?;
-        let body_values = self.block_parameter_values(write_body);
-        self.current = write_body;
-        let rest = body_values[0];
-        let position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, body_values[1], one, OverflowBehavior::Wrap)?;
-        let remainder = self.push_arithmetic(ValueType::Int, ArithmeticOperator::RemainderSigned, rest, ten_int, OverflowBehavior::Trap)?;
-        let digit_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, remainder, sign, OverflowBehavior::Wrap)?;
-        let digit = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int });
-        let digit_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, digit, one, OverflowBehavior::Trap)?;
-        let digit_in_table = self.push_compare(ComparisonOperator::LessEqualUnsigned, digit_end, digit_table_count)?;
-        self.push_guard(digit_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        let position_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, position, one, OverflowBehavior::Trap)?;
-        let position_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, position_end, total)?;
-        self.push_guard(position_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.push_byte_copy(object, position, digits, digit, one, layout);
-        let next_rest = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, rest, ten_int, OverflowBehavior::Trap)?;
-        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![next_rest, position] })?;
-        self.current = write_exit;
+        // Emit the at-most-19 decimal writes directly. A back edge that
+        // carries a mutable owner would meet distinct owner generations, and
+        // must remain invalid: every write below instead observes, proves,
+        // and then advances one linear owner generation.
+        let render_slots = self.push_const_size(MAX_RENDERED_INT_BYTES)?;
+        let all_slot_ends = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Multiply,
+            digit_count,
+            render_slots,
+            OverflowBehavior::Wrap,
+        )?;
+        let last_slot_end = self.push_arithmetic(
+            ValueType::Size,
+            ArithmeticOperator::Subtract,
+            all_slot_ends,
+            one,
+            OverflowBehavior::Wrap,
+        )?;
+        for exponent in (0..19_u32).rev() {
+            let exponent_size = self.push_const_size(u64::from(exponent))?;
+            // `20 * digit_count - 1 - exponent` is always non-negative.
+            // Its remainder gives a valid digit slot even for leading writes;
+            // those writes happen first and the actual decimal digits replace
+            // every logical slot afterward.
+            let slot_numerator = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::Subtract,
+                last_slot_end,
+                exponent_size,
+                OverflowBehavior::Wrap,
+            )?;
+            let digit_slot = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::RemainderUnsigned,
+                slot_numerator,
+                digit_count,
+                OverflowBehavior::Trap,
+            )?;
+            let position = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::Add,
+                sign_len,
+                digit_slot,
+                OverflowBehavior::Trap,
+            )?;
+            let divisor = self.push_const_int(10_i64.pow(exponent))?;
+            let quotient = self.push_arithmetic(
+                ValueType::Int,
+                ArithmeticOperator::DivideSigned,
+                value,
+                divisor,
+                OverflowBehavior::Trap,
+            )?;
+            let remainder = self.push_arithmetic(
+                ValueType::Int,
+                ArithmeticOperator::RemainderSigned,
+                quotient,
+                ten_int,
+                OverflowBehavior::Trap,
+            )?;
+            let digit_int = self.push_arithmetic(
+                ValueType::Int,
+                ArithmeticOperator::Multiply,
+                remainder,
+                sign,
+                OverflowBehavior::Wrap,
+            )?;
+            let digit = self.fresh(ValueType::Size)?;
+            self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int });
+            let digit_end = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::Add,
+                digit,
+                one,
+                OverflowBehavior::Trap,
+            )?;
+            let digit_in_table = self.push_compare(
+                ComparisonOperator::LessEqualUnsigned,
+                digit_end,
+                digit_table_count,
+            )?;
+            self.push_guard(digit_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            let position_end = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::Add,
+                position,
+                one,
+                OverflowBehavior::Trap,
+            )?;
+            let position_fits = self.push_compare(
+                ComparisonOperator::LessEqualUnsigned,
+                position_end,
+                total,
+            )?;
+            self.push_guard(position_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            let capacity_is_current = self.push_compare(
+                ComparisonOperator::LessEqualUnsigned,
+                total,
+                render_limit,
+            )?;
+            self.push_guard(capacity_is_current, witchy_wir::canonical_safewir::GuardKind::Bounds);
+            self.push_byte_copy(object, position, digits, digit, one, layout);
+        }
 
         self.string_lengths.insert(object, total);
         self.string_capacities.insert(object, render_limit);
@@ -13952,31 +17304,63 @@ impl FunctionLowerer<'_> {
         right_start: ValueId,
         length: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        let facts = self.snapshot_facts();
         let layout = self.string_layout_id()?;
-        let left_length = self.string_length_of(left)?;
-        let right_length = self.string_length_of(right)?;
+        // This comparison only borrows its operands, but the counted shared
+        // phi owns a token on every edge.  Give the loop its own retained
+        // token so its exit can release it without consuming the caller's
+        // dominator root. `CloneRef` preserves the allocation identity; this
+        // is deliberately not a storage/string clone.
+        let (original_left, original_right) = (left, right);
+        let left = self.clone_reference_token(left)?;
+        let right = self.clone_reference_token(right)?;
+        self.refresh_disjunctive_string_extent(left)?;
+        self.refresh_disjunctive_string_extent(right)?;
+        let (left_length, left_capacity) = self.tracked_lanes(left).ok_or(CanonicalLoweringError::UnsupportedExpression("range-equal left extent"))?;
+        let (right_length, right_capacity) = self.tracked_lanes(right).ok_or(CanonicalLoweringError::UnsupportedExpression("range-equal right extent"))?;
+        // The edge renamer needs distinct scalar ids even when a String's
+        // physical header proves both lanes. Otherwise the second parameter
+        // overwrites the count rename and the shared-counted phi loses the
+        // exact guard's count lane.
+        let (left_length, left_capacity) = self.split_lanes(left_length, left_capacity)?;
+        let (right_length, right_capacity) = self.split_lanes(right_length, right_capacity)?;
         let equal = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::ConstBool { destination: equal, value: true });
         let differ = self.fresh(ValueType::Bool)?;
         self.push_operation(Operation::ConstBool { destination: differ, value: false });
         let zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
-        let header = self.new_block(&[ValueType::Size])?;
-        let body = self.new_block(&[ValueType::Size])?;
+        let root_lanes = [
+            (ValueType::Size, None),
+            (self.values[&left], Some(Ownership::Shared)), (ValueType::Size, None), (ValueType::Size, None),
+            (self.values[&right], Some(Ownership::Shared)), (ValueType::Size, None), (ValueType::Size, None),
+        ];
+        let header = self.new_block_owned(&root_lanes)?;
+        let body = self.new_block_owned(&root_lanes)?;
         let exit = self.new_block(&[ValueType::Bool])?;
-        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
-        let cursor = self.block_parameter_values(header)[0];
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, left, left_length, left_capacity, right, right_length, right_capacity] })?;
+        let header_lanes = self.block_parameter_values(header);
+        let cursor = header_lanes[0];
         self.current = header;
+        self.track_accumulator_lanes(&header_lanes[1..4]);
+        self.track_accumulator_lanes(&header_lanes[4..7]);
         let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, length)?;
         self.finish_current(Terminator::BranchIf {
             condition: more,
             then_target: body,
-            then_arguments: vec![cursor],
+            then_arguments: header_lanes.clone(),
             else_target: exit,
             else_arguments: vec![equal],
         })?;
-        let cursor = self.block_parameter_values(body)[0];
+        let body_lanes = self.block_parameter_values(body);
+        let cursor = body_lanes[0];
         self.current = body;
+        let left = body_lanes[1];
+        let right = body_lanes[4];
+        self.track_accumulator_lanes(&body_lanes[1..4]);
+        self.track_accumulator_lanes(&body_lanes[4..7]);
+        let left_length = body_lanes[2];
+        let right_length = body_lanes[5];
         let left_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, left_start, cursor, OverflowBehavior::Wrap)?;
         let right_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, right_start, cursor, OverflowBehavior::Wrap)?;
         let left_in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, left_index, left_length)?;
@@ -13990,11 +17374,21 @@ impl FunctionLowerer<'_> {
         self.finish_current(Terminator::BranchIf {
             condition: same,
             then_target: header,
-            then_arguments: vec![next],
+            then_arguments: vec![next, left, body_lanes[2], body_lanes[3], right, body_lanes[5], body_lanes[6]],
             else_target: exit,
             else_arguments: vec![differ],
         })?;
         self.current = exit;
+        // The retained loop roots and their lanes are local to the comparison.
+        // Do not let a header load in this control-flow region become a cached
+        // extent fact for a sibling/outer continuation.
+        self.restore_facts(facts, exit);
+        // The clone-root loop can rebase a shared owner generation. Its
+        // predecessor header observations are not continuation authority for
+        // either original root; force the next use to load and explicitly
+        // reauthenticate the current header instead of reviving that cache.
+        self.invalidate_dynamic_count(original_left);
+        self.invalidate_dynamic_count(original_right);
         Ok(self.block_parameter_values(exit)[0])
     }
 
@@ -14194,6 +17588,11 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = found;
+        // `lower_string_range_equal` enters a counted shared-root loop. The
+        // found continuation must establish its own current String header
+        // before deriving the source slice it copies.
+        self.refresh_disjunctive_string_extent(object)?;
+        let total = self.string_length_of(object)?;
         let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, cursor)?;
         self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let piece_length = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, cursor, start, OverflowBehavior::Wrap)?;
@@ -14211,6 +17610,12 @@ impl FunctionLowerer<'_> {
         self.current = tail;
         let tail_values = self.block_parameter_values(tail);
         self.track_accumulator_lanes(&tail_values);
+        // The tail joins the pre-scan edge with loop-header exits.  Neither
+        // predecessor's cached String header lane is current authority here;
+        // authenticate this root in the continuation before forming the tail
+        // slice range.
+        self.refresh_disjunctive_string_extent(object)?;
+        let total = self.string_length_of(object)?;
         let start = tail_values[3];
         let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, total)?;
         self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
@@ -14331,6 +17736,11 @@ impl FunctionLowerer<'_> {
         let separator_length = self.string_length_of(separator)?;
         let zero = self.push_const_size(0)?;
         let empty_separator = self.push_compare(ComparisonOperator::Equal, separator_length, zero)?;
+        // Each arm may authenticate headers that exist only on its own CFG
+        // path. Do not let those cached SSA values escape into the sibling
+        // arm: the scan loop has backedges that do not pass through the empty
+        // separator path.
+        let facts = self.snapshot_facts();
         let boundaries = self.new_block(&[])?;
         let pieces = self.new_block(&[])?;
         let join = self.new_block_owned(&[(ValueType::Ref(list_layout_id), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
@@ -14355,10 +17765,12 @@ impl FunctionLowerer<'_> {
         let (lanes, _) = self.accumulator_lanes(list)?;
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
         self.current = pieces;
+        self.restore_snapshot(facts.clone());
         let list = self.push_empty_value(&list_type)?;
         let list = self.lower_match_scan_loop(object, separator, list, |this, lanes, piece, _| push(this, lanes, piece))?;
         let (lanes, _) = self.accumulator_lanes(list)?;
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
         self.current = join;
         let join_values = self.block_parameter_values(join);
         self.track_accumulator_lanes(&join_values);
@@ -14374,6 +17786,10 @@ impl FunctionLowerer<'_> {
         let to_length = self.string_length_of(to)?;
         let zero = self.push_const_size(0)?;
         let empty_from = self.push_compare(ComparisonOperator::Equal, from_length, zero)?;
+        // `boundaries` and `pieces` are distinct predecessors of `join`.
+        // Header facts created in the first arm are not SSA definitions for
+        // the second arm or its scan-loop backedges.
+        let facts = self.snapshot_facts();
         let boundaries = self.new_block(&[])?;
         let pieces = self.new_block(&[])?;
         let join = self.new_block_owned(&[(ValueType::Ref(layout), Some(Ownership::Unique)), (ValueType::Size, None), (ValueType::Size, None)])?;
@@ -14398,10 +17814,12 @@ impl FunctionLowerer<'_> {
         let (lanes, _) = self.accumulator_lanes(out)?;
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
         self.current = pieces;
+        self.restore_snapshot(facts.clone());
         let out = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
         let out = self.lower_match_scan_loop(object, from, out, append)?;
         let (lanes, _) = self.accumulator_lanes(out)?;
         self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
         self.current = join;
         let join_values = self.block_parameter_values(join);
         self.track_accumulator_lanes(&join_values);
@@ -14409,6 +17827,13 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_string_find(&mut self, object: ValueId, needle: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        // This intrinsic builds a diamond and two scan loops by hand.  Its
+        // internal header loads are path-local, so they cannot become facts
+        // visible at `exit`: a later enclosing join might otherwise reuse a
+        // load from the found arm on the direct-miss edge.  `find` is
+        // read-only for both inputs, hence the incoming facts are precisely
+        // the checked facts that dominate every path through its exit.
+        let facts = self.snapshot_facts();
         let length = self.string_length_of(object)?;
         let needle_length = self.string_length_of(needle)?;
         let missing = self.push_const_int(-1)?;
@@ -14458,6 +17883,7 @@ impl FunctionLowerer<'_> {
         self.current = advance;
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
         self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
+        self.restore_facts(facts, exit);
         self.current = exit;
         Ok(self.block_parameter_values(exit)[0])
     }
@@ -15199,8 +18625,9 @@ impl FunctionLowerer<'_> {
     }
 
     /// `destination[start..start+length] = source[source_start..+length]` over
-    /// raw bytes. The caller has already pushed the guards the checker's range
-    /// rule needs for both slices.
+    /// raw bytes. The caller establishes the source range; when this helper
+    /// knows the destination's live capacity, it authenticates that range on
+    /// the current owner generation immediately before the copy.
     fn push_byte_copy(
         &mut self,
         destination: ValueId,
@@ -15210,6 +18637,18 @@ impl FunctionLowerer<'_> {
         length: ValueId,
         layout: witchy_wir::layout::LayoutId,
     ) {
+        if let Some((_, capacity)) = self.tracked_lanes(destination) {
+            let end = self.push_arithmetic(
+                ValueType::Size,
+                ArithmeticOperator::Add,
+                start,
+                length,
+                OverflowBehavior::Trap,
+            ).expect("byte-copy end must fit the canonical value space");
+            let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, end, capacity)
+                .expect("byte-copy capacity comparison must lower");
+            self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        }
         self.push_operation(Operation::CopyBytes {
             destination: witchy_wir::canonical_safewir::Place::projected(
                 destination,
@@ -15256,6 +18695,7 @@ fn scalar_type(source: &Type) -> Result<ValueType, CanonicalLoweringError> {
             "Nil" | "Unit" => Ok(ValueType::Unit),
             _ => Err(CanonicalLoweringError::UnsupportedType(source.clone())),
         },
+        Type::Tuple(items) if items.is_empty() => Ok(ValueType::Unit),
         _ => Err(CanonicalLoweringError::UnsupportedType(source.clone())),
     }
 }
@@ -15986,6 +19426,7 @@ fn list_layout(
         Type::Named(element, args) if element == "Float" && args.is_empty() => ValueType::Float,
         Type::Named(element, args) if element == "Bool" && args.is_empty() => ValueType::Bool,
         Type::Named(element, args) if matches!(element.as_str(), "Nil" | "Unit") && args.is_empty() => ValueType::Unit,
+        Type::Tuple(items) if items.is_empty() => ValueType::Unit,
         Type::Named(element, args) if matches!(element.as_str(), "String" | "Bytes") && args.is_empty() => {
             ValueType::Ref(string_layout(&Type::Named("String".into(), Vec::new()), layout_bundle, layouts)?)
         }
@@ -16119,6 +19560,16 @@ const fn is_unit(value_type: ValueType) -> bool {
     matches!(value_type, ValueType::Unit)
 }
 
+/// Inline scalar lanes carry no addressable storage or ownership token. Their
+/// source-level `unique` fact is checked at the type boundary and therefore
+/// has no distinct canonical ABI representation.
+const fn is_inline_scalar(value_type: ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128
+    )
+}
+
 fn canonical_tail_sites(
     manifest: &ProperTailSiteManifest,
     module: &witchy_syntax::ast::Module,
@@ -16247,17 +19698,67 @@ fn expr_in_tail_path<'a>(expression: &'a Expr, path: &[ProperTailPathStep]) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{lower_typed_module, CanonicalLoweringError, Type};
-    use witchy_syntax::ast::{Convention, Item};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::{lower_typed_module, promote_fresh_write_back_result_contracts, require_region_promotion_contract, CanonicalLoweringError, Type};
+    use witchy_types::typeck::{RegionMustDisposition, RegionMustTransfer, RegionPackedLayoutDescriptor, RegionPromotionFact};
+    use witchy_syntax::ast::{Expr, Item, TypeQual};
     use witchy_syntax::parser::parse_module;
     use witchy_wir::canonical_safewir::{
-        check_initial, check_initial_with_witness, validate_final, CallArgument, CanonicalModule, Extent,
-        GuardKind, LoadTransfer, LoweredModuleParts, Operation,
-        Ownership, ParameterOwnership, Projection, Terminator, ValueType,
+        check_initial, check_initial_with_witness, validate_final, BasicBlock, BlockId, CallArgument, CallableContract,
+        CanonicalModule, Extent, Function, FunctionId, FunctionSignature, FunctionSignatureId, GuardKind,
+        LoadTransfer, LoweredModuleParts, Operation,
+        MemoryEffect, Ownership, ParameterContract, ParameterOwnership, Projection, ResultContract, Terminator, ValueType,
+        ValueId,
     };
+    use witchy_wir::canonical_safewir::closure_owner_contract::{OwnerFamilySource, OwnerOperation};
     use witchy_wir::layout::{ClosedTypeResolver, LayoutBundle, LayoutInterner, LayoutKind, PointerSlot, RcHeader, ResolvedNamed, ScalarKind};
 
     struct ListResolver;
+
+    #[test]
+    fn result_unique_ok_carrier_accepts_only_a_direct_collection_root() {
+        let int = || Type::Named("Int".into(), Vec::new());
+        let string = || Type::Named("String".into(), Vec::new());
+        let unique_list = Type::Qualified(
+            TypeQual::Unique,
+            Box::new(Type::Named("List".into(), vec![int()])),
+        );
+        let exact = Type::Named("Result".into(), vec![unique_list, string()]);
+        assert!(witchy_syntax::ast::is_direct_unique_result_ok_collection(&exact));
+
+        let unique_dict = Type::Qualified(
+            TypeQual::Unique,
+            Box::new(Type::Named("Dict".into(), vec![int(), string()])),
+        );
+        let exact_dict = Type::Named("Result".into(), vec![unique_dict, string()]);
+        assert!(witchy_syntax::ast::is_direct_unique_result_ok_collection(&exact_dict));
+
+        let nested_unique = Type::Qualified(
+            TypeQual::Unique,
+            Box::new(Type::Named(
+                "List".into(),
+                vec![Type::Qualified(TypeQual::Unique, Box::new(int()))],
+            )),
+        );
+        let nested = Type::Named("Result".into(), vec![nested_unique, string()]);
+        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&nested));
+
+        let arbitrary = Type::Named(
+            "Result".into(),
+            vec![Type::Qualified(TypeQual::Unique, Box::new(Type::Tuple(vec![int()]))), string()],
+        );
+        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&arbitrary));
+
+        let qualified_error = Type::Named(
+            "Result".into(),
+            vec![
+                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()]))),
+                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()])))
+            ],
+        );
+        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&qualified_error));
+    }
 
     #[test]
     fn compiler_doc_dispatch_uses_exact_registered_intrinsics() {
@@ -16327,6 +19828,456 @@ mod tests {
         let layouts = crate::canonical_layouts::derive_layout_bundle(canonical)
             .expect("derive canonical layouts");
         lower_typed_module(canonical, layouts).expect("lower canonical SafeWIR")
+    }
+
+    fn rooted_view_aggregate_carrier(source: &str, name: &str) -> bool {
+        let module = witchy_syntax::parser::parse_module(source).expect("parse aggregate fixture");
+        let definitions = witchy_types::canonical_aggregates::type_definitions(&module);
+        super::is_direct_rooted_int_view_aggregate_carrier(
+            &Type::Named(name.into(), Vec::new()),
+            &definitions,
+        )
+    }
+
+    #[test]
+    fn rooted_view_aggregate_carrier_is_shallow_and_rejects_decoy_descendants() {
+        assert!(rooted_view_aggregate_carrier(
+            "type Holder:\n    value: &Int\n    count: Int\n",
+            "Holder",
+        ), "a direct &Int field may share an aggregate owner with scalar fields");
+
+        for (name, source) in [
+            (
+                "OptionDecoy",
+                "type OptionDecoy:\n    direct: &Int\n    hidden: Option(&Int)\n",
+            ),
+            (
+                "NominalDecoy",
+                "type Inner:\n    value: &Int\n\ntype NominalDecoy:\n    direct: &Int\n    hidden: Inner\n",
+            ),
+            (
+                "CallableDecoy",
+                "type CallableDecoy:\n    direct: &Int\n    hidden: fn() -> &Int\n",
+            ),
+            (
+                "GenericDecoy",
+                "type Box(a):\n    value: a\n\ntype GenericDecoy:\n    direct: &Int\n    hidden: Box(&Int)\n",
+            ),
+        ] {
+            assert!(
+                !rooted_view_aggregate_carrier(source, name),
+                "a direct field must not authorize a nested rooted view in {name}",
+            );
+        }
+    }
+
+    #[test]
+    fn rooted_view_parameter_and_result_remain_opaque_owner_transport() {
+        let candidate = lower_with_derived_layouts(
+            "fn relay(view: &Int) -> &Int:\n    view\n\nfn main() -> Int:\n    let value = 7\n    let view = relay(&value)\n    let _ = view\n    0\n",
+        );
+        let relay = candidate.functions().iter().find(|function| function.id == FunctionId::new(0))
+            .expect("relay function");
+        let signature = candidate.signatures().iter().find(|signature| signature.id == relay.signature)
+            .expect("relay signature");
+        assert!(matches!(signature.parameters.as_slice(), [ValueType::Gc(_)]));
+        assert!(matches!(signature.results.as_slice(), [ValueType::Gc(_)]));
+        assert!(matches!(signature.contract.parameters.as_slice(), [ParameterContract {
+            value_type: ValueType::Gc(_), ownership: ParameterOwnership::Shared
+        }]));
+        assert!(matches!(signature.contract.results.as_slice(), [ResultContract::Value(ValueType::Gc(_))]),
+            "a rooted view result must carry its opaque root-plus-projection token, never a Ref alias");
+    }
+
+    #[test]
+    fn option_of_rooted_int_view_uses_opaque_aggregate_owner() {
+        let candidate = lower_with_derived_layouts(
+            "fn select(present: Bool, value: &Int) -> Option(&Int):\n    if present: Some(value) else: None\n\nfn main() -> Int:\n    let value = 79\n    let selected = select(true, &value)\n    match selected:\n        Some(view) -> *view\n        None -> 0\n",
+        );
+        check_initial(candidate).expect("Option(&Int) stays in the authenticated opaque aggregate family");
+    }
+
+    #[test]
+    fn option_of_rooted_int_view_rejects_erased_owner_identity() {
+        let checked = checked("fn select(present: Bool, value: &Int) -> Option(&Int):\n    if present: Some(value) else: None\n");
+        let source = checked.canonical_source().expect("source authority");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
+        let candidate = lower_typed_module(source, layouts).expect("lower Option rooted-view carrier")
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        check_initial_with_witness(candidate.clone(), source).expect("source-bound Option owner");
+
+        let mut families = candidate.owner_families().to_vec();
+        let family = families.iter_mut().find(|family| matches!(
+            family.source,
+            OwnerFamilySource::Aggregate(ref aggregate)
+                if super::is_direct_rooted_int_view_aggregate_carrier(aggregate, &BTreeMap::new())
+        )).expect("Option rooted-view aggregate owner");
+        family.source = OwnerFamilySource::Aggregate(Type::Named(
+            "Option".into(),
+            vec![Type::Named("Int".into(), Vec::new())],
+        ));
+        assert!(check_initial_with_witness(candidate.with_owner_families(families), source).is_err(),
+            "erasing View from the owner source identity must be refused");
+    }
+
+    #[test]
+    fn option_of_rooted_int_view_some_none_match_executes_with_balanced_owners() {
+        let checked = checked("fn select(present: Bool, value: &Int) -> Option(&Int):\n    if present: Some(value) else: None\n\nfn read(option: Option(&Int)) -> Int:\n    match option:\n        Some(view) -> *view\n        None -> 0\n\nfn main() -> Int:\n    let value = 79\n    let some = select(true, &value)\n    let none = select(false, &value)\n    read(some) * 10 + read(none)\n");
+        let source = checked.canonical_source().expect("source authority");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
+        let candidate = lower_typed_module(source, layouts).expect("lower Option rooted-view carrier")
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let initial = check_initial_with_witness(candidate, source).expect("check ownership and joins");
+        let validated = validate_final(initial, source).expect("final validation");
+        witchy_wir::admit_canonical_with_observer(validated, source, |validated, artifact| {
+            let export = artifact.entry().expect("admitted entry").export();
+            let main = FunctionId::new(export.strip_prefix('f').expect("canonical function export")
+                .parse().expect("canonical entry function id"));
+            let oracle = witchy_wir::canonical_interpreter::interpret_program(
+                validated,
+                main,
+                Vec::new(),
+                witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+            ).expect("execute independent canonical semantics");
+            assert_eq!(oracle.results, vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(790)]);
+            assert_eq!(oracle.leaked_objects, 0, "all Option owner tokens must be released");
+        }).expect("encode and admit exact checked artifact");
+    }
+
+    #[test]
+    fn option_of_rooted_int_view_var_parameter_fails_closed() {
+        let checked = checked("fn reject(var option: Option(&Int)) -> Int:\n    0\n");
+        let source = checked.canonical_source().expect("source authority");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
+        let lowered = lower_typed_module(source, layouts);
+        assert!(matches!(
+            lowered,
+            Err(CanonicalLoweringError::UnsupportedExpression("opaque owner var parameter"))
+        ), "var Option(&Int) must not silently erase write-back: {lowered:?}");
+    }
+
+    #[test]
+    fn rooted_var_view_parameter_uses_an_opaque_carrier_write_back_lane() {
+        let candidate = lower_with_derived_layouts(
+            "fn replace(var slot: &Int):\n    ()\n",
+        );
+        let replace = candidate.functions().first().expect("replace function");
+        let signature = candidate.signatures().iter().find(|signature| signature.id == replace.signature)
+            .expect("replace signature");
+        assert!(matches!(signature.parameters.as_slice(), [ValueType::Gc(_)]));
+        assert!(matches!(signature.results.as_slice(), [ValueType::Gc(_)]));
+        assert!(matches!(signature.contract.parameters.as_slice(), [ParameterContract {
+            value_type: ValueType::Gc(_), ownership: ParameterOwnership::WriteBack
+        }]));
+        assert!(matches!(signature.contract.results.as_slice(), [ResultContract::Value(ValueType::Gc(_))]));
+        assert_eq!(signature.contract.parameter_effects.get(&0), Some(&vec![
+            MemoryEffect::Read,
+            MemoryEffect::Retain,
+            MemoryEffect::Release,
+            MemoryEffect::Write,
+        ]));
+    }
+
+    #[test]
+    fn rooted_list_element_view_retains_a_snapshot_root_across_push() {
+        let candidate = lower_with_derived_layouts(
+            "fn main() -> Int:\n    var values = [7]\n    let view = &values[0]\n    values.push(9)\n    return *view\n",
+        );
+        let main = candidate.functions().first().expect("main function");
+        assert!(main.blocks.iter().flat_map(|block| &block.operations).any(|operation| matches!(
+            operation,
+            Operation::ClosureOwner(OwnerOperation::Construct { .. })
+        )), "the element view must construct an authenticated root-plus-projection owner");
+        assert!(main.blocks.iter().flat_map(|block| &block.operations).any(|operation| matches!(
+            operation,
+            Operation::ClosureOwner(OwnerOperation::ReadSharedPlace { .. })
+        )), "dereference must use the authenticated shared-place reader, not a raw list address");
+        assert!(main.blocks.iter().flat_map(|block| &block.operations).any(|operation| matches!(
+            operation, Operation::Alloc { .. }
+        )), "list.push must allocate a replacement root while the view owns a cloned old root");
+    }
+
+    #[test]
+    fn static_data_census_drops_rooted_view_only_bounds_labels() {
+        let rooted_view = lower_with_derived_layouts(
+            "fn main() -> Int:\n    var values = [7]\n    let first = &values[0]\n    values.push(9)\n    let snapshot_value = *first\n    snapshot_value\n",
+        );
+        assert!(rooted_view.static_data_segments().is_empty(),
+            "a rooted view does not lower an ordinary bounds-diagnostic branch");
+        check_initial(rooted_view).expect("rooted CoW view candidate has no orphan static data");
+
+        // Near miss: an ordinary index does lower the bounds diagnostic and
+        // must retain its authenticated function-label segment.
+        let indexed_read = lower_with_derived_layouts(
+            "fn main() -> Int:\n    let values = [7]\n    values[0]\n",
+        );
+        assert_eq!(indexed_read.static_data_segments().len(), 1);
+        assert!(indexed_read.functions().iter()
+            .flat_map(|function| function.blocks.iter())
+            .flat_map(|block| block.operations.iter())
+            .any(|operation| matches!(operation, Operation::StaticData { data, .. }
+                if indexed_read.static_data_segments().iter().any(|segment| segment.id() == *data))));
+        check_initial(indexed_read).expect("ordinary bounds diagnostic retains its static label");
+    }
+
+    #[test]
+    fn unit_var_list_push_derives_a_reallocated_write_back_contract() {
+        let candidate = lower_with_derived_layouts(
+            "fn mutate_values(var xs: List(Int)):\n    xs.push(42)\n",
+        );
+        let function = candidate.functions().first().expect("mutate_values function");
+        let signature = candidate.signatures().iter().find(|signature| signature.id == function.signature)
+            .expect("mutate_values signature");
+        assert!(matches!(signature.contract.results.as_slice(), [ResultContract::ReallocatesParameter {
+            parameter: 0,
+            layout: _,
+        }]));
+    }
+
+    #[test]
+    fn named_adapter_rebinds_promoted_write_back_contract() {
+        let checked = checked(
+            "fn update(var xs: List(Int)):\n    xs.push(42)\n\nfn relay(var xs: List(Int)):\n    let apply = update\n    apply(xs)\n",
+        );
+        let source = checked.canonical_source().expect("source authority");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("source layouts");
+        let candidate = lower_typed_module(source, layouts).expect("lower named write-back adapter");
+        let binding = candidate.adapter_bindings().entries().first()
+            .expect("named function has an adapter binding");
+        let target = candidate.functions().iter().find(|function| function.id == binding.target())
+            .expect("adapter target function");
+        let adapter = candidate.functions().iter().find(|function| function.id == binding.adapter())
+            .expect("adapter function");
+        let target_signature = candidate.signatures().iter().find(|signature| signature.id == target.signature)
+            .expect("adapter target signature");
+        let adapter_signature = candidate.signatures().iter().find(|signature| signature.id == adapter.signature)
+            .expect("adapter signature");
+        assert!(matches!(target_signature.contract.results.as_slice(), [ResultContract::ReallocatesParameter {
+            parameter: 0,
+            layout: _,
+        }]));
+        assert!(matches!(adapter_signature.contract.results.as_slice(), [ResultContract::ReallocatesParameter {
+            parameter: 1,
+            layout: _,
+        }]), "the closure environment is parameter zero");
+        for family in candidate.owner_families().iter().filter(|family| {
+            matches!(family.source, OwnerFamilySource::Closure)
+        }) {
+            for constructor in &family.constructors {
+                assert!(candidate.functions().iter().any(|function| {
+                    function.id == constructor.function && function.signature == family.signature
+                }), "owner constructor must name a function in its final closure family");
+            }
+        }
+    }
+
+    #[test]
+    fn empty_tuple_unit_list_literal_lowers_and_validates() {
+        let candidate = lower_with_derived_layouts(
+            "fn main() -> Int:\n    var xs = [()]\n    xs.push(())\n    list.length(xs)\n",
+        );
+        check_initial(candidate).expect("Tuple([]) list element uses the Unit scalar layout");
+    }
+
+    #[test]
+    fn var_tail_call_blocks_write_back_reallocation_promotion() {
+        let layout = witchy_wir::layout::LayoutId::from_bytes([0x63; 32]);
+        let reference = ValueType::Ref(layout);
+        let signature_id = FunctionSignatureId::new(0);
+        let mut signatures = vec![FunctionSignature {
+            id: signature_id,
+            parameters: vec![reference],
+            results: vec![reference],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: reference,
+                    ownership: ParameterOwnership::WriteBack,
+                }],
+                results: vec![ResultContract::Shared { layout }],
+                parameter_effects: BTreeMap::new(),
+            },
+        }];
+        let fresh = ValueId::new(0);
+        let function = Function {
+            id: FunctionId::new(0),
+            signature: signature_id,
+            entry: BlockId::new(0),
+            value_types: [(fresh, reference)].into_iter().collect(),
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId::new(0),
+                    parameters: Vec::new(),
+                    operations: vec![Operation::Alloc {
+                        destination: fresh,
+                        layout,
+                        extent: Extent::FixedBytes(8),
+                        class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
+                    }],
+                    terminator: Terminator::Return { values: vec![fresh] },
+                },
+                BasicBlock {
+                    id: BlockId::new(1),
+                    parameters: Vec::new(),
+                    operations: Vec::new(),
+                    terminator: Terminator::VarTailCall {
+                        site: witchy_wir::canonical_safewir::TailSiteId::from_digest([0x64; 32]),
+                        callee: ValueId::new(1),
+                        signature: signature_id,
+                        arguments: Vec::new(),
+                    },
+                },
+            ],
+        };
+        promote_fresh_write_back_result_contracts(
+            &mut signatures,
+            &[function],
+        );
+        assert!(matches!(signatures[0].contract.results.as_slice(), [ResultContract::Shared { .. }]));
+    }
+
+    #[test]
+    fn region_promotion_contract_refuses_missing_stale_and_must_facts() {
+        let int = Type::Named("Int".to_string(), vec![]);
+        let string = Type::Named("String".to_string(), vec![]);
+
+        let scalar_tail = Expr::Int(0);
+        let missing = require_region_promotion_contract(None, &int, &scalar_tail, None, false)
+            .expect_err("a canonical region cannot lower without its exact checked fact");
+        assert!(matches!(missing, CanonicalLoweringError::UnsupportedExpression(message) if message.contains("authenticated checked contract")));
+
+        let stale_fact = RegionPromotionFact::Scalar { result: int.clone() };
+        let stale = require_region_promotion_contract(Some(&stale_fact), &string, &scalar_tail, None, false)
+            .expect_err("a fact for a different result cannot authenticate this region");
+        assert!(matches!(stale, CanonicalLoweringError::UnsupportedExpression(message) if message.contains("stale")));
+
+        let must_fact = RegionPromotionFact::NormalOwnedSnapshot {
+            result: string,
+            must_disposition: RegionMustDisposition::Unproven,
+        };
+        let must = require_region_promotion_contract(
+            Some(&must_fact),
+            must_fact.result(),
+            &scalar_tail,
+            None,
+            false,
+        )
+        .expect_err("canonical promotion cannot duplicate a must-consume payload");
+        assert!(matches!(must, CanonicalLoweringError::UnsupportedExpression(message) if message.contains("must-bearing") && message.contains("must-transfer")));
+
+        let constructor_tail = Expr::Ctor { name: "Ticket".into(), args: Vec::new() };
+        let transfer_fact = RegionPromotionFact::NormalOwnedSnapshot {
+            result: must_fact.result().clone(),
+            must_disposition: RegionMustDisposition::FreshConstructor(RegionMustTransfer {
+                tail: &constructor_tail as *const Expr as usize,
+                constructor: "Ticket".into(),
+            }),
+        };
+        assert_eq!(
+            require_region_promotion_contract(
+                Some(&transfer_fact), transfer_fact.result(), &constructor_tail, None, false,
+            )
+            .expect("exact fresh constructor proof is admitted"),
+            Some(&constructor_tail as *const Expr as usize),
+        );
+
+        let packed = RegionPackedLayoutDescriptor {
+            record: "Point".into(), fields: vec![int.clone()],
+        };
+        let wrong_packed = RegionPromotionFact::PackedInline {
+            result: int.clone(),
+            descriptor: RegionPackedLayoutDescriptor {
+                record: "other.Point".into(), fields: vec![int.clone()],
+            },
+        };
+        let mismatch = require_region_promotion_contract(
+            Some(&wrong_packed), wrong_packed.result(), &scalar_tail, Some(&packed), true,
+        )
+        .expect_err("a same-bare-name source descriptor cannot authenticate another packed layout");
+        assert!(matches!(mismatch, CanonicalLoweringError::UnsupportedExpression(message) if message.contains("descriptor does not match")));
+    }
+
+    #[test]
+    fn rfc0167_unit_result_layouts_have_no_ordinary_lane_and_explicit_discard_drops_one() {
+        let checked = checked(r#"
+pub fn explicit_free() -> ():
+    ()
+pub fn omitted_free():
+    ()
+pub fn explicit_generic(value: a) -> ():
+    ()
+pub fn omitted_generic(value: a):
+    ()
+type Meter:
+    Meter(Int)
+impl Meter:
+    pub fn explicit_method(self) -> ():
+        ()
+    pub fn omitted_method(self):
+        ()
+fn private_value() -> Int:
+    41
+fn main():
+    explicit_free()
+    omitted_free()
+    explicit_generic(1)
+    omitted_generic(1)
+    let meter = Meter(0)
+    meter.explicit_method()
+    meter.omitted_method()
+    let _ = private_value()
+"#);
+        let source = checked.canonical_source().expect("canonical checked source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source)
+            .expect("derive layouts for the record method receiver");
+        let candidate = lower_typed_module(source, layouts).expect("lower unit result matrix");
+
+        let signature_for = |marker: &str| {
+            let binding = candidate.source_abi_bindings().entries().iter().find(|binding| {
+                source
+                    .closed_callable_declaration(binding.source_declaration_ordinal())
+                    .is_some_and(|function| function.name.contains(marker))
+            }).unwrap_or_else(|| panic!("lowered binding for `{marker}`"));
+            let function = candidate.functions().iter()
+                .find(|function| function.id == binding.function())
+                .expect("binding selects a lowered function");
+            &candidate.signatures()[function.signature.get() as usize]
+        };
+
+        for marker in [
+            "explicit_free",
+            "omitted_free",
+            "explicit_generic",
+            "omitted_generic",
+            "explicit_method",
+            "omitted_method",
+            "main",
+        ] {
+            let signature = signature_for(marker);
+            assert!(signature.results.is_empty(), "{marker} must have no ordinary canonical result lane: {signature:?}");
+            assert!(signature.contract.results.is_empty(), "{marker} must have no ordinary canonical result contract: {signature:?}");
+        }
+
+        let private = signature_for("private_value");
+        assert_eq!(private.results, vec![ValueType::Int]);
+        assert_eq!(private.contract.results.len(), 1);
+
+        let private_binding = candidate.source_abi_bindings().entries().iter().find(|binding| {
+            source
+                .closed_callable_declaration(binding.source_declaration_ordinal())
+                .is_some_and(|function| function.name.contains("private_value"))
+        }).expect("private result binding");
+        let main_binding = candidate.source_abi_bindings().entries().iter().find(|binding| {
+            source
+                .closed_callable_declaration(binding.source_declaration_ordinal())
+                .is_some_and(|function| function.name == "main")
+        }).expect("main binding");
+        let main = candidate.functions().iter().find(|function| function.id == main_binding.function())
+            .expect("main lowered function");
+        let discarded_call = main.blocks.iter().flat_map(|block| &block.operations).find_map(|operation| match operation {
+            Operation::Call { callee, destinations, .. } if *callee == private_binding.function() => Some(destinations),
+            _ => None,
+        }).expect("explicit discard lowers a call");
+        assert_eq!(discarded_call.len(), 1, "the callee ABI still transports its Int result to the discard point");
     }
 
     #[test]
@@ -16486,6 +20437,15 @@ pub fn take_int(var xs: unique List(Int)) -> Option(Int):
         );
         let result = check_initial(candidate);
         assert!(result.is_ok(), "nested string join lost its capacity: {result:?}");
+    }
+
+    #[test]
+    fn string_words_keeps_branch_local_extent_facts_out_of_the_scan_loop() {
+        let candidate = lower_with_derived_layouts(
+            "fn main() -> Int:\n    \"three blind mice\".words().length()\n",
+        );
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "string.words leaked a branch-local extent: {result:?}");
     }
 
     #[test]
@@ -16710,6 +20670,75 @@ fn main() -> Int:
     }
 
     #[test]
+    fn managed_capture_remains_authorized_as_an_ordinary_by_value_capture() {
+        let checked = checked(r#"
+fn main() -> Int:
+    let text = "retained"
+    let read = fn() -> String:
+        text
+    read().length()
+"#);
+        let source = checked.canonical_source().expect("canonical source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source)
+            .expect("layouts for managed capture");
+        let candidate = lower_typed_module(source, layouts)
+            .expect("lower managed capture")
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        check_initial_with_witness(candidate, source)
+            .expect("ordinary managed capture remains source-authorized");
+    }
+
+    #[test]
+    fn rooted_view_capture_requires_its_source_witness_and_retained_opaque_carrier() {
+        let checked = checked(r#"
+fn first[a](items: List(a)) -> &a:
+    &items[0]
+
+fn main() -> Int:
+    var values = [7, 8]
+    let selected: &Int = first(values)
+    let read = fn() -> Int:
+        *selected
+    values = [9, 10]
+    read() * 10 + values[0]
+"#);
+        let source = checked.canonical_source().expect("canonical source");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source)
+            .expect("layouts for rooted-view capture");
+        let candidate = lower_typed_module(source, layouts)
+            .expect("lower rooted-view capture")
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        check_initial_with_witness(candidate.clone(), source)
+            .expect("checked rooted-view capture is source-bound");
+
+        let mut missing_witness = candidate.owner_families().to_vec();
+        let constructor = missing_witness.iter_mut().flat_map(|family| &mut family.constructors)
+            .find(|constructor| constructor.witness.is_some() && !constructor.captures.is_empty())
+            .expect("capturing rooted-view constructor");
+        constructor.witness = None;
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(missing_witness), source).is_err(),
+            "the physical closure cannot replace its checked capture witness");
+
+        let mut wrong_transfer = candidate.owner_families().to_vec();
+        let capture = wrong_transfer.iter_mut().flat_map(|family| &mut family.constructors)
+            .find(|constructor| constructor.witness.is_some() && !constructor.captures.is_empty())
+            .and_then(|constructor| constructor.captures.first_mut())
+            .expect("rooted-view retained capture");
+        capture.transfer = witchy_wir::canonical_safewir::closure_owner_contract::CaptureTransfer::CopyScalar;
+        assert!(check_initial_with_witness(candidate.clone().with_owner_families(wrong_transfer), source).is_err(),
+            "a rooted-view capture cannot be downgraded to a scalar copy");
+
+        let mut wrong_carrier = candidate.owner_families().to_vec();
+        let capture = wrong_carrier.iter_mut().flat_map(|family| &mut family.constructors)
+            .find(|constructor| constructor.witness.is_some() && !constructor.captures.is_empty())
+            .and_then(|constructor| constructor.captures.first_mut())
+            .expect("rooted-view retained capture");
+        capture.value_type = ValueType::Int;
+        assert!(check_initial_with_witness(candidate.with_owner_families(wrong_carrier), source).is_err(),
+            "a different carrier cannot stand in for an authenticated rooted view");
+    }
+
+    #[test]
     fn recursive_source_type_lowers_to_the_catalog_nominal_and_passes_initial_check() {
         let source = r#"
 type Tree:
@@ -16838,13 +20867,50 @@ fn main() -> Int:
     }
 
     #[test]
+    fn generic_own_scalar_specializations_lower_through_the_concrete_abi() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![(
+                "main".to_string(),
+                b"fn consume(own value: a) -> a:\n    value\n\nfn main() -> Int:\n    let unit = consume(())\n    let number = consume(41)\n    number + 1\n".to_vec(),
+            )],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("generic own source checks");
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(source, empty_layouts())
+            .expect("generic own scalar instances lower through concrete ABI")
+            .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        assert!(candidate
+            .signatures()
+            .iter()
+            .any(|signature| signature.parameters == [ValueType::Unit]
+                && signature.results.is_empty()
+                && signature.contract.parameters[0].ownership == ParameterOwnership::Value));
+        assert!(candidate
+            .signatures()
+            .iter()
+            .any(|signature| signature.parameters == [ValueType::Int]
+                && signature.contract.parameters[0].ownership == ParameterOwnership::Value));
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("generic own scalar ABI agrees with the checked source witness");
+        validate_final(initial, source)
+            .expect("generic own scalar ABI remains valid at the final SafeWIR boundary");
+    }
+
+    #[test]
     fn canonical_lowering_interns_structural_callable_parameter() {
         // A `fn` value is a closure record, so the candidate needs the
         // derived layouts.
         let candidate = lower_with_derived_layouts(
             "fn positive(n: Int) -> Bool:\n    n > 0\n\nfn nonzero(n: Int) -> Bool:\n    n != 0\n\nfn apply(f: fn(Int) -> Bool, n: Int) -> Bool:\n    f(n)\n\nfn main() -> Int:\n    if apply(positive, 3):\n        1\n    else:\n        0\n",
         );
-        assert_eq!(candidate.functions()[0].signature, candidate.functions()[1].signature);
+        let positive = &candidate.signatures()[candidate.functions()[0].signature.get() as usize];
+        let nonzero = &candidate.signatures()[candidate.functions()[1].signature.get() as usize];
+        assert_ne!(positive.id, nonzero.id,
+            "authenticated named callables retain distinct declaration identities");
+        assert!(super::signature_lanes_equal(positive, nonzero),
+            "structurally equal callable values retain one physical ABI shape");
         let apply = &candidate.functions()[2];
         assert_eq!(candidate.signatures()[apply.signature.get() as usize].parameters.len(), 2);
         assert!(candidate
@@ -16948,6 +21014,60 @@ fn main() -> Int:
         assert_eq!(join.parameters[2].value_type, ValueType::Size);
         let result = check_initial(candidate);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn shared_string_if_reauthenticates_both_extent_lanes_at_the_phi() {
+        // The retained parameter and the newly allocated substring have
+        // different allocation histories. A fresh String header observation
+        // is both its count and capacity; preserving the parameter's old
+        // capacity alongside the new length would leave the shared phi with
+        // an unauthenticated synthetic extent pair.
+        let candidate = lower_with_derived_layouts(
+            "fn choose(flag: Bool, raw: String) -> String:\n    if flag:\n        raw\n    else:\n        raw.substring(0, raw.char_count())\n",
+        );
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "shared string join rejected: {result:?}");
+    }
+
+    #[test]
+    fn string_range_equal_loop_carries_distinct_count_capacity_lanes_and_releases_retained_roots() {
+        let candidate = lower_with_derived_layouts(
+            "fn starts(raw: String, prefix: String) -> Bool:\n    raw.starts_with(prefix)\n",
+        );
+        let function = &candidate.functions()[0];
+        let entry_roots = function.blocks[0].parameters.iter()
+            .filter(|parameter| matches!(parameter.value_type, ValueType::Ref(_)))
+            .map(|parameter| parameter.value)
+            .collect::<BTreeSet<_>>();
+        let retained_loop_roots = function.blocks.iter().flat_map(|block| &block.operations).filter_map(|operation| match operation {
+            Operation::CloneRef { destination, source } if entry_roots.contains(source) => Some(*destination),
+            _ => None,
+        }).collect::<BTreeSet<_>>();
+        let released = function.blocks.iter().flat_map(|block| &block.operations).filter_map(|operation| match operation {
+            Operation::DropRef { object } => Some(*object),
+            _ => None,
+        }).collect::<BTreeSet<_>>();
+        assert!(!retained_loop_roots.is_empty(), "range-equality loop retains its shared roots");
+        let retained_phi_roots = function.blocks.iter().flat_map(|block| match &block.terminator {
+            Terminator::Branch { target, arguments } => {
+                let parameters = &function.blocks.iter()
+                    .find(|candidate| candidate.id == *target)
+                    .expect("branch target")
+                    .parameters;
+                arguments.iter().zip(parameters).filter_map(|(argument, parameter)| {
+                    retained_loop_roots.contains(argument)
+                        .then_some((parameter.value, parameter.ownership))
+                }).collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        }).filter_map(|(value, ownership)| (ownership == Some(Ownership::Shared)).then_some(value))
+            .collect::<BTreeSet<_>>();
+        assert!(!retained_phi_roots.is_empty(), "retained roots enter shared loop phi lanes");
+        assert!(retained_phi_roots.is_subset(&released),
+            "every retained loop phi root releases exactly on its exit paths");
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "range-equality count/capacity phi rejected: {result:?}");
     }
 
     #[test]
@@ -17087,12 +21207,302 @@ fn main() -> Int:
     }
 
     #[test]
+    fn for_keeps_an_independent_string_extent_while_carrying_a_pushed_list() {
+        // `hits` is mutable loop state, but `needle` is an independent
+        // dynamic owner captured by the nested string comparison loop. Its
+        // extent must remain checked-current rather than being cleared with
+        // the list lanes carried on the for-loop backedge.
+        let candidate = lower_with_derived_layouts(
+            "fn collect(needle: String, lines: List(String)) -> List(String):\n    var hits = []\n    for line in lines:\n        if line.to_lower().contains(needle):\n            hits.push(line)\n    hits\n",
+        );
+        assert!(candidate.functions()[0].blocks.iter().any(|block| {
+            block.operations.iter().any(|operation| matches!(operation, Operation::CloneRange { .. }))
+        }), "the pushed list still takes the counted copy path");
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "independent string extent was dropped at the loop meet: {result:?}");
+    }
+
+    #[test]
+    fn nested_for_carries_invariant_string_metadata_without_a_root_phi() {
+        let checked = checked(
+            "fn nested_filter(ext: String, lines: List(String)) -> Int:\n    var hits = 0\n    for line in lines:\n        let child = if string.is_empty(line): ext else: line\n        if string.ends_with(child, ext):\n            for _nested in lines:\n                hits = hits + 1\n    hits\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect("nested invariant String loop lowers")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let function = candidate.functions().first().expect("nested_filter function");
+        // Canonical parameters are ordered by name, so `ext` follows `lines`.
+        let ext = function.blocks[function.entry.get() as usize]
+            .parameters.get(1).expect("ext parameter");
+        let ValueType::Ref(string_layout) = ext.value_type else {
+            panic!("ext parameter is a String reference");
+        };
+        assert!(function.blocks.iter().filter(|block| block.id != function.entry).flat_map(|block| &block.parameters).all(|parameter|
+            parameter.value != ext.value
+        ), "the invariant String root must not acquire a loop parameter");
+        let loop_headers = function.blocks.iter().filter(|block| {
+            matches!(block.terminator, Terminator::BranchIf { .. })
+                && function.blocks.iter().any(|predecessor| matches!(
+                    &predecessor.terminator,
+                    Terminator::Branch { target, .. } if *target == block.id
+                ))
+        }).collect::<Vec<_>>();
+        assert!(!loop_headers.is_empty(), "nested source has loop headers");
+        assert!(loop_headers.iter().any(|header| {
+            header.parameters.iter().map(|parameter| parameter.value_type).eq([
+                ValueType::Int,
+                ValueType::Size,
+                ValueType::Size,
+                ValueType::Size,
+            ])
+        }), "the outer loop carries its mutable root and metadata lanes only");
+        assert!(loop_headers.iter().filter(|header|
+            header.parameters.iter().any(|parameter| parameter.value_type == ValueType::Int)
+        ).all(|header| header.parameters.iter().all(|parameter|
+            parameter.value_type != ValueType::Ref(string_layout)
+        )), "the invariant String root must remain the dominating entry SSA value");
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("initial SafeWIR validation keeps the root and metadata coupled");
+        validate_final(initial, source)
+            .expect("final SafeWIR validation preserves the invariant String loop contract");
+    }
+
+    #[test]
+    fn while_carries_invariant_string_metadata_without_a_root_phi() {
+        let checked = checked(
+            "fn scan(rest: String, sep: String) -> Int:\n    var current = rest\n    var hits = 0\n    while string.length(current) > 0:\n        if string.length(sep) > 0:\n            hits = hits + string.char_count(sep)\n        current = string.substring(current, 1, string.char_count(current))\n    hits\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect("invariant String while loop lowers")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let function = candidate.functions().first().expect("scan function");
+        // Canonical parameters are ordered by name, so `sep` follows `rest`.
+        let sep = function.blocks[function.entry.get() as usize]
+            .parameters.get(1).expect("sep parameter");
+        let ValueType::Ref(string_layout) = sep.value_type else {
+            panic!("sep parameter is a String reference");
+        };
+        assert!(function.blocks.iter().filter(|block| block.id != function.entry).flat_map(|block| &block.parameters).all(|parameter|
+            parameter.value != sep.value
+        ), "the invariant String root must not acquire a loop parameter");
+        let loop_headers = function.blocks.iter().filter(|block| {
+            matches!(block.terminator, Terminator::BranchIf { .. })
+                && function.blocks.iter().any(|predecessor| matches!(
+                    &predecessor.terminator,
+                    Terminator::Branch { target, .. } if *target == block.id
+                ))
+        }).collect::<Vec<_>>();
+        assert!(loop_headers.iter().any(|header| {
+            header.parameters.iter().filter(|parameter|
+                parameter.value_type == ValueType::Ref(string_layout)
+            ).count() == 1
+                && header.parameters.iter().filter(|parameter|
+                    parameter.value_type == ValueType::Size
+                ).count() == 4
+        }), "the mutable root remains the lone reference loop parameter; both roots carry scalar metadata");
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("initial SafeWIR validation keeps while metadata tied to the dominating root");
+        validate_final(initial, source)
+            .expect("final SafeWIR validation preserves the invariant String while contract");
+    }
+
+    #[test]
+    fn rfind_style_if_and_while_keep_metadata_on_dominating_paths() {
+        let checked = checked(
+            "fn rfind(s: String, sep: String) -> Int:\n    if string.length(sep) == 0:\n        0 - 1\n    else:\n        var last = 0 - 1\n        var base = 0\n        var rest = s\n        var i = 0\n        while i >= 0:\n            last = base + i\n            base = base + i + string.char_count(sep)\n            rest = string.substring(rest, i + string.char_count(sep), string.char_count(rest))\n            i = 0 - 1\n        last\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect("rfind-style source lowers")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("all metadata values used after the if/while join dominate that join");
+        validate_final(initial, source)
+            .expect("rfind-style control flow reaches final SafeWIR validation");
+    }
+
+    #[test]
+    fn for_equality_reauthenticates_an_invariant_string() {
+        let checked = checked(
+            "fn key_value(part: String) -> Option((String, String)):\n    Some((part, part))\n\nfn parts(value: String) -> List(String):\n    [value]\n\nfn parse(value: String) -> List(String):\n    [value]\n\nfn count(inline: String, key: String) -> List(String):\n    let body = inline.trim()\n    var found = []\n    for part in parts(body):\n        if let Some((k, v)) = key_value(part.trim()):\n            if k == key:\n                found = parse(v)\n    found\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect("invariant equality source lowers")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        // `count` is the fourth source declaration. Its `key` parameter is
+        // invariant: nested joins may refresh its header proof but may not
+        // introduce a replacement root at the loop header.
+        let function = candidate.functions().iter().find(|function| function.id == FunctionId::new(3))
+            .expect("count function");
+        let key = function.blocks[function.entry.get() as usize].parameters.get(1)
+            .expect("key parameter");
+        let ValueType::Ref(string_layout) = key.value_type else {
+            panic!("key parameter is a String reference");
+        };
+        assert!(function.blocks.iter().filter(|block| block.id != function.entry).flat_map(|block| &block.parameters).all(|parameter|
+            parameter.value != key.value
+        ), "the invariant key root must not acquire a loop parameter");
+        let refreshed_backedges = function.blocks.iter().filter(|block| {
+            matches!(&block.terminator, Terminator::Branch { target, .. } if target.get() < block.id.get())
+                && block.operations.iter().any(|operation|
+                    matches!(operation, Operation::ReauthenticateRawHeaderExtent { object, .. } if *object == key.value)
+                )
+        }).collect::<Vec<_>>();
+        assert_eq!(refreshed_backedges.len(), 1, "the nested list join has one outer loop back-edge");
+        for block in refreshed_backedges {
+            let Terminator::Branch { target, .. } = &block.terminator else { unreachable!() };
+            let header = &function.blocks[target.get() as usize];
+            assert!(header.parameters.iter().all(|parameter|
+                parameter.value != key.value && parameter.value_type != ValueType::Ref(string_layout)
+            ), "the edge transports fresh scalar metadata while key retains its dominating root");
+        }
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("invariant string equality has a current extent in the loop body");
+        validate_final(initial, source)
+            .expect("invariant string equality reaches final SafeWIR validation");
+    }
+
+    #[test]
     fn while_does_not_phi_an_unused_dynamic_alias() {
         let candidate = lower_with_derived_layouts(
             "fn scan(s: String) -> Int:\n    var rest = s\n    var index = 0\n    while index < string.length(rest):\n        rest = string.substring(rest, 1, string.length(rest))\n        index = index + 1\n    index\n",
         );
         let result = check_initial(candidate);
         assert!(result.is_ok(), "unused outer alias acquired a competing loop extent: {result:?}");
+    }
+
+    #[test]
+    fn shared_while_phi_reloads_its_dynamic_header_before_counted_uses() {
+        let candidate = lower_with_derived_layouts(
+            "fn scan(s: String) -> Int:\n    var rest = s\n    var index = 0\n    while index < string.length(rest):\n        rest = string.substring(rest, 1, string.length(rest))\n        index = index + 1\n    index\n",
+        );
+        let function = candidate.functions().first().expect("scan function");
+        let header = function.blocks.iter().find(|block| {
+            block.parameters.iter().any(|parameter| {
+                parameter.ownership == Some(Ownership::Shared)
+                    && matches!(parameter.value_type, ValueType::Ref(_))
+            })
+        }).expect("shared dynamic while header");
+        let shared = header.parameters.iter().find(|parameter| {
+            parameter.ownership == Some(Ownership::Shared)
+                && matches!(parameter.value_type, ValueType::Ref(_))
+        }).expect("shared header reference").value;
+        let inherited_scalar_lanes = header.parameters.iter()
+            .filter(|parameter| parameter.value_type == ValueType::Size)
+            .map(|parameter| parameter.value)
+            .collect::<Vec<_>>();
+        let reloaded_length = header.operations.iter().find_map(|operation| match operation {
+            Operation::Load {
+                destination,
+                place,
+                transfer: LoadTransfer::CopyScalar,
+            } if place.object() == shared
+                && matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length)) => {
+                    Some(*destination)
+                }
+            _ => None,
+        }).expect("shared phi reloads its physical length header");
+        assert!(
+            !inherited_scalar_lanes.contains(&reloaded_length),
+            "the reload must not reuse an inherited count/capacity scalar lane",
+        );
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "shared while header reload rejected: {result:?}");
+    }
+
+    #[test]
+    fn shared_list_while_refreshes_count_without_replacing_carried_capacity() {
+        let candidate = lower_with_derived_layouts(
+            "fn scan(xs: List(Int)) -> Int:\n    var rest = xs\n    var index = 0\n    while index < rest.length():\n        rest = rest\n        index = index + 1\n    rest.length()\n",
+        );
+        let function = candidate.functions().first().expect("scan function");
+        let header = function.blocks.iter().find(|block| {
+            block.parameters.iter().filter(|parameter| parameter.value_type == ValueType::Size).count() >= 2
+                && block.parameters.iter().any(|parameter| {
+                parameter.ownership == Some(Ownership::Shared)
+                    && matches!(parameter.value_type, ValueType::Ref(_))
+                })
+        }).expect("shared list while header");
+        let shared = header.parameters.iter().find(|parameter| {
+            parameter.ownership == Some(Ownership::Shared)
+                && matches!(parameter.value_type, ValueType::Ref(_))
+        }).expect("shared header reference").value;
+        assert!(header.operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Load { place, transfer: LoadTransfer::CopyScalar, .. }
+                if place.object() == shared
+                    && matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length))
+        )), "shared list header refreshes its logical count");
+        assert!(!header.operations.iter().any(|operation| matches!(
+            operation,
+            Operation::Load { place, transfer: LoadTransfer::CopyScalar, .. }
+                if place.object() == shared
+                    && matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Capacity))
+        )), "shared list header must carry its authenticated capacity lane");
+        let capacity = header.parameters.iter().filter(|parameter| parameter.value_type == ValueType::Size)
+            .nth(1).expect("shared list capacity parameter").value;
+        assert!(matches!(
+            &header.terminator,
+            Terminator::BranchIf { then_arguments, else_arguments, .. }
+                if then_arguments.contains(&capacity) && else_arguments.contains(&capacity)
+        ), "both loop successors transport the authenticated capacity lane");
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "shared list while header rejected: {result:?}");
+    }
+
+    #[test]
+    fn structural_render_copy_refreshes_dynamic_field_source_before_copybytes() {
+        let candidate = lower_with_derived_layouts(
+            "type Envelope:\n    text: String\n\nfn main(console: Console):\n    console.print(\"${Envelope(\"value\")}\")\n",
+        );
+        let function = candidate.functions().iter().find(|function| {
+            function.blocks.iter().any(|block| block.operations.iter().any(|operation|
+                matches!(operation, Operation::Load { place, .. } if matches!(place.projection(), Projection::Field { .. }))
+            )) && function.blocks.iter().any(|block|
+                block.operations.iter().any(|operation| matches!(operation, Operation::CopyBytes { .. }))
+            )
+        }).expect("structural render function");
+        let field_values = function.blocks.iter().flat_map(|block| &block.operations).filter_map(|operation| match operation {
+            Operation::Load { destination, place, .. }
+                if matches!(place.projection(), Projection::Field { .. }) => Some(*destination),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let mut copies = Vec::new();
+        for block in &function.blocks {
+            for (copy, operation) in block.operations.iter().enumerate() {
+                let Operation::CopyBytes { source, .. } = operation else { continue };
+                if field_values.contains(&source.object()) {
+                    copies.push((block, copy));
+                }
+            }
+        }
+        assert!(!copies.is_empty(), "structural render copies its dynamic field");
+        for (block, copy) in copies {
+            let Operation::CopyBytes { source, .. } = &block.operations[copy] else { unreachable!() };
+            assert!(block.operations[..copy].iter().any(|operation| matches!(
+                operation,
+                Operation::Load { place, transfer: LoadTransfer::CopyScalar, .. }
+                    if place.object() == source.object()
+                        && matches!(place.projection(), Projection::Header(witchy_wir::canonical_safewir::HeaderField::Length))
+            )), "CopyBytes source {:?} lacks a fresh local header read", source.object());
+        }
+        let result = check_initial(candidate);
+        assert!(result.is_ok(), "structural render string copy rejected: {result:?}");
     }
 
     #[test]
@@ -17312,6 +21722,25 @@ fn main() -> Int:
     }
 
     #[test]
+    fn canonical_preparation_uses_authenticated_view_control_flow_facts() {
+        let checked = checked(
+            "mode opt\n\n\
+             type Pair:\n    left: String\n    right: String\n\n\
+             fn borrow(pair: &Pair) -> &Pair:\n    pair\n\n\
+             fn main():\n    let flag = true\n    let pair = Pair(\"left\", \"right\")\n    let whole = borrow(&pair)\n    let left = (*whole).left\n    if flag:\n        let _ = left\n    else:\n        let _ = left\n",
+        );
+        let source = checked.canonical_source().expect("canonical source retains its typed product");
+        let facts = source.typed_module().view_facts().expect("canonical preparation retains checked rooted views");
+        let access = source.access_facts().expect("canonical preparation retains checked access facts");
+        assert!(access.call_contracts().next().is_some());
+        assert!(facts.iter().next().is_some(), "the `&pair` formation has an authenticated root-plus-projection fact");
+        let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("canonical layouts");
+        let error = lower_typed_module(source, layouts)
+            .expect_err("the partial ABI still rejects record-view transport after querying checked view facts");
+        assert!(matches!(error, CanonicalLoweringError::UnsupportedCanonicalObligation(_)));
+    }
+
+    #[test]
     fn empty_list_literal_is_a_fresh_validated_safewir_object() {
         let checked = checked("fn empty() -> List(Int):\n    []\n");
         let candidate = lower_typed_module(
@@ -17380,6 +21809,21 @@ fn main() -> Int:
     }
 
     #[test]
+    fn rooted_string_view_remains_fail_closed_until_its_carrier_is_implemented() {
+        let checked = checked(
+            "mode opt\n\n\
+             fn view(text: &String) -> &String:\n    text\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let lowered = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive reference layout"),
+        );
+        assert!(matches!(lowered, Err(CanonicalLoweringError::UnsupportedCanonicalObligation(_))),
+            "the partial rooted-view ABI must reject &String rather than reuse the retired lifetime alias carrier: {lowered:?}");
+    }
+
+    #[test]
     fn reference_tail_call_moves_the_owned_token() {
         let checked = checked("fn recurse(xs: List(Int)) -> Int:\n    return recurse(xs)\n");
         let candidate = lower_typed_module(
@@ -17423,30 +21867,98 @@ fn main() -> Int:
     }
 
     #[test]
-    fn unique_contracts_stay_fail_closed() {
+    fn root_unique_own_contracts_preserve_their_checked_abi() {
         let checked = checked(
-            "fn consume(own value: unique List(Int)) -> Int:\n    value.length()\n",
+            "fn round_trip(own value: unique List(Int)) -> unique List(Int):\n    value\n",
         );
         let source = checked.canonical_source().expect("canonical source");
-        let error = lower_typed_module(
+        let candidate = lower_typed_module(
             source,
             crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
         )
-        .expect_err("v1 must not silently erase a unique contract");
-        assert!(matches!(error, CanonicalLoweringError::UnsupportedType(_)));
+        .expect("root unique own ABI lowers without erasing its checked contract")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let function = candidate.functions().first().expect("round_trip function");
+        let signature = candidate.signatures().iter()
+            .find(|signature| signature.id == function.signature)
+            .expect("round_trip signature");
+        assert_eq!(signature.contract.parameters[0].ownership, ParameterOwnership::Unique);
+        assert!(matches!(signature.contract.results.as_slice(), [ResultContract::Unique { .. }]));
+        assert_eq!(function.blocks[0].parameters[0].ownership, Some(Ownership::Unique));
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("root unique own ABI passes initial SafeWIR validation");
+        validate_final(initial, source)
+            .expect("root unique own ABI passes final SafeWIR validation");
     }
 
     #[test]
-    fn local_unique_ascriptions_stay_fail_closed() {
+    fn root_unique_scalar_uses_the_ordinary_scalar_abi_and_admits() {
+        let checked = checked(
+            "fn round_trip(own value: unique Int) -> unique Int:\n    value\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive scalar layouts"),
+        )
+        .expect("root unique scalar must retain its ordinary physical lane")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let function = candidate.functions().first().expect("round_trip function");
+        let signature = candidate.signatures().iter()
+            .find(|signature| signature.id == function.signature)
+            .expect("round_trip signature");
+        assert_eq!(signature.parameters, [ValueType::Int]);
+        assert_eq!(signature.results, [ValueType::Int]);
+        assert_eq!(signature.contract.parameters[0].ownership, ParameterOwnership::Value);
+        assert_eq!(signature.contract.results, [ResultContract::Value(ValueType::Int)]);
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("root unique scalar ABI passes initial SafeWIR validation");
+        validate_final(initial, source)
+            .expect("root unique scalar ABI passes final SafeWIR validation");
+    }
+
+    #[test]
+    fn root_unique_binding_ascriptions_use_the_inner_physical_layout() {
         let checked = checked(
             "fn main() -> Int:\n    let values: unique List(Int) = [1]\n    values.length()\n",
         );
         let source = checked.canonical_source().expect("canonical source");
+        let candidate = lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect("a root unique local has the ordinary list representation")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        let initial = check_initial_with_witness(candidate, source)
+            .expect("root unique local passes initial SafeWIR validation");
+        validate_final(initial, source)
+            .expect("root unique local passes final SafeWIR validation");
+    }
+
+    #[test]
+    fn unique_var_root_uses_the_inner_physical_layout() {
+        let checked = checked(
+            "fn main() -> Int:\n    var values: unique List(Int) = [1]\n    values[0]\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
+        lower_typed_module(
+            source,
+            crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
+        )
+        .expect("a checked unique var root has the ordinary list representation");
+    }
+
+    #[test]
+    fn nested_unique_list_element_stays_fail_closed_after_var_root_normalization() {
+        let checked = checked(
+            "mode opt\n\nfn update(var values: unique List(unique List(Int))) -> ():\n    ()\n",
+        );
+        let source = checked.canonical_source().expect("canonical source");
         let error = lower_typed_module(
             source,
             crate::canonical_layouts::derive_layout_bundle(source).expect("derive layouts"),
         )
-        .expect_err("v1 must reject a local qualifier before type normalization erases it");
+        .expect_err("v1 must not erase nested unique qualifiers while lowering a var root");
         assert!(matches!(error, CanonicalLoweringError::UnsupportedType(_)));
     }
 
@@ -17480,7 +21992,7 @@ fn main() -> Int:
         // Once a v1 refusal; a unit function's final `if` is an effect, and an
         // arm that returns early simply has no join edge.
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".to_string(), "fn bad(flag: Bool) -> Nil:\n    if flag:\n        return\n".as_bytes().to_vec())],
+            vec![("main".to_string(), "fn bad(flag: Bool) -> ():\n    if flag:\n        return\n".as_bytes().to_vec())],
             "main",
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )

@@ -1,7 +1,8 @@
 //! Native Witchy command-line application.
 //!
-//! This binary composes the compiler pipeline, interpreter and Wasm runtime,
-//! capability policy, project tooling, and bundled self-hosted commands.
+//! This binary composes the compiler pipeline, canonical SafeWIR/Wasm runtime,
+//! capability policy, project tooling, and bundled self-hosted commands. The
+//! frozen source evaluator remains only for temporary comptime/build support.
 
 // This crate is hand-indented, not rustfmt-managed. Clippy's "collapse nested
 // conditionals" lints would rewrite explicit `if { if let ... }` nesting into
@@ -18,6 +19,7 @@ pub(crate) use witchy::capabilities;
 pub(crate) use witchy::codegen;
 pub(crate) use witchy::format;
 pub(crate) use witchy_caps::grants;
+#[cfg(test)]
 pub(crate) use witchy::interpreter;
 pub(crate) use witchy::{enforce_performance_modes, is_entry_function};
 pub(crate) use witchy::opt;
@@ -53,7 +55,7 @@ pub(crate) use commands::execution::{parity_check, ParityOutcome};
 pub(crate) use commands::frontend::check_file;
 use runtime::Runtime;
 pub(crate) use source::{
-    bundled_module, link_file_checked,
+    bundled_module, link_file_checked, link_static_evaluation_file,
     link_file_checked_with_deps, link_test_file, linked_has_main, project_entry_file,
 };
 #[cfg(test)]
@@ -71,30 +73,11 @@ fn main() -> wasmtime::Result<()> {
 /// (transitively), link, type-check, then run with root capabilities (Console
 /// and a Dir rooted at the file's directory). Returns the program's output or a
 /// diagnostic.
-/// Time the interpreter against the compiled (WASM) backend on a few workloads.
+/// Time the canonical SafeWIR interpreter against admitted Wasm on a few workloads.
 fn run_benchmarks() -> wasmtime::Result<()> {
     use std::time::Instant;
-
-    fn interp_ms(src: &str, runs: u32) -> f64 {
-        let start = Instant::now();
-        for _ in 0..runs {
-            interpreter::run(src).expect("interpreter run");
-        }
-        start.elapsed().as_secs_f64() * 1000.0 / runs as f64
-    }
-
-    fn compiled_ms(src: &str, runs: u32) -> f64 {
-        let checked = witchy::resolve_std_only_checked(src).expect("resolve and check benchmark");
-        let artifact = codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("the binary path lowers this benchmark");
-        let mut rt = Runtime::new().expect("runtime");
-        let start = Instant::now();
-        for _ in 0..runs {
-            let mut vm = spawn_benchmark_iteration(&mut rt, &artifact).expect("spawn");
-            vm.run().expect("run");
-        }
-        start.elapsed().as_secs_f64() * 1000.0 / runs as f64
-    }
+    use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig};
+    use witchy_wir::canonical_safewir::FunctionId;
 
     let fib = r#"
 fn fib(n: Int) -> Int:
@@ -106,11 +89,8 @@ fn fib(n: Int) -> Int:
 fn main() -> Int:
     fib(30)
 "#;
-    // The accumulator is kept under 10^6 (`% 1000000`) so it stays well within
-    // the compiled backend's 32-bit `Int`; otherwise this sum would overflow in
-    // the compiled run (which wraps at 2^31) while the i64 interpreter would not,
-    // making the two columns incomparable. (Compiled `Int` is i32, a deliberate
-    // divergence from the interpreter's i64 — see `ty_kind` in codegen.)
+    // Keep the accumulator bounded so this measures loop execution rather than
+    // overflow handling.
     let loop_sum = r#"
 fn main() -> Int:
     var sum = 0
@@ -123,11 +103,34 @@ fn main() -> Int:
 
     println!("== witchy benchmarks (avg ms/run) ==");
     for (name, src, runs) in [("fib(30)", fib, 5u32), ("loop_sum(1e6)", loop_sum, 5u32)] {
-        let i = interp_ms(src, runs);
-        let c = compiled_ms(src, runs);
+        let checked = witchy::resolve_std_only_checked(src).expect("resolve and check benchmark");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical path lowers this benchmark");
+        let validated = codegen::validate_checked_module_for_oracle(&checked)
+            .expect("validate benchmark for the canonical interpreter");
+        let entry = artifact.entry().expect("benchmark entry");
+        let function = FunctionId::new(
+            entry.export().strip_prefix('f').expect("canonical entry export")
+                .parse().expect("canonical function id"),
+        );
+
+        let canonical_start = Instant::now();
+        for _ in 0..runs {
+            interpret_program(&validated, function, Vec::new(), InterpreterConfig::default())
+                .expect("canonical benchmark run");
+        }
+        let canonical_ms = canonical_start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+
+        let mut runtime = Runtime::new().expect("runtime");
+        let wasm_start = Instant::now();
+        for _ in 0..runs {
+            let mut vm = spawn_benchmark_iteration(&mut runtime, &artifact).expect("spawn");
+            vm.run().expect("run");
+        }
+        let wasm_ms = wasm_start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
         println!(
-            "{name:14}  interpreter {i:8.2} ms   compiled {c:8.3} ms   ({:.0}x)",
-            i / c
+            "{name:14}  canonical {canonical_ms:8.2} ms   wasm {wasm_ms:8.3} ms   ({:.0}x)",
+            canonical_ms / wasm_ms
         );
     }
     Ok(())
@@ -154,7 +157,7 @@ fn spawn_benchmark_iteration(
 #[test]
 fn remaining_internal_admitted_benchmark_owner_execution() {
     let source = r#"
-fn make(console: Console, text: String) -> fn() -> Nil:
+fn make(console: Console, text: String) -> fn() -> ():
     fn(): console.print(text)
 
 fn main(console: Console):

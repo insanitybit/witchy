@@ -151,7 +151,7 @@ fn call0(f: fn() -> Int) -> Int:
 
 fn main(console: Console):
     var d = dict.new()
-    dict.insert(d, 5000000000, 9000000000)
+    let _ = dict.insert(d, 5000000000, 9000000000)
     let captured = d
     let direct = fn():
         var total = 0

@@ -6,7 +6,7 @@
 //! so it never rejects a valid program — it tightens as the type system grows.
 //!
 //! Capability safety is not a special case: `print` has type
-//! `(Console, String) -> Nil`, and the only way to obtain a `Console` is to
+//! `(Console, String) -> ()`, and the only way to obtain a `Console` is to
 //! receive one as a parameter — ultimately from `main`. So "this code may
 //! perform output" is simply visible in its type, and code that never received
 //! the capability cannot type-check a call that needs it.
@@ -70,7 +70,7 @@ fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
         // Ownership qualifiers apply to the reference handle. They do not
         // change the exclusive capability of the underlying `&mut` relation.
         ast::Type::Qualified(
-            ast::TypeQual::Frozen | ast::TypeQual::Unique | ast::TypeQual::LocalUnique,
+            ast::TypeQual::Frozen | ast::TypeQual::Unique,
             inner,
         ) => type_is_exclusive_reference(inner),
         _ => false,
@@ -84,7 +84,7 @@ fn type_is_explicit_reference(ty: &ast::Type) -> bool {
             _,
         ) => true,
         ast::Type::Qualified(
-            ast::TypeQual::Frozen | ast::TypeQual::Unique | ast::TypeQual::LocalUnique,
+            ast::TypeQual::Frozen | ast::TypeQual::Unique,
             inner,
         ) => type_is_explicit_reference(inner),
         _ => false,
@@ -169,6 +169,10 @@ pub enum Ty {
     /// an ABI convention: `let x: &'a mut T` accepts `&mut place`, whereas a
     /// `var x: T` accepts a caller write-back place.
     Fn(Rc<[Ty]>, Rc<Ty>, Rc<[Convention]>, Rc<[bool]>, CallableQualifiers),
+    /// RFC-0167 immutable rooted-view carrier.  This is deliberately distinct
+    /// from its payload: a view copies a retained root-plus-projection handle,
+    /// never an owned payload or a lexical loan relation.
+    View(Rc<Ty>),
     Var(u32),
 }
 
@@ -263,6 +267,7 @@ impl fmt::Display for Ty {
                 }
                 write!(f, ") -> {ret}")
             }
+            Ty::View(payload) => write!(f, "&{payload}"),
             Ty::Var(_) => write!(f, "?"),
         }
     }
@@ -271,6 +276,7 @@ impl fmt::Display for Ty {
 fn collect_callable_lifetime_markers(ty: &Ty, markers: &mut HashMap<String, String>) {
     match ty {
         Ty::List(element) => collect_callable_lifetime_markers(element, markers),
+        Ty::View(payload) => collect_callable_lifetime_markers(payload, markers),
         Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
             if let Ty::Named(name, arguments) = ty
                 && arguments.is_empty()
@@ -324,6 +330,9 @@ fn normalize_callable_lifetime_markers(
         Ty::List(element) => Ty::List(Box::new(normalize_callable_lifetime_markers(
             element, markers,
         )).into()),
+        Ty::View(payload) => Ty::View(
+            Box::new(normalize_callable_lifetime_markers(payload, markers)).into(),
+        ),
         Ty::Tuple(items) => Ty::Tuple(
             items
                 .iter()
@@ -455,6 +464,30 @@ fn is_builtin_type_name(name: &str) -> bool {
     BUILTIN_TYPE_NAMES.contains(&name) || CapabilityKind::from_name(name).is_some()
 }
 
+/// Linker mode markers identify the source module that owns a callable.  They
+/// are retained metadata (`@opt:module`), not user spellings, so a normal entry
+/// can call an imported opt export without becoming opt itself.  In particular,
+/// an inherent method may lower to an unqualified `List__map`; its linker-stamped
+/// source owner, rather than that mangled implementation spelling, decides the
+/// contract.
+fn source_callable_is_opt(modes: &[String], function: &Function) -> bool {
+    if let Some(owner) = witchy_syntax::linker::linked_source_module(function) {
+        return modes.iter().any(|mode| mode == &format!("@opt:{owner}"));
+    }
+
+    // Standalone type-checking has no linked source owner. Preserve its
+    // source-level `mode opt` behavior; linked modules always carry the marker
+    // above, so an unqualified lowered std method cannot inherit entry mode.
+    if !function.name.contains('.') {
+        return modes.iter().any(|mode| mode == "opt");
+    }
+    modes.iter().any(|mode| {
+        mode.strip_prefix("@opt:")
+            .and_then(|owner| function.name.strip_prefix(owner))
+            .is_some_and(|suffix| suffix.starts_with('.'))
+    })
+}
+
 /// Linked async signatures may retain the module-qualified spelling for the
 /// compiler-provided Task type while source calls use its bare builtin name.
 fn same_builtin_nominal_head(left: &str, right: &str) -> bool {
@@ -524,24 +557,48 @@ pub fn anon_union_synthetic_variants(name: &str) -> Option<Vec<(String, usize)>>
 /// Validate that every named type in `t` is known — a builtin, a declared type,
 /// or a lowercase generic parameter — so a typo like `fn f(x: Flarb)` is a clear
 /// "unknown type" error rather than an opaque type that mis-unifies later.
-/// Whether a declared type carries a `frozen` qualifier at the top (`frozen T`,
-/// possibly under other stacked qualifiers) — used to enforce that a `frozen`
-/// (deeply immutable) value is never declared mutable (RFC-0025).
-fn is_frozen_type(t: &ast::Type) -> bool {
+/// Whether the value handle itself carries a `frozen` qualifier. Qualifiers
+/// beneath an explicit reference describe its referent instead: `&'a frozen T`
+/// leaves the reference handle movable and replaceable.
+fn is_frozen_value_type(t: &ast::Type) -> bool {
     match t {
         ast::Type::Qualified(ast::TypeQual::Frozen, _) => true,
-        ast::Type::Qualified(_, inner) => is_frozen_type(inner),
+        ast::Type::Qualified(ast::TypeQual::Unique, inner) => is_frozen_value_type(inner),
         _ => false,
     }
 }
 
-/// Whether a declared type carries a `local unique` qualifier at the top — used to
-/// reject it in escaping positions (a return type), per RFC-0026.
-fn is_local_unique_type(t: &ast::Type) -> bool {
+/// Whether this declaration qualifies the value handle itself as `unique`.
+/// A qualifier below an explicit reference belongs to the referent, so the
+/// (copyable) reference handle does not become affine.
+fn is_unique_value_type(t: &ast::Type) -> bool {
     match t {
-        ast::Type::Qualified(ast::TypeQual::LocalUnique, _) => true,
-        ast::Type::Qualified(_, inner) => is_local_unique_type(inner),
+        ast::Type::Qualified(ast::TypeQual::Unique, _) => true,
+        ast::Type::Qualified(ast::TypeQual::Frozen, inner) => is_unique_value_type(inner),
         _ => false,
+    }
+}
+
+fn type_stores_value_parameter(t: &ast::Type, parameter: &str) -> bool {
+    match t {
+        ast::Type::Qualified(
+            ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+            _,
+        ) => false,
+        ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => {
+            type_stores_value_parameter(inner, parameter)
+        }
+        ast::Type::Named(name, arguments) => {
+            name == parameter || arguments.iter().any(|arg| type_stores_value_parameter(arg, parameter))
+        }
+        ast::Type::Tuple(items) => items.iter().any(|item| type_stores_value_parameter(item, parameter)),
+        ast::Type::Dyn(..) | ast::Type::Fn(..) => false,
+        ast::Type::RecordCompose { base, fields } => {
+            type_stores_value_parameter(base, parameter)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_stores_value_parameter(field, parameter))
+        }
     }
 }
 
@@ -1540,6 +1597,15 @@ fn reject_borrowed_capability_views(
     storage: &ReferenceStorageClassifier<'_>,
 ) -> Result<(), TypeError> {
     match ty {
+        ast::Type::Qualified(ast::TypeQual::View, inner) => {
+            if let Some(capability) = storage.first_stored_capability(inner) {
+                return terr(format!(
+                    "immutable view of `{}` would retain capability `{capability}`, but no authenticated retained-authority carrier is admitted",
+                    witchy_syntax::format::type_str(inner)
+                ));
+            }
+            reject_borrowed_capability_views(inner, storage)
+        }
         ast::Type::Qualified(
             ast::TypeQual::Borrow(lifetime)
             | ast::TypeQual::LegacyBorrow(lifetime)
@@ -1548,7 +1614,7 @@ fn reject_borrowed_capability_views(
         ) => {
             if let Some(capability) = storage.first_stored_capability(inner) {
                 return terr(format!(
-                    "borrowed view `View({}, '{lifetime})` names capability `{capability}` as an \
+                    "explicit reference with lifetime `'{lifetime}` to `{}` names capability `{capability}` as an \
                      ordinary owner, but host capabilities require a lease-bearing API; an \
                      ordinary lifetime cannot extend capability authority",
                     witchy_syntax::format::type_str(inner)
@@ -1588,17 +1654,193 @@ fn validate_type_model(
 ) -> Result<(), TypeError> {
     validate_type(t, known, arities, nominal_parameters)?;
     reject_bare_unsized_types(t)?;
-    reject_owned_qualifiers_inside_references(t)?;
-    reject_contradictory_exclusive_reference_handle_qualifiers(t)?;
+    validate_frozen_unique_reference_qualifiers(t)?;
+    reject_invalid_frozen_payloads(t, type_defs)?;
     reject_structural_authority_type(t, type_defs)?;
     reject_borrowed_capability_views(t, storage)
+}
+
+/// `frozen` is deep payload immutability, not a way to turn authority into a
+/// shareable value or to hide an exclusive loan inside an immutable shell.
+/// Check it while source nominal structure is still available: `Ty` erases
+/// qualifiers and cannot recover a nested record field after monomorphization.
+fn reject_invalid_frozen_payloads(
+    t: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+) -> Result<(), TypeError> {
+    fn substitute(
+        t: &ast::Type,
+        substitutions: &HashMap<String, ast::Type>,
+    ) -> ast::Type {
+        match t {
+            ast::Type::Named(name, arguments) if arguments.is_empty() => substitutions
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| t.clone()),
+            ast::Type::Named(name, arguments) => ast::Type::Named(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| substitute(argument, substitutions))
+                    .collect(),
+            ),
+            ast::Type::Tuple(items) => ast::Type::Tuple(
+                items.iter().map(|item| substitute(item, substitutions)).collect(),
+            ),
+            ast::Type::Slice(item) => ast::Type::Slice(Box::new(substitute(item, substitutions))),
+            ast::Type::RecordCompose { base, fields } => ast::Type::RecordCompose {
+                base: Box::new(substitute(base, substitutions)),
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| (name.clone(), substitute(field, substitutions)))
+                    .collect(),
+            },
+            ast::Type::Fn(parameters, result, conventions, qualifiers) => ast::Type::Fn(
+                parameters.iter().map(|parameter| substitute(parameter, substitutions)).collect(),
+                Box::new(substitute(result, substitutions)),
+                conventions.clone(),
+                *qualifiers,
+            ),
+            ast::Type::Qualified(qualifier, inner) => {
+                ast::Type::Qualified(qualifier.clone(), Box::new(substitute(inner, substitutions)))
+            }
+            ast::Type::Dyn(name, arguments) => ast::Type::Dyn(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| substitute(argument, substitutions))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn stored_payload_hazard(
+        t: &ast::Type,
+        defs: &HashMap<&str, &ast::TypeDef>,
+        seen: &mut HashSet<String>,
+    ) -> Option<String> {
+        match t {
+            ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _) => {
+                Some("an exclusive-reference field".into())
+            }
+            // Frozen preserves shared loans; it neither owns nor copies their
+            // referents. An exclusive reference is handled above because the
+            // frozen aggregate could otherwise retain mutable access.
+            ast::Type::Qualified(
+                ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_),
+                _,
+            ) => None,
+            ast::Type::Qualified(ast::TypeQual::Unique, _) => {
+                Some("a unique (affine) payload".into())
+            }
+            ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => {
+                stored_payload_hazard(inner, defs, seen)
+            }
+            ast::Type::Named(name, arguments) => {
+                if is_builtin_authority_type_name(name) {
+                    return Some(format!("capability `{name}`"));
+                }
+                let Some(definition) = defs.get(name.as_str()) else {
+                    // Built-in containers own their arguments. User nominals
+                    // are always present in `defs`; an unbound type parameter
+                    // has no arguments and remains transportable (e.g.
+                    // `frozen a`).
+                    return arguments
+                        .iter()
+                        .find_map(|argument| stored_payload_hazard(argument, defs, seen));
+                };
+                if definition.is_capability {
+                    return Some(format!("capability `{name}`"));
+                }
+                if definition.must_consume {
+                    return Some(format!("must-consume payload `{name}`"));
+                }
+                if !seen.insert(name.clone()) {
+                    return None;
+                }
+                let parameters = ast::effective_nominal_type_def_params(definition);
+                let substitutions = parameters
+                    .into_iter()
+                    .zip(arguments.iter().cloned())
+                    .collect::<HashMap<_, _>>();
+                let hazard = definition
+                    .variants
+                    .iter()
+                    .flat_map(|variant| &variant.fields)
+                    .find_map(|field| {
+                        stored_payload_hazard(&substitute(field, &substitutions), defs, seen)
+                    });
+                seen.remove(name);
+                hazard
+            }
+            ast::Type::Tuple(items) => items
+                .iter()
+                .find_map(|item| stored_payload_hazard(item, defs, seen)),
+            // A `dyn` value is an owned, erased concrete payload plus a
+            // witness. Its type arguments describe only the method surface,
+            // so no source type can prove that every value it may pack is
+            // copyable. In particular, `dynamic.Dynamic` stores `dyn Reflect`;
+            // accepting `frozen Dynamic` would let its erased payload hide a
+            // must/unique/once value, capability, or exclusive reference.
+            // Reject the shell before qualifier erasure, rather than trying to
+            // recover a packing fact from a later runtime descriptor.
+            ast::Type::Dyn(_, _) => Some("an existential payload".into()),
+            ast::Type::Fn(_, _, _, qualifiers) => qualifiers
+                .once
+                .then_some("a once-callable (affine) payload".into()),
+            ast::Type::RecordCompose { base, fields } => {
+                stored_payload_hazard(base, defs, seen).or_else(|| {
+                    fields
+                        .iter()
+                        .find_map(|(_, field)| stored_payload_hazard(field, defs, seen))
+                })
+            }
+        }
+    }
+
+    fn visit(
+        t: &ast::Type,
+        defs: &HashMap<&str, &ast::TypeDef>,
+    ) -> Result<(), TypeError> {
+        match t {
+            ast::Type::Qualified(ast::TypeQual::Frozen, inner) => {
+                if let Some(hazard) = stored_payload_hazard(inner, defs, &mut HashSet::new()) {
+                    let diagnostic = if let Some(capability) = hazard.strip_prefix("capability ") {
+                        format!("frozen capabilities do not exist (payload carries {capability})")
+                    } else {
+                        format!("frozen values cannot contain {hazard}")
+                    };
+                    return terr(format!(
+                        "`frozen {}` is invalid: {diagnostic}",
+                        witchy_syntax::format::type_str(inner),
+                    ));
+                }
+                visit(inner, defs)
+            }
+            ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => visit(inner, defs),
+            ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
+                arguments.iter().try_for_each(|argument| visit(argument, defs))
+            }
+            ast::Type::RecordCompose { base, fields } => {
+                visit(base, defs)?;
+                fields.iter().try_for_each(|(_, field)| visit(field, defs))
+            }
+            ast::Type::Fn(parameters, result, _, _) => {
+                parameters.iter().try_for_each(|parameter| visit(parameter, defs))?;
+                visit(result, defs)
+            }
+        }
+    }
+
+    visit(t, defs)
 }
 
 fn reject_bare_unsized_types(t: &ast::Type) -> Result<(), TypeError> {
     fn visit(t: &ast::Type, under_reference: bool) -> Result<(), TypeError> {
         match t {
             ast::Type::Qualified(
-                ast::TypeQual::Borrow(_)
+                ast::TypeQual::View
+                | ast::TypeQual::Borrow(_)
                 | ast::TypeQual::LegacyBorrow(_)
                 | ast::TypeQual::BorrowMut(_),
                 inner,
@@ -1637,29 +1879,66 @@ fn reject_bare_unsized_types(t: &ast::Type) -> Result<(), TypeError> {
     visit(t, false)
 }
 
-/// `frozen`, `unique`, and `local unique` describe owned storage or a reference
-/// handle. They are not target qualifiers: `&'a mut frozen T` would misleadingly
-/// promise write access to immutable storage. Apply such a qualifier outside the
-/// reference when the handle itself needs that contract.
-fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeError> {
+/// Validate the RFC-0167 ownership/reference qualifier matrix without changing
+/// the erased runtime type. `frozen` and `unique` qualify owned values, while a
+/// reference's outermost qualifier is its access relation. A qualifier below a
+/// reference therefore describes the referent: `&'a frozen T` and both forms of
+/// `&'a unique T` are valid, but `&'a mut frozen T` is not.
+fn validate_frozen_unique_reference_qualifiers(t: &ast::Type) -> Result<(), TypeError> {
     fn visit(t: &ast::Type) -> Result<(), TypeError> {
+        let mut cursor = t;
+        let mut frozen = false;
+        let mut unique = false;
+        let mut outer_reference_qualifier = None;
+        loop {
+            match cursor {
+                ast::Type::Qualified(ast::TypeQual::Frozen, inner) => {
+                    frozen = true;
+                    outer_reference_qualifier.get_or_insert("frozen");
+                    cursor = inner;
+                }
+                ast::Type::Qualified(ast::TypeQual::Unique, inner) => {
+                    unique = true;
+                    outer_reference_qualifier.get_or_insert("unique");
+                    cursor = inner;
+                }
+                ast::Type::Qualified(
+                    ast::TypeQual::View | ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+                    _,
+                ) if outer_reference_qualifier.is_some() => {
+                    return terr(format!(
+                        "outer `{}` reference qualifiers are invalid; write the ownership qualifier inside the reference target",
+                        outer_reference_qualifier.expect("set above")
+                    ));
+                }
+                _ => break,
+            }
+        }
+        if frozen && unique {
+            return terr(
+                "`frozen` and `unique` cannot qualify the same value; transfer unique storage into a frozen snapshot instead",
+            );
+        }
         match t {
             ast::Type::Qualified(reference, inner)
-                if matches!(reference, ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_)) => {
-                if let ast::Type::Qualified(qualifier, _) = inner.as_ref() {
-                    let invalid = matches!(
-                        qualifier,
-                        ast::TypeQual::Unique | ast::TypeQual::LocalUnique
-                    ) || matches!(
-                        (reference, qualifier),
-                        (ast::TypeQual::BorrowMut(_), ast::TypeQual::Frozen)
-                    );
-                    if invalid {
-                    return terr(format!(
-                        "`{}` may qualify an owned value or reference handle, not a reference target",
-                        qualifier.as_str()
-                    ));
+                if matches!(reference, ast::TypeQual::View | ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_)) => {
+                let mut target = inner.as_ref();
+                let mut target_frozen = false;
+                loop {
+                    match target {
+                        ast::Type::Qualified(ast::TypeQual::Frozen, next) => {
+                            target_frozen = true;
+                            target = next;
+                        }
+                        ast::Type::Qualified(ast::TypeQual::Unique, next) => target = next,
+                        _ => break,
                     }
+                }
+                if target_frozen && matches!(reference, ast::TypeQual::BorrowMut(_)) {
+                    return terr(format!(
+                        "`{}` cannot target `frozen` storage; an exclusive reference requires a mutable referent",
+                        witchy_syntax::format::type_str(t)
+                    ));
                 }
                 visit(inner)
             }
@@ -1668,55 +1947,6 @@ fn reject_owned_qualifiers_inside_references(t: &ast::Type) -> Result<(), TypeEr
             ast::Type::Named(_, arguments) | ast::Type::Tuple(arguments) | ast::Type::Dyn(_, arguments) => {
                 arguments.iter().try_for_each(visit)
             }
-            ast::Type::RecordCompose { base, fields } => {
-                visit(base)?;
-                fields.iter().try_for_each(|(_, field)| visit(field))
-            }
-            ast::Type::Fn(parameters, result, _, _) => {
-                parameters.iter().try_for_each(visit)?;
-                visit(result)
-            }
-        }
-    }
-    visit(t)
-}
-
-/// `frozen` makes a handle read-only while `unique` / `local unique` promise
-/// exclusive mutable authority. They are individually meaningful wrappers for
-/// references, but cannot describe the same `&mut` handle at once.
-fn reject_contradictory_exclusive_reference_handle_qualifiers(t: &ast::Type) -> Result<(), TypeError> {
-    fn visit(t: &ast::Type) -> Result<(), TypeError> {
-        let mut cursor = t;
-        let mut frozen = false;
-        let mut unique = false;
-        loop {
-            match cursor {
-                ast::Type::Qualified(ast::TypeQual::Frozen, inner) => {
-                    frozen = true;
-                    cursor = inner;
-                }
-                ast::Type::Qualified(
-                    ast::TypeQual::Unique | ast::TypeQual::LocalUnique,
-                    inner,
-                ) => {
-                    unique = true;
-                    cursor = inner;
-                }
-                ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _) if frozen && unique => {
-                    return terr(
-                        "`frozen` and `unique` cannot qualify the same exclusive reference handle; \
-                         drop `frozen` for mutable access or use a shared `&'a T` reference",
-                    );
-                }
-                _ => break,
-            }
-        }
-        match t {
-            ast::Type::Qualified(_, inner) => visit(inner),
-            ast::Type::Slice(inner) => visit(inner),
-            ast::Type::Named(_, arguments)
-            | ast::Type::Tuple(arguments)
-            | ast::Type::Dyn(_, arguments) => arguments.iter().try_for_each(visit),
             ast::Type::RecordCompose { base, fields } => {
                 visit(base)?;
                 fields.iter().try_for_each(|(_, field)| visit(field))
@@ -2029,16 +2259,6 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         &f.name,
                         "a return type",
                     )?;
-                    // (RFC-0026) `local unique` is valid only WITHIN the call — it may
-                    // not escape — so it cannot be a return type (a return escapes).
-                    if is_local_unique_type(t) {
-                        return Err(TypeError {
-                            message: format!(
-                                "`{}`: a `local unique` value cannot escape, so it cannot be a return type — use `unique` (returnable) or drop `local`",
-                                f.name
-                            ),
-                        });
-                    }
                 }
                 validate_block_types(
                     &f.body,
@@ -2918,7 +3138,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
             ));
         }
     }
-    // (BUG-335, spec §16.3) `main` may return only `Nil` (the default) or `Int` (the
+    // (BUG-335, spec §16.3) `main` may return only `()` (the default) or `Int` (the
     // process exit code); `Float` is also surfaced (both backends print it). Any
     // OTHER return type — `String`/`Bool`/`List`/a record — is a parity trap: the
     // interpreter echoes it when the program printed nothing, but the compiled run
@@ -2926,16 +3146,17 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
     // it at check time so the backends agree by construction (fail loud, never a
     // silently different answer).
     if let Some(t) = &main.ret {
-        let allowed = matches!(
-            t.unqualified(),
-            ast::Type::Named(n, _) if n == "Nil" || n == "Int" || n == "Float"
-        );
+        let allowed = match t.unqualified() {
+            ast::Type::Tuple(items) => items.is_empty(),
+            ast::Type::Named(n, _) => n == "Nil" || n == "Int" || n == "Float",
+            _ => false,
+        };
         if !allowed {
             return terr(format!(
-                "`main` returns `{}`, but `main` may return only `Nil` (the default) or \
+                "`main` returns `{}`, but `main` may return only `()` (the default) or \
                  `Int` (the process exit code) — a `String`/`Bool`/`List`/record result is \
                  printed by the interpreter but dropped by the compiled backend, so the two \
-                 diverge. Print the value inside `main` and return `Nil` or an exit code.",
+                 diverge. Print the value inside `main` and return `()` or an exit code.",
                 witchy_syntax::format::type_str(t)
             ));
         }
@@ -3025,7 +3246,7 @@ fn check_dynamic_method_declarations(module: &Module) -> Result<(), TypeError> {
 fn canonical_public_state_std_impl(implementation: &ast::ImplDef) -> bool {
     let scalar = matches!(
         implementation.type_name.as_str(),
-        "Nil" | "Bool" | "Int" | "Float" | "Duration" | "String"
+        "Tuple0" | "Bool" | "Int" | "Float" | "Duration" | "String"
     ) && implementation.target_args.is_empty();
     if scalar {
         return true;
@@ -3348,9 +3569,9 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
 /// of a generic ADT from its variant field types.
 /// A plain `let`-borrowed parameter may not BE the function's result: every
 /// block tail and `return` expression is checked for the bare parameter
-/// (through if/match/block tails). RFC-0083's explicit lifetime relation is the
-/// one exception: `let x: let('a) T -> View(T, 'a)` deliberately returns a
-/// checked view, and the loan checker validates that relation below.
+/// (through if/match/block tails). An explicit lifetime relation is the one
+/// exception: `x: &'a T -> &'a T` deliberately returns a checked reference,
+/// and the loan checker validates that relation below.
 fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
     let returned_lifetime = func.ret.as_ref().and_then(|ty| match ty {
         ast::Type::Qualified(
@@ -3481,13 +3702,20 @@ fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
     scan_returns_block(&func.body, &borrowed, &func.name)
 }
 
-fn is_unique_capacity_result(ty: &ast::Type) -> bool {
+/// Whether this is an outer `unique` owner of a collection root. Nested
+/// owners are permitted, but each component is proved separately by
+/// `produces_root_owner` below.
+fn is_unique_root_owner_result(ty: &ast::Type) -> bool {
     matches!(
         ty,
         ast::Type::Qualified(ast::TypeQual::Unique, inner)
             if matches!(inner.unqualified(), ast::Type::Named(name, _)
                 if matches!(name.as_str(), "List" | "Dict"))
     )
+}
+
+fn is_unique_owner_type(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Qualified(ast::TypeQual::Unique, _))
 }
 
 /// Whether evaluating an expression can reach the statement after it.
@@ -3567,85 +3795,270 @@ fn join_reachable_binding_facts(
     (consumed, must_live, once_invoked)
 }
 
-/// A `unique List` / `unique Dict` result is also a compiled capacity-token
-/// promise. Keep the proof surface deliberately explicit: fresh literals/new
-/// storage and direct calls carrying the same result ABI. Broader local-flow
-/// proofs can be added without weakening this safe default.
-fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
-    let unique_functions: HashSet<String> = module
+/// A `unique List` / `unique Dict` result must carry a checked root-owner
+/// token. Fresh literals/new storage and direct calls carrying the same result
+/// ABI establish one.  A directly returned `own unique` collection parameter
+/// carries that same token too: uniqueness is ownership of the root, not a
+/// promise of spare list capacity.  Broader local-flow proofs remain outside
+/// this deliberately small source proof surface.
+fn check_unique_root_owner_results(module: &Module) -> Result<(), TypeError> {
+    let unique_functions: HashMap<String, ast::Type> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) if function.ret.as_ref().is_some_and(is_unique_owner_type) => {
+                Some((function.name.clone(), function.ret.clone().expect("unique return exists")))
+            }
+            _ => None,
+        })
+        .collect();
+    let unique_result_functions: HashMap<String, ast::Type> = module
         .items
         .iter()
         .filter_map(|item| match item {
             Item::Function(function)
-                if function.ret.as_ref().is_some_and(is_unique_capacity_result) =>
+                if function
+                    .ret
+                    .as_ref()
+                    .and_then(result_ok_payload_type)
+                    .is_some_and(is_unique_root_owner_result) =>
             {
-                Some(function.name.clone())
+                Some((
+                    function.name.clone(),
+                    function.ret.clone().expect("Result return exists"),
+                ))
             }
             _ => None,
         })
         .collect();
 
-    fn produces_capacity(expr: &Expr, functions: &HashSet<String>) -> bool {
+    /// Establishes every `unique` owner named by `expected`, recursively. A
+    /// fresh list proves its outer root and then proves each independently
+    /// declared unique element. A direct call/`own` transfer is accepted only
+    /// when its complete declared type exactly matches `expected`.
+    fn produces_root_owner(
+        expr: &Expr,
+        expected: &ast::Type,
+        functions: &HashMap<String, ast::Type>,
+        transferred_parameters: &HashMap<String, ast::Type>,
+    ) -> bool {
+        if !is_unique_owner_type(expected) {
+            return true;
+        }
         match expr {
-            Expr::List(_) => true,
+            Expr::List(items) => {
+                let ast::Type::Qualified(ast::TypeQual::Unique, inner) = expected else {
+                    return false;
+                };
+                let ast::Type::Named(name, arguments) = inner.unqualified() else {
+                    return false;
+                };
+                name.rsplit('.').next() == Some("List")
+                    && arguments.len() == 1
+                    && items.iter().all(|item| {
+                        produces_root_owner(
+                            item,
+                            &arguments[0],
+                            functions,
+                            transferred_parameters,
+                        )
+                    })
+            }
+            Expr::Str(_) => matches!(
+                expected,
+                ast::Type::Qualified(ast::TypeQual::Unique, inner)
+                    if matches!(inner.unqualified(), ast::Type::Named(name, _)
+                        if name.rsplit('.').next() == Some("String"))
+            ),
+            // This is deliberately only a direct parameter name from the
+            // enclosing function body.  Aliases, projections, aggregate
+            // fields, and nested returns remain unproved rather than silently
+            // inheriting the root-owner token.
+            Expr::Var(name) => transferred_parameters.get(name) == Some(expected),
             Expr::Call { name, args } => {
-                functions.contains(name)
+                functions.get(name) == Some(expected)
                     || (args.is_empty()
+                        && matches!(
+                            expected,
+                            ast::Type::Qualified(ast::TypeQual::Unique, inner)
+                                if matches!(inner.unqualified(), ast::Type::Named(name, _)
+                                    if name.rsplit('.').next() == Some("Dict"))
+                        )
                         && (name == intrinsics::DICT_NEW
                             || name
                                 .strip_prefix(intrinsics::DICT_NEW)
                                 .is_some_and(|suffix| suffix.starts_with("__"))
                             || name.ends_with(".dict.new")))
                     || (args.len() == 1
+                        && matches!(
+                            expected,
+                            ast::Type::Qualified(ast::TypeQual::Unique, inner)
+                                if matches!(inner.unqualified(), ast::Type::Named(name, _)
+                                    if name.rsplit('.').next() == Some("Dict"))
+                        )
                         && (name == intrinsics::DICT_WITH_CAPACITY
                             || name
                                 .strip_prefix(intrinsics::DICT_WITH_CAPACITY)
                                 .is_some_and(|suffix| suffix.starts_with("__"))
                             || name.ends_with(".dict.with_capacity")))
             }
-            Expr::Unary { op: UnOp::Move, expr } => produces_capacity(expr, functions),
+            Expr::Unary { op: UnOp::Move, expr } => {
+                produces_root_owner(expr, expected, functions, transferred_parameters)
+            }
             _ => false,
         }
     }
 
-    fn block_produces_capacity(block: &Block, functions: &HashSet<String>) -> bool {
-        matches!(block.stmts.last(), Some(Stmt::Expr(expr)) if produces_capacity(expr, functions))
+    #[derive(Clone, Copy)]
+    enum UniqueReturnContract<'a> {
+        Direct(&'a ast::Type),
+        ResultOk {
+            result: &'a ast::Type,
+            payload: &'a ast::Type,
+        },
+    }
+
+    fn return_expr_produces_root_owner(
+        expr: &Expr,
+        contract: UniqueReturnContract<'_>,
+        functions: &HashMap<String, ast::Type>,
+        result_functions: &HashMap<String, ast::Type>,
+        transferred_parameters: &HashMap<String, ast::Type>,
+    ) -> bool {
+        match contract {
+            UniqueReturnContract::Direct(expected) => {
+                produces_root_owner(expr, expected, functions, transferred_parameters)
+            }
+            UniqueReturnContract::ResultOk { result, payload } => match expr {
+                Expr::Call { name, .. } => result_functions.get(name) == Some(result),
+                Expr::Ctor { name, args }
+                    if name.rsplit('.').next() == Some("Ok") && args.len() == 1 =>
+                {
+                    produces_root_owner(&args[0], payload, functions, transferred_parameters)
+                }
+                // `Err` has no success payload and therefore no `Ok` owner
+                // root to prove. Its payload remains subject to ordinary type
+                // checking.
+                Expr::Ctor { name, args }
+                    if name.rsplit('.').next() == Some("Err") && args.len() == 1 =>
+                {
+                    true
+                }
+                _ => false,
+            },
+        }
+    }
+
+    fn block_produces_root_owner(
+        block: &Block,
+        contract: UniqueReturnContract<'_>,
+        functions: &HashMap<String, ast::Type>,
+        result_functions: &HashMap<String, ast::Type>,
+        transferred_parameters: &HashMap<String, ast::Type>,
+    ) -> bool {
+        block_can_complete(block)
+            && matches!(block.stmts.last(), Some(Stmt::Expr(expr))
+                if expr_produces_root_owner(expr, contract, functions, result_functions, transferred_parameters))
+    }
+
+    /// A control-flow expression preserves the root-owner proof only when
+    /// every path which reaches its continuation produces the same direct
+    /// owner. Terminal paths have already been checked at their `return`.
+    fn expr_produces_root_owner(
+        expr: &Expr,
+        contract: UniqueReturnContract<'_>,
+        functions: &HashMap<String, ast::Type>,
+        result_functions: &HashMap<String, ast::Type>,
+        transferred_parameters: &HashMap<String, ast::Type>,
+    ) -> bool {
+        match expr {
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                (!block_can_complete(then_block)
+                    || block_produces_root_owner(
+                        then_block,
+                        contract,
+                        functions,
+                        result_functions,
+                        transferred_parameters,
+                    ))
+                    && (!block_can_complete(else_block)
+                        || block_produces_root_owner(
+                            else_block,
+                            contract,
+                            functions,
+                            result_functions,
+                            transferred_parameters,
+                        ))
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => arms.iter().all(|arm| {
+                !expr_can_complete(&arm.body)
+                    || expr_produces_root_owner(
+                        &arm.body,
+                        contract,
+                        functions,
+                        result_functions,
+                        transferred_parameters,
+                    )
+            }),
+            Expr::Block(block) => {
+                !block_can_complete(block)
+                    || block_produces_root_owner(
+                        block,
+                        contract,
+                        functions,
+                        result_functions,
+                        transferred_parameters,
+                    )
+            }
+            _ => return_expr_produces_root_owner(
+                expr,
+                contract,
+                functions,
+                result_functions,
+                transferred_parameters,
+            ),
+        }
     }
 
     fn check_returns_expr(
         expr: &Expr,
         function: &str,
-        functions: &HashSet<String>,
+        contract: UniqueReturnContract<'_>,
+        functions: &HashMap<String, ast::Type>,
+        result_functions: &HashMap<String, ast::Type>,
+        transferred_parameters: &HashMap<String, ast::Type>,
     ) -> Result<(), TypeError> {
         match expr {
             Expr::If { cond, then_block, else_block } => {
-                check_returns_expr(cond, function, functions)?;
-                check_returns_block(then_block, function, functions)?;
+                check_returns_expr(cond, function, contract, functions, result_functions, transferred_parameters)?;
+                check_returns_block(then_block, function, contract, functions, result_functions, transferred_parameters)?;
                 if let Some(block) = else_block {
-                    check_returns_block(block, function, functions)?;
+                    check_returns_block(block, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::Match { scrutinee, arms } => {
-                check_returns_expr(scrutinee, function, functions)?;
+                check_returns_expr(scrutinee, function, contract, functions, result_functions, transferred_parameters)?;
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        check_returns_expr(guard, function, functions)?;
+                        check_returns_expr(guard, function, contract, functions, result_functions, transferred_parameters)?;
                     }
-                    check_returns_expr(&arm.body, function, functions)?;
+                    check_returns_expr(&arm.body, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
-            Expr::Block(block) => check_returns_block(block, function, functions)?,
+            Expr::Block(block) => {
+                check_returns_block(block, function, contract, functions, result_functions, transferred_parameters)?
+            }
             Expr::While { cond, body } => {
-                check_returns_expr(cond, function, functions)?;
-                check_returns_block(body, function, functions)?;
+                check_returns_expr(cond, function, contract, functions, result_functions, transferred_parameters)?;
+                check_returns_block(body, function, contract, functions, result_functions, transferred_parameters)?;
             }
             Expr::WhileLet { scrutinee, body, .. } => {
-                check_returns_expr(scrutinee, function, functions)?;
-                check_returns_block(body, function, functions)?;
+                check_returns_expr(scrutinee, function, contract, functions, result_functions, transferred_parameters)?;
+                check_returns_block(body, function, contract, functions, result_functions, transferred_parameters)?;
             }
             Expr::For { iter, body, .. } => {
-                check_returns_expr(iter, function, functions)?;
-                check_returns_block(body, function, functions)?;
+                check_returns_expr(iter, function, contract, functions, result_functions, transferred_parameters)?;
+                check_returns_block(body, function, contract, functions, result_functions, transferred_parameters)?;
             }
             Expr::Call { args, .. }
             | Expr::Ctor { args, .. }
@@ -3653,54 +4066,56 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
             | Expr::List(args)
             | Expr::Tuple(args) => {
                 for arg in args {
-                    check_returns_expr(arg, function, functions)?;
+                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::LabeledCall { args, .. } => {
                 for (_, arg) in args {
-                    check_returns_expr(arg, function, functions)?;
+                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
-                check_returns_expr(receiver, function, functions)?;
+                check_returns_expr(receiver, function, contract, functions, result_functions, transferred_parameters)?;
                 for arg in args {
-                    check_returns_expr(arg, function, functions)?;
+                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::ExistentialCall { receiver, args, .. } => {
-                check_returns_expr(receiver, function, functions)?;
+                check_returns_expr(receiver, function, contract, functions, result_functions, transferred_parameters)?;
                 for arg in args {
-                    check_returns_expr(arg, function, functions)?;
+                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::Apply { func, args } => {
-                check_returns_expr(func, function, functions)?;
+                check_returns_expr(func, function, contract, functions, result_functions, transferred_parameters)?;
                 for arg in args {
-                    check_returns_expr(arg, function, functions)?;
+                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
-            | Expr::Field { base: expr, .. } => check_returns_expr(expr, function, functions)?,
+            | Expr::Field { base: expr, .. } => {
+                check_returns_expr(expr, function, contract, functions, result_functions, transferred_parameters)?
+            }
             Expr::Binary { lhs, rhs, .. }
             | Expr::Range { lo: lhs, hi: rhs, .. }
             | Expr::Index { base: lhs, index: rhs } => {
-                check_returns_expr(lhs, function, functions)?;
-                check_returns_expr(rhs, function, functions)?;
+                check_returns_expr(lhs, function, contract, functions, result_functions, transferred_parameters)?;
+                check_returns_expr(rhs, function, contract, functions, result_functions, transferred_parameters)?;
             }
             Expr::RecordUpdate { base, fields, .. } => {
-                check_returns_expr(base, function, functions)?;
+                check_returns_expr(base, function, contract, functions, result_functions, transferred_parameters)?;
                 for (_, value) in fields {
-                    check_returns_expr(value, function, functions)?;
+                    check_returns_expr(value, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             Expr::Record { fields, spread, .. } => {
                 for (_, value) in fields {
-                    check_returns_expr(value, function, functions)?;
+                    check_returns_expr(value, function, contract, functions, result_functions, transferred_parameters)?;
                 }
                 if let Some(spread) = spread {
-                    check_returns_expr(spread, function, functions)?;
+                    check_returns_expr(spread, function, contract, functions, result_functions, transferred_parameters)?;
                 }
             }
             _ => {}
@@ -3711,13 +4126,24 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
     fn check_returns_block(
         block: &Block,
         function: &str,
-        functions: &HashSet<String>,
+        contract: UniqueReturnContract<'_>,
+        functions: &HashMap<String, ast::Type>,
+        result_functions: &HashMap<String, ast::Type>,
+        transferred_parameters: &HashMap<String, ast::Type>,
     ) -> Result<(), TypeError> {
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Return(Some(expr)) if !produces_capacity(expr, functions) => {
+                Stmt::Return(Some(expr))
+                    if !expr_produces_root_owner(
+                        expr,
+                        contract,
+                        functions,
+                        result_functions,
+                        transferred_parameters,
+                    ) =>
+                {
                     return terr(format!(
-                        "in `{function}`: this `unique` collection return has no capacity-token proof — return fresh list/dict storage or the direct result of another `unique` collection function"
+                        "in `{function}`: this `unique` collection return has no root-owner proof — return fresh list/dict storage, the direct result of another `unique` collection function, or this function's direct `own unique` parameter"
                     ));
                 }
                 Stmt::Return(Some(expr))
@@ -3725,24 +4151,65 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
                 | Stmt::Assign { value: expr, .. }
                 | Stmt::LetPattern { value: expr, .. }
                 | Stmt::Expr(expr)
-                | Stmt::Yield(expr) => check_returns_expr(expr, function, functions)?,
+                | Stmt::Yield(expr) => {
+                    check_returns_expr(expr, function, contract, functions, result_functions, transferred_parameters)?
+                }
                 Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             }
         }
         Ok(())
     }
 
+    /// `Result` carries its success value in `Ok`.  Its runtime `Ty` erases
+    /// source qualifiers, so a `unique` root nested there must receive the
+    /// same source proof as an outer result before constructor inference can
+    /// hide a `var` write-back root inside `Ok`.
+    fn result_ok_payload_type(result: &ast::Type) -> Option<&ast::Type> {
+        let ast::Type::Named(name, arguments) = result.unqualified() else {
+            return None;
+        };
+        (name.rsplit('.').next() == Some("Result") && arguments.len() == 2)
+            .then(|| &arguments[0])
+    }
+
     for item in &module.items {
         let Item::Function(function) = item else { continue };
-        if !function.ret.as_ref().is_some_and(is_unique_capacity_result) {
+        let Some(result) = function.ret.as_ref() else {
             continue;
-        }
-        check_returns_block(&function.body, &function.name, &unique_functions)?;
+        };
+        let transferred_parameters = function.params.iter().filter_map(|parameter| {
+            (parameter.convention == Convention::Own
+                && parameter.ty.as_ref().is_some_and(is_unique_owner_type))
+                .then(|| (parameter.name.clone(), parameter.ty.clone().expect("own unique type exists")))
+        }).collect::<HashMap<_, _>>();
+        let contract = if is_unique_root_owner_result(result) {
+            UniqueReturnContract::Direct(result)
+        } else if let Some(payload) = result_ok_payload_type(result)
+            && is_unique_root_owner_result(payload)
+        {
+            UniqueReturnContract::ResultOk { result, payload }
+        } else {
+            continue;
+        };
+        check_returns_block(
+            &function.body,
+            &function.name,
+            contract,
+            &unique_functions,
+            &unique_result_functions,
+            &transferred_parameters,
+        )?;
         if block_can_complete(&function.body)
-            && !block_produces_capacity(&function.body, &unique_functions)
+            && !block_produces_root_owner(
+                &function.body,
+                contract,
+                &unique_functions,
+                &unique_result_functions,
+                &transferred_parameters,
+            )
         {
             return terr(format!(
-                "in `{}`: the tail of a `unique` collection function has no capacity-token proof — return fresh list/dict storage or the direct result of another `unique` collection function",
+                "in `{}`: the tail of a `unique` collection return has no root-owner proof — return fresh list/dict storage, the direct result of another `unique` collection function, or this function's direct `own unique` parameter",
                 function.name
             ));
         }
@@ -3754,6 +4221,92 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
 /// copied by value, never pointer-backed.
 fn is_scalar_ty(t: &Ty) -> bool {
     matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration)
+}
+
+/// The source layouts the initial canonical inline ABI can authenticate.  Do
+/// not broaden this to arbitrary `packed` declarations: nested packed fields,
+/// generics, and sums need their own descriptor/carrier contracts.
+fn region_packed_layout_descriptors(module: &Module) -> HashMap<String, RegionPackedLayoutDescriptor> {
+    let mut descriptors = HashMap::new();
+    for item in &module.items {
+        let Item::Type(definition) = item else { continue };
+        let Some(variant) = definition.variants.first() else { continue };
+        if !(definition.packed
+            && definition.params.is_empty()
+            && definition.variants.len() == 1
+            && variant.fields.iter().all(|field| matches!(field.unqualified(),
+                ast::Type::Named(name, arguments)
+                    if arguments.is_empty()
+                        && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
+            ))) {
+            continue;
+        }
+        let fields = variant.fields.clone();
+        descriptors.insert(definition.name.clone(), RegionPackedLayoutDescriptor {
+            record: definition.name.clone(), fields: fields.clone(),
+        });
+        // The linked entry's own definitions have one known canonical
+        // qualification. Do not manufacture aliases for imported modules:
+        // an imported packed declaration needs its owner-qualified carrier.
+        if let Some(entry) = module.linked_entry.as_deref()
+            && !definition.name.contains('.')
+        {
+            let record = format!("{entry}.{}", definition.name);
+            descriptors.insert(record.clone(), RegionPackedLayoutDescriptor { record, fields });
+        }
+    }
+    descriptors
+}
+
+fn region_value_tail(block: &Block) -> Option<&Expr> {
+    match block.stmts.last()? {
+        Stmt::Expr(value) | Stmt::Return(Some(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn region_declared_local_names(block: &Block) -> HashSet<String> {
+    block
+        .stmts
+        .iter()
+        .filter_map(|statement| match statement {
+            Stmt::Let { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Recover the checked source-place root of a direct reference handle.  A
+/// region-local *handle* may leave when it borrows a parent root (`let h =
+/// &parent; h`); a region-local owner may not.  We deliberately accept only
+/// direct borrow/alias/ascription chains until the retained loan graph exports
+/// a richer projection witness.
+fn region_reference_root(block: &Block) -> Option<String> {
+    fn root(expression: &Expr, aliases: &HashMap<String, String>) -> Option<String> {
+        match expression {
+            Expr::Var(name) => aliases.get(name).cloned().or_else(|| Some(name.clone())),
+            Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, expr } => root(expr, aliases),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => root(base, aliases),
+            Expr::As { expr, .. } => root(expr, aliases),
+            _ => None,
+        }
+    }
+
+    let mut aliases = HashMap::new();
+    let (tail, leading) = block.stmts.split_last()?;
+    for statement in leading {
+        if let Stmt::Let { name, value, .. } = statement
+            && let Some(owner_root) = root(value, &aliases)
+            && matches!(value, Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }
+                | Expr::Var(_) | Expr::As { .. })
+        {
+            aliases.insert(name.clone(), owner_root);
+        }
+    }
+    match tail {
+        Stmt::Expr(value) | Stmt::Return(Some(value)) => root(value, &aliases),
+        _ => None,
+    }
 }
 
 fn collect_trait_method_names(module: &Module) -> HashSet<String> {
@@ -3774,7 +4327,8 @@ fn collect_trait_method_names(module: &Module) -> HashSet<String> {
 /// the value's actual type arguments on access.
 type RecordInfo = (Vec<u32>, Vec<(String, Ty)>);
 type CallObligations = Vec<(Ty, String)>;
-type UserCallSig = (Vec<Ty>, Ty, CallObligations);
+type ViewPayloadConstraints = Vec<Ty>;
+type UserCallSig = (Vec<Ty>, Ty, CallObligations, ViewPayloadConstraints);
 type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3785,6 +4339,137 @@ enum SuspensionTransferKind {
     /// A spawned task can be shallow-cancelled while suspended. With no drop
     /// glue, abandoning this frame would also abandon any live must obligation.
     Cancellable(String),
+}
+
+/// Qualifier-bearing callable facts that are intentionally absent from [`Ty`]'s
+/// runtime function identity. Result guarantees require every source path;
+/// parameter demands are retained if any source path needs them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UniqueCallableContract {
+    unique_params: Vec<bool>,
+    unique_result: bool,
+    /// `Ty` deliberately erases `frozen`, but an indirect `var` call still
+    /// needs to distinguish whole-value replacement from a potentially deep
+    /// mutation. Retain the source contract beside the callable identity.
+    frozen_params: Vec<bool>,
+    /// An inferred binding receiving this result remains frozen; otherwise a
+    /// direct or indirect call would turn an immutable payload into writable
+    /// storage merely by passing through a qualifier-erasing `Ty`.
+    frozen_result: bool,
+}
+
+/// Checked provenance for a first-class callable whose runtime identity is
+/// intentionally just its convention-preserving function ABI.  `mode opt`
+/// does not introduce an `opt fn` spelling: an opt callable parameter instead
+/// requires this source fact at its entry boundary.  Keeping it out of `Ty`
+/// prevents an erased function value or a separate-compilation ABI from
+/// accidentally manufacturing the permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OptCallableContract {
+    /// Nested callable arguments must retain compatible provenance as well.
+    params: Vec<Option<Box<OptCallableContract>>>,
+    /// A returned callable carries the contract declared by its producer, not
+    /// a body-derived guess at the consuming module.
+    result: Option<Box<OptCallableContract>>,
+}
+
+impl OptCallableContract {
+    fn from_function_type(ty: &ast::Type) -> Option<Self> {
+        match ty {
+            ast::Type::Fn(params, result, _, _) => Some(Self {
+                params: params
+                    .iter()
+                    .map(|param| Self::from_function_type(param).map(Box::new))
+                    .collect(),
+                result: Self::from_function_type(result).map(Box::new),
+            }),
+            ast::Type::Qualified(_, inner) => Self::from_function_type(inner),
+            _ => None,
+        }
+    }
+
+    fn from_function(function: &Function) -> Self {
+        Self {
+            params: function
+                .params
+                .iter()
+                .map(|param| param.ty.as_ref().and_then(Self::from_function_type).map(Box::new))
+                .collect(),
+            result: function.ret.as_ref().and_then(Self::from_function_type).map(Box::new),
+        }
+    }
+
+    fn from_lambda(params: &[ast::Param], result: Option<&ast::Type>) -> Self {
+        Self {
+            params: params
+                .iter()
+                .map(|param| param.ty.as_ref().and_then(Self::from_function_type).map(Box::new))
+                .collect(),
+            result: result.and_then(Self::from_function_type).map(Box::new),
+        }
+    }
+
+    /// A leaf callable has no callable precondition or recursively higher-order
+    /// result.  Normal code may receive it through an ordinary ABI: losing its
+    /// origin cannot enable a later opt HOF call because `require_opt...` still
+    /// rejects it at that stricter slot.  Everything else is load-bearing.
+    fn has_higher_order_boundary(&self) -> bool {
+        self.params.iter().any(Option::is_some)
+            || self
+                .result
+                .as_deref()
+                .is_some_and(Self::has_higher_order_boundary)
+    }
+}
+
+/// A callable-producing control-flow path either yields a value contract or
+/// does not reach the join at all.  The latter is neutral: treating it as an
+/// empty, ordinary contract would erase the guarantees of the surviving path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CallableContractPath {
+    Completes(UniqueCallableContract),
+    Diverges,
+}
+
+impl UniqueCallableContract {
+    fn from_function_type(ty: &ast::Type) -> Option<Self> {
+        match ty {
+            ast::Type::Fn(params, result, _, _) => Some(Self {
+                unique_params: params.iter().map(is_unique_value_type).collect(),
+                unique_result: is_unique_value_type(result),
+                frozen_params: params.iter().map(is_frozen_value_type).collect(),
+                frozen_result: is_frozen_value_type(result),
+            }),
+            ast::Type::Qualified(_, inner) => Self::from_function_type(inner),
+            _ => None,
+        }
+    }
+
+    fn join_all(contracts: impl IntoIterator<Item = Self>) -> Option<Self> {
+        let mut contracts = contracts.into_iter();
+        let mut joined = contracts.next()?;
+        for contract in contracts {
+            if joined.unique_params.len() != contract.unique_params.len() {
+                return None;
+            }
+            for (joined_param, param) in joined.unique_params.iter_mut().zip(contract.unique_params) {
+                *joined_param |= param;
+            }
+            joined.unique_result &= contract.unique_result;
+            if joined.frozen_params.len() != contract.frozen_params.len() {
+                return None;
+            }
+            for (joined_param, param) in joined.frozen_params.iter_mut().zip(contract.frozen_params) {
+                // A caller may pass frozen storage through an indirect `var`
+                // call only when every completing callee promises whole-value
+                // replacement. One deep-mutating branch invalidates that
+                // permission; unlike unique demand, this is a guarantee.
+                *joined_param &= param;
+            }
+            joined.frozen_result &= contract.frozen_result;
+        }
+        Some(joined)
+    }
 }
 
 struct Checker {
@@ -3867,6 +4552,35 @@ struct Checker {
     /// Bindings declared with `frozen`. Qualifiers erase from [`Ty`], but
     /// exclusive borrowing must still respect the source storage contract.
     frozen_bindings: Vec<HashSet<String>>,
+    /// Bindings whose value handle was declared `unique`.  This is distinct
+    /// from a shell that merely stores a nested unique payload: projections of
+    /// the latter must retain field-local provenance rather than freezing every
+    /// sibling by root name.
+    unique_value_bindings: Vec<HashSet<String>>,
+    /// Bindings known to carry unique storage, including inferred list/tuple/
+    /// nominal shells.  The common `consumed` set records their affine flow;
+    /// this set only retains the erased source qualifier provenance.
+    unique_storage_bindings: Vec<HashSet<String>>,
+    /// Original declared types for bindings carrying unique storage. Pattern
+    /// extraction needs these because `Ty` has already erased nested qualifiers.
+    unique_binding_types: Vec<HashMap<String, ast::Type>>,
+    /// Source callable contracts keyed by local binding. Runtime callable
+    /// identity erases qualifiers, so indirect source calls recover both the
+    /// parameter and result facts rather than silently repairing aliases in
+    /// opt.
+    callable_unique_contracts: Vec<HashMap<String, UniqueCallableContract>>,
+    /// Source-level opt callable provenance for local function-value aliases.
+    /// This is deliberately separate from `Ty::Fn`: the ordinary function ABI
+    /// remains usable by normal callers, while opt higher-order entries demand
+    /// the checked fact explicitly.
+    callable_opt_provenance: Vec<HashMap<String, OptCallableContract>>,
+    /// Authenticated callable facts carried by a structural value.  Function
+    /// ABI deliberately does not encode `mode opt`, so this is checker-only
+    /// evidence for the small set of container/pattern paths that can expose a
+    /// callable value again.  `Some(None)` is meaningful: it records a known
+    /// absent Option/Result payload, rather than treating an unknown container
+    /// as a trusted callback carrier.
+    container_opt_provenance: Vec<HashMap<String, Option<OptCallableContract>>>,
     /// Sealed record capabilities (`capability X:` with named fields). Their
     /// fields are opaque: `.field` access is rejected so the only way to reach a
     /// carried capability is `match`, which the linker confines to the home
@@ -3892,12 +4606,48 @@ struct Checker {
     /// deliberately tracked beside conventions: `&mut T` keeps the public
     /// `let` convention while still reserving an exclusive caller place.
     fn_exclusive_reference_params: HashMap<String, Vec<bool>>,
+    /// Whether each source parameter is an outer `frozen` value. Qualifiers
+    /// erase from `Ty`, so this preserves the write-back contract needed to
+    /// distinguish `var frozen T` (replacement) from `var T` (deep mutation).
+    fn_frozen_value_params: HashMap<String, Vec<bool>>,
+    /// Source callable contracts for named functions. Callable identity remains
+    /// erased at runtime, so this is checker-only provenance.
+    fn_unique_contracts: HashMap<String, UniqueCallableContract>,
+    /// Named function origins retained from the linker mode markers.  This is
+    /// signature/source metadata, never inferred from an implementation body.
+    fn_opt_provenance: HashMap<String, OptCallableContract>,
+    /// Named record fields declared as outer `frozen` values. This preserves
+    /// storage immutability below an otherwise mutable aggregate after `Ty`
+    /// erases qualifiers.
+    frozen_record_fields: HashMap<String, HashSet<String>>,
+    /// Record fields declared with an outer `unique` qualifier.  This is the
+    /// checked declaration fact used for projection-aware affine transfer.
+    unique_record_fields: HashMap<String, HashSet<String>>,
+    /// Source record-field types and their nominal parameter order.  Used only
+    /// to recover qualifier provenance for field projections after `Ty` erasure.
+    unique_source_record_fields: HashMap<String, HashMap<String, ast::Type>>,
+    unique_source_record_params: HashMap<String, Vec<String>>,
+    /// Source positional constructor payload types. ADT field `Ty`s erase
+    /// qualifiers, so pattern extraction follows these checked declarations
+    /// rather than marking every binding below a moved aggregate affine.
+    unique_ctor_field_types: HashMap<String, Vec<ast::Type>>,
+    /// For each nominal generic, which type parameters occur in stored value
+    /// fields.  This prevents a phantom `Phantom(unique T)` from becoming
+    /// affine while retaining `Box(unique T)`.
+    unique_storage_parameters: HashMap<String, Vec<bool>>,
+    ctor_source_type_params: HashMap<String, Vec<String>>,
     /// Source parameter names paired with [`Self::fn_conventions`]. Names are
     /// diagnostic metadata only; function-type identity remains positional.
     fn_param_names: HashMap<String, Vec<String>>,
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     fn_typarams: HashMap<String, Vec<(String, u32)>>,
+    /// Generic variables whose referents are formed into a canonical rooted
+    /// view by this function body.  They are checked after each call-site
+    /// instantiation resolves the variable; no unresolved authority/affinity
+    /// claim is accepted as a permissive fallback.
+    fn_view_payload_constraints: HashMap<String, Vec<u32>>,
+    current_view_payload_vars: HashSet<u32>,
     /// Per-function call obligations from `where` clauses, keyed to the same
     /// signature type-parameter var ids as `fn_typarams`. These are checked at a
     /// generic call site so wrapper functions cannot erase a callee's public
@@ -3956,6 +4706,13 @@ struct Checker {
     /// inside it — an assignment to a name outside the innermost region must
     /// be scalar (a region's only pointer-escape is its value).
     region_locals: Vec<HashSet<String>>,
+    /// Exact checked contracts for `region:` blocks.  Canonical lowering may
+    /// consume only this retained, AST-address-keyed product; a naked region
+    /// node is never permission to erase the source boundary.
+    region_promotions: HashMap<usize, RegionPromotionFact>,
+    /// The only packed records that canonical v1 can carry inline.  This is
+    /// source-derived layout identity, not a lowerer-supplied permission bit.
+    region_packed_layouts: HashMap<String, RegionPackedLayoutDescriptor>,
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
@@ -3996,6 +4753,9 @@ struct Checker {
     compiler_syntax_allowed: bool,
     /// Explicit references are an opt-mode-only source capability.
     opt_mode: bool,
+    /// The source callable currently being checked may be imported from an opt
+    /// module even when the linked entry module is normal.
+    current_opt_callable: bool,
 }
 
 /// Render a canonical `module.Name` for a diagnostic: strip the qualifier when it
@@ -4192,6 +4952,9 @@ impl Checker {
         let (name, args) = match t {
             // (RFC-0025/0026) Ownership/immutability qualifiers are compile-time
             // contracts with no runtime type — lower to the inner type.
+            ast::Type::Qualified(ast::TypeQual::View, inner) => {
+                return Ty::View(Box::new(self.to_ty(inner)).into());
+            }
             ast::Type::Qualified(_, inner) => return self.to_ty(inner),
             ast::Type::Slice(elem) => {
                 let inner = self.to_ty(elem);
@@ -4229,16 +4992,14 @@ impl Checker {
         if let Some(t) = self.named_builtin(name, args, &mut |c, a| c.to_ty(a)) {
             return t;
         }
-        // (BUG-308) A lowercase, argument-less name that names one of the
-        // enclosing function's type parameters is that parameter's var — so a
+        // (BUG-308) An argument-less name that names one of the enclosing
+        // function's type parameters is that parameter's var — so a
         // body ascription refines the generic parameter instead of pinning it
         // to a distinct concrete `Named`. (Matches the signature-only rule in
         // `to_ty_generic`; outside a generic fn `current_typarams` is empty, so
         // top-level `let` and non-parameter names are unaffected.)
         if args.is_empty()
-            && name.chars().next().is_some_and(|c| c.is_lowercase())
             && !name.contains('.')
-            && name != "str"
             && self.current_typarams.contains_key(name.as_str())
         {
             return Ty::Var(self.current_typarams[name.as_str()]);
@@ -4251,6 +5012,9 @@ impl Checker {
     #[allow(clippy::wrong_self_convention)]
     fn to_ty_generic(&mut self, t: &ast::Type, vars: &mut HashMap<String, Ty>) -> Ty {
         match t {
+            ast::Type::Qualified(ast::TypeQual::View, inner) => {
+                Ty::View(Box::new(self.to_ty_generic(inner, vars)).into())
+            }
             ast::Type::Qualified(_, inner) => self.to_ty_generic(inner, vars),
             ast::Type::Slice(elem) => {
                 let inner = self.to_ty_generic(elem, vars);
@@ -4284,6 +5048,12 @@ impl Checker {
                     self.named_builtin(name, args, &mut |c, a| c.to_ty_generic(a, vars))
                 {
                     return t;
+                }
+                if args.is_empty()
+                    && !name.contains('.')
+                    && let Some(v) = vars.get(name.as_str())
+                {
+                    return v.clone();
                 }
                 if args.is_empty()
                     && name.chars().next().is_some_and(|c| c.is_lowercase())
@@ -4323,6 +5093,7 @@ impl Checker {
         ret: &Ty,
         typarams: &HashSet<u32>,
         bounds: &[(u32, String)],
+        view_payload_vars: &[u32],
     ) -> UserCallSig {
         let fresh_map = self.fresh_typeparam_map(typarams);
         let p = params.iter().map(|t| self.subst_vars(t, &fresh_map)).collect();
@@ -4331,7 +5102,11 @@ impl Checker {
             .iter()
             .map(|(var, tr)| (self.subst_vars(&Ty::Var(*var), &fresh_map), tr.clone()))
             .collect();
-        (p, r, bs)
+        let views = view_payload_vars
+            .iter()
+            .map(|var| self.subst_vars(&Ty::Var(*var), &fresh_map))
+            .collect();
+        (p, r, bs, views)
     }
 
     fn fresh_typeparam_map(&mut self, typarams: &HashSet<u32>) -> HashMap<u32, Ty> {
@@ -4355,6 +5130,7 @@ impl Checker {
         match self.resolve(t) {
             Ty::Var(v) => map.get(&v).cloned().unwrap_or(Ty::Var(v)),
             Ty::List(e) => Ty::List(Box::new(self.subst_vars(&e, map)).into()),
+            Ty::View(payload) => Ty::View(Box::new(self.subst_vars(&payload, map)).into()),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|x| self.subst_vars(x, map)).collect()),
             Ty::Named(n, args) => {
                 Ty::Named(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
@@ -4410,6 +5186,7 @@ impl Checker {
                 result
             }
             Ty::List(e) => Ty::List(Rc::new(self.resolve(e))),
+            Ty::View(payload) => Ty::View(Rc::new(self.resolve(payload))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             Ty::Dyn(n, args) => Ty::Dyn(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
@@ -4514,6 +5291,7 @@ impl Checker {
             }
             match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
+                Ty::View(payload) => go(c, &payload, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
                 Ty::Fn(params, ret, _, _, _) => params
                     .iter()
@@ -4565,6 +5343,7 @@ impl Checker {
             match c.resolve(t) {
                 Ty::Fn(..) => true,
                 Ty::List(inner) => go(c, &inner, seen),
+                Ty::View(payload) => go(c, &payload, seen),
                 Ty::Tuple(items) | Ty::Dyn(_, items) => {
                     items.iter().any(|item| go(c, item, seen))
                 }
@@ -4638,6 +5417,7 @@ impl Checker {
             }
             match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
+                Ty::View(payload) => go(c, &payload, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
                 Ty::Fn(params, ret, _, _, _) => params
                     .iter()
@@ -4729,6 +5509,7 @@ impl Checker {
                 Ty::Dyn(_, _) => Some(PureCaptureHazard::Existential),
                 Ty::Var(_) => Some(PureCaptureHazard::UnresolvedGeneric),
                 Ty::List(item) => go(checker, &item, visiting),
+                Ty::View(payload) => go(checker, &payload, visiting),
                 Ty::Tuple(items) => items.iter().find_map(|item| go(checker, item, visiting)),
                 Ty::Named(name, arguments) => {
                     if checker.capability_types.contains(name.as_ref()) {
@@ -4955,6 +5736,7 @@ impl Checker {
                     child.push("list item".into());
                     go(checker, &item, visiting, &child)
                 }
+                Ty::View(payload) => go(checker, &payload, visiting, path),
                 Ty::Tuple(items) => items.iter().enumerate().find_map(|(index, item)| {
                     let mut child = path.to_vec();
                     child.push(format!("tuple[{index}]"));
@@ -5104,6 +5886,7 @@ impl Checker {
             Ty::BuildNet => Some("BuildNet".to_string()),
             Ty::BuildExec => Some("BuildExec".to_string()),
             Ty::List(inner) => self.ty_authority_taint(&inner, seen),
+            Ty::View(payload) => self.ty_authority_taint(&payload, seen),
             Ty::Tuple(items) => items.iter().find_map(|item| self.ty_authority_taint(item, seen)),
             Ty::Fn(params, ret, _, _, _) => params
                 .iter()
@@ -5145,6 +5928,7 @@ impl Checker {
     fn reject_structural_authority_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
         match self.resolve(t) {
             Ty::List(inner) => self.reject_structural_authority_ty(&inner, ctx),
+            Ty::View(payload) => self.reject_structural_authority_ty(&payload, ctx),
             Ty::Dyn(_, args) => {
                 args.iter().try_for_each(|arg| self.reject_structural_authority_ty(arg, ctx))
             }
@@ -5180,6 +5964,7 @@ impl Checker {
     fn compiler_syntax_ty(&self, t: &Ty) -> Option<&'static str> {
         match self.resolve(t) {
             Ty::List(inner) => self.compiler_syntax_ty(&inner),
+            Ty::View(payload) => self.compiler_syntax_ty(&payload),
             Ty::Dyn(_, args) => args.iter().find_map(|arg| self.compiler_syntax_ty(arg)),
             Ty::Tuple(items) => items.iter().find_map(|item| self.compiler_syntax_ty(item)),
             Ty::Fn(params, ret, _, _, _) => params
@@ -5199,6 +5984,7 @@ impl Checker {
 
     fn borrowed_nominal_name(&self, ty: &Ty) -> Option<String> {
         match self.resolve(ty) {
+            Ty::View(payload) => self.borrowed_nominal_name(&payload),
             Ty::List(element) => self.borrowed_nominal_name(&element),
             Ty::Tuple(items) => items
                 .iter()
@@ -5267,6 +6053,7 @@ impl Checker {
 
     fn contains_unsupported_borrowed_nominal(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
+            Ty::View(payload) => self.contains_unsupported_borrowed_nominal(&payload),
             Ty::List(element) => self.contains_unsupported_borrowed_nominal(&element),
             Ty::Tuple(items) => items
                 .iter()
@@ -5336,6 +6123,1288 @@ impl Checker {
             .iter()
             .rev()
             .any(|bindings| bindings.contains(name))
+    }
+
+    fn authorize_unique_value_binding(&mut self, name: String) {
+        self.unique_value_bindings
+            .last_mut()
+            .expect("unique bindings track type scopes")
+            .insert(name);
+    }
+
+    fn authorize_unique_storage_binding(&mut self, name: String) {
+        self.unique_storage_bindings
+            .last_mut()
+            .expect("unique storage bindings track type scopes")
+            .insert(name);
+    }
+
+    fn remember_unique_binding_type(&mut self, name: String, ty: ast::Type) {
+        self.unique_binding_types
+            .last_mut()
+            .expect("unique binding types track type scopes")
+            .insert(name, ty);
+    }
+
+    fn unique_binding_type(&self, name: &str) -> Option<ast::Type> {
+        self.unique_binding_types
+            .iter()
+            .rev()
+            .find_map(|types| types.get(name).cloned())
+    }
+
+    fn remember_callable_unique_contract(&mut self, name: String, contract: UniqueCallableContract) {
+        self.callable_unique_contracts
+            .last_mut()
+            .expect("callable unique contracts track type scopes")
+            .insert(name, contract);
+    }
+
+    fn callable_unique_contract(&self, name: &str) -> Option<UniqueCallableContract> {
+        self.callable_unique_contracts
+            .iter()
+            .rev()
+            .find_map(|contracts| contracts.get(name).cloned())
+            .or_else(|| self.fn_unique_contracts.get(name).cloned())
+    }
+
+    fn callable_unique_contract_path_for_block(&self, block: &Block) -> Option<CallableContractPath> {
+        if !block_can_complete(block) {
+            return Some(CallableContractPath::Diverges);
+        }
+        match block.stmts.last() {
+            Some(Stmt::Expr(expression)) => self
+                .callable_unique_contract_path_for_expr(expression),
+            _ => None,
+        }
+    }
+
+    fn join_callable_unique_contract_paths(
+        paths: impl IntoIterator<Item = CallableContractPath>,
+    ) -> Option<CallableContractPath> {
+        let contracts = paths
+            .into_iter()
+            .filter_map(|path| match path {
+                CallableContractPath::Completes(contract) => Some(contract),
+                CallableContractPath::Diverges => None,
+            })
+            .collect::<Vec<_>>();
+        if contracts.is_empty() {
+            Some(CallableContractPath::Diverges)
+        } else {
+            UniqueCallableContract::join_all(contracts).map(CallableContractPath::Completes)
+        }
+    }
+
+    fn callable_unique_contract_path_for_expr(
+        &self,
+        expression: &Expr,
+    ) -> Option<CallableContractPath> {
+        match expression {
+            Expr::Var(name) => self
+                .callable_unique_contract(name)
+                .map(CallableContractPath::Completes),
+            Expr::Lambda { params, ret, .. } => Some(CallableContractPath::Completes(UniqueCallableContract {
+                unique_params: params
+                    .iter()
+                    .map(|parameter| parameter.ty.as_ref().is_some_and(is_unique_value_type))
+                    .collect(),
+                unique_result: ret.as_ref().is_some_and(is_unique_value_type),
+                frozen_params: params
+                    .iter()
+                    .map(|parameter| parameter.ty.as_ref().is_some_and(is_frozen_value_type))
+                    .collect(),
+                frozen_result: ret.as_ref().is_some_and(is_frozen_value_type),
+            })),
+            // An ascription is an explicit function-value weakening boundary:
+            // use its declared source contract, never the payload's stronger
+            // erased identity.
+            Expr::As { ty, .. } => UniqueCallableContract::from_function_type(ty)
+                .map(CallableContractPath::Completes),
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                Self::join_callable_unique_contract_paths([
+                    self.callable_unique_contract_path_for_block(then_block)?,
+                    self.callable_unique_contract_path_for_block(else_block)?,
+                ])
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => {
+                Self::join_callable_unique_contract_paths(
+                    arms.iter()
+                        .map(|arm| self.callable_unique_contract_path_for_expr(&arm.body))
+                        .collect::<Option<Vec<_>>>()?,
+                )
+            }
+            Expr::Block(block) => self.callable_unique_contract_path_for_block(block),
+            _ => None,
+        }
+    }
+
+    fn callable_unique_contract_for_expr(&self, expression: &Expr) -> Option<UniqueCallableContract> {
+        match self.callable_unique_contract_path_for_expr(expression)? {
+            CallableContractPath::Completes(contract) => Some(contract),
+            CallableContractPath::Diverges => None,
+        }
+    }
+
+    fn remember_opt_callable_provenance(&mut self, name: String, contract: OptCallableContract) {
+        self.callable_opt_provenance
+            .last_mut()
+            .expect("opt callable provenance tracks type scopes")
+            .insert(name, contract);
+    }
+
+    fn callable_opt_contract(&self, name: &str) -> Option<OptCallableContract> {
+        self.callable_opt_provenance
+            .iter()
+            .rev()
+            .find_map(|provenance| provenance.get(name).cloned())
+            .or_else(|| self.fn_opt_provenance.get(name).cloned())
+    }
+
+    fn remember_container_opt_provenance(
+        &mut self,
+        name: String,
+        contract: Option<OptCallableContract>,
+    ) {
+        self.container_opt_provenance
+            .last_mut()
+            .expect("container opt provenance tracks type scopes")
+            .insert(name, contract);
+    }
+
+    fn container_opt_contract(&self, name: &str) -> Option<Option<OptCallableContract>> {
+        self.container_opt_provenance
+            .iter()
+            .rev()
+            .find_map(|provenance| provenance.get(name).cloned())
+    }
+
+    fn opt_callable_contract_from_ty(&self, ty: &Ty) -> Option<OptCallableContract> {
+        let Ty::Fn(params, result, ..) = self.resolve(ty) else { return None };
+        Some(OptCallableContract {
+            params: params
+                .iter()
+                .map(|parameter| self.opt_callable_contract_from_ty(parameter).map(Box::new))
+                .collect(),
+            result: self.opt_callable_contract_from_ty(&result).map(Box::new),
+        })
+    }
+
+    fn container_opt_contract_for_expr(&self, expression: &Expr) -> Option<Option<OptCallableContract>> {
+        match expression {
+            Expr::Var(name) => self.container_opt_contract(name),
+            Expr::List(items) => {
+                let mut contracts = items.iter().map(|item| self.expression_opt_callable_contract(item));
+                let first = contracts.next()?;
+                contracts.all(|contract| contract == first).then_some(first)
+            }
+            Expr::Ctor { name, args } if matches!(name.rsplit('.').next(), Some("None") | Some("Err")) => {
+                Some(None)
+            }
+            Expr::Ctor { name, args } if matches!(name.rsplit('.').next(), Some("Some") | Some("Ok")) => {
+                (args.len() == 1).then(|| self.expression_opt_callable_contract(&args[0]))
+            }
+            Expr::As { expr, .. } => self.container_opt_contract_for_expr(expr),
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                let then_contract = self.block_container_opt_contract(then_block)?;
+                let else_contract = self.block_container_opt_contract(else_block)?;
+                (then_contract == else_contract).then_some(then_contract)
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => {
+                let mut contracts = arms.iter().map(|arm| self.container_opt_contract_for_expr(&arm.body));
+                let first = contracts.next()??;
+                contracts.all(|contract| contract.as_ref() == Some(&first)).then_some(first)
+            }
+            _ => None,
+        }
+    }
+
+    fn block_container_opt_contract(&self, block: &Block) -> Option<Option<OptCallableContract>> {
+        match block.stmts.last() {
+            Some(Stmt::Expr(expr)) | Some(Stmt::Return(Some(expr))) => {
+                self.container_opt_contract_for_expr(expr)
+            }
+            _ => None,
+        }
+    }
+
+    /// Pattern binding is a projection, not a new provenance source.  Carry a
+    /// fact only along the exact source expression/pattern slot that supplied
+    /// it; a same-shaped pattern over an unknown aggregate remains untrusted.
+    fn remember_pattern_opt_provenance(&mut self, pattern: &Pattern, value: &Expr) {
+        match (pattern, value) {
+            (Pattern::Var(name), value) => {
+                if let Some(contract) = self.expression_opt_callable_contract(value) {
+                    self.remember_opt_callable_provenance(name.clone(), contract);
+                }
+            }
+            (Pattern::Tuple(patterns), Expr::Tuple(values)) => {
+                for (pattern, value) in patterns.iter().zip(values) {
+                    self.remember_pattern_opt_provenance(pattern, value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Recognize only the linker's zero-source-line eta adapter for an imported
+    /// function value.  This carries the target declaration's contract into
+    /// both the adapter value and its generated parameter bindings.
+    fn linker_eta_opt_contract(
+        &self,
+        params: &[ast::Param],
+        body: &Block,
+    ) -> Option<Option<OptCallableContract>> {
+        (params.iter().all(|param| param.name.starts_with("__eta"))
+            && body.lines.iter().all(|line| *line == 0)
+            && matches!(body.stmts.as_slice(), [Stmt::Expr(Expr::Call { args, .. })] if args.len() == params.len()
+                && args.iter().zip(params).all(|(arg, param)| matches!(arg, Expr::Var(name) if name == &param.name))))
+            .then(|| match body.stmts.first() {
+                Some(Stmt::Expr(Expr::Call { name, .. })) => self.callable_opt_contract(name),
+                _ => None,
+            })
+    }
+
+    /// A callable result from a compatible callable is compatible too: the
+    /// originating callable's signature recursively carries its input/result
+    /// callable contract.  Every other producer is rejected closed.
+    fn expression_opt_callable_contract(&self, expression: &Expr) -> Option<OptCallableContract> {
+        match expression {
+            Expr::Var(name) => self.callable_opt_contract(name),
+            Expr::Lambda { params, body, ret, .. } => {
+                // The linker eta-expands imported function values so that the
+                // target lowering never needs an import-specific closure ABI.
+                // This exact compiler-generated adapter preserves (rather than
+                // invents) the origin's declaration contract.  User closures
+                // do not have zero-source-line `__eta` parameters and therefore
+                // cannot use this route to bless a normal callback.
+                // A recognized compiler eta adapter preserves its exact target
+                // fact, including absence.  Falling through from a normal
+                // target to the enclosing opt callable would manufacture
+                // provenance for an ordinary imported function.
+                if let Some(target_contract) = self.linker_eta_opt_contract(params, body) {
+                    return target_contract;
+                }
+                self.current_opt_callable.then(|| {
+                    // Inferred lambda results still have a checked source
+                    // expression.  Preserve that fact instead of dropping it
+                    // merely because the author omitted an annotation.
+                    let mut contract = OptCallableContract::from_lambda(params, ret.as_ref());
+                    if ret.is_none() {
+                        contract.result = self.block_opt_callable_contract(body).map(Box::new);
+                    }
+                    contract
+                })
+            }
+            // An ascription may weaken source-visible *type* qualifiers, but
+            // cannot add a missing opt callable origin.
+            Expr::As { expr, .. } => self.expression_opt_callable_contract(expr),
+            Expr::Call { name, .. } => self
+                .callable_opt_contract(name)
+                .and_then(|contract| contract.result.map(|result| *result)),
+            Expr::Apply { func, .. } => self
+                .expression_opt_callable_contract(func)
+                .and_then(|contract| contract.result.map(|result| *result)),
+            Expr::Binary { op: ast::BinOp::Coalesce, lhs, rhs } => {
+                let fallback = self.expression_opt_callable_contract(rhs)?;
+                match self.container_opt_contract_for_expr(lhs) {
+                    // An authenticated None/Err always selects the fallback.
+                    Some(None) => Some(fallback),
+                    // A potentially present payload must carry the same
+                    // contract as the fallback: either branch may be returned.
+                    Some(Some(payload)) if payload == fallback => Some(payload),
+                    _ => None,
+                }
+            }
+            Expr::Field { base, field } => {
+                // A record field's type is independently checked at its
+                // declaration.  It is a carrier only while checking an opt
+                // declaration; normal modules never acquire this fact.
+                self.current_opt_callable.then(|| {
+                    let base_ty = self.lookup(match base.as_ref() { Expr::Var(name) => name, _ => return None })?;
+                    let Ty::Named(record, arguments) = self.resolve(&base_ty) else { return None };
+                    let (params, fields) = self.record_fields.get(record.as_ref())?.clone();
+                    let (_, field_ty) = fields.iter().find(|(name, _)| name == field)?;
+                    let substitutions: HashMap<u32, Ty> = params.into_iter().zip(arguments.iter().cloned()).collect();
+                    self.opt_callable_contract_from_ty(&self.subst_vars(field_ty, &substitutions))
+                }).flatten()
+            }
+            Expr::ExistentialCall { result, .. } => self
+                .current_opt_callable
+                .then(|| OptCallableContract::from_function_type(result))
+                .flatten(),
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                let then_contract = self.block_opt_callable_contract(then_block)?;
+                let else_contract = self.block_opt_callable_contract(else_block)?;
+                (then_contract == else_contract).then_some(then_contract)
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => {
+                let mut contracts = arms
+                    .iter()
+                    .map(|arm| self.expression_opt_callable_contract(&arm.body));
+                let first = contracts.next()??;
+                contracts.all(|contract| contract.as_ref() == Some(&first)).then_some(first)
+            }
+            Expr::Block(block) => self.block_opt_callable_contract(block),
+            _ => None,
+        }
+    }
+
+    fn block_opt_callable_contract(&self, block: &Block) -> Option<OptCallableContract> {
+        match block.stmts.last() {
+            Some(Stmt::Expr(expr)) | Some(Stmt::Return(Some(expr))) => {
+                self.expression_opt_callable_contract(expr)
+            }
+            _ => None,
+        }
+    }
+
+    fn require_opt_callable_provenance(
+        &self,
+        argument: &Expr,
+        callee: &str,
+        index: usize,
+    ) -> Result<(), TypeError> {
+        if self.expression_opt_callable_contract(argument).is_some() {
+            return Ok(());
+        }
+        terr(format!(
+            "argument {} to `{}` requires an opt-compatible callable; normal closures and functions cannot satisfy an opt higher-order contract",
+            index + 1,
+            diagnostic_callable_name(callee),
+        ))
+    }
+
+    /// No ordinary function-value, generic, aggregate, or nominal-field ABI
+    /// carries opt callable provenance today.  Letting an opt function enter
+    /// one would erase the contract and permit a later normal callback to
+    /// re-enter an opt higher-order call.  Reject at that first erasing edge;
+    /// direct normal use of an opt function (with non-callable arguments) is
+    /// unaffected.
+    fn reject_opt_callable_erasure(
+        &self,
+        argument: &Expr,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        if self
+            .expression_opt_callable_contract(argument)
+            .is_some_and(|contract| contract.has_higher_order_boundary())
+        {
+            return terr(format!(
+                "{context} cannot erase an opt-compatible callable into an ordinary callable contract; pass it directly through an opt-compatible interface"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recover the erased source `frozen` result contract for a value binding.
+    /// Unlike `unique`, freezing is not affine, so a frozen local may be copied
+    /// into another frozen snapshot. What must never happen is qualifier loss
+    /// at a call boundary followed by a deep write through the new binding.
+    fn expression_returns_frozen_value(&self, expression: &Expr) -> bool {
+        match expression {
+            Expr::Var(name) => self.is_frozen_binding(name),
+            Expr::Call { name, .. } => self
+                .callable_unique_contract(name)
+                .is_some_and(|contract| contract.frozen_result),
+            Expr::Apply { func, .. } => self
+                .callable_unique_contract_for_expr(func)
+                .is_some_and(|contract| contract.frozen_result),
+            Expr::As { ty, .. } => is_frozen_value_type(ty),
+            Expr::Block(block) => block
+                .stmts
+                .last()
+                .is_some_and(|statement| matches!(statement, Stmt::Expr(expression) if self.expression_returns_frozen_value(expression))),
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                self.block_returns_frozen_value(then_block) && self.block_returns_frozen_value(else_block)
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => arms
+                .iter()
+                .all(|arm| self.expression_returns_frozen_value(&arm.body)),
+            _ => false,
+        }
+    }
+
+    fn block_returns_frozen_value(&self, block: &Block) -> bool {
+        block.stmts.last().is_some_and(
+            |statement| matches!(statement, Stmt::Expr(expression) if self.expression_returns_frozen_value(expression)),
+        )
+    }
+
+    fn is_unique_value_binding(&self, name: &str) -> bool {
+        self.unique_value_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
+    }
+
+    fn is_unique_storage_binding(&self, name: &str) -> bool {
+        self.unique_storage_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
+    }
+
+    fn declared_type_carries_unique_storage(&self, t: &ast::Type) -> bool {
+        match t {
+            ast::Type::Qualified(ast::TypeQual::Unique, _) => true,
+            ast::Type::Qualified(ast::TypeQual::Frozen, inner) | ast::Type::Slice(inner) => {
+                self.declared_type_carries_unique_storage(inner)
+            }
+            // A view is a copyable carrier even when it observes qualified
+            // payload storage; it never proves unique ownership itself.
+            ast::Type::Qualified(ast::TypeQual::View, _) => false,
+            ast::Type::Qualified(
+                ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_),
+                _,
+            ) => false,
+            ast::Type::Named(name, arguments) => {
+                // Anonymous unions carry each tag payload as a source type
+                // argument on their shape-encoded head, rather than through a
+                // nominal definition in `unique_storage_parameters`.
+                if anon_union_synthetic_variants(name).is_some() {
+                    arguments
+                        .iter()
+                        .any(|argument| self.declared_type_carries_unique_storage(argument))
+                } else {
+                    self.unique_storage_parameters
+                        .get(name)
+                        .is_some_and(|positions| {
+                            positions.iter().zip(arguments).any(|(stored, argument)| {
+                                *stored && self.declared_type_carries_unique_storage(argument)
+                            })
+                        })
+                }
+            }
+            ast::Type::Tuple(items) => items
+                .iter()
+                .any(|item| self.declared_type_carries_unique_storage(item)),
+            ast::Type::Dyn(..) | ast::Type::Fn(..) => false,
+            ast::Type::RecordCompose { base, fields } => {
+                self.declared_type_carries_unique_storage(base)
+                    || fields
+                        .iter()
+                        .any(|(_, field)| self.declared_type_carries_unique_storage(field))
+            }
+        }
+    }
+
+    fn ty_carries_unique_storage(&self, ty: &Ty) -> bool {
+        fn go(checker: &Checker, ty: &Ty, seen: &mut HashSet<String>) -> bool {
+            match checker.resolve(ty) {
+                Ty::List(item) => go(checker, &item, seen),
+                Ty::Tuple(items) => items.iter().any(|item| go(checker, item, seen)),
+                Ty::Dyn(..) | Ty::Fn(..) => false,
+                Ty::Named(name, arguments) => {
+                    if !seen.insert(name.to_string()) {
+                        return false;
+                    }
+                    let direct_field = checker
+                        .unique_record_fields
+                        .get(name.as_ref())
+                        .is_some_and(|fields| !fields.is_empty());
+                    let record_field = checker.record_fields.get(name.as_ref()).is_some_and(|(params, fields)| {
+                        let bindings: HashMap<u32, Ty> = params
+                            .iter()
+                            .copied()
+                            .zip(arguments.iter().cloned())
+                            .collect();
+                        fields.iter().any(|(_, field)| {
+                            go(checker, &checker.subst_vars(field, &bindings), seen)
+                        })
+                    });
+                    let variant_field = checker.adt_variants.get(name.as_ref()).is_some_and(|variants| {
+                        variants.iter().any(|variant| {
+                            checker.ctor_sigs.get(variant).is_some_and(|(payloads, result)| {
+                                let result_arguments = match checker.resolve(result) {
+                                    Ty::Named(_, result_arguments) => result_arguments,
+                                    _ => Vec::new().into(),
+                                };
+                                let bindings = result_arguments
+                                    .iter()
+                                    .zip(arguments.iter())
+                                    .filter_map(|(parameter, argument)| match parameter {
+                                        Ty::Var(id) => Some((*id, argument.clone())),
+                                        _ => None,
+                                    })
+                                    .collect::<HashMap<_, _>>();
+                                payloads.iter().any(|payload| {
+                                    go(checker, &checker.subst_vars(payload, &bindings), seen)
+                                })
+                            })
+                        })
+                    });
+                    seen.remove(name.as_ref());
+                    direct_field || record_field || variant_field
+                }
+                _ => false,
+            }
+        }
+        go(self, ty, &mut HashSet::new())
+    }
+
+    /// Whether evaluating `expression` yields storage that must follow affine
+    /// `unique` flow.  A unique whole value is affine; a non-unique record is
+    /// only affine below a field declared `unique`, preserving ordinary sibling
+    /// fields.  This works exclusively from checked declaration/provenance
+    /// facts, never rendered type strings.
+    fn expression_carries_unique_storage(&self, expression: &Expr, ty: &Ty) -> bool {
+        match expression {
+            Expr::Var(name) => {
+                self.is_unique_value_binding(name)
+                    || self.is_unique_storage_binding(name)
+                    || self.ty_carries_unique_storage(ty)
+            }
+            Expr::As { expr, .. } | Expr::Unary { op: UnOp::Move, expr } => {
+                self.expression_carries_unique_storage(expr, ty)
+            }
+            Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut | UnOp::Deref, .. } => false,
+            Expr::Field { base, field } => {
+                if self
+                    .unique_source_type_for_place(expression)
+                    .is_some_and(|source| self.declared_type_carries_unique_storage(&source))
+                {
+                    return true;
+                }
+                let Some(Ty::Named(record, _)) = self.place_ty(base) else {
+                    return false;
+                };
+                self.unique_record_fields
+                    .get(record.as_ref())
+                    .is_some_and(|fields| fields.contains(field))
+                    || matches!(base.as_ref(), Expr::Field { .. } | Expr::Index { .. })
+                        && self.expression_carries_unique_storage(
+                            base,
+                            &self.place_ty(base).unwrap_or_else(|| ty.clone()),
+                        )
+            }
+            // An outer `unique List(T)` qualifies the list handle, not every
+            // `T` extracted from it. The element is affine only when its own
+            // checked type carries unique storage.
+            Expr::Index { .. } => self
+                .unique_source_type_for_place(expression)
+                .is_some_and(|source| self.declared_type_carries_unique_storage(&source))
+                || self.ty_carries_unique_storage(ty),
+            Expr::List(items) | Expr::Tuple(items) => items.iter().any(|item| {
+                self.expression_carries_unique_storage(item, &self.fresh_for_unique_probe(item))
+            }),
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+                self.ty_carries_unique_storage(ty)
+                    || args.iter().any(|arg| self.expression_carries_unique_storage(arg, &self.fresh_for_unique_probe(arg)))
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                self.expression_carries_unique_storage(base, &self.fresh_for_unique_probe(base))
+                    || fields.iter().any(|(_, value)| self.expression_carries_unique_storage(value, &self.fresh_for_unique_probe(value)))
+            }
+            Expr::Call { name, .. } => self
+                .callable_unique_contract(name)
+                .is_some_and(|contract| contract.unique_result),
+            Expr::Apply { func, .. } => self
+                .callable_unique_contract_for_expr(func)
+                .is_some_and(|contract| contract.unique_result),
+            _ => self.ty_carries_unique_storage(ty),
+        }
+    }
+
+    /// A positive, source-authenticated proof that this expression forms or
+    /// carries an outer unique owner. Component contracts are checked by
+    /// `expression_establishes_declared_unique_storage` below; a fresh shell
+    /// alone never blesses an ordinary child as `unique`.
+    fn expression_establishes_unique_storage(&self, expression: &Expr, ty: &Ty) -> bool {
+        match expression {
+            Expr::Var(_) | Expr::Field { .. } | Expr::Index { .. } => {
+                self.expression_carries_unique_storage(expression, ty)
+            }
+            // `move` transfers an already-proven owner; it cannot manufacture
+            // one from an ordinary root.
+            Expr::Unary { op: UnOp::Move, expr } => {
+                self.expression_establishes_unique_storage(expr, ty)
+            }
+            // Ascribing a weaker source type deliberately drops provenance.
+            // An outer unique ascription still needs the payload proof.
+            Expr::As { expr, ty: target } => {
+                self.declared_type_carries_unique_storage(target)
+                    && self.expression_establishes_unique_storage(expr, ty)
+            }
+            Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => true,
+            // Each of these allocates a new shell. Its components are checked
+            // for affine transfer separately; their ordinary provenance cannot
+            // make the freshly formed aggregate ordinary.
+            Expr::List(_) | Expr::Tuple(_) | Expr::Ctor { .. } | Expr::AnonCtor { .. } => true,
+            Expr::Record { spread: None, .. } => true,
+            Expr::Record { spread: Some(_), .. } | Expr::RecordUpdate { .. } => false,
+            Expr::Call { name, .. } => self
+                .callable_unique_contract(name)
+                .is_some_and(|contract| contract.unique_result),
+            Expr::Apply { func, .. } => self
+                .callable_unique_contract_for_expr(func)
+                .is_some_and(|contract| contract.unique_result),
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                self.block_establishes_unique_storage(then_block)
+                    && self.block_establishes_unique_storage(else_block)
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => arms
+                .iter()
+                .all(|arm| self.expression_establishes_unique_storage(
+                    &arm.body,
+                    &self.fresh_for_unique_probe(&arm.body),
+                )),
+            Expr::Block(block) => self.block_establishes_unique_storage(block),
+            _ => false,
+        }
+    }
+
+    fn block_establishes_unique_storage(&self, block: &Block) -> bool {
+        if !block_can_complete(block) {
+            return true;
+        }
+        match block.stmts.last() {
+            Some(Stmt::Expr(expression)) => self.expression_establishes_unique_storage(
+                expression,
+                &self.fresh_for_unique_probe(expression),
+            ),
+            _ => false,
+        }
+    }
+
+    /// Does a qualifier-bearing source declaration prove every `unique`
+    /// position required by `target`? `Ty` cannot answer this: it deliberately
+    /// erases these qualifiers, including qualifiers nested in aggregates.
+    fn source_type_proves_unique_storage(source: &ast::Type, target: &ast::Type) -> bool {
+        match target {
+            ast::Type::Qualified(ast::TypeQual::Unique, target_inner) => {
+                matches!(source, ast::Type::Qualified(ast::TypeQual::Unique, source_inner)
+                    if Self::source_type_proves_unique_storage(source_inner, target_inner))
+            }
+            ast::Type::Qualified(ast::TypeQual::Frozen, target_inner) => match source {
+                ast::Type::Qualified(ast::TypeQual::Frozen, source_inner) => {
+                    Self::source_type_proves_unique_storage(source_inner, target_inner)
+                }
+                _ => false,
+            },
+            ast::Type::Qualified(ast::TypeQual::View, _) => false,
+            ast::Type::Qualified(
+                ast::TypeQual::Borrow(_)
+                | ast::TypeQual::LegacyBorrow(_)
+                | ast::TypeQual::BorrowMut(_),
+                _,
+            ) => false,
+            ast::Type::Slice(target_inner) => match source {
+                ast::Type::Slice(source_inner) => {
+                    Self::source_type_proves_unique_storage(source_inner, target_inner)
+                }
+                _ => false,
+            },
+            ast::Type::Named(target_name, target_arguments) => match source {
+                ast::Type::Named(source_name, source_arguments)
+                    if source_name == target_name && source_arguments.len() == target_arguments.len() =>
+                {
+                    source_arguments
+                        .iter()
+                        .zip(target_arguments)
+                        .all(|(source, target)| Self::source_type_proves_unique_storage(source, target))
+                }
+                _ => false,
+            },
+            ast::Type::Tuple(target_items) => match source {
+                ast::Type::Tuple(source_items) if source_items.len() == target_items.len() => source_items
+                    .iter()
+                    .zip(target_items)
+                    .all(|(source, target)| Self::source_type_proves_unique_storage(source, target)),
+                _ => false,
+            },
+            ast::Type::RecordCompose { base: target_base, fields: target_fields } => match source {
+                ast::Type::RecordCompose { base: source_base, fields: source_fields } => {
+                    Self::source_type_proves_unique_storage(source_base, target_base)
+                        && target_fields.iter().all(|(target_name, target_field)| {
+                            source_fields
+                                .iter()
+                                .find(|(source_name, _)| source_name == target_name)
+                                .is_some_and(|(_, source_field)| {
+                                    Self::source_type_proves_unique_storage(source_field, target_field)
+                                })
+                        })
+                }
+                _ => false,
+            },
+            // These leaves cannot contain a nested storage qualifier.
+            ast::Type::Fn(..) | ast::Type::Dyn(..) => true,
+        }
+    }
+
+    fn expression_source_type_for_unique_storage(&self, expression: &Expr) -> Option<ast::Type> {
+        match expression {
+            Expr::Var(_) | Expr::Field { .. } | Expr::Index { .. } => {
+                self.unique_source_type_for_place(expression)
+            }
+            Expr::Unary { op: UnOp::Move, expr } | Expr::As { expr, .. } => {
+                self.expression_source_type_for_unique_storage(expr)
+            }
+            _ => None,
+        }
+    }
+
+    fn declared_type_requires_only_outer_unique(&self, declared: &ast::Type) -> bool {
+        match declared {
+            ast::Type::Qualified(ast::TypeQual::Frozen, inner) => {
+                self.declared_type_requires_only_outer_unique(inner)
+            }
+            ast::Type::Qualified(ast::TypeQual::Unique, inner) => {
+                !self.declared_type_carries_unique_storage(inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn expression_establishes_declared_unique_storage(
+        &self,
+        expression: &Expr,
+        declared: &ast::Type,
+        ty: &Ty,
+    ) -> bool {
+        if !self.declared_type_carries_unique_storage(declared) {
+            return true;
+        }
+        if self
+            .expression_source_type_for_unique_storage(expression)
+            .is_some_and(|source| Self::source_type_proves_unique_storage(&source, declared))
+        {
+            return true;
+        }
+
+        match (expression, declared) {
+            (Expr::Unary { op: UnOp::Move, expr }, _) | (Expr::As { expr, .. }, _) => self
+                .expression_establishes_declared_unique_storage(expr, declared, ty),
+            (_, ast::Type::Qualified(ast::TypeQual::Unique, inner)) => {
+                self.expression_establishes_unique_storage(expression, ty)
+                    && self.expression_establishes_declared_unique_storage(expression, inner, ty)
+            }
+            (_, ast::Type::Qualified(ast::TypeQual::Frozen, inner)) => {
+                self.expression_establishes_declared_unique_storage(expression, inner, ty)
+            }
+            (Expr::List(items), ast::Type::Named(name, arguments))
+                if name.rsplit('.').next() == Some("List") && arguments.len() == 1 =>
+            {
+                items.iter().all(|item| {
+                    self.expression_establishes_declared_unique_storage(
+                        item,
+                        &arguments[0],
+                        &self.fresh_for_unique_probe(item),
+                    )
+                })
+            }
+            (Expr::Tuple(items), ast::Type::Tuple(declared_items)) if items.len() == declared_items.len() => {
+                items.iter().zip(declared_items).all(|(item, declared)| {
+                    self.expression_establishes_declared_unique_storage(
+                        item,
+                        declared,
+                        &self.fresh_for_unique_probe(item),
+                    )
+                })
+            }
+            (Expr::Ctor { name, args }, ast::Type::Named(_, arguments)) => {
+                let Some(field_types) = self.unique_ctor_field_types.get(name) else {
+                    return false;
+                };
+                let Some(parameters) = self.ctor_source_type_params.get(name) else {
+                    return false;
+                };
+                if field_types.len() != args.len() || parameters.len() != arguments.len() {
+                    return false;
+                }
+                let substitutions = parameters.iter().cloned().zip(arguments.iter().cloned()).collect();
+                args.iter().zip(field_types).all(|(argument, field)| {
+                    let field = Self::substitute_unique_source_type(field, &substitutions);
+                    self.expression_establishes_declared_unique_storage(
+                        argument,
+                        &field,
+                        &self.fresh_for_unique_probe(argument),
+                    )
+                })
+            }
+            (Expr::Record { fields, spread: None, .. }, ast::Type::Named(record, arguments)) => {
+                let Some(field_types) = self.unique_source_record_fields.get(record) else {
+                    return false;
+                };
+                let Some(parameters) = self.unique_source_record_params.get(record) else {
+                    return false;
+                };
+                if parameters.len() != arguments.len() {
+                    return false;
+                }
+                let substitutions = parameters.iter().cloned().zip(arguments.iter().cloned()).collect();
+                field_types.iter().all(|(name, field)| {
+                    let field = Self::substitute_unique_source_type(field, &substitutions);
+                    if !self.declared_type_carries_unique_storage(&field) {
+                        return true;
+                    }
+                    fields.iter().find(|(candidate, _)| candidate == name).is_some_and(|(_, value)| {
+                        self.expression_establishes_declared_unique_storage(
+                            value,
+                            &field,
+                            &self.fresh_for_unique_probe(value),
+                        )
+                    })
+                })
+            }
+            (Expr::Call { name, .. }, _) => self.declared_type_requires_only_outer_unique(declared)
+                && self.callable_unique_contract(name).is_some_and(|contract| contract.unique_result),
+            (Expr::Apply { func, .. }, _) => self.declared_type_requires_only_outer_unique(declared)
+                && self
+                    .callable_unique_contract_for_expr(func)
+                    .is_some_and(|contract| contract.unique_result),
+            (Expr::If { then_block, else_block: Some(else_block), .. }, _) => {
+                self.block_establishes_declared_unique_storage(then_block, declared)
+                    && self.block_establishes_declared_unique_storage(else_block, declared)
+            }
+            (Expr::Match { arms, .. }, _) if !arms.is_empty() => arms.iter().all(|arm| {
+                self.expression_establishes_declared_unique_storage(
+                    &arm.body,
+                    declared,
+                    &self.fresh_for_unique_probe(&arm.body),
+                )
+            }),
+            (Expr::Block(block), _) => self.block_establishes_declared_unique_storage(block, declared),
+            _ => false,
+        }
+    }
+
+    fn block_establishes_declared_unique_storage(&self, block: &Block, declared: &ast::Type) -> bool {
+        if !block_can_complete(block) {
+            return true;
+        }
+        match block.stmts.last() {
+            Some(Stmt::Expr(expression)) => self.expression_establishes_declared_unique_storage(
+                expression,
+                declared,
+                &self.fresh_for_unique_probe(expression),
+            ),
+            _ => false,
+        }
+    }
+
+    /// Unique provenance probes only need a conservative checked type.  Local
+    /// roots retain their exact type; compound forms are handled structurally
+    /// above, so an unresolved placeholder cannot manufacture affinity.
+    fn fresh_for_unique_probe(&self, expression: &Expr) -> Ty {
+        match expression {
+            Expr::Var(name) => self.lookup(name).unwrap_or(Ty::Unit),
+            Expr::Field { .. } | Expr::Index { .. } => self.place_ty(expression).unwrap_or(Ty::Unit),
+            _ => Ty::Unit,
+        }
+    }
+
+    fn unique_source_type_for_place(&self, expression: &Expr) -> Option<ast::Type> {
+        match expression {
+            Expr::Var(name) => self.unique_binding_type(name),
+            Expr::Index { base, .. } => match self.unique_source_type_for_place(base)? {
+                ast::Type::Named(name, arguments) if name.rsplit('.').next() == Some("List") => {
+                    arguments.into_iter().next()
+                }
+                _ => None,
+            },
+            Expr::Field { base, field } => {
+                let ast::Type::Named(record, arguments) = self.unique_source_type_for_place(base)? else {
+                    return None;
+                };
+                let source_field = self.unique_source_record_fields.get(&record)?.get(field)?;
+                let params = self.unique_source_record_params.get(&record)?;
+                let substitutions = params.iter().cloned().zip(arguments).collect();
+                Some(Self::substitute_unique_source_type(source_field, &substitutions))
+            }
+            _ => None,
+        }
+    }
+
+    fn transfer_unique_value(
+        &mut self,
+        expression: &Expr,
+        ty: &Ty,
+        context: &str,
+    ) -> Result<(), TypeError> {
+        if !self.expression_carries_unique_storage(expression, ty) {
+            return Ok(());
+        }
+        let Some(root) = self.affine_place_root(expression) else {
+            return Ok(());
+        };
+        if self.is_consumed_binding(&root) {
+            return terr(format!(
+                "use of unique value `{root}` after it was transferred ({context})"
+            ));
+        }
+        self.mark_consumed_binding(&root);
+        Ok(())
+    }
+
+    /// Substitute nominal source parameters before walking qualifier storage.
+    /// `Ty` deliberately erases those qualifiers, so this source shape remains
+    /// the authority for extraction provenance. The substitution is structural:
+    /// `List(a)`, `(a, Int)`, and `Pair(a)` retain a supplied `unique` argument.
+    fn substitute_unique_source_type(
+        source: &ast::Type,
+        substitutions: &HashMap<String, ast::Type>,
+    ) -> ast::Type {
+        match source {
+            ast::Type::Named(name, arguments) if arguments.is_empty() => substitutions
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| source.clone()),
+            ast::Type::Named(name, arguments) => ast::Type::Named(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| Self::substitute_unique_source_type(argument, substitutions))
+                    .collect(),
+            ),
+            ast::Type::Tuple(items) => ast::Type::Tuple(
+                items
+                    .iter()
+                    .map(|item| Self::substitute_unique_source_type(item, substitutions))
+                    .collect(),
+            ),
+            ast::Type::Slice(item) => ast::Type::Slice(Box::new(
+                Self::substitute_unique_source_type(item, substitutions),
+            )),
+            ast::Type::RecordCompose { base, fields } => ast::Type::RecordCompose {
+                base: Box::new(Self::substitute_unique_source_type(base, substitutions)),
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| {
+                        (
+                            name.clone(),
+                            Self::substitute_unique_source_type(field, substitutions),
+                        )
+                    })
+                    .collect(),
+            },
+            ast::Type::Fn(inputs, output, conventions, qualifiers) => ast::Type::Fn(
+                inputs
+                    .iter()
+                    .map(|input| Self::substitute_unique_source_type(input, substitutions))
+                    .collect(),
+                Box::new(Self::substitute_unique_source_type(output, substitutions)),
+                conventions.clone(),
+                *qualifiers,
+            ),
+            ast::Type::Qualified(qualifier, inner) => ast::Type::Qualified(
+                qualifier.clone(),
+                Box::new(Self::substitute_unique_source_type(inner, substitutions)),
+            ),
+            ast::Type::Dyn(name, arguments) => ast::Type::Dyn(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| Self::substitute_unique_source_type(argument, substitutions))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn bind_unique_source_parameters(
+        source: &ast::Type,
+        value: &ast::Type,
+        parameters: &[String],
+        bindings: &mut HashMap<String, ast::Type>,
+    ) {
+        match source {
+            ast::Type::Named(name, arguments)
+                if arguments.is_empty() && parameters.contains(name) =>
+            {
+                bindings.entry(name.clone()).or_insert_with(|| value.clone());
+            }
+            ast::Type::Named(_, source_arguments) => {
+                if let ast::Type::Named(_, value_arguments) = value {
+                    for (source_argument, value_argument) in
+                        source_arguments.iter().zip(value_arguments)
+                    {
+                        Self::bind_unique_source_parameters(
+                            source_argument,
+                            value_argument,
+                            parameters,
+                            bindings,
+                        );
+                    }
+                }
+            }
+            ast::Type::Tuple(source_items) => {
+                if let ast::Type::Tuple(value_items) = value {
+                    for (source_item, value_item) in source_items.iter().zip(value_items) {
+                        Self::bind_unique_source_parameters(
+                            source_item,
+                            value_item,
+                            parameters,
+                            bindings,
+                        );
+                    }
+                }
+            }
+            ast::Type::Qualified(_, source_inner) | ast::Type::Slice(source_inner) => {
+                let value_inner = match value {
+                    ast::Type::Qualified(_, value_inner) | ast::Type::Slice(value_inner) => value_inner,
+                    _ => value,
+                };
+                Self::bind_unique_source_parameters(
+                    source_inner,
+                    value_inner,
+                    parameters,
+                    bindings,
+                );
+            }
+            ast::Type::RecordCompose { .. } | ast::Type::Fn(..) | ast::Type::Dyn(..) => {}
+        }
+    }
+
+    fn inferred_unique_source_type(&self, expression: &Expr, ty: &Ty) -> Option<ast::Type> {
+        match expression {
+            Expr::Var(name) => self.unique_binding_type(name),
+            Expr::As { ty, .. } => Some(ty.clone()),
+            Expr::Tuple(items) => Some(ast::Type::Tuple(
+                items
+                    .iter()
+                    .map(|item| {
+                        self.inferred_unique_source_type(item, &self.fresh_for_unique_probe(item))
+                            .unwrap_or_else(|| ast::Type::Named("Unit".into(), Vec::new()))
+                    })
+                    .collect(),
+            )),
+            Expr::List(items) => items.iter().find_map(|item| {
+                self.inferred_unique_source_type(item, &self.fresh_for_unique_probe(item))
+                    .map(|item| ast::Type::Named("List".into(), vec![item]))
+            }),
+            Expr::Ctor { name, args } => {
+                let source_fields = self.unique_ctor_field_types.get(name)?;
+                let parameters = self.ctor_source_type_params.get(name)?;
+                let Ty::Named(result_name, _) = self.resolve(ty) else {
+                    return None;
+                };
+                let mut bindings = HashMap::new();
+                for (source_field, argument) in source_fields.iter().zip(args) {
+                    if let Some(argument_source) = self.inferred_unique_source_type(
+                        argument,
+                        &self.fresh_for_unique_probe(argument),
+                    ) {
+                        Self::bind_unique_source_parameters(
+                            source_field,
+                            &argument_source,
+                            parameters,
+                            &mut bindings,
+                        );
+                    }
+                }
+                (!bindings.is_empty()).then(|| {
+                    ast::Type::Named(
+                        result_name.to_string(),
+                        parameters
+                            .iter()
+                            .map(|parameter| {
+                                bindings
+                                    .get(parameter)
+                                    .cloned()
+                                    .unwrap_or_else(|| ast::Type::Named("Unit".into(), Vec::new()))
+                            })
+                            .collect(),
+                    )
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn authorize_unique_pattern_storage(&mut self, pattern: &Pattern, declared: &ast::Type) {
+        if let Pattern::Or(alternatives) = pattern {
+            for alternative in alternatives {
+                self.authorize_unique_pattern_storage(alternative, declared);
+            }
+            return;
+        }
+        match declared {
+            // Moving a unique whole value into a single binding preserves the
+            // handle contract. Structural extraction instead follows the
+            // payload declaration, so ordinary sibling fields stay copyable.
+            ast::Type::Qualified(ast::TypeQual::Unique, inner) => match pattern {
+                Pattern::Var(name) => self.authorize_unique_storage_binding(name.clone()),
+                _ => self.authorize_unique_pattern_storage(pattern, inner),
+            },
+            ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => {
+                self.authorize_unique_pattern_storage(pattern, inner)
+            }
+            ast::Type::Tuple(types) => {
+                if let Pattern::Tuple(items) = pattern {
+                    for (item, item_type) in items.iter().zip(types) {
+                        self.authorize_unique_pattern_storage(item, item_type);
+                    }
+                }
+            }
+            ast::Type::Named(name, arguments) => {
+                if let Pattern::Var(binding) = pattern
+                    && self.declared_type_carries_unique_storage(declared)
+                {
+                    self.authorize_unique_storage_binding(binding.clone());
+                } else if name.rsplit('.').next() == Some("List")
+                    && let (Some(element), Pattern::List { elems, rest }) =
+                        (arguments.first(), pattern)
+                {
+                    for element_pattern in elems {
+                        self.authorize_unique_pattern_storage(element_pattern, element);
+                    }
+                    if let Some(Some(rest)) = rest
+                        && self.declared_type_carries_unique_storage(element)
+                    {
+                        self.authorize_unique_storage_binding(rest.clone());
+                    }
+                } else if let Pattern::Ctor { name, args } = pattern
+                    && let Some(field_types) = self.unique_ctor_field_types.get(name).cloned()
+                {
+                    let parameters = self
+                        .ctor_source_type_params
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let substitutions = parameters
+                        .iter()
+                        .cloned()
+                        .zip(arguments.iter().cloned())
+                        .collect();
+                    for (argument, field_type) in args.iter().zip(&field_types) {
+                        let field_type =
+                            Self::substitute_unique_source_type(field_type, &substitutions);
+                        self.authorize_unique_pattern_storage(argument, &field_type);
+                    }
+                } else if let Pattern::AnonCtor { tag, args } = pattern
+                    && let Some(variants) = anon_union_synthetic_variants(name)
+                {
+                    // Anonymous-union payload shapes live in the synthetic
+                    // head while their source-qualified payload types remain
+                    // ordinary type arguments.  Recover the selected tag's
+                    // argument range before `Ty` erasure so a unique payload
+                    // is affine without making an ordinary sibling affine.
+                    let mut offset = 0usize;
+                    for (variant, arity) in variants {
+                        let end = offset.saturating_add(arity);
+                        if variant == *tag {
+                            for (argument, field_type) in args
+                                .iter()
+                                .zip(arguments.get(offset..end).unwrap_or_default())
+                            {
+                                self.authorize_unique_pattern_storage(argument, field_type);
+                            }
+                            break;
+                        }
+                        offset = end;
+                    }
+                }
+            }
+            ast::Type::Dyn(..) | ast::Type::Fn(..) | ast::Type::RecordCompose { .. } => {}
+        }
+    }
+
+    fn place_root(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Var(name) => Some(name),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => Self::place_root(base),
+            Expr::Unary { op: UnOp::Deref, expr } => Self::place_root(expr),
+            _ => None,
+        }
+    }
+
+    fn place_ty(&self, expr: &Expr) -> Option<Ty> {
+        match expr {
+            Expr::Var(name) => self.lookup(name).map(|ty| self.resolve(&ty)),
+            Expr::Field { base, field } => {
+                let Ty::Named(name, args) = self.place_ty(base)? else {
+                    return None;
+                };
+                let (parameters, fields) = self.record_fields.get(name.as_ref())?;
+                let (_, field_ty) = fields.iter().find(|(name, _)| name == field)?;
+                let substitutions: HashMap<u32, Ty> = parameters
+                    .iter()
+                    .copied()
+                    .zip(args.iter().cloned())
+                    .collect();
+                Some(self.resolve(&self.subst_vars(field_ty, &substitutions)))
+            }
+            Expr::Index { base, .. } => match self.place_ty(base)? {
+                Ty::List(element) => Some(element.as_ref().clone()),
+                _ => None,
+            },
+            Expr::Unary { op: UnOp::Deref, expr } => self.place_ty(expr),
+            _ => None,
+        }
+    }
+
+    fn frozen_binding_root<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+        match expr {
+            Expr::Var(name) if self.is_frozen_binding(name) => Some(name),
+            Expr::Field { base, field } => self.frozen_binding_root(base).or_else(|| {
+                let Ty::Named(record, _) = self.place_ty(base)? else {
+                    return None;
+                };
+                self.frozen_record_fields
+                    .get(record.as_ref())
+                    .filter(|fields| fields.contains(field))
+                    .and_then(|_| Self::place_root(base))
+            }),
+            Expr::Index { base, .. } | Expr::Unary { op: UnOp::Deref, expr: base } => {
+                self.frozen_binding_root(base)
+            }
+            _ => None,
+        }
+    }
+
+    /// Classify the exact destination recovered from RFC-0022 assignment
+    /// desugaring. A frozen field is local to that projection: sibling fields
+    /// stay writable, while every index/field below the frozen field remains
+    /// immutable. If a non-root assignment has lost its canonical place shape,
+    /// reject rather than silently treating it as a root-only replacement.
+    fn assignment_targets_frozen_storage(
+        &self,
+        root: &str,
+        value: &Expr,
+        place_depth: u32,
+    ) -> Result<bool, ()> {
+        if place_depth == 0 {
+            return Ok(false);
+        }
+        if self.is_frozen_binding(root) {
+            return Ok(true);
+        }
+        let place = crate::access::checked_assignment_place(root, value, place_depth);
+        if place.steps().len() != place_depth as usize {
+            return Err(());
+        }
+        let mut current = self.lookup(root).map(|ty| self.resolve(&ty)).ok_or(())?;
+        for step in place.steps() {
+            match (self.resolve(&current), step) {
+                (Ty::Named(record, args), crate::access::CheckedPlaceStep::Field(field)) => {
+                    if self
+                        .frozen_record_fields
+                        .get(record.as_ref())
+                        .is_some_and(|fields| fields.contains(field))
+                    {
+                        return Ok(true);
+                    }
+                    let (parameters, fields) = self.record_fields.get(record.as_ref()).ok_or(())?;
+                    let (_, field_ty) = fields.iter().find(|(name, _)| name == field).ok_or(())?;
+                    let substitutions: HashMap<u32, Ty> = parameters
+                        .iter()
+                        .copied()
+                        .zip(args.iter().cloned())
+                        .collect();
+                    current = self.subst_vars(field_ty, &substitutions);
+                }
+                (Ty::List(element), crate::access::CheckedPlaceStep::Index(_)
+                    | crate::access::CheckedPlaceStep::DynamicIndex) => {
+                    current = element.as_ref().clone();
+                }
+                (Ty::Named(name, arguments), crate::access::CheckedPlaceStep::DynamicIndex)
+                    if name.as_ref() == "Dict" && arguments.len() == 2 => {
+                    current = arguments[1].clone();
+                }
+                _ => return Err(()),
+            }
+        }
+        Ok(false)
     }
 
     fn exclusive_borrow_targets_frozen_storage(&self, expr: &Expr) -> bool {
@@ -5508,6 +7577,7 @@ impl Checker {
                 Ok(())
             }
             (Ty::List(x), Ty::List(y)) => self.unify(x, y),
+            (Ty::View(x), Ty::View(y)) => self.unify(x, y),
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
                 for (x, y) in xs.iter().zip(ys.iter()) {
                     self.unify(x, y)?;
@@ -5605,6 +7675,7 @@ impl Checker {
         match self.resolve(t) {
             Ty::Var(y) => x == y,
             Ty::List(inner) => self.occurs(x, &inner),
+            Ty::View(payload) => self.occurs(x, &payload),
             Ty::Tuple(items) => items.iter().any(|i| self.occurs(x, i)),
             Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(|a| self.occurs(x, a)),
             Ty::Fn(params, ret, _, _, _) => {
@@ -5620,6 +7691,12 @@ impl Checker {
         self.borrowed_shell_bindings.push(HashSet::new());
         self.explicit_reference_bindings.push(HashSet::new());
         self.frozen_bindings.push(HashSet::new());
+        self.unique_value_bindings.push(HashSet::new());
+        self.unique_storage_bindings.push(HashSet::new());
+        self.unique_binding_types.push(HashMap::new());
+        self.callable_unique_contracts.push(HashMap::new());
+        self.callable_opt_provenance.push(HashMap::new());
+        self.container_opt_provenance.push(HashMap::new());
     }
     fn pop(&mut self) {
         let scope = self.scopes.len().saturating_sub(1);
@@ -5636,6 +7713,12 @@ impl Checker {
         self.borrowed_shell_bindings.pop();
         self.explicit_reference_bindings.pop();
         self.frozen_bindings.pop();
+        self.unique_value_bindings.pop();
+        self.unique_storage_bindings.pop();
+        self.unique_binding_types.pop();
+        self.callable_unique_contracts.pop();
+        self.callable_opt_provenance.pop();
+        self.container_opt_provenance.pop();
     }
     fn is_explicit_reference_binding(&self, name: &str) -> bool {
         self.explicit_reference_bindings
@@ -5660,6 +7743,9 @@ impl Checker {
 
     fn ty_carries_must_consume(&self, ty: &Ty) -> bool {
         match self.resolve(ty) {
+            // A view may be copyable, but it may never erase the payload's
+            // consumption obligation. Formation rejects such a carrier below.
+            Ty::View(payload) => self.ty_carries_must_consume(&payload),
             Ty::List(element) => self.ty_carries_must_consume(&element),
             Ty::Tuple(items) => items.iter().any(|item| self.ty_carries_must_consume(item)),
             Ty::Named(name, arguments) | Ty::Dyn(name, arguments) => {
@@ -5681,10 +7767,69 @@ impl Checker {
         }
     }
 
+    /// Admit a payload for a copyable rooted-view carrier. Generic variables
+    /// belonging to the current declaration become retained call-site
+    /// obligations; every other unresolved variable is rejected now. This
+    /// prevents a generic body from manufacturing `&a` and later specializing
+    /// `a` to authority, must-consume, or affine storage.
+    fn admit_view_payload(&mut self, ty: &Ty, context: &str) -> Result<(), TypeError> {
+        fn collect(checker: &Checker, ty: &Ty, variables: &mut HashSet<u32>) {
+            match checker.resolve(ty) {
+                Ty::Var(variable) => {
+                    variables.insert(variable);
+                }
+                Ty::View(payload) | Ty::List(payload) => collect(checker, &payload, variables),
+                Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
+                    for item in items.iter() {
+                        collect(checker, item, variables);
+                    }
+                }
+                Ty::Fn(params, result, _, _, _) => {
+                    for parameter in params.iter() {
+                        collect(checker, parameter, variables);
+                    }
+                    collect(checker, &result, variables);
+                }
+                _ => {}
+            }
+        }
+
+        let resolved = self.resolve(ty);
+        let mut variables = HashSet::new();
+        collect(self, &resolved, &mut variables);
+        let current: HashSet<u32> = self.current_typarams.values().copied().collect();
+        for variable in variables {
+            if current.contains(&variable) {
+                self.current_view_payload_vars.insert(variable);
+            } else {
+                return terr(format!(
+                    "{context} forms an immutable view with unresolved payload type; authenticate a concrete payload or declare it as a function type parameter",
+                ));
+            }
+        }
+        if let Some(capability) = self.ty_authority_taint(&resolved, &mut HashSet::new()) {
+            return terr(format!(
+                "{context} cannot form an immutable view of authority `{capability}`; no retained-authority carrier is admitted",
+            ));
+        }
+        if self.ty_carries_must_consume(&resolved) {
+            return terr(format!(
+                "{context} cannot form an immutable view of must-consume storage; the copyable carrier would erase the payload obligation",
+            ));
+        }
+        if self.ty_carries_once_callable(&resolved) {
+            return terr(format!(
+                "{context} cannot form an immutable view of affine once-callable storage; the copyable carrier cannot consume its referent",
+            ));
+        }
+        Ok(())
+    }
+
     fn ty_carries_once_callable(&self, ty: &Ty) -> bool {
         fn go(checker: &Checker, ty: &Ty, seen: &mut HashSet<String>) -> bool {
             match checker.resolve(ty) {
                 Ty::Fn(_, _, _, _, qualifiers) => qualifiers.once,
+                Ty::View(payload) => go(checker, &payload, seen),
                 Ty::List(item) => go(checker, &item, seen),
                 Ty::Tuple(items) => items.iter().any(|item| go(checker, item, seen)),
                 // An existential's type arguments describe its method surface;
@@ -5775,7 +7920,8 @@ impl Checker {
         fn contains(checker: &mut Checker, declared: &ast::Type) -> bool {
             match declared {
                 ast::Type::Qualified(
-                    ast::TypeQual::Borrow(_)
+                    ast::TypeQual::View
+                        | ast::TypeQual::Borrow(_)
                         | ast::TypeQual::LegacyBorrow(_)
                         | ast::TypeQual::BorrowMut(_),
                     referent,
@@ -5912,7 +8058,7 @@ impl Checker {
         self.affine_place(expression).map(|(root, _)| root)
     }
 
-    fn reject_once_loop_backedge(
+    fn reject_affine_loop_backedge(
         &self,
         before: &HashSet<(usize, String)>,
         context: &str,
@@ -5921,17 +8067,21 @@ impl Checker {
             let Some((ty, _)) = self.scopes.get(*scope).and_then(|frame| frame.get(name)) else {
                 continue;
             };
-            if !self.ty_carries_once_callable(ty) {
-                continue;
+            if self.ty_carries_once_callable(ty) {
+                let action = if self.once_invoked.contains(binding) {
+                    "invoked"
+                } else {
+                    "transferred"
+                };
+                return terr(format!(
+                    "once-callable `{name}` is {action} in {context}; a loop backedge could repeat that affine consumption"
+                ));
             }
-            let action = if self.once_invoked.contains(binding) {
-                "invoked"
-            } else {
-                "transferred"
-            };
-            return terr(format!(
-                "once-callable `{name}` is {action} in {context}; a loop backedge could repeat that affine consumption"
-            ));
+            if self.ty_carries_must_consume(ty) {
+                return terr(format!(
+                    "must-consume value `{name}` is transferred in {context}; a loop backedge could repeat that affine consumption"
+                ));
+            }
         }
         Ok(())
     }
@@ -6251,7 +8401,18 @@ impl Checker {
             .map(|(_, id)| *id)
             .collect();
         let bounds = self.fn_bounds.get(name).cloned().unwrap_or_default();
-        Some(self.instantiate_with_bounds(&params, &ret, &typarams, &bounds))
+        let view_payload_vars = self
+            .fn_view_payload_constraints
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        Some(self.instantiate_with_bounds(
+            &params,
+            &ret,
+            &typarams,
+            &bounds,
+            &view_payload_vars,
+        ))
     }
 
     fn unknown_call(&self, name: &str, args: &[Expr]) -> Result<Ty, TypeError> {
@@ -6568,17 +8729,24 @@ impl Checker {
                 Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
             }
             S::StringToStr => {
-                Some((vec![Ty::String], Ty::Named("str".into(), Vec::new().into())))
+                let str_ty = Ty::Named("str".into(), Vec::new().into());
+                Some((
+                    vec![Ty::View(Box::new(Ty::String).into())],
+                    Ty::View(Box::new(str_ty).into()),
+                ))
             }
             S::StrIntIntToStr => {
                 let str_ty = Ty::Named("str".into(), Vec::new().into());
-                Some((vec![str_ty.clone(), Ty::Int, Ty::Int], str_ty))
+                let str_view = Ty::View(Box::new(str_ty).into());
+                Some((vec![str_view.clone(), Ty::Int, Ty::Int], str_view))
             }
             S::StrToString => {
-                Some((vec![Ty::Named("str".into(), Vec::new().into())], Ty::String))
+                let str_ty = Ty::Named("str".into(), Vec::new().into());
+                Some((vec![Ty::View(Box::new(str_ty).into())], Ty::String))
             }
             S::StrToInt => {
-                Some((vec![Ty::Named("str".into(), Vec::new().into())], Ty::Int))
+                let str_ty = Ty::Named("str".into(), Vec::new().into());
+                Some((vec![Ty::View(Box::new(str_ty).into())], Ty::Int))
             }
             S::ListStringListStringToString => Some((
                 vec![
@@ -7009,6 +9177,28 @@ impl Checker {
         self.unify(expected, actual)
     }
 
+    /// A rooted slice is a retained immutable carrier, not an owned `List`.
+    /// Only catalogued read-only sequence operations may consume this
+    /// compatibility at their receiver position; list mutation never reaches
+    /// this helper.  Keep the element variable unified with the carrier payload
+    /// so generic `list.length` retains its ordinary type contract.
+    fn coerce_rooted_slice_read_arg(&mut self, expected: &Ty, actual: &Ty) -> Result<bool, TypeError> {
+        let Ty::List(expected_element) = self.resolve(expected) else {
+            return Ok(false);
+        };
+        let Ty::View(payload) = self.resolve(actual) else {
+            return Ok(false);
+        };
+        let Ty::Named(name, arguments) = self.resolve(&payload) else {
+            return Ok(false);
+        };
+        if name.as_ref() != "Slice" || arguments.len() != 1 {
+            return Ok(false);
+        }
+        self.unify(&expected_element, &arguments[0])?;
+        Ok(true)
+    }
+
     fn callable_purity_widening(&self, expected: &Ty, actual: &Ty) -> bool {
         matches!(
             (self.resolve(expected), self.resolve(actual)),
@@ -7332,13 +9522,54 @@ impl Checker {
         expected: Option<&Ty>,
     ) -> Result<Ty, TypeError> {
         let is_region = block.region.is_some();
+        // Reject this before ordinary reference-relation inference loses the
+        // lexical owner and reports a misleading generic "unbound" error.
+        // A local *handle* rooted in a parent remains legal; only a local
+        // owner root is the region-born escape.
+        let region_annotation_has_reference = block
+            .region
+            .as_ref()
+            .and_then(|region| region.ty.as_ref())
+            .is_some_and(type_contains_explicit_reference_relation);
+        let region_direct_borrow = matches!(
+            region_value_tail(block),
+            Some(Expr::Unary {
+                op: UnOp::Borrow | UnOp::BorrowMut,
+                ..
+            })
+        );
+        if is_region && (region_annotation_has_reference || region_direct_borrow) {
+            let owner_root = region_reference_root(block);
+            if let Some(root) = owner_root.as_ref()
+                && region_declared_local_names(block).contains(root)
+            {
+                return terr(format!(
+                    "cannot copy out region-born reference `{root}` from `region:`; its owner is rewound at region exit"
+                ));
+            }
+            // We admit only a direct, checked reference carrier rooted in a
+            // parent binding.  An aggregate reference needs a per-field owner
+            // witness which this contract deliberately does not mint yet.
+            if region_annotation_has_reference
+                && (!block
+                    .region
+                    .as_ref()
+                    .and_then(|region| region.ty.as_ref())
+                    .is_some_and(type_is_explicit_reference)
+                    || owner_root.is_none())
+            {
+                return terr(
+                    "cannot copy out a region reference aggregate without a supported parent-owner carrier proof"
+                        .to_string(),
+                );
+            }
+        }
         if is_region {
             self.region_locals.push(HashSet::new());
         }
         let result = self.infer_block_inner(block, expected);
-        if is_region {
-            self.region_locals.pop();
-        }
+        let locals = is_region
+            .then(|| self.region_locals.pop().expect("active region has locals"));
         let ty = result?;
         if is_region
             && !self.ty_is_direct_externref_value(&ty)
@@ -7357,7 +9588,194 @@ impl Checker {
                 })?;
             }
         }
+        if let Some(locals) = locals {
+            let fact = self.region_promotion_fact(block, &ty, &locals)?;
+            self.region_promotions.insert(block as *const Block as usize, fact);
+        }
         Ok(ty)
+    }
+
+    /// Classify exactly what the checked region boundary promises.  Normal
+    /// code may use the existing value/snapshot representation; opt code gets
+    /// no implicit promotion copy and therefore records either a direct
+    /// parent-owned pass-through or an obligation the canonical path must
+    /// reject.  Reference handles are permitted only when their root is
+    /// outside the region.
+    fn region_promotion_fact(
+        &self,
+        block: &Block,
+        ty: &Ty,
+        locals: &HashSet<String>,
+    ) -> Result<RegionPromotionFact, TypeError> {
+        let tail = region_value_tail(block);
+        let result = ty_to_ast(&self.resolve(ty)).ok_or_else(|| TypeError {
+            message: "region value has no concrete checked representation".to_string(),
+        })?;
+        let annotation_is_reference = block
+            .region
+            .as_ref()
+            .and_then(|region| region.ty.as_ref())
+            .is_some_and(type_contains_explicit_reference_relation);
+        let direct_borrow = matches!(tail, Some(Expr::Unary { op: UnOp::Borrow | UnOp::BorrowMut, .. }));
+        let direct_view = matches!(self.resolve(ty), Ty::View(_));
+        let carries_view = self.ty_carries_rooted_view(ty);
+        if carries_view && !direct_view {
+            return terr(
+                "cannot copy out a region aggregate carrying immutable views without per-field parent-root provenance"
+                    .to_string(),
+            );
+        }
+        if annotation_is_reference || direct_borrow || direct_view {
+            let Some(root) = region_reference_root(block) else {
+                return terr(
+                    "cannot copy out an immutable view from `region:` without a parent-root provenance proof".to_string(),
+                );
+            };
+            if locals.contains(&root) {
+                return terr(format!(
+                    "cannot copy out region-born view rooted in `{root}` from `region:`; its backing root is rewound at region exit"
+                ));
+            }
+        }
+
+        if is_scalar_ty(&self.resolve(ty)) {
+            return Ok(RegionPromotionFact::Scalar { result });
+        }
+        if let Some(descriptor) = self.region_packed_layout_descriptor(&result) {
+            return Ok(RegionPromotionFact::PackedInline { result, descriptor });
+        }
+        if !self.current_opt_callable {
+            return Ok(RegionPromotionFact::NormalOwnedSnapshot {
+                result,
+                // A must result crosses this boundary only through the exact
+                // fresh constructor expression that introduced its obligation.
+                // A boolean would let a stale or forged fact claim transfer.
+                must_disposition: if self.ty_carries_must_consume(ty) {
+                    self.region_must_transfer(tail, ty)
+                        .map(RegionMustDisposition::FreshConstructor)
+                        .unwrap_or(RegionMustDisposition::Unproven)
+                } else {
+                    RegionMustDisposition::NoObligation
+                },
+            });
+        }
+        let owner_root = if annotation_is_reference || direct_borrow || direct_view {
+            region_reference_root(block)
+        } else {
+            match tail {
+                Some(Expr::Var(root)) if !locals.contains(root) && self.lookup(root).is_some() => {
+                    Some(root.clone())
+                }
+                _ => None,
+            }
+        };
+        match owner_root {
+            Some(owner_root) if !locals.contains(&owner_root) => {
+                let explicit_reference = annotation_is_reference || direct_borrow || direct_view;
+                Ok(RegionPromotionFact::OptParentPassThrough {
+                    result,
+                    qualifier: self.region_promotion_qualifier(&owner_root, explicit_reference),
+                    reference_loan: explicit_reference.then(|| RegionPromotionLoan {
+                        owner_root: owner_root.clone(),
+                    }),
+                    owner_root,
+                })
+            }
+            _ => Ok(RegionPromotionFact::OptNeedsCopyFreeProof { result }),
+        }
+    }
+
+    /// Whether a runtime value stores an immutable rooted-view carrier. Function
+    /// signatures are intentionally opaque here: parameter and result types are
+    /// contracts, not captured storage. Closure captures are checked separately.
+    fn ty_carries_rooted_view(&self, ty: &Ty) -> bool {
+        fn go(checker: &Checker, ty: &Ty, seen: &mut HashSet<String>) -> bool {
+            match checker.resolve(ty) {
+                Ty::View(_) => true,
+                Ty::List(item) => go(checker, &item, seen),
+                Ty::Tuple(items) => items.iter().any(|item| go(checker, item, seen)),
+                Ty::Dyn(_, arguments) => arguments.iter().any(|argument| go(checker, argument, seen)),
+                Ty::Named(name, arguments) => {
+                    let argument_hit = checker
+                        .must_consume_parameters
+                        .get(name.as_ref())
+                        .map(|stored| stored.iter().zip(arguments.iter()).any(|(stored, argument)| {
+                            *stored && go(checker, argument, seen)
+                        }))
+                        .unwrap_or_else(|| arguments.iter().any(|argument| go(checker, argument, seen)));
+                    if argument_hit || !seen.insert(name.to_string()) {
+                        return argument_hit;
+                    }
+                    let field_hit = checker.record_fields.get(name.as_ref()).is_some_and(|(_, fields)| {
+                        fields.iter().any(|(_, field)| go(checker, field, seen))
+                    });
+                    let variant_hit = checker.adt_variants.get(name.as_ref()).is_some_and(|variants| {
+                        variants.iter().any(|variant| checker.ctor_sigs.get(variant).is_some_and(
+                            |(payloads, _)| payloads.iter().any(|payload| go(checker, payload, seen)),
+                        ))
+                    });
+                    seen.remove(name.as_ref());
+                    field_hit || variant_hit
+                }
+                Ty::Fn(..)
+                | Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+                | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Secret(_) | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
+                | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => false,
+            }
+        }
+        go(self, ty, &mut HashSet::new())
+    }
+
+    fn region_promotion_qualifier(
+        &self,
+        root: &str,
+        explicit_reference: bool,
+    ) -> RegionPromotionQualifier {
+        if explicit_reference || self.is_explicit_reference_binding(root) {
+            RegionPromotionQualifier::ExplicitReference
+        } else if self.is_unique_value_binding(root) || self.is_unique_storage_binding(root) {
+            RegionPromotionQualifier::Unique
+        } else if self.is_frozen_binding(root) {
+            RegionPromotionQualifier::Frozen
+        } else {
+            RegionPromotionQualifier::Ordinary
+        }
+    }
+
+    fn region_packed_layout_descriptor(
+        &self,
+        result: &ast::Type,
+    ) -> Option<RegionPackedLayoutDescriptor> {
+        let ast::Type::Named(name, arguments) = result.unqualified() else { return None };
+        if !arguments.is_empty() {
+            return None;
+        }
+        self.region_packed_layouts
+            .get(name)
+            .cloned()
+    }
+
+    /// This is deliberately narrower than "the result carries must".  A
+    /// direct constructor is the existing checker operation that mints one
+    /// fresh obligation at this exact tail node.  A local, projection, call,
+    /// or aggregate would require a separate disposition carrier and remains
+    /// refused by canonical lowering.
+    fn region_must_transfer(
+        &self,
+        tail: Option<&Expr>,
+        result: &Ty,
+    ) -> Option<RegionMustTransfer> {
+        if !self.ty_carries_must_consume(result) {
+            return None;
+        }
+        let tail = tail?;
+        let Expr::Ctor { name, .. } = tail else { return None };
+        self.ctor_sigs.contains_key(name).then(|| RegionMustTransfer {
+            tail: tail as *const Expr as usize,
+            constructor: name.clone(),
+        })
     }
 
     fn infer_block_inner(&mut self, block: &Block, expected: Option<&Ty>) -> Result<Ty, TypeError> {
@@ -7383,16 +9801,6 @@ impl Checker {
                             decl,
                             &format!("local type ascription for `{name}`"),
                         )?;
-                        // (RFC-0025) `frozen` asserts deep immutability, so a `frozen`
-                        // binding cannot also be mutable — `var x: frozen T` is a
-                        // contradiction the checker rejects (the contract has teeth).
-                        if *mutable && is_frozen_type(decl) {
-                            return Err(TypeError {
-                                message: format!(
-                                    "`{name}` is declared `frozen` (deeply immutable) but also `var` (mutable) — drop the `var` (use `let`), or drop `frozen`"
-                                ),
-                            });
-                        }
                         let want = self.to_ty(decl);
                         let vt = self.infer_expected(value, &want).map_err(|e| {
                             type_mismatch_context(
@@ -7421,6 +9829,21 @@ impl Checker {
                         self.reject_implicit_must_copy(value, &format!("binding `{name}`"))?;
                     }
                     self.reject_implicit_once_copy(value, &vt, &format!("binding `{name}`"))?;
+                    self.transfer_unique_value(value, &vt, &format!("binding `{name}`"))?;
+                    if self.opt_mode
+                        && decl
+                            .as_ref()
+                            .is_some_and(|ty| self.declared_type_carries_unique_storage(ty))
+                        && !self.expression_establishes_declared_unique_storage(
+                            value,
+                            decl.as_ref().expect("unique declaration was checked above"),
+                            &vt,
+                        )
+                    {
+                        return terr(format!(
+                            "binding `{name}` cannot repair ordinary storage into `unique` in `mode opt`; pass an existing unique owner or construct fresh storage"
+                        ));
+                    }
                     let borrowed_shell_binding = self.is_direct_borrowed_nominal(&vt)
                         && Self::borrowed_shell_binding_source(value);
                     let borrowed_list_binding = self.is_direct_borrowed_nominal_list(&vt)
@@ -7436,8 +9859,59 @@ impl Checker {
                     self.define(name.clone(), vt, *mutable);
                     let binding_ty = self.lookup(name).expect("new binding retains its type");
                     self.mark_must_consume_binding(name, &binding_ty);
-                    if decl.as_ref().is_some_and(is_frozen_type) {
+                    if decl.as_ref().is_some_and(is_frozen_value_type)
+                        || self.expression_returns_frozen_value(value)
+                    {
                         self.authorize_frozen_binding(name.clone());
+                    }
+                    if decl.as_ref().is_some_and(is_unique_value_type) {
+                        self.authorize_unique_value_binding(name.clone());
+                    }
+                    if decl.as_ref().map_or_else(
+                        || self.expression_carries_unique_storage(value, &binding_ty)
+                            || self.ty_carries_unique_storage(&binding_ty),
+                        |ty| self.declared_type_carries_unique_storage(ty),
+                    )
+                    {
+                        self.authorize_unique_storage_binding(name.clone());
+                        if let Some(declared) = decl {
+                            self.remember_unique_binding_type(name.clone(), declared.clone());
+                        } else if let Some(source_type) =
+                            self.inferred_unique_source_type(value, &binding_ty)
+                        {
+                            self.remember_unique_binding_type(name.clone(), source_type);
+                        }
+                    }
+                    // A declared function type is the source-visible contract
+                    // of this binding. It may explicitly weaken a stronger
+                    // value contract, or give an inferred lambda its declared
+                    // unique result fact after `Ty` erases it.
+                    if let Some(contract) = decl
+                        .as_ref()
+                        .and_then(UniqueCallableContract::from_function_type)
+                        .or_else(|| self.callable_unique_contract_for_expr(value))
+                    {
+                        self.remember_callable_unique_contract(name.clone(), contract);
+                    }
+                    // Unlike ordinary function type compatibility, opt
+                    // provenance is never created by an ascription.  An alias
+                    // carries it only when its source expression already did.
+                    if matches!(self.resolve(&binding_ty), Ty::Fn(..))
+                        && self.expression_opt_callable_contract(value).is_some()
+                    {
+                        self.remember_opt_callable_provenance(
+                            name.clone(),
+                            self.expression_opt_callable_contract(value)
+                                .expect("checked opt callable expression has a contract"),
+                        );
+                    }
+                    if matches!(
+                        self.resolve(&binding_ty),
+                        Ty::List(_) | Ty::Tuple(_) | Ty::Named(_, _)
+                    )
+                        && let Some(contract) = self.container_opt_contract_for_expr(value)
+                    {
+                        self.remember_container_opt_provenance(name.clone(), contract);
                     }
                     if borrowed_shell_binding {
                         self.authorize_borrowed_shell_binding(name.clone());
@@ -7457,7 +9931,7 @@ impl Checker {
                     }
                     ty = Ty::Unit;
                 }
-                Stmt::Assign { name, value, .. } => {
+                Stmt::Assign { name, value, place_depth } => {
                     let Some(existing) = self.lookup(name) else {
                         self.pop();
                         return terr(format!("assignment to unbound variable `{name}`"));
@@ -7467,6 +9941,21 @@ impl Checker {
                         return terr(format!(
                             "cannot assign to `{name}`: it is immutable (declared with `let`)"
                         ));
+                    }
+                    match self.assignment_targets_frozen_storage(name, value, *place_depth) {
+                        Ok(true) => {
+                            self.pop();
+                            return terr(format!(
+                                "cannot mutate through frozen value `{name}`; replace the whole value instead"
+                            ));
+                        }
+                        Ok(false) => {}
+                        Err(()) => {
+                            self.pop();
+                            return terr(format!(
+                                "cannot verify deep assignment place rooted in `{name}`; reject to preserve frozen storage contracts"
+                            ));
+                        }
                     }
                     if self.current_pure
                         && self
@@ -7523,6 +10012,7 @@ impl Checker {
                         &vt,
                         &format!("assignment to `{name}`"),
                     )?;
+                    self.transfer_unique_value(value, &vt, &format!("assignment to `{name}`"))?;
                     if !self.is_borrowed_shell_self_update(name, &existing, value) {
                         self.reject_borrowed_nominal_runtime_ty(
                             &vt,
@@ -7536,6 +10026,21 @@ impl Checker {
                         self.unify(&existing, &vt)?;
                     }
                     self.reinitialize_binding(name); // reassignment re-initializes
+                    if !self.is_unique_value_binding(name) {
+                        if let Some(bindings) = self
+                            .unique_storage_bindings
+                            .iter_mut()
+                            .rev()
+                            .find(|bindings| bindings.contains(name))
+                        {
+                            bindings.remove(name);
+                        }
+                        if self.expression_carries_unique_storage(value, &vt)
+                            || self.ty_carries_unique_storage(&existing)
+                        {
+                            self.authorize_unique_storage_binding(name.clone());
+                        }
+                    }
                     if self.ty_carries_must_consume(&existing)
                         && !self.is_borrowed_must_binding(name)
                     {
@@ -7558,6 +10063,7 @@ impl Checker {
                     }
                     let vt = self.infer(value)?;
                     self.reject_implicit_once_copy(value, &vt, "pattern destructuring")?;
+                    self.transfer_unique_value(value, &vt, "pattern destructuring")?;
                     if self.ty_carries_must_consume(&vt) {
                         self.reject_implicit_must_copy(value, "pattern destructuring")?;
                         if self.expression_introduces_must_obligation(value, &vt) {
@@ -7570,6 +10076,7 @@ impl Checker {
                         return terr(reason);
                     }
                     self.check_pattern(pattern, &vt)?;
+                    self.remember_pattern_opt_provenance(pattern, value);
                     ty = Ty::Unit;
                 }
                 Stmt::Return(opt) => {
@@ -7597,6 +10104,7 @@ impl Checker {
                     }
                     if let Some(expression) = opt {
                         self.reject_implicit_once_copy(expression, &t, "return")?;
+                        self.transfer_unique_value(expression, &t, "return")?;
                         if self.ty_carries_once_callable(&t)
                             && let Some(root) = self.affine_place_root(expression)
                         {
@@ -7643,6 +10151,7 @@ impl Checker {
                     }
                     ty = self.infer(e)?;
                     self.reject_implicit_once_copy(e, &ty, "generator yield")?;
+                    self.transfer_unique_value(e, &ty, "generator yield")?;
                     if self.ty_carries_once_callable(&ty)
                         && let Some(root) = self.affine_place_root(e)
                     {
@@ -7675,6 +10184,9 @@ impl Checker {
             if let Some(root) = self.affine_place_root(expression) {
                 self.mark_consumed_binding(&root);
             }
+        }
+        if let Some(Stmt::Expr(expression)) = block.stmts.last() {
+            self.transfer_unique_value(expression, &ty, "block result")?;
         }
         self.reject_live_must_in_current_scope()?;
         self.pop();
@@ -7713,6 +10225,15 @@ impl Checker {
 
     fn infer_expected(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
         let actual = self.infer_expected_inner(expr, expected)?;
+        // A typed storage/call boundary inside `mode opt` cannot turn an
+        // ordinary callable into a trusted carrier merely because `Ty::Fn`
+        // erases the mode marker.  Structural paths below recover only facts
+        // admitted here (or by an already authenticated opt call).
+        if self.current_opt_callable
+            && self.opt_callable_contract_from_ty(expected).is_some()
+        {
+            self.require_opt_callable_provenance(expr, "opt callable storage", 0)?;
+        }
         self.record_existential_pack(expr, expected, &actual)?;
         self.record_existential_upcast(expr, expected, &actual)?;
         self.record_record_projection(expr, expected, &actual);
@@ -7752,6 +10273,9 @@ impl Checker {
                 Ok(at)
             }
             Expr::Tuple(items) => {
+                if items.is_empty() && matches!(self.resolve(expected), Ty::Unit) {
+                    return self.finish_infer(expr, Ty::Unit);
+                }
                 if let Ty::Tuple(slots) = self.resolve(expected) {
                     if slots.len() == items.len() {
                         for (item, slot) in items.iter().zip(slots.iter()) {
@@ -7866,12 +10390,12 @@ impl Checker {
                     block_can_complete(else_block)
                 } else if matches!(self.resolve(expected), Ty::Dyn(_, _)) {
                     return terr(
-                        "`if` without `else` has an implicit `Nil` path that cannot produce \
+                        "`if` without `else` has an implicit `()` path that cannot produce \
                          an existential value — add an explicit `else` branch"
                     );
                 } else {
                     self.coerce_arg(expected, &Ty::Unit).map_err(|e| TypeError {
-                        message: format!("`if` without `else` produces `Nil`: {}", e.message),
+                        message: format!("`if` without `else` produces `()`: {}", e.message),
                     })?;
                     true
                 };
@@ -7995,6 +10519,13 @@ impl Checker {
         // apply it. Handles both an explicit `fn(..)->..` type and an as
         // yet unconstrained variable (which we pin to a function type).
         if !is_cap_op && let Some(vty) = self.lookup(name) {
+            // Named application bypasses Expr::Var inference, but it still
+            // reads the callable binding and cannot revive an own/move transfer.
+            if self.is_consumed_binding(name) {
+                let callee = Expr::Var(name.to_string());
+                self.consume_once_callee(&callee, &vty)?;
+                self.infer(&callee)?;
+            }
             match self.resolve(&vty) {
                 Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) => {
                     if self.current_pure && !qualifiers.pure {
@@ -8018,12 +10549,22 @@ impl Checker {
                         ));
                     }
                     let display = diagnostic_callable_name(name);
+                    let unique_contract = self.callable_unique_contract(name);
+                    let opt_callable = self.callable_opt_contract(name).is_some();
                     if let Some(expected) = expected {
                         self.coerce_arg(expected, ret.as_ref()).map_err(|e| TypeError {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
                     }
                     for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
+                        if opt_callable && matches!(self.resolve(pty), Ty::Fn(..)) {
+                            self.require_opt_callable_provenance(arg, &display, index)?;
+                        } else if !opt_callable {
+                            self.reject_opt_callable_erasure(
+                                arg,
+                                &format!("argument {} to function value `{display}`", index + 1),
+                            )?;
+                        }
                         let at = self
                             .infer_expected(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
@@ -8038,6 +10579,19 @@ impl Checker {
                             pty,
                             &at,
                         )?;
+                        if self.opt_mode
+                            && unique_contract
+                                .as_ref()
+                                .and_then(|contract| contract.unique_params.get(index))
+                                .copied()
+                                .unwrap_or(false)
+                            && !self.expression_carries_unique_storage(arg, pty)
+                        {
+                            return terr(format!(
+                                "argument {} to function value `{display}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
+                                index + 1
+                            ));
+                        }
                         self.coerce_arg(pty, &at).map_err(|e| TypeError {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
@@ -8057,6 +10611,7 @@ impl Checker {
                         &param_tys,
                         &conventions,
                         &reference_params,
+                        unique_contract.as_ref(),
                     )?;
                     if qualifiers.once {
                         self.consume_once_callee(&Expr::Var(name.to_string()), &vty)?;
@@ -8197,15 +10752,15 @@ impl Checker {
         if let Some(t) = self.check_try_ctx(call_name, args)? {
             return Ok(t);
         }
-        let (params, ret, call_bounds) = match catalog_contract {
-            Some(contract) => contract,
+        let (params, ret, call_bounds, view_payload_constraints) = match catalog_contract {
+            Some((params, ret, bounds)) => (params, ret, bounds, Vec::new()),
             None => match user_sig {
                 Some(sig) => sig,
                 None => {
                     let Some((params, ret)) = self.call_sig(call_name) else {
                         return self.unknown_call(call_name, args);
                     };
-                    (params, ret, Vec::new())
+                    (params, ret, Vec::new(), Vec::new())
                 }
             },
         };
@@ -8247,8 +10802,29 @@ impl Checker {
                 | intrinsics::LIST_CONCAT
         ) || intrinsics::is_list_pop_extract(call_name)
             || call_name == "list.pop";
+        let rooted_slice_read_intrinsic = intrinsics::lookup(call_name)
+            .is_some_and(|spec| spec.signature.accepts_rooted_slice_view());
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
+            let expects_opt_callable = self
+                .fn_opt_provenance
+                .get(name)
+                .and_then(|contract| contract.params.get(index))
+                .is_some_and(Option::is_some);
+            if expects_opt_callable {
+                self.require_opt_callable_provenance(arg, &display, index)?;
+            } else {
+                // An opt declaration can still have an ordinary or generic
+                // parameter at this position.  Such a slot has no carrier for
+                // a higher-order contract, so allowing it to accept one would
+                // erase provenance through `fn id(a)(a) -> a`.  Only an
+                // explicit callable declaration slot receives the opt entry
+                // contract above.
+                self.reject_opt_callable_erasure(
+                    arg,
+                    &format!("argument {} to `{display}`", index + 1),
+                )?;
+            }
             let typed_vm_callback = (call_name == "vm.with_dir" && index == 1)
                 || (call_name == "vm.serve" && index == 2);
             let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
@@ -8286,7 +10862,7 @@ impl Checker {
                         .copied()
                         .unwrap_or(CallableQualifiers::ORDINARY),
                 ))
-            } else if exact_generic {
+            } else if exact_generic || (index == 0 && rooted_slice_read_intrinsic) {
                 self.infer(arg)
             } else {
                 self.infer_expected(arg, param_ty)
@@ -8358,7 +10934,12 @@ impl Checker {
                     &format!("argument to `{display}`"),
                 )?;
             }
-            let result = if name == "vm.serve" && index == 2 {
+            let result = if index == 0
+                && rooted_slice_read_intrinsic
+                && self.coerce_rooted_slice_read_arg(param_ty, &at)?
+            {
+                Ok(())
+            } else if name == "vm.serve" && index == 2 {
                 // Check a copied-byte invocation, not a conversion to the std
                 // implementation's function-value parameter type. Preserve the
                 // declaration's actual conventions in `at` and the type table.
@@ -8384,6 +10965,12 @@ impl Checker {
         }
         for (bound_ty, trait_name) in &call_bounds {
             self.require_call_bound(call_name, bound_ty, trait_name)?;
+        }
+        for payload in &view_payload_constraints {
+            self.admit_view_payload(
+                payload,
+                &format!("generic call to `{display}`"),
+            )?;
         }
         if !bind_expected_before_args && let Some(expected) = expected {
             self.coerce_arg(expected, &ret).map_err(|e| TypeError {
@@ -8411,6 +10998,36 @@ impl Checker {
                         *conv,
                         &format!("argument {} to `{name}`", i + 1),
                     )?;
+                }
+                if *conv == Convention::Var
+                    && let Some(root) = self.frozen_binding_root(arg)
+                    && !self
+                        .fn_frozen_value_params
+                        .get(name)
+                        .and_then(|params| params.get(i))
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    return terr(format!(
+                        "argument {} to `{name}` cannot pass frozen value `{root}` to a non-frozen `var` parameter; declare that parameter `var frozen` to permit replacement",
+                        i + 1
+                    ));
+                }
+                if self.opt_mode
+                    && self
+                        .fn_unique_contracts
+                        .get(name)
+                        .and_then(|contract| contract.unique_params.get(i))
+                        .copied()
+                        .unwrap_or(false)
+                    && !params.get(i).is_some_and(|parameter| {
+                        self.expression_carries_unique_storage(arg, parameter)
+                    })
+                {
+                    return terr(format!(
+                        "argument {} to `{name}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
+                        i + 1
+                    ));
                 }
                 let explicit_exclusive = self
                     .fn_exclusive_reference_params
@@ -8516,6 +11133,13 @@ impl Checker {
                     // obligation (a borrow's no-escape rule is enforced at
                     // native-lowering time by Rust's borrow checker).
                     Convention::Let => {
+                        if let Some(parameter) = params.get(i) {
+                            self.transfer_unique_value(
+                                arg,
+                                parameter,
+                                &format!("argument {} to `{name}`", i + 1),
+                            )?;
+                        }
                         self.reject_implicit_must_copy(
                             arg,
                             &format!("argument {} to `{name}`", i + 1),
@@ -8576,6 +11200,7 @@ impl Checker {
         parameter_types: &[Ty],
         conventions: &[Convention],
         reference_params: &[bool],
+        source_contract: Option<&UniqueCallableContract>,
     ) -> Result<(), TypeError> {
         let mut var_places: Vec<(usize, crate::access::CheckedPlace)> = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
@@ -8587,6 +11212,18 @@ impl Checker {
                     *convention,
                     &format!("argument {} to function value `{name}`", index + 1),
                 )?;
+            }
+            if *convention == Convention::Var
+                && let Some(root) = self.frozen_binding_root(arg)
+                && !source_contract
+                    .and_then(|contract| contract.frozen_params.get(index))
+                    .copied()
+                    .unwrap_or(false)
+            {
+                return terr(format!(
+                    "argument {} to function value `{name}` cannot pass frozen value `{root}` to a non-frozen or erased `var` parameter contract",
+                    index + 1
+                ));
             }
             if reference_params.get(index).copied().unwrap_or(false)
                 && let Expr::Unary { op: UnOp::BorrowMut, expr } = arg
@@ -8672,6 +11309,13 @@ impl Checker {
                     }
                 }
                 Convention::Let => {
+                    if let Some(parameter) = parameter_types.get(index) {
+                        self.transfer_unique_value(
+                            arg,
+                            parameter,
+                            &format!("argument {} to function value `{name}`", index + 1),
+                        )?;
+                    }
                     self.reject_implicit_must_copy(
                         arg,
                         &format!("argument {} to function value `{name}`", index + 1),
@@ -8790,6 +11434,13 @@ impl Checker {
                     }
                 }
                 Convention::Let => {
+                    if index > 0 && let Some(parameter) = parameter_types.get(index - 1) {
+                        self.transfer_unique_value(
+                            operand,
+                            parameter,
+                            &format!("operand {} to existential `{callee}`", index + 1),
+                        )?;
+                    }
                     self.reject_implicit_must_copy(
                         operand,
                         &format!("operand {} to existential `{callee}`", index + 1),
@@ -9126,10 +11777,46 @@ impl Checker {
 
     fn infer_index_parts(&mut self, base: &Expr, index: &Expr) -> Result<(Ty, Ty), TypeError> {
         let base_ty = self.infer(base)?;
+        // A rooted view carries a checked immutable projection, not an owned
+        // list handle.  Reads through it keep the payload type; formation of a
+        // further `&` projection is authenticated separately by `views`.
+        let payload = match self.resolve(&base_ty) {
+            Ty::View(payload) => payload.as_ref().clone(),
+            other => other,
+        };
+        if let Expr::Range { lo, hi, .. } = index {
+            let lo_ty = self.infer(lo)?;
+            let hi_ty = self.infer(hi)?;
+            self.unify(&lo_ty, &Ty::Int)?;
+            self.unify(&hi_ty, &Ty::Int)?;
+            let element = match self.resolve(&payload) {
+                Ty::List(element) => element.as_ref().clone(),
+                Ty::Named(name, arguments)
+                    if (name == "List".into() || name == "Slice".into()) && arguments.len() == 1 =>
+                {
+                    arguments[0].clone()
+                }
+                other => return terr(format!("cannot slice `{other}`")),
+            };
+            return Ok((base_ty, Ty::Named("Slice".into(), vec![element].into())));
+        }
+        if let Ty::Named(name, arguments) = self.resolve(&payload)
+            && name == "Slice".into()
+            && arguments.len() == 1
+        {
+            let index_ty = self.infer(index)?;
+            self.unify(&index_ty, &Ty::Int)?;
+            return Ok((base_ty, arguments[0].clone()));
+        }
+        if let Ty::List(element) = self.resolve(&payload) {
+            let index_ty = self.infer(index)?;
+            self.unify(&index_ty, &Ty::Int)?;
+            return Ok((base_ty, element.as_ref().clone()));
+        }
         // The transient below types clones; infer the source index directly so
         // its persistent node retains the fact canonical lowering consumes.
         let _ = self.infer(index)?;
-        let desugared = if matches!(base_ty, Ty::Named(ref name, _) if **name == *"Dict") {
+        let desugared = if matches!(payload, Ty::Named(ref name, _) if **name == *"Dict") {
             Expr::Call {
                 name: intrinsics::DICT_AT.to_string(),
                 args: vec![base.clone(), index.clone()],
@@ -9297,7 +11984,7 @@ impl Checker {
                 self.check_pattern(pattern, &scrutinee_ty)?;
                 self.infer_block(body)?;
                 self.pop();
-                self.reject_once_loop_backedge(&consumed_before, "a `while let` loop")?;
+                self.reject_affine_loop_backedge(&consumed_before, "a `while let` loop")?;
                 self.must_live = &must_before | &self.must_live;
                 let d = witchy_syntax::parser::desugar_while_let(
                     pattern.clone(),
@@ -9307,12 +11994,18 @@ impl Checker {
                 self.infer_transient(&d)
             }
             Expr::List(items) => {
+                for item in items {
+                    self.reject_opt_callable_erasure(item, "list construction")?;
+                }
                 let elem = self.fresh();
                 for it in items {
                     let t = self.infer(it)?;
                     self.unify(&elem, &t)?;
                 }
                 let ty = Ty::List(Box::new(elem.clone()).into());
+                for item in items {
+                    self.transfer_unique_value(item, &elem, "list construction")?;
+                }
                 if self.ty_carries_must_consume(&ty) {
                     for item in items {
                         self.reject_implicit_must_copy(item, "list construction")?;
@@ -9328,11 +12021,22 @@ impl Checker {
                 Ok(ty)
             }
             Expr::Tuple(items) => {
+                if items.is_empty() {
+                    return Ok(Ty::Unit);
+                }
+                for item in items {
+                    self.reject_opt_callable_erasure(item, "tuple construction")?;
+                }
                 let tys = items
                     .iter()
                     .map(|e| self.infer(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 let ty = Ty::Tuple(tys.into());
+                if let Ty::Tuple(item_tys) = &ty {
+                    for (item, item_ty) in items.iter().zip(item_tys.iter()) {
+                        self.transfer_unique_value(item, item_ty, "tuple construction")?;
+                    }
+                }
                 if self.ty_carries_must_consume(&ty) {
                     for item in items {
                         self.reject_implicit_must_copy(item, "tuple construction")?;
@@ -9352,6 +12056,11 @@ impl Checker {
             }
             Expr::Var(name) => {
                 if self.is_consumed_binding(name) {
+                    if self.is_unique_value_binding(name) || self.is_unique_storage_binding(name) {
+                        return terr(format!(
+                            "use of unique value `{name}` after it was transferred"
+                        ));
+                    }
                     if self
                         .must_binding_key(name)
                         .is_some_and(|binding| self.once_invoked.contains(&binding))
@@ -9370,6 +12079,15 @@ impl Checker {
                 // A bare top-level function name used as a value retains its
                 // parameter conventions in the function type.
                 if let Some((params, ret)) = self.fn_sigs.get(name).cloned() {
+                    if self
+                        .fn_view_payload_constraints
+                        .get(name)
+                        .is_some_and(|constraints| !constraints.is_empty())
+                    {
+                        return terr(format!(
+                            "generic function `{name}` forms rooted views from its type parameters and cannot be transported as a function value; its view-admissibility constraints require a direct checked call",
+                        ));
+                    }
                     let typarams: HashSet<u32> = self
                         .fn_typarams
                         .get(name)
@@ -9452,8 +12170,14 @@ impl Checker {
                 let captures = scan.captures();
                 let suspension_transfer =
                     self.suspension_transfer_kind(params, body, &captures);
+                let mut copied_captures = Vec::new();
                 for capture in captures {
                     let Some(captured_ty) = self.lookup(&capture) else { continue };
+                    if self.is_consumed_binding(&capture) {
+                        return terr(format!(
+                            "closure capture `{capture}` uses a binding after it was moved"
+                        ));
+                    }
                     if self.ty_carries_once_callable(&captured_ty) {
                         return terr(format!(
                             "closure environment captures affine once-callable `{capture}`; pass it explicitly to an `own` parameter instead"
@@ -9462,7 +12186,12 @@ impl Checker {
                     if self.is_must_binding(&capture) {
                         match &suspension_transfer {
                             Some(SuspensionTransferKind::Root)
-                                if self.is_live_must_binding(&capture) => {}
+                                if self.is_live_must_binding(&capture) =>
+                            {
+                                return terr(format!(
+                                    "must-consume `{capture}` remains live across `await` in the root async fn; suspended frames have no drop cleanup, so consume or return it before the suspension"
+                                ));
+                            }
                             Some(SuspensionTransferKind::Cancellable(source))
                                 if self.is_live_must_binding(&capture) =>
                             {
@@ -9498,11 +12227,31 @@ impl Checker {
                     if pure_capture_boundary {
                         self.reject_pure_capture(&capture, &captured_ty)?;
                     }
+                    if !self.is_must_binding(&capture)
+                        && !self.ty_carries_must_consume(&captured_ty)
+                    {
+                        let mutable = self.is_mutable(&capture).unwrap_or(false);
+                        let frozen = self.is_frozen_binding(&capture);
+                        copied_captures.push((capture, captured_ty, mutable, frozen));
+                    }
                 }
                 let saved_pure = std::mem::replace(&mut self.current_pure, qualifiers.pure);
                 let saved_pure_var_parameters =
                     std::mem::take(&mut self.pure_var_parameters);
                 self.push();
+                // Ordinary value captures are snapshots, not the enclosing
+                // bindings. An `own` call in the body consumes that invocation's
+                // private binding. Approved must-consume suspension captures
+                // deliberately keep the existing transfer identity instead.
+                for (capture, ty, mutable, frozen) in &copied_captures {
+                    // These analysis-only bindings do not allocate storage in
+                    // the enclosing lexical region, unlike a source `let`.
+                    self.scopes.last_mut().unwrap()
+                        .insert(capture.clone(), (ty.clone(), *mutable));
+                    if *frozen {
+                        self.authorize_frozen_binding(capture.clone());
+                    }
+                }
                 let param_tys: Vec<Ty> = params
                     .iter()
                     .map(|p| match &p.ty {
@@ -9510,12 +12259,27 @@ impl Checker {
                         None => self.fresh(),
                     })
                     .collect();
-                for (p, ty) in params.iter().zip(&param_tys) {
+                let eta_contract = self.linker_eta_opt_contract(params, body);
+                for (index, (p, ty)) in params.iter().zip(&param_tys).enumerate() {
                     self.define(
                         p.name.clone(),
                         ty.clone(),
-                        p.convention.binds_mutable() || parameter_binds_exclusive_reference(p),
+                        p.convention.binds_mutable(),
                     );
+                    if let Some(contract) = eta_contract
+                        .as_ref()
+                        .and_then(Option::as_ref)
+                        .and_then(|contract| contract.params.get(index))
+                        .and_then(|contract| contract.as_deref())
+                        .cloned()
+                        .or_else(|| {
+                            (eta_contract.is_none() && self.current_opt_callable)
+                                .then(|| p.ty.as_ref().and_then(OptCallableContract::from_function_type))
+                                .flatten()
+                        })
+                    {
+                        self.remember_opt_callable_provenance(p.name.clone(), contract);
+                    }
                     if qualifiers.pure && p.convention == Convention::Var {
                         let binding = self
                             .must_binding_key(&p.name)
@@ -9554,6 +12318,20 @@ impl Checker {
                             .expect("reference bindings track type scopes")
                             .insert(p.name.clone());
                     }
+                    if p.ty.as_ref().is_some_and(is_frozen_value_type) {
+                        self.authorize_frozen_binding(p.name.clone());
+                    }
+                    if p.ty.as_ref().is_some_and(is_unique_value_type) {
+                        self.authorize_unique_value_binding(p.name.clone());
+                    }
+                    if p
+                        .ty
+                        .as_ref()
+                        .is_some_and(|ty| self.declared_type_carries_unique_storage(ty))
+                        || self.ty_carries_unique_storage(ty)
+                    {
+                        self.authorize_unique_storage_binding(p.name.clone());
+                    }
                 }
                 // The closure is its OWN `?` boundary: a `?` in its body propagates
                 // to the closure's return type, not the enclosing function's. Use
@@ -9576,9 +12354,50 @@ impl Checker {
                 self.unify(&lambda_ret, &body_ty).map_err(|e| TypeError {
                     message: format!("closure body type does not match its declared return type: {}", e.message),
                 })?;
+                // Body inference can refine a generic capture. It must not
+                // retroactively turn an admitted snapshot into an affine,
+                // must-consume, or reference-bearing environment. The one
+                // exception is the exact compiler-generated root suspension
+                // transfer: it is not cancellable, and
+                // `suspension_transfer_kind` has structurally proved this
+                // one-expression continuation forwards every capture exactly
+                // once to the matching `own` frame slot.
+                let mut late_root_must_transfers = Vec::new();
+                for (capture, captured_ty, _, _) in &copied_captures {
+                    if self.ty_carries_must_consume(captured_ty) {
+                        match &suspension_transfer {
+                            Some(SuspensionTransferKind::Root) => {
+                                late_root_must_transfers.push(capture.clone());
+                            }
+                            Some(SuspensionTransferKind::Cancellable(source)) => {
+                                return terr(format!(
+                                    "must-consume `{capture}` remains live across `await` in async fn `{}`; spawned tasks are shallow-cancellable and suspended frames have no drop cleanup, so consume or return it before the suspension",
+                                    diagnostic_callable_name(source),
+                                ));
+                            }
+                            None => {
+                                return terr(format!(
+                                    "closure environment carries must-consume `{capture}`; this callable type would erase that obligation"
+                                ));
+                            }
+                        }
+                    }
+                    if self.ty_carries_once_callable(captured_ty) {
+                        return terr(format!(
+                            "closure environment captures affine once-callable `{capture}`; pass it explicitly to an `own` parameter instead"
+                        ));
+                    }
+                    self.reject_borrowed_nominal_erasure(
+                        captured_ty,
+                        &format!("closure capture `{capture}`"),
+                    )?;
+                }
                 self.current_ret = saved_ret;
                 self.reject_live_must_in_current_scope()?;
                 self.pop();
+                for capture in late_root_must_transfers {
+                    self.transfer_owned_argument_binding(&capture);
+                }
                 self.current_pure = saved_pure;
                 self.pure_var_parameters = saved_pure_var_parameters;
                 let conventions = params.iter().map(|p| p.convention).collect();
@@ -9604,6 +12423,8 @@ impl Checker {
             Expr::Apply { func, args } => {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
+                let unique_contract = self.callable_unique_contract_for_expr(func);
+                let opt_callable = self.expression_opt_callable_contract(func).is_some();
                 let fty = self.infer(func)?;
                 if let Ty::Fn(param_tys, ret, conventions, reference_params, qualifiers) =
                     self.resolve(&fty)
@@ -9622,6 +12443,14 @@ impl Checker {
                         ));
                     }
                     for (index, (arg, pty)) in args.iter().zip(param_tys.iter()).enumerate() {
+                        if opt_callable && matches!(self.resolve(pty), Ty::Fn(..)) {
+                            self.require_opt_callable_provenance(arg, "function value", index)?;
+                        } else if !opt_callable {
+                            self.reject_opt_callable_erasure(
+                                arg,
+                                &format!("argument {} to function value", index + 1),
+                            )?;
+                        }
                         let at = self.infer_expected(arg, pty)?;
                         self.reject_borrowed_nominal_runtime_ty(
                             &at,
@@ -9634,6 +12463,19 @@ impl Checker {
                             pty,
                             &at,
                         )?;
+                        if self.opt_mode
+                            && unique_contract
+                                .as_ref()
+                                .and_then(|contract| contract.unique_params.get(index))
+                                .copied()
+                                .unwrap_or(false)
+                            && !self.expression_carries_unique_storage(arg, pty)
+                        {
+                            return terr(format!(
+                                "argument {} to function value cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
+                                index + 1
+                            ));
+                        }
                         self.coerce_arg(pty, &at).map_err(|e| TypeError {
                             message: format!("in function application: {}", e.message),
                         })?;
@@ -9645,6 +12487,7 @@ impl Checker {
                         &param_tys,
                         &conventions,
                         &reference_params,
+                        unique_contract.as_ref(),
                     )?;
                     if qualifiers.once {
                         self.consume_once_callee(func, &fty)?;
@@ -9713,6 +12556,10 @@ impl Checker {
                         ));
                     }
                     for (arg, fty) in args.iter().zip(&fields) {
+                        self.reject_opt_callable_erasure(
+                            arg,
+                            &format!("constructor `{name}`"),
+                        )?;
                         let at = if self.ty_is_direct_externref_value(fty) {
                             self.infer(arg)?
                         } else {
@@ -9723,6 +12570,7 @@ impl Checker {
                         self.coerce_arg(fty, &at).map_err(|e| TypeError {
                             message: format!("in constructor `{name}`: {}", e.message),
                         })?;
+                        self.transfer_unique_value(arg, fty, &format!("constructor `{name}`"))?;
                     }
                     if self.ty_carries_must_consume(&result) {
                         for argument in args {
@@ -9766,21 +12614,7 @@ impl Checker {
                 let t = if matches!(op, UnOp::Borrow)
                     && let Expr::Index { base, index } = expr.as_ref()
                 {
-                    let (base_ty, result) = self.infer_index_parts(base, index)?;
-                    let direct_list_int = match self.resolve(&base_ty) {
-                        Ty::List(element) => matches!(self.resolve(&element), Ty::Int),
-                        Ty::Named(name, arguments) => {
-                            name.rsplit('.').next() == Some("List")
-                                && arguments.len() == 1
-                                && matches!(self.resolve(&arguments[0]), Ty::Int)
-                        }
-                        _ => false,
-                    };
-                    if !direct_list_int {
-                        return terr(
-                            "projected shared references currently require a direct List(Int) element",
-                        );
-                    }
+                    let (_, result) = self.infer_index_parts(base, index)?;
                     self.finish_infer(expr, result)?
                 } else {
                     self.infer(expr)?
@@ -9822,6 +12656,9 @@ impl Checker {
                         }
                         Ok(t)
                     }
+                    UnOp::Await if !self.region_locals.is_empty() => terr(
+                        "cannot `await` inside `region:`: the async frame outlives the region".to_string(),
+                    ),
                     UnOp::Await if self.current_pure => terr(
                         "pure callable cannot suspend with `await`; task scheduling is an observable effect",
                     ),
@@ -9850,20 +12687,19 @@ impl Checker {
                             "`await` requires `Task(T)`, but this expression has type `{actual}`"
                         )),
                     },
-                    // Shared borrows and dereferences retain their referent's
-                    // runtime shape; the loan pass consumes the source operator.
-                    UnOp::Borrow if self.opt_mode => {
-                        if self.ty_carries_once_callable(&t) {
-                            return terr(
-                                "cannot create an explicit shared reference to affine once-callable storage; the copyable reference handle cannot carry referent-consumption state",
-                            );
-                        }
-                        Ok(t)
+                    // RFC-0167 views are rooted immutable carrier values in
+                    // both modes. Their root/projection authentication is
+                    // published by `CheckedViewFacts`, not LoanFacts.
+                    UnOp::Borrow => {
+                        self.admit_view_payload(&t, "immutable view formation")?;
+                        Ok(Ty::View(Box::new(t).into()))
                     }
-                    UnOp::Deref if self.opt_mode => Ok(t),
-                    UnOp::Borrow | UnOp::Deref => terr(
-                        "explicit references are available only in `mode opt` files; normal Witchy uses owned values and does not require lifetime annotations",
-                    ),
+                    UnOp::Deref => match self.resolve(&t) {
+                        Ty::View(payload) => Ok(payload.as_ref().clone()),
+                        actual => terr(format!(
+                            "immutable read dereference requires a rooted view, but this expression has type `{actual}`"
+                        )),
+                    },
                     UnOp::BorrowMut if self.opt_mode => {
                         if self.ty_carries_once_callable(&t) {
                             return terr(
@@ -9973,6 +12809,7 @@ impl Checker {
             Expr::RecordUpdate { name, base, fields } => {
                 let bt = self.infer(base)?;
                 self.reject_implicit_once_copy(base, &bt, "record spread/update")?;
+                self.transfer_unique_value(base, &bt, "record spread/update")?;
                 let borrowed_shell = self.is_authorized_borrowed_shell_update(base, &bt);
                 if !borrowed_shell {
                     self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
@@ -10032,6 +12869,11 @@ impl Checker {
                         }
                     }
                     let vt = self.infer_expected(vexpr, &expected)?;
+                    self.transfer_unique_value(
+                        vexpr,
+                        &expected,
+                        &format!("update of field `{fname}`"),
+                    )?;
                     self.reject_implicit_once_copy(
                         vexpr,
                         &expected,
@@ -10217,7 +13059,7 @@ impl Checker {
                 })?;
                 let must_before = self.must_live.clone();
                 self.infer_block(body)?;
-                self.reject_once_loop_backedge(&consumed_before, "a `while` loop")?;
+                self.reject_affine_loop_backedge(&consumed_before, "a `while` loop")?;
                 self.must_live = &must_before | &self.must_live;
                 Ok(Ty::Unit)
             }
@@ -10231,7 +13073,16 @@ impl Checker {
                 let consumed_before_body = self.consumed.clone();
                 self.push();
                 let borrowed_element = self.is_direct_borrowed_nominal(&elem);
-                self.define(var.clone(), elem, false);
+                self.define(var.clone(), elem.clone(), false);
+                if let Some(contract) = self.container_opt_contract_for_expr(iter).flatten().or_else(|| {
+                    // Empty literals acquire their element type only after a
+                    // later generic call.  That call is checked before this
+                    // projection; recover its now-finalized callable shape
+                    // without treating an unknown container as a source.
+                    self.current_opt_callable.then(|| self.opt_callable_contract_from_ty(&elem)).flatten()
+                }) {
+                    self.remember_opt_callable_provenance(var.clone(), contract);
+                }
                 // A borrowed-list loop binder is a read-only borrowed shell.
                 // Its owner roots remain live through the enclosing iterator
                 // expression; authorizing the binder admits only checked field
@@ -10241,7 +13092,7 @@ impl Checker {
                 }
                 self.infer_block(body)?;
                 self.pop();
-                self.reject_once_loop_backedge(&consumed_before_body, "a `for` loop")?;
+                self.reject_affine_loop_backedge(&consumed_before_body, "a `for` loop")?;
                 Ok(Ty::Unit)
             }
             Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
@@ -10465,6 +13316,7 @@ impl Checker {
     ) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
         self.transfer_once_match_scrutinee(scrutinee, &st)?;
+        self.transfer_unique_value(scrutinee, &st, "match scrutinee")?;
         if self.ty_carries_must_consume(&st) {
             self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
             if self.expression_introduces_must_obligation(scrutinee, &st) {
@@ -10490,6 +13342,11 @@ impl Checker {
                 ));
             }
             self.check_pattern(&arm.pattern, &st)?;
+            if let Expr::Var(binding) = scrutinee
+                && let Some(declared) = self.unique_binding_type(binding)
+            {
+                self.authorize_unique_pattern_storage(&arm.pattern, &declared);
+            }
             if let Some(guard) = &arm.guard {
                 let guard_before = self.consumed.clone();
                 let gt = self.infer(guard)?;
@@ -10705,8 +13562,15 @@ impl Checker {
                             args.len()
                         ));
                     }
-                    for (p, fty) in args.iter().zip(&fields) {
+                    let source_fields = self.unique_ctor_field_types.get(name).cloned();
+                    for (index, (p, fty)) in args.iter().zip(&fields).enumerate() {
                         self.check_pattern(p, fty)?;
+                        if let Some(source_field) = source_fields
+                            .as_ref()
+                            .and_then(|source_fields| source_fields.get(index))
+                        {
+                            self.authorize_unique_pattern_storage(p, source_field);
+                        }
                     }
                     Ok(())
                 } else {
@@ -11313,11 +14177,18 @@ impl Checker {
         self.borrowed_shell_bindings = vec![HashSet::new()];
         self.explicit_reference_bindings = vec![HashSet::new()];
         self.frozen_bindings = vec![HashSet::new()];
+        self.unique_value_bindings = vec![HashSet::new()];
+        self.unique_storage_bindings = vec![HashSet::new()];
+        self.unique_binding_types = vec![HashMap::new()];
+        self.callable_unique_contracts = vec![HashMap::new()];
+        self.callable_opt_provenance = vec![HashMap::new()];
+        self.container_opt_provenance = vec![HashMap::new()];
         self.consumed.clear();
         self.once_invoked.clear();
         self.must_live.clear();
         self.must_borrowed.clear();
         self.once_borrowed.clear();
+        self.current_view_payload_vars.clear();
         let body_ret =
             self.async_body_returns
                 .get(&func.name)
@@ -11325,6 +14196,10 @@ impl Checker {
                 .unwrap_or(ret.clone());
         self.current_ret = Some(body_ret.clone());
         self.current_pure = func.pure;
+        let saved_opt_callable = std::mem::replace(
+            &mut self.current_opt_callable,
+            self.fn_opt_provenance.contains_key(&func.name),
+        );
         self.pure_var_parameters.clear();
         self.current_isolated_callback = isolated_vm_callback_contract(
             &func.name,
@@ -11368,26 +14243,20 @@ impl Checker {
             attribute == witchy_syntax::suspension::FRAME_FUNCTION_ATTRIBUTE
         });
         for (param, ty) in func.params.iter().zip(&params) {
-            // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
-            // convention (`var`/`own`, which exist to mutate/consume the argument)
-            // contradicts it.
-            if param.convention.binds_mutable() {
-                if let Some(decl) = &param.ty {
-                    if is_frozen_type(decl) {
-                        return Err(TypeError {
-                            message: format!(
-                                "parameter `{}` of `{}` is `frozen` (deeply immutable) but its convention is mutable (`var`/`own`) — a frozen value cannot be mutated; use a plain (read-only) parameter",
-                                param.name, source_callable
-                            ),
-                        });
-                    }
-                }
-            }
+            // `var` replaces the parameter handle and `own` transfers it; neither
+            // is a field/deep mutation of a frozen payload.
             self.define(
                 param.name.clone(),
                 ty.clone(),
-                param.convention.binds_mutable() || parameter_binds_exclusive_reference(param),
+                param.convention.binds_mutable(),
             );
+            if self.current_opt_callable
+                && let Some(contract) = param.ty.as_ref().and_then(OptCallableContract::from_function_type)
+            {
+                // The declaration is the checked entry boundary: callers must
+                // supply provenance before this local becomes callable.
+                self.remember_opt_callable_provenance(param.name.clone(), contract);
+            }
             if func.pure && param.convention == Convention::Var {
                 let binding = self
                     .must_binding_key(&param.name)
@@ -11395,6 +14264,20 @@ impl Checker {
                 self.pure_var_parameters.insert(binding);
             }
             if self.ty_carries_must_consume(ty) {
+                // Calling a source `async fn` constructs a lazy, replayable
+                // `Task`; it does not execute the body or establish a checked
+                // cancellation cleanup.  Moving a must-consume parameter into
+                // that recipe would let the caller discard or replay the
+                // obligation before the first suspension.  Compiler-generated
+                // frame functions are checked separately below and retain the
+                // one exact non-cancellable root-transfer exception.
+                if func.is_async && param.convention == Convention::Own {
+                    return terr(format!(
+                        "async function `{}` cannot capture must-consume parameter `{}` into its lazy Task recipe; consume it before constructing the task or use an obligation-visible non-replayable operation",
+                        diagnostic_callable_name(&source_callable),
+                        param.name,
+                    ));
+                }
                 match param.convention {
                     // An `own` parameter is the declaration of a consuming
                     // operation. The caller's obligation is discharged at the
@@ -11417,6 +14300,13 @@ impl Checker {
                 }
             }
             if self.ty_carries_once_callable(ty) {
+                if func.is_async && param.convention == Convention::Own {
+                    return terr(format!(
+                        "async function `{}` cannot capture affine once-callable parameter `{}` into its replayable Task recipe; invoke it before constructing the task or pass copyable data",
+                        diagnostic_callable_name(&source_callable),
+                        param.name,
+                    ));
+                }
                 match param.convention {
                     Convention::Var => {
                         return terr(format!(
@@ -11435,8 +14325,22 @@ impl Checker {
                     .expect("reference bindings track type scopes")
                     .insert(param.name.clone());
             }
-            if param.ty.as_ref().is_some_and(is_frozen_type) {
+            if param.ty.as_ref().is_some_and(is_frozen_value_type) {
                 self.authorize_frozen_binding(param.name.clone());
+            }
+            if param.ty.as_ref().is_some_and(is_unique_value_type) {
+                self.authorize_unique_value_binding(param.name.clone());
+            }
+            if param
+                .ty
+                .as_ref()
+                .is_some_and(|ty| self.declared_type_carries_unique_storage(ty))
+                || self.ty_carries_unique_storage(ty)
+            {
+                self.authorize_unique_storage_binding(param.name.clone());
+                if let Some(declared) = &param.ty {
+                    self.remember_unique_binding_type(param.name.clone(), declared.clone());
+                }
             }
         }
         let body = if func.ret.is_some() {
@@ -11449,6 +14353,19 @@ impl Checker {
         } else {
             self.infer_block(&func.body)?
         };
+        // An opt declaration that returns a callable publishes a recursive
+        // declaration contract.  Its completing tail must therefore carry the
+        // checked origin too; a normal imported function cannot be relabelled
+        // merely by returning it from an opt body.
+        if self.current_opt_callable
+            && func.ret.as_ref().and_then(OptCallableContract::from_function_type).is_some()
+            && self.block_opt_callable_contract(&func.body).is_none()
+        {
+            return terr(format!(
+                "opt function `{}` returns a callable without opt-compatible provenance",
+                diagnostic_callable_name(&source_callable),
+            ));
+        }
         // A broader capability may be returned where a narrower one is declared
         // (`-> Net[Connect]` returning a full `Net`), mirroring call-argument
         // narrowing; `coerce_arg` falls back to unification for everything else.
@@ -11513,7 +14430,40 @@ impl Checker {
                 }
             }
         }
+        let mut view_payload_vars: Vec<u32> = self.current_view_payload_vars.iter().copied().collect();
+        view_payload_vars.sort_unstable();
+        self.fn_view_payload_constraints
+            .insert(func.name.clone(), view_payload_vars);
         self.compiler_syntax_allowed = prev_compiler_syntax_allowed;
+        self.current_opt_callable = saved_opt_callable;
+        Ok(())
+    }
+
+    fn check_public_return_annotations(&mut self, module: &Module) -> Result<(), TypeError> {
+        // Check only after every body has contributed its constraints. A public
+        // unit wrapper may call a later declaration whose fresh result variable
+        // has not resolved while the wrapper itself is being checked.
+        for item in &module.items {
+            let Item::Function(function) = item else { continue };
+            if !function.public || function.ret.is_some() {
+                continue;
+            }
+            let inferred = if function.is_async {
+                self.async_body_returns.get(&function.name).cloned()
+            } else {
+                self.fn_sigs.get(&function.name).map(|(_, ret)| ret.clone())
+            }
+            .expect("every checked function has a collected result signature");
+            let inferred = self.resolve(&inferred);
+            if inferred != Ty::Unit {
+                self.cur_line = function.line;
+                let source_callable = witchy_syntax::suspension::source_callable_name(function);
+                return terr(format!(
+                    "public function `{}` has inferred non-unit return type `{inferred}`; add an explicit return annotation `-> {inferred}`",
+                    diagnostic_callable_name(&source_callable),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -11521,7 +14471,15 @@ impl Checker {
 
 /// Type-check a whole module. Returns the first error found.
 pub fn check(module: &Module) -> Result<(), TypeError> {
-    check_with_compiler_syntax(module, false).map(|_| ())
+    let checked = check_with_compiler_syntax(module, false)?;
+    // Canonical views are authenticated during ordinary type checking too.
+    // `check` cannot retain pointer facts because it borrows the caller's AST,
+    // but it must still reject a raw/non-place `&` rather than deferring that
+    // safety boundary to a lowering consumer.
+    if crate::views::module_contains_canonical_view(checked.module()) {
+        crate::views::checked_facts(checked.module(), checked.table())?;
+    }
+    Ok(())
 }
 
 /// Type-check source async contracts before CPS lowering erases them.
@@ -11699,6 +14657,7 @@ fn check_with_compiler_syntax(
     module: &Module,
     compiler_syntax_allowed: bool,
 ) -> Result<TypedModule, TypeError> {
+    crate::views::reject_const_view_formation(module)?;
     // Catch duplicate top-level functions before lowering, while `impl` methods
     // are still distinct from free functions (so overloaded methods aren't
     // mistaken for duplicates) and source lines are still available.
@@ -11766,19 +14725,12 @@ fn check_with_compiler_syntax(
                 compiler_syntax_allowed,
             )?
             .unwrap_or_default();
-            check_unique_capacity_results(&lowered)?;
+            check_unique_root_owner_results(&lowered)?;
             // (RFC-0083) Static lifetime/loan check for borrowed views. Runs after
             // type checking (so a genuine type error is reported first) on the
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
-            crate::loans::facts_with_types(&lowered, &type_table)?;
-            crate::access::verify_module(&lowered).map_err(|error| TypeError {
-                message: error.to_string(),
-            })?;
-            Ok(TypedModule {
-                module: lowered,
-                table: type_table,
-            })
+            typed_module_checked(lowered, type_table)
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
@@ -11825,9 +14777,96 @@ fn check_with_compiler_syntax(
 /// This table is deliberately not produced independently of its AST. Raw node
 /// addresses are valid identities only while that exact module allocation is
 /// alive, so [`annotate`] returns both values in one ownership unit.
+/// A region promotion classification minted by the checker for one exact
+/// `Block`.  It is deliberately not reconstructible from a type alone:
+/// qualifiers, loans, and lexical origin decide whether opt may pass a managed
+/// value through without materializing a hidden copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionPromotionQualifier {
+    Ordinary,
+    Frozen,
+    Unique,
+    ExplicitReference,
+}
+
+/// The checked owner root carried by an explicit-reference promotion.  This is
+/// deliberately a direct carrier only: aggregate and projected reference
+/// shapes stay rejected until the retained loan graph can mint their exact
+/// projection witness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionPromotionLoan {
+    pub owner_root: String,
+}
+
+/// The checked source identity of a fixed inline packed layout.  The lowerer
+/// must rederive this from the exact checked result and match it to the decoded
+/// layout bundle; this data alone never authorizes a layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionPackedLayoutDescriptor {
+    pub record: String,
+    pub fields: Vec<ast::Type>,
+}
+
+/// A single fresh must-consume obligation produced at a region tail.  `tail`
+/// is an AST identity under the same `CanonicalCheckedSource` that owns the
+/// enclosing promotion fact; canonical lowering verifies both it and the
+/// constructor spelling before consuming this proof once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionMustTransfer {
+    pub tail: usize,
+    pub constructor: String,
+}
+
+/// The checker-visible disposition state for a normal region promotion.  An
+/// obligation cannot disappear into an ordinary snapshot: it is either the
+/// one constructor identity below or an explicit canonical refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegionMustDisposition {
+    NoObligation,
+    FreshConstructor(RegionMustTransfer),
+    Unproven,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegionPromotionFact {
+    Scalar { result: ast::Type },
+    /// A normal-mode owned promotion.  `unique`/`frozen` remain ordinary
+    /// qualifier contracts and do not by themselves prohibit normal snapshot
+    /// representation choice.  A must payload has an exact one-shot transfer
+    /// identity rather than an unauthenticated `true` flag.
+    NormalOwnedSnapshot { result: ast::Type, must_disposition: RegionMustDisposition },
+    /// A fixed inline packed result.  Its descriptor is derived from the
+    /// checked source definition and must match the canonical layout bundle.
+    PackedInline { result: ast::Type, descriptor: RegionPackedLayoutDescriptor },
+    OptParentPassThrough {
+        result: ast::Type,
+        owner_root: String,
+        qualifier: RegionPromotionQualifier,
+        reference_loan: Option<RegionPromotionLoan>,
+    },
+    OptNeedsCopyFreeProof { result: ast::Type },
+}
+
+impl RegionPromotionFact {
+    pub fn result(&self) -> &ast::Type {
+        match self {
+            Self::Scalar { result }
+            | Self::NormalOwnedSnapshot { result, .. }
+            | Self::PackedInline { result, .. }
+            | Self::OptParentPassThrough { result, .. }
+            | Self::OptNeedsCopyFreeProof { result } => result,
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    /// Canonical view expressions retain their carrier type even while a
+    /// generic payload variable remains unresolved. These are authenticated
+    /// formation facts, not general permission for downstream consumers to
+    /// treat arbitrary unresolved expressions as concrete runtime values.
+    view_types: HashMap<usize, Ty>,
     /// Fully resolved lexical callee signatures at named call expressions.
     /// A source spelling alone never supplies a callable type.
     local_callees: HashMap<usize, Ty>,
@@ -11840,6 +14879,7 @@ pub struct TypeTable {
     existential_packs: HashMap<usize, (Ty, Ty)>,
     existential_upcasts: HashMap<usize, (Ty, Ty)>,
     record_projections: HashMap<usize, (Ty, Ty)>,
+    region_promotions: HashMap<usize, RegionPromotionFact>,
 }
 
 /// Stable identity of one callable in the canonical checked AST.  The item and
@@ -12110,19 +15150,33 @@ struct TailCaller<'a> {
     functions: &'a HashMap<&'a str, &'a Function>,
     table: &'a TypeTable,
     checked_signature: Option<&'a Ty>,
-    /// Parameter spellings hidden by a nearer lexical binding at this site.
+    /// Hidden write-back parameter spellings shadowed by a nearer lexical
+    /// binding at this site.
     /// Assignment preserves a binding; declarations and patterns replace it.
     shadowed_parameters: &'a HashSet<String>,
 }
 
-/// RFC-0090 proper tails forward the complete callable ABI envelope. A `var`
-/// parameter is a hidden result lane, so a textually final direct call is
-/// proper only when every such lane is forwarded unchanged. Checked callable
-/// types resolve indirect targets; ordinary input parameters need not match
-/// because they are not returned write-back lanes. Unknown indirect
-/// ABI shapes remain candidates only when the caller itself has no pending
-/// write-back lane; the independent SafeWIR checker still requires exact
-/// result signatures before accepting the edge.
+/// A plain direct `&mut T` parameter is a hidden write-back lane in the
+/// canonical ABI, just as `var T` is. Outer ownership qualifiers deliberately
+/// stay outside this predicate: their transport has a distinct contract.
+fn plain_exclusive_reference(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Qualified(ast::TypeQual::BorrowMut(_), _))
+}
+
+fn plain_direct_exclusive_write_back(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Qualified(ast::TypeQual::BorrowMut(_), inner)
+        if matches!(inner.unqualified(), ast::Type::Named(name, arguments)
+            if matches!(name.as_str(), "String" | "Int") && arguments.is_empty()))
+}
+
+/// RFC-0090 proper tails forward the complete callable ABI envelope. `var`
+/// and plain direct `&mut` parameters are hidden result lanes, so a textually
+/// final direct call is proper only when every such lane is forwarded
+/// unchanged. Checked callable types resolve indirect targets; ordinary input
+/// parameters need not match because they are not returned write-back lanes.
+/// Unknown indirect ABI shapes remain candidates only when the caller itself
+/// has no pending write-back lane; the independent SafeWIR checker still
+/// requires exact result signatures before accepting the edge.
 fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> bool {
     let checked_target = match expr {
         Expr::Call { name, args } => {
@@ -12151,15 +15205,57 @@ fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> boo
         {
             return false;
         }
-        let source_vars = caller.params.iter().enumerate()
-            .filter_map(|(index, parameter)| (parameter.convention == Convention::Var).then_some(index))
-            .collect::<Vec<_>>();
-        let target_vars = target_conventions.iter().enumerate()
-            .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
-            .collect::<Vec<_>>();
-        return source_result == target_result && source_vars.len() == target_vars.len()
-            && source_vars.iter().zip(&target_vars).all(|(&source, &target)| {
-                source_types[source] == target_types[target]
+        let declared_target = match expr {
+            Expr::Call { name, .. } if caller.table.local_callee_type(expr).is_none() => {
+                caller.functions.get(name.as_str()).copied()
+            }
+            _ => None,
+        };
+        let source_has_unsupported_reference = caller.params.iter().any(|parameter| {
+            parameter.convention == Convention::Let
+                && parameter.ty.as_ref().is_some_and(|ty| {
+                    plain_exclusive_reference(ty) && !plain_direct_exclusive_write_back(ty)
+                })
+        });
+        let target_has_unsupported_reference = declared_target.is_some_and(|target| {
+            target.params.iter().any(|parameter| {
+                parameter.convention == Convention::Let
+                    && parameter.ty.as_ref().is_some_and(|ty| {
+                        plain_exclusive_reference(ty) && !plain_direct_exclusive_write_back(ty)
+                    })
+            })
+        });
+        if source_has_unsupported_reference || target_has_unsupported_reference {
+            return false;
+        }
+        let source_write_backs = caller.params.iter().enumerate().filter_map(|(index, parameter)| {
+            (parameter.convention == Convention::Var).then_some((index, false)).or_else(|| {
+                (parameter.convention == Convention::Let
+                    && parameter.ty.as_ref().is_some_and(plain_direct_exclusive_write_back))
+                    .then_some((index, true))
+            })
+        }).collect::<Vec<_>>();
+        let target_write_backs: Vec<(usize, bool)> = declared_target.map(|target| {
+            target.params.iter().enumerate().filter_map(|(index, parameter)| {
+                (parameter.convention == Convention::Var).then_some((index, false)).or_else(|| {
+                    (parameter.convention == Convention::Let
+                        && parameter.ty.as_ref().is_some_and(plain_direct_exclusive_write_back))
+                        .then_some((index, true))
+                })
+            }).collect()
+        }).unwrap_or_else(|| {
+            target_types.iter().enumerate().filter_map(|(index, ty)| {
+                let convention = target_conventions.get(index).copied().unwrap_or(Convention::Let);
+                (convention == Convention::Var).then_some((index, false)).or_else(|| {
+                    (convention == Convention::Let && plain_direct_exclusive_write_back(ty))
+                        .then_some((index, true))
+                })
+            }).collect()
+        });
+        return source_result == target_result && source_write_backs.len() == target_write_backs.len()
+            && source_write_backs.iter().zip(&target_write_backs).all(|(&(source, source_reference), &(target, target_reference))| {
+                source_reference == target_reference
+                    && source_types[source] == target_types[target]
                     && !caller.shadowed_parameters.contains(&caller.params[source].name)
                     && matches!(&arguments[target], Expr::Var(name) if name == &caller.params[source].name)
             });
@@ -12169,30 +15265,57 @@ fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> boo
     if caller.table.local_callee_type(expr).is_some() {
         return false;
     }
-    let caller_has_var = caller.params.iter().any(|param| param.convention == Convention::Var);
+    let caller_write_backs = caller.params.iter().enumerate().filter_map(|(index, parameter)| {
+        (parameter.convention == Convention::Var).then_some((index, false)).or_else(|| {
+            (parameter.convention == Convention::Let
+                && parameter.ty.as_ref().is_some_and(plain_direct_exclusive_write_back))
+                .then_some((index, true))
+        })
+    }).collect::<Vec<_>>();
     let Expr::Call { name, args } = expr else {
-        return !caller_has_var;
+        return caller_write_backs.is_empty();
     };
     let Some(target) = caller.functions.get(name.as_str()).copied() else {
-        return !caller_has_var;
+        return caller_write_backs.is_empty();
     };
-    if !caller_has_var {
-        return target.params.iter().all(|param| param.convention != Convention::Var);
+    let target_write_backs = target.params.iter().enumerate().filter_map(|(index, parameter)| {
+        (parameter.convention == Convention::Var).then_some((index, false)).or_else(|| {
+            (parameter.convention == Convention::Let
+                && parameter.ty.as_ref().is_some_and(plain_direct_exclusive_write_back))
+                .then_some((index, true))
+        })
+    }).collect::<Vec<_>>();
+    let has_unsupported_reference = |parameters: &[ast::Param]| {
+        parameters.iter().any(|parameter| {
+            parameter.convention == Convention::Let
+                && parameter.ty.as_ref().is_some_and(|ty| {
+                    plain_exclusive_reference(ty) && !plain_direct_exclusive_write_back(ty)
+                })
+        })
+    };
+    if has_unsupported_reference(caller.params) || has_unsupported_reference(&target.params) {
+        return false;
+    }
+    if caller_write_backs.is_empty() {
+        return target_write_backs.is_empty();
     }
     caller.ret == target.ret.as_ref()
-        && caller.params.len() == target.params.len()
-        && target.params.len() == args.len()
-        && caller.params.iter().zip(&target.params).zip(args).all(|((source, target), argument)| {
-            source.convention == target.convention
-                && source.ty == target.ty
-                && (source.convention != Convention::Var
-                    || (!caller.shadowed_parameters.contains(&source.name)
-                        && matches!(argument, Expr::Var(name) if name == &source.name)))
+        && caller_write_backs.len() == target_write_backs.len()
+        && caller_write_backs.iter().zip(&target_write_backs).all(|(&source, &target_lane)| {
+            source.1 == target_lane.1
+                && caller.params[source.0].ty == target.params[target_lane.0].ty
+                && !caller.shadowed_parameters.contains(&caller.params[source.0].name)
+                && matches!(&args[target_lane.0], Expr::Var(name) if name == &caller.params[source.0].name)
         })
 }
 
 fn shadow_tail_parameter(name: &str, params: &[ast::Param], shadowed: &mut HashSet<String>) {
-    if params.iter().any(|parameter| parameter.convention == Convention::Var && parameter.name == name) {
+    if params.iter().any(|parameter| {
+        parameter.name == name
+            && (parameter.convention == Convention::Var
+                || (parameter.convention == Convention::Let
+                    && parameter.ty.as_ref().is_some_and(plain_direct_exclusive_write_back)))
+    }) {
         shadowed.insert(name.to_owned());
     }
 }
@@ -12426,6 +15549,10 @@ fn proper_tail_dispatch(expr: &Expr) -> Option<ProperTailDispatchKind> {
         // value: there is no callee to transfer to.
         Expr::Call { name, .. }
             if matches!(name.as_str(), "fail" | "vm.serve" | "__capop.print" | "int_to_duration" | "duration_to_int")
+                // The parser-only reference write is an effect terminator,
+                // not a source-callable callee. A proper-tail obligation here
+                // would require SafeWIR to invent a TailCall for `*r = v`.
+                || name == intrinsics::REFERENCE_WRITE
                 || (name.starts_with("__capop.") && witchy_syntax::cap_ops::is_op_name(name))
                 || witchy_syntax::intrinsics::lookup(name).is_some()
                 || witchy_syntax::intrinsics::lookup(name.strip_prefix("list.__").map_or(name.as_str(), |_| name.as_str())).is_some() => None,
@@ -12518,6 +15645,10 @@ impl TypeTable {
         self.types.get(&(e as *const Expr as usize))
     }
 
+    pub(crate) fn view_type_of(&self, e: &Expr) -> Option<&Ty> {
+        self.view_types.get(&(e as *const Expr as usize))
+    }
+
     pub fn local_callee_type(&self, e: &Expr) -> Option<&Ty> {
         self.local_callees.get(&(e as *const Expr as usize))
     }
@@ -12558,6 +15689,12 @@ impl TypeTable {
             .get(&(e as *const Expr as usize))
     }
 
+    /// The checker-authenticated promotion contract for this exact `region:`
+    /// block.  Absence is never equivalent to an ordinary lexical block.
+    pub fn region_promotion(&self, block: &Block) -> Option<&RegionPromotionFact> {
+        self.region_promotions.get(&(block as *const Block as usize))
+    }
+
     pub(crate) fn record_projection_count(&self) -> usize {
         self.record_projections.len()
     }
@@ -12568,10 +15705,139 @@ impl TypeTable {
 /// Keeping the table under the same owner as the module prevents callers from
 /// moving the table away, dropping the annotated nodes, and accidentally
 /// consulting it for freshly allocated nodes that reuse an old address.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct TypedModule {
-    module: Module,
+    // Address-keyed type and loan facts must outlive moves of this wrapper.
+    // A box gives the retained AST one stable allocation for the lifetime of
+    // every checked side product.
+    module: Box<Module>,
     table: TypeTable,
+    loan_facts: Option<RetainedLoanFacts>,
+    access_facts: Option<RetainedAccessFacts>,
+    view_facts: Option<RetainedViewFacts>,
+}
+
+#[derive(Debug)]
+struct RetainedLoanFacts {
+    module: *const Module,
+    facts: crate::loans::LoanFacts,
+}
+
+#[derive(Debug)]
+struct RetainedAccessFacts {
+    module: *const Module,
+    facts: crate::access::CheckedAccessFacts,
+}
+
+#[derive(Debug)]
+struct RetainedViewFacts {
+    module: *const Module,
+    facts: crate::views::CheckedViewFacts,
+}
+
+/// Why the retained loan graph cannot be used for this typed AST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedLoanFactsError {
+    Missing,
+    Stale,
+}
+
+impl std::fmt::Display for CheckedLoanFactsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(formatter, "checked typed module lacks its loan graph"),
+            Self::Stale => write!(formatter, "checked loan graph belongs to a different AST allocation"),
+        }
+    }
+}
+
+impl std::error::Error for CheckedLoanFactsError {}
+
+/// Why the retained access-signature graph cannot be used for this typed AST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedAccessFactsError {
+    Missing,
+    Stale,
+}
+
+/// Why rooted-view formation facts cannot be used for this typed AST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedViewFactsError {
+    Missing,
+    Stale,
+}
+
+impl std::fmt::Display for CheckedViewFactsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(formatter, "checked typed module lacks rooted-view facts"),
+            Self::Stale => write!(formatter, "checked rooted-view facts belong to a different AST allocation"),
+        }
+    }
+}
+
+impl std::error::Error for CheckedViewFactsError {}
+
+impl std::fmt::Display for CheckedAccessFactsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(formatter, "checked typed module lacks its access-signature graph"),
+            Self::Stale => write!(formatter, "checked access-signature graph belongs to a different AST allocation"),
+        }
+    }
+}
+
+impl std::error::Error for CheckedAccessFactsError {}
+
+impl PartialEq for TypedModule {
+    fn eq(&self, other: &Self) -> bool {
+        self.module == other.module && self.table == other.table
+    }
+}
+
+fn typed_module_checked(module: Module, table: TypeTable) -> Result<TypedModule, TypeError> {
+    let module = Box::new(module);
+    let has_views = crate::views::module_contains_canonical_view(&module);
+    let has_legacy_loans = crate::views::module_contains_legacy_loan(&module);
+    if has_views && has_legacy_loans {
+        return terr(
+            "canonical immutable views cannot be mixed with legacy lifetime loans in one checked module; migrate the legacy references or split the module",
+        );
+    }
+    let loan_facts = (!has_views)
+        .then(|| crate::loans::facts_with_types(&module, &table))
+        .transpose()?;
+    let view_facts = has_views
+        .then(|| crate::views::checked_facts(&module, &table))
+        .transpose()?;
+    let access_facts = crate::access::checked_facts(&module, &table)
+        .map_err(|error| TypeError { message: error.to_string() })?;
+    Ok(TypedModule {
+        loan_facts: loan_facts.map(|facts| RetainedLoanFacts { module: std::ptr::from_ref(module.as_ref()), facts }),
+        access_facts: Some(RetainedAccessFacts { module: std::ptr::from_ref(module.as_ref()), facts: access_facts }),
+        view_facts: view_facts.map(|facts| RetainedViewFacts { module: std::ptr::from_ref(module.as_ref()), facts }),
+        module,
+        table,
+    })
+}
+
+fn typed_module_best_effort(module: Module, table: TypeTable) -> TypedModule {
+    let module = Box::new(module);
+    let has_views = crate::views::module_contains_canonical_view(&module);
+    let has_legacy_loans = crate::views::module_contains_legacy_loan(&module);
+    // Best-effort annotation cannot report the mixed-mode error, but must not
+    // hand either stale/incomplete fact product to a downstream consumer.
+    let mixed_view_and_loan = has_views && has_legacy_loans;
+    let loan_facts = (!has_views && !mixed_view_and_loan).then(|| crate::loans::facts_with_types(&module, &table))
+        .and_then(Result::ok)
+        .map(|facts| RetainedLoanFacts { module: std::ptr::from_ref(module.as_ref()), facts });
+    let access_facts = crate::access::checked_facts(&module, &table)
+        .ok()
+        .map(|facts| RetainedAccessFacts { module: std::ptr::from_ref(module.as_ref()), facts });
+    let view_facts = (has_views && !mixed_view_and_loan).then(|| crate::views::checked_facts(&module, &table))
+        .and_then(Result::ok)
+        .map(|facts| RetainedViewFacts { module: std::ptr::from_ref(module.as_ref()), facts });
+    TypedModule { module, table, loan_facts, access_facts, view_facts }
 }
 
 impl TypedModule {
@@ -12584,7 +15850,39 @@ impl TypedModule {
     }
 
     pub fn into_module(self) -> Module {
-        self.module
+        *self.module
+    }
+
+    /// Borrow the exact pointer-keyed loan graph checked for this AST.
+    ///
+    /// This is deliberately fallible: best-effort annotation has no authority
+    /// to invent an empty graph, and any structural rewrite must re-check it.
+    pub fn loan_facts(&self) -> Result<&crate::loans::LoanFacts, CheckedLoanFactsError> {
+        let retained = self.loan_facts.as_ref().ok_or(CheckedLoanFactsError::Missing)?;
+        (std::ptr::eq(retained.module, self.module.as_ref()))
+            .then_some(&retained.facts)
+            .ok_or(CheckedLoanFactsError::Stale)
+    }
+
+    /// Borrow exact checked rooted-view formation facts.  Consumers that do
+    /// not understand this carrier receive `Missing` and must reject rather
+    /// than recreating root/projection authority from source syntax.
+    pub fn view_facts(&self) -> Result<&crate::views::CheckedViewFacts, CheckedViewFactsError> {
+        let retained = self.view_facts.as_ref().ok_or(CheckedViewFactsError::Missing)?;
+        (std::ptr::eq(retained.module, self.module.as_ref()))
+            .then_some(&retained.facts)
+            .ok_or(CheckedViewFactsError::Stale)
+    }
+
+    /// Borrow the exact pointer-keyed access-signature graph checked for this AST.
+    ///
+    /// This graph authenticates declarations, calls, callable expressions, and
+    /// places; canonical consumers must reject rather than rebuild it.
+    pub fn access_facts(&self) -> Result<&crate::access::CheckedAccessFacts, CheckedAccessFactsError> {
+        let retained = self.access_facts.as_ref().ok_or(CheckedAccessFactsError::Missing)?;
+        (std::ptr::eq(retained.module, self.module.as_ref()))
+            .then_some(&retained.facts)
+            .ok_or(CheckedAccessFactsError::Stale)
     }
 
     /// Mutate fields that preserve every expression allocation (for example a
@@ -12605,7 +15903,7 @@ impl TypedModule {
         rewrite: impl FnOnce(&TypeTable, &mut Module),
     ) -> Self {
         rewrite(&self.table, &mut self.module);
-        annotate(self.module)
+        annotate(*self.module)
     }
 
     /// Perform a final, potentially structural rewrite while the old facts are
@@ -12616,7 +15914,7 @@ impl TypedModule {
         rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
     ) -> (Module, TypeTable, R) {
         let result = rewrite(&self.table, &mut self.module);
-        (self.module, self.table, result)
+        (*self.module, self.table, result)
     }
 }
 
@@ -12634,7 +15932,11 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Bytes => T::Named("Bytes".into(), Vec::new()),
         Ty::Msg => T::Named("__Msg".into(), Vec::new()),
         Ty::Bool => T::Named("Bool".into(), Vec::new()),
-        Ty::Unit => T::Named("Nil".into(), Vec::new()),
+        // `()` is the one surface representation of unit.  This conversion
+        // feeds checked declaration signatures and generated source, so
+        // emitting the legacy `Nil` name here would make it re-enter the
+        // canonical route after parsing has already normalized it away.
+        Ty::Unit => T::Tuple(Vec::new()),
         Ty::Console(rights) => {
             if !rights.read && !rights.write {
                 return None;
@@ -12736,6 +16038,10 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::BuildNet => T::Named("BuildNet".into(), Vec::new()),
         Ty::BuildExec => T::Named("BuildExec".into(), Vec::new()),
         Ty::List(e) => T::Named("List".into(), vec![ty_to_ast(e)?]),
+        Ty::View(payload) => T::Qualified(
+            witchy_syntax::ast::TypeQual::View,
+            Box::new(ty_to_ast(payload)?),
+        ),
         Ty::Tuple(ts) => {
             T::Tuple(ts.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?)
         }
@@ -12762,6 +16068,7 @@ fn ty_has_var(t: &Ty) -> bool {
     match t {
         Ty::Var(_) => true,
         Ty::List(e) => ty_has_var(e),
+        Ty::View(payload) => ty_has_var(payload),
         Ty::Tuple(ts) => ts.iter().any(ty_has_var),
         Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(ty_has_var),
         Ty::Fn(ps, r, _, _, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
@@ -12802,7 +16109,7 @@ pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
         true,
     )?
         .unwrap_or_default();
-    Ok(TypedModule { module, table })
+    typed_module_checked(module, table)
 }
 
 /// Lower an already checked linked source module to the ordinary typed runtime
@@ -12872,7 +16179,7 @@ pub fn annotate_checked_build(mut module: Module) -> Result<TypedModule, TypeErr
             table.functions.insert("main".to_string(), signature);
         }
     }
-    Ok(TypedModule { module, table })
+    typed_module_checked(module, table)
 }
 
 fn annotate_with_conversion_fns(
@@ -12897,7 +16204,7 @@ fn annotate_with_conversion_fns(
         }
         _ => TypeTable::default(),
     };
-    TypedModule { module, table }
+    typed_module_best_effort(module, table)
 }
 
 /// Annotate a trait-lowering intermediate while preserving the semantic
@@ -13124,6 +16431,10 @@ fn run_check_selected(
     compiler_syntax_allowed: bool,
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
+    // Source-check entry points carry the pre-lowering trait catalog. Internal
+    // re-annotation and trait-lowering probes do not, and must not reapply a
+    // source-only exported-signature rule to their generated functions.
+    let enforce_public_return_annotations = trait_method_names.is_some();
     let must_consume = must_consume_catalog(module);
     let root_source = module
         .linked_entry
@@ -13166,6 +16477,16 @@ fn run_check_selected(
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
         fn_exclusive_reference_params: HashMap::new(),
+        fn_frozen_value_params: HashMap::new(),
+        fn_unique_contracts: HashMap::new(),
+        fn_opt_provenance: HashMap::new(),
+        frozen_record_fields: HashMap::new(),
+        unique_record_fields: HashMap::new(),
+        unique_source_record_fields: HashMap::new(),
+        unique_source_record_params: HashMap::new(),
+        unique_ctor_field_types: HashMap::new(),
+        unique_storage_parameters: HashMap::new(),
+        ctor_source_type_params: HashMap::new(),
         fn_param_names: HashMap::new(),
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
@@ -13229,6 +16550,12 @@ fn run_check_selected(
         borrowed_shell_bindings: vec![HashSet::new()],
         explicit_reference_bindings: vec![HashSet::new()],
         frozen_bindings: vec![HashSet::new()],
+        unique_value_bindings: vec![HashSet::new()],
+        unique_storage_bindings: vec![HashSet::new()],
+        unique_binding_types: vec![HashMap::new()],
+        callable_unique_contracts: vec![HashMap::new()],
+        callable_opt_provenance: vec![HashMap::new()],
+        container_opt_provenance: vec![HashMap::new()],
         sealed_types: HashSet::new(),
         capability_types: module
             .items
@@ -13245,6 +16572,8 @@ fn run_check_selected(
         gc_cap_aggregates: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
+        fn_view_payload_constraints: HashMap::new(),
+        current_view_payload_vars: HashSet::new(),
         fn_bounds: HashMap::new(),
         trait_method_names: trait_method_names.cloned().unwrap_or_else(|| collect_trait_method_names(module)),
         trait_supertraits: trait_supertraits.cloned().unwrap_or_else(|| {
@@ -13272,6 +16601,8 @@ fn run_check_selected(
         must_borrowed: HashSet::new(),
         once_borrowed: HashSet::new(),
         region_locals: Vec::new(),
+        region_promotions: HashMap::new(),
+        region_packed_layouts: region_packed_layout_descriptors(module),
         current_ret: None,
         current_pure: false,
         pure_var_parameters: HashSet::new(),
@@ -13285,7 +16616,20 @@ fn run_check_selected(
             .unwrap_or_else(|| detect_entry_module(module)),
         compiler_syntax_allowed,
         opt_mode: module.modes.iter().any(|mode| mode == "opt"),
+        current_opt_callable: false,
     };
+
+    for (name, positions) in [
+        ("List", vec![true]),
+        ("Option", vec![true]),
+        ("Result", vec![true, true]),
+        ("Dict", vec![true, true]),
+        ("Set", vec![true]),
+        ("Task", vec![true]),
+        ("Iter", vec![true]),
+    ] {
+        c.unique_storage_parameters.insert(name.into(), positions);
+    }
 
     let option_a = c.fresh();
     let option_id = match option_a {
@@ -13340,6 +16684,13 @@ fn run_check_selected(
         match item {
             Item::Function(f) => {
                 let mut vars: HashMap<String, Ty> = HashMap::new();
+                // Bracketed declaration parameters bind these exact signature
+                // variables before any inferred lowercase parameter is seen.
+                // They are not formatter-only AST metadata.
+                for parameter in &f.type_params {
+                    let variable = c.fresh();
+                    vars.insert(parameter.clone(), variable);
+                }
                 let params: Vec<Ty> = f
                     .params
                     .iter()
@@ -13386,6 +16737,34 @@ fn run_check_selected(
                     f.name.clone(),
                     f.params.iter().map(parameter_binds_exclusive_reference).collect(),
                 );
+                c.fn_frozen_value_params.insert(
+                    f.name.clone(),
+                    f.params
+                        .iter()
+                        .map(|parameter| parameter.ty.as_ref().is_some_and(is_frozen_value_type))
+                        .collect(),
+                );
+                c.fn_unique_contracts.insert(
+                    f.name.clone(),
+                    UniqueCallableContract {
+                        unique_params: f
+                            .params
+                            .iter()
+                            .map(|parameter| parameter.ty.as_ref().is_some_and(is_unique_value_type))
+                            .collect(),
+                        unique_result: f.ret.as_ref().is_some_and(is_unique_value_type),
+                        frozen_params: f
+                            .params
+                            .iter()
+                            .map(|parameter| parameter.ty.as_ref().is_some_and(is_frozen_value_type))
+                            .collect(),
+                        frozen_result: f.ret.as_ref().is_some_and(is_frozen_value_type),
+                    },
+                );
+                if source_callable_is_opt(&module.modes, f) {
+                    c.fn_opt_provenance
+                        .insert(f.name.clone(), OptCallableContract::from_function(f));
+                }
                 c.fn_param_names
                     .insert(f.name.clone(), f.params.iter().map(|p| p.name.clone()).collect());
             }
@@ -13401,6 +16780,20 @@ fn run_check_selected(
                 // field value types, but a nominal value such as `Pair('a)`
                 // must still unify with its constructor pattern and call ABI.
                 let param_names = ast::effective_nominal_type_def_params(t);
+                c.unique_storage_parameters.insert(
+                    t.name.clone(),
+                    param_names
+                        .iter()
+                        .map(|parameter| {
+                            t.variants.iter().any(|variant| {
+                                variant
+                                    .fields
+                                    .iter()
+                                    .any(|field| type_stores_value_parameter(field, parameter))
+                            })
+                        })
+                        .collect(),
+                );
                 let mut vars: HashMap<String, Ty> = HashMap::new();
                 let mut typaram_ids: HashSet<u32> = HashSet::new();
                 let mut params_in_order: Vec<u32> = Vec::new();
@@ -13436,6 +16829,35 @@ fn run_check_selected(
                             .collect();
                         c.record_fields
                             .insert(t.name.clone(), (params_in_order.clone(), rec));
+                        let frozen_fields = variant
+                            .field_names
+                            .iter()
+                            .zip(&variant.fields)
+                            .filter_map(|(name, ty)| {
+                                is_frozen_value_type(ty).then_some(name.clone())
+                            })
+                            .collect();
+                        c.frozen_record_fields.insert(t.name.clone(), frozen_fields);
+                        let unique_fields = variant
+                            .field_names
+                            .iter()
+                            .zip(&variant.fields)
+                            .filter_map(|(name, ty)| {
+                                is_unique_value_type(ty).then_some(name.clone())
+                            })
+                            .collect();
+                        c.unique_record_fields.insert(t.name.clone(), unique_fields);
+                        c.unique_source_record_fields.insert(
+                            t.name.clone(),
+                            variant
+                                .field_names
+                                .iter()
+                                .cloned()
+                                .zip(variant.fields.iter().cloned())
+                                .collect(),
+                        );
+                        c.unique_source_record_params
+                            .insert(t.name.clone(), param_names.clone());
                         // Field privacy is a CAPABILITY property (its carried
                         // authority is secret), not a general sealing one. A
                         // `sealed type` (RFC-0065) seals only CONSTRUCTION; its
@@ -13447,6 +16869,12 @@ fn run_check_selected(
                     }
                     c.ctor_sigs
                         .insert(variant.name.clone(), (fields, result.clone()));
+                    c.ctor_source_type_params
+                        .insert(variant.name.clone(), param_names.clone());
+                    c.unique_ctor_field_types.insert(
+                        variant.name.clone(),
+                        variant.fields.clone(),
+                    );
                     c.ctor_typarams
                         .insert(variant.name.clone(), typaram_ids.clone());
                     names.push(variant.name.clone());
@@ -13565,6 +16993,9 @@ fn run_check_selected(
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
+    if enforce_public_return_annotations {
+        c.check_public_return_annotations(module)?;
+    }
     let mut existential_packs = HashMap::new();
     if let Some(records) = c.existential_pack_record.take() {
         for (key, (existential, concrete)) in records {
@@ -13614,6 +17045,7 @@ fn run_check_selected(
     }
     if let Some(rec) = c.type_record.take() {
         let mut types = HashMap::new();
+        let mut view_types = HashMap::new();
         let mut local_callees = HashMap::new();
         let mut non_completing = HashSet::new();
         for (k, (ty, cannot_complete, local_callee)) in rec {
@@ -13623,6 +17055,8 @@ fn run_check_selected(
             let resolved = c.resolve(&ty);
             if !ty_has_var(&resolved) {
                 types.insert(k, resolved);
+            } else if matches!(resolved, Ty::View(_)) {
+                view_types.insert(k, resolved);
             }
             if let Some(callee) = local_callee {
                 let resolved = c.resolve(&callee);
@@ -13662,12 +17096,14 @@ fn run_check_selected(
             .collect();
         return Ok(Some(TypeTable {
             types,
+            view_types,
             local_callees,
             non_completing,
             functions,
             existential_packs,
             existential_upcasts,
             record_projections,
+            region_promotions: c.region_promotions,
         }));
     }
     Ok(None)
@@ -13742,6 +17178,17 @@ pub fn intrinsic(name: &str) -> bool {
 /// Convenience: parse then type-check.
 pub fn check_str(src: &str) -> Result<(), String> {
     let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
+    check(&module).map_err(|e| e.to_string())
+}
+
+/// Compatibility-only parser/check boundary for historical reference syntax.
+/// Ordinary source must use [`check_str`], which deliberately rejects explicit
+/// lifetimes, `View(T, 'a)`, and `&mut`. Migration tooling and legacy semantic
+/// fixtures may opt into this parser explicitly while the source is rewritten.
+#[doc(hidden)]
+pub fn check_reference_migration_str(src: &str) -> Result<(), String> {
+    let module = witchy_syntax::parser::parse_reference_migration(src)
+        .map_err(|e| e.to_string())?;
     check(&module).map_err(|e| e.to_string())
 }
 

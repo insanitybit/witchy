@@ -5,7 +5,7 @@ use super::*;
     /// helpers as `==`, including String fields and enum payloads.
     #[test]
     fn compound_dict_keys_work_on_both_backends() {
-        let src = "import cmp\nimport dict\n\ntype Pair derive(PartialEq, Eq):\n    id: Int\n    label: String\n\ntype Tag derive(PartialEq, Eq):\n    ById(Int)\n    ByName(String)\n\nfn main(console: Console):\n    var records = dict.new()\n    dict.insert(records, Pair(100000, \"a\"), 10)\n    dict.insert(records, Pair(100000, \"a\"), 20)\n    console.print(\"${dict.get_or(records, Pair(100000, \"a\"), 0)}\")\n    console.print(\"${dict.contains_key(records, Pair(100000, \"a\"))}\")\n    console.print(\"${dict.length(records)}\")\n\n    var tags = dict.new()\n    dict.insert(tags, ById(7), \"id\")\n    dict.insert(tags, ByName(\"x\"), \"name\")\n    dict.insert(tags, ById(7), \"id2\")\n    console.print(dict.get_or(tags, ById(7), \"missing\"))\n    console.print(dict.get_or(tags, ByName(\"x\"), \"missing\"))\n    console.print(\"${dict.length(tags)}\")\n";
+        let src = "import cmp\nimport dict\n\ntype Pair derive(PartialEq, Eq):\n    id: Int\n    label: String\n\ntype Tag derive(PartialEq, Eq):\n    ById(Int)\n    ByName(String)\n\nfn main(console: Console):\n    var records = dict.new()\n    let _ = dict.insert(records, Pair(100000, \"a\"), 10)\n    let _ = dict.insert(records, Pair(100000, \"a\"), 20)\n    console.print(\"${dict.get_or(records, Pair(100000, \"a\"), 0)}\")\n    console.print(\"${dict.contains_key(records, Pair(100000, \"a\"))}\")\n    console.print(\"${dict.length(records)}\")\n\n    var tags = dict.new()\n    let _ = dict.insert(tags, ById(7), \"id\")\n    let _ = dict.insert(tags, ByName(\"x\"), \"name\")\n    let _ = dict.insert(tags, ById(7), \"id2\")\n    console.print(dict.get_or(tags, ById(7), \"missing\"))\n    console.print(dict.get_or(tags, ByName(\"x\"), \"missing\"))\n    console.print(\"${dict.length(tags)}\")\n";
         let expected = ["20", "true", "1", "id2", "name", "2"];
         assert_eq!(link_run(src), expected, "interp: compound dict keys");
         assert_eq!(
@@ -20,7 +20,7 @@ use super::*;
     /// place assignment through a Dict agree on both backends.
     #[test]
     fn dict_subscript_read_and_nested_place_assignment_work_on_both_backends() {
-        let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    console.print(\"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    var inner: Dict(String, Int) = dict.new()\n    dict.insert(inner, \"inner\", 1)\n    nested[\"outer\"] = inner\n    nested[\"outer\"][\"inner\"] = 7\n    console.print(\"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    console.print(\"${rows[\"r\"]}\")\n";
+        let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    console.print(\"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    var inner: Dict(String, Int) = dict.new()\n    let _ = dict.insert(inner, \"inner\", 1)\n    nested[\"outer\"] = inner\n    nested[\"outer\"][\"inner\"] = 7\n    console.print(\"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    console.print(\"${rows[\"r\"]}\")\n";
         let expected = ["3", "7", "[1, 9, 3]"];
         assert_eq!(link_run(src), expected, "interp: dict subscript read");
         assert_eq!(
@@ -37,8 +37,8 @@ use super::*;
     #[test]
     fn var_record_container_field_updates_keep_headers_on_both_backends() {
         let list_free = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
-        let list_method = "type Buf:\n    items: List(Int)\n\nimpl Buf:\n    fn add(var self, x: Int) -> Nil:\n        list.push(self.items, x)\n        return\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.add(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
-        let dict_field = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
+        let list_method = "type Buf:\n    items: List(Int)\n\nimpl Buf:\n    fn add(var self, x: Int) -> ():\n        list.push(self.items, x)\n        return\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.add(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
+        let dict_field = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    let _ = dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
 
         for (label, src, expected) in [
             ("list free function", list_free, vec!["15", "16"]),
@@ -58,7 +58,7 @@ use super::*;
     /// with first-occurrence semantics; all-occurrences removal remains `filter`.
     #[test]
     fn list_remove_removes_first_occurrence_on_both_backends() {
-        let src = "import list\n\nfn main(console: Console):\n    var xs = [1, 2, 3, 2]\n    xs.remove(2)\n    console.print(\"${xs}\")\n    xs.remove(9)\n    console.print(\"${xs}\")\n    var words = [\"a\", \"b\", \"a\"]\n    let _removed = list.remove(words, \"a\")\n    console.print(\"${words}\")\n";
+        let src = "import list\n\nfn main(console: Console):\n    var xs = [1, 2, 3, 2]\n    let _ = xs.remove(2)\n    console.print(\"${xs}\")\n    let _ = xs.remove(9)\n    console.print(\"${xs}\")\n    var words = [\"a\", \"b\", \"a\"]\n    let _removed = list.remove(words, \"a\")\n    console.print(\"${words}\")\n";
         let expected = ["[1, 3, 2]", "[1, 3, 2]", "[b, a]"];
         assert_eq!(link_run(src), expected, "interp: list.remove");
         assert_eq!(
@@ -73,7 +73,7 @@ use super::*;
     /// of depending on the older free-function UFCS path.
     #[test]
     fn list_mutator_methods_write_back_on_both_backends() {
-        let src = "import list\n\nfn main(console: Console):\n    var xs = [3, 1, 2]\n    xs.sort()\n    console.print(\"${xs}\")\n    xs.reverse()\n    console.print(\"${xs}\")\n    xs.set_at(1, 9)\n    console.print(\"${xs}\")\n    xs.update_at(2, fn(n: Int): n + 10)\n    console.print(\"${xs}\")\n    xs.remove(9)\n    console.print(\"${xs}\")\n    var ys = [3, 1, 2]\n    ys.sort_by(fn(x: Int, y: Int): x > y)\n    console.print(\"${ys}\")\n";
+        let src = "import list\n\nfn main(console: Console):\n    var xs = [3, 1, 2]\n    xs.sort()\n    console.print(\"${xs}\")\n    xs.reverse()\n    console.print(\"${xs}\")\n    xs.set_at(1, 9)\n    console.print(\"${xs}\")\n    xs.update_at(2, fn(n: Int): n + 10)\n    console.print(\"${xs}\")\n    let _ = xs.remove(9)\n    console.print(\"${xs}\")\n    var ys = [3, 1, 2]\n    ys.sort_by(fn(x: Int, y: Int): x > y)\n    console.print(\"${ys}\")\n";
         let expected = ["[1, 2, 3]", "[3, 2, 1]", "[3, 9, 1]", "[3, 9, 11]", "[3, 11]", "[3, 2, 1]"];
         assert_eq!(link_run(src), expected, "interp: list mutator methods");
         assert_eq!(
@@ -85,17 +85,36 @@ use super::*;
 
     /// (BUG-637) A method mutator on an indexed place resolves the mutator
     /// before its enclosing List write-back is synthesized. The module form is
-    /// the matching control: both must update only the selected inner list.
+    /// the matching control: the independent expectation, canonical SafeWIR
+    /// interpreter, and admitted Wasm must all update only the selected list.
     #[test]
     fn indexed_list_mutators_write_back_on_both_backends() {
         let src = "fn main(console: Console):\n    var method_rows = [[1], [2]]\n    let method_inner = method_rows[0]\n    method_rows[0].push(9)\n    console.print(\"${method_inner} ${method_rows}\")\n\n    var module_rows = [[1], [2]]\n    let module_inner = module_rows[0]\n    list.push(module_rows[0], 9)\n    console.print(\"${module_inner} ${module_rows}\")\n";
-        let expected = ["[1] [[1, 9], [2]]", "[1] [[1, 9], [2]]"];
-        assert_eq!(link_run(src), expected, "interp: indexed list mutators");
-        assert_eq!(
-            run_linked_on_wasm(&[("main", src)], "main"),
-            expected,
-            "compiled: indexed list mutators",
-        );
+        let expected = vec!["[1] [[1, 9], [2]]".to_owned(); 2];
+        let checked = witchy::resolve_std_only_checked(src).expect("indexed mutator fixture checks");
+        let (artifact, oracle) = codegen::compile_checked_module_artifact_with_observer(
+            &checked,
+            |validated, artifact| {
+                use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterValue};
+                let entry = artifact.entry().expect("indexed mutator entry");
+                let function = witchy_wir::canonical_safewir::FunctionId::new(
+                    entry.export().strip_prefix('f').unwrap().parse().unwrap());
+                let tokens = entry.capabilities().iter().copied()
+                    .map(InterpreterValue::entry_capability).collect();
+                interpret_entry_program(validated, function, tokens, &[], Default::default())
+                    .expect("canonical interpreter executes indexed mutators")
+            },
+        ).expect_lowered("indexed mutators admit through canonical semantics");
+        assert_eq!(oracle.output, expected, "canonical SafeWIR expectation");
+        assert_eq!(oracle.leaked_objects, 0, "canonical oracle releases every root");
+
+        let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+        let mut vm = runtime.spawn_admitted(&artifact, witchy::runtime::Capabilities {
+            print: true, quiet: true, ..witchy::runtime::Capabilities::none()
+        }, 128).expect("spawn indexed mutator fixture");
+        vm.run().expect("execute admitted indexed mutators");
+        assert_eq!(vm.output(), expected, "admitted Wasm expectation");
+        assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
     }
 
     /// Dict and Set carry the same mutator-method rule as List: module
@@ -103,7 +122,7 @@ use super::*;
     /// on `var self` write back to the receiver.
     #[test]
     fn dict_and_set_mutator_methods_write_back_on_both_backends() {
-        let src = "import dict\nimport set\n\nfn main(console: Console):\n    var d: Dict(String, Int) = dict.new()\n    d.insert(\"a\", 1)\n    d.insert(\"b\", 2)\n    d.update(\"b\", 0, fn(n: Int): n + 5)\n    d.remove(\"a\")\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n    console.print(\"${dict.get_or(d, \"b\", 0)}\")\n    console.print(\"${dict.length(d)}\")\n\n    var s: Set(Int) = set.new()\n    s.insert(1)\n    s.insert(2)\n    s.insert(2)\n    s.remove(1)\n    console.print(\"${set.contains(s, 1)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    console.print(\"${set.length(s)}\")\n";
+        let src = "import dict\nimport set\n\nfn main(console: Console):\n    var d: Dict(String, Int) = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let _ = d.insert(\"b\", 2)\n    let _ = d.update(\"b\", 0, fn(n: Int): n + 5)\n    let _ = d.remove(\"a\")\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n    console.print(\"${dict.get_or(d, \"b\", 0)}\")\n    console.print(\"${dict.length(d)}\")\n\n    var s: Set(Int) = set.new()\n    let _ = s.insert(1)\n    let _ = s.insert(2)\n    let _ = s.insert(2)\n    let _ = s.remove(1)\n    console.print(\"${set.contains(s, 1)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    console.print(\"${set.length(s)}\")\n";
         let expected = ["0", "7", "1", "false", "true", "1"];
         assert_eq!(link_run(src), expected, "interp: dict/set mutator methods");
         assert_eq!(

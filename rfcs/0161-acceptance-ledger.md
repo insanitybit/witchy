@@ -1,11 +1,18 @@
 ---
 rfc: 0161
 title: "RFC-0161 acceptance ledger"
-status: active
+status: deferred
 created: 2026-08-26
 ---
 
 # RFC-0161 acceptance ledger
+
+> 2026-09-16: The competing source surface is deferred by
+> [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension).
+> No pending row is closed or canceled. Must-start Task, Child, explicit owner
+> close, and selectable-operation rows require an adopted RFC-0167 amendment
+> before implementation can count toward the selected language. Representation
+> work preserving that language may reuse these assets with its own evidence.
 
 This ledger records implementation and measurement evidence for RFC-0161. A
 row is complete only when its source, tests, durable artifacts, and merged

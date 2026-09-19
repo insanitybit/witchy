@@ -77,11 +77,11 @@ fn read_arg(b: Bytes, i: Int, minor: Int) -> Result((Int, Int), CborError):
     else:
         Err(IndefiniteLength)
 
-fn need(b: Bytes, upto: Int) -> Result(Nil, CborError):
+fn need(b: Bytes, upto: Int) -> Result((), CborError):
     if upto > bytes.length(b):
         Err(Truncated)
     else:
-        Ok(Nil)
+        Ok(())
 
 // A big-endian unsigned integer of `n` bytes starting at `start`.
 fn read_uint(b: Bytes, start: Int, n: Int) -> Int:

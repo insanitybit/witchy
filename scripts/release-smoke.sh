@@ -207,6 +207,7 @@ expected_binaryen_lib_sha256="${binaryen_evidence#*|}"
 
 root="$install/witchy-${version}-${target}"
 "$script_dir/installed-bounded-channels-smoke.sh" --witchy "$root/bin/witchy" >/dev/null
+"$script_dir/installed-language-contract-smoke.sh" --witchy "$root/bin/witchy" >/dev/null
 
 work="$scratch/work"
 home="$scratch/home"

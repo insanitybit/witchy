@@ -426,9 +426,11 @@ fn test_linking_does_not_authorize_sealed_construction_during_comptime() {
         "suite.witchy",
         "import sealed_lib\n\n\
          comptime:\n    \
-         emit(\"fn leaked() -> Int:\")\n    \
-         emit(\"    let version = sealed_lib.Version(99, 0, 0)\")\n    \
-         emit(\"    99\")\n\n\
+         emit_item(quote item:\n        \
+             fn leaked() -> Int:\n            \
+                 let version = sealed_lib.Version(99, 0, 0)\n            \
+                 99\n    \
+         )\n\n\
          fn test_control():\n    let value = 1\n",
     );
 

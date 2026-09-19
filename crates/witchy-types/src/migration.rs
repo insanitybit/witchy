@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use witchy_syntax::{
-    ast::{self, Block, Convention, Expr, Item, Module, Param, Pattern, Stmt, Type},
+    ast::{self, Block, Convention, Expr, Item, Module, Param, Pattern, Stmt},
     intrinsics,
 };
 
@@ -161,9 +161,7 @@ fn signatures(module: &Module) -> BTreeMap<String, Signature> {
         .iter()
         .filter_map(|item| {
             let Item::Function(function) = item else { return None };
-            let returns_nil = function.ret.as_ref().is_none_or(|ty| {
-                matches!(ty.unqualified(), Type::Named(name, _) if name == "Nil")
-            });
+            let returns_nil = function.ret.as_ref().is_none_or(crate::pipeline::is_unit_type);
             Some((
                 function.name.clone(),
                 Signature {

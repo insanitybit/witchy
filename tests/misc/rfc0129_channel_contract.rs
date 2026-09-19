@@ -106,12 +106,12 @@ async fn main(console: Console):
 fn run_compiled(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0129 row-2 channel contract must check");
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered("compile RFC-0129 row-2 channel contract");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("admit RFC-0129 row-2 channel contract");
     let mut runtime = Runtime::batch().expect("create RFC-0129 row-2 runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,

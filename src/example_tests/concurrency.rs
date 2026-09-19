@@ -45,23 +45,23 @@ fn bump(var n: Int) -> Int:
     n = n + 1
     n
 
-async fn counter(tx: Sender(Int), n: Int) -> Nil:
+async fn counter(tx: Sender(Int), n: Int) -> ():
     var i = 0
     while i < n:
         chan.send(tx, i).await
         i = i + 1
 
-async fn total(console: Console, rx: Receiver(Int)) -> Nil:
+async fn total(console: Console, rx: Receiver(Int)) -> ():
     var sum = 0
     for await v in rx:
         sum = sum + v
     console.print("sum ${sum}")
 
-async fn var_across(console: Console) -> Nil:
+async fn var_across(console: Console) -> ():
     var acc = 10
     let first = bump(acc)
     chan.yield_now().await
-    bump(acc)
+    let _ = bump(acc)
     acc = acc + 100
     chan.yield_now().await
     console.print("acc ${acc} first ${first}")
@@ -87,11 +87,11 @@ async fn main(console: Console):
 import chan
 from chan import Receiver, Sender
 
-async fn producer(tx: Sender(Int)) -> Nil:
+async fn producer(tx: Sender(Int)) -> ():
     for n in [1, 2, 3]:
         chan.send(tx, n).await
 
-async fn relay(rx: Receiver(Int), out: Sender(Int)) -> Nil:
+async fn relay(rx: Receiver(Int), out: Sender(Int)) -> ():
     for await x in rx:
         chan.send(out, x * x).await
 
@@ -113,13 +113,13 @@ async fn main(console: Console):
 import chan
 from chan import Receiver, Sender
 
-async fn logger(console: Console, rx: Receiver(Int)) -> Nil:
+async fn logger(console: Console, rx: Receiver(Int)) -> ():
     chan.consume(rx, fn(a): task.done(console.print("log ${a}"))).await
 
-async fn forwarder(rx: Receiver(Int), log_tx: Sender(Int)) -> Nil:
+async fn forwarder(rx: Receiver(Int), log_tx: Sender(Int)) -> ():
     chan.consume(rx, fn(m): chan.send(log_tx, m)).await
 
-async fn driver(log_tx: Sender(Int), fwd_tx: Sender(Int)) -> Nil:
+async fn driver(log_tx: Sender(Int), fwd_tx: Sender(Int)) -> ():
     chan.send(log_tx, 100).await
     chan.send(fwd_tx, 200).await
 
@@ -148,7 +148,7 @@ type Job:
 type Answer:
     Answer(Int)
 
-async fn worker(jobs: Receiver(Job), out: Sender(Answer)) -> Nil:
+async fn worker(jobs: Receiver(Job), out: Sender(Answer)) -> ():
     for await j in jobs:
         match j:
             Job(n) -> chan.send(out, Answer(n * n)).await
@@ -182,7 +182,7 @@ from chan import Sender, Receiver
 fn doubled(xs: List(Int)) -> List(Int):
     iter.collect(iter.from_list(xs).map(fn(x): x * 2))
 
-async fn producer(tx: Sender(Int)) -> Nil:
+async fn producer(tx: Sender(Int)) -> ():
     chan.send(tx, 41).await
 
 async fn main(console: Console):
@@ -203,11 +203,11 @@ async fn main(console: Console):
 import chan
 from chan import Receiver, Sender
 
-async fn producer(tx: Sender(String)) -> Nil:
+async fn producer(tx: Sender(String)) -> ():
     chan.send(tx, "alice").await
     chan.send(tx, "bob").await
 
-async fn consumer(console: Console, rx: Receiver(String)) -> Nil:
+async fn consumer(console: Console, rx: Receiver(String)) -> ():
     chan.consume(rx, fn(name): task.done(console.print("hello ${name}"))).await
 
 async fn main(console: Console):
@@ -225,14 +225,14 @@ async fn main(console: Console):
 import chan
 from chan import Receiver, Sender
 
-async fn pa(tx: Sender(Int)) -> Nil:
+async fn pa(tx: Sender(Int)) -> ():
     chan.send(tx, 1).await
     chan.send(tx, 2).await
 
-async fn pb(tx: Sender(Int)) -> Nil:
+async fn pb(tx: Sender(Int)) -> ():
     chan.send(tx, 9).await
 
-async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
+async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> ():
     let s = chan.select(a, b).await
     match s:
         First(x) ->

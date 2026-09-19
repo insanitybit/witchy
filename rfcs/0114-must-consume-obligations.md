@@ -20,6 +20,15 @@ tracking: >
 
 # RFC-0114: Must-consume obligations (linear resource handles)
 
+> 2026-09-16 scoped supersession: [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension)
+> owns resource and suspension semantics. The borrowed-parent task motivation
+> below does not admit references into suspended frames. A `must` resource cannot
+> hide in an opaque callable, even when passed directly to `own`; use an
+> obligation-visible nominal wrapper. Historical capture tests are evidence of
+> the old boundary, not acceptance of that exception. The all-path disposition,
+> transaction, and cancellation obligations remain. Unit is `()` and explicit
+> discard is `let _ =`, which still cannot discharge `must`.
+
 ## Summary
 
 This RFC adapts one half of Rust's 2026 ["Immobile types and guaranteed

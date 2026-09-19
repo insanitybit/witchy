@@ -179,9 +179,9 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     // (RFC-0004/BUG-550) Run the front-end on the COMPILED WASM tier — the
-    // production tier, exactly like `coven-serve` above. The interpreter is the
-    // differential-testing oracle ONLY; running the self-hosted pm through the
-    // tree-walker made every command pay it (e.g. `pm add` of a glamour dep took
+    // production tier, exactly like `coven-serve` above. The canonical SafeWIR
+    // interpreter is the executable oracle; running the self-hosted pm through the
+    // frozen source tree walker made every command pay it (e.g. `pm add` of a glamour dep took
     // ~170s). All of pm's deps — `compiler.footprint`/`diff`/`doc`, `Exec`,
     // `Dir`/`Net`/`Env`/`Clock` — have host functions, so it lowers cleanly.
     // The checked launcher preserves the Dir grant order (ordinal 0 =

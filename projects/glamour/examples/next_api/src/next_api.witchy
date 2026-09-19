@@ -22,23 +22,23 @@ fn child_ui() -> Ui(ChildMsg):
 fn parent_msg_to_json(message: ParentMsg) -> Json:
     json.from_value(message)
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, msg: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     match msg:
         Increment -> (model + 1, NoCmd)
 
 fn view(model: Int) -> Ui(Msg):
     glamour.ui(glamour.element("button", [glamour.on_event("counter.increment", "click", glamour.event_msg(Increment))], [glamour.text("${model}")]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
 fn msg_to_json(msg: Msg) -> Json:
@@ -56,7 +56,7 @@ fn model_to_json(model: Int) -> Json:
 fn trace(console: Console, model: Int):
     console.print("${model}\t${glamour.to_json(glamour.ui_node(view(model)), msg_to_json)}")
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, view, subscriptions)
 
 pub fn counter_region() -> Interactive:
@@ -84,9 +84,9 @@ fn main(console: Console):
     let _resource = resource_value
     console.print("mapped\t${glamour.to_json(glamour.ui_node(mapped), parent_msg_to_json)}")
     trace(console, 0)
-    let (one, _cmd1) = update(Nil, 0, Increment)
+    let (one, _cmd1) = update((), 0, Increment)
     trace(console, one)
-    let (two, _cmd2) = update(Nil, one, Increment)
+    let (two, _cmd2) = update((), one, Increment)
     trace(console, two)
-    let (three, _cmd3) = update(Nil, two, Increment)
+    let (three, _cmd3) = update((), two, Increment)
     trace(console, three)

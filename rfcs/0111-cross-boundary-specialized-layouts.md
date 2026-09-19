@@ -19,6 +19,13 @@ related:
 
 # RFC-0111: Cross-boundary specialized layouts and destination passing
 
+> 2026-09-16 source boundary: [RFC-0167 sections 6 and 10](0167-witchy-language-contract.md#6-normal-and-opt-interoperation)
+> govern mode interoperation and optional specialization. Transitive opt
+> dependencies do not opt a normal importing root into stricter source rules.
+> Checked adapters preserve each callable's entry contract. Layout, destination,
+> and allocation requirements below remain mechanism/evidence obligations,
+> not additional promises inferred merely from a `unique` signature.
+
 > This RFC adds no source syntax. It completes the ABI and code-generation
 > meaning of the existing `packed`, `unique`, `own`, `var`, and `mode opt`
 > contracts.

@@ -501,9 +501,10 @@ privileged slot ships, RFC-0100 must be revived with a compiler-authenticated
 slot declaration and host grant that does not pass ambient authority into
 application rendering.
 
-The owned render value is named `Ui(msg)`, not `View(msg)`. Witchy already uses
-`View(T, 'a)` for RFC-0083 borrowed values, and overloading that spelling with a
-one-argument framework type would make ownership diagnostics ambiguous.
+The owned render value remains named `Ui(msg)`. The original naming rationale
+avoided the then-builtin `View(T, 'a)`, now retired by
+[RFC-0167](0167-witchy-language-contract.md#5-references-and-lifetimes).
+That retirement does not rename the framework API or reserve nominal `View`.
 Application projection functions remain conventionally named `view`.
 
 `update` is the only ordinary place an application changes its model. It may

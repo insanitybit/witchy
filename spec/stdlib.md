@@ -26,9 +26,9 @@ True when `s` is non-empty and every character is an ASCII digit - a safe guard 
 
 ## `borrow`
 
-Materialization for RFC-0083 borrowed views. `value.owned()` copies a borrowed `View(T, 'a)` into an owned `T`, ending the view's borrow of its owner so the owner may be mutated or moved again.
+Explicit view materialization. `value.owned()` copies a lawful immutable `&T` into an independent owned `T`, leaving the rooted view unchanged so the owner may subsequently be mutated or moved.
 
-A view has no value representation of its own, so `owned` is the logical identity on both backends. The checked last use ends the loan; compiled ownership facts have already made the owner shared, so a later mutation copy-on-writes and the returned value remains an independent snapshot. It is a blanket impl over any type and dispatches through the ordinary typed method path (RFC-0046), with the same shape as `std/convert`'s `Into`. On a non-view value it is a plain identity. (This module is named `borrow`, not `own`, because `own` is the parameter-convention keyword and so cannot be a module name.)
+`owned` is a checked typed operation, not a `View` representation conversion. It is available only where copying is lawful; `must` resources, authority, and view-bearing aggregates require their own checked conversion. On an already-owned copyable value it is identity. The method uses the ordinary typed dispatch path. The module is named `borrow` because `own` is the parameter-convention keyword and cannot be a module name.
 
 #### `trait Owned`
 
@@ -267,7 +267,7 @@ The integer a `Cbor` holds, or None.
 
 std/chan - decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent - you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a witchy cooperative executor with a deterministic round-robin schedule. Given deterministic task behavior, interpreter and compiled runs agree; ordinary task callbacks may themselves exercise delegated effects. There is no scheduler state in the runtime and no `Pin`.
 
-Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types - a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. Compiled WebAssembly represents `__Msg` as one typed GC envelope whose i32, i64, f64, externref, and erased anyref fields preserve the message's physical kind; anyref carries either a GC struct or GC array, and the checked endpoint type selects the field to recover. No reference is bit-cast through an integer slot. Erasure remains observationally invisible, so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full while the executor is making progress (backpressure), an unbounded one never does. If every live task parks with no progress, the executor runs its quiescence close pass: parked receivers/selects resume with `None`, parked senders are released, and parked joins resume. This replaces sender refcounting and destructors; it is deterministic on both backends, but "closed" means quiescent, not "no `Sender` value can ever be used again".
+Messages: channels are per-type generic (RFC-0055). A `Sender(m)`/`Receiver(m)` pair carries values of ITS OWN type `m`, and independent channels in one program may carry different types - a library may pipeline work through a private channel without forcing its message type on the whole program. Under the hood the executor is ERASED: its effects and buffers carry the opaque `__Msg`; the typed endpoints erase a message on `send` and recover it on `recv`. Compiled WebAssembly represents `__Msg` as one typed GC envelope whose i32, i64, f64, externref, and erased anyref fields preserve the message's physical kind; anyref carries either a GC struct or GC array, and the checked endpoint type selects the field to recover. No reference is bit-cast through an integer slot. Erasure remains observationally invisible, so interleavings stay byte-identical. Spawned tasks return `()`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract). `send`/`recv` are always `await`ed because messaging is an effect on the executor-owned buffer; a *bounded* channel additionally blocks the sender when full while the executor is making progress (backpressure), an unbounded one never does. If every live task parks with no progress, the executor runs its quiescence close pass: parked receivers/selects resume with `None`, parked senders are released, and parked joins resume. This replaces sender refcounting and destructors; it is deterministic on both backends, but "closed" means quiescent, not "no `Sender` value can ever be used again".
 
 The `async`/`await` CPS transform lowers onto the `std/task` executor (task.lazy/and_then/done/run); channel ops (`await chan.recv(rx)` / `await chan.send(tx, x)`) run on the same protocol.
 
@@ -312,11 +312,11 @@ Fixed-arity variants retain the selected arm in the public result without routin
 
 A finished task.
 
-#### `fn ready_unit() -> Task(Nil)`
+#### `fn ready_unit() -> Task(())`
 
-An already-complete `Task(Nil)` - the async/await lowering target for a body that falls off its end.
+An already-complete `Task(())` - the async/await lowering target for a body that falls off its end.
 
-#### `fn yield_now() -> Task(Nil)`
+#### `fn yield_now() -> Task(())`
 
 Hand control back to the executor once, then continue.
 
@@ -332,7 +332,7 @@ Transform a task's result.
 
 Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task` is a replayable execution recipe, not a memo cell; the standard driver advances through continuations, but driving the same task value again reruns its thunk.
 
-#### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
+#### `fn for_each(xs: List(a), f: fn(a) -> Task(())) -> Task(())`
 
 Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
 
@@ -348,7 +348,7 @@ An unbounded channel - `send` never blocks (the buffer grows without limit).
 
 Compiler marker for `for await x in rx:`. The async lowering pass unwraps this declaration before execution; it exists only so source type checking can resolve the parser's lossless receive-stream marker. It must never be called as a runtime channel operation.
 
-#### `fn send(tx: Sender(m), msg: m) -> Task(Nil)`
+#### `fn send(tx: Sender(m), msg: m) -> Task(())`
 
 Send `msg`; on a bounded channel this blocks until there is room while some task can make progress. If the whole executor reaches quiescence with this send parked, the close pass releases it and stores the message, even if that temporarily exceeds the logical capacity. Always awaited. The message is erased to the executor's opaque slot at this boundary.
 
@@ -360,37 +360,37 @@ Receive the next message, or `None` when the executor reaches quiescence with th
 
 Compiler-private exact-Int bridges. The lowerer selects these only from a proved RFC-0152 ready region; public generic channel APIs and all unproved operations continue to use the erased scheduler bridge above.
 
-#### `fn __rfc0152_send_i64(tx: Sender(Int), msg: Int) -> Task(Nil)`
+#### `fn __rfc0152_send_i64(tx: Sender(Int), msg: Int) -> Task(())`
 
 #### `fn __rfc0152_recv_i64(rx: Receiver(Int)) -> Task(Option(Int))`
 
-#### `fn spawn(child: Task(Nil)) -> Task(Handle)`
+#### `fn spawn(child: Task(())) -> Task(Handle)`
 
 Start `child` as a concurrent task; the returned handle completes when it does.
 
-#### `fn join(own h: Handle) -> Task(Nil)`
+#### `fn join(own h: Handle) -> Task(())`
 
 Wait for the spawned task behind `h` while the executor can make progress. If the whole executor reaches quiescence with this join parked, the close pass releases it even if the joined task has a continuation that will run afterward.
 
-#### `fn cancel(own h: Handle) -> Task(Nil)`
+#### `fn cancel(own h: Handle) -> Task(())`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks immediately. Cancellation is shallow - it stops this one task, not any tasks it itself spawned - and idempotent (already finished or already cancelled is a no-op). Deterministic on the cooperative schedule, hence byte-identical on both backends. Used by `race` to drop the loser.
 
-#### `fn spawn_all(children: List(Task(Nil))) -> Task(List(Handle))`
+#### `fn spawn_all(children: List(Task(()))) -> Task(List(Handle))`
 
 Spawn every task in `children` concurrently, returning their handles. The children begin running on the next executor turns; nothing is joined yet.
 
-#### `fn join_all(own hs: List(Handle)) -> Task(Nil)`
+#### `fn join_all(own hs: List(Handle)) -> Task(())`
 
 Join every handle in `hs` while the executor can make progress. Like `join`, quiescence releases a parked join even if a child has a continuation that will run afterward.
 
-#### `fn cancel_all(own hs: List(Handle)) -> Task(Nil)`
+#### `fn cancel_all(own hs: List(Handle)) -> Task(())`
 
 Cancel every handle in `hs` - the companion to `spawn_all`/`join_all`. Each is stopped and treated as finished; idempotent, so cancelling an already-finished handle is a no-op. Used by `race_n` to drop the losers.
 
-#### `fn scope(children: List(Task(Nil))) -> Task(Nil)`
+#### `fn scope(children: List(Task(()))) -> Task(())`
 
-STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and wait for their handles while the executor can make progress. No handle escapes the call, so the normal case has no leaked tasks; if the whole executor reaches quiescence, `join_all` releases just like `join`. Prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `Nil`).
+STRUCTURED concurrency (a "nursery"): run every task in `children` concurrently and wait for their handles while the executor can make progress. No handle escapes the call, so the normal case has no leaked tasks; if the whole executor reaches quiescence, `join_all` releases just like `join`. Prefer this over a bare `spawn` whose handle you must remember to `join`. The children interleave on the cooperative executor, so a concurrent run is byte-identical on both backends (the parity contract). Results flow out over channels, as with any task (a child returns `()`).
 
 #### `fn gather(jobs: List(Task(m))) -> Task(List(m))`
 
@@ -424,17 +424,17 @@ Receive from the first ready receiver among `a`, `b`, and `c`. A tie is resolved
 
 Four-way counterpart of `select3`, retaining the same deterministic first-ready rule and fixed endpoint ABI.
 
-#### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
-#### `fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
 Compiler-owned three-way frame bridge. The public spelling keeps the receiver ownership surface typed while task owns the fixed endpoint ids and deterministic source-order wake protocol.
 
-#### `fn recv_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn recv_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
 Compiler-owned one-way frame bridge for a payload-free receive loop. A final `None` is delivered exactly once by task's close pass.
 
-#### `fn select4_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn select4_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
 #### `fn __select2_map(a: Receiver(m), b: Receiver(m), k: fn(own Selected(m)) -> Task(n)) -> Task(n)`
 
@@ -462,15 +462,15 @@ Three-way counterpart of `select2_frame_payload`; the tag remains in the compile
 
 Four-way counterpart; source-arm identity remains in the separate tag lane.
 
-#### `fn consume(rx: Receiver(m), f: fn(m) -> Task(Nil)) -> Task(Nil)`
+#### `fn consume(rx: Receiver(m), f: fn(m) -> Task(())) -> Task(())`
 
 Receive from `rx`, run `f` on each message, until the channel closes. The stateless server loop; `for await x in rx:` lowers to this.
 
-#### `fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(Nil)`
+#### `fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(())`
 
 The stateful server loop: receive a message, run `handler` with the current `state` to get the next state, and repeat until the channel closes. State threads through every message with no hand-written recursion.
 
-#### `fn run(root: Task(Nil))`
+#### `fn run(root: Task(()))`
 
 Drive `root` through the canonical `std/task` executor. `chan` keeps this facade for channel-centric programs, but scheduling has a single implementation.
 
@@ -902,7 +902,7 @@ An empty Dict with pre-allocated capacity.
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
-#### `fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq`
+#### `fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Eq`
 
 The value for `key`, or `default` when absent.
 
@@ -910,27 +910,27 @@ The value for `key`, or `default` when absent.
 
 The value for `key`, inserting `default` first when the key is absent. Returns the existing value on a hit and `default` on a miss, so the key is guaranteed present afterward. Like `insert`, the `unique` receiver makes the write a checked ownership contract in `mode opt`.
 
-#### `fn at(d: Dict(k, v), key: k) -> v where k: Eq`
+#### `fn at(let d: Dict(k, v), key: k) -> v where k: Eq`
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
 #### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq`
 
-#### `fn update_str(var d: Dict(String, v), key: &'a str, default: v, f: fn(v) -> v)`
+#### `fn update_str(var d: Dict(String, v), key: &str, default: v, f: fn(v) -> v)`
 
-Single-lookup upsert with a borrowed string slice key (RFC-0139). On Hit: zero allocations (in-place value update). On Miss: clones string slice to insert entry.
+Single-lookup upsert with a rooted string slice view key (RFC-0139). On Hit: zero allocations (in-place value update). On Miss: clones string slice to insert entry.
 
-#### `fn contains_str(d: Dict(String, v), key: &'a str) -> Bool`
+#### `fn contains_str(let d: Dict(String, v), key: &str) -> Bool`
 
 String slice lookup without allocating an owned String (RFC-0139).
 
-#### `fn get_str_or(d: Dict(String, v), key: &'a str, default: v) -> v`
+#### `fn get_str_or(let d: Dict(String, v), key: &str, default: v) -> v`
 
-#### `fn at_str(d: Dict(String, v), key: &'a str) -> v`
+#### `fn at_str(let d: Dict(String, v), key: &str) -> v`
 
-#### `fn get_str(d: Dict(String, v), key: &'a str) -> Option(v)`
+#### `fn get_str(let d: Dict(String, v), key: &str) -> Option(v)`
 
-#### `fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq`
+#### `fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Eq`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
@@ -938,19 +938,19 @@ Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/v
 
 Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
 
-#### `fn keys(d: Dict(k, v)) -> List(k)`
+#### `fn keys(let d: Dict(k, v)) -> List(k)`
 
 The keys, in insertion order.
 
-#### `fn values(d: Dict(k, v)) -> List(v)`
+#### `fn values(let d: Dict(k, v)) -> List(v)`
 
 The values, in insertion order.
 
-#### `fn pairs(d: Dict(k, v)) -> List((k, v))`
+#### `fn pairs(let d: Dict(k, v)) -> List((k, v))`
 
 The (key, value) pairs, in insertion order.
 
-#### `fn length(d: Dict(k, v)) -> Int`
+#### `fn length(let d: Dict(k, v)) -> Int`
 
 The number of entries.
 
@@ -1154,7 +1154,7 @@ Checked runtime values (RFC-0082 Stage 1).
 
 #### `sealed type RuntimeAccessKind`
 
-Logical callable access metadata. Every position and projection names a source type or loan relation. Borrow relations expose their logical storage type and qualifier sites; compiler storage offsets and ownership-token representations are intentionally absent.
+Logical callable access metadata. Every position and projection names a source type and rooted-carrier relation. Compiler storage offsets and ownership-token representations are intentionally absent.
 
 - `AccessValue`
 - `AccessBorrow`
@@ -1165,9 +1165,7 @@ Logical callable access metadata. Every position and projection names a source t
 
 - `AccessFrozen`
 - `AccessUnique`
-- `AccessLocalUnique`
-- `AccessView(Int)`
-- `AccessMutReference(Int)`
+- `AccessRootedView`
 
 #### `sealed type RuntimeQualifierPathStep`
 
@@ -1230,6 +1228,7 @@ Checked failures remain ordinary matchable data and never become unchecked casts
 - `TypeMismatch(RuntimeType)`
 - `MissingField(String)`
 - `MissingMethod(String)`
+- `BorrowedResult(String)`
 - `ArityMismatch(String, Int, Int)`
 - `ArgumentMismatch(Int, RuntimeType, RuntimeType)`
 - `ResultMismatch(RuntimeType, RuntimeType)`
@@ -1303,7 +1302,7 @@ The canonical access identity covers the receiver and every declared method para
 
 #### `fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError)`
 
-Invoke only a descriptor-registered method. Arguments are checked against exact authenticated descriptors before the compiler-generated typed call.
+Invoke only a descriptor-registered owned-result method. Methods with a borrowed result remain reflectable, but invocation returns `BorrowedResult` before decoding an argument or calling the method: Dynamic never stores a live reference.
 
 #### `fn call_with(value: Dynamic, name: String, args: List(Dynamic), capabilities: c) -> Result(Dynamic, DynamicError)`
 
@@ -1568,11 +1567,11 @@ Run `thunk` at poll time and complete with its result. Unlike `ready`, which cap
 
 Build the future `thunk()` lazily: nothing runs until this future is polled. The usual drivers replace a `More` result with its continuation, so a normal drive path enters the lazy wrapper once. The value itself is not consumed or memoized, though: polling the same `Future` value again reruns `thunk`.
 
-#### `fn ready_unit() -> Future(Nil)`
+#### `fn ready_unit() -> Future(())`
 
-An already-complete `Future(Nil)` - the lowering target for an async body that falls off its end.
+An already-complete `Future(())` - the lowering target for an async body that falls off its end.
 
-#### `fn yield_now() -> Future(Nil)`
+#### `fn yield_now() -> Future(())`
 
 Yield control to the executor once, then continue. `await yield_now()` is a cooperative scheduling point an async task uses to let its peers run.
 
@@ -1883,7 +1882,7 @@ Concatenate an iterator OF iterators into one flat iterator, lazily and in order
 
 A lazy STATEFUL map: thread `state` through `f`, which returns the new state and the value to emit. `xs.scan(0, fn(s, x): (s + x, s + x))` yields the running sums. Unlike `fold`, it produces an iterator, so it is lazy and composable, and unlike `map` it can carry state between elements.
 
-#### `Iter.for_each(f: fn(a) -> Nil)`
+#### `Iter.for_each(f: fn(a) -> ())`
 
 Call `f` on every element for its effect (drives to exhaustion). The right consumer for a generator when you don't need to early-exit - no list is built.
 
@@ -2119,6 +2118,32 @@ Follow a dotted path of object keys, e.g. `resp.get_path("user.name")`. This spl
 #### `impl From(DeserializeError) for String`
 
 - `fn from(value: DeserializeError) -> Self`
+
+#### `impl Deserialize for Int`
+
+Primitive and standard-container implementations make the bound emitted by `derive(Deserialize)` useful when a generic field is instantiated with a scalar, list, or optional value. Records remain compiler-derived; these implementations reuse the same conversions and error behavior as generated record fields.
+
+- `fn from_json(j: Json) -> Result(Int, DeserializeError)`
+
+#### `impl Deserialize for Float`
+
+- `fn from_json(j: Json) -> Result(Float, DeserializeError)`
+
+#### `impl Deserialize for Bool`
+
+- `fn from_json(j: Json) -> Result(Bool, DeserializeError)`
+
+#### `impl Deserialize for String`
+
+- `fn from_json(j: Json) -> Result(String, DeserializeError)`
+
+#### `impl Deserialize for List(a) where a: Deserialize`
+
+- `fn from_json(j: Json) -> Result(List(a), DeserializeError)`
+
+#### `impl Deserialize for Option(a) where a: Deserialize`
+
+- `fn from_json(j: Json) -> Result(Option(a), DeserializeError)`
 
 #### `impl Reflect for Json`
 
@@ -2660,7 +2685,7 @@ This is COMPILE-TIME structure (field names + declared type expressions), distin
 
 #### `sealed type ItemSyntax`
 
-RFC-0080's typed boundary for whole generated items. `quote item:` and literal whole-item `meta.item("...")` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST. Dynamic `item(source)` input is parsed once at this boundary and then travels as a compiler-owned module fragment, including any imports required by the generated declaration.
+RFC-0080's typed boundary for whole generated items. `quote item:` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST.
 
 - `ItemSyntax(String)`
 
@@ -2685,7 +2710,7 @@ Hole-free `quote type:` values retain a compiler-owned type AST. The internal co
 
 #### `sealed type ExprSyntax`
 
-Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a compiler-owned expression AST. The second constructor is compiler-internal; structural call, field, and match builders retain it, while remaining compatibility builders may still project canonical source.
+Hole-free `quote expr:` values retain a compiler-owned expression AST.
 
 - `ExprSyntax(String)`
 - `CompilerExprSyntax(String, String)`
@@ -2740,8 +2765,7 @@ A declared type expression, exposed as data so generators do not have to parse s
 - `TTuple(List(TypeExpr))`
 - `TFn(List(TypeExpr), TypeExpr, List(String), Bool, Bool)`
 - `TQualified(String, TypeExpr)`
-- `TBorrowed(TypeExpr, String)`
-- `TReference(String, TypeExpr, String)`
+- `TView(TypeExpr)`
 
 #### `type TypeKind`
 
@@ -2769,13 +2793,9 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 
 - `TypeInfo { name: String, kind: TypeKind, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
 
-#### `fn item(source: String) -> ItemSyntax`
+#### `fn item_with_imports(imports: List(String), item_syntax: ItemSyntax) -> ItemSyntax`
 
-Parse one complete dynamic declaration (and its imports) into compiler-owned syntax. Literal whole-item arguments take the parser's equivalent zero-runtime path; dynamic input is rejected here unless it is exactly one declaration.
-
-#### `fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyntax`
-
-Join parser-checked item quote fragments with typed syntax holes.
+Attach compiler-approved standard-module imports to an already structural item. The item remains sealed and the import set is carried as a compiler module fragment; no source is rendered or reparsed.
 
 #### `fn ident(name: String) -> Ident`
 
@@ -2790,6 +2810,14 @@ An explicit invocation-site reference. The syntax constructor that consumes this
 A deterministic compiler-owned binding name. The returned identifier cannot collide with source names because its spelling lives in the reserved `__` namespace; repeated calls, blocks, and tagged-literal invocations are distinct.
 
 #### `fn is_identifier(name: String) -> Bool`
+
+#### `fn expr_tag_hole(marker: String) -> ExprSyntax`
+
+Reify exactly one compiler-issued tagged-literal hole. This does not parse a name: the compiler accepts only a sentinel issued for the active tag invocation, then substitutes the call-site expression after expansion.
+
+#### `fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
+
+Construct a nested tagged literal from validated tag identity, static parts, and compiler-owned expression handles. The bridge stores an owned AST; it never concatenates or reparses source. `parts` must have exactly one more member than `holes`.
 
 #### `fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax`
 
@@ -2819,19 +2847,11 @@ A deeply immutable type qualifier.
 
 A unique-reference type qualifier.
 
-#### `fn type_local_unique(ty: TypeSyntax) -> TypeSyntax`
-
-A local unique-reference type qualifier.
-
 #### `fn type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax`
 
 A capability type with rights, such as `Dir[Read]`.
 
 #### `fn type_expr(ty: TypeExpr) -> TypeSyntax`
-
-#### `fn type_join(parts: List(String), holes: List(TypeSyntax)) -> TypeSyntax`
-
-Join parser-checked type quote fragments with typed type holes.
 
 #### `fn expr_name(name: Ident) -> ExprSyntax`
 
@@ -2839,19 +2859,57 @@ Expression syntax builders. Ordinary names retain the compatibility payload; cal
 
 #### `fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax`
 
+#### `fn expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax`
+
+Build a direct call from a compiler-validated identifier. Unlike `expr_call`, this preserves the direct-call AST shape required by declaration-site resolution and generic specialization; it never accepts source text.
+
+#### `fn expr_try(value: ExprSyntax) -> ExprSyntax`
+
+#### `fn expr_lambda(params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ExprSyntax`
+
+#### `fn expr_method_call(receiver: ExprSyntax, method: Ident, args: List(ExprSyntax)) -> ExprSyntax`
+
+#### `fn expr_qualified_call(module: Ident, name: Ident, args: List(ExprSyntax)) -> ExprSyntax`
+
+#### `fn expr_qualified_call_path(path: List(Ident), member: Ident, args: List(ExprSyntax)) -> ExprSyntax`
+
+A qualified call with a compiler-validated nominal path, such as `sibling.Child.from_json`. Each path segment remains an Ident until the compiler bridge creates the AST call name; callers cannot supply dotted or otherwise unvalidated source strings.
+
 #### `fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax`
 
 #### `fn expr_int(n: Int) -> ExprSyntax`
 
 #### `fn expr_bool(b: Bool) -> ExprSyntax`
 
+#### `fn expr_string(value: String) -> ExprSyntax`
+
+A compiler-owned string literal. The value is stored as an `Expr::Str`, so quotes, backslashes, interpolation markers, and source-looking text remain data; a compatibility source projection never determines the generated AST.
+
+#### `fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax`
+
+A compiler-owned binary expression. `op` is admitted by the compiler's fixed source-operator whitelist; it is never parsed as a source fragment.
+
+#### `fn expr_list(elements: List(ExprSyntax)) -> ExprSyntax`
+
+A compiler-owned list expression. Each element stays a typed expression node; the bridge never joins their rendered source.
+
+#### `fn expr_tuple(elements: List(ExprSyntax)) -> ExprSyntax`
+
+A compiler-owned tuple expression. Each member remains an expression node; tuple punctuation is introduced by the AST builder rather than source text.
+
+#### `fn record_field(name: Ident, value: ExprSyntax) -> (Ident, ExprSyntax)`
+
+One named record field. A tuple is sufficient here: both parts are already sealed syntax values, so introducing another compiler-syntax type would add a runtime-leakage surface without adding authority.
+
+#### `fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax`
+
+Compiler-owned construction of an explicitly named record. The record head and labels are definition-site identifiers; invocation-site identifiers are references and are rejected rather than having their origin erased.
+
+#### `fn expr_record_update(name: Ident, fields: List((Ident, ExprSyntax)), base: ExprSyntax) -> ExprSyntax`
+
 #### `fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax`
 
-#### `fn expr_raw(source: String) -> ExprSyntax`
-
-#### `fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax`
-
-Join parser-checked expression fragments with mixed typed syntax holes.
+#### `fn expr_block(body: BlockSyntax) -> ExprSyntax`
 
 #### `fn pattern_var(name: Ident) -> PatternSyntax`
 
@@ -2899,10 +2957,6 @@ A list pattern with `..` or `..rest`.
 
 An or-pattern. Every alternative must bind the same names when type-checked.
 
-#### `fn pattern_join(parts: List(String), holes: List(PatternSyntax)) -> PatternSyntax`
-
-Join parser-checked pattern quote fragments with typed pattern holes.
-
 #### `fn expr_hole(expr: ExprSyntax) -> SyntaxHole`
 
 #### `fn type_hole(ty: TypeSyntax) -> SyntaxHole`
@@ -2921,23 +2975,7 @@ Source-backed statement and block syntax. These are still text at the compiler b
 
 #### `fn stmt_return_none() -> StmtSyntax`
 
-#### `fn stmt_raw(source: String) -> StmtSyntax`
-
-A source-backed statement wrapper for parser-checked `quote stmt:`.
-
-#### `fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyntax`
-
-Join parser-checked statement quote fragments with typed syntax holes.
-
 #### `fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax`
-
-#### `fn block_raw(source: String) -> BlockSyntax`
-
-A source-backed block wrapper for parser-checked `quote block:`.
-
-#### `fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockSyntax`
-
-Join parser-checked block quote fragments with typed syntax holes.
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 
@@ -2950,6 +2988,10 @@ A function parameter and function item constructors. The single-expression form 
 #### `fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax`
 
 Build a trait implementation directly from typed trait/target heads and compiler-owned function items. No impl source is rendered or reparsed.
+
+#### `fn impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: List((Ident, Ident)), items: List(ItemSyntax)) -> ItemSyntax`
+
+Structural impl construction with typed conditional bounds. Each pair is `(type_parameter, trait)`; the compiler turns it directly into ImplDef bounds.
 
 #### `fn module(items: List(ItemSyntax)) -> ModuleSyntax`
 
@@ -3259,7 +3301,7 @@ PublicState is a checked boundary proof for data that may cross into static HTML
 
 ### Trait implementations
 
-#### `impl PublicState for Nil`
+#### `impl PublicState for ()`
 
 - `fn public_state_proof(self)`
 
@@ -3402,7 +3444,7 @@ A `Dict` reflects to an `MRecord` - the same string-keyed shape a record uses, s
 
 - `fn reflect(self) -> Mirror`
 
-#### `impl Reflect for Nil`
+#### `impl Reflect for ()`
 
 - `fn reflect(self) -> Mirror`
 
@@ -4132,13 +4174,13 @@ The witchy standard string library. Importing it grants no root authority; this 
 
 #### `fn substring(s: String, start: Int, end: Int) -> String`
 
-#### `fn as_str(s: &'a String) -> &'a str`
+#### `fn as_str(s: &String) -> &str`
 
-#### `fn slice(s: &'a str, start: Int, end: Int) -> &'a str`
+#### `fn slice(s: &str, start: Int, end: Int) -> &str`
 
-#### `fn to_string(s: &'a str) -> String`
+#### `fn to_string(s: &str) -> String`
 
-#### `fn len(s: &'a str) -> Int`
+#### `fn len(s: &str) -> Int`
 
 #### `fn to_upper(s: String) -> String`
 
@@ -4184,9 +4226,9 @@ Replace every occurrence of `from` with `to`.
 
 The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
 
-#### `String.as_str() -> &'a str`
+#### `String.as_str() -> &str`
 
-Return a borrowed view of this String as a string slice (`&'a str`).
+Return a rooted immutable view of this String as a string slice (`&str`).
 
 #### `String.to_upper() -> String`
 
@@ -4302,7 +4344,7 @@ The string's length in BYTES (UTF-8). For user-perceived characters, see `char_c
 
 The number of Unicode scalar values.
 
-#### `str.slice(start: Int, end: Int) -> &'a str`
+#### `str.slice(start: Int, end: Int) -> &str`
 
 The sub-slice from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
 
@@ -4312,7 +4354,7 @@ Whether the string has no characters.
 
 #### `str.to_string() -> String`
 
-Convert this borrowed slice into an owned String.
+Materialize this rooted slice view as an owned String.
 
 ## `task`
 
@@ -4322,7 +4364,7 @@ A `Task(a)` is a CPS-over-closures computation that, when stepped, either comple
 
 This module is the scheduling core: the `Task` monad, `spawn`/`join`/ `yield_now`, and the executor. First-class channels are layered on top in `std/chan`; lightweight value-returning structured concurrency (`join_all`/ `select` over independent futures) lives in `std/future`.
 
-Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` carry the opaque `__Msg`, so ONE program can run channels of many different message types - a library may use channels privately without forcing its type on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)` in `std/chan`) erase a message on `send` and recover it on `recv`. Compiled WebAssembly carries one typed GC envelope with separate i32, i64, f64, externref, and erased anyref fields; anyref carries either a GC struct or GC array, and the checked endpoint type selects the field to recover. That keeps heterogeneous scalars and direct references in one scheduler ABI without bit-casting references through an integer slot. Erasure is observationally invisible, so interleavings stay byte-identical. Spawned tasks return `Nil`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
+Messages: the executor is ERASED (RFC-0055). Its buffers, `Step`, and `Slot` carry the opaque `__Msg`, so ONE program can run channels of many different message types - a library may use channels privately without forcing its type on the whole program. The typed channel endpoints (`Sender(m)`/`Receiver(m)` in `std/chan`) erase a message on `send` and recover it on `recv`. Compiled WebAssembly carries one typed GC envelope with separate i32, i64, f64, externref, and erased anyref fields; anyref carries either a GC struct or GC array, and the checked endpoint type selects the field to recover. That keeps heterogeneous scalars and direct references in one scheduler ABI without bit-casting references through an integer slot. Erasure is observationally invisible, so interleavings stay byte-identical. Spawned tasks return `()`; a task reports a result by sending it on a channel, not by returning it (a typed `JoinHandle(T)` would force a native runtime and break the parity contract).
 
 The `async`/`await` CPS transform lowers onto this substrate (`task.lazy`/ `and_then`/`done`/`run`), so `chan.recv(rx).await` / `chan.send(tx, x).await` work in async fns.
 
@@ -4332,29 +4374,29 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 
 - `Done(a)`
 - `Yield(Task(a))`
-- `Fork(Task(Nil), fn(Int) -> Task(a))`
+- `Fork(Task(()), fn(Int) -> Task(a))`
 - `Open(Int, fn(Int) -> Task(a))`
-- `Push(Int, __Msg, fn(Nil) -> Task(a))`
+- `Push(Int, __Msg, fn(()) -> Task(a))`
 - `Pull(Int, fn(Option(__Msg)) -> Task(a))`
 - `OpenI64(Int, fn(Int) -> Task(a))`
-- `PushI64(Int, Int, fn(Nil) -> Task(a))`
+- `PushI64(Int, Int, fn(()) -> Task(a))`
 - `PullI64(Int, fn(Option(Int)) -> Task(a))`
 - `Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
-- `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
-- `PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `PullReadyFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Pull2ReadyFrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Pull3ReadyFrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Pull4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Pull4ReadyFrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
+- `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))`
+- `PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `PullReadyFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Pull2ReadyFrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Pull3ReadyFrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Pull4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Pull4ReadyFrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
-- `Wait(Int, fn(Nil) -> Task(a))`
-- `Cancel(Int, fn(Nil) -> Task(a))`
+- `Wait(Int, fn(()) -> Task(a))`
+- `Cancel(Int, fn(()) -> Task(a))`
 
 #### `sealed type Task(a)`
 
@@ -4376,19 +4418,19 @@ Channel identity shared with std/chan. User source cannot mint one; the compiler
 
 A scheduling slot: running, parked on a channel recv/send or on a join, or done. Parked messages are the erased `__Msg` (RFC-0055).
 
-- `Active(Task(Nil))`
-- `WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))`
-- `WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))`
-- `Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
-- `Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
-- `Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))`
-- `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))`
-- `WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `Wait4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))`
-- `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))`
-- `WaitJoin(Int, fn(Nil) -> Task(Nil))`
+- `Active(Task(()))`
+- `WaitRecv(Int, fn(Option(__Msg)) -> Task(()))`
+- `WaitSend(Int, __Msg, fn(()) -> Task(()))`
+- `Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(()))`
+- `Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))`
+- `Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))`
+- `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))`
+- `WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `Wait4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
+- `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(()))`
+- `WaitJoin(Int, fn(()) -> Task(()))`
 - `Ended`
 
 #### `type __TypedI64Ring = (List(Int), Int, Int, Int)`
@@ -4399,11 +4441,11 @@ The compiler-owned Int ring is deliberately parallel to `channels`, not a replac
 
 A finished task.
 
-#### `fn ready_unit() -> Task(Nil)`
+#### `fn ready_unit() -> Task(())`
 
-An already-complete `Task(Nil)` - the async/await lowering target for a body that falls off its end.
+An already-complete `Task(())` - the async/await lowering target for a body that falls off its end.
 
-#### `fn yield_now() -> Task(Nil)`
+#### `fn yield_now() -> Task(())`
 
 Hand control back to the executor once, then continue.
 
@@ -4419,7 +4461,7 @@ Transform a task's result.
 
 Build the task `thunk()` lazily: nothing runs until this task is polled. A `Task` is a replayable execution recipe, not a memo cell; the standard driver advances through continuations, but driving the same task value again reruns its thunk.
 
-#### `fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil)`
+#### `fn for_each(xs: List(a), f: fn(a) -> Task(())) -> Task(())`
 
 Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an `await` inside a `for x in xs:` loop.
 
@@ -4427,7 +4469,7 @@ Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an
 
 RFC-0152 compiler-private typed ready-path bridge. These functions retain the public ChannelId and Task contracts; only the yielded Step carries its exact Int payload. `task.run` falls back to the ordinary ring on the first blocking operation.
 
-#### `fn __channel_send_i64(channel: ChannelId, msg: Int) -> Task(Nil)`
+#### `fn __channel_send_i64(channel: ChannelId, msg: Int) -> Task(())`
 
 #### `fn __channel_recv_i64(channel: ChannelId) -> Task(Option(Int))`
 
@@ -4439,27 +4481,39 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 
 #### `fn __channel_select4_map(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, decode: fn(Int, Option(__Msg)) -> Task(a)) -> Task(a)`
 
-#### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
-#### `fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
-#### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
-#### `fn channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil)`
+#### `fn channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
-#### `fn spawn(child: Task(Nil)) -> Task(Handle)`
+#### `fn __spawn_raw(child: Task(())) -> Task(Int)`
 
-Start `child` as a concurrent task; the returned handle completes when it does.
+The scheduler owns raw task IDs. They are not public handles: only this compiler-private bridge may mint or consume the `must` Handle wrapper. This keeps scheduler continuations scalar while preserving the public obligation that every Handle is joined, cancelled, or returned.
 
-#### `fn join(own h: Handle) -> Task(Nil)`
+#### `fn __join_raw(id: Int) -> Task(())`
+
+#### `fn __cancel_raw(id: Int) -> Task(())`
+
+#### `fn __handle_from_raw(id: Int) -> Handle`
+
+#### `fn __handle_into_raw(own h: Handle) -> Int`
+
+#### `fn spawn(child: Task(())) -> Task(Handle)`
+
+Start `child` as a concurrent task. Mint the public `must` Handle only at the public result boundary; the scheduler continuation carries its raw ID.
+
+#### `fn join(own h: Handle) -> Task(())`
 
 Wait for the spawned task behind `h` while the executor can make progress. If the whole executor reaches quiescence with this join parked, the close pass releases it even if the joined task has a continuation that will run afterward.
 
-#### `fn cancel(own h: Handle) -> Task(Nil)`
+#### `fn cancel(own h: Handle) -> Task(())`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its descendants) and idempotent (already-finished is a no-op). Deterministic on the round-robin schedule, hence byte-identical on both backends.
 
-#### `fn run(root: Task(Nil))`
+#### `fn run(root: Task(()))`
 
 Drive `root` (and everything it spawns) to completion on a deterministic round-robin schedule. An async `main` lowers to a single `run` of its body.
 

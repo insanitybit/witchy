@@ -1,8 +1,8 @@
 # Retired language RFCs
 
-The 2026-09-16 consolidation removes 54 obsolete design bodies from the working
+The 2026-09-16 consolidation removes 55 obsolete design bodies from the working
 corpus. The single target language contract is [RFC-0167](0167-witchy-language-contract.md).
-Its status is proposed; deletion of conflicting history is not compiler adoption.
+Its status is accepted; deletion of conflicting history is not compiler completion.
 
 All removed files are recoverable at baseline commit
 `418a69b9ca75ae70fae5e96f797057e161f93aeb`:
@@ -74,3 +74,4 @@ removing a roadmap does not close its outstanding implementation obligations.
 | `round5-plan.md` | [Language contract](0167-witchy-language-contract.md#9-deliberate-changes-and-tradeoffs) |
 | `round6-plan.md` | [Language contract](0167-witchy-language-contract.md#9-deliberate-changes-and-tradeoffs) |
 | `round7-plan.md` | [Language contract](0167-witchy-language-contract.md#9-deliberate-changes-and-tradeoffs) |
+| `impl-plans/0110-execution-plan.md` | [Normal/opt contract](0167-witchy-language-contract.md#6-normal-and-opt-interoperation); [retained evidence and obligations](retained-contract-audit.md#removed-execution-plan) |

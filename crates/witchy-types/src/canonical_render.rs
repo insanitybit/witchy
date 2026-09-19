@@ -134,6 +134,7 @@ impl Preparation {
             function: Function {
                 line: 0, public: false, pure: true, comptime_only: false, attributes: Vec::new(),
                 name: name.clone(),
+                type_params: Vec::new(),
                 params: vec![Param {
                     name: "value".into(), ty: Some(ty.clone()), convention: Convention::Let, default: None,
                 }],

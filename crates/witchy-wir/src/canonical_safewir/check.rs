@@ -110,6 +110,7 @@ pub enum InitialCheckError {
     PointerBearingStaticData { function: FunctionId, object: ValueId },
     WritableStaticData { function: FunctionId, object: ValueId },
     UnsupportedHostCall { function: FunctionId },
+    UnsupportedExternalCall { function: FunctionId },
     DuplicateImport(ImportId),
     MissingImportContract { function: FunctionId, import: ImportId },
     UnknownImportIdentity { import: ImportId },
@@ -1214,6 +1215,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. }
         | Operation::VarCall { destinations, .. }
+        | Operation::ExternalCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
         Operation::Guard { .. }
         | Operation::InitNullableOwned { .. }
@@ -1222,6 +1224,7 @@ fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
         | Operation::MoveRange { .. }
         | Operation::CloneRange { .. }
         | Operation::UpdateCount { .. }
+        | Operation::ReauthenticateRawHeaderExtent { .. }
         | Operation::Retain { .. }
         | Operation::Release { .. }
         | Operation::DropRef { .. }
@@ -1272,7 +1275,8 @@ pub(crate) fn operation_uses(operation: &Operation) -> Vec<ValueId> {
             result
         }
         Operation::UpdateCount { object, count } => vec![*object, *count],
-        Operation::Call { arguments, .. } => argument_uses(arguments),
+        Operation::ReauthenticateRawHeaderExtent { object, header } => vec![*object, *header],
+        Operation::Call { arguments, .. } | Operation::ExternalCall { arguments, .. } => argument_uses(arguments),
         Operation::HostCall { arguments, .. } => host_argument_uses(arguments),
         Operation::VarCall { callee, arguments, .. } => {
             let mut result = vec![*callee];
@@ -1531,6 +1535,12 @@ fn check_operation(
             require_type(function, *value, operand)
         }
         Operation::Guard { condition, .. } => require_type(function, *condition, ValueType::Bool),
+        Operation::ReauthenticateRawHeaderExtent { object, header } => {
+            if !matches!(value_type(function, *object)?, ValueType::Ref(_)) {
+                return unsupported_memory(function, "ReauthenticateRawHeaderExtent(object)");
+            }
+            require_type(function, *header, ValueType::Size)
+        }
         Operation::MoveValue { destination, source } => {
             let source_type = value_type(function, *source)?;
             if source_type.is_memory_bearing() || matches!(source_type, ValueType::InlineAggregate(_)) {
@@ -1595,6 +1605,9 @@ fn check_operation(
             check_indirect_reference_arguments(function, arguments, signature)?;
             check_call(function, destinations, arguments, signature, Some(memory))
         }
+        Operation::ExternalCall { destinations, import, arguments } => {
+            check_external_call(function, *import, destinations, arguments, imports, signatures, memory)
+        }
         Operation::HostCall { destinations, import, arguments } => {
             host::check_call(function, *import, destinations, arguments, imports, signatures, catalog)?;
             let contract = imports
@@ -1648,6 +1661,52 @@ fn check_operation(
         Operation::DropRef { .. } => unsupported_memory(function, "DropRef"),
         Operation::Reclaim { .. } => unsupported_memory(function, "Reclaim"),
     }
+}
+
+/// External calls are scalar-only by construction. They deliberately share
+/// call-value checking with local calls, but never share host ABI roles or the
+/// host catalog: an external module has a separate Wasmtime instance and no
+/// permission to receive caller memory, references, or capabilities.
+fn check_external_call(
+    function: &Function,
+    import_id: ImportId,
+    destinations: &[ValueId],
+    arguments: &[CallArgument],
+    imports: &BTreeMap<ImportId, &ImportContract>,
+    signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    memory: &mut MemoryChecker<'_>,
+) -> Result<(), InitialCheckError> {
+    let import = imports.get(&import_id).copied().ok_or(
+        InitialCheckError::MissingImportContract { function: function.id, import: import_id },
+    )?;
+    let super::ImportContractIdentity::AuthenticatedExternal(_) = &import.abi_identity else {
+        return Err(InitialCheckError::UnsupportedExternalCall { function: function.id });
+    };
+    let signature = signatures.get(&import.signature).copied()
+        .ok_or(InitialCheckError::MissingSignature(import.signature))?;
+    let scalar = |value: ValueType| matches!(value, ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit);
+    if signature.contract.parameters.len() != signature.parameters.len()
+        || signature.contract.results.len() != signature.results.len()
+        || !signature.parameters.iter().copied().all(scalar)
+        || !signature.results.iter().copied().all(scalar)
+        || signature.contract.parameters.iter().enumerate().any(|(index, parameter)| {
+            parameter.value_type != signature.parameters[index]
+                || parameter.ownership != ParameterOwnership::Value
+        })
+        || signature.contract.results.iter().enumerate().any(|(index, result)| {
+            !matches!(result, super::ResultContract::Value(value) if *value == signature.results[index])
+        })
+        || !signature.contract.parameter_effects.is_empty()
+        || !import.parameter_roles.is_empty()
+        || !import.result_roles.is_empty()
+        || !matches!(import.mutation, super::HostMutation::ReadOnly)
+        || !matches!(import.reentrancy, super::HostReentrancy::Forbidden)
+        || import.module.is_empty()
+        || import.name.is_empty()
+    {
+        return Err(InitialCheckError::UnsupportedExternalCall { function: function.id });
+    }
+    check_call(function, destinations, arguments, signature, Some(memory))
 }
 
 fn scalar_arithmetic_is_backend_total(
@@ -1730,7 +1789,7 @@ fn check_call(
 ) -> Result<(), InitialCheckError> {
     require_arity("call arguments", signature.parameters.len(), arguments.len())?;
     require_arity("call results", signature.results.len(), destinations.len())?;
-    for (argument, expected) in arguments.iter().zip(&signature.contract.parameters) {
+    for (index, (argument, expected)) in arguments.iter().zip(&signature.contract.parameters).enumerate() {
         let (value, ownership) = match argument {
             CallArgument::Value(value) => (*value, ParameterOwnership::Value),
             CallArgument::Move(value) => (*value, ParameterOwnership::Unique),
@@ -1752,6 +1811,16 @@ fn check_call(
             // Moving a unique token into a shared parameter is a safe
             // ownership weakening; the callee receives that token.
             | (ParameterOwnership::Shared, ParameterOwnership::Unique) => true,
+            // A source-authenticated direct shared-reference relay carries a
+            // cloned managed token as `Move`, then returns that exact token as
+            // its sole alias result.  The candidate contract itself is the
+            // complete structural safety proof here; production authority
+            // independently binds the same shape to the sealed checked-source
+            // specialization in the initial-witness pipeline.
+            (ParameterOwnership::Value, ParameterOwnership::Unique)
+                if exact_moved_value_alias_parameter_transport(argument, signature) => true,
+            (ParameterOwnership::Value, ParameterOwnership::Unique)
+                if exact_indirect_moved_value_alias_parameter_transport(index, argument, signature) => true,
             _ => false,
         };
         if !accepted {
@@ -1768,12 +1837,15 @@ fn check_call(
         let contract_type = match contract {
             super::ResultContract::BodyDerived(value_type) => *value_type,
             super::ResultContract::Value(value_type) => *value_type,
+            super::ResultContract::DisjunctiveWriteBackSelector { .. } => super::ValueType::Bool,
             super::ResultContract::CheckedValue { layout }
             | super::ResultContract::Fresh { layout, .. }
             | super::ResultContract::Shared { layout }
             | super::ResultContract::Unique { layout }
             | super::ResultContract::StaticData { layout }
             | super::ResultContract::AliasesParameter { layout, .. }
+            | super::ResultContract::AliasesWriteBackParameter { layout, .. }
+            | super::ResultContract::AliasesOneOfWriteBackParameters { layout, .. }
             | super::ResultContract::ReallocatesParameter { layout, .. } => {
                 ValueType::Ref(*layout)
             }
@@ -1786,6 +1858,7 @@ fn check_call(
     }
     if let Some(memory) = memory.as_deref_mut() {
         memory.check_call(
+            signature,
             arguments,
             &signature.contract.parameters,
             destinations,
@@ -1793,6 +1866,52 @@ fn check_call(
         )?;
     }
     Ok(())
+}
+
+/// The one managed-reference exception to ordinary `Value` call arguments.
+///
+/// This is deliberately a complete callable contract, rather than a
+/// parameter-local relaxation: a moved cloned token is only safe when the
+/// callee returns the same storage as its one alias result.  The source
+/// authority independently proves that this contract came from the sealed
+/// generic forwarding declaration in production; this structural check plus
+/// downstream memory validation remains sufficient for module safety on its
+/// own.
+fn exact_moved_value_alias_parameter_transport(
+    argument: &CallArgument,
+    signature: &FunctionSignature,
+) -> bool {
+    let CallArgument::Move(_) = argument else {
+        return false;
+    };
+    let ([ValueType::Ref(parameter_layout)], [ValueType::Ref(result_layout)]) =
+        (signature.parameters.as_slice(), signature.results.as_slice())
+    else {
+        return false;
+    };
+    let ([parameter], [result]) = (
+        signature.contract.parameters.as_slice(),
+        signature.contract.results.as_slice(),
+    ) else {
+        return false;
+    };
+    *parameter_layout == *result_layout
+        && parameter.ownership == ParameterOwnership::Value
+        && parameter.value_type == ValueType::Ref(*parameter_layout)
+        && matches!(
+            result,
+            super::ResultContract::AliasesParameter { parameter: 0, layout }
+                if *layout == *parameter_layout
+        )
+        && signature.contract.parameter_effects
+            == BTreeMap::from([(
+                0,
+                vec![
+                    super::MemoryEffect::Read,
+                    super::MemoryEffect::Retain,
+                    super::MemoryEffect::Release,
+                ],
+            )])
 }
 
 fn check_indirect_reference_arguments(
@@ -1824,17 +1943,53 @@ fn check_indirect_reference_arguments(
         let memory_bearing = value_type.as_ref()
             .map(|value_type| value_type.is_memory_bearing())
             .unwrap_or(true);
-        memory_bearing && !matches!(
+        let supported = matches!(
             (argument, value_type, parameter.value_type, parameter.ownership),
             (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Shared | ParameterOwnership::WriteBack)
+                | (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Unique)
+                | (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::UniqueWriteBack)
                 | (CallArgument::Move(_), Ok(ValueType::Gc(_)), ValueType::Gc(_), ParameterOwnership::Shared)
-        )
+        ) || exact_indirect_moved_value_alias_parameter_transport(index, argument, signature);
+        memory_bearing && !supported
     }) {
         return Err(InitialCheckError::UnsupportedIndirectCall {
             function: function.id,
         });
     }
     Ok(())
+}
+
+/// The closure form of the one exact shared-alias transport.  The leading
+/// environment is an independently owned shared lane; the source reference
+/// remains parameter one and the result must alias exactly that lane.  This
+/// structural SafeWIR condition is paired with pointer-bound source access
+/// identity before lowering may emit the call.
+fn exact_indirect_moved_value_alias_parameter_transport(
+    index: usize,
+    argument: &CallArgument,
+    signature: &FunctionSignature,
+) -> bool {
+    let CallArgument::Move(_) = argument else { return false };
+    let ([environment, ValueType::Ref(parameter_layout)], [ValueType::Ref(result_layout)]) =
+        (signature.parameters.as_slice(), signature.results.as_slice())
+    else { return false };
+    let ([environment_contract, parameter], [result]) = (
+        signature.contract.parameters.as_slice(),
+        signature.contract.results.as_slice(),
+    ) else { return false };
+    index == 1
+        && matches!(environment, ValueType::Ref(_) | ValueType::Gc(_))
+        && environment_contract.value_type == *environment
+        && environment_contract.ownership == ParameterOwnership::Shared
+        && *parameter_layout == *result_layout
+        && parameter.ownership == ParameterOwnership::Value
+        && parameter.value_type == ValueType::Ref(*parameter_layout)
+        && matches!(result, super::ResultContract::AliasesParameter { parameter: 1, layout }
+            if *layout == *parameter_layout)
+        && signature.contract.parameter_effects == BTreeMap::from([
+            (0, vec![super::MemoryEffect::Read, super::MemoryEffect::Retain, super::MemoryEffect::Release]),
+            (1, vec![super::MemoryEffect::Read, super::MemoryEffect::Retain, super::MemoryEffect::Release]),
+        ])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1940,7 +2095,7 @@ fn check_tail_call(
     }
     // A tail edge forwards results without executing the caller's Return
     // judgment. It must not turn a shared or opaque result into fresh storage.
-    if callee.contract.results != caller.contract.results {
+    if !tail_result_contracts_compatible(&callee.contract.results, &caller.contract.results) {
         return Err(InitialCheckError::CallableContractMismatch {
             signature: caller.id,
         });
@@ -1951,6 +2106,34 @@ fn check_tail_call(
         results: Vec::new(),
         contract: callee.contract.clone(),
     }, memory)
+}
+
+/// A normal `var` relay can repair a shared input by copying it and tail-call a
+/// `var unique` worker. The worker returns the fresh replacement as a unique
+/// token; forwarding that token through the relay's declared shared write-back
+/// lane only weakens the receiver's authority.  A reallocation proof likewise
+/// carries a unique token and may be forgotten by a unique caller. The layout
+/// and result arity stay exact, and no Shared-to-Unique conversion is accepted.
+fn tail_result_contracts_compatible(
+    callee: &[super::ResultContract],
+    caller: &[super::ResultContract],
+) -> bool {
+    callee.len() == caller.len()
+        && callee.iter().zip(caller).all(|(actual, declared)| {
+            actual == declared || matches!(
+                (actual, declared),
+                (
+                    super::ResultContract::Unique { layout: actual },
+                    super::ResultContract::Shared { layout: declared },
+                ) if actual == declared
+            ) || matches!(
+                (actual, declared),
+                (
+                    super::ResultContract::ReallocatesParameter { layout: actual, .. },
+                    super::ResultContract::Unique { layout: declared },
+                ) if actual == declared
+            )
+        })
 }
 
 fn observe_tail_site(
@@ -2117,6 +2300,26 @@ mod tests {
             check_initial(candidate),
             Err(InitialCheckError::InvalidLayoutBundle(message))
                 if message == "nullable owned slots require canonical presence and destruction support"
+        ));
+    }
+
+    #[test]
+    fn tail_reallocation_proof_may_weaken_to_unique_but_not_the_reverse() {
+        let mut layouts = LayoutInterner::new();
+        let layout = layouts.intern_scalar(ScalarKind::Int).unwrap();
+        let replacement = ResultContract::ReallocatesParameter {
+            parameter: 0,
+            layout,
+        };
+        let unique = ResultContract::Unique { layout };
+
+        assert!(super::tail_result_contracts_compatible(
+            std::slice::from_ref(&replacement),
+            std::slice::from_ref(&unique),
+        ));
+        assert!(!super::tail_result_contracts_compatible(
+            std::slice::from_ref(&unique),
+            std::slice::from_ref(&replacement),
         ));
     }
 
@@ -2812,6 +3015,67 @@ mod tests {
                     terminator: Terminator::Return {
                         values: vec![ValueId::new(1)],
                     },
+                }],
+            }],
+            proper_tail_sites: Vec::new(),
+        })
+    }
+
+    fn external_scalar_module(
+        identity: ImportContractIdentity,
+        value_type: ValueType,
+        layouts: LayoutBundle,
+    ) -> CanonicalModule<super::super::LoweredCandidate> {
+        let external_signature = FunctionSignature {
+            id: FunctionSignatureId::new(1),
+            parameters: vec![value_type],
+            results: vec![value_type],
+            contract: CallableContract {
+                parameters: vec![ParameterContract { value_type, ownership: ParameterOwnership::Value }],
+                results: vec![ResultContract::Value(value_type)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let caller_signature = FunctionSignature {
+            id: SIGNATURE,
+            parameters: vec![value_type],
+            results: vec![value_type],
+            contract: CallableContract {
+                parameters: vec![ParameterContract { value_type, ownership: ParameterOwnership::Value }],
+                results: vec![ResultContract::Value(value_type)],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([42; 32]),
+            layouts,
+            signatures: vec![caller_signature, external_signature],
+            imports: vec![ImportContract {
+                id: ImportId::new(0),
+                signature: FunctionSignatureId::new(1),
+                abi_identity: identity,
+                module: "external_math".into(),
+                name: "id".into(),
+                parameter_roles: Vec::new(),
+                result_roles: Vec::new(),
+                mutation: HostMutation::ReadOnly,
+                reentrancy: HostReentrancy::Forbidden,
+            }],
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [(VALUE, value_type), (ValueId::new(1), value_type)].into_iter().collect(),
+                blocks: vec![BasicBlock {
+                    id: ENTRY,
+                    parameters: vec![BlockParameter { value: VALUE, value_type, ownership: None }],
+                    operations: vec![Operation::ExternalCall {
+                        destinations: vec![ValueId::new(1)],
+                        import: ImportId::new(0),
+                        arguments: vec![CallArgument::Value(VALUE)],
+                    }],
+                    terminator: Terminator::Return { values: vec![ValueId::new(1)] },
                 }],
             }],
             proper_tail_sites: Vec::new(),
@@ -3789,6 +4053,52 @@ mod tests {
             matches!(result.as_ref(), Err(InitialCheckError::MissingImportContract { .. })),
             "unexpected result: {result:?}"
         );
+    }
+
+    #[test]
+    fn external_call_rejects_unknown_import_identity() {
+        let module = external_scalar_module(ImportContractIdentity::Unknown, ValueType::Int, empty_layouts());
+        assert!(matches!(
+            super::check_initial(module),
+            Err(InitialCheckError::UnsupportedExternalCall { .. })
+        ));
+    }
+
+    #[test]
+    fn external_call_rejects_reference_gc_capability_and_callable_abi() {
+        let identity = ImportContractIdentity::AuthenticatedExternal(
+            super::super::ExternalWasmIdentity {
+                library_binding_digest: [1; 32],
+                wasm_sha256: [2; 32],
+                sidecar_sha256: [3; 32],
+            },
+        );
+        let (reference_layouts, reference_layout) = dynamic_u32_layout();
+        for (value_type, layouts) in [
+            (ValueType::Ref(reference_layout), reference_layouts),
+            (ValueType::Gc(super::super::GcTypeId::new(1)), empty_layouts()),
+            (ValueType::Capability(super::super::CapabilityKindId::new(1)), empty_layouts()),
+            (ValueType::Callable(FunctionSignatureId::new(1)), empty_layouts()),
+        ] {
+            let module = external_scalar_module(identity.clone(), value_type, layouts);
+            assert!(
+                super::check_initial(module).is_err(),
+                "external ABI must reject {value_type:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn external_call_accepts_unit_parameter_and_result_contracts() {
+        let identity = ImportContractIdentity::AuthenticatedExternal(
+            super::super::ExternalWasmIdentity {
+                library_binding_digest: [4; 32],
+                wasm_sha256: [5; 32],
+                sidecar_sha256: [6; 32],
+            },
+        );
+        let module = external_scalar_module(identity, ValueType::Unit, empty_layouts());
+        assert!(super::check_initial(module).is_ok());
     }
 
     #[test]
@@ -4778,6 +5088,7 @@ mod tests {
         with_guard: bool,
         capacity_value: u64,
         initialize: bool,
+        dynamic_inputs: bool,
     ) -> CanonicalModule<super::super::LoweredCandidate> {
         let count = ValueId::new(0);
         let capacity = ValueId::new(1);
@@ -4786,28 +5097,51 @@ mod tests {
         let object = ValueId::new(4);
         let loaded = ValueId::new(5);
         let stored = ValueId::new(6);
+        let allocation_condition = ValueId::new(7);
         let (layouts, layout) = packed_u32_layout();
         let (base, stride) = (8, 4);
         let mut operations = vec![
             Operation::ConstSize {
-                destination: count,
-                value: 1,
-            },
-            Operation::ConstSize {
                 destination: capacity,
                 value: capacity_value,
             },
-            Operation::ConstSize {
-                destination: index,
-                value: 0,
-            },
+        ];
+        if !dynamic_inputs {
+            operations.extend([
+                Operation::ConstSize {
+                    destination: count,
+                    value: 1,
+                },
+                Operation::ConstSize {
+                    destination: index,
+                    value: 0,
+                },
+            ]);
+        } else {
+            // The allocation's dynamic count is independently bounded by its
+            // capacity. This must not authenticate the distinct index<count
+            // access below.
+            operations.extend([
+                Operation::Compare {
+                    destination: allocation_condition,
+                    operator: ComparisonOperator::LessEqualUnsigned,
+                    left: count,
+                    right: capacity,
+                },
+                Operation::Guard {
+                    condition: allocation_condition,
+                    kind: GuardKind::Bounds,
+                },
+            ]);
+        }
+        operations.push(
             Operation::Compare {
                 destination: condition,
                 operator: ComparisonOperator::LessUnsigned,
                 left: index,
                 right: count,
             },
-        ];
+        );
         if with_guard {
             operations.push(Operation::Guard {
                 condition,
@@ -4853,6 +5187,18 @@ mod tests {
             },
             Operation::Reclaim { object },
         ]);
+        let mut value_types = BTreeMap::from([
+            (count, ValueType::Size),
+            (capacity, ValueType::Size),
+            (index, ValueType::Size),
+            (condition, ValueType::Bool),
+            (object, ValueType::Ref(layout)),
+            (loaded, ValueType::Size),
+            (stored, ValueType::Size),
+        ]);
+        if dynamic_inputs {
+            value_types.insert(allocation_condition, ValueType::Bool);
+        }
 
         CanonicalModule::from_lowering(LoweredModuleParts {
             revision: Revision::new(0),
@@ -4860,29 +5206,39 @@ mod tests {
             layouts,
             signatures: vec![FunctionSignature {
                 id: SIGNATURE,
-                parameters: Vec::new(),
+                parameters: dynamic_inputs.then_some(ValueType::Size).into_iter()
+                    .chain(dynamic_inputs.then_some(ValueType::Size))
+                    .collect(),
                 results: Vec::new(),
-                contract: contract(Vec::new()),
+                contract: CallableContract {
+                    parameters: dynamic_inputs.then_some(ParameterContract {
+                        value_type: ValueType::Size,
+                        ownership: ParameterOwnership::Value,
+                    }).into_iter().chain(dynamic_inputs.then_some(ParameterContract {
+                        value_type: ValueType::Size,
+                        ownership: ParameterOwnership::Value,
+                    })).collect(),
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
             }],
             imports: Vec::new(),
             functions: vec![Function {
                 id: FUNCTION,
                 signature: SIGNATURE,
                 entry: ENTRY,
-                value_types: [
-                    (count, ValueType::Size),
-                    (capacity, ValueType::Size),
-                    (index, ValueType::Size),
-                    (condition, ValueType::Bool),
-                    (object, ValueType::Ref(layout)),
-                    (loaded, ValueType::Size),
-                    (stored, ValueType::Size),
-                ]
-                .into_iter()
-                .collect(),
+                value_types,
                 blocks: vec![BasicBlock {
                     id: ENTRY,
-                    parameters: Vec::new(),
+                    parameters: dynamic_inputs.then_some(BlockParameter {
+                        value: count,
+                        value_type: ValueType::Size,
+                        ownership: None,
+                    }).into_iter().chain(dynamic_inputs.then_some(BlockParameter {
+                        value: index,
+                        value_type: ValueType::Size,
+                        ownership: None,
+                    })).collect(),
                     operations,
                     terminator: Terminator::Return { values: Vec::new() },
                 }],
@@ -4893,13 +5249,14 @@ mod tests {
 
     #[test]
     fn guarded_dynamic_element_load_is_admitted() {
-        assert!(check_initial(dynamic_load_module(true, 1, true)).is_ok());
+        let result = check_initial(dynamic_load_module(true, 1, true, false));
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
     fn uninitialized_scalar_load_is_refused() {
         assert!(matches!(
-            check_initial(dynamic_load_module(true, 1, false)),
+            check_initial(dynamic_load_module(true, 1, false, false)),
             Err(InitialCheckError::UnsupportedMemoryOperation {
                 operation: "Load(uninitialized scalar)", ..
             })
@@ -4909,7 +5266,7 @@ mod tests {
     #[test]
     fn dynamic_element_load_without_guard_is_refused() {
         assert_eq!(
-            check_initial(dynamic_load_module(false, 1, false)).unwrap_err(),
+            check_initial(dynamic_load_module(false, 1, false, true)).unwrap_err(),
             InitialCheckError::MissingBoundsGuard {
                 function: FUNCTION,
                 index: ValueId::new(2),
@@ -4921,7 +5278,7 @@ mod tests {
     #[test]
     fn dynamic_allocation_extent_must_fit_wasm_address_space() {
         assert_eq!(
-            check_initial(dynamic_load_module(true, u64::MAX, true)).unwrap_err(),
+            check_initial(dynamic_load_module(true, u64::MAX, true, false)).unwrap_err(),
             InitialCheckError::UnsupportedScalarOperation {
                 function: FUNCTION,
                 operation: "ConstSize outside Wasm32",
@@ -5740,6 +6097,88 @@ mod tests {
                 operation: "Call(Value memory)",
             }
         );
+    }
+
+    #[test]
+    fn moved_value_alias_parameter_transport_requires_the_complete_contract() {
+        let layout = LayoutId::from_bytes([3; 32]);
+        let other_layout = LayoutId::from_bytes([4; 32]);
+        let moved = CallArgument::Move(VALUE);
+        let value = CallArgument::Value(VALUE);
+        let relay = || FunctionSignature {
+            id: CALLEE_SIGNATURE,
+            parameters: vec![ValueType::Ref(layout)],
+            results: vec![ValueType::Ref(layout)],
+            contract: call_contract(
+                layout,
+                ParameterOwnership::Value,
+                vec![ResultContract::AliasesParameter { parameter: 0, layout }],
+                BTreeMap::from([(
+                    0,
+                    vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
+                )]),
+            ),
+        };
+
+        assert!(super::exact_moved_value_alias_parameter_transport(&moved, &relay()));
+        assert!(!super::exact_moved_value_alias_parameter_transport(&value, &relay()));
+
+        let mut wrong_result_kind = relay();
+        wrong_result_kind.contract.results[0] = ResultContract::Shared { layout };
+        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_result_kind));
+
+        let mut wrong_result_index = relay();
+        wrong_result_index.contract.results[0] = ResultContract::AliasesParameter { parameter: 1, layout };
+        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_result_index));
+
+        let mut wrong_result_layout = relay();
+        wrong_result_layout.results[0] = ValueType::Ref(other_layout);
+        wrong_result_layout.contract.results[0] = ResultContract::AliasesParameter {
+            parameter: 0,
+            layout: other_layout,
+        };
+        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_result_layout));
+
+        let mut wrong_effects = relay();
+        wrong_effects.contract.parameter_effects.insert(0, vec![MemoryEffect::Read]);
+        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &wrong_effects));
+
+        let mut extra_lanes = relay();
+        extra_lanes.parameters.push(ValueType::Ref(layout));
+        extra_lanes.contract.parameters.push(ParameterContract {
+            value_type: ValueType::Ref(layout),
+            ownership: ParameterOwnership::Value,
+        });
+        extra_lanes.results.push(ValueType::Ref(layout));
+        extra_lanes.contract.results.push(ResultContract::AliasesParameter { parameter: 0, layout });
+        assert!(!super::exact_moved_value_alias_parameter_transport(&moved, &extra_lanes));
+
+        let foreign_reference = Function {
+            id: FUNCTION,
+            signature: SIGNATURE,
+            entry: ENTRY,
+            value_types: [
+                (VALUE, ValueType::Ref(other_layout)),
+                (ValueId::new(1), ValueType::Ref(layout)),
+            ]
+            .into_iter()
+            .collect(),
+            blocks: Vec::new(),
+        };
+        assert!(matches!(
+            super::check_call(
+                &foreign_reference,
+                &[ValueId::new(1)],
+                &[CallArgument::Move(VALUE)],
+                &relay(),
+                None,
+            ),
+            Err(InitialCheckError::TypeMismatch { function, value, expected, actual })
+                if function == FUNCTION
+                    && value == VALUE
+                    && expected == ValueType::Ref(layout)
+                    && actual == ValueType::Ref(other_layout)
+        ));
     }
 
     #[test]

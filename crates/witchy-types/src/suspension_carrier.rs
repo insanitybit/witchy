@@ -2834,7 +2834,7 @@ mod tests {
     #[test]
     fn typed_catalog_flattens_owned_scalar_wrappers_and_pins_state_order() {
         let mut module = witchy_syntax::parser::parse_module(
-            "type Id:\n    Id(Int)\n\nfn entry(id: Id, n: Int) -> Nil:\n    ()\n\nfn resume(own id: Id, own n: Int) -> Nil:\n    ()\n",
+            "type Id:\n    Id(Int)\n\nfn entry(id: Id, n: Int) -> ():\n    ()\n\nfn resume(own id: Id, own n: Int) -> ():\n    ()\n",
         )
         .expect("carrier fixture parses");
         let Item::Function(entry) = &mut module.items[1] else {
@@ -2903,7 +2903,7 @@ mod tests {
     #[test]
     fn typed_catalog_flattens_capability_and_sum_resume_lanes() {
         let mut module = witchy_syntax::parser::parse_module(
-            "type Maybe(a):\n    None\n    Some(a)\n\nfn entry(console: Console) -> Nil:\n    ()\n\nfn resume(console: Console, own value: Maybe(Int)) -> Nil:\n    ()\n",
+            "type Maybe(a):\n    None\n    Some(a)\n\nfn entry(console: Console) -> ():\n    ()\n\nfn resume(console: Console, own value: Maybe(Int)) -> ():\n    ()\n",
         )
         .expect("mixed carrier fixture parses");
         let Item::Function(entry) = &mut module.items[1] else {
@@ -2947,7 +2947,7 @@ mod tests {
     #[test]
     fn scalar_executor_qualification_rejects_float_and_unsupported_channel_payloads() {
         let mut float_module =
-            witchy_syntax::parser::parse_module("fn resume(value: Float) -> Nil:\n    ()\n")
+            witchy_syntax::parser::parse_module("fn resume(value: Float) -> ():\n    ()\n")
                 .expect("float fixture parses");
         let Item::Function(float_state) = &mut float_module.items[0] else {
             panic!("float state")
@@ -2970,7 +2970,7 @@ mod tests {
         );
 
         let mut channel_module = witchy_syntax::parser::parse_module(
-            "type Sender(a):\n    Sender(Int)\n\nfn resume(tx: Sender(String)) -> Nil:\n    ()\n",
+            "type Sender(a):\n    Sender(Int)\n\nfn resume(tx: Sender(String)) -> ():\n    ()\n",
         )
         .expect("channel fixture parses");
         let Item::Function(channel_state) = &mut channel_module.items[1] else {
@@ -3003,7 +3003,7 @@ mod tests {
         );
 
         let mut packed_module = witchy_syntax::parser::parse_module(
-            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Pair:\n    Pair(Int, Int)\n\nfn resume(tx: Sender(Pair), rx: Receiver(Pair)) -> Nil:\n    ()\n",
+            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Pair:\n    Pair(Int, Int)\n\nfn resume(tx: Sender(Pair), rx: Receiver(Pair)) -> ():\n    ()\n",
         )
         .expect("packed endpoint fixture parses");
         let Item::Function(packed_state) = &mut packed_module.items[3] else {
@@ -3031,7 +3031,7 @@ mod tests {
     #[test]
     fn ready_channel_region_rejects_erased_payloads_and_dynamic_operations() {
         let mut module = witchy_syntax::parser::parse_module(
-            "type Sender(a):\n    Sender(Int)\n\nfn state(tx: Sender(List(Int))) -> Nil:\n    ()\n",
+            "type Sender(a):\n    Sender(Int)\n\nfn state(tx: Sender(List(Int))) -> ():\n    ()\n",
         )
         .expect("boxed endpoint fixture parses");
         let Item::Function(state) = &mut module.items[1] else {
@@ -3075,7 +3075,7 @@ mod tests {
     #[test]
     fn typed_channel_plans_preserve_endpoint_direction_and_buffer_root_identity() {
         let mut module = witchy_syntax::parser::parse_module(
-            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Packet:\n    Packet(Int, Bool)\n\nfn state(tx: Sender(String), rx: Receiver(Bytes), ints: Receiver(Int), packets: Receiver(Packet)) -> Nil:\n    ()\n",
+            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\ntype Packet:\n    Packet(Int, Bool)\n\nfn state(tx: Sender(String), rx: Receiver(Bytes), ints: Receiver(Int), packets: Receiver(Packet)) -> ():\n    ()\n",
         )
         .expect("channel plan fixture parses");
         let Item::Function(state) = &mut module.items[3] else {
@@ -3141,7 +3141,7 @@ mod tests {
     #[test]
     fn typed_channel_plans_preserve_tuple_carrier_endpoint_lanes() {
         let mut module = witchy_syntax::parser::parse_module(
-            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\nfn state(pair: (Sender(Int), Receiver(Int))) -> Nil:\n    ()\n",
+            "type Sender(a):\n    Sender(Int)\n\ntype Receiver(a):\n    Receiver(Int)\n\nfn state(pair: (Sender(Int), Receiver(Int))) -> ():\n    ()\n",
         )
         .expect("tuple channel plan fixture parses");
         let Item::Function(state) = &mut module.items[2] else {
@@ -3184,7 +3184,7 @@ mod tests {
     #[test]
     fn scalar_transition_plan_unwraps_lazy_and_then_effect_edges() {
         let module = witchy_syntax::parser::parse_module(
-            "fn state() -> Nil:\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.send__Int(tx, value), fn(ignored): resume()))\n",
+            "fn state() -> ():\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.send__Int(tx, value), fn(ignored): resume()))\n",
         )
         .expect("transition fixture parses");
         let table = TypeTable::default();
@@ -3209,7 +3209,7 @@ mod tests {
     #[test]
     fn scalar_receive_transition_maps_a_direct_continuation_argument() {
         let module = witchy_syntax::parser::parse_module(
-            "fn state() -> Nil:\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.recv__Int(rx), fn(value): resume(value)))\n",
+            "fn state() -> ():\n    task.lazy__Nil(fn(): task.and_then__Int__Nil(chan.recv__Int(rx), fn(value): resume(value)))\n",
         )
         .expect("receive transition fixture parses");
         let Item::Function(function) = &module.items[0] else {

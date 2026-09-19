@@ -313,7 +313,7 @@ impl TypedAsyncLoweringInput {
             }
             let unit_terminal = matches!(operation.runtime_kind, TypedAsyncOperationKind::Yield | TypedAsyncOperationKind::Return)
                 && operation.operand_bindings.is_empty()
-                && operation.operand_type == Some(Type::Named("Nil".into(), Vec::new()));
+                && matches!(operation.operand_type.as_ref(), Some(Type::Tuple(items)) if items.is_empty());
             if operation.runtime_kind == TypedAsyncOperationKind::Return
                 && (!operation.operand_bindings.is_empty() || operation.operand_type.is_some())
                 && !unit_terminal
@@ -1623,7 +1623,7 @@ mod tests {
 
     #[test]
     fn queue_aware_producer_lowers_select_into_continuation_capture() {
-        let module = witchy_syntax::parser::parse_module("from chan import Receiver, Selected\n\nasync fn choose(first: Receiver(Int), second: Receiver(Int)) -> Nil:\n    let selected = chan.select(first, second).await\n    return\n\nfn main():\n    ()\n").expect("parse source");
+        let module = witchy_syntax::parser::parse_module("from chan import Receiver, Selected\n\nasync fn choose(first: Receiver(Int), second: Receiver(Int)) -> ():\n    let selected = chan.select(first, second).await\n    return\n\nfn main():\n    ()\n").expect("parse source");
         let checked = link_checked(vec![("main".to_string(), module)], "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default())).expect("checked source");
         let mut input = checked.typed_async_lowering_input().expect("typed lowering input");
         let select = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::ChannelSelect).expect("select operation");
@@ -1723,7 +1723,7 @@ mod tests {
         ).expect("checked source");
         let input = checked.typed_async_lowering_input().expect("typed lowering input");
         let yield_operation = input.operations.iter().find(|operation| operation.runtime_kind == TypedAsyncOperationKind::Yield).expect("yield operation");
-        assert_eq!(yield_operation.operand_type, Some(Type::Named("Nil".into(), Vec::new())));
+        assert_eq!(yield_operation.operand_type, Some(Type::Tuple(Vec::new())));
         let execution = input.into_linear_execution(ExecutionShapeId(0), [5; 32]).expect("unit yield is executable");
         assert_eq!(execution.execution.operations.len(), 1);
         assert_eq!(execution.execution.operations[0].kind, ExecutionOperation::Yield);

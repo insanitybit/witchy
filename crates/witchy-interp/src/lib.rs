@@ -1,14 +1,14 @@
-//! `witchy-interp` — the reference interpreter (the parity oracle) and the
-//! compile-time evaluator.
+//! `witchy-interp` — frozen source-tree evaluator and temporary compiler
+//! services.
 //!
-//! `interpreter` is the tree-walking evaluator the differential tests run
-//! alongside the compiled path — keeping it a separate implementation is what
-//! lets the parity diff catch lowering bugs. `comptime` + `tagged` evaluate
-//! `comptime:` blocks and `tag"…"` literals at compile time (on the interpreter),
-//! and `pipeline` wires the compile-time expander into the linker (RFC-0018
-//! dependency inversion). These four are mutually recursive — one crate, one
-//! intra-crate cycle. Wasm-safe: this is the playground's run path, not the
-//! native wasmtime sandbox.
+//! RFC-0167 freezes `interpreter`: it is not a production runtime, semantic
+//! oracle, or destination for new language features. Executable acceptance is
+//! independent expectation -> canonical SafeWIR interpreter -> admitted Wasm.
+//! `comptime` + `tagged` temporarily continue to evaluate `comptime:` blocks
+//! and `tag"…"` literals here, while `pipeline` still wires expansion into the
+//! linker. Those services must migrate to canonical execution or a
+//! runtime-neutral crate. The playground must migrate from this tree walker to
+//! compiled admitted Wasm before the crate can be removed.
 
 // Match the project-wide lint policy (root `src/lib.rs`).
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]

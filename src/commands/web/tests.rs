@@ -223,6 +223,30 @@
     }
 
     #[test]
+    fn static_evaluation_recipe_rewrites_before_authenticated_linking() {
+        let root = temp_path("static-evaluation-recipe");
+        let files = starter_files("static-evaluation-recipe", "static_evaluation_recipe");
+        create_project_atomically(&root, &files).expect("create static project");
+        let entry = root.join("src/static_evaluation_recipe.witchy");
+        let (recipe, _) = crate::link_static_evaluation_file(
+            entry.to_str().expect("UTF-8 static entry"),
+        ).expect("source-owned static evaluation recipe");
+        let source = recipe.canonical_source();
+        let mut rewritten = 0;
+        witchy_syntax::ast::visit::visit_module_exprs::<()>(
+            source.typed_module().module(),
+            &mut |expression| {
+                if matches!(expression, witchy_syntax::ast::Expr::Call { name, .. }
+                    if matches!(name.as_str(), "glamour.interactive_with_origin" | "glamour.client_region_with_origin"))
+                { rewritten += 1; }
+                Ok(())
+            },
+        ).expect("walk typed static recipe");
+        assert_eq!(rewritten, 1);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn legacy_client_fixture_is_complete_and_deterministic() {
         let root = temp_path("starter");
         let files = client_fixture_files("web-check", "web_check");
@@ -989,25 +1013,25 @@ pub fn web() -> Site:
 type Msg:
     Increment
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn render(model: Int) -> Ui(Msg):
     glamour.ui(glamour.element("button", [glamour.on_event("counter.increment", "click", glamour.event_msg(Increment))], [glamour.text("${model}")]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, render, subscriptions)
 
 fn static_view(model: Int) -> Ui(Msg):
@@ -1053,51 +1077,51 @@ pub fn web() -> Site:
 type Msg:
     Tick
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn render(model: Int) -> Ui(Msg):
     var attrs = [glamour.attribute("title", "title-${model}"), glamour.boolean_attribute("hidden", model == 0), glamour.property("value", "property-${model}"), glamour.static_url_attribute("href", "/${model}"), glamour.static_class_attribute(["item-${model}"]), glamour.aria_attribute("aria-label", "label-${model}"), glamour.prop("data-value", "compat-${model}")]
     match glamour.css_length_property("gap"):
-        Err(_) -> Nil
+        Err(_) -> ()
         Ok(gap) ->
             match glamour.css_px(model):
-                Err(_) -> Nil
+                Err(_) -> ()
                 Ok(gap_value) ->
                     match glamour.css_percentage_property("position"):
-                        Err(_) -> Nil
+                        Err(_) -> ()
                         Ok(position) ->
                             match glamour.css_percent(model):
-                                Err(_) -> Nil
+                                Err(_) -> ()
                                 Ok(position_value) ->
                                     match glamour.css_angle_property("turn"):
-                                        Err(_) -> Nil
+                                        Err(_) -> ()
                                         Ok(turn) ->
                                             match glamour.css_deg(model):
-                                                Err(_) -> Nil
+                                                Err(_) -> ()
                                                 Ok(turn_value) ->
                                                     match glamour.css_time_property("delay"):
-                                                        Err(_) -> Nil
+                                                        Err(_) -> ()
                                                         Ok(delay) ->
                                                             match glamour.css_ms(model):
-                                                                Err(_) -> Nil
+                                                                Err(_) -> ()
                                                                 Ok(delay_value) -> attrs.push(glamour.css_custom_properties([glamour.css_assign(gap, gap_value), glamour.css_assign(position, position_value), glamour.css_assign(turn, turn_value), glamour.css_assign(delay, delay_value)]))
     let item = glamour.element("a", attrs, [glamour.text("text-${model}")])
     glamour.ui(glamour.element("div", [], [glamour.keyed("item", item)]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, render, subscriptions)
 
 fn static_view(model: Int) -> Ui(Msg):
@@ -1180,25 +1204,25 @@ pub fn web() -> Site:
 type Msg:
     Tick
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn render(_model: Int) -> Ui(Msg):
     glamour.ui(glamour.element("div", [], [STRUCTURAL_NODE]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, render, subscriptions)
 
 fn static_view(model: Int) -> Ui(Msg):
@@ -1574,10 +1598,10 @@ fn home(styles: CssSheet) -> glamour.Ui(Message):
         glamour.class_attribute(glamour.classes(["card"])),
     ]
     match glamour.css_color_property("accent"):
-        Err(_) -> Nil
+        Err(_) -> ()
         Ok(accent) ->
             match glamour.css_color("#663399"):
-                Err(_) -> Nil
+                Err(_) -> ()
                 Ok(color) -> attrs.push(glamour.css_custom_properties([glamour.css_assign(accent, color)]))
     glamour.ui(glamour.element("main", attrs, [
         glamour.element("form", glamour.form_attributes(signup()), [
@@ -4084,25 +4108,25 @@ type Msg derive(Reflect):
 type Model derive(PublicState, Reflect, Deserialize):
     count: Int
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Model:
     Model(0)
 
-fn start(_auth: Nil, _model: Model) -> Cmd(Msg):
+fn start(_auth: (), _model: Model) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Model, _message: Msg) -> (Model, Cmd(Msg)):
+fn update(_auth: (), model: Model, _message: Msg) -> (Model, Cmd(Msg)):
     (Model(model.count + 1), NoCmd)
 
 fn render(model: Model) -> Ui(Msg):
     glamour.ui(glamour.element("button", [glamour.on_event("counter.increment", "click", glamour.event_msg(Increment))], [glamour.text("${model.count}")]))
 
-fn subscriptions(_auth: Nil, _model: Model) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Model) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Model, Msg):
+fn app() -> Program((), Model, Msg):
     glamour.program(authorize, initial, start, update, render, subscriptions)
 
 fn static_view(model: Model) -> Ui(Msg):
@@ -4199,25 +4223,25 @@ from glamour import Cmd, MediaQuery, Program, Site, Start, Sub, Ui, UiRoot
 type Msg derive(Reflect):
     Increment
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn view(model: Int) -> Ui(Msg):
     glamour.ui(glamour.element("div", [], [glamour.element("a", [glamour.static_url_attribute("href", "/next"), glamour.on_event("counter.increment", "click", glamour.prevent_default(glamour.event_msg(Increment)))], [glamour.text("${model}")]), glamour.element("form", [glamour.static_url_attribute("action", "/save"), glamour.attribute("method", "post"), glamour.on_event("counter.submit", "submit", glamour.prevent_default(glamour.event_msg(Increment)))], [glamour.element("button", [glamour.attribute("type", "submit")], [glamour.text("Save")])])]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, view, subscriptions)
 
 fn wide() -> MediaQuery:
@@ -4374,28 +4398,28 @@ pub fn web() -> Site:
 type Msg:
     Activated
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(start: Start) -> Int:
     match start:
         Start("/", "") -> 42
         _ -> 0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn view(model: Int) -> Ui(Msg):
     let root_events = if model % 2 == 0: [glamour.on_event("editor.optional", "keydown", glamour.event_msg(Activated))] else: []
     glamour.ui(glamour.element("div", root_events, [glamour.element("button", [glamour.on_event("editor.activated", "click", glamour.event_msg(Activated))], [glamour.text("Toggle-${model}")]), glamour.branch("editor-details", model > 42, glamour.element("button", [glamour.on_event("editor.details", "click", glamour.event_msg(Activated))], [glamour.text("Detail-${model}")]))]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     NoSub
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, view, subscriptions)
 
 fn fallback() -> StaticUi:
@@ -4606,7 +4630,7 @@ pub fn web() -> Site:
         let original = std::fs::read_to_string(&source_path).expect("read client-region source");
         let eventful = original.replace(
             "glamour.static_ui(html\"<p>Editor loads on demand</p>\")",
-            "glamour.static_ui(html\"<button on:click=${Nil}>Editor</button>\")",
+            "glamour.static_ui(html\"<button on:click=${()}>Editor</button>\")",
         );
         std::fs::write(&source_path, eventful).expect("write eventful StaticUi fixture");
         let error = check_static_project(load_project(&root).expect("project"))
@@ -4659,43 +4683,43 @@ from glamour import Cmd, Program, Site, Start, Sub, Ui, UiRoot
 type Msg derive(Reflect):
     Changed
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn int_initial(_start: Start) -> Int:
     0
 
-fn int_start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn int_start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn int_update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn int_update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn int_view(model: Int) -> Ui(Msg):
     glamour.ui(glamour.text("${model}"))
 
-fn int_subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn int_subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn int_app() -> Program(Nil, Int, Msg):
+fn int_app() -> Program((), Int, Msg):
     glamour.program(authorize, int_initial, int_start, int_update, int_view, int_subscriptions)
 
 fn string_initial(_start: Start) -> String:
     ""
 
-fn string_start(_auth: Nil, _model: String) -> Cmd(Msg):
+fn string_start(_auth: (), _model: String) -> Cmd(Msg):
     NoCmd
 
-fn string_update(_auth: Nil, model: String, _message: Msg) -> (String, Cmd(Msg)):
+fn string_update(_auth: (), model: String, _message: Msg) -> (String, Cmd(Msg)):
     (model + "!", NoCmd)
 
 fn string_view(model: String) -> Ui(Msg):
     glamour.ui(glamour.text(model))
 
-fn string_subscriptions(_auth: Nil, _model: String) -> Sub(Msg):
+fn string_subscriptions(_auth: (), _model: String) -> Sub(Msg):
     glamour.no_sub()
 
-fn string_app() -> Program(Nil, String, Msg):
+fn string_app() -> Program((), String, Msg):
     glamour.program(authorize, string_initial, string_start, string_update, string_view, string_subscriptions)
 
 pub fn web() -> Site:
@@ -4769,7 +4793,7 @@ pub fn web() -> Site:
                 "pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:\n    state",
                 "pub fn glamour_dispatch(_state: BrowserState, _input: Bytes) -> BrowserState:\n    BrowserState(8, 2.5, false)",
             )
-            .replace("BrowserState(_) -> Nil", "BrowserState(_, _, _) -> Nil");
+            .replace("BrowserState(_) -> ()", "BrowserState(_, _, _) -> ()");
         create_project_atomically(&root, &files).expect("create");
         let checked = check_project_development(&root).expect("development check");
         let metadata = checked.development.as_ref().expect("scalar metadata");
@@ -4983,7 +5007,7 @@ pub fn web() -> Site:
                 "pub fn glamour_dispatch(state: BrowserState, _input: Bytes) -> BrowserState:\n    state",
                 "pub fn glamour_dispatch(_state: BrowserState, _input: Bytes) -> BrowserState:\n    BrowserState(\"changed\", [\"stable\"])",
             )
-            .replace("BrowserState(_) -> Nil", "BrowserState(_, _) -> Nil");
+            .replace("BrowserState(_) -> ()", "BrowserState(_, _) -> ()");
         std::fs::write(&source, aggregate).expect("aggregate source");
         let checked = check_project_development(&root).expect("development check");
         let metadata = checked.development.as_ref().expect("aggregate metadata");
@@ -5208,7 +5232,7 @@ pub fn web() -> Site:
                 "BrowserState(true)",
                 "BrowserState(\"before\", [\"migration\"])",
             )
-            .replace("BrowserState(_) -> Nil", "BrowserState(_, _) -> Nil");
+            .replace("BrowserState(_) -> ()", "BrowserState(_, _) -> ()");
         std::fs::write(&source_path, &old_source).expect("old source");
         let old_checked = check_project_development(&root).expect("old development build");
         let old_schema = old_checked
@@ -5306,8 +5330,8 @@ pub fn web() -> Site:
                 "pub fn glamour_emit(_state: NextState) -> Bytes:",
             )
             .replace(
-                "pub fn glamour_release(own state: BrowserState):\n    match state:\n        BrowserState(_, _) -> Nil",
-                "pub fn glamour_release(own state: NextState):\n    match state:\n        NextState(_, _, _) -> Nil",
+                "pub fn glamour_release(own state: BrowserState):\n    match state:\n        BrowserState(_, _) -> ()",
+                "pub fn glamour_release(own state: NextState):\n    match state:\n        NextState(_, _, _) -> ()",
             )
             + "\nfn glamour_migrate(previous: BrowserState) -> NextState:\n    match previous:\n        BrowserState(name, items) -> NextState(name, items, 7)\n";
         std::fs::write(&source_path, new_source).expect("new source");
@@ -5715,16 +5739,16 @@ from glamour import Cmd, FrameEvent, Program, Site, Start, Sub, Ui, UiRoot
 type Msg derive(Reflect):
     Activated(FrameEvent)
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, message: Msg) -> (Int, Cmd(Msg)):
     match message:
         Activated(event) ->
             match event:
@@ -5733,10 +5757,10 @@ fn update(_auth: Nil, model: Int, message: Msg) -> (Int, Cmd(Msg)):
 fn render(model: Int) -> Ui(Msg):
     glamour.ui(glamour.frame(glamour.document_renderer(), glamour.frame_text("Document ${model}"), glamour.static_ui(html"<p>Document unavailable</p>"), "document.activate", fn(event: FrameEvent): Activated(event)))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     glamour.no_sub()
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, render, subscriptions)
 
 pub fn web() -> Site:

@@ -115,9 +115,11 @@ identical setup. Output must remain correct, and this tuple must be equal:
  rc_free_calls, region_rewind_calls)
 ```
 
-The interpreter remains the value-semantics oracle; its Rust representation is
-not the resource oracle. Resource claims come from the compiled module's
-counters and structural lowering checks.
+Independent expected values are the semantic reference. The canonical SafeWIR
+interpreter is the executable oracle used to check those expectations before an
+admitted Wasm module is checked for the same result. The retired source tree
+walker is not an oracle. Resource claims come from the compiled module's counters
+and structural lowering checks.
 
 ## Relationship to other ownership features
 

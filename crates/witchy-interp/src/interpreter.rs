@@ -1,17 +1,16 @@
-//! Tree-walking evaluator for witchy — the **reference oracle**.
+//! Frozen source-tree evaluator for temporary compiler services.
 //!
 //! User programs run on the compiled (WASM) backend: `witchy run`, `witchy
 //! sandbox`, build steps, and the browser playground all go through `codegen`.
-//! This evaluator's job is to *define* the semantics the compiled backend is
-//! checked against — it is the independent implementation `witchy parity` and the
-//! differential test suite diff the compiler against. It is reached at runtime
-//! only as: the parity oracle and the differential test runner, the `comptime`
-//! evaluator (compile-time blocks, zero capabilities), the capability-sound
+//! It is not a production runtime or semantic oracle. Executable acceptance is
+//! independent expectation -> canonical SafeWIR interpreter -> admitted Wasm.
+//! The source evaluator is reached only for temporary compatibility: `comptime`
+//! evaluation (compile-time blocks, zero capabilities), capability-sound
 //! executor for *effectful* build steps (BuildExec/BuildNet/BuildEnv, whose
 //! host-side I/O the WASM boundary can't sandbox — the grant allow-list is the
 //! confinement), and the `witchy demo` showcase. Its `Dir`/`Net` path-confinement
-//! logic is also reused by the sandbox, so it stays even as the evaluator role
-//! shrinks. See `rfcs/oracle-only-migration.md`.
+//! logic is also reused by the sandbox, so it remains until those services move
+//! to canonical execution or a neutral crate. See `rfcs/oracle-only-migration.md`.
 
 // `Result<Value, Flow>` threads control flow (early `return`, `break`,
 // `continue`) — not just errors — through evaluation, so the `Flow::Return(Value)`
@@ -99,11 +98,12 @@ use capability_values::{
 mod reflection;
 use reflection::{
     compiler_binding_ident_name, compiler_block_syntax_value, compiler_ctor_tail,
+    compiler_definition_ident_name,
     compiler_direct_hole_origins, compiler_expr_syntax_value, compiler_function_conventions,
     compiler_expr_leaf, compiler_ident_name, compiler_item_hole_origins, compiler_item_holes,
     compiler_match_arms, compiler_optional_expr_syntax_value,
     compiler_optional_type_syntax_value, compiler_params, compiler_pattern_holes,
-    compiler_pattern_leaf, compiler_pattern_syntax_value, compiler_reflected_type,
+    compiler_owned_expr_syntax_value, compiler_pattern_leaf, compiler_pattern_syntax_value, compiler_reflected_type,
     compiler_stmt_leaf, compiler_stmt_syntax_value,
     compiler_type_holes, compiler_type_syntax_value,
 };
@@ -505,6 +505,7 @@ fn closure_function(owner: String, params: Vec<Param>, body: Block) -> Rc<Functi
         comptime_only: false,
         attributes: Vec::new(),
         name: owner,
+        type_params: Vec::new(),
         params,
         ret: None,
         body,
@@ -671,6 +672,9 @@ pub struct Interpreter {
     /// Module names that dynamic generated expressions may use as qualifiers.
     /// Populated only for tagged-literal compile-time evaluation.
     compiler_expr_qualifiers: Option<Vec<String>>,
+    /// Exact opaque sentinels issued for the active tagged literal. Structural
+    /// tag-hole construction may use one of these, never an arbitrary name.
+    compiler_tag_hole_markers: Option<Vec<String>>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
     compiler_match_arm_syntax: HashMap<String, MatchArm>,
@@ -930,6 +934,7 @@ impl Interpreter {
             compiler_item_modules: HashMap::new(),
             compiler_expr_syntax,
             compiler_expr_qualifiers: None,
+            compiler_tag_hole_markers: None,
             compiler_type_syntax,
             compiler_pattern_syntax,
             compiler_match_arm_syntax: HashMap::new(),
@@ -2036,6 +2041,9 @@ impl Interpreter {
                 Ok(Value::list(vals))
             }
             Expr::Tuple(items) => {
+                if items.is_empty() {
+                    return Ok(Value::Unit);
+                }
                 let vals = items
                     .iter()
                     .map(|e| self.eval(e, env))

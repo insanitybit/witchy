@@ -48,9 +48,9 @@ pub fn check_integration_test_driver(
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
     let template = if asynchronous {
-        "fn main() -> Nil:\n    task.run(Nil)\n"
+        "fn main() -> ():\n    task.run(())\n"
     } else {
-        "fn main() -> Nil:\n    Nil\n"
+        "fn main() -> ():\n    ()\n"
     };
     let mut generated = witchy_syntax::parser::parse_module(template)
         .map_err(|error| refused(format!("invalid compiler integration recipe: {error}")))?;
@@ -115,7 +115,7 @@ pub fn check_integration_test_driver(
             return Err(refused("integration recipe requires exact checked Console, Dir or Net parameters; data, records and other capabilities are unsupported"));
         }
     }
-    let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest)?;
+    let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest, PrecompiledDeclarationEnvironment::default())?;
     let runtime_catalog = Some(checked.runtime_declaration_catalog()?);
     let canonical_source = checked.canonical_source.take()
         .ok_or_else(|| refused("integration recipe canonical source missing"))?;

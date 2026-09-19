@@ -12,10 +12,21 @@ pub(super) fn check_imports(
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
     catalog: Option<&CanonicalAbiCatalog>,
 ) -> Result<(), InitialCheckError> {
-    if !imports.is_empty() && catalog.is_none() {
+    if imports
+        .values()
+        .any(|import| matches!(import.abi_identity, ImportContractIdentity::AuthenticatedAbi(_)))
+        && catalog.is_none()
+    {
         return Err(InitialCheckError::MissingCanonicalAbiCatalog);
     }
     for import in imports.values() {
+        // An authenticated external Wasm export is deliberately not a host
+        // import.  Its independent scalar-only contract is checked at the
+        // `ExternalCall` site; admitting it through the host catalog would
+        // turn a package artifact into ambient host authority.
+        if matches!(import.abi_identity, ImportContractIdentity::AuthenticatedExternal(_)) {
+            continue;
+        }
         let Some(catalog) = catalog else { continue };
         let expected = catalog.imports.get(&import.id).ok_or(
             InitialCheckError::InvalidCanonicalAbiContract { import: import.id },

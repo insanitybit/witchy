@@ -4,26 +4,23 @@
 
 use crate::commands::execution::run_checked_test_driver_compiled;
 use crate::{
-    ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
+    ast, codegen, enforce_performance_modes, is_entry_function,
     link_test_file, parser, run_admitted_test_artifact, runtime, typeck,
 };
-use witchy_testkit::{FixturePlan, TestResult, TestTranscript};
+use witchy_testkit::{FixturePlan, TestTranscript};
 
-/// Run a program on BOTH backends — the tree-walking interpreter and compiled
-/// WebAssembly — and confirm they produce identical output. Witchy's
-/// dual-backend equivalence is normally an internal test invariant; `witchy
-/// verify` surfaces it as a guarantee you can check on your own code.
+/// Run tests through the admitted compiled-Wasm production runtime. Canonical
+/// SafeWIR interpretation remains an acceptance oracle, not a second installed
+/// source-language backend.
 /// A failed in-language test: its (qualified) name and the abort message.
 pub(crate) type TestFailure = (String, String);
 
 pub(crate) const TEST_USAGE: &str =
-    "usage: witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
+    "usage: witchy test [--fixtures <plan.json>] [--backend wasm] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TestBackend {
-    Interpreter,
     Wasm,
-    Both,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,14 +96,17 @@ impl TestOptions {
                 "--backend" => {
                     let value = args
                         .next()
-                        .ok_or_else(|| "`--backend` requires interpreter, wasm, or both".to_string())?;
+                        .ok_or_else(|| "`--backend` requires wasm".to_string())?;
                     let parsed = match value.as_str() {
-                        "interpreter" => TestBackend::Interpreter,
                         "wasm" => TestBackend::Wasm,
-                        "both" => TestBackend::Both,
+                        "interpreter" | "both" => {
+                            return Err(format!(
+                                "test backend `{value}` was retired: checked admitted Wasm is the sole production runtime; use `witchy parity` for canonical SafeWIR oracle comparison"
+                            ));
+                        }
                         _ => {
                             return Err(format!(
-                                "unknown test backend `{value}`; expected interpreter, wasm, or both"
+                                "unknown test backend `{value}`; expected wasm"
                             ));
                         }
                     };
@@ -194,11 +194,7 @@ impl TestOptions {
         if list && show_output {
             return Err("`--list` cannot be combined with `--show-output`".to_string());
         }
-        let backend = backend.unwrap_or(if fixture_path.is_some() {
-            TestBackend::Both
-        } else {
-            TestBackend::Wasm
-        });
+        let backend = backend.unwrap_or(TestBackend::Wasm);
         Ok(Self {
             path,
             integration,
@@ -585,32 +581,6 @@ struct FixtureBackendOutcome {
     transcript: TestTranscript,
 }
 
-fn run_interpreter_fixtures(
-    checked: &witchy_types::pipeline::CheckedTestDriverModule,
-    plan: &FixturePlan,
-) -> Result<FixtureBackendOutcome, String> {
-    let outcome = interpreter::run_checked_test_driver_fixtures(checked, plan.clone())
-        .map_err(|error| error.to_string())?;
-    let output = match outcome.result {
-        interpreter::FixtureProgramResult::Passed { output, .. }
-        | interpreter::FixtureProgramResult::Failed { output, .. } => output,
-    };
-    // A normal guest return is not a passed fixture: finalization also checks
-    // required script steps, call counts, ordering and absence obligations.
-    let (passed, error) = match &outcome.transcript.result {
-        TestResult::Passed => (true, None),
-        TestResult::Failed { message } | TestResult::InfrastructureError { message } => {
-            (false, Some(message.clone()))
-        }
-    };
-    Ok(FixtureBackendOutcome {
-        passed,
-        output,
-        error,
-        transcript: outcome.transcript,
-    })
-}
-
 fn run_wasm_fixtures(
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     plan: &FixturePlan,
@@ -631,43 +601,20 @@ fn run_wasm_fixtures(
     })
 }
 
-fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool {
-    left == right
-}
-
 fn run_fixture_test(
     checked: &witchy_types::pipeline::CheckedTestDriverModule,
     plan: &FixturePlan,
     backend: TestBackend,
 ) -> Result<FixtureBackendOutcome, String> {
-    // Admission precedes either execution leg. An interpreter-only selection
-    // cannot silently execute an unsupported fixture recipe or operation.
+    // Admission precedes execution, so an unsupported fixture recipe or
+    // operation cannot silently reach the production runtime.
     let artifact = match codegen::compile_checked_test_driver_artifact(checked) {
         codegen::LoweringOutcome::Lowered(artifact) => artifact,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
     };
     match backend {
-
-        TestBackend::Interpreter => run_interpreter_fixtures(checked, plan),
         TestBackend::Wasm => run_wasm_fixtures(&artifact, plan),
-        TestBackend::Both => {
-            let interpreted = run_interpreter_fixtures(checked, plan)?;
-            let compiled = run_wasm_fixtures(&artifact, plan)?;
-            if interpreted.passed != compiled.passed
-                || interpreted.output != compiled.output
-                || !same_fixture_evidence(&interpreted.transcript, &compiled.transcript)
-            {
-                return Err(format!(
-                    "fixture backend divergence\ninterpreter: output={:?}, transcript={:?}\nwasm: output={:?}, transcript={:?}",
-                    interpreted.output,
-                    interpreted.transcript,
-                    compiled.output,
-                    compiled.transcript
-                ));
-            }
-            Ok(compiled)
-        }
     }
 }
 
@@ -739,7 +686,7 @@ fn run_tests_in_module(
         // CALLED — calling an `async fn` yields a `Task` and a `gen fn` yields an
         // iterator, both discarded, so a `fail_with` inside never fires and the test
         // FALSELY passes. An `async fn test_*()` is already lowered (when the file was
-        // linked) to a `Task(Nil)`-returning function, so DRIVE it to completion with
+        // linked) to a `Task(())`-returning function, so DRIVE it to completion with
         // `task.run` — which surfaces the abort. A `gen fn` yields a sequence rather
         // than running to completion, so it cannot be a test; report it as a failure
         // rather than a silent pass.
@@ -1012,18 +959,30 @@ mod test_mode_link_tests {
     }
 
     #[test]
-    fn fixture_options_default_to_backend_parity_and_reject_real_grants() {
+    fn fixture_options_default_to_admitted_wasm_and_reject_retired_backends_and_real_grants() {
         let options = TestOptions::parse([
             "--fixtures".to_string(),
             "plan.json".to_string(),
             "suite.witchy".to_string(),
         ])
         .expect("fixture options");
-        assert_eq!(options.backend, TestBackend::Both);
+        assert_eq!(options.backend, TestBackend::Wasm);
         assert_eq!(
             options.fixture_path.as_deref(),
             Some(std::path::Path::new("plan.json"))
         );
+        for retired in ["interpreter", "both"] {
+            let error = TestOptions::parse([
+                "--fixtures".to_string(),
+                "plan.json".to_string(),
+                "--backend".to_string(),
+                retired.to_string(),
+                "suite.witchy".to_string(),
+            ])
+            .expect_err("the source-language test backend is retired");
+            assert!(error.contains("sole production runtime"), "{error}");
+            assert!(error.contains("witchy parity"), "{error}");
+        }
         let error = TestOptions::parse([
             "--fixtures".to_string(),
             "plan.json".to_string(),
@@ -1035,7 +994,7 @@ mod test_mode_link_tests {
     }
 
     #[test]
-    fn fixture_test_runs_real_witchy_source_with_identical_backend_evidence() {
+    fn fixture_test_runs_real_witchy_source_on_admitted_wasm() {
         let dir = unique_dir("fixture_backend_parity");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1064,12 +1023,12 @@ mod test_mode_link_tests {
                 fixture_record_authority: true,
                 grants: &grants,
                 fixture_plan: Some(&plan),
-                backend: TestBackend::Both,
+                backend: TestBackend::Wasm,
                 filter: None,
                 list: false,
             },
         )
-        .expect("fixture parity run");
+        .expect("admitted fixture run");
         assert!(result.failed.is_empty(), "{:?}", result.failed);
         assert_eq!(result.passed, vec!["suite.test_console".to_string()]);
         let transcript = result
@@ -1082,7 +1041,7 @@ mod test_mode_link_tests {
     }
 
     #[test]
-    fn fixture_test_assembles_owned_capability_record_on_both_backends() {
+    fn fixture_test_assembles_owned_capability_record_on_admitted_wasm() {
         let dir = unique_dir("fixture_capability_record");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1115,7 +1074,7 @@ mod test_mode_link_tests {
                 fixture_record_authority: true,
                 grants: &grants,
                 fixture_plan: Some(&plan),
-                backend: TestBackend::Both,
+                backend: TestBackend::Wasm,
                 filter: None,
                 list: false,
             },
@@ -1138,7 +1097,7 @@ mod test_mode_link_tests {
                 fixture_record_authority: false,
                 grants: &grants,
                 fixture_plan: Some(&plan),
-                backend: TestBackend::Both,
+                backend: TestBackend::Wasm,
                 filter: None,
                 list: false,
             },

@@ -20,11 +20,15 @@ mod canonical_render;
 pub mod canonical_worker;
 mod canonical_messages;
 pub mod async_program;
+pub mod async_readiness;
 pub mod async_migration;
 pub mod async_control_flow;
 pub mod loans;
 pub mod existential;
 pub mod migration;
+pub mod opt_callable_export;
+pub mod optimization_readiness;
+pub mod precompiled_declarations;
 mod record_projection;
 pub mod pipeline;
 pub mod runtime_type;
@@ -35,6 +39,9 @@ pub mod typed_execution;
 pub mod typed_async_lowering;
 pub mod typeck;
 pub mod witness;
+pub mod views;
 
 #[cfg(test)]
 mod access_tests;
+#[cfg(test)]
+mod views_tests;

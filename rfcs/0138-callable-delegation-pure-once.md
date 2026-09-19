@@ -14,6 +14,15 @@ related:
 
 # RFC-0138: Callable delegation, pure functions, and single-use closures
 
+> 2026-09-16 scoped supersession: [RFC-0167 sections 3 and 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension)
+> replace the initial restrictions below. Droppable affine captures are admitted
+> by `once`, never by reusable callables; `must` captures remain forbidden in
+> opaque callable types. Default affine inputs transfer rather than copy, without
+> a universal extra `move` requirement. `pure` excludes caller-visible writes
+> through references as well as `var` write-back and authority effects. Unit is
+> `()`. Delegated authority, exact callable identity, and all historical evidence
+> remain; the old blanket affine-capture ban is not the selected language rule.
+
 ## Summary
 
 An ordinary closure is an opaque delegated capability. A caller that hands a

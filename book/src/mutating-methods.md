@@ -90,5 +90,5 @@ one owner, it moves the old leaf out and repairs that storage directly;
 `List.pop` is O(1) in the same case. If a live alias exists, normal mode copies
 the container first so the alias keeps its old value. The behavior is identical;
 only the ownership-dependent cost differs. In `mode opt`, these three receivers
-carry a `unique` contract: an alias or active borrowed view is a compile error
+carry a `unique` contract: an alias or active shared reference is a compile error
 with the ownership-loss reason instead of an implicit copy.

@@ -1,7 +1,7 @@
 //! Private, artifact-bound owner imports. Linkage IDs are only deterministic
 //! encoder metadata; the runtime receives the full admitted structural recipe.
 use super::*;
-use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, ConstructorId, OwnerFamily, OwnerOperation};
+use crate::canonical_safewir::closure_owner_contract::{CaptureOrdinal, ConstructorId, OwnerFamily, OwnerFamilySource, OwnerOperation, SharedReferenceConstructor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OwnerBridgeRecipe {
@@ -32,6 +32,7 @@ impl OwnerBridgeRecipe {
             // The operation is implemented from this family-authenticated tag
             // bridge plus one admitted CloneEnvironment bridge per constructor.
             O::ReadSharedPlace { family, .. } => Self::ReadTag(*family),
+            O::ReadSharedSliceLength { family, .. } => Self::ReadTag(*family),
             O::ReadTag { family, .. } => Self::ReadTag(*family),
             O::ReadCallable { family, .. } => Self::ReadCallable(*family),
             O::Clone { family, .. } => Self::Clone(*family),
@@ -159,8 +160,9 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 parameters.retain(|ty| matches!(ty, ValueType::Capability(_) | ValueType::Gc(_)));
                 parameters.insert(0, ValueType::Ref(family.environment));
             }
-            let mut results = operation.destinations().iter().map(|value| function.value_types.get(value).copied()
+            let results = operation.destinations().iter().map(|value| function.value_types.get(value).copied()
                 .ok_or_else(|| error("owner result type"))).collect::<Result<Vec<_>, _>>()?;
+            let mut results = recipe_results(&recipe, results);
             if let OwnerBridgeRecipe::ReadOwner(constructor, capture) = &recipe {
                 let captured_type = family.constructors.iter()
                     .find(|candidate| candidate.id == *constructor)
@@ -208,7 +210,7 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                 result.push(bridge);
             }
 
-            if matches!(operation, OwnerOperation::ReadSharedPlace { .. }) {
+            if matches!(operation, OwnerOperation::ReadSharedPlace { .. } | OwnerOperation::ReadSharedSliceLength { .. }) {
                 for constructor in &family.constructors {
                     if constructor.shared_reference_constructor().is_none() {
                         return Err(error("shared-place constructor schema"));
@@ -235,6 +237,99 @@ pub(super) fn build<S: crate::canonical_safewir::ModuleStage>(source: &Canonical
                         if result[index] != dependency {
                             return Err(error("private owner recipe collision"));
                         }
+                    } else {
+                        admitted.insert(dependency_id, result.len());
+                        result.push(dependency);
+                    }
+                    let Some(SharedReferenceConstructor::ListIntElementFromSlice { slice, .. }) =
+                        constructor.shared_reference_constructor()
+                    else { continue };
+                    let nested_type = match constructor.captures.get(slice.0 as usize) {
+                        Some(crate::canonical_safewir::closure_owner_contract::OwnerCapture {
+                            value_type: ValueType::Gc(owner_type),
+                            storage: crate::canonical_safewir::closure_owner_contract::CaptureStorage::OwnerField(_),
+                            ..
+                        }) => *owner_type,
+                        _ => return Err(error("shared-slice nested owner capture")),
+                    };
+                    let nested_family = source.owner_families().iter().find(|candidate| {
+                        candidate.owner_type == nested_type
+                            && matches!(&candidate.source, OwnerFamilySource::SharedReference(source)
+                                if matches!(source, witchy_syntax::ast::Type::Qualified(
+                                    witchy_syntax::ast::TypeQual::View, inner,
+                                ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Slice(element)
+                                    if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                                        if name == "Int" && arguments.is_empty()))))
+                    }).ok_or_else(|| error("shared-slice nested owner family"))?;
+                    let recipe = OwnerBridgeRecipe::ReadOwner(constructor.id, slice);
+                    let dependency = AdmittedOwnerBridge {
+                        recipe,
+                        family: family.clone(),
+                        parameters: vec![ValueType::Gc(family.owner_type)],
+                        results: vec![ValueType::Gc(nested_type)],
+                        callable_indices: Vec::new(),
+                        payload_result: false,
+                        cleanup_result: false,
+                        payload_type_index: 0,
+                        cleanup_item_type_index: 0,
+                        cleanup_type_index: 0,
+                        cleanup_families: Vec::new(),
+                    };
+                    let dependency_id = dependency.id();
+                    if import_ids.contains(&dependency_id) { return Err(error("private owner import collision")); }
+                    if let Some(&index) = admitted.get(&dependency_id) {
+                        if result[index] != dependency { return Err(error("private owner recipe collision")); }
+                    } else {
+                        admitted.insert(dependency_id, result.len());
+                        result.push(dependency);
+                    }
+                    for nested_constructor in &nested_family.constructors {
+                        if !matches!(nested_constructor.shared_reference_constructor(),
+                            Some(SharedReferenceConstructor::ListIntSlice { .. }))
+                        {
+                            return Err(error("shared-slice nested constructor schema"));
+                        }
+                        let recipe = OwnerBridgeRecipe::CloneEnvironment(nested_constructor.id);
+                        let dependency = AdmittedOwnerBridge {
+                            recipe,
+                            family: nested_family.clone(),
+                            parameters: vec![ValueType::Gc(nested_family.owner_type)],
+                            results: Vec::new(),
+                            callable_indices: Vec::new(),
+                            payload_result: true,
+                            cleanup_result: false,
+                            payload_type_index: 0,
+                            cleanup_item_type_index: 0,
+                            cleanup_type_index: 0,
+                            cleanup_families: Vec::new(),
+                        };
+                        let dependency_id = dependency.id();
+                        if import_ids.contains(&dependency_id) { return Err(error("private owner import collision")); }
+                        if let Some(&index) = admitted.get(&dependency_id) {
+                            if result[index] != dependency { return Err(error("private owner recipe collision")); }
+                        } else {
+                            admitted.insert(dependency_id, result.len());
+                            result.push(dependency);
+                        }
+                    }
+                    let recipe = OwnerBridgeRecipe::Drop(nested_family.signature);
+                    let dependency = AdmittedOwnerBridge {
+                        recipe,
+                        family: nested_family.clone(),
+                        parameters: vec![ValueType::Gc(nested_family.owner_type)],
+                        results: Vec::new(),
+                        callable_indices: Vec::new(),
+                        payload_result: true,
+                        cleanup_result: false,
+                        payload_type_index: 0,
+                        cleanup_item_type_index: 0,
+                        cleanup_type_index: 0,
+                        cleanup_families: Vec::new(),
+                    };
+                    let dependency_id = dependency.id();
+                    if import_ids.contains(&dependency_id) { return Err(error("private owner import collision")); }
+                    if let Some(&index) = admitted.get(&dependency_id) {
+                        if result[index] != dependency { return Err(error("private owner recipe collision")); }
                     } else {
                         admitted.insert(dependency_id, result.len());
                         result.push(dependency);
@@ -311,6 +406,18 @@ fn recipe_has_cleanup_result(recipe: &OwnerBridgeRecipe) -> bool {
     matches!(recipe, OwnerBridgeRecipe::ListPush(_) | OwnerBridgeRecipe::ListSet(_))
 }
 
+fn recipe_results(recipe: &OwnerBridgeRecipe, results: Vec<ValueType>) -> Vec<ValueType> {
+    // ReadSharedPlace and ReadSharedSliceLength are implemented by composing
+    // the same private family-tag bridge with constructor-specific environment
+    // access. The bridge returns the intrinsic i64 tag, never the consuming
+    // operation's public result lane (which is Size for a slice length).
+    if matches!(recipe, OwnerBridgeRecipe::ReadTag(_)) {
+        vec![ValueType::Int]
+    } else {
+        results
+    }
+}
+
 fn recipe_requires_cleanup_helper(recipe: &OwnerBridgeRecipe) -> bool {
     recipe_has_cleanup_result(recipe)
         || matches!(recipe, OwnerBridgeRecipe::Drop(_) | OwnerBridgeRecipe::DropList(_))
@@ -329,6 +436,15 @@ mod tests {
         assert!(recipe_requires_cleanup_helper(&OwnerBridgeRecipe::ListSet(family)));
         assert!(recipe_requires_cleanup_helper(&OwnerBridgeRecipe::ListPush(family)));
         assert!(!recipe_requires_cleanup_helper(&OwnerBridgeRecipe::CloneList(family)));
+    }
+
+    #[test]
+    fn read_tag_bridge_keeps_its_intrinsic_int_result() {
+        let family = FunctionSignatureId::new(8);
+        assert_eq!(
+            recipe_results(&OwnerBridgeRecipe::ReadTag(family), vec![ValueType::Size]),
+            vec![ValueType::Int],
+        );
     }
 }
 

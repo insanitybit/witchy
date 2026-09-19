@@ -228,6 +228,13 @@ pub(super) fn check_unique_declarations(
                     }
                 }
             }
+            Item::Function(function) => {
+                check_type_params(
+                    format!("function `{}`", bare(&function.name)),
+                    &function.type_params,
+                )
+                .map_err(|error| UniquenessError::new(idx, error))?;
+            }
             _ => {}
         }
     }
@@ -266,6 +273,11 @@ pub(super) fn check_unique_declarations(
                 }
                 let mut here: HashSet<String> = HashSet::new();
                 for m in &im.methods {
+                    check_type_params(
+                        format!("method `{}`", bare(&m.name)),
+                        &m.type_params,
+                    )
+                    .map_err(|error| UniquenessError::new(idx, error))?;
                     let name = bare(&m.name);
                     if !here.insert(name.clone()) {
                         return unique_err(idx, format!(
@@ -292,6 +304,11 @@ pub(super) fn check_unique_declarations(
                     .map_err(|error| UniquenessError::new(idx, error))?;
                 let mut here: HashSet<&str> = HashSet::new();
                 for m in &tr.methods {
+                    check_type_params(
+                        format!("trait method `{}`", bare(&m.name)),
+                        &m.type_params,
+                    )
+                    .map_err(|error| UniquenessError::new(idx, error))?;
                     if !here.insert(m.name.as_str()) {
                         return unique_err(idx, format!(
                             "method `{}` is declared more than once in `trait {}`; \

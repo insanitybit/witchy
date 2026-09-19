@@ -1,4 +1,4 @@
-//! RFC 8032 known answers across source, independent oracle, and admitted Wasm.
+//! RFC 8032 known answers across the independent oracle and admitted Wasm.
 use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
 
@@ -32,8 +32,6 @@ fn main(console: Console):
 "#, upper_key = KEY.to_uppercase(), upper_signature = SIGNATURE.to_uppercase(), plus_key = "+0".repeat(32));
     let expected = ["true", "true", "true", "false", "Ed25519 public key is malformed", "Ed25519 signature is malformed", "false", "true", "00"];
     let checked = witchy::resolve_std_only_checked(&source).unwrap();
-    let root = crate::temp_dir::TempDir::new("canonical-ed25519");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
         let entry = artifact.entry().unwrap();
         let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());

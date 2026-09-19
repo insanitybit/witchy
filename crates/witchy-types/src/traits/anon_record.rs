@@ -88,6 +88,7 @@ fn reflect_impl(
         comptime_only: false,
         attributes: Vec::new(),
         name: "reflect".to_string(),
+        type_params: Vec::new(),
         params: vec![Param {
             name: "self".to_string(),
             ty: None,
@@ -160,6 +161,7 @@ fn reflect_impl(
             comptime_only: false,
             attributes: Vec::new(),
             name: "__dynamic_field".into(),
+            type_params: Vec::new(),
             params: vec![
                 Param {
                     name: "self".into(),

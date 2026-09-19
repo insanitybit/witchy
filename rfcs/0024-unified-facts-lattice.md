@@ -115,7 +115,8 @@ Frame  ⊑  Loop(n)  ⊑  Region(r)  ⊑  Call  ⊑  Module  ⊑  Escapes
 - `Loop(n)` — confined to loop body `n` (watermark-reset candidate).
 - `Region(r)` — confined to region `r` (the `region:` copy-out / reclaim story).
 - `Call` — may be returned to the immediate caller but no further by this
-  function (this is `local unique`'s confinement — see [0026](./0167-witchy-language-contract.md#4-unique-and-frozen)).
+  function. This is an inferred confinement fact, not a source qualifier; see
+  [RFC-0167](0167-witchy-language-contract.md#10-optimization-readiness-is-part-of-the-contract).
 - `Module` / `Escapes` — stored somewhere globally reachable / passed to an
   unknown callee.
 

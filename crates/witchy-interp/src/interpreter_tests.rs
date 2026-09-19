@@ -57,13 +57,6 @@
         Interpreter::new(module)
     }
 
-    fn run_raw_runtime_fixture(source: &str) -> Result<Vec<String>, RuntimeError> {
-        let module = witchy_syntax::parser::parse_module(source).map_err(|error| RuntimeError {
-            message: error.to_string(),
-        })?;
-        run_module(module, ".", Vec::new())
-    }
-
     #[test]
     fn checked_evaluation_accepts_and_returns_only_owned_compiler_values() {
         let source = "\
@@ -219,22 +212,6 @@ fn echo(page: Page) -> Page:
     }
 
     #[test]
-    fn exclusive_reference_parameter_writes_back_to_its_caller_place() {
-        let source = r#"
-mode opt
-
-fn set_answer(value: &'a mut Int) -> Nil:
-    *value = 42
-
-fn main() -> Int:
-    var number = 1
-    set_answer(&mut number)
-    number
-"#;
-        assert_eq!(run_exit(source), 42);
-    }
-
-    #[test]
     fn existential_dispatch_uses_the_closed_witness_plan() {
         let source = r#"
 trait Render:
@@ -314,7 +291,7 @@ fn main() -> Int:
 
     #[test]
     fn existential_values_stay_opaque_when_the_oracle_skips_source_checking() {
-        let module = witchy_syntax::parser::parse_module("fn main() -> Nil:\n    Nil\n")
+        let module = witchy_syntax::parser::parse_module("fn main() -> ():\n    ()\n")
             .expect("parse minimal module");
         let mut interpreter = Interpreter::new(module);
         let opaque = Value::Existential {
@@ -789,7 +766,7 @@ fn main(console: Console):
     #[test]
     fn function_without_capability_cannot_print() {
         let src = r#"
-fn leak(secret: String) -> Nil:
+fn leak(secret: String) -> ():
     print(secret)
 
 fn main(console: Console):
@@ -808,7 +785,7 @@ fn main(console: Console):
     #[test]
     fn capability_can_be_threaded_to_a_helper() {
         let src = r#"
-fn announce(console: Console, who: String) -> Nil:
+fn announce(console: Console, who: String) -> ():
     console.print(("hello, " + who))
 
 fn main(console: Console):
@@ -1612,144 +1589,6 @@ fn main(console: Console):
     console.print("${swap_down(1000001, 2, 7)}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["72"]);
-    }
-
-    #[test]
-    fn exclusive_reference_reads_the_owner_after_owner_assignment() {
-        let src = r#"
-mode opt
-
-fn main(console: Console):
-    var value = 1
-    let reference = &mut value
-    value = 9
-    console.print("${*reference}")
-"#;
-        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
-    }
-
-    #[test]
-    fn exclusive_reference_can_escape_a_function_call() {
-        let src = r#"
-mode opt
-
-fn identity(value: Int) -> Int:
-    value
-
-fn main(console: Console):
-    var value = 1
-    let reference = identity(&mut value)
-    value = 9
-    console.print("${*reference}")
-"#;
-        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
-    }
-
-    #[test]
-    fn exclusive_reference_writes_its_owner_place() {
-    let src = r#"
-mode opt
-
-fn write_value(slot: &'a mut Int):
-    *slot = 9
-
-fn main(console: Console):
-    var value = 1
-    write_value(&mut value)
-    console.print("${value}")
-"#;
-        assert_eq!(run(src).unwrap(), vec!["9"]);
-    }
-
-    #[test]
-    fn exclusive_reference_preserves_a_projected_place_across_a_call() {
-        let src = r#"
-mode opt
-
-type Pair:
-    left: Int
-    right: Int
-
-fn write_value(slot: &'a mut Int):
-    *slot = 9
-
-fn main(console: Console):
-    var pair = Pair(1, 2)
-    let left = &mut pair.left
-    write_value(left)
-    console.print("${pair.left}:${pair.right}")
-"#;
-        assert_eq!(run(src).unwrap(), vec!["9:2"]);
-    }
-
-    #[test]
-    fn exclusive_reference_can_return_a_projection_of_an_exclusive_reference() {
-        let src = r#"
-mode opt
-
-type Pair:
-    left: Int
-    right: Int
-
-fn left(pair: &'a mut Pair) -> &'a mut Int:
-    &mut pair.left
-
-fn main(console: Console):
-    var pair = Pair(1, 2)
-    let slot = left(&mut pair)
-    *slot = 9
-    console.print("${pair.left}:${pair.right}")
-"#;
-        assert_eq!(run(src).unwrap(), vec!["9:2"]);
-    }
-
-    #[test]
-    fn projected_owner_assignment_observes_promoted_reference_storage() {
-        let src = r#"
-mode opt
-
-type Pair:
-    left: Int
-    right: Int
-
-fn main(console: Console):
-    var pair = Pair(1, 2)
-    let left = &mut pair.left
-    pair.right = 3
-    *left = 9
-    console.print("${pair.left}:${pair.right}")
-"#;
-        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9:3"]);
-    }
-
-    #[test]
-    fn shared_reborrow_reads_through_an_exclusive_reference() {
-        let src = r#"
-mode opt
-
-fn main(console: Console):
-    var value = 9
-    let editable = &mut value
-    let view = &*editable
-    console.print("${*view}")
-"#;
-        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
-    }
-
-    #[test]
-    fn shared_reference_is_a_first_class_read_value() {
-        let src = r#"
-mode opt
-
-fn identity(value: Int) -> Int:
-    value
-
-fn main(console: Console):
-    let value = 9
-    let reference = identity(&value)
-    console.print("${*reference}")
-"#;
-        assert_eq!(run_raw_runtime_fixture(src).unwrap(), vec!["9"]);
     }
 
     #[test]

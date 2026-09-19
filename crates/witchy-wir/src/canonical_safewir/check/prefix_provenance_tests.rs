@@ -96,7 +96,7 @@ fn edges(
         let mut state = checker.snapshot();
         state.constants.extend([(length, 1), (count, count_value)]);
         state.objects.insert(SOURCE, ObjectState {
-            identity: SOURCE, layout: layout.list, extent: layout.extent(count, CAPACITY),
+            identity: SOURCE, owner_generation: 0, layout: layout.list, extent: layout.extent(count, CAPACITY),
             ownership, allocation_class: Some(AllocationClass::ReferenceCounted),
             shared_immutable: false, initialized_owned_slots: false,
         });

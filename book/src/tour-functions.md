@@ -405,14 +405,13 @@ ownership contract about a value:
 
 | Qualifier | Contract |
 |---|---|
-| `frozen T` | deeply immutable; it can't be bound as mutable or consumed through `own` |
+| `frozen T` | deeply immutable payload; the whole value may still move or be replaced |
 | `unique T` | the sole reference to the value |
-| `local unique T` | unique within the current call and unable to escape it |
-| `&'a T` | a read-only reference valid for lifetime `'a`; available in `mode opt` |
+| `&T` / `&[T]` | an immutable value-semantic view that retains its backing root and projection |
 
 The qualifiers have no runtime representation and can't change a program's
 answer. They let `mode opt` turn a missed ownership proof into a compile error
-instead of taking a copy-correct fallback. Borrowed views, the `own unique`
+instead of taking a copy-correct fallback. Shared references, the `own unique`
 recursive-kernel contract, and the operations that use `unique` are covered in
 [Appendix: Performance](appendix-performance.md).
 
@@ -421,6 +420,6 @@ determines what the compiler may mutate in place): see
 [Appendix: Performance - the Ownership Knobs](appendix-performance.md) for
 what each one means to the optimizer and when to reach for it.
 
-For first-class shared and exclusive references, explicit lifetimes, reborrows,
-aggregate carriers, and normal-to-opt adapters, see
-[Opt-mode References and Lifetimes](opt-mode-references.md).
+For immutable rooted views, aggregate and callable carriers, copy-on-write
+snapshots, and normal-to-opt adapters, see
+[Rooted views and opt mode](opt-mode-references.md).

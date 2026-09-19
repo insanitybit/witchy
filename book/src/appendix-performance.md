@@ -12,10 +12,10 @@ This appendix is organized around what you write:
 | Write this... | To unlock this... | Read... |
 |---|---|---|
 | `let`, `var`, `own`, `move` | Clear call ownership and write-back behavior | [Syntax and ownership contracts](appendix-performance-ownership.md) |
-| `unique`, `local unique`, `frozen` | In-place updates, extraction, and safe sharing | [Syntax and ownership contracts](appendix-performance-ownership.md) |
-| `region:` (unstable) | Bulk reclamation for temporary work | [Layouts and allocation lifetime](appendix-performance-layout.md) |
+| `unique`, `frozen` | In-place updates, extraction, and safe sharing | [Syntax and ownership contracts](appendix-performance-ownership.md) |
+| `region:` | Explicit lexical allocation scope with checked copy-out | [Layouts and allocation lifetime](appendix-performance-layout.md) |
 | `packed` | Inline, cache-dense data layout | [Layouts and allocation lifetime](appendix-performance-layout.md) |
-| `mode opt`, `&'a T`, `&'a mut T` | Explicit lifetimes, loans, and reference carriers | [Opt-mode References and Lifetimes](opt-mode-references.md) |
+| `mode opt`, `&T`, `&[T]` | Immutable rooted views and stricter no-hidden-copy proofs | [Rooted views and opt mode](opt-mode-references.md) |
 | A measured source shape | Evidence for a real workload improvement | [Measuring and diagnosing](appendix-performance-measurement.md) |
 
 The [`WITCHY_OPT` switches](appendix-performance-knobs.md) are still useful, but
@@ -34,13 +34,13 @@ boundary, not merely because a benchmark is slow.
 default owned value       fn render(xs: List(Int)) -> String
 read-only call borrow     fn inspect(let xs: List(Int)) -> Int
 ownership transfer        fn consume(own xs: List(Int)) -> Int
-caller write-back         fn normalize(var text: String) -> Nil
+caller write-back         fn normalize(var text: String) -> ()
 ```
 
 The source convention is the important control. `let`, `var`, `own`, and `move`
 describe value ownership and call behavior. `unique`, `frozen`, `region:`, and
-`packed` add stronger storage facts. `mode opt` permits explicit references and
-requires the associated access proofs. A normal file can receive the compiled
+`packed` add stronger storage facts. Both modes permit immutable rooted views;
+`mode opt` additionally requires stricter access and no-hidden-copy proofs. A normal file can receive the compiled
 tier's ordinary optimizations without adopting explicit reference syntax or
 setting a performance environment variable.
 

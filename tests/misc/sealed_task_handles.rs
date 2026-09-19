@@ -70,7 +70,43 @@ fn raw_scheduler_protocol_is_not_user_constructible() {
         "import task\n\nfn main(console: Console):\n    let _raw = task.__channel_open(0)\n    console.print(\"bad\")\n",
         &["compiler-private intrinsic", "public stdlib surface"],
     );
+    assert_rejected(
+        &dir,
+        "private-raw-spawn",
+        "import task\n\nfn main(console: Console):\n    let _raw = task.__spawn_raw(task.ready_unit())\n    console.print(\"bad\")\n",
+        &["compiler-private intrinsic", "public stdlib surface"],
+    );
+    assert_rejected(
+        &dir,
+        "private-raw-handle-mint",
+        "import task\n\nfn main(console: Console):\n    let _handle = task.__handle_from_raw(999)\n    console.print(\"bad\")\n",
+        &["compiler-private intrinsic", "public stdlib surface"],
+    );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn public_spawn_keeps_its_direct_scheduler_result_boundary() {
+    let task_source = include_str!("../../std/task.witchy");
+    let chan_source = include_str!("../../std/chan.witchy");
+    assert!(
+        task_source.contains(
+            "Task(fn(): Fork(child, fn(id): Task(fn(): Done(__handle_from_raw(id)))))"
+        ),
+        "public spawn must mint Handle in the Fork continuation without an extra task turn"
+    );
+    assert!(
+        !task_source.contains("and_then(__spawn_raw(child),"),
+        "wrapping public spawn in and_then adds an observable scheduler Yield"
+    );
+    assert!(
+        chan_source.contains("spawn_all_into(children, 0, [], fn(raw_handles):"),
+        "spawn_all must mint handles in its raw-ID completion boundary"
+    );
+    assert!(
+        !chan_source.contains("and_then(spawn_all_into(children, 0, []),"),
+        "wrapping spawn_all in and_then adds an observable scheduler Yield"
+    );
 }
 
 #[test]

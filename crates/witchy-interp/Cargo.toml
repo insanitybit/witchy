@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false            # internal workspace crate — not published standalone
 license = "MIT OR Apache-2.0"
-description = "witchy compiler — the reference interpreter (parity oracle) + compile-time evaluation"
+description = "witchy compiler — frozen source evaluator and temporary compile-time services"
 
 [features]
 test-fixtures = ["dep:witchy-test-host", "dep:witchy-testkit"]
@@ -12,9 +12,9 @@ test-fixtures = ["dep:witchy-test-host", "dep:witchy-testkit"]
 # checked pipeline. Production dependents receive only proof-carrying entries.
 raw-module-test-api = []
 
-# Wasm-safe: the tree-walker is the playground's run path. No external crates
-# beyond no_std-clean foldhash (the call path's lookup tables; also used by the
-# other stage crates) and no native gate — the tests are plain #[cfg(test)] units.
+# Wasm-safe while the playground still uses this frozen tree walker. The
+# production runtime and semantic oracle are the admitted-Wasm and canonical
+# SafeWIR paths respectively; do not add new language semantics here.
 [dependencies]
 foldhash = "0.2.0"
 witchy-caps = { path = "../witchy-caps" }

@@ -45,7 +45,25 @@ use crate::{codegen, interpreter, parser, typeck};
         let linked = prepared_module(src);
         let bytes = codegen::compile_module_binary(&linked).expect_lowered("raw test encoder lowers this program");
         let mut runtime = crate::runtime::Runtime::new().expect("preemptible runtime");
-        let mut actor = runtime.spawn(&bytes, Capabilities { print: true, print_int: true, ..Default::default() }, 4).expect("spawn");
+        let mut actor = runtime
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    print_int: true,
+                    clock: true,
+                    env: true,
+                    dir_root: Some(std::path::PathBuf::from(".")),
+                    dir_read: true,
+                    dir_write: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .expect("spawn");
         runtime.run_with_budget(&mut actor, budget).expect("run within budget");
         actor.output()
     }
@@ -138,7 +156,7 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
         assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
 
-        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    dict.insert(m, \"a\", 42)\n    c.print(\"${lookup(m)}\")\n    c.print(\"${dict.length(m)}\")\n";
+        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    let _ = dict.insert(m, \"a\", 42)\n    c.print(\"${lookup(m)}\")\n    c.print(\"${dict.length(m)}\")\n";
         assert_eq!(link_run(dict), ["42", "1"]);
         assert_eq!(run_linked_on_wasm(&[("main", dict)], "main"), ["42", "1"], "wasm dict");
     }
@@ -242,7 +260,7 @@ use crate::{codegen, interpreter, parser, typeck};
     /// and stays value-semantic on both backends.
     #[test]
     fn analysis_dirty_shapes_stay_value_semantic() {
-        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${s.length()}\")\n    var d = dict.new()\n    var zs = [1]\n    dict.insert(d, \"snap\", zs)\n    list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
+        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${s.length()}\")\n    var d = dict.new()\n    var zs = [1]\n    let _ = dict.insert(d, \"snap\", zs)\n    list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
         let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -279,12 +297,12 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(link_run(list_src), list_expected, "interpreter: list field");
         assert_eq!(wasm_run(list_src), list_expected, "wasm: list field");
 
-        let dict_src = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
+        let dict_src = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    let _ = dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
         let dict_expected = vec!["98".to_string(), "50".to_string()];
         assert_eq!(link_run(dict_src), dict_expected, "interpreter: dict field");
         assert_eq!(wasm_run(dict_src), dict_expected, "wasm: dict field");
 
-        let sibling_src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 16:\n        bag.counts.update(\"hit\", 0, inc)\n        bag.seen.insert(\"k${i}\")\n        i = i + 1\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${set.length(bag.seen)}\")\n";
+        let sibling_src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 16:\n        let _ = bag.counts.update(\"hit\", 0, inc)\n        let _ = bag.seen.insert(\"k${i}\")\n        i = i + 1\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${set.length(bag.seen)}\")\n";
         let sibling_expected = vec!["16".to_string(), "16".to_string()];
         assert_eq!(link_run(sibling_src), sibling_expected, "interpreter: sibling fields");
         assert_eq!(wasm_run(sibling_src), sibling_expected, "wasm: sibling fields");
@@ -395,7 +413,7 @@ fn main(console: Console):
     fn single_allocator_invariant_holds_on_lowered_programs() {
         let progs = [
             // accumulators: list push / dict insert / string concat self-assigns
-            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        list.push(xs, i)\n        dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    list.set_at(xs, 0, 9)\n    console.print(\"${list.length(xs)} ${dict.length(d)} ${s.length()}\")\n",
+            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        list.push(xs, i)\n        let _ = dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    list.set_at(xs, 0, 9)\n    console.print(\"${list.length(xs)} ${dict.length(d)} ${s.length()}\")\n",
             // scalar region reclaim (the watermark rewind exemption)
             "\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.length(parts)\n    console.print(\"${n}\")\n",
             // pointer region copy-out (the `heap = wm + copied_len` advance-rewind)
@@ -522,9 +540,9 @@ fn main(console: Console):
                    \x20   xs.set_at(0, 9)\n\
                    \x20   console.print(\"${xs}\")\n\
                    \x20   var d = dict.new()\n\
-                   \x20   d.insert(\"a\", 1)\n\
-                   \x20   d.insert(\"b\", 2)\n\
-                   \x20   d.remove(\"a\")\n\
+                   \x20   let _ = d.insert(\"a\", 1)\n\
+                   \x20   let _ = d.insert(\"b\", 2)\n\
+                   \x20   let _ = d.remove(\"a\")\n\
                    \x20   console.print(\"${dict.contains_key(d, \"a\")}\")\n\
                    \x20   console.print(\"${dict.get_or(d, \"b\", 0)}\")\n";
         let want = vec!["[9, 2, 3, 4]".to_string(), "false".to_string(), "2".to_string()];
@@ -643,7 +661,7 @@ fn main(console: Console):
                          \x20   list.length(xs)\n\
                          fn main(console: Console):\n\
                          \x20   var xs = [1, 2, 3]\n\
-                         \x20   bump(xs, 5)\n\
+                         \x20   let _ = bump(xs, 5)\n\
                          \x20   console.print(\"${xs}\")\n";
         for (src, want) in [(free_std, "[1, 2, 3, 2]"), (free_user, "[1, 2, 3, 5]")] {
             assert_eq!(link_run(src), [want], "interpreter commits free var call");

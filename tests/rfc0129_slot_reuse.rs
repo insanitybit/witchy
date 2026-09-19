@@ -89,7 +89,7 @@ fn assert_task_slots_retag(source: &str, work: i64, label: &str) {
 fn bounded_channel_retags_task_slots_without_replacement_allocations() {
     const MESSAGES: i64 = 64;
     let source = format!(
-        "mode opt\n\nfrom chan import Sender\n\nasync fn producer(let tx: Sender(Int), n: Int) -> Nil:\n    var i = 0\n    while i < n:\n        chan.send(tx, i).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    let producer_handle = chan.spawn(producer(tx, {MESSAGES})).await\n    var seen = 0\n    for await value in rx:\n        seen = seen + 1\n        chan.done(value)\n    chan.join(producer_handle).await\n    if seen == {MESSAGES}:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n"
+        "mode opt\n\nfrom chan import Sender\n\nasync fn producer(let tx: Sender(Int), n: Int) -> ():\n    var i = 0\n    while i < n:\n        chan.send(tx, i).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    let producer_handle = chan.spawn(producer(tx, {MESSAGES})).await\n    var seen = 0\n    for await value in rx:\n        seen = seen + 1\n        chan.done(value)\n    chan.join(producer_handle).await\n    if seen == {MESSAGES}:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n"
     );
     let source = source.replace("chan.done(value)", "let _ = chan.done(value)");
     assert_task_slots_retag(&source, MESSAGES, "bounded-channel");
@@ -99,7 +99,7 @@ fn bounded_channel_retags_task_slots_without_replacement_allocations() {
 fn simultaneous_fanout_retags_task_slots_without_replacement_allocations() {
     const TASKS: i64 = 24;
     let source = format!(
-        "mode opt\n\nimport chan\nimport list\n\nasync fn child(n: Int) -> Nil:\n    chan.yield_now().await\n    if n < 0:\n        fail(\"unreachable\")\n\nasync fn main(console: Console):\n    let items = list.range({TASKS})\n    chan.scope(list.map(items, fn(n): child(n))).await\n    if list.length(items) == {TASKS}:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n"
+        "mode opt\n\nimport chan\nimport list\n\nasync fn child(n: Int) -> ():\n    chan.yield_now().await\n    if n < 0:\n        fail(\"unreachable\")\n\nasync fn main(console: Console):\n    let items = list.range({TASKS})\n    chan.scope(list.map(items, fn(n): child(n))).await\n    if list.length(items) == {TASKS}:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n"
     );
     assert_task_slots_retag(&source, TASKS, "simultaneous-fanout");
 }

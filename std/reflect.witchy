@@ -87,7 +87,7 @@ impl Reflect for Bytes:
     fn reflect(self) -> Mirror:
         reflect_bytes(self)
 
-impl Reflect for Nil:
+impl Reflect for ():
     fn reflect(self) -> Mirror:
         MNil
 

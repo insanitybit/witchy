@@ -19,7 +19,7 @@ Compiled witchy carries ordinary values in an 8-byte slot. The WIR type
 | `Int` | `I64` | signed `i64` |
 | `Float` | `F64`/slot | IEEE `f64`, bit-reinterpreted through an `i64` slot when stored generically |
 | `Bool` | `I32`/slot | `0` or `1`, widened to the slot when stored generically |
-| `Nil` | `I32`/slot | zero sentinel |
+| `()` | `I32`/slot | zero sentinel |
 | `String` | `I32` pointer | pointer to `[len: i32][utf8 bytes...]` |
 | `Bytes` | `I32` pointer | same flat `[len: i32][bytes...]` layout as `String` |
 | `List(T)` | `I32` pointer or `GcRef(_)` | pointer to `[count: i32][slot0][slot1]...` for scalar storage; a reference-bearing element uses a typed GC array of its exact reference kind; declared `packed` confined lists use their flat record layout |

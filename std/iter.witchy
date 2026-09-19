@@ -298,7 +298,7 @@ impl FromIterator((k, v)) for Dict(k, v) where k: Eq:
                 Empty -> more = false
                 Item(pair, rest) ->
                     let (key, value) = pair
-                    dict.insert(out, key, value)
+                    let _ = dict.insert(out, key, value)
                     cur = rest
         out
 
@@ -413,7 +413,7 @@ impl Iter(a):
     // Call `f` on every element for its effect (drives to exhaustion). The
     // right consumer for a generator when you don't need to early-exit - no
     // list is built.
-    pub fn for_each(self, f: fn(a) -> Nil):
+    pub fn for_each(self, f: fn(a) -> ()):
         var cur = self
         var more = true
         while more:

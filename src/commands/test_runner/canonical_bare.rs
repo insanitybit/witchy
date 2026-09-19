@@ -68,7 +68,7 @@ fn canonical_bare_driver_refuses_inferred_non_nil_results() {
         let files = Files::new(&format!("fn test_value():\n    {body}\n"));
         let (suite, _) = link_test_file(&files.path()).expect("source with inferred result checks");
         let error = check_bare_test_driver(&suite, "suite.test_value")
-            .expect_err("the generated Nil entry cannot discard an inferred result").to_string();
+            .expect_err("the generated unit entry cannot discard an inferred result").to_string();
         assert!(error.contains("expected `()`"), "{body}: {error}");
     }
 }

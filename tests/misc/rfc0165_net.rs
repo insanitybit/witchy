@@ -129,6 +129,48 @@ fn host_net_rejects_missing_authority_wrong_refs_and_invalid_input_slices() {
 }
 
 #[test]
+fn canonical_net_listen_registration_does_not_mint_authority() {
+    // Canonical Net imports are always linkable so a public, unreachable helper
+    // cannot prevent its no-Net entry point from instantiating.  Calling the
+    // adapters (including the legacy-name accept/close ABI entries) with no
+    // host-minted token must still fail before any network action.
+    let cases = [
+        (
+            "net_listen_at",
+            "(param externref i32 i32) (result externref)",
+            "(drop (call $host (ref.null extern) (i32.const 0) (i32.const 0)))",
+            "Net externref is null",
+        ),
+        (
+            "net_accept",
+            "(param externref) (result externref)",
+            "(drop (call $host (ref.null extern)))",
+            "Listener externref is null",
+        ),
+        (
+            "net_close",
+            "(param externref)",
+            "(call $host (ref.null extern))",
+            "Socket externref is null",
+        ),
+        (
+            "serve_pool",
+            "(param externref)",
+            "(call $host (ref.null extern))",
+            "Listener externref is null",
+        ),
+    ];
+    for (name, signature, call, expected) in cases {
+        let wat = format!(r#"(module
+          (import "witchy" "{name}" (func $host {signature}))
+          (memory (export "memory") 1)
+          (func (export "run") {call}))"#);
+        let error = raw(wat, Capabilities::none()).expect_err("null Net token must be rejected");
+        assert!(error.contains(expected), "{name}: unexpected denial: {error}");
+    }
+}
+
+#[test]
 fn host_net_receive_rejects_short_invalid_stale_and_cross_socket_fills() {
     let cases = [
         ("(drop (call $fill (local.get $sock) (i32.const 64) (i32.const 4)))", 1, "capacity is too small"),
@@ -182,7 +224,7 @@ fn canonical_net_server_router_serves_one_real_request() {
 
 #[test]
 fn canonical_net_missing_root_grants_reject_even_without_imports() {
-    let checked = witchy::resolve_std_only_checked("fn main(first: Net, second: Net):\n    Nil\n").unwrap();
+    let checked = witchy::resolve_std_only_checked("fn main(first: Net, second: Net):\n    ()\n").unwrap();
     let artifact = witchy::codegen::compile_checked_module_artifact(&checked).expect_lowered("Net entry admits");
     assert_eq!(artifact.entry().unwrap().capabilities(), &[witchy_wir::CanonicalEntryCapability::Net; 2]);
     assert_eq!(witchy_wir::canonical_entry_from_wasm(artifact.wasm()).unwrap().as_ref(), artifact.entry());

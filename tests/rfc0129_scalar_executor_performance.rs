@@ -46,7 +46,7 @@ fn benchmark_source(messages: i64) -> String {
 
 fn aggregate_benchmark_source(messages: i64) -> String {
     format!(
-        "mode opt\n\nimport chan\nfrom chan import Sender\n\ntype Pair:\n    Pair(Int, Int)\n\nasync fn producer(let tx: Sender(Pair), n: Int) -> Nil:\n    var i = 0\n    while i < n:\n        chan.send(tx, Pair(i, i + 1)).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    var seen = 0\n    var sum = 0\n    while seen < {messages}:\n        let packet = chan.recv(rx).await\n        match packet:\n            Some(Pair(left, right)) ->\n                sum = sum + left + right\n                seen = seen + 1\n            None -> fail(\"channel closed before producer completed\")\n    chan.join(producer_handle).await\n    console.print(\"${{sum}}\")\n"
+        "mode opt\n\nimport chan\nfrom chan import Sender\n\ntype Pair:\n    Pair(Int, Int)\n\nasync fn producer(let tx: Sender(Pair), n: Int) -> ():\n    var i = 0\n    while i < n:\n        chan.send(tx, Pair(i, i + 1)).await\n        i = i + 1\n\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(64).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    var seen = 0\n    var sum = 0\n    while seen < {messages}:\n        let packet = chan.recv(rx).await\n        match packet:\n            Some(Pair(left, right)) ->\n                sum = sum + left + right\n                seen = seen + 1\n            None -> fail(\"channel closed before producer completed\")\n    chan.join(producer_handle).await\n    console.print(\"${{sum}}\")\n"
     )
 }
 

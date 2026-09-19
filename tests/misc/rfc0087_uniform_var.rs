@@ -198,7 +198,7 @@ fn list_pop_projected_coordinates_and_nested_payloads_on_three_legs() {
 type State:
     rows: List(List(String))
 
-fn grow(var words: List(String)) -> Nil:
+fn grow(var words: List(String)) -> ():
     words.push("grown")
     return
 
@@ -272,7 +272,7 @@ fn coordinate(var log: List(Int), marker: Int) -> Int:
     log.push(marker)
     0
 
-fn add_row(var rows: List(List(Int))) -> Nil:
+fn add_row(var rows: List(List(Int))) -> ():
     rows.push([30])
     return
 
@@ -329,7 +329,7 @@ fn next_index(var calls: Int) -> Int:
     calls = calls + 1
     0
 
-fn bump(var n: Int) -> Nil:
+fn bump(var n: Int) -> ():
     n = n + 10
     return
 
@@ -343,7 +343,7 @@ fn main(console: Console):
 
     var calls = 0
     var rows = [[5, 6]]
-    bump(rows[next_index(calls)][1])
+    let _ = bump(rows[next_index(calls)][1])
 
     var values = [7]
     let old_len = append_snapshot_len(values, values)
@@ -365,7 +365,7 @@ fn main(console: Console):
 #[test]
 fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     let duplicate = type_error(
-        "fn exchange(var left: Int, var right: Int) -> Nil:\n\
+        "fn exchange(var left: Int, var right: Int) -> ():\n\
          \x20   return\n\
          fn main(console: Console):\n\
          \x20   var n = 1\n\
@@ -381,7 +381,7 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
         "fn inner(var n: Int) -> Int:\n\
          \x20   n = n + 1\n\
          \x20   n\n\
-         fn outer(var n: Int, snapshot: Int) -> Nil:\n\
+         fn outer(var n: Int, snapshot: Int) -> ():\n\
          \x20   return\n\
          fn main(console: Console):\n\
          \x20   var n = 0\n\
@@ -394,9 +394,9 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     assert_source_facing(&reservation);
 
     let immutable = type_error(
-        "fn bump(var n: Int) -> Nil:\n\
+        "fn bump(var n: Int) -> ():\n\
          \x20   return\n\
-         fn test(n: Int) -> Nil:\n\
+         fn test(n: Int) -> ():\n\
          \x20   bump(n)\n\
          \x20   return\n\
          fn main(console: Console):\n\
@@ -409,7 +409,7 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     assert_source_facing(&immutable);
 
     let temporary = type_error(
-        "fn bump(var n: Int) -> Nil:\n\
+        "fn bump(var n: Int) -> ():\n\
          \x20   return\n\
          fn main(console: Console):\n\
          \x20   bump(1)\n",
@@ -421,7 +421,7 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     assert_source_facing(&temporary);
 
     let moved = type_error(
-        "fn bump(var n: Int) -> Nil:\n\
+        "fn bump(var n: Int) -> ():\n\
          \x20   return\n\
          fn main(console: Console):\n\
          \x20   var n = 0\n\
@@ -456,7 +456,7 @@ type State:
     left: List(Int)
     right: List(Int)
 
-fn change(var left: Int, var right: Int) -> Nil:
+fn change(var left: Int, var right: Int) -> ():
     left = left + 10
     right = right + 100
     return
@@ -469,7 +469,7 @@ fn coordinate(var calls: Int) -> Int:
     let _ = bump(calls)
     0
 
-fn append(var values: List(Int), snapshot: List(Int)) -> Nil:
+fn append(var values: List(Int), snapshot: List(Int)) -> ():
     values.push(snapshot.length())
     return
 
@@ -548,7 +548,7 @@ fn main(console: Console):
 #[test]
 fn traps_are_terminal_and_do_not_create_a_backend_specific_writeback_rule() {
     let source = r#"
-fn explode(var n: Int) -> Nil:
+fn explode(var n: Int) -> ():
     n = 99
     fail("boom after local mutation")
 
@@ -752,7 +752,7 @@ fn main(console: Console):
     let mismatch = type_error(
         "fn pure(n: Int) -> Int:\n\
          \x20   n\n\
-         fn consume(operation: fn(var Int) -> Int) -> Nil:\n\
+         fn consume(operation: fn(var Int) -> Int) -> ():\n\
          \x20   return\n\
          fn main(console: Console):\n\
          \x20   consume(pure)\n",
@@ -778,7 +778,7 @@ fn mark(var log: List(Int), value: Int) -> Int:
 fn apply(operation: fn(var Int) -> Int, var value: Int) -> Int:
     operation(value)
 
-async fn seam(console: Console) -> Nil:
+async fn seam(console: Console) -> ():
     var state = 10
     let operation: fn(var Int) -> Int = fn(var n: Int):
         n = n + 1
@@ -802,7 +802,7 @@ fn generator_locals_may_use_synchronous_var_calls_between_yields() {
     let source = r#"
 import iter
 
-fn bump(var n: Int) -> Nil:
+fn bump(var n: Int) -> ():
     n = n + 1
     return
 
@@ -824,7 +824,7 @@ fn main(console: Console):
 fn async_and_generator_var_parameters_reject_at_the_shared_parser() {
     for (source, expected) in [
         (
-            "async fn bad(var state: Int) -> Nil:\n    return\n",
+            "async fn bad(var state: Int) -> ():\n    return\n",
             "parse error at 1:30: a async function cannot take `var` parameter `state`: suspension may outlive the caller's write-back place; use an ordinary parameter or mutate a local until the lifetime model admits suspended `var` access",
         ),
         (

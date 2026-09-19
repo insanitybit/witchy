@@ -5,9 +5,9 @@
 // it into the string.
 fn main(console: Console):
     var prices = dict.new()
-    prices.insert("apple", 3)
-    prices.insert("bread", 2)
-    prices.insert("milk", 4)
+    let _ = prices.insert("apple", 3)
+    let _ = prices.insert("bread", 2)
+    let _ = prices.insert("milk", 4)
 
     var total = 0
     for v in prices.values():

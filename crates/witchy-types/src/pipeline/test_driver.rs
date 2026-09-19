@@ -3,7 +3,7 @@
 //! Async tests are driven to completion; parameterized, fixture and integration
 //! recipes are separate obligations.
 use super::*;
-use witchy_syntax::ast::{Expr, Item, Stmt, Type};
+use witchy_syntax::ast::{Expr, Item, Stmt};
 
 mod console_fixture;
 pub use console_fixture::check_console_fixture_test_driver;
@@ -76,7 +76,7 @@ pub fn link_checked_test_suite_from_source_bundle(
     {
         return Err(refused("test source bundle requires unique module names and its entry"));
     }
-    let original_source_digest = checked_source_digest(&sources, entry);
+    let original_source_digest = checked_source_digest(&sources, entry, &PrecompiledDeclarationEnvironment::default());
     let (checked, _) = link_checked_with(
         parse_sources(&sources)?, entry, expand, LinkMode::Test,
         Some(user_modules), false, Some(owners),
@@ -112,9 +112,9 @@ pub fn check_bare_test_driver(
     let (ordinal, target) = targets[0];
     if target.is_gen || target.comptime_only || !target.params.is_empty()
         || !target.bounds.is_empty()
-        || target.ret.as_ref().is_some_and(|ty| !matches!(ty, Type::Named(name, args) if name == "Nil" && args.is_empty()))
+        || target.ret.as_ref().is_some_and(|ty| !is_unit_type(ty))
     {
-        return Err(refused(format!("bare test `{selected}` requires an ordinary or async nullary Nil declaration; generator, parameterized and generic targets are unsupported")));
+        return Err(refused(format!("bare test `{selected}` requires an ordinary or async nullary unit declaration; generator, parameterized and generic targets are unsupported")));
     }
     let is_async = target.is_async;
     let declaration_ordinal = u64::try_from(ordinal)
@@ -138,9 +138,9 @@ pub fn check_bare_test_driver(
     // This fixed compiler template is not user input. Use the local source
     // declaration before linking, never a guessed post-link callable spelling.
     let recipe = if is_async {
-        "fn main() -> Nil:\n    task.run(Nil)\n"
+        "fn main() -> ():\n    task.run(())\n"
     } else {
-        "fn main() -> Nil:\n    Nil\n"
+        "fn main() -> ():\n    ()\n"
     };
     let mut generated = witchy_syntax::parser::parse_module(recipe)
         .map_err(|error| refused(format!("invalid compiler test recipe: {error}")))?;
@@ -197,7 +197,7 @@ pub fn check_bare_test_driver(
     if name != selected || !args.is_empty() {
         return Err(refused("checked test recipe target binding changed"));
     }
-    let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest)?;
+    let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest, PrecompiledDeclarationEnvironment::default())?;
     let runtime_catalog = Some(checked.runtime_declaration_catalog()?);
     let canonical_source = checked.canonical_source.take();
     Ok(CheckedTestDriverModule {

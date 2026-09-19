@@ -1,30 +1,29 @@
 use super::*;
 use crate::{interpreter, parser, typeck};
 
-    /// (BUG-214) `Nil` is the language's unit value, so every backend must accept
-    /// it anywhere a `Nil` expression is expected instead of treating it as an
-    /// unknown nullary constructor that the compiled backend cannot lower.
+    /// (BUG-214) `()` is the language's sole unit spelling, so every backend must
+    /// accept it anywhere a unit expression is expected.
     #[test]
-    fn bare_nil_expression_compiles_on_both_backends() {
+    fn unit_expression_compiles_on_both_backends() {
         let cases = [
             (
                 "tail",
-                "fn unit() -> Nil:\n    Nil\n\nfn main(console: Console):\n    unit()\n    console.print(\"tail\")\n",
+                "fn unit() -> ():\n    ()\n\nfn main(console: Console):\n    unit()\n    console.print(\"tail\")\n",
                 ["tail"],
             ),
             (
                 "statement",
-                "fn main(console: Console):\n    Nil\n    console.print(\"statement\")\n",
+                "fn main(console: Console):\n    ()\n    console.print(\"statement\")\n",
                 ["statement"],
             ),
             (
                 "match arm",
-                "fn unit(n: Int) -> Nil:\n    match n:\n        0 -> Nil\n        _ -> Nil\n\nfn main(console: Console):\n    unit(0)\n    unit(1)\n    console.print(\"match\")\n",
+                "fn unit(n: Int) -> ():\n    match n:\n        0 -> ()\n        _ -> ()\n\nfn main(console: Console):\n    unit(0)\n    unit(1)\n    console.print(\"match\")\n",
                 ["match"],
             ),
             (
                 "let binding",
-                "fn unit() -> Nil:\n    Nil\n\nfn main(console: Console):\n    let x = unit()\n    console.print(\"let\")\n",
+                "fn unit() -> ():\n    ()\n\nfn main(console: Console):\n    let x = unit()\n    console.print(\"let\")\n",
                 ["let"],
             ),
         ];
@@ -36,26 +35,20 @@ use crate::{interpreter, parser, typeck};
 
         assert!(
             typeck::check_str("fn main(console: Console):\n    Nil(1)\n").is_err(),
-            "Nil has no constructor fields"
+            "the retired Nil spelling has no constructor form"
         );
     }
 
     /// `comptime:` — compile-time item generation: zero capabilities
-    /// reachable (deterministic by construction), `emit(line)` as the
-    /// channel, output parsed as ADDITIVE items before checking — so the
-    /// generated functions exist on both backends and in the footprint.
+    /// reachable (deterministic by construction), typed item builders append
+    /// ADDITIVE items before checking — so the generated functions exist on
+    /// both backends and in the footprint.
     #[test]
     fn comptime_blocks_generate_items_additively() {
-        let src = "comptime:\n    var i = 0\n    while i < 3:\n        emit(\"pub fn lucky_${i}() -> Int:\")\n        emit(\"    ${i * 7}\")\n        emit(\"\")\n        i = i + 1\n\nfn main(console: Console):\n    console.print(\"${lucky_0()} ${lucky_1()} ${lucky_2()}\")\n";
+        let src = "import meta\n\ncomptime:\n    var i = 0\n    while i < 3:\n        emit_item(meta.function(true, meta.ident(\"lucky_${i}\"), [], Some(meta.type_named(meta.ident(\"Int\"), [])), meta.expr_int(i * 7)))\n        i = i + 1\n\nfn main(console: Console):\n    console.print(\"${lucky_0()} ${lucky_1()} ${lucky_2()}\")\n";
         let want = vec!["0 7 14".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
-        // Emitted garbage is a loud error carrying the emitted source.
-        let bad = "comptime:\n    emit(\"fn (((\")\n\nfn main(console: Console):\n    console.print(\"x\")\n";
-        let module = parser::parse_module(bad).expect("parse");
-        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
-            .expect_err("bad emission must be loud");
-        assert!(err.to_string().contains("does not parse"), "got: {err}");
     }
 
     /// `return X if cond` — a postfix-guard return, sugar for `if cond: return X`.
@@ -269,7 +262,7 @@ fn main(console: Console):
         let src = "import meta\n\
                    \n\
                    comptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-                   \x20   meta.expr_raw(\"\\\"ok\\\"\")\n\
+                   \x20   meta.expr_string(\"ok\")\n\
                    type Box:\n\
                    \x20   value: Int\n\
                    impl Box:\n\
@@ -293,7 +286,7 @@ fn main(console: Console):
     /// matches a plain multiline string and both backends produce identical bytes.
     #[test]
     fn multiline_tag_literal_preserves_raw_newlines_on_both_backends() {
-        let src = "import meta\n\ncomptime fn raw(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_raw(\"\\\"\" + parts.at(0) + \"\\\"\")\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
+        let src = "import meta\n\ncomptime fn raw(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_string(parts.at(0))\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
         // The plain multiline string (line 2 of output) is the oracle; the tagged
         // literal (line 1) must match it exactly on BOTH backends.
         let expected = vec!["line1\nline2".to_string(), "line1\nline2".to_string()];

@@ -176,6 +176,12 @@ impl AuthenticatedModuleOwners {
     pub(crate) fn owner(&self, module: &str) -> Option<&ModuleLoadIdentity> {
         self.owners.get(module)
     }
+
+    /// The loader's complete, key-sorted ownership assignment. Compiler-owned
+    /// source recipes bind this exact map into their authenticated witness.
+    pub(crate) fn assignments(&self) -> impl Iterator<Item = (&str, &ModuleLoadIdentity)> {
+        self.owners.iter().map(|(module, identity)| (module.as_str(), identity))
+    }
 }
 
 /// Resolved identity of one loader-owned declaration.

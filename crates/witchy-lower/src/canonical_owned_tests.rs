@@ -200,3 +200,94 @@ fn owned_releases_apply_loop_token_permutations_simultaneously() {
     assert_eq!(function.blocks.len(), 3);
     assert!(function.blocks.iter().all(|block| block.operations.is_empty()));
 }
+
+#[test]
+fn owned_releases_normalize_static_and_owned_tokens_at_a_join() {
+    let ty = ValueType::Ref(LayoutId::from_bytes([1; 32]));
+    let condition = ValueId::new(0);
+    let owned = ValueId::new(1);
+    let static_value = ValueId::new(2);
+    let joined = ValueId::new(3);
+    let sig = signature(0, vec![ValueType::Bool, ty], vec![ty]);
+    let mut function = Function {
+        id: FunctionId::new(0), signature: sig.id, entry: BlockId::new(0),
+        value_types: BTreeMap::from([
+            (condition, ValueType::Bool), (owned, ty), (static_value, ty), (joined, ty),
+        ]),
+        blocks: vec![
+            BasicBlock {
+                id: BlockId::new(0),
+                parameters: vec![parameter(0, ValueType::Bool), parameter(1, ty)],
+                operations: Vec::new(),
+                terminator: Terminator::BranchIf {
+                    condition,
+                    then_target: BlockId::new(1), then_arguments: Vec::new(),
+                    else_target: BlockId::new(2), else_arguments: Vec::new(),
+                },
+            },
+            BasicBlock {
+                id: BlockId::new(1), parameters: Vec::new(),
+                operations: vec![Operation::StaticData {
+                    destination: static_value, layout: LayoutId::from_bytes([1; 32]),
+                    extent: Extent::FixedBytes(4), data: StaticDataId::new(0),
+                }],
+                terminator: Terminator::Branch { target: BlockId::new(3), arguments: vec![static_value] },
+            },
+            BasicBlock {
+                id: BlockId::new(2), parameters: Vec::new(), operations: Vec::new(),
+                terminator: Terminator::Branch { target: BlockId::new(3), arguments: vec![owned] },
+            },
+            BasicBlock {
+                id: BlockId::new(3), parameters: vec![parameter(3, ty)], operations: Vec::new(),
+                terminator: Terminator::Return { values: vec![joined] },
+            },
+        ],
+    };
+
+    insert_releases(&mut function, &sig, &[sig.clone()], &HashMap::new())
+        .expect("a static no-op token and an owned token normalize at their shared phi");
+}
+
+#[test]
+fn owned_releases_refuse_join_with_an_unowned_non_reference_lane() {
+    let ty = ValueType::Ref(LayoutId::from_bytes([1; 32]));
+    let condition = ValueId::new(0);
+    let owned = ValueId::new(1);
+    let joined = ValueId::new(2);
+    let sig = signature(0, vec![ValueType::Bool, ty], vec![ty]);
+    let mut function = Function {
+        id: FunctionId::new(0), signature: sig.id, entry: BlockId::new(0),
+        value_types: BTreeMap::from([
+            (condition, ValueType::Bool), (owned, ty), (joined, ty),
+        ]),
+        blocks: vec![
+            BasicBlock {
+                id: BlockId::new(0),
+                parameters: vec![parameter(0, ValueType::Bool), parameter(1, ty)],
+                operations: Vec::new(),
+                terminator: Terminator::BranchIf {
+                    condition,
+                    then_target: BlockId::new(1), then_arguments: Vec::new(),
+                    else_target: BlockId::new(2), else_arguments: Vec::new(),
+                },
+            },
+            BasicBlock {
+                id: BlockId::new(1), parameters: Vec::new(), operations: Vec::new(),
+                terminator: Terminator::Branch { target: BlockId::new(3), arguments: vec![owned] },
+            },
+            BasicBlock {
+                id: BlockId::new(2), parameters: Vec::new(), operations: Vec::new(),
+                terminator: Terminator::Branch { target: BlockId::new(3), arguments: vec![condition] },
+            },
+            BasicBlock {
+                id: BlockId::new(3), parameters: vec![parameter(2, ty)], operations: Vec::new(),
+                terminator: Terminator::Return { values: vec![joined] },
+            },
+        ],
+    };
+
+    assert!(matches!(
+        insert_releases(&mut function, &sig, &[sig.clone()], &HashMap::new()),
+        Err(super::owned::ReleasePlacementError::IncompatibleOwnedEdge(target)) if target == BlockId::new(3)
+    ));
+}

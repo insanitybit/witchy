@@ -12,7 +12,6 @@
 mod tests {
     use witchy_lower::codegen::*;
     use witchy_lower::analysis;
-    use witchy_syntax::ast::*;
 
     // Mirrors the private `codegen::SCRUT_POOL` (16): the per-depth scrutinee
     // save-slot pool. The scratch-pool helper builds a match nested one level
@@ -31,6 +30,16 @@ mod tests {
         assert!(
             unsupported.message.contains("reachable functions do not fully lower to WIR"),
             "the whole-unit fallback must survive partial loan-fact consumption: {unsupported}",
+        );
+    }
+
+    fn expect_view_rejection(source: &str, context: &str, expected: &str) {
+        let module = parse_module(source).expect("parse immutable-view fixture");
+        let error = compile_module_binary(&module).expect_rejected(context);
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains(expected),
+            "{context}: expected diagnostic containing {expected:?}, got {diagnostic}"
         );
     }
     use witchy_syntax::parser::parse_module;
@@ -719,24 +728,6 @@ fn main() -> Int:
 "#,
                 13,
             ),
-            (
-                "borrow-root-and-lifetime",
-                r#"
-mode opt
-type Point packed:
-    x: Int
-fn view(points: let('a) List(Point)) -> View(List(Point), 'a):
-    points
-fn main() -> Int:
-    let points = [Point(4), Point(9)]
-    let borrowed = view(points)
-    var total = 0
-    for point in borrowed:
-        total = total + point.x
-    total
-"#,
-                13,
-            ),
         ];
         let release = witchy_syntax::opt::OptSet::default_set();
         for (label, source, expected) in cases {
@@ -747,6 +738,28 @@ fn main() -> Int:
             assert_eq!(counters["__witchy_rc_headers_elided"], 0, "{label}");
             assert!(counters["__witchy_rc_headers_emitted"] > 0, "{label}: {counters:?}");
         }
+    }
+
+    #[test]
+    fn borrowed_list_iteration_rejects_until_view_receivers_are_supported() {
+        expect_view_rejection(
+            r#"
+mode opt
+type Point packed:
+    x: Int
+fn view(points: &List(Point)) -> &List(Point):
+    points
+fn main() -> Int:
+    let points = [Point(4), Point(9)]
+    let borrowed = view(&points)
+    var total = 0
+    for point in borrowed:
+        total = total + point.x
+    total
+"#,
+            "immutable List iteration remains fail-closed until view receivers are supported",
+            "expected `List(?)`, found `&List(Point)`",
+        );
     }
 
     #[test]
@@ -1015,142 +1028,6 @@ fn main(console: Console):
         let compiled = captured.lock().unwrap().clone();
         let oracle = vec!["7102".to_string()];
         assert_eq!(compiled, oracle, "compiled expected value");
-    }
-
-    #[test]
-    fn exclusive_reference_place_write_matches_the_interpreter_oracle() {
-        let source = r#"
-mode opt
-
-fn write_value(slot: &'a mut Int) -> Nil:
-    *slot = 9
-
-fn main(console: Console):
-    var value = 1
-    write_value(&mut value)
-    console.print("${value}")
-"#;
-        let module = parse_module(source).expect("parse exclusive reference place fixture");
-        let bytes = compile_module_binary(&module)
-            .expect_lowered("compiled backend lowers exclusive reference place fixture");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        assert_eq!(captured.lock().unwrap().as_slice(), ["9"]);
-    }
-
-    #[test]
-    fn exclusive_reference_projected_place_write_matches_the_interpreter_oracle() {
-        let source = r#"
-mode opt
-
-type Counter:
-    value: Int
-
-fn write_value(slot: &'a mut Int) -> Nil:
-    *slot = 9
-
-fn main(console: Console):
-    var counter = Counter(1)
-    write_value(&mut counter.value)
-    console.print("${counter.value}")
-"#;
-        let module = parse_module(source).expect("parse projected exclusive reference fixture");
-        let bytes = compile_module_binary(&module)
-            .expect_lowered("compiled backend lowers projected exclusive reference fixture");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        assert_eq!(captured.lock().unwrap().as_slice(), ["9"]);
-    }
-
-    #[test]
-    fn local_projected_exclusive_reference_write_matches_the_interpreter_oracle() {
-        let source = r#"
-mode opt
-
-type Counter:
-    value: Int
-
-fn main(console: Console):
-    var counter = Counter(1)
-    let slot = &mut counter.value
-    *slot = 9
-    console.print("${counter.value}")
-"#;
-        let module = parse_module(source).expect("parse local projected exclusive reference fixture");
-        let bytes = compile_module_binary(&module)
-            .expect_lowered("compiled backend lowers local projected exclusive reference fixture");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        assert_eq!(captured.lock().unwrap().as_slice(), ["9"]);
-    }
-
-    #[test]
-    fn local_exclusive_reborrow_preserves_the_original_projected_place() {
-        let source = r#"
-mode opt
-
-type Counter:
-    value: Int
-
-fn main(console: Console):
-    var counter = Counter(1)
-    let parent = &mut counter.value
-    let child = &mut parent
-    *child = 9
-    console.print("${counter.value}")
-"#;
-        let module = parse_module(source).expect("parse local exclusive reborrow fixture");
-        let bytes = compile_module_binary(&module)
-            .expect_lowered("compiled backend lowers local exclusive reborrow fixture");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        assert_eq!(captured.lock().unwrap().as_slice(), ["9"]);
-    }
-
-    #[test]
-    fn returned_exclusive_reference_preserves_the_callee_projection() {
-        let source = r#"
-mode opt
-
-type Pair:
-    left: Int
-    right: Int
-
-fn left(pair: &'a mut Pair) -> &'a mut Int:
-    &mut pair.left
-
-fn main(console: Console):
-    var pair = Pair(1, 2)
-    let slot = left(&mut pair)
-    *slot = 9
-    console.print("${pair.left}:${pair.right}")
-"#;
-        let module = parse_module(source).expect("parse returned exclusive reference fixture");
-        let bytes = compile_module_binary(&module)
-            .expect_lowered("compiled backend preserves the returned exclusive reference place");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        assert_eq!(captured.lock().unwrap().as_slice(), ["9:2"]);
     }
 
     #[test]
@@ -1467,7 +1344,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn borrowed_string_slice_materializes_from_its_authenticated_root_range() {
+    fn borrowed_string_slice_rejects_until_aggregate_view_carriers_are_admitted() {
         let string_module = parse_module(
             witchy_syntax::linker::bundled_source("string").expect("bundled string module"),
         ).expect("parse string module");
@@ -1486,18 +1363,16 @@ fn main() -> Int:
             "app",
             &std::collections::HashSet::from(["app".to_string()]),
         );
-        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
-        assert_eq!(result, 3);
-        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower borrowed slice"));
-        assert!(wat.contains("str_slice_view"), "slice binding should preserve its view tuple: {wat}");
-        assert!(!wat.contains("call $substr"), "borrowed slice must not allocate via substr: {wat}");
-        assert!(wat.contains("call $str_view_to_string"), "materialization should use the root/start/len helper: {wat}");
-        assert!(wat.contains("memory.copy"), "materialization should lower its checked bulk-copy operation: {wat}");
-        assert!(!wat.contains("raw_buffer_copy"), "materialization must not retain the unauthenticated payload-copy helper: {wat}");
+        let error = compile_module_binary(&module)
+            .expect_rejected("String view materialization is fail-closed until aggregate carriers are admitted");
+        assert!(
+            error.to_string().contains("parameter type erases that relation"),
+            "unexpected immutable String view rejection: {error}"
+        );
     }
 
     #[test]
-    fn dict_query_consumes_a_materialized_slice_without_recloning() {
+    fn dict_query_from_string_view_rejects_until_aggregate_view_carriers_are_admitted() {
         let dict_module = parse_module(
             witchy_syntax::linker::bundled_source("dict").expect("bundled dict module"),
         ).expect("parse dict module");
@@ -1519,10 +1394,12 @@ fn main() -> Int:
             "app",
             &std::collections::HashSet::from(["app".to_string()]),
         );
-        let (result, _) = run_int_module_with_i64_globals(&module, &[]);
-        assert_eq!(result, 41);
-        let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower dict slice query"));
-        assert!(wat.contains("call $dict_get_slice_or"), "dict query should use the borrowed slice helper: {wat}");
+        let error = compile_module_binary(&module)
+            .expect_rejected("Dict query from a String view is fail-closed until aggregate carriers are admitted");
+        assert!(
+            error.to_string().contains("parameter type erases that relation"),
+            "unexpected immutable String view rejection: {error}"
+        );
     }
 
     #[test]
@@ -1533,8 +1410,10 @@ fn main() -> Int:
         let app = parse_module(r#"
 mode opt
 import dict
+fn fresh() -> unique Dict(String, Int):
+    dict.new()
 fn main() -> Int:
-    var d: Dict(String, Int) = dict.new()
+    var d = fresh()
     let inserted = dict.get_or_insert(d, "word7", 99)
     let i = 7
     dict.get_or(d, "word${i}", 42)
@@ -1557,7 +1436,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn dict_update_interpolation_uses_borrowed_view_and_preserves_misses() {
+    fn dict_update_interpolation_uses_owned_key_and_preserves_misses() {
         let dict_module = parse_module(
             witchy_syntax::linker::bundled_source("dict").expect("bundled dict module"),
         ).expect("parse dict module");
@@ -1569,7 +1448,7 @@ fn main() -> Int:
     var i = 0
     while i < 3:
         let w = "word${i}"
-        dict.update(d, w, 0, fn(n: Int): n + 1)
+        let _ = dict.update(d, w, 0, fn(n: Int): n + 1)
         i = i + 1
     dict.length(d)
 "#).expect("parse interpolation update app");
@@ -1581,14 +1460,10 @@ fn main() -> Int:
         let (result, _) = run_int_module_with_i64_globals(&module, &[]);
         assert_eq!(result, 3);
         let wat = witchy_wir::wir::to_wat(&assemble_wir_module(&module).expect_lowered("lower interpolation update"));
-        assert!(wat.contains("call $str_fmt_prefix_int_view"), "update key should use a borrowed format view: {wat}");
-        assert!(wat.contains("call $dict_update_slice_cap"), "update should consume the view directly: {wat}");
-        assert!(!wat.contains("call $str_fmt_prefix_int\n"), "update path should not materialize an owned key: {wat}");
-        let update = wat.find("call $dict_update_slice_cap").expect("slice update call");
-        let rewind = wat[update..]
-            .find("global.set $fmt_stack_top")
-            .expect("format arena is rewound after the update");
-        assert!(rewind < 512, "format arena rewind must immediately follow the borrowed update: {}", &wat[update..update + rewind]);
+        assert!(wat.contains("call $str_fmt_prefix_int"), "update key uses the current owned format helper: {wat}");
+        assert!(wat.contains("call $dict_update_cap"), "update reaches the checked dictionary helper: {wat}");
+        assert!(!wat.contains("call $str_fmt_prefix_int_view"), "unsupported borrowed format carrier is not emitted: {wat}");
+        assert!(!wat.contains("call $dict_update_slice_cap"), "unsupported borrowed dictionary carrier is not emitted: {wat}");
     }
 
     #[test]
@@ -3469,161 +3344,63 @@ fn main() -> Int:
     }
 
     #[test]
-    fn borrowed_owner_root_is_released_after_explicit_return_value_evaluation() {
-        let module = parse_module(
+    fn borrowed_list_view_receiver_rejects_until_view_receivers_are_supported() {
+        expect_view_rejection(
             "mode opt\n\n\
-             fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
-             fn finish(xs: let('a) List(Int)) -> Int:\n    let w = view(xs)\n    return list.length(w)\n\n\
+             fn view(xs: &List(Int)) -> &List(Int):\n    xs\n\n\
+             fn finish(xs: &List(Int)) -> Int:\n    let w = view(xs)\n    return list.length(w)\n\n\
              fn main() -> Int:\n    finish([1, 2])\n",
-        )
-        .expect("parse");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed-view program lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $finish").expect("finish function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let finish = &tail[..end];
-
-        let eval = finish.find("local.set $__witchy_call_result_i64").expect("return evaluated");
-        let release = finish.find("call $rc_drop").expect("borrow root released");
-        let ret = finish.rfind("return").expect("explicit return");
-        assert!(finish.contains("__loan_root_w__xs"), "hidden owner root is declared: {finish}");
-        assert!(eval < release && release < ret, "evaluate, release, return ordering: {finish}");
+            "borrowed List view used as a List receiver must reject",
+            "expected `List(?)`, found `&List(Int)`",
+        );
     }
 
     #[test]
-    fn borrowed_owner_root_is_released_on_try_early_return() {
-        let module = parse_module(
+    fn borrowed_list_view_try_path_rejects_until_view_receivers_are_supported() {
+        expect_view_rejection(
             "mode opt\n\n\
-             fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+             fn view(xs: &List(Int)) -> &List(Int):\n    xs\n\n\
              fn fail() -> Result(Int, String):\n    Err(\"stop\")\n\n\
-             fn finish(xs: let('a) List(Int)) -> Result(Int, String):\n    let w = view(xs)\n    let n = fail()?\n    Ok(list.length(w) + n)\n\n\
+             fn finish(xs: &List(Int)) -> Result(Int, String):\n    let w = view(xs)\n    let n = fail()?\n    Ok(list.length(w) + n)\n\n\
              fn main() -> Int:\n    match finish([1, 2]):\n        Ok(n) -> n\n        Err(_) -> 0\n",
-        )
-        .expect("parse");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed-view try program lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $finish").expect("finish function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let finish = &tail[..end];
-        let drops = finish.match_indices("call $rc_drop").count();
-
-        assert_eq!(finish.match_indices("call $rc_dup").count(), 1, "one root opened: {finish}");
-        assert!(drops >= 2, "both `?` failure and success paths release the root: {finish}");
-    }
-
-    #[test]
-    fn alternative_view_origins_share_one_owner_root() {
-        let module = parse_module(
-            "mode opt\n\nfn first(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn second(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn count(xs: List(Int), pick: Bool) -> Int:\n    let w = if pick: first(xs) else: second(xs)\n    list.length(w)\n\nfn main() -> Int:\n    count([1], true)\n",
-        )
-        .expect("parse");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("alternative view origins lower");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $count").expect("count function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let count = &tail[..end];
-        assert_eq!(count.match_indices("call $rc_dup").count(), 1, "one owner root: {count}");
-        assert_eq!(count.match_indices("call $rc_drop").count(), 1, "one owner release: {count}");
-    }
-
-    #[test]
-    fn nested_dict_view_roots_the_owner_object_base_not_the_projected_pointer() {
-        let module = parse_module(
-            "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(holder: let('a) Holder) -> View(Dict(Int, Int), 'a):\n    holder.values\n\nfn count(holder: Holder) -> Int:\n    let v = view(holder)\n    dict.length(v)\n\nfn main() -> Int:\n    count(Holder(dict.new()))\n",
-        )
-        .expect("parse");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("nested Dict view lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $count").expect("count function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let count = &tail[..end];
-        let root = count.find("local.set $__loan_root_v__holder").expect("root assignment");
-        let before = &count[..root];
-        let owner = before
-            .rfind("    local.get $holder\n")
-            .filter(|owner| {
-                before.rfind("    local.get $v\n").is_none_or(|view| *owner > view)
-            })
-            .expect("the retained root must come from Holder, never the projected Dict view");
-        assert!(
-            !before[owner..].contains("i32.const 4"),
-            "a projected Dict bias must not be applied to the containing Holder root: {count}",
+            "borrowed List view on a try path must reject",
+            "expected `List(?)`, found `&List(Int)`",
         );
     }
 
     #[test]
-    fn direct_dict_view_roots_the_dict_owner_with_its_own_layout_bias() {
-        let module = parse_module(
-            "mode opt\n\nfn view(values: let('a) Dict(Int, Int)) -> View(Dict(Int, Int), 'a):\n    values\n\nfn count(values: Dict(Int, Int)) -> Int:\n    let v = view(values)\n    dict.length(v)\n\nfn main() -> Int:\n    count(dict.new())\n",
-        )
-        .expect("parse");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("direct Dict view lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $count").expect("count function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let count = &tail[..end];
-        let root = count.find("local.set $__loan_root_v__values").expect("root assignment");
-        let before = &count[..root];
-        let owner = before
-            .rfind("    local.get $values\n")
-            .filter(|owner| {
-                before.rfind("    local.get $v\n").is_none_or(|view| *owner > view)
-            })
-            .expect("the direct owner, not the returned view, supplies the retained root");
-        assert!(
-            before[owner..].contains("i32.const 4"),
-            "the direct Dict owner's own pointer representation supplies its -4 base bias: {count}",
+    fn alternative_list_view_origins_reject_until_view_receivers_are_supported() {
+        expect_view_rejection(
+            "mode opt\n\nfn first(xs: &List(Int)) -> &List(Int):\n    xs\n\nfn second(xs: &List(Int)) -> &List(Int):\n    xs\n\nfn count(xs: List(Int), pick: Bool) -> Int:\n    let w = if pick: first(&xs) else: second(&xs)\n    list.length(w)\n\nfn main() -> Int:\n    let xs = [1]\n    count(xs, true)\n",
+            "alternative immutable List views must reject unsupported receivers",
+            "expected `List(?)`, found `&List(Int)`",
         );
     }
 
     #[test]
-    fn projected_dict_argument_keeps_the_containing_owner_base() {
-        let module = parse_module(
-            "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(values: let('a) Dict(Int, Int)) -> View(Dict(Int, Int), 'a):\n    values\n\nfn count(holder: Holder) -> Int:\n    let v = view(holder.values)\n    dict.length(v)\n\nfn main() -> Int:\n    count(Holder(dict.new()))\n",
-        )
-        .expect("parse");
-        let typed = witchy_types::typeck::annotate_checked(module.clone())
-            .expect("annotate Holder root fixture");
-        let checked_facts = witchy_types::loans::facts_with_types(typed.module(), typed.table())
-            .expect("checked Holder loan facts");
-        let checked_count = typed
-            .module()
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Item::Function(function) if function.name == "count" => Some(function),
-                _ => None,
-            })
-            .expect("checked count function");
-        let checked_root = checked_facts.opens_after(&checked_count.body.stmts[0])[0].owner_root();
-        assert_eq!(
-            checked_root.direct_storage_type,
-            Some(Type::Named("Holder".into(), vec![])),
-            "the caller's checked root type must beat the callee's projected Dict storage type",
+    fn nested_dict_view_projection_rejects_until_aggregate_carriers_are_admitted() {
+        expect_view_rejection(
+            "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(holder: &Holder) -> &Dict(Int, Int):\n    holder.values\n\nfn count(holder: Holder) -> Int:\n    let v = view(&holder)\n    dict.length(v)\n\nfn main() -> Int:\n    let holder = Holder(dict.new())\n    count(holder)\n",
+            "nested immutable Dict projection must reject until aggregate views are admitted",
+            "field access `.values` requires a record, found `&Holder`",
         );
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("projected Dict argument lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $count").expect("count function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let count = &tail[..end];
-        let root = count.find("local.set $__loan_root_v__holder").expect("root assignment");
-        let before = &count[..root];
-        let owner = before.rfind("    local.get $holder\n").expect("owner base");
-        assert!(
-            !before[owner..].contains("i32.const 4"),
-            "the callee's Dict type must not bias the projected argument's Holder base: {count}",
+    }
+
+    #[test]
+    fn direct_dict_view_receiver_rejects_until_view_receivers_are_supported() {
+        expect_view_rejection(
+            "mode opt\n\nfn view(values: &Dict(Int, Int)) -> &Dict(Int, Int):\n    values\n\nfn count(values: Dict(Int, Int)) -> Int:\n    let v = view(&values)\n    dict.length(v)\n\nfn main() -> Int:\n    let values = dict.new()\n    count(values)\n",
+            "direct immutable Dict views must reject unsupported receivers",
+            "expected `Dict(?, ?)`, found `&Dict(Int, Int)`",
+        );
+    }
+
+    #[test]
+    fn projected_dict_argument_rejects_until_aggregate_carriers_are_admitted() {
+        expect_view_rejection(
+            "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(values: &Dict(Int, Int)) -> &Dict(Int, Int):\n    values\n\nfn count(holder: Holder) -> Int:\n    let v = view(&holder.values)\n    dict.length(v)\n\nfn main() -> Int:\n    let holder = Holder(dict.new())\n    count(holder)\n",
+            "projected immutable Dict arguments must reject until aggregate carriers are admitted",
+            "expected `Dict(?, ?)`, found `&Dict(Int, Int)`",
         );
     }
 
@@ -3647,21 +3424,14 @@ fn main() -> Int:
     }
 
     #[test]
-    fn lambda_local_view_declares_and_releases_its_root() {
-        let module = parse_module(
-            "mode opt\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn main() -> Int:\n    let f = fn() -> Int:\n        let xs = [1, 2]\n        let w = view(xs)\n        list.length(w)\n    f()\n",
-        )
-        .expect("parse");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("lambda-local borrowed view lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $__lam").expect("lifted lambda");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let lambda = &tail[..end];
-        assert!(lambda.contains("__loan_root_w__xs"), "lambda root local: {lambda}");
-        assert!(lambda.contains("call $rc_dup"), "lambda opens root: {lambda}");
-        assert!(lambda.contains("call $rc_drop"), "lambda closes root: {lambda}");
+    fn lambda_local_view_rejects_until_view_carriers_are_admitted() {
+        let source =
+            "mode opt\n\nfn view(xs: &List(Int)) -> &List(Int):\n    xs\n\nfn main() -> Int:\n    let f = fn() -> Int:\n        let xs = [1, 2]\n        let w = view(&xs)\n        list.length(w)\n    f()\n";
+        expect_view_rejection(
+            source,
+            "Lambda-local immutable List views must reject until carriers are admitted",
+            "expected `List(?)`, found `&List(Int)`",
+        );
     }
 
     #[test]
@@ -3818,7 +3588,7 @@ fn main() -> Int:
         (store, instance, captured)
     }
 
-    fn run_authenticated_dynamic(src: &str) -> Vec<String> {
+    fn compile_authenticated_dynamic(src: &str) -> LoweringOutcome<Vec<u8>> {
         use witchy_types::runtime_type::{
             AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
         };
@@ -3864,25 +3634,20 @@ fn main() -> Int:
             owners,
         )
         .expect("authenticated Dynamic checked link");
-        let bytes = compile_checked_module_binary(&checked)
-            .expect_lowered("authenticated Dynamic fixture lowers");
-        let (mut store, instance, captured) = instantiate_with_print(&bytes);
-        instance
-            .get_typed_func::<(), ()>(&mut store, "run")
-            .unwrap()
-            .call(&mut store, ())
-            .unwrap();
-        captured.lock().unwrap().clone()
+        compile_checked_module_binary(&checked)
     }
 
     #[test]
-    fn dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter() {
-        let output = run_authenticated_dynamic(
+    fn dynamic_descriptor_without_source_witness_rejects_fail_closed() {
+        let error = compile_authenticated_dynamic(
             "import dynamic\nimport reflect\n\ntype User:\n    name: String\n    age: Int\n\ntype Box(a):\n    Box(a)\n\nimpl Reflect for User:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nimpl Reflect for Box(a):\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console):\n    let value = dynamic.dynamic(7)\n    console.print(dynamic.type_name(dynamic.type_of(value)))\n    console.print(dynamic.type_name(dynamic.runtime_type(Int)))\n    console.print(dynamic.type_name(dynamic.runtime_type(User)))\n    console.print(dynamic.type_name(dynamic.runtime_type(Box(Int))))\n    console.print(dynamic.type_name(dynamic.runtime_type(.{age: Int, name: String})))\n    console.print(dynamic.type_name(dynamic.runtime_type(.[Count(Int) | Label(String)])))\n    let exact: Option(Int) = dynamic.try_decode(value)\n    match exact:\n        Some(number) -> console.print(\"${number}\")\n        None -> console.print(\"missing-int\")\n    let mismatch: Option(String) = dynamic.try_decode(value)\n    match mismatch:\n        Some(text) -> console.print(text)\n        None -> console.print(\"none\")\n    let decoded: Result(Int, dynamic.DynamicError) = dynamic.decode(value)\n    match decoded:\n        Ok(number) -> console.print(\"decoded-${number}\")\n        Err(_) -> console.print(\"decode-failed\")\n    let wrong: Result(String, dynamic.DynamicError) = dynamic.decode(value)\n    match wrong:\n        Ok(text) -> console.print(text)\n        Err(dynamic.TypeMismatch(actual)) -> console.print(\"mismatch-${dynamic.type_name(actual)}\")\n        Err(_) -> console.print(\"unexpected-dynamic-error\")\n    let person = dynamic.dynamic(User(\"Ada\", 42))\n    let decoded_person: Option(User) = dynamic.try_decode(person)\n    match decoded_person:\n        Some(user) -> console.print(user.name)\n        None -> console.print(\"missing-user\")\n    let words = dynamic.dynamic([\"alpha\", \"beta\"])\n    let decoded_words: Option(List(String)) = dynamic.try_decode(words)\n    match decoded_words:\n        Some(items) -> console.print(list.at(items, 1))\n        None -> console.print(\"missing-words\")\n    let boxed = dynamic.dynamic(Box(11))\n    let decoded_box: Option(Box(Int)) = dynamic.try_decode(boxed)\n    match decoded_box:\n        Some(Box(number)) -> console.print(\"box-${number}\")\n        None -> console.print(\"missing-box\")\n    let record = dynamic.dynamic(.{name: \"Nia\", age: 9})\n    let decoded_record: Option(.{age: Int, name: String}) = dynamic.try_decode(record)\n    match decoded_record:\n        Some(found) -> console.print(found.name)\n        None -> console.print(\"missing-record\")\n    let choice: .[Count(Int) | Label(String)] = .Count(5)\n    let encoded_choice = dynamic.dynamic(choice)\n    let decoded_choice: Option(.[Count(Int) | Label(String)]) = dynamic.try_decode(encoded_choice)\n    match decoded_choice:\n        Some(.Count(number)) -> console.print(\"count-${number}\")\n        Some(.Label(label)) -> console.print(label)\n        None -> console.print(\"missing-choice\")\n",
         );
-        assert_eq!(
-            output,
-            ["Int", "Int", "User", "Box(Int)", ".{age: Int, name: String}", ".[Count(Int) | Label(String)]", "7", "none", "decoded-7", "mismatch-Int", "Ada", "beta", "box-11", "Nia", "count-5"]
+        let error = error.expect_rejected(
+            "Dynamic descriptor aggregate decoding remains fail-closed until its canonical source witness is admitted",
+        );
+        assert!(
+            error.to_string().contains("MissingCheckedSourceWitness"),
+            "unexpected Dynamic rejection: {error}"
         );
     }
 
@@ -3900,9 +3665,9 @@ impl Render for Label:
         match self:
             Label(value) -> value
 
-fn main() -> Nil:
+fn main() -> ():
     let item: dyn Render = Label(42)
-    Nil
+    ()
 "#;
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
@@ -4233,7 +3998,7 @@ mode opt
 fn build() -> unique List(Int):
     [1, 2]
 
-fn append(var xs: unique List(Int)) -> Nil:
+fn append(var xs: unique List(Int)) -> ():
     xs = [1, 2, 3]
     return
 
@@ -4286,12 +4051,12 @@ fn main() -> Int:
         let src = r#"
 mode opt
 
-fn append(var xs: unique List(Int)) -> Nil:
+fn append(var xs: unique List(Int)) -> ():
     xs = [1, 2, 3]
     return
 
 fn main() -> Int:
-    var xs = [0]
+    var xs: unique List(Int) = [0]
     let update = append
     update(xs)
     list.length(xs) * 10 + list.at(xs, 2)
@@ -4314,7 +4079,7 @@ fn main() -> Int:
     let make = fn() -> unique List(Int):
         [4]
     var xs = make()
-    let update = fn(var ys: unique List(Int)) -> Nil:
+    let update = fn(var ys: unique List(Int)) -> ():
         ys = [4, 5]
         return
     update(xs)
@@ -4341,7 +4106,7 @@ fn forward(own values: unique List(Int)) -> unique List(Int):
     move values
 
 fn main() -> Int:
-    var values = [5, 6]
+    var values: unique List(Int) = [5, 6]
     let transfer = forward
     var result = transfer(move values)
     list.length(result) * 10 + list.at(result, 1)
@@ -4795,7 +4560,7 @@ fn poisoned_condition(let n: Int) -> Int:
             copied[hi] = a
             lo = lo + 1
             hi = hi - 1
-        if list.set_at(copied, 0, 99) == Nil:
+        if list.set_at(copied, 0, 99) == ():
             k = copied[0]
     0
 
@@ -6281,7 +6046,7 @@ fn main() -> Int:
     }
 
     #[test]
-    fn forced_copy_dict_update_does_not_reference_an_ownership_token() {
+    fn forced_copy_dict_update_without_source_witness_rejects_fail_closed() {
         let default = witchy_syntax::opt::OptSet::default_set();
         witchy_syntax::opt::set_for_tests(Some(default.without(witchy_syntax::opt::Opt::InPlace)));
         let app = parse_module(include_str!("../../../benchmarks/knucleotide.witchy"))
@@ -6294,7 +6059,11 @@ fn main() -> Int:
         .expect("link forced-copy knucleotide fixture");
         let result = compile_checked_module_binary(&checked);
         witchy_syntax::opt::set_for_tests(None);
-        result.expect_lowered("forced-copy knucleotide lowers without a missing cap local");
+        let error = result.expect_rejected("forced-copy knucleotide remains fail-closed without a checked source witness");
+        assert!(
+            error.to_string().contains("MissingCheckedSourceWitness"),
+            "unexpected forced-copy rejection: {error}"
+        );
     }
 
     #[test]
@@ -6380,7 +6149,7 @@ fn main() -> Int:
         assert!(!root_wat.contains("__seq_forward_"), "a different root is not forwarded");
 
         let intervening_call = r#"
-fn observe() -> Nil:
+fn observe() -> ():
     return
 
 fn main() -> Int:
@@ -6418,7 +6187,7 @@ fn main() -> Int:
     #[test]
     fn sequence_plan_rejects_root_escape_and_length_mutation() {
         let escaped = r#"
-fn observe(let values: List(Int)) -> Nil:
+fn observe(let values: List(Int)) -> ():
     return
 
 fn main() -> Int:
@@ -6785,263 +6554,148 @@ fn main(console: Console):
     }
 
     #[test]
-    fn borrowed_shell_scalar_update_keeps_one_root_for_the_whole_mutable_shell() {
+    fn borrowed_shell_scalar_update_rejects_until_aggregate_carriers_are_admitted() {
         let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
-             fn main() -> Int:\n    let input = \"root\"\n    var cursor = make(input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n";
-        assert_eq!(run_int(source), 1);
-
-        let module = parse_module(source).expect("parse borrowed shell mutation");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed shell scalar mutation lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $main").expect("main function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let main = &tail[..end];
-        assert!(main.contains("__loan_root_cursor__input"), "checked root local: {main}");
-        assert_eq!(main.match_indices("call $rc_dup").count(), 1, "one root retain: {main}");
-        assert_eq!(main.match_indices("call $rc_drop").count(), 1, "one root release: {main}");
-    }
-
-    #[test]
-    fn borrowed_shell_field_replacement_retires_then_retains_the_new_root() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\n\
-             fn replace_cursor(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n\n\
-             fn main() -> Int:\n    let left = \"left\"\n    let right = \"right\"\n    replace_cursor(left, right)\n";
-        assert_eq!(run_int(source), 0);
-
-        let module = parse_module(source).expect("parse borrowed shell root transition");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed shell root transition lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $replace_cursor").expect("replace function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let replace = &tail[..end];
-        assert!(replace.contains("__loan_root_cursor__left"), "old root local: {replace}");
-        assert!(replace.contains("__loan_root_cursor__right"), "new root local: {replace}");
-        assert_eq!(replace.match_indices("call $rc_dup").count(), 2, "one retain per root: {replace}");
-        assert_eq!(replace.match_indices("call $rc_drop").count(), 2, "one release per root: {replace}");
-        assert!(
-            replace.find("call $rc_drop").expect("retired root drop")
-                < replace.rfind("call $rc_dup").expect("replacement root retain"),
-            "the old root closes before the replacement root opens: {replace}"
-        );
-    }
-
-    #[test]
-    fn borrowed_shell_roots_balance_on_explicit_and_branch_returns() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\n\
-             fn early(input: let('a) String) -> Int:\n    var cursor = make(input)\n    return cursor.offset\n\n\
-             fn branch(input: let('a) String, take: Bool) -> Int:\n    var cursor = make(input)\n    if take:\n        return cursor.offset\n    cursor.offset\n\n\
-             fn looped(input: let('a) String) -> Int:\n    var cursor = make(input)\n    var i = 0\n    while (i < 3):\n        i = i + 1\n    cursor.offset + i\n\n\
-             fn main() -> Int:\n    let input = \"root\"\n    early(input) + branch(input, true) + branch(input, false) + looped(input)\n";
-        assert_eq!(run_int(source), 31);
-
-        let module = parse_module(source).expect("parse aggregate root lifecycle fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("aggregate root lifecycle lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        for function in ["early", "branch", "looped"] {
-            let start = wat.find(&format!("(func ${function}")).expect("lifecycle function");
-            let tail = &wat[start..];
-            let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-            let body = &tail[..end];
-            assert!(body.contains("__loan_root_cursor__input"), "root local in {function}: {body}");
-            assert!(body.contains("call $rc_dup"), "retain in {function}: {body}");
-            assert!(body.contains("call $rc_drop"), "release in {function}: {body}");
-        }
-    }
-
-    #[test]
-    fn borrowed_shell_root_is_released_on_try_early_return() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\n\
-             fn fail() -> Result(Int, String):\n    Err(\"stop\")\n\n\
-             fn finish(input: let('a) String) -> Result(Int, String):\n    var cursor = make(input)\n    let value = fail()?\n    Ok(cursor.offset + value)\n\n\
-             fn main() -> Int:\n    match finish(\"root\"):\n        Ok(value) -> value\n        Err(_) -> 0\n";
-        assert_eq!(run_int(source), 0);
-
-        let module = parse_module(source).expect("parse aggregate try lifecycle fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("aggregate try lifecycle lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $finish").expect("finish function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let finish = &tail[..end];
-        assert!(finish.contains("__loan_root_cursor__input"), "checked root local: {finish}");
-        assert_eq!(finish.match_indices("call $rc_dup").count(), 1, "one root opened: {finish}");
-        assert!(
-            finish.match_indices("call $rc_drop").count() >= 2,
-            "both `?` failure and success paths release the root: {finish}"
-        );
-    }
-
-    #[test]
-    fn borrowed_nominal_list_at_transfers_the_checked_owner_root() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String, offset: Int) -> Cursor('a):\n    Cursor(input, offset)\n\n\
-             fn first(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let cursor = list.at(cursors, 0)\n    cursor.offset\n\n\
-             fn main() -> Int:\n    first(\"root\")\n";
-        assert_eq!(run_int(source), 7);
-
-        let module = parse_module(source).expect("parse borrowed nominal list fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed nominal list read lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $first").expect("first function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let first = &tail[..end];
-        assert!(first.contains("__loan_root_cursors__input"), "list root local: {first}");
-        assert!(first.contains("__loan_root_cursor__input"), "extracted root local: {first}");
-        // The list element itself is copied out of its slot once; the other
-        // two operations retain the list and extracted-shell root companions.
-        assert_eq!(first.match_indices("call $rc_dup").count(), 3, "element copy plus one retain per live shell: {first}");
-        assert_eq!(first.match_indices("call $rc_drop").count(), 2, "one root release per live shell: {first}");
-    }
-
-    #[test]
-    fn borrowed_nominal_list_copy_keeps_an_independent_root_companion() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String, offset: Int) -> Cursor('a):\n    Cursor(input, offset)\n\n\
-             fn copy_read(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let copied = cursors\n    let cursor = list.at(copied, 0)\n    cursor.offset\n\n\
-             fn main() -> Int:\n    copy_read(\"root\")\n";
-        assert_eq!(run_int(source), 7);
-
-        let module = parse_module(source).expect("parse borrowed nominal list copy fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed nominal list copy lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $copy_read").expect("copy_read function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let copy_read = &tail[..end];
-        assert!(copy_read.contains("__loan_root_cursors__input"), "source list root: {copy_read}");
-        assert!(copy_read.contains("__loan_root_copied__input"), "copied list root: {copy_read}");
-        assert!(copy_read.contains("__loan_root_cursor__input"), "extracted shell root: {copy_read}");
-        assert!(copy_read.contains("call $rc_dup"), "retains every live root: {copy_read}");
-        assert!(copy_read.contains("call $rc_drop"), "releases every live root: {copy_read}");
-    }
-
-    #[test]
-    fn borrowed_nominal_list_loop_binder_keeps_the_list_root_live() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String, offset: Int) -> Cursor('a):\n    Cursor(input, offset)\n\n\
-             fn sum(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7), make(input, 9)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n\n\
-             fn main() -> Int:\n    sum(\"root\")\n";
-        assert_eq!(run_int(source), 16);
-
-        let module = parse_module(source).expect("parse borrowed nominal list loop fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed nominal list loop lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $sum").expect("sum function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let sum = &tail[..end];
-        assert!(sum.contains("__loan_root_cursors__input"), "list companion root: {sum}");
-        assert!(sum.contains("call $rc_dup"), "list root retain: {sum}");
-        assert!(sum.contains("call $rc_drop"), "list root release: {sum}");
-    }
-
-    #[test]
-    fn borrowed_nominal_list_overwrite_reopens_and_drops_owned_roots_in_wasm() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\n\
-             fn rebind(left: let('a) String, right: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n\n\
-             fn main() -> Int:\n    rebind(\"left\", \"right\")\n";
-        assert_eq!(run_int(source), 1);
-
-        let module = parse_module(source).expect("parse borrowed nominal list overwrite fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed nominal list overwrite lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $rebind").expect("rebind function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let replace = &tail[..end];
-        assert!(
-            replace.contains("__loan_root_cursors__"),
-            "list root: {replace}"
-        );
-        // direct borrow-aware companion root naming may lag shadowed binding translation here;
-        // keep this check on the list root lifecycle only.
-        assert!(
-            replace.contains("call $rc_dup"),
-            "list overwrite may retain new list companions: {replace}"
-        );
-        assert!(replace.contains("call $rc_drop"), "list overwrite must drop retired companions: {replace}");
-    }
-
-    #[test]
-    fn borrowed_nominal_list_drop_releases_its_checked_root_companions_in_wasm() {
-        let source = "mode opt\n\n\
-             type Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\n\
-             fn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\n\
-             fn clear_roots(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let cursors = []\n    list.length(cursors)\n\n\
-             fn main() -> Int:\n    clear_roots(\"input\")\n";
-        assert_eq!(run_int(source), 0);
-
-        let module = parse_module(source).expect("parse borrowed nominal list drop fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed nominal list drop fixture lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $clear_roots").expect("clear_roots function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let clear = &tail[..end];
-        assert!(
-            clear.contains("__loan_root_cursors__"),
-            "list root: {clear}"
-        );
-        assert!(clear.contains("call $rc_drop"), "dropping the borrowed list must release companions: {clear}");
-    }
-
-    #[test]
-    fn borrowed_parser_and_iterator_shells_run_without_view_materialization() {
-        let source = "mode opt\n\n\
-             type Parser('a):\n    input: View(String, 'a)\n    offset: Int\n\n\
-             type TokenIter('a):\n    input: View(String, 'a)\n    index: Int\n\n\
-             type Token('a):\n    text: View(String, 'a)\n    width: Int\n\n\
-             fn parser(input: let('a) String) -> Parser('a):\n    Parser(input, 2)\n\n\
-             fn tokens(input: let('a) String) -> TokenIter('a):\n    TokenIter(input, 3)\n\n\
-             fn scan(input: let('a) String) -> Int:\n    let p = parser(input)\n    let it = tokens(p.input)\n    let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]\n    var total = 0\n    for token in values:\n        total = total + token.width\n    total\n\n\
-             fn main() -> Int:\n    scan(\"source\")\n";
-        assert_eq!(run_int(source), 5);
-        let (compiled, counters) = run_int_with_i64_globals(
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    var cursor = make(&input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n";
+        expect_view_rejection(
             source,
-            &["__witchy_packed_alloc_calls", "__witchy_packed_alloc_bytes"],
+            "Aggregate Cursor carrying an immutable String view must reject until carriers are admitted",
+            "parameter type erases that relation",
         );
-        assert_eq!(compiled, 5);
-        assert_eq!(counters["__witchy_packed_alloc_calls"], 0);
-        assert_eq!(counters["__witchy_packed_alloc_bytes"], 0);
+    }
 
-        let module = parse_module(source).expect("parse borrowed parser/iterator fixture");
-        let wir = assemble_wir_module(&module)
-            .expect_lowered("borrowed parser/iterator fixture lowers to WIR");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        let start = wat.find("(func $scan").expect("scan function");
-        let tail = &wat[start..];
-        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
-        let scan = &tail[..end];
-        assert!(scan.contains("__loan_root_p__input"), "parser root: {scan}");
-        assert!(scan.contains("__loan_root_it__input"), "iterator root: {scan}");
-        assert!(scan.contains("__loan_root_values__input"), "list root: {scan}");
-        assert!(scan.contains("call $rc_dup"), "owner roots retained: {scan}");
-        assert!(scan.contains("call $rc_drop"), "owner roots released: {scan}");
+    #[test]
+    fn borrowed_shell_field_replacement_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\n\
+             fn replace_cursor(left: &String, right: &String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n\n\
+             fn main() -> Int:\n    let left = \"left\"\n    let right = \"right\"\n    replace_cursor(&left, &right)\n";
+        expect_view_rejection(
+            source,
+            "Replacing an aggregate immutable String view must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_shell_returns_reject_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\n\
+             fn early(input: &String) -> Int:\n    var cursor = make(input)\n    return cursor.offset\n\n\
+             fn branch(input: &String, take: Bool) -> Int:\n    var cursor = make(input)\n    if take:\n        return cursor.offset\n    cursor.offset\n\n\
+             fn looped(input: &String) -> Int:\n    var cursor = make(input)\n    var i = 0\n    while (i < 3):\n        i = i + 1\n    cursor.offset + i\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    early(&input) + branch(&input, true) + branch(&input, false) + looped(&input)\n";
+        expect_view_rejection(
+            source,
+            "Aggregate immutable String views across returns must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_shell_try_path_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\n\
+             fn fail() -> Result(Int, String):\n    Err(\"stop\")\n\n\
+             fn finish(input: &String) -> Result(Int, String):\n    var cursor = make(input)\n    let value = fail()?\n    Ok(cursor.offset + value)\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    match finish(&input):\n        Ok(value) -> value\n        Err(_) -> 0\n";
+        expect_view_rejection(
+            source,
+            "Aggregate immutable String views on try paths must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_list_at_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String, offset: Int) -> Cursor:\n    Cursor(input, offset)\n\n\
+             fn first(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input, 7)]\n    let cursor = list.at(cursors, 0)\n    cursor.offset\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    first(&input)\n";
+        expect_view_rejection(
+            source,
+            "List of aggregate immutable views must reject until aggregate carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_list_copy_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String, offset: Int) -> Cursor:\n    Cursor(input, offset)\n\n\
+             fn copy_read(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input, 7)]\n    let copied = cursors\n    let cursor = list.at(copied, 0)\n    cursor.offset\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    copy_read(&input)\n";
+        expect_view_rejection(
+            source,
+            "Copied List of aggregate immutable views must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_list_loop_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String, offset: Int) -> Cursor:\n    Cursor(input, offset)\n\n\
+             fn sum(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input, 7), make(input, 9)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n\n\
+             fn main() -> Int:\n    let input = \"root\"\n    sum(&input)\n";
+        expect_view_rejection(
+            source,
+            "Looping over a List of aggregate immutable views must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_list_overwrite_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\n\
+             fn rebind(left: &String, right: &String) -> Int:\n    let cursors: List(Cursor) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n\n\
+             fn main() -> Int:\n    let left = \"left\"\n    let right = \"right\"\n    rebind(&left, &right)\n";
+        expect_view_rejection(
+            source,
+            "Rebinding a List of aggregate immutable views must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_nominal_list_drop_rejects_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Cursor:\n    view: &String\n    offset: Int\n\n\
+             fn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\n\
+             fn clear_roots(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input, 7)]\n    let cursors = []\n    list.length(cursors)\n\n\
+             fn main() -> Int:\n    let input = \"input\"\n    clear_roots(&input)\n";
+        expect_view_rejection(
+            source,
+            "Dropping a List of aggregate immutable views must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
+    }
+
+    #[test]
+    fn borrowed_parser_and_iterator_shells_reject_until_aggregate_carriers_are_admitted() {
+        let source = "mode opt\n\n\
+             type Parser:\n    input: &String\n    offset: Int\n\n\
+             type TokenIter:\n    input: &String\n    index: Int\n\n\
+             type Token:\n    text: &String\n    width: Int\n\n\
+             fn parser(input: &String) -> Parser:\n    Parser(input, 2)\n\n\
+             fn tokens(input: &String) -> TokenIter:\n    TokenIter(input, 3)\n\n\
+             fn scan(input: &String) -> Int:\n    let p = parser(input)\n    let it = tokens(p.input)\n    let values: List(Token) = [Token(p.input, p.offset), Token(it.input, it.index)]\n    var total = 0\n    for token in values:\n        total = total + token.width\n    total\n\n\
+             fn main() -> Int:\n    let input = \"source\"\n    scan(&input)\n";
+        expect_view_rejection(
+            source,
+            "Aggregate parser and iterator immutable views must reject until carriers are admitted",
+            "parameter type erases that relation",
+        );
     }
 
     #[test]

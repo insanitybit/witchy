@@ -25,6 +25,7 @@ pub(super) enum ReleasePlacementError {
     IncompatibleOwnedEdge(BlockId),
     UnresolvedResult(ValueId),
     HostMemoryResult(ValueId),
+    ExternalManagedValue(ValueId),
     TailOwnedTokenNeedsTransfer(ValueId),
     EdgeArity(BlockId),
     BlockIdOverflow,
@@ -89,11 +90,12 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
         | Operation::ExtractInlineField { destination, .. }
         | Operation::CloneRef { destination, .. } | Operation::FunctionValue { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. }
+        | Operation::ExternalCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
         Operation::Guard { .. } | Operation::InitNullableOwned { .. } | Operation::Store { .. } | Operation::CopyBytes { .. }
         | Operation::MoveRange { .. } | Operation::CloneRange { .. } | Operation::UpdateCount { .. }
         | Operation::Retain { .. } | Operation::Release { .. } | Operation::DropRef { .. }
-        | Operation::Reclaim { .. } => Vec::new(),
+        | Operation::Reclaim { .. } | Operation::ReauthenticateRawHeaderExtent { .. } => Vec::new(),
     }
 }
 
@@ -115,7 +117,8 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::CapabilityUnwrap { source, .. } => vec![*source],
         Operation::MakeInlineAggregate { fields, .. } => fields.clone(),
         Operation::ExtractInlineField { aggregate, .. } => vec![*aggregate],
-        Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. } => {
+        Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. }
+        | Operation::ExternalCall { arguments, .. } => {
             arguments.iter().map(argument_value).collect()
         }
         Operation::HostCall { arguments, .. } => arguments.iter().filter_map(|argument| {
@@ -127,6 +130,7 @@ fn uses(operation: &Operation) -> Vec<ValueId> {
         | Operation::ConstSize { .. } | Operation::Alloc { .. } | Operation::StaticData { .. }
         | Operation::CapabilityNone { .. }
         | Operation::FunctionValue { .. } => Vec::new(),
+        Operation::ReauthenticateRawHeaderExtent { object, header } => vec![*object, *header],
     }
 }
 
@@ -219,6 +223,44 @@ fn consume(owned: &mut Values, value: ValueId) -> Result<(), ReleasePlacementErr
     if owned.remove(&value) { Ok(()) } else { Err(ReleasePlacementError::MissingToken(value)) }
 }
 
+/// A returned parameter alias is not a fresh reference.  It may carry the one
+/// consumed call token into its result lane only when the signature names that
+/// exact moved managed lane.  Every incomplete or mismatched relation remains
+/// unresolved: release placement is not permitted to guess an alias.
+fn aliases_parameter_rebinds_moved_token(
+    function: &Function,
+    arguments: &[CallArgument],
+    destination: ValueId,
+    signature: &FunctionSignature,
+    parameter: u32,
+    layout: witchy_wir::layout::LayoutId,
+) -> bool {
+    let Ok(parameter) = usize::try_from(parameter) else {
+        return false;
+    };
+    let Some(CallArgument::Move(source)) = arguments.get(parameter) else {
+        return false;
+    };
+    let (
+        Some(ValueType::Ref(source_layout)),
+        Some(ValueType::Ref(destination_layout)),
+        Some(ValueType::Ref(parameter_layout)),
+        Some(parameter_contract),
+    ) = (
+        function.value_types.get(source),
+        function.value_types.get(&destination),
+        signature.parameters.get(parameter),
+        signature.contract.parameters.get(parameter),
+    ) else {
+        return false;
+    };
+    *source_layout == layout
+        && *destination_layout == layout
+        && *parameter_layout == layout
+        && parameter_contract.value_type == ValueType::Ref(layout)
+        && parameter_contract.ownership == ParameterOwnership::Value
+}
+
 fn call_flow(
     function: &Function,
     owned: &mut Values,
@@ -252,9 +294,32 @@ fn call_flow(
         match contract {
             ResultContract::Value(ValueType::Gc(_)) => { owned.insert(*destination); }
             ResultContract::Shared { .. } | ResultContract::Unique { .. }
+            | ResultContract::AliasesWriteBackParameter { .. }
+            | ResultContract::AliasesOneOfWriteBackParameters { .. }
             | ResultContract::Fresh { class: AllocationClass::ReferenceCounted, .. } => { owned.insert(*destination); }
+            // Like a direct StaticData operation, an authenticated static
+            // result has a destructor-neutral token. Carry it through joins
+            // so it can meet a releasable result in the same phi lane.
+            ResultContract::StaticData { .. } if is_reference(function, *destination) => {
+                owned.insert(*destination);
+            }
+            ResultContract::DisjunctiveWriteBackSelector { .. } => {}
+            ResultContract::AliasesParameter { parameter, layout }
+                if is_reference(function, *destination) => {
+                    if !aliases_parameter_rebinds_moved_token(
+                        function,
+                        arguments,
+                        *destination,
+                        signature,
+                        *parameter,
+                        *layout,
+                    ) {
+                        return Err(ReleasePlacementError::UnresolvedResult(*destination));
+                    }
+                    owned.insert(*destination);
+                }
             ResultContract::BodyDerived(_) | ResultContract::CheckedValue { .. }
-            | ResultContract::AliasesParameter { .. } | ResultContract::ReallocatesParameter { .. }
+            | ResultContract::ReallocatesParameter { .. }
                 if is_reference(function, *destination) => {
                     return Err(ReleasePlacementError::UnresolvedResult(*destination));
                 }
@@ -305,6 +370,7 @@ fn operation_flow(
                 | OwnerOperation::ReadCapability { .. }
                 | OwnerOperation::ReadOwner { .. }
                 | OwnerOperation::ReadSharedPlace { .. }
+                | OwnerOperation::ReadSharedSliceLength { .. }
                 | OwnerOperation::ReadCallable { .. }
                 | OwnerOperation::ReadTag { .. }
                 | OwnerOperation::Clone { .. }
@@ -319,6 +385,14 @@ fn operation_flow(
             }
         }
         Operation::Alloc { destination, class: AllocationClass::ReferenceCounted, .. }
+        // A static reference has no physical RC count to release, but it is a
+        // destructor-neutral token at a CFG join. Track it exactly like a
+        // releasable token so a phi that receives static data on one edge and
+        // an owned reference on another has one uniform target token. The
+        // independent checker authenticates StaticData and admits its
+        // DropRef as a no-op; this pass must not make ownership depend on
+        // which predecessor happened to reach the join.
+        | Operation::StaticData { destination, .. }
         | Operation::Load { destination, transfer: LoadTransfer::CloneShared | LoadTransfer::ClonePresent | LoadTransfer::MoveUnique | LoadTransfer::TakeLast, .. } => {
             if is_reference(function, *destination) { owned.insert(*destination); }
         }
@@ -347,6 +421,18 @@ fn operation_flow(
             let signature = signatures.get(signature).ok_or(ReleasePlacementError::MissingSignature(*signature))?;
             call_flow(function, owned, arguments, destinations, signature)?;
         }
+        Operation::ExternalCall { destinations, arguments, .. } => {
+            // The SafeWIR checker admits this edge only for scalar Value lanes.
+            // Preserve that boundary here instead of treating an external
+            // import like a local or host call: no ownership token can cross
+            // into a separately-instantiated Wasm memory.
+            if let Some(value) = arguments.iter().map(argument_value)
+                .chain(destinations.iter().copied())
+                .find(|value| is_reference(function, *value))
+            {
+                return Err(ReleasePlacementError::ExternalManagedValue(value));
+            }
+        }
         Operation::HostCall { destinations, .. } => {
             if let Some(value) = destinations.iter().find(|value| is_reference(function, **value)) {
                 return Err(ReleasePlacementError::HostMemoryResult(*value));
@@ -367,8 +453,8 @@ fn operation_flow(
         | Operation::WidenSize { .. }
         | Operation::FloatUnary { .. }
         | Operation::Guard { .. }
+        | Operation::ReauthenticateRawHeaderExtent { .. }
         | Operation::Alloc { .. }
-        | Operation::StaticData { .. }
         | Operation::Load { .. }
         | Operation::InitNullableOwned { .. }
         | Operation::Store { .. }
@@ -605,5 +691,81 @@ mod opaque_tests {
             Operation::ClosureOwner(OwnerOperation::Drop { owner: original, family: family.signature }),
         ]);
         assert_eq!(function.blocks[0].terminator, Terminator::Return { values: vec![cloned] });
+    }
+}
+
+#[cfg(test)]
+mod aliases_parameter_tests {
+    use super::*;
+    use witchy_wir::canonical_safewir::{CallableContract, ParameterContract};
+    use witchy_wir::layout::LayoutId;
+
+    fn alias_signature(layout: LayoutId, parameter: u32) -> FunctionSignature {
+        FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![ValueType::Ref(layout)],
+            results: vec![ValueType::Ref(layout)],
+            contract: CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: ValueType::Ref(layout),
+                    ownership: ParameterOwnership::Value,
+                }],
+                results: vec![ResultContract::AliasesParameter { parameter, layout }],
+                parameter_effects: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn reference_function(source_layout: LayoutId, destination_layout: LayoutId) -> Function {
+        Function {
+            id: FunctionId::new(0),
+            signature: FunctionSignatureId::new(0),
+            entry: BlockId::new(0),
+            value_types: BTreeMap::from([
+                (ValueId::new(0), ValueType::Ref(source_layout)),
+                (ValueId::new(1), ValueType::Ref(destination_layout)),
+            ]),
+            blocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn aliases_parameter_rebinds_only_the_exact_moved_reference_token() {
+        let layout = LayoutId::from_bytes([7; 32]);
+        let source = ValueId::new(0);
+        let destination = ValueId::new(1);
+        let signature = alias_signature(layout, 0);
+        let function = reference_function(layout, layout);
+
+        let mut owned = Values::from([source]);
+        call_flow(
+            &function,
+            &mut owned,
+            &[CallArgument::Move(source)],
+            &[destination],
+            &signature,
+        ).expect("an exact moved alias transfers its sole token");
+        assert_eq!(owned, Values::from([destination]));
+
+        let mut copied = Values::from([source]);
+        assert!(matches!(
+            call_flow(&function, &mut copied, &[CallArgument::Value(source)], &[destination], &signature),
+            Err(ReleasePlacementError::UnresolvedResult(value)) if value == destination,
+        ), "a copied/borrowed call argument cannot mint an alias result token");
+
+        let wrong_layout = LayoutId::from_bytes([8; 32]);
+        let mismatched = reference_function(layout, wrong_layout);
+        let mut mismatched_owned = Values::from([source]);
+        assert!(matches!(
+            call_flow(&mismatched, &mut mismatched_owned, &[CallArgument::Move(source)], &[destination], &signature),
+            Err(ReleasePlacementError::UnresolvedResult(value)) if value == destination,
+        ), "a result whose storage layout differs from the source remains unresolved");
+
+        let out_of_range = alias_signature(layout, 1);
+        let mut out_of_range_owned = Values::from([source]);
+        assert!(matches!(
+            call_flow(&function, &mut out_of_range_owned, &[CallArgument::Move(source)], &[destination], &out_of_range),
+            Err(ReleasePlacementError::UnresolvedResult(value)) if value == destination,
+        ), "an absent parameter relation cannot rebind a token");
     }
 }

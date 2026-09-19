@@ -39,7 +39,8 @@ impl<'a> Registry<'a> {
                     || body.results != declaration.results
                     || body.contract.parameters.first().map(|p| p.ownership) != Some(ParameterOwnership::Shared)
                     || body.contract.parameters.get(1..) != Some(declaration.contract.parameters.as_slice())
-                    || body.contract.results != declaration.contract.results
+                    || closure_result_contracts(&body.contract.results)
+                        != Some(declaration.contract.results.clone())
                 {
                     return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
                 }
@@ -48,7 +49,7 @@ impl<'a> Registry<'a> {
                 return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
             }
             if let OwnerFamilySource::SharedReference(source_type) = &family.source {
-                if !shared_int_reference(source_type) {
+                if !shared_rooted_int_reference(source_type) {
                     return Err(InitialCheckError::UnsupportedMemorySignature { signature: family.signature });
                 }
                 let mut kinds = BTreeSet::new();
@@ -56,21 +57,53 @@ impl<'a> Registry<'a> {
                     let Some(kind) = constructor.shared_reference_constructor() else {
                         return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
                     };
-                    let Some(OwnerCapture { value_type: ValueType::Ref(root), .. }) = constructor.captures.first() else {
-                        return Err(InitialCheckError::CallableContractMismatch { signature: family.signature });
-                    };
-                    let physical = layouts.resolve_nominal(*root).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
                     let valid = match kind {
-                        SharedReferenceConstructor::WholeIntCell { root } => root.0 == 0
-                            && kinds.insert(0_u8)
-                            && matches!(layouts.get(physical).map(|descriptor| descriptor.kind()),
-                                Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))),
+                        SharedReferenceConstructor::WholeIntCell { root } => {
+                            let Some(OwnerCapture { value_type: ValueType::Ref(root_layout), .. }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
+                            let physical = layouts.resolve_nominal(*root_layout).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
+                            root.0 == 0 && kinds.insert(0_u8)
+                                && matches!(layouts.get(physical).map(|descriptor| descriptor.kind()),
+                                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int)))
+                        }
                         SharedReferenceConstructor::ListIntElement { root, index, bounds: _ } => {
+                            let Some(OwnerCapture { value_type: ValueType::Ref(root_layout), .. }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
+                            let physical = layouts.resolve_nominal(*root_layout).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
                             let element = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
                                 Some(crate::layout::LayoutKind::PackedList { element, .. }) => Some(*element),
                                 _ => None,
                             };
                             root.0 == 0 && index.0 == 1 && kinds.insert(1_u8)
+                                && element.is_some_and(|element| matches!(layouts.get(element).map(|descriptor| descriptor.kind()),
+                                    Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))))
+                        }
+                        SharedReferenceConstructor::ListIntElementFromSlice { slice, index, bounds: _ } => {
+                            let Some(OwnerCapture {
+                                value_type: ValueType::Gc(slice_type),
+                                storage: CaptureStorage::OwnerField(field),
+                                transfer: CaptureTransfer::CloneManaged,
+                            }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
+                            let Some(OwnerCapture {
+                                value_type: ValueType::Size,
+                                storage: CaptureStorage::EnvironmentField(_),
+                                transfer: CaptureTransfer::CopyScalar,
+                            }) = constructor.captures.get(index.0 as usize) else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
+                            shared_int_reference(source_type)
+                                && slice.0 == 0 && index.0 == 1 && *field == 2 && kinds.insert(3_u8)
+                                && registry.families.iter().any(|candidate| {
+                                    candidate.owner_type == *slice_type
+                                        && matches!(&candidate.source, OwnerFamilySource::SharedReference(source)
+                                            if rooted_int_slice_reference(source))
+                                })
+                        }
+                        SharedReferenceConstructor::ListIntSlice { root, start, length } => {
+                            let Some(OwnerCapture { value_type: ValueType::Ref(root_layout), .. }) = constructor.captures.first() else { return Err(InitialCheckError::CallableContractMismatch { signature: family.signature }) };
+                            let physical = layouts.resolve_nominal(*root_layout).map_err(|_| InitialCheckError::CallableContractMismatch { signature: family.signature })?;
+                            let element = match layouts.get(physical).map(|descriptor| descriptor.kind()) {
+                                Some(crate::layout::LayoutKind::PackedList { element, .. }) => Some(*element),
+                                _ => None,
+                            };
+                            rooted_int_slice_reference(source_type)
+                                && root.0 == 0 && start.0 == 1 && length.0 == 2 && kinds.insert(2_u8)
                                 && element.is_some_and(|element| matches!(layouts.get(element).map(|descriptor| descriptor.kind()),
                                     Some(crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))))
                         }
@@ -187,6 +220,26 @@ impl<'a> Registry<'a> {
                 require_type(function, *owner, ValueType::Gc(family.owner_type))?;
                 require_type(function, *destination, ValueType::Int)?;
             }
+            O::ReadSharedSliceLength { destination, owner, family } => {
+                let family = self.family(*family)?;
+                let OwnerFamilySource::SharedReference(source) = &family.source else {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation {
+                        function: function.id, operation: "ReadSharedSliceLength non-slice family",
+                    });
+                };
+                if !rooted_int_slice_reference(source)
+                    || !family.constructors.iter().all(|constructor| matches!(
+                        constructor.shared_reference_constructor(),
+                        Some(SharedReferenceConstructor::ListIntSlice { .. }),
+                    ))
+                {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation {
+                        function: function.id, operation: "ReadSharedSliceLength non-slice carrier",
+                    });
+                }
+                require_type(function, *owner, ValueType::Gc(family.owner_type))?;
+                require_type(function, *destination, ValueType::Size)?;
+            }
             O::ReadTag { destination, owner, family } => {
                 let family = self.family(*family)?;
                 if matches!(family.source, OwnerFamilySource::SharedReference(_)) {
@@ -282,6 +335,39 @@ impl<'a> Registry<'a> {
     }
 }
 
+/// Owner-family closure code has one leading environment parameter.  Result
+/// contracts naming a parameter must carry that same offset; compare the
+/// stripped lane to the declaration rather than treating the hidden owner as
+/// a source parameter. Any underflow refuses the family.
+fn closure_result_contracts(results: &[ResultContract]) -> Option<Vec<ResultContract>> {
+    results
+        .iter()
+        .cloned()
+        .map(|result| match result {
+            ResultContract::AliasesParameter { parameter, layout } => {
+                Some(ResultContract::AliasesParameter {
+                    parameter: parameter.checked_sub(1)?,
+                    layout,
+                })
+            }
+            ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+                Some(ResultContract::AliasesWriteBackParameter {
+                    parameter: parameter.checked_sub(1)?,
+                    layout,
+                    projection,
+                })
+            }
+            ResultContract::ReallocatesParameter { parameter, layout } => {
+                Some(ResultContract::ReallocatesParameter {
+                    parameter: parameter.checked_sub(1)?,
+                    layout,
+                })
+            }
+            result => Some(result),
+        })
+        .collect()
+}
+
 fn is_gc(function: &Function, value: ValueId) -> bool {
     matches!(function.value_types.get(&value), Some(ValueType::Gc(_)))
 }
@@ -361,6 +447,7 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                         | OwnerOperation::ReadCapability { .. }
                         | OwnerOperation::ReadOwner { .. }
                         | OwnerOperation::ReadSharedPlace { .. }
+                        | OwnerOperation::ReadSharedSliceLength { .. }
                         | OwnerOperation::ReadTag { .. }
                         | OwnerOperation::ReadCallable { .. }
                         | OwnerOperation::Clone { .. }
@@ -404,7 +491,9 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
                 | Operation::DropRef { .. }
                 | Operation::Reclaim { .. }
                 | Operation::FunctionValue { .. }
-                | Operation::HostCall { .. } => {}
+                | Operation::ExternalCall { .. }
+                | Operation::HostCall { .. }
+                | Operation::ReauthenticateRawHeaderExtent { .. } => {}
             }
             for destination in operation_destinations(operation).into_iter().filter(|v| is_gc(function, *v)) {
                 if !state.insert(destination) { return Err(InitialCheckError::InvalidOwnership { function: function.id, object: destination }); }
@@ -456,13 +545,25 @@ pub(super) fn check(function: &Function, registry: &Registry<'_>) -> Result<(), 
     Ok(())
 }
 
+fn shared_rooted_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    shared_int_reference(source_type) || rooted_int_slice_reference(source_type)
+}
+
 fn shared_int_reference(source_type: &witchy_syntax::ast::Type) -> bool {
     matches!(source_type,
         witchy_syntax::ast::Type::Qualified(
-            witchy_syntax::ast::TypeQual::Borrow(lifetime), inner,
-        ) if !lifetime.is_empty()
-            && matches!(inner.as_ref(), witchy_syntax::ast::Type::Named(name, arguments)
+            witchy_syntax::ast::TypeQual::View, inner,
+        ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty()))
+}
+
+fn rooted_int_slice_reference(source_type: &witchy_syntax::ast::Type) -> bool {
+    matches!(source_type,
+        witchy_syntax::ast::Type::Qualified(
+            witchy_syntax::ast::TypeQual::View, inner,
+        ) if matches!(inner.as_ref(), witchy_syntax::ast::Type::Slice(element)
+                if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                    if name == "Int" && arguments.is_empty())))
 }
 
 #[cfg(test)]
@@ -682,7 +783,7 @@ mod tests {
         let family_token = FunctionSignatureId::new(50);
         let family = OwnerFamily {
             source: OwnerFamilySource::SharedReference(Type::Qualified(
-                TypeQual::Borrow("a".into()),
+                TypeQual::View,
                 Box::new(Type::Named("Int".into(), Vec::new())),
             )),
             owner_type,

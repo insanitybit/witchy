@@ -103,14 +103,14 @@ use crate::{interpreter, parser, typeck};
     }
 
     /// (BUG-486) `MNil` is the reflection shape for the language's unit value,
-    /// not only for JSON null. Exercise it through a Nil-returning helper so this
-    /// stays independent of the separate bare-`Nil` expression backend bug.
+    /// not only for JSON null. Exercise it through a unit-returning helper so this
+    /// stays independent of the retired bare-`Nil` expression spelling.
     #[test]
     fn nil_is_reflectable_on_both_backends() {
-        let src = "import reflect\nimport json\n\nfn unit() -> Nil:\n    return\n\nfn main(console: Console):\n    console.print(reflect.debug(unit()))\n    console.print(json.stringify(unit()))\n";
+        let src = "import reflect\nimport json\n\nfn unit() -> ():\n    return\n\nfn main(console: Console):\n    console.print(reflect.debug(unit()))\n    console.print(json.stringify(unit()))\n";
         let expected = ["nil", "null"];
-        assert_eq!(link_run(src), expected, "interp: Nil reflection");
-        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: Nil reflection");
+        assert_eq!(link_run(src), expected, "interp: () reflection");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: () reflection");
     }
 
     /// `derive(Show, Eq, Ord)`: compiler-generated impls, byte-identical in
@@ -243,6 +243,40 @@ use crate::{interpreter, parser, typeck};
         let want = ["[Some(1), None, Some(3)] Some(Some(7))"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
+    }
+
+    #[test]
+    fn derive_deserialize_scalar_list_option_error_and_generic_paths_agree() {
+        let src = "import json\n\ntype Record derive(Deserialize):\n    n: Int\n    ratio: Float\n    ok: Bool\n    text: String\n    xs: List(Int)\n    maybe: Option(String)\n\ntype Box(a) derive(Deserialize):\n    value: a\n\nfn main(console: Console):\n    match json.decode(\"{\\\"n\\\": 4, \\\"ratio\\\": 2, \\\"ok\\\": true, \\\"text\\\": \\\"hi\\\", \\\"xs\\\": [1, 2], \\\"maybe\\\": null}\"):\n        Ok(doc) ->\n            match Record.from_json(doc):\n                Ok(r) -> console.print(\"${r.n} ${r.ratio} ${r.ok} ${r.text} ${r.xs} ${r.maybe}\")\n                Err(_) -> console.print(\"valid-error\")\n        Err(_) -> console.print(\"parse-error\")\n    match json.decode(\"{\\\"value\\\": [1, null, 3]}\"):\n        Ok(doc) ->\n            let nested: Result(Box(List(Option(Int))), json.DeserializeError) = Box.from_json(doc)\n            match nested:\n                Ok(b) -> console.print(\"${b.value}\")\n                Err(_) -> console.print(\"generic-error\")\n        Err(_) -> console.print(\"parse-error\")\n    match json.decode(\"{\\\"n\\\": 4}\"):\n        Ok(doc) ->\n            match Record.from_json(doc):\n                Ok(_) -> console.print(\"missing-not-rejected\")\n                Err(_) -> console.print(\"missing-error\")\n        Err(_) -> console.print(\"parse-error\")\n";
+        let expected = ["4 2.0 true hi [1, 2] None", "[Some(1), None, Some(3)]", "missing-error"];
+        assert_eq!(link_run(src), expected, "interp: deserialize scalar/list/option/generic/error paths");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: deserialize scalar/list/option/generic/error paths");
+    }
+
+    #[test]
+    fn derive_deserialize_nested_frozen_and_unique_wrappers_agree() {
+        let src = "import json\n\ntype Wrapped derive(Deserialize):\n    frozen_values: frozen List(Option(Int))\n    unique_values: unique List(Option(Int))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"frozen_values\\\": [1, null], \\\"unique_values\\\": [2, null]}\"):\n        Ok(doc) ->\n            match Wrapped.from_json(doc):\n                Ok(value) -> console.print(\"${value.frozen_values} ${value.unique_values}\")\n                Err(_) -> console.print(\"decode-error\")\n        Err(_) -> console.print(\"parse-error\")\n";
+        let expected = ["[Some(1), None] [Some(2), None]"];
+        assert_eq!(link_run(src), expected, "interp: nested frozen/unique deserialize wrappers");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "compiled: nested frozen/unique deserialize wrappers");
+    }
+
+    #[test]
+    fn derive_deserialize_qualified_nominal_field_resolves_across_modules() {
+        let sibling = "import json\n\ntype Child derive(Deserialize):\n    value: Int\n";
+        let main = "import json\nimport sibling\n\ntype Parent derive(Deserialize):\n    child: sibling.Child\n\nfn main(console: Console):\n    match json.decode(\"{\\\"child\\\": {\\\"value\\\": 9}}\"):\n        Ok(doc) ->\n            match Parent.from_json(doc):\n                Ok(parent) -> console.print(\"${parent.child.value}\")\n                Err(_) -> console.print(\"decode-error\")\n        Err(_) -> console.print(\"parse-error\")\n";
+        let expected = ["9"];
+        assert_eq!(
+            interpreter::run_program(&[("sibling", sibling), ("main", main)], "main")
+                .expect("interp: qualified generated from_json call"),
+            expected,
+            "interp: qualified generated from_json call",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("sibling", sibling), ("main", main)], "main"),
+            expected,
+            "compiled: qualified generated from_json call",
+        );
     }
 
     /// (BUG-496) `derive(Deserialize)` must not bind decoded fields under source

@@ -173,7 +173,7 @@ const BUILTINS: &[&str] = &[
 
 /// For each module, its exported function names mapped to the signature facts
 /// RFC-0050 Part-2 eta-expansion needs: the function's FULL declared arity and
-/// whether it is a Nil-returning `var`-procedure (which cannot become a value —
+/// whether it is a unit-returning `var`-procedure (which cannot become a value —
 /// see the `Expr::Field` arm of `rewrite_expr`). Membership (`contains_key`) is
 /// still the "does module X export `f`" question the rest of the linker asks.
 type FnTable = HashMap<String, HashMap<String, EtaSig>>;
@@ -307,15 +307,33 @@ struct EtaSig {
     arity: usize,
     /// Parameter conventions copied onto the forwarding lambda.
     conventions: Vec<Convention>,
+    /// Qualifier-bearing parameter types copied onto the forwarding lambda. A
+    /// function value has the same callable contract as the declaration it
+    /// names, so an eta parameter cannot discard `unique` (or another
+    /// qualifier) and ask type checking to reconstruct it from an unqualified
+    /// forwarding call. Ordinary types remain inferred, preserving generic
+    /// eta expansion.
+    qualified_parameter_types: Vec<Option<Type>>,
+    /// A generic callable value must retain the declaration identity until its
+    /// use site selects concrete type arguments.  Eta-expanding it here would
+    /// put source type variables (such as `unique a`) in a non-generic lambda,
+    /// where `a` is a nominal spelling rather than the declaration's type
+    /// parameter.
+    generic: bool,
     /// Declaration purity preserved by function-value eta expansion.
     pure: bool,
     /// Part of this module's public API. Same-module calls may use private
     /// helpers; imported or module-qualified cross-module calls may not.
     public: bool,
-    /// A normal importer must not be able to name an API that carries a
-    /// first-class reference. Conventional `let`/`var`/`own` APIs remain
-    /// callable across the mode boundary.
+    /// An API carries a reference that needs an explicit cross-mode decision.
+    /// Ordinary value APIs are always callable across the mode boundary.
     reference_bearing: bool,
+    /// An API's only first-class references are RFC-0167 immutable rooted
+    /// views.  Their authenticated root-plus-projection carrier is preserved
+    /// verbatim by linking, so a normal module may call the API without
+    /// erasing its type.  Nested or otherwise unadmitted carriers are still
+    /// checked by canonical lowering; this bit is only the source-link policy.
+    rooted_view_only: bool,
     /// A compiler-provided module-function alias for an inherent method declared
     /// in this module. `list.map(xs, f)` and `list.map` as a value target the
     /// generated method implementation; the method body stays the single
@@ -329,7 +347,7 @@ struct EtaSig {
 
 fn type_mentions_reference(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_reference(inner),
         Type::Slice(elem) => type_mentions_reference(elem),
         Type::Named(_, args) | Type::Tuple(args) | Type::Dyn(_, args) => {
@@ -347,6 +365,46 @@ fn type_mentions_reference(ty: &Type) -> bool {
 
 fn type_is_reference_bearing(ty: &Type, bearing: &HashSet<String>) -> bool {
     type_mentions_reference(ty) || type_mentions_named_reference(ty, bearing)
+}
+
+/// Returns whether a type contains a reference that is not an immutable
+/// RFC-0167 rooted view. Direct structural view shapes continue to canonical
+/// ABI admission without erasure; named reference-bearing carriers remain
+/// closed at linking because their per-field root provenance is opaque here.
+fn type_mentions_non_rooted_reference(ty: &Type, bearing: &HashSet<String>) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::View, inner) => type_mentions_non_rooted_reference(inner, bearing),
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) => type_mentions_non_rooted_reference(inner, bearing),
+        Type::Slice(elem) => type_mentions_non_rooted_reference(elem, bearing),
+        Type::Named(name, args) => {
+            bearing.contains(name)
+                || args.iter().any(|arg| type_mentions_non_rooted_reference(arg, bearing))
+        }
+        Type::Tuple(args) | Type::Dyn(_, args) => {
+            args.iter().any(|arg| type_mentions_non_rooted_reference(arg, bearing))
+        }
+        Type::RecordCompose { base, fields } => {
+            type_mentions_non_rooted_reference(base, bearing)
+                || fields.iter().any(|(_, field)| type_mentions_non_rooted_reference(field, bearing))
+        }
+        Type::Fn(params, result, _, _) => {
+            params.iter().any(|param| type_mentions_non_rooted_reference(param, bearing))
+                || type_mentions_non_rooted_reference(result, bearing)
+        }
+    }
+}
+
+fn function_has_only_rooted_views(function: &Function, bearing: &HashSet<String>) -> bool {
+    function
+        .params
+        .iter()
+        .filter_map(|param| param.ty.as_ref())
+        .all(|ty| !type_mentions_non_rooted_reference(ty, bearing))
+        && function
+            .ret
+            .as_ref()
+            .is_none_or(|ty| !type_mentions_non_rooted_reference(ty, bearing))
 }
 
 /// Compute the opt-only nominal interface transitively. A normal importer must
@@ -535,6 +593,30 @@ pub const PRELUDE_MODULES: &[&str] =
 /// filesystem-free docs and playgrounds, but retain a package owner distinct
 /// from the standard library.
 pub const PLAYGROUND_MODULES: &[&str] = &["glamour", "markdown", "highlight"];
+
+/// Compiler-only provenance retained on every callable after it is linked into
+/// a whole-program module.  Later lowerings can mangle an inherent method into
+/// an unqualified symbol such as `List__map`; consumers must use this source
+/// owner rather than that implementation spelling when applying per-module
+/// contracts such as `mode opt`.
+///
+/// This is deliberately not a source declaration attribute.  The parser's
+/// deny-by-default attribute registry cannot spell it, and the linker stamps it
+/// only after resolving the module graph.
+pub const LINKED_SOURCE_MODULE_ATTRIBUTE_PREFIX: &str = "__compiler_linked_source_module=";
+
+pub fn linked_source_module_attribute(module: &str) -> String {
+    format!("{LINKED_SOURCE_MODULE_ATTRIBUTE_PREFIX}{module}")
+}
+
+pub fn linked_source_module(function: &Function) -> Option<&str> {
+    // A source graph can be linked again by a later projection.  The current
+    // linker stamp is appended last, so it wins over any stale internal
+    // metadata rather than trusting an earlier AST allocation.
+    function.attributes.iter().rev().find_map(|attribute| {
+        attribute.strip_prefix(LINKED_SOURCE_MODULE_ATTRIBUTE_PREFIX)
+    })
+}
 
 /// The bundled std modules that export a `pub fn` of the given name — used to
 /// suggest a missing `import` when a call names an unimported stdlib function.
@@ -923,7 +1005,8 @@ fn pulled_std_cache_insert(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x03";
+// Version 4 invalidates AST enum ordinals from before the retired qualifier removal.
+const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x04";
 
 #[cfg(not(target_arch = "wasm32"))]
 const PERSISTENT_STD_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -1078,6 +1161,11 @@ pub enum LinkMode {
     /// domain data. Generated items and items containing generated syntax stay
     /// production-strict, as do sealed capabilities.
     Test,
+    /// Compiler-owned static evaluation only. The source recipe has already
+    /// authenticated Glamour and inserted one of its two origin-bearing
+    /// constructors before this linker runs; ordinary source cannot select
+    /// this mode.
+    StaticEvaluation,
 }
 
 thread_local! {
@@ -1108,7 +1196,7 @@ fn ast_fold_is_suppressed() -> bool {
 
 fn returns_borrowed_view(ty: Option<&Type>) -> bool {
     ty.is_some_and(|ty| {
-        matches!(ty, Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _))
+        matches!(ty, Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _))
     })
 }
 
@@ -1119,7 +1207,7 @@ fn returns_view_callable(ty: Option<&Type>) -> bool {
             Type::Fn(_, result, _, _)
                 if matches!(
                     result.as_ref(),
-                    Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _)
+                    Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _)
                 )
         )
     })
@@ -2293,6 +2381,12 @@ where
                     EtaSig {
                         arity: f.params.len(),
                         conventions: f.params.iter().map(|param| param.convention).collect(),
+                        qualified_parameter_types: f
+                            .params
+                            .iter()
+                            .map(qualified_parameter_type)
+                            .collect(),
+                        generic: function_has_type_parameters(f),
                         pure: f.pure,
                         public: f.public,
                         reference_bearing: f
@@ -2301,9 +2395,10 @@ where
                             .filter_map(|param| param.ty.as_ref())
                             .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
                             || f
-                                .ret
-                                .as_ref()
-                                .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
+                            .ret
+                            .as_ref()
+                            .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
+                        rooted_view_only: function_has_only_rooted_views(f, &reference_bearing),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -2328,6 +2423,12 @@ where
                                 .iter()
                                 .map(|param| param.convention)
                                 .collect(),
+                            qualified_parameter_types: method
+                                .params
+                                .iter()
+                                .map(qualified_parameter_type)
+                                .collect(),
+                            generic: function_has_type_parameters(method),
                             pure: method.pure,
                             public: true,
                             reference_bearing: method
@@ -2338,6 +2439,7 @@ where
                                 || method.ret.as_ref().is_some_and(|ty| {
                                     type_is_reference_bearing(ty, &reference_bearing)
                                 }),
+                            rooted_view_only: function_has_only_rooted_views(method, &reference_bearing),
                             method_alias: true,
                             alias_target: Some(inherent_method_symbol(im, &method.name)),
                         },
@@ -2418,6 +2520,8 @@ where
                     } else {
                         format!("{mname}.{}", f.name)
                     };
+                    f2.attributes
+                        .push(linked_source_module_attribute(mname));
                     let mut bound = HashSet::new();
                     for p in &f2.params {
                         bound.insert(p.name.clone());
@@ -2521,6 +2625,9 @@ where
                     }
                     let mut im2 = im.clone();
                     for method in &mut im2.methods {
+                        method
+                            .attributes
+                            .push(linked_source_module_attribute(mname));
                         let mut bound = HashSet::new();
                         for p in &method.params {
                             bound.insert(p.name.clone());
@@ -3057,6 +3164,7 @@ struct RewriteContext<'a> {
     bound: &'a HashSet<String>,
     user_std_shadows: &'a HashSet<String>,
     definition_site: bool,
+    mode: LinkMode,
     opt: bool,
 }
 
@@ -3115,6 +3223,12 @@ pub fn mark_definition_site_expr(
                             .iter()
                             .map(|param| param.convention)
                             .collect(),
+                        qualified_parameter_types: function
+                            .params
+                            .iter()
+                            .map(qualified_parameter_type)
+                            .collect(),
+                        generic: function_has_type_parameters(function),
                         pure: function.pure,
                         public: function.public,
                         reference_bearing: function
@@ -3123,9 +3237,10 @@ pub fn mark_definition_site_expr(
                             .filter_map(|param| param.ty.as_ref())
                             .any(|ty| type_is_reference_bearing(ty, &reference_bearing))
                             || function
-                                .ret
-                                .as_ref()
-                                .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
+                            .ret
+                            .as_ref()
+                            .is_some_and(|ty| type_is_reference_bearing(ty, &reference_bearing)),
+                        rooted_view_only: function_has_only_rooted_views(function, &reference_bearing),
                         method_alias: false,
                         alias_target: None,
                     },
@@ -3158,6 +3273,7 @@ pub fn mark_definition_site_expr(
         bound: &bound,
         user_std_shadows: &user_std_shadows,
         definition_site: true,
+        mode: LinkMode::Production,
         opt: true,
     };
     rewrite_expr(expr, &context, None)
@@ -3172,13 +3288,14 @@ fn rewrite_block(
     fns: &FnTable,
     bound: &HashSet<String>,
     user_std_shadows: &HashSet<String>,
-    _mode: LinkMode,
+    mode: LinkMode,
     _entry: &str,
     opt: bool,
 ) -> Result<(), LinkError> {
     let context = RewriteContext {
         module: m, imports: imps, bare_imports, fns, bound,
         user_std_shadows, definition_site: false,
+        mode,
         opt,
     };
     rewrite_block_with_context(b, &context)
@@ -3384,7 +3501,18 @@ fn rewrite_expr(
                     .and_then(|s| s.get(&field))
                     .cloned()
                     .expect("resolve_call accepted the reference, so the function exists");
-                *e = eta_lambda(&qualified, sig);
+                // Generic function values are not monomorphized by a rendered
+                // spelling. Keep the checked declaration identity so type
+                // checking instantiates its signature at the application site;
+                // lowering already synthesizes the same forwarding closure from
+                // a top-level `Var` value. Inherent method aliases still need
+                // their generated implementation target, so they retain the
+                // ordinary eta rewrite.
+                *e = if sig.generic && !sig.method_alias {
+                    Expr::Var(qualified)
+                } else {
+                    eta_lambda(&qualified, sig)
+                };
                 if context.definition_site {
                     rewrite_expr(e, context, line)?;
                 }
@@ -3511,12 +3639,12 @@ fn is_prelude_module(name: &str) -> bool {
 
 /// (RFC-0050 Part 2) Build the eta-expansion of a module-function reference in
 /// value position: `list.length` (arity 1) becomes `fn(__eta0): list.length(__eta0)`.
-/// The lambda captures nothing and its parameters carry no type annotation, so the
-/// ordinary checker infers them — for a generic callee, RFC-0046's annotate/mono
-/// fixpoint resolves the type-var parameters. A source-to-source rewrite on the
-/// single linked AST before either backend lowers: parity by construction. The
-/// arity is the callee's FULL declared parameter count; RFC-0056 defaults never
-/// attach to a function value, so every positional argument is present.
+/// The lambda captures nothing, but its parameters retain the declaration's
+/// authenticated type facts: `var unique List(Int)` must remain `var unique
+/// List(Int)` when the function is named as a value. A source-to-source rewrite
+/// on the single linked AST before either backend lowers: parity by construction.
+/// The arity is the callee's FULL declared parameter count; RFC-0056 defaults
+/// never attach to a function value, so every positional argument is present.
 fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
     let arity = sig.arity;
     let names: Vec<String> = (0..arity).map(|i| format!("__eta{i}")).collect();
@@ -3525,7 +3653,7 @@ fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
         .enumerate()
         .map(|(index, n)| Param {
             name: n.clone(),
-            ty: None,
+            ty: sig.qualified_parameter_types.get(index).cloned().unwrap_or(None),
             convention: sig.conventions.get(index).copied().unwrap_or(Convention::Let),
             default: None,
         })
@@ -3552,6 +3680,33 @@ fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
 fn fn_sig(fns: &FnTable, qualified: &str) -> Option<EtaSig> {
     let (modname, fname) = qualified.split_once('.')?;
     fns.get(modname).and_then(|s| s.get(fname)).cloned()
+}
+
+/// Eta expansion normally leaves types to the checker so implicit generic
+/// parameters continue to infer at every use site. A top-level type qualifier
+/// is different: it is a callable ABI fact, not inference context, and must
+/// survive from the authenticated declaration into the generated lambda.
+fn qualified_parameter_type(param: &Param) -> Option<Type> {
+    match param.ty.as_ref() {
+        Some(ty @ Type::Qualified(_, _)) => Some(ty.clone()),
+        _ => None,
+    }
+}
+
+fn function_has_type_parameters(function: &Function) -> bool {
+    if !function.bounds.is_empty() {
+        return true;
+    }
+    let mut parameters = Vec::new();
+    for parameter in &function.params {
+        if let Some(ty) = &parameter.ty {
+            collect_type_vars(ty, &mut parameters);
+        }
+    }
+    if let Some(result) = &function.ret {
+        collect_type_vars(result, &mut parameters);
+    }
+    !parameters.is_empty()
 }
 
 fn inherent_method_symbol(im: &ImplDef, method: &str) -> String {
@@ -3866,6 +4021,7 @@ fn resolve_call(
         bound,
         user_std_shadows,
         definition_site: _,
+        mode,
         opt,
     } = *context;
     if let Some(target) = call_site_expr_target(name) {
@@ -3907,17 +4063,21 @@ fn resolve_call(
             Some(_) if private_intrinsic_friend_call(modname, fname, m) => {
                 accept(name.to_string())
             }
-            Some(sig) if sig.public && (modname == m || opt || !sig.reference_bearing) => {
+            Some(sig) if sig.public
+                && (modname == m || opt || !sig.reference_bearing || sig.rooted_view_only) => {
                 accept(name.to_string())
             }
             Some(sig) if sig.public && sig.reference_bearing => lerr_at(
                 format!(
-                    "normal module `{m}` cannot use reference-bearing opt API `{modname}.{fname}`; \
-                     call a conventional `let`/`var`/`own` export instead"
+                    "normal module `{m}` cannot use non-rooted-reference opt API `{modname}.{fname}`; \
+                     only immutable rooted-view APIs cross this boundary"
                 ),
                 m,
                 line,
             ),
+            Some(_) if static_evaluation_origin_constructor(mode, modname, fname) => {
+                accept(name.to_string())
+            }
             Some(_) => lerr_at(
                 format!("function `{modname}.{fname}` is private to module `{modname}`"),
                 m,
@@ -3954,12 +4114,14 @@ fn resolve_call(
                 && fns
                     .get(srcmod)
                     .and_then(|functions| functions.get(name))
-                    .is_some_and(|signature| signature.reference_bearing)
+                    .is_some_and(|signature| {
+                        signature.reference_bearing && !signature.rooted_view_only
+                    })
             {
                 return lerr_at(
                     format!(
-                        "normal module `{m}` cannot use reference-bearing opt API `{srcmod}.{name}`; \
-                         call a conventional `let`/`var`/`own` export instead"
+                        "normal module `{m}` cannot use non-rooted-reference opt API `{srcmod}.{name}`; \
+                         only immutable rooted-view APIs cross this boundary"
                     ),
                     m,
                     line,
@@ -3985,6 +4147,17 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
+}
+
+/// The pre-link static-evaluation recipe is the only producer of these calls.
+/// Keep this name-level allowance in the linker deliberately smaller than a
+/// general private-access mode; the recipe separately verifies that the raw
+/// `glamour` module has the authenticated toolchain identity before selecting
+/// [`LinkMode::StaticEvaluation`].
+fn static_evaluation_origin_constructor(mode: LinkMode, module: &str, function: &str) -> bool {
+    mode == LinkMode::StaticEvaluation
+        && module == "glamour"
+        && matches!(function, "interactive_with_origin" | "client_region_with_origin")
 }
 
 fn definition_site_target(
@@ -4910,6 +5083,24 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn persistent_std_cache_rejects_retired_ast_enum_ordinals() {
+        let expansion = CachedStdExpansion {
+            module: crate::parser::parse_reference_migration("fn view(x: &'a String) -> &'a String:\n    x\n")
+                .expect("explicit reference source"),
+            origins: crate::origin::OriginTable::default(),
+        };
+        let payload = postcard::to_stdvec(&expansion).expect("encode cache fixture");
+        let mut current = PERSISTENT_STD_CACHE_MAGIC.to_vec();
+        current.extend_from_slice(blake3::hash(&payload).as_bytes());
+        current.extend_from_slice(&payload);
+        assert!(persistent_std_cache_decode(&current).is_some());
+        let mut retired = current;
+        retired[PERSISTENT_STD_CACHE_MAGIC.len() - 1] = 3;
+        assert!(persistent_std_cache_decode(&retired).is_none());
+    }
+
+    #[test]
     fn pulled_std_cache_preserves_cold_and_warm_proof_and_origins() {
         fn origin_expand(
             name: &str,
@@ -5027,14 +5218,21 @@ mod tests {
 
     #[test]
     fn eta_expansion_preserves_named_function_purity() {
+        let expected_parameter_type = Type::Qualified(
+            TypeQual::Unique,
+            Box::new(Type::Named("worker.Payload".to_string(), vec![])),
+        );
         let expression = eta_lambda(
             "api.clean",
             EtaSig {
                 arity: 1,
                 conventions: vec![Convention::Borrow],
+                qualified_parameter_types: vec![Some(expected_parameter_type.clone())],
+                generic: false,
                 pure: true,
                 public: true,
                 reference_bearing: false,
+                rooted_view_only: true,
                 method_alias: false,
                 alias_target: None,
             },
@@ -5048,7 +5246,42 @@ mod tests {
             panic!("eta expansion must produce a lambda")
         };
         assert_eq!(params[0].convention, Convention::Borrow);
+        assert_eq!(params[0].ty, Some(expected_parameter_type));
         assert_eq!(qualifiers, CallableQualifiers::new(true, false));
+    }
+
+    #[test]
+    fn generic_module_function_value_retains_its_checked_declaration_identity() {
+        let worker = crate::parser::parse_module(
+            "mode opt\n\npub fn retain(own value: unique a) -> unique a:\n    value\n",
+        )
+        .expect("worker parses");
+        let api = crate::parser::parse_module(
+            "mode opt\n\nimport worker\n\npub fn relay(own packet: unique String) -> unique String:\n    let keep = worker.retain\n    keep(packet)\n",
+        )
+        .expect("api parses");
+        let main = crate::parser::parse_module(
+            "import api\n\nfn main():\n    let _ = 0\n",
+        )
+        .expect("entry parses");
+        let linked = link(
+            vec![("worker".into(), worker), ("api".into(), api), ("main".into(), main)],
+            "main",
+            noop_expand,
+        )
+        .expect("generic function value links");
+        let relay = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "api.relay" => Some(function),
+                _ => None,
+            })
+            .expect("linked relay");
+        assert!(matches!(
+            relay.body.stmts.first(),
+            Some(Stmt::Let { value: Expr::Var(name), .. }) if name == "worker.retain"
+        ));
     }
 
     #[test]
@@ -5286,7 +5519,7 @@ mod tests {
     fn raw_channel_privacy_external_bridge_calls_rejected() {
         let mut admitted = Vec::new();
         for (bridge, result, call) in [
-            ("__channel_send_i64", "Nil", "task.__channel_send_i64(id, 7)"),
+            ("__channel_send_i64", "()", "task.__channel_send_i64(id, 7)"),
             ("__channel_recv_i64", "Option(Int)", "task.__channel_recv_i64(id)"),
             ("__channel_select2_map", "Option(String)",
                 "task.__channel_select2_map(id, id, fn(_tag, _raw): task.done(None))"),
@@ -5303,6 +5536,11 @@ mod tests {
     fn raw_channel_privacy_external_function_values_rejected() {
         let mut admitted = Vec::new();
         for (module, bridge) in [
+            ("task", "__spawn_raw"),
+            ("task", "__join_raw"),
+            ("task", "__cancel_raw"),
+            ("task", "__handle_from_raw"),
+            ("task", "__handle_into_raw"),
             ("task", "__channel_send_i64"),
             ("task", "__channel_recv_i64"),
             ("task", "__channel_select2_map"),
@@ -5446,6 +5684,28 @@ mod tests {
     }
 
     #[test]
+    fn static_evaluation_origin_constructors_remain_private_in_production() {
+        let glamour = "fn interactive_with_origin(origin: String, program: (), initial: ()) -> ():\n    ()\n\n\
+                       fn client_region_with_origin(origin: String, program: (), fallback: ()) -> ():\n    ()\n";
+        for constructor in ["interactive_with_origin", "client_region_with_origin"] {
+            let main = format!(
+                "import glamour\n\nfn main() -> ():\n    glamour.{constructor}(\"origin\", (), ())\n"
+            );
+            let modules = vec![
+                ("glamour".to_string(), crate::parser::parse_module(glamour).expect("parse Glamour fixture")),
+                ("main".to_string(), crate::parser::parse_module(&main).expect("parse caller fixture")),
+            ];
+            let error = link_with_mode(modules, "main", noop_expand, LinkMode::Production)
+                .expect_err("ordinary production source cannot call compiler-owned origin constructor")
+                .to_string();
+            assert!(
+                error.contains(&format!("function `glamour.{constructor}` is private")),
+                "{error}",
+            );
+        }
+    }
+
+    #[test]
     fn plain_import_does_not_bind_bare_functions() {
         // RFC-0042 / BUG-452: `import X` keeps functions qualified. A bare
         // imported call exists only when the source wrote `from X import f`.
@@ -5573,80 +5833,82 @@ mod tests {
     }
 
     #[test]
-    fn normal_importer_cannot_call_a_reference_bearing_opt_export() {
+    fn normal_importer_preserves_rooted_view_opt_signatures() {
         let api = crate::parser::parse_module(
-            "mode opt\n\npub fn first(text: &'a String) -> &'a String:\n    text\n\n\
-             pub fn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
+            "mode opt\n\npub fn relay(view: &Int) -> &Int:\n    view\n",
         )
-        .expect("opt API parses");
+        .expect("rooted-view opt API parses");
         let normal = crate::parser::parse_module(
-            "import api\n\nfn main() -> String:\n    api.first(\"hello\")\n",
+            "import api\n\nfn main() -> Int:\n    var value = 7\n    let observed = api.relay(&value)\n    value = 9\n    (*observed) * 10 + value\n",
         )
-        .expect("normal caller parses");
+        .expect("normal rooted-view caller parses");
+        link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect("qualified rooted-view call retains its source type across the mode boundary");
 
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn relay(view: &Int) -> &Int:\n    view\n",
+        )
+        .expect("rooted-view opt API parses");
+        let normal = crate::parser::parse_module(
+            "from api import relay\n\nfn main() -> Int:\n    var value = 7\n    let observed = relay(&value)\n    value = 9\n    (*observed) * 10 + value\n",
+        )
+        .expect("normal from-import rooted-view caller parses");
+        link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect("from-import rooted-view call retains its source type across the mode boundary");
+
+        let api = crate::parser::parse_module(
+            "mode opt\n\npub fn relay(view: &Int) -> &Int:\n    view\n",
+        )
+        .expect("rooted-view opt API parses");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> Int:\n    var value = 7\n    let forward = api.relay\n    let observed = forward(&value)\n    value = 9\n    (*observed) * 10 + value\n",
+        )
+        .expect("normal rooted-view function-value caller parses");
+        link(
+            vec![("api".into(), api), ("normal".into(), normal)],
+            "normal",
+            noop_expand,
+        )
+        .expect("function value retains the rooted-view contract across the mode boundary");
+    }
+
+    #[test]
+    fn normal_importer_keeps_non_rooted_reference_opt_exports_closed() {
+        let api = crate::parser::parse_reference_migration(
+            "mode opt\n\npub fn edit(value: &'a mut Int) -> &'a mut Int:\n    value\n",
+        )
+        .expect("legacy syntax is available only to the migration parser");
+        let normal = crate::parser::parse_module(
+            "import api\n\nfn main() -> Int:\n    api.edit(7)\n",
+        )
+        .expect("normal caller parses without retired syntax");
         let error = link(
             vec![("api".into(), api), ("normal".into(), normal)],
             "normal",
             noop_expand,
         )
-        .expect_err("normal source must not see reference-bearing opt exports");
-        assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
-
-        let api = crate::parser::parse_module(
-            "mode opt\n\npub fn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
-        )
-        .expect("exclusive opt API parses");
-        let normal = crate::parser::parse_module(
-            "import api\n\nfn main() -> String:\n    api.edit(\"hello\")\n",
-        )
-        .expect("normal caller parses");
-        let error = link(
-            vec![("api".into(), api), ("normal".into(), normal)],
-            "normal",
-            noop_expand,
-        )
-        .expect_err("exclusive references are equally hidden from normal source");
-        assert!(error.message.contains("reference-bearing opt API `api.edit`"), "{}", error.message);
-
-        let api = crate::parser::parse_module(
-            "mode opt\n\npub fn first(text: &'a String) -> &'a String:\n    text\n",
-        )
-        .expect("opt API parses");
-        let normal = crate::parser::parse_module(
-            "from api import first\n\nfn main() -> String:\n    first(\"hello\")\n",
-        )
-        .expect("normal caller parses");
-        let error = link(
-            vec![("api".into(), api), ("normal".into(), normal)],
-            "normal",
-            noop_expand,
-        )
-        .expect_err("from-import must not expose a reference-bearing export");
-        assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
-
-        let api = crate::parser::parse_module(
-            "mode opt\n\npub fn first(text: &'a String) -> &'a String:\n    text\n",
-        )
-        .expect("opt API parses");
-        let normal = crate::parser::parse_module(
-            "import api\n\nfn main() -> String:\n    let first = api.first\n    first(\"hello\")\n",
-        )
-        .expect("normal function-value caller parses");
-        let error = link(
-            vec![("api".into(), api), ("normal".into(), normal)],
-            "normal",
-            noop_expand,
-        )
-        .expect_err("function values must not leak reference-bearing exports");
-        assert!(error.message.contains("reference-bearing opt API `api.first`"), "{}", error.message);
+        .expect_err("non-rooted references must not cross the mode boundary");
+        assert!(
+            error.message.contains("non-rooted-reference opt API `api.edit`"),
+            "{}",
+            error.message,
+        );
     }
 
     #[test]
     fn normal_importer_cannot_name_an_opt_type_that_contains_a_reference() {
-        let api = crate::parser::parse_module(
+        let api = crate::parser::parse_reference_migration(
             "mode opt\n\ntype Holder:\n    Holder(&'a String)\n\npub fn make(text: &'a String) -> Holder:\n    Holder(text)\n",
         )
-        .expect("opt API parses");
+        .expect("legacy reference carrier is available only to the migration parser");
         let normal = crate::parser::parse_module(
             "import api\n\nfn retain(holder: api.Holder) -> Int:\n    0\n\nfn main() -> Int:\n    0\n",
         )
@@ -5667,10 +5929,10 @@ mod tests {
 
     #[test]
     fn normal_importer_cannot_name_an_opt_trait_with_reference_methods() {
-        let api = crate::parser::parse_module(
+        let api = crate::parser::parse_reference_migration(
             "mode opt\n\ntrait Read:\n    fn read(self: Self, text: &'a String) -> &'a String\n",
         )
-        .expect("opt trait parses");
+        .expect("legacy reference trait is available only to the migration parser");
         let normal = crate::parser::parse_module(
             "import api\n\nfn retain(reader: dyn api.Read) -> Int:\n    0\n\nfn main() -> Int:\n    0\n",
         )
@@ -5710,10 +5972,10 @@ mod tests {
 
     #[test]
     fn normal_importer_cannot_call_an_opt_export_that_hides_a_reference_in_a_type_alias() {
-        let api = crate::parser::parse_module(
-            "mode opt\n\ntype Callback = fn(&'a String) -> Int\n\npub fn apply(callback: Callback) -> Int:\n    callback(\"value\")\n",
+        let api = crate::parser::parse_reference_migration(
+            "mode opt\n\ntype Callback = fn(&String) -> Int\n\npub fn apply(callback: Callback) -> Int:\n    callback(\"value\")\n",
         )
-        .expect("opt API with a reference-bearing alias parses");
+        .expect("legacy reference alias is available only to the migration parser");
         let normal = crate::parser::parse_module(
             "import api\n\nfn main() -> Int:\n    api.apply(fn(value):\n        0\n    )\n",
         )
@@ -5725,15 +5987,20 @@ mod tests {
             noop_expand,
         )
         .expect_err("alias expansion must not hide an opt reference from a normal importer");
-        assert!(error.message.contains("reference-bearing opt API `api.apply`"), "{}", error.message);
+        assert!(
+            error.message.contains("reference-bearing opt API `api.apply`")
+                || error.message.contains("non-rooted-reference opt API `api.apply`"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
     fn normal_from_import_rejects_a_nested_reference_bearing_export() {
-        let api = crate::parser::parse_module(
-            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a String\n    right: &'b String\n\npub fn make(left: &'a String, right: &'b String) -> Option(List(Pair('a, 'b))):\n    Some([Pair(left, right)])\n",
+        let api = crate::parser::parse_reference_migration(
+            "mode opt\n\ntype Pair(a, b):\n    left: &String\n    right: &String\n\npub fn make(left: &String, right: &String) -> Option(List(Pair(String, String))):\n    Some([Pair(left, right)])\n",
         )
-        .expect("nested reference-bearing opt API parses");
+        .expect("nested legacy references are available only to the migration parser");
         let normal = crate::parser::parse_module(
             "from api import make\n\nfn main():\n    var left = \"left\"\n    var right = \"right\"\n    make(&left, &right)\n",
         )
@@ -5745,7 +6012,12 @@ mod tests {
             noop_expand,
         )
         .expect_err("from-import must not expose a nested reference-bearing opt export");
-        assert!(error.message.contains("reference-bearing opt API `api.make`"), "{}", error.message);
+        assert!(
+            error.message.contains("reference-bearing opt API `api.make`")
+                || error.message.contains("non-rooted-reference opt API `api.make`"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -5787,7 +6059,7 @@ mod tests {
         }
 
         let views = crate::parser::parse_module(
-            "mode opt\n\npub fn view(text: let('a) String) -> View(String, 'a):\n    text\n",
+            "mode opt\n\npub fn view(text: &String) -> &String:\n    text\n",
         )
         .expect("view module parses");
         let user = crate::parser::parse_module(
@@ -5811,11 +6083,11 @@ mod tests {
 
     #[test]
     fn imported_exclusive_reference_result_is_not_erased_at_an_async_boundary() {
-        let views = crate::parser::parse_module(
+        let views = crate::parser::parse_reference_migration(
             "mode opt\n\npub fn edit(text: &'a mut String) -> &'a mut String:\n    text\n",
         )
         .expect("exclusive-reference module parses");
-        let user = crate::parser::parse_module(
+        let user = crate::parser::parse_reference_migration(
             "mode opt\n\nimport views\n\nasync fn bad(console: Console):\n    var text = \"x\"\n    let editable = views.edit(&mut text)\n    let _ = task.done(0).await\n    console.print(editable)\n",
         )
         .expect("consumer parses");
@@ -5840,7 +6112,7 @@ mod tests {
                     "async fn bad(console: Console):\n    let text = \"x\"\n    let borrowed = views.view(text)\n    let _ = task.done(0).await\n    console.print(borrowed)\n"
                 }
                 "views" => {
-                    "pub fn view(text: let('a) String) -> View(String, 'a):\n    text\n"
+                    "pub fn view(text: &String) -> &String:\n    text\n"
                 }
                 _ => return Ok(crate::origin::OriginTable::default()),
             };
@@ -5889,7 +6161,7 @@ mod tests {
         }
 
         let views = crate::parser::parse_module(
-            "mode opt\n\ntype Holder:\n    Holder(String)\n\nimpl Holder:\n    pub fn view(self: let('a) Holder) -> View(Holder, 'a):\n        self\n",
+            "mode opt\n\ntype Holder:\n    Holder(String)\n\nimpl Holder:\n    pub fn view(self: &Holder) -> &Holder:\n        self\n",
         )
         .expect("view module parses");
         let user = crate::parser::parse_module(
@@ -5914,7 +6186,7 @@ mod tests {
     #[test]
     fn handwritten_async_uses_public_inherent_view_alias_facts() {
         let views = crate::parser::parse_module(
-            "mode opt\n\ntype Holder:\n    Holder(String)\n\nimpl Holder:\n    pub fn view(self: let('a) Holder) -> View(Holder, 'a):\n        self\n",
+            "mode opt\n\ntype Holder:\n    Holder(String)\n\nimpl Holder:\n    pub fn view(self: &Holder) -> &Holder:\n        self\n",
         )
         .expect("view module parses");
         let user = crate::parser::parse_module(
@@ -5939,7 +6211,7 @@ mod tests {
     #[test]
     fn top_level_function_suppresses_inherent_view_alias_fact() {
         let views = crate::parser::parse_module(
-            "mode opt\n\ntype Holder:\n    Holder(String)\n\npub fn view(holder: Holder) -> Holder:\n    holder\n\nimpl Holder:\n    pub fn view(self: let('a) Holder) -> View(Holder, 'a):\n        self\n",
+            "mode opt\n\ntype Holder:\n    Holder(String)\n\npub fn view(holder: Holder) -> Holder:\n    holder\n\nimpl Holder:\n    pub fn view(self: &Holder) -> &Holder:\n        self\n",
         )
         .expect("view module parses");
         let user = crate::parser::parse_module(
@@ -5957,7 +6229,7 @@ mod tests {
     #[test]
     fn first_inherent_method_determines_published_view_alias_fact() {
         let views = crate::parser::parse_module(
-            "mode opt\n\ntype Owned:\n    Owned(String)\n\ntype Borrowed:\n    Borrowed(String)\n\nimpl Owned:\n    pub fn view(self: Owned) -> Owned:\n        self\n\nimpl Borrowed:\n    pub fn view(self: let('a) Borrowed) -> View(Borrowed, 'a):\n        self\n",
+            "mode opt\n\ntype Owned:\n    Owned(String)\n\ntype Borrowed:\n    Borrowed(String)\n\nimpl Owned:\n    pub fn view(self: Owned) -> Owned:\n        self\n\nimpl Borrowed:\n    pub fn view(self: &Borrowed) -> &Borrowed:\n        self\n",
         )
         .expect("view module parses");
         let user = crate::parser::parse_module(
@@ -5984,7 +6256,7 @@ mod tests {
                     "async fn bad(console: Console):\n    let text = \"x\"\n    let borrowed = string.generated_view(text)\n    let _ = task.done(0).await\n    console.print(borrowed)\n"
                 }
                 "string" => {
-                    "pub fn generated_view(text: let('a) String) -> View(String, 'a):\n    text\n"
+                    "pub fn generated_view(text: &String) -> &String:\n    text\n"
                 }
                 _ => return Ok(crate::origin::OriginTable::default()),
             };

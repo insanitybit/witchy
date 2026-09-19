@@ -193,18 +193,34 @@ use crate::{codegen, interpreter, parser};
     }
 
     #[test]
-    fn precompiled_wasm_runs_like_the_source() {
-        // C Tier 1 (distribution): a program emitted to a `.wasm` and run as a
-        // precompiled module — with authority derived from its imports — produces
-        // the same output as running the source. This is "ship the .wasm, run it
-        // with witchy".
+    fn detached_wasm_requires_admission_while_the_admitted_artifact_runs() {
+        // Detached Wasm bytes no longer carry canonical admission authority.
+        // Preserve both sides of that boundary: raw distribution fails closed,
+        // while the authenticated artifact produced in-process executes and
+        // matches an independent semantic expectation.
         let tmp = std::env::temp_dir().join(format!("witchy_tier1_precompiled_{}.wasm", std::process::id()));
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
-        let (from_wasm, _) =
-            crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled).expect("run .wasm");
-        let from_source = crate::execute_file("examples/calc/src/calc.witchy", Vec::new()).expect("run source");
-        assert_eq!(from_wasm, from_source, "precompiled .wasm diverges from the source run");
+        let error = crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled)
+            .expect_err("detached Wasm must not recover admission authority");
+        assert!(error.contains("raw Wasm cannot claim canonical admission"), "{error}");
+
+        let (checked, _) = crate::link_file_checked("examples/calc/src/calc.witchy")
+            .expect("checked calc source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("canonical calc admission");
+        let expected = [
+            "2 + 3 * 4       => 14",
+            "(2 + 3) * 4     => 20",
+            "100 - 2 - 3     => 95",
+            "2 * (10 - 1)    => 18",
+            "8 / (4 - 4)     => error: division by zero",
+            "2 * (3 +        => error: unexpected end of input",
+        ].map(str::to_owned);
+        assert_eq!(
+            crate::run_admitted_artifact(&artifact).expect("run admitted calc"),
+            expected,
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 

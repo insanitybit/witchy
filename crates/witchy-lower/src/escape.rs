@@ -1143,7 +1143,7 @@ mod tests {
 
     #[test]
     fn arbitrary_call_result_is_not_an_rc_floor_candidate() {
-        let src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> Nil:\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> ():\n    var working = identity(x)\n    working = string.substring(working, 1, string.length(working))\n";
         assert!(
             !rc_floor(src).contains("working"),
             "an ordinary call may return an input alias"
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[test]
     fn shadowed_destination_function_name_cannot_prove_freshness() {
-        let src = "fn damage(choose: fn(String) -> String, x: String) -> Nil:\n    var working = choose(x)\n    working = string.substring(working, 1, string.length(working))\n";
+        let src = "fn damage(choose: fn(String) -> String, x: String) -> ():\n    var working = choose(x)\n    working = string.substring(working, 1, string.length(working))\n";
         let module = parser::parse_module(src).expect("parse");
         let summaries = crate::analysis::Summaries::of_module(&module);
         let function = module
@@ -1200,13 +1200,13 @@ mod tests {
 
     #[test]
     fn control_flow_aliases_are_not_rc_floor_candidates() {
-        let if_src = "fn damage(x: String) -> Nil:\n    var working = if true: x else: x\n    working = string.substring(working, 1, string.length(working))\n";
+        let if_src = "fn damage(x: String) -> ():\n    var working = if true: x else: x\n    working = string.substring(working, 1, string.length(working))\n";
         assert!(!rc_floor(if_src).contains("working"));
 
-        let match_src = "fn damage(x: String) -> Nil:\n    var working = match true:\n        true -> x\n        false -> x\n    working = string.substring(working, 1, string.length(working))\n";
+        let match_src = "fn damage(x: String) -> ():\n    var working = match true:\n        true -> x\n        false -> x\n    working = string.substring(working, 1, string.length(working))\n";
         assert!(!rc_floor(match_src).contains("working"));
 
-        let nested_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> Nil:\n    if true:\n        var working = identity(x)\n        working = string.substring(working, 1, string.length(working))\n";
+        let nested_src = "fn identity(x: String) -> String:\n    x\nfn damage(x: String) -> ():\n    if true:\n        var working = identity(x)\n        working = string.substring(working, 1, string.length(working))\n";
         assert!(
             !rc_floor(nested_src).contains("working"),
             "nested initializers must be visited by the default-deny classifier"
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn later_alias_assignment_disqualifies_rc_floor_candidate() {
-        let src = "fn damage(trusted: String) -> Nil:\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
+        let src = "fn damage(trusted: String) -> ():\n    var working = \"fresh\"\n    working = trusted\n    working = string.substring(working, 1, string.length(working))\n";
         assert!(
             !rc_floor(src).contains("working"),
             "a later assignment can destroy initializer freshness"
@@ -1224,7 +1224,7 @@ mod tests {
 
     #[test]
     fn self_threaded_cow_assignment_preserves_rc_floor_candidate() {
-        let src = "fn transform() -> Nil:\n    var working = \"FRESH\"\n    working = string.to_lower(working)\n";
+        let src = "fn transform() -> ():\n    var working = \"FRESH\"\n    working = string.to_lower(working)\n";
         assert!(
             rc_floor(src).contains("working"),
             "the guarded self-threaded COW overwrite must remain reclaimable"
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn proven_fresh_constructor_remains_an_rc_floor_candidate() {
-        let src = "type Pair:\n    left: Int\n    right: Int\nfn build() -> Nil:\n    var pair = Pair(1, 2)\n    pair = Pair(3, 4)\n";
+        let src = "type Pair:\n    left: Int\n    right: Int\nfn build() -> ():\n    var pair = Pair(1, 2)\n    pair = Pair(3, 4)\n";
         assert!(rc_floor(src).contains("pair"));
     }
 

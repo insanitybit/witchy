@@ -574,6 +574,7 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope(
         step_limit,
         fresh_ident_scope,
         None,
+        None,
     )
 }
 
@@ -583,10 +584,11 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
     compiler_expr_qualifiers: Option<Vec<String>>,
+    compiler_tag_hole_markers: Option<Vec<String>>,
 ) -> Result<ComptimeOutputs, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited_with_catalog_and_seed(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers, None, None, Some(0))
+        run_module_inner_limited_with_catalog_and_seed(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers, compiler_tag_hole_markers, None, None, Some(0))
     })
     .map(|outcome| ComptimeOutputs {
         output: outcome.output,
@@ -915,7 +917,7 @@ fn run_module_inner_limited_with_catalog(
 ) -> Result<InterpreterOutcome, RuntimeError> {
     run_module_inner_limited_with_catalog_and_seed(module, root, dir_roots, file_grants,
         net_allow, fetch_origins, args, signing_key, named_secrets, user_caps, step_limit,
-        fresh_ident_scope, compiler_expr_qualifiers, runtime_catalog, console_input,
+        fresh_ident_scope, compiler_expr_qualifiers, None, runtime_catalog, console_input,
         witchy_runtime::rand::seed_from_env())
 }
 
@@ -925,7 +927,8 @@ fn run_module_inner_limited_with_catalog_and_seed(
     net_allow: Vec<String>, fetch_origins: Vec<String>, args: Vec<String>,
     signing_key: Option<[u8; 32]>, named_secrets: Vec<(String, Vec<u8>, bool)>,
     user_caps: UserCapGrants, step_limit: u64, fresh_ident_scope: Option<String>,
-    compiler_expr_qualifiers: Option<Vec<String>>, runtime_catalog: Option<RuntimeDeclarationCatalog>,
+    compiler_expr_qualifiers: Option<Vec<String>>, compiler_tag_hole_markers: Option<Vec<String>>,
+    runtime_catalog: Option<RuntimeDeclarationCatalog>,
     console_input: Option<Vec<String>>, rand_seed: Option<u64>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
     let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
@@ -933,6 +936,7 @@ fn run_module_inner_limited_with_catalog_and_seed(
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
     interp.compiler_expr_qualifiers = compiler_expr_qualifiers;
+    interp.compiler_tag_hole_markers = compiler_tag_hole_markers;
     interp.root = root;
     interp.dir_roots = dir_roots;
     interp.file_grants = file_grants;
@@ -1009,7 +1013,7 @@ fn run_module_inner_limited_with_catalog_and_seed(
         Value::Int(n) => n as i32,
         _ => 0,
     };
-    // A non-`Int`, non-`Nil` result (e.g. a `Float`) is still surfaced when the
+    // A non-`Int`, non-unit result (e.g. a `Float`) is still surfaced when the
     // program printed nothing — for a compiled `main -> Float` this is the only
     // way to show the value (the WASM backend has no float `to_string`).
     if interp.output.is_empty() && !matches!(ret, Value::Unit | Value::Int(_)) {

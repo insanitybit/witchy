@@ -17,14 +17,13 @@ source ──lexer/parser──> per-module AST
                     (AST + origins + declarations
                      + authenticated owners, when loaded)
                               │
-                   ┌──────────┴──────────┐
-             checked lowering       checked interpreter
-                    │                (parity/comptime/
-                   WIR                tests/build only)
-                    │
-               wasm-encoder
-                    │
-             wasmtime execution
+                         checked lowering
+                                │
+                      canonical SafeWIR
+                         ┌──────┴──────┐
+              canonical interpreter  admitted wasm-encoder
+                    (oracle)                 │
+                                      wasmtime execution
 ```
 
 `witchy-types::pipeline::CheckedModule` is the production proof boundary. The
@@ -42,10 +41,12 @@ that a transformed AST remains checked.
 
 There is **one user-program run path: the compiled WASM backend.** `witchy
 <file>`, `witchy run`, and `witchy sandbox` all compile to a wasm binary and
-execute it under wasmtime, so dev == deploy by construction. The tree-walking
-interpreter is *not* a run path - it's the source-level oracle (`witchy
-parity`), the `comptime:` evaluator, the in-language test runner, and the
-effectful build-step executor.
+execute it under wasmtime, so dev == deploy by construction. Semantic evidence
+flows from an independent expected result to the canonical SafeWIR interpreter
+and then to admitted unoptimized Wasm. The source tree walker is frozen and is
+not a language oracle. It remains only as a temporary implementation detail for
+`comptime:` and effectful build evaluation until those paths use canonical
+lowering too.
 
 Compile-time generation retains a compiler-only provenance result inside the
 checked artifact. Tooling that must operate on an incomplete, type-invalid
@@ -76,7 +77,7 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR, selecting ordinary slots, typed references, or canonical specialized layouts before Wasm-kind erasure; `analysis` is the uniqueness / cap-token pass the in-place and destination paths depend on. |
 | `witchy-confinement` | normalized policy plus platform providers | Target-neutral filesystem, network, Fetch-origin, and syscall-class confinement policy; Linux Landlock/seccomp enforcement consumes this policy without depending on compiler stages or Wasmtime. |
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), native-function registry (FFI-as-capability), runtime adapters over shared confinement policy, and the Wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The non-`runtime` modules are wasm-safe; `runtime` sits behind the `native` feature. |
-| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking source-level oracle (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) - plus compile-time `comptime:` / `tag"…"` evaluation and the task-shaped checked-link service that injects the compile-time expander. |
+| `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | A frozen source tree walker retained temporarily for compile-time `comptime:` / `tag"…"` evaluation and build evaluation, plus the task-shaped checked-link service that injects the compile-time expander. It is neither a production runtime nor a semantic oracle; linker/tooling services are being separated from it. |
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) - recomputed from source, never trusted metadata - and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
 | `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
 
@@ -87,27 +88,24 @@ are the package manager and registry, self-hosted in witchy.
 
 Stable observable semantics converge before support
 ([RFC-0135](../rfcs/0135-stable-semantics-converge.md)). Independent expected
-results adjudicate correctness. Interpreter/Wasm agreement proves the
-backends match; it does not prove they are right. A silent split (two
-different answers) is a bug. A loud error on a backend that does not yet
-implement an experimental surface is how unfinished work is allowed to
-exist.
+results adjudicate correctness. Canonical SafeWIR interpretation and admitted
+unoptimized Wasm must each match that expectation. Agreement between those two
+executors proves consistency, not correctness by itself. A silent split is a
+bug; a loud fail-closed refusal is the only acceptable state for an unfinished
+surface.
 
-The compiled backend is the user run path. The interpreter is a
-source-level oracle for `witchy parity`, `comptime`, in-language tests, and
-effectful build steps. It does not reproduce Wasm carrier layouts, GC
-encodings, SIMD, or allocation strategies.
+The compiled backend is the user run path. The canonical SafeWIR interpreter
+is the executable semantic oracle. The frozen source tree walker does not
+participate in language acceptance and must not gain new language features.
 
 Verification, by kind of work:
 
-- **Stable language semantics** land on both backends in the same change,
-  with an independent expected result, and stay under focused
-  `witchy parity` in the inner loop.
-- **Experimental runtime representations** (unsettled carriers, ABIs,
-  host layouts) are Wasm-first. The slice records a named interpreter
-  debt: fixture, missing boundary, convergence milestone. The interpreter
-  errors loudly until that debt is paid, at or before the feature is
-  marked supported.
+- **Stable language semantics** land in canonical lowering, match an
+  independent expected result in the canonical SafeWIR interpreter, and match
+  it again in admitted unoptimized Wasm.
+- **Experimental runtime representations** (unsettled carriers, ABIs, host
+  layouts) fail closed until both canonical execution legs admit them. They do
+  not create source-interpreter feature debt.
 - **Pure optimizations** (SIMD, SROA, bounds elision, local pruning)
   exist only on compiled Wasm. Compare optimized Wasm to scalar Wasm and
   to the expected result. Do not implement them in the interpreter.
@@ -118,24 +116,27 @@ Verification, by kind of work:
 
 Enforced by:
 
-- `witchy parity <file>`: runs both backends and compares values and complete
-  error diagnostics byte-for-byte. An error/value split, different errors, or a
-  missing compiled source location is a reported divergence.
-- Hundreds of differential unit tests plus property-based tests (proptest).
-- A CI sweep running `parity` over every example.
+- Focused oracle fixtures state the expected value or rejection independently,
+  then run the canonical SafeWIR interpreter and the admitted Wasm artifact.
+  An error/value split, different errors, or a missing compiled source location
+  is a reported divergence.
+- Canonical interpreter/Wasm unit tests plus property-based tests (proptest).
+- A CI sweep lowers and executes the admitted example corpus through both
+  canonical execution legs.
 - `tests/misc/semantic_conformance.rs`: independently stated exact values,
   rejection diagnostics, and capability footprints. Its positive control
-  injects a shared semantic mutation that both backends agree on and proves the
-  external expectation still rejects it.
+  injects a shared semantic mutation that both canonical executors agree on and
+  proves the external expectation still rejects it.
 
-The interpreter and compiled backend share parsing, linking, type checking,
-and parts of lowering policy, so a common-mode defect can preserve
+The canonical interpreter and compiled backend share parsing, linking, type
+checking, and canonical lowering, so a common-mode defect can preserve
 agreement. New supported semantics therefore need an independent expected
-result or rejection in addition to parity. The conformance corpus is
-deliberately small and reviewable; broad generated coverage stays in the
-differential and property suites. [RFC-0058](../rfcs/0058-differential-harness-integrity.md)
-still governs the corpus when it runs: fail-closed classification, vacuity
-guards, seeded divergence controls.
+result or rejection in addition to executor agreement. The conformance corpus
+is deliberately small and reviewable; broad generated coverage stays in the
+differential and property suites.
+[RFC-0058](../rfcs/0058-differential-harness-integrity.md) still governs the
+corpus when it runs: fail-closed classification, vacuity guards, and seeded
+divergence controls.
 
 ## The WASM value model
 
@@ -301,7 +302,7 @@ Tracked honestly rather than hidden:
   constructor literals). A payload codegen cannot resolve - e.g. through an
   unspecialized generic function, or a *recursive* generic ADT - stays a loud
   compile error, never a silent pointer compare.
-- Spawned tasks return `Nil` and report results over channels (the Go model):
+- Spawned tasks return `()` and report results over channels (the Go model):
   there's no typed `JoinHandle(T)` - one would force a native runtime and
   break the byte-identical executor, so the structured forms (`chan.scope`,
   `chan.gather`, `chan.par_map`) cover the join-with-result shapes. `await`

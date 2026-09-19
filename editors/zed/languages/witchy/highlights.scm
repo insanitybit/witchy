@@ -45,7 +45,7 @@
   "mode" "mut"
   "sealed" "must" "grantable" "capability"
   "dyn"
-  "unique" "frozen" "local"
+  "unique" "frozen"
   "quote"
 ] @keyword
 

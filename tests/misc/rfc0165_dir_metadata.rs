@@ -1,9 +1,9 @@
-//! Source-backed directory metadata, including captured authority and aliases.
+//! Directory metadata, including captured authority and aliases.
 use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
 
 #[test]
-fn canonical_dir_metadata_source_oracle_wasm_and_missing_grants() {
+fn canonical_dir_metadata_oracle_wasm_and_missing_grants() {
     let root = crate::temp_dir::TempDir::new("canonical-dir-metadata");
     std::fs::create_dir_all(root.path().join("nested/leaf")).unwrap();
     std::fs::create_dir(root.path().join("\u{e9}-\u{1f980}")).unwrap();
@@ -27,7 +27,6 @@ fn canonical_dir_metadata_source_oracle_wasm_and_missing_grants() {
         console.print("${{probe(path)}}")
 "#).replace("UNICODE_DIR", "\u{e9}-\u{1f980}");
     let checked = witchy::resolve_std_only_checked(&source).unwrap();
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
         let entry = artifact.entry().unwrap();
         let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());

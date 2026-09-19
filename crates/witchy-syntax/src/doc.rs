@@ -182,7 +182,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             continue;
         }
         any = true;
-        let sig = format!("{}{}", fn_qualifier(f.pure, f.is_async, f.is_gen), signature(&f.name, &f.params, &f.ret, &f.bounds));
+        let sig = format!("{}{}", fn_qualifier(f.pure, f.is_async, f.is_gen), signature(&f.name, &f.type_params, &f.params, &f.ret, &f.bounds));
         let dynamic = f.attributes.iter().any(|attribute| attribute == "dynamic");
         let sig = if dynamic { format!("@dynamic {sig}") } else { sig };
         let _ = writeln!(out, "#### `{sig}`\n");
@@ -253,7 +253,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             let _ = writeln!(
                 out,
                 "- `{}`",
-                signature(&method.name, &method.params, &method.ret, &method.bounds),
+                signature(&method.name, &method.type_params, &method.params, &method.ret, &method.bounds),
             );
         }
         if !im.methods.is_empty() {
@@ -321,7 +321,7 @@ fn variant_str(v: &Variant) -> String {
     }
 }
 
-fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String, Vec<Type>)]) -> String {
+fn signature(name: &str, type_params: &[String], params: &[Param], ret: &Option<Type>, bounds: &[(String, String, Vec<Type>)]) -> String {
     let ps: Vec<String> = params.iter().map(|p| param_str(p, bounds)).collect();
     let r = ret
         .as_ref()
@@ -340,7 +340,8 @@ fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String
             .collect();
         format!(" where {}", bs.join(", "))
     };
-    format!("fn {name}({}){r}{w}", ps.join(", "))
+    let generic = if type_params.is_empty() { String::new() } else { format!("[{}]", type_params.join(", ")) };
+    format!("fn {name}{generic}({}){r}{w}", ps.join(", "))
 }
 
 /// Render one public inherent method as its callable surface spelling. A
@@ -349,7 +350,7 @@ fn signature(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String
 fn inherent_signature(owner: &str, method: &Function) -> (String, bool) {
     let is_static = method.params.first().is_none_or(|param| param.name != "self");
     let params: &[Param] = if is_static { &method.params } else { &method.params[1..] };
-    let signature = signature(&method.name, params, &method.ret, &method.bounds);
+    let signature = signature(&method.name, &method.type_params, params, &method.ret, &method.bounds);
     let signature = signature
         .strip_prefix("fn ")
         .map(|rest| {
@@ -447,8 +448,8 @@ fn unop_str(op: UnOp) -> &'static str {
         UnOp::Not => "!",
         UnOp::BitNot => "~",
         UnOp::Borrow => "&",
-        UnOp::BorrowMut => "&mut ",
-        UnOp::Deref => "*",
+        UnOp::BorrowMut => panic!("cannot document a migration-only mutable borrow as canonical source"),
+        UnOp::Deref => panic!("cannot document a migration-only dereference as canonical source"),
         UnOp::Move => "move ",
         UnOp::Await => "await ",
     }
@@ -541,7 +542,7 @@ fn method_sig_str(m: &MethodSig) -> String {
     format!(
         "{}{}",
         if m.pure { "pure " } else { "" },
-        signature(&m.name, &m.params, &m.ret, &[]),
+        signature(&m.name, &m.type_params, &m.params, &m.ret, &[]),
     )
 }
 
@@ -855,15 +856,15 @@ mod tests {
 
     #[test]
     fn renders_borrowed_nominal_lifetime_parameters_as_public_relations() {
-        let src = "mode opt\n\n// Two views tied to independent owners.\ntype PairView(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n";
+        let src = "mode opt\n\n// Two immutable rooted views.\ntype PairView(a):\n    first: &a\n    second: &a\n";
         let md = render("views", src).expect("borrowed nominal docs render");
         assert!(
-            md.contains("#### `type PairView(a, 'left, 'right)`"),
-            "lifetime relations missing from declaration heading: {md}"
+            md.contains("#### `type PairView(a)`"),
+            "rooted-view declaration missing from heading: {md}"
         );
-        assert!(md.contains("Two views tied to independent owners."), "{md}");
-        assert!(md.contains("first: &'left a"), "borrowed field missing: {md}");
-        assert!(md.contains("second: &'right a"), "borrowed field missing: {md}");
+        assert!(md.contains("Two immutable rooted views."), "{md}");
+        assert!(md.contains("first: &a"), "rooted-view field missing: {md}");
+        assert!(md.contains("second: &a"), "rooted-view field missing: {md}");
     }
 
     // BUG-207: RFC-0056 default values appear in the rendered signature.

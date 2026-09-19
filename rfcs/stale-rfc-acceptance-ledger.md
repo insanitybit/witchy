@@ -1,5 +1,11 @@
 # Stale RFC terminal-outcome ledger
 
+> 2026-09-16: This is revision-scoped historical evidence, not a current pickup
+> queue. Retired source decisions resolve through [the retirement index](retired-rfcs.md)
+> and [RFC-0167's acceptance ledger](0167-acceptance-ledger.md). Historical
+> `PROVEN`/terminal rows and old revival instructions do not certify or override
+> the selected contract; no security obligation is canceled by this clarification.
+
 This ledger records the current-master evidence and terminal disposition work
 for RFCs whose implementation or status outlived the agent session that owned
 it. It is intentionally stricter than an `in progress` note: every row must end

@@ -42,4 +42,3 @@ pub mod source_check;
 pub mod suspension;
 pub mod syntax_holes;
 pub mod type_resolve;
-pub mod unstable;

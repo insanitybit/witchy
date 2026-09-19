@@ -3935,7 +3935,7 @@ pub fn glamour_emit(_state: BrowserState) -> Bytes:
 @browser
 pub fn glamour_release(own state: BrowserState):
     match state:
-        BrowserState(_) -> Nil
+        BrowserState(_) -> ()
 "#;
 
 const STARTER_SOURCE: &str = r#"from glamour import Cmd, Program, Site, Start, Sub, Ui, UiRoot
@@ -3943,25 +3943,25 @@ const STARTER_SOURCE: &str = r#"from glamour import Cmd, Program, Site, Start, S
 type Msg:
     Increment
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> Int:
     0
 
-fn start(_auth: Nil, _model: Int) -> Cmd(Msg):
+fn start(_auth: (), _model: Int) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, model: Int, _message: Msg) -> (Int, Cmd(Msg)):
+fn update(_auth: (), model: Int, _message: Msg) -> (Int, Cmd(Msg)):
     (model + 1, NoCmd)
 
 fn view(model: Int) -> Ui(Msg):
     glamour.ui(glamour.element("button", [glamour.attribute("type", "button"), glamour.on_event("counter.increment", "click", glamour.event_msg(Increment))], [glamour.text("Count: ${model}")]))
 
-fn subscriptions(_auth: Nil, _model: Int) -> Sub(Msg):
+fn subscriptions(_auth: (), _model: Int) -> Sub(Msg):
     NoSub
 
-fn app() -> Program(Nil, Int, Msg):
+fn app() -> Program((), Int, Msg):
     glamour.program(authorize, initial, start, update, view, subscriptions)
 
 pub fn web() -> Site:

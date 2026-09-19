@@ -31,6 +31,7 @@ always current - is
 | `bytes` | the `Bytes` type - `from_string`/`to_string_lossy`, `from_list`, `length`, slicing; the binary counterpart to `String` |
 | `iter` | lazy iterator combinators (`take`, `collect`, …) |
 | `func` | function combinators - `identity`, `compose`, `flip`, `constant`, `on_key`, `first`/`second` |
+| `borrow` | `.owned()` explicitly materializes a lawful shared reference as an independent owned snapshot |
 | `option` / `result` *(prelude)* | helpers for `Option` / `Result` |
 
 Ordering-aware functions (`list.sort_by`, `list.min_by`, …) take a *less-than
@@ -62,7 +63,6 @@ to_ms` finds `duration.to_milliseconds`.
 | `semver` | version parsing and comparison |
 | `cmp` / `show` *(show is prelude)* | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait; scalar comparison helpers live in `cmp`, collection algorithms live in `list` |
 | `convert` / `error` | the `From`/`Into` conversion traits (`(5).into()`, `T.from(x)`) and the `Error` trait bound |
-| `borrow` | `.owned()` materialization for a borrowed `View` (and identity on an ordinary owned value); see the performance appendix |
 | `reflect` / `meta` | runtime reflection (`reflect(x)` → the `Mirror` tree, `derive(Reflect)`) and compile-time type introspection - see the [Reflection](tour-reflection.md) and [comptime](tour-comptime.md) chapters |
 | `ascii` | ASCII classification |
 

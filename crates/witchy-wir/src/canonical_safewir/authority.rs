@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
@@ -496,6 +496,7 @@ pub enum CandidateAbiBindingError {
     MissingCandidateFunction { function: super::FunctionId },
     MissingCandidateSignature { function: super::FunctionId },
     SourceAbiMismatch { source_declaration: u32 },
+    MissingCheckedReferenceRelation { source_declaration: u32 },
     CandidateSignatureMismatch { function: super::FunctionId },
     MissingCanonicalLayouts,
     MissingClosureWitness { closure: u32 },
@@ -519,6 +520,7 @@ pub enum InitialWitnessError {
     Safety(InitialCheckError),
     CandidateAbi(CandidateAbiBindingError),
     LaunchContractMismatch,
+    ExternalImportMismatch,
 }
 
 impl fmt::Display for InitialWitnessError {
@@ -527,6 +529,7 @@ impl fmt::Display for InitialWitnessError {
             Self::Safety(error) => error.fmt(formatter),
             Self::CandidateAbi(error) => error.fmt(formatter),
             Self::LaunchContractMismatch => formatter.write_str("canonical SafeWIR launch contract does not match checked source"),
+            Self::ExternalImportMismatch => formatter.write_str("canonical SafeWIR external imports do not match the authenticated checked-source environment"),
         }
     }
 }
@@ -549,6 +552,7 @@ pub fn check_initial_with_witness(
     let expected_source = source_digest;
     validate_candidate_abi_bindings(&candidate, source)
         .map_err(InitialWitnessError::CandidateAbi)?;
+    validate_external_imports(&candidate, source)?;
     if candidate.launch_contract_payload() != source.launch_contract_payload() {
         return Err(InitialWitnessError::LaunchContractMismatch);
     }
@@ -591,6 +595,32 @@ pub fn check_initial_with_witness(
     Ok(CheckedInitialSafeWir { module, witness })
 }
 
+fn validate_external_imports(
+    candidate: &CanonicalModule<LoweredCandidate>,
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+) -> Result<(), InitialWitnessError> {
+    let expected = source.precompiled_declarations().libraries().flat_map(|library| {
+        library.exports().map(move |(export, _)| {
+            (
+                format!("witchy.precompiled.{}", library.alias()),
+                export.to_owned(),
+                super::ExternalWasmIdentity {
+                    library_binding_digest: library.binding_digest(),
+                    wasm_sha256: library.wasm_sha256(),
+                    sidecar_sha256: library.sidecar_sha256(),
+                },
+            )
+        })
+    }).collect::<HashSet<_>>();
+    let actual = candidate.imports().iter().filter_map(|import| {
+        let super::ImportContractIdentity::AuthenticatedExternal(identity) = &import.abi_identity else {
+            return None;
+        };
+        Some((import.module.clone(), import.name.clone(), *identity))
+    }).collect::<HashSet<_>>();
+    (actual == expected).then_some(()).ok_or(InitialWitnessError::ExternalImportMismatch)
+}
+
 fn validate_candidate_abi_bindings<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     source: &witchy_types::pipeline::CanonicalCheckedSource,
@@ -604,6 +634,11 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         Some((target.function_ordinal, entry.key.as_bytes()))
     }).collect::<BTreeMap<_, _>>();
     let records = witchy_types::canonical_aggregates::type_definitions(source.typed_module().module());
+    let access_facts = source.access_facts()
+        .map_err(|_| CandidateAbiBindingError::MissingCanonicalLayouts)?;
+    // A direct exclusive ABI has no syntax-only fallback: a stale or absent
+    // checked loan graph must not be silently treated as an empty one.
+    let loan_facts_available = source.loan_facts().is_ok();
     // One decode of the candidate's layout bundle serves every signature
     // comparison and the closure catalog below.
     let (_bundle, layouts) = match crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes()) {
@@ -650,9 +685,44 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: binding.source_declaration_ordinal() });
         };
         let source_declaration = source.closed_callable_declaration(binding.source_declaration_ordinal());
-        let source_signature = restore_direct_shared_scalar_parameters(
+        if source_declaration.is_some_and(|declaration| {
+            generic_shared_relay_template_candidate(source, &declaration.name)
+                && !exact_generic_shared_relay_binding(source, source_signature, declaration, signature)
+        }) {
+            return Err(CandidateAbiBindingError::MissingCheckedReferenceRelation {
+                source_declaration: binding.source_declaration_ordinal(),
+            });
+        }
+        let projected_scalar_relay = source_declaration.is_some_and(|declaration| {
+            authenticated_projected_scalar_relay_relation_is_checked(
+                declaration,
+                source.typed_module().module(),
+                access_facts,
+                &records,
+            )
+        });
+        if !direct_reference_binding_is_checked(
+            &source_signature,
+            source_declaration,
+            source_declaration.and_then(|declaration| access_facts.declaration(&declaration.name)),
+            loan_facts_available,
+            &records,
+        ) && !projected_scalar_relay {
+            return Err(CandidateAbiBindingError::MissingCheckedReferenceRelation {
+                source_declaration: binding.source_declaration_ordinal(),
+            });
+        }
+        let mut source_signature = restore_source_abi_qualifiers(
             source_signature,
             source_declaration,
+            &records,
+        );
+        restore_authenticated_projected_scalar_relay_abi(
+            &mut source_signature,
+            source_declaration,
+            source.typed_module().module(),
+            access_facts,
+            &records,
         );
         let source_matches = candidate_signature_matches_source_with_layouts(
             signature,
@@ -684,7 +754,10 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
                     &layouts,
                 )
             };
-        if !source_matches && !fresh_list_push_matches {
+        let projected_contract_matches = source_declaration.is_none_or(|declaration| {
+            projected_exclusive_result_contract_matches(signature, declaration, &records)
+        });
+        if (!source_matches || !projected_contract_matches) && !fresh_list_push_matches {
             return Err(CandidateAbiBindingError::CandidateSignatureMismatch { function: binding.function() });
         }
     }
@@ -710,9 +783,7 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
         let Some(signature) = candidate.signatures().iter().find(|signature| signature.id == function.signature) else {
             return Err(CandidateAbiBindingError::MissingCandidateSignature { function: binding.function() });
         };
-        let Some(source_signature) = witchy_types::typeck::ty_to_ast(witness.signature()) else {
-            return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
-        };
+        let source_signature = witness.declared_signature().clone();
         if let Some(super::ValueType::Gc(owner)) = signature.parameters.first() {
             if !candidate.owner_families().iter().any(|family| matches!(family.source, super::closure_owner_contract::OwnerFamilySource::Closure)
                 && family.owner_type == *owner && family.signature == signature.id
@@ -728,6 +799,8 @@ fn validate_candidate_abi_bindings<S: ModuleStage>(
             declaration.contract.parameters.remove(0);
             declaration.contract.parameter_effects = declaration.contract.parameter_effects.into_iter()
                 .filter_map(|(index, effects)| index.checked_sub(1).map(|index| (index, effects))).collect();
+            declaration.contract.results = strip_closure_result_contracts(&declaration.contract.results)
+                .ok_or(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() })?;
             if !candidate_signature_matches_source_with_layouts(&declaration, &source_signature, candidate, &records, &layouts) {
                 return Err(CandidateAbiBindingError::ClosureSignatureMismatch { closure: binding.closure() });
             }
@@ -910,7 +983,7 @@ fn strip_closure_environment<S: ModuleStage>(
         results: signature.results.clone(),
         contract: super::CallableContract {
             parameters: signature.contract.parameters[1..].to_vec(),
-            results: signature.contract.results.clone(),
+            results: strip_closure_result_contracts(&signature.contract.results)?,
             parameter_effects: signature
                 .contract
                 .parameter_effects
@@ -943,7 +1016,7 @@ fn strip_closure_environment_with(
         results: signature.results.clone(),
         contract: super::CallableContract {
             parameters: signature.contract.parameters[1..].to_vec(),
-            results: signature.contract.results.clone(),
+            results: strip_closure_result_contracts(&signature.contract.results)?,
             parameter_effects: signature
                 .contract
                 .parameter_effects
@@ -954,6 +1027,40 @@ fn strip_closure_environment_with(
                 .collect(),
         },
     })
+}
+
+/// Closure ABI parameter zero is the environment record.  Remove it from
+/// result-alias targets together with the parameter lane; a bare physical
+/// layout must never make an alias point at that hidden owner.
+fn strip_closure_result_contracts(
+    results: &[super::ResultContract],
+) -> Option<Vec<super::ResultContract>> {
+    results
+        .iter()
+        .cloned()
+        .map(|result| match result {
+            super::ResultContract::AliasesParameter { parameter, layout } => {
+                Some(super::ResultContract::AliasesParameter {
+                    parameter: parameter.checked_sub(1)?,
+                    layout,
+                })
+            }
+            super::ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+                Some(super::ResultContract::AliasesWriteBackParameter {
+                    parameter: parameter.checked_sub(1)?,
+                    layout,
+                    projection,
+                })
+            }
+            super::ResultContract::ReallocatesParameter { parameter, layout } => {
+                Some(super::ResultContract::ReallocatesParameter {
+                    parameter: parameter.checked_sub(1)?,
+                    layout,
+                })
+            }
+            result => Some(result),
+        })
+        .collect()
 }
 
 /// Two signatures carry the same lanes: the identity differs (an adapter has
@@ -1134,6 +1241,72 @@ fn hidden_environment_uses_are_closed(
 /// exactly the slots `witchy_types::canonical_aggregates` derives for it.
 type ScalarRecordFields = BTreeMap<String, witchy_syntax::ast::TypeDef>;
 
+/// The only source form permitted to carry an exclusive result through a
+/// record is a final `&mut parameter.named_string_field`.  This descriptor is
+/// deliberately source-derived: it selects neither a candidate layout nor a
+/// candidate contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProjectedExclusiveReturn {
+    parameter: usize,
+    field: u32,
+}
+
+fn projected_exclusive_return_source(
+    declaration: &witchy_syntax::ast::Function,
+    records: &ScalarRecordFields,
+) -> Option<ProjectedExclusiveReturn> {
+    use witchy_syntax::ast::{Expr, Stmt, Type, TypeQual, UnOp};
+
+    let result = declaration.ret.as_ref()?;
+    let (lifetime, result_referent) = direct_exclusive_reference_parts(result)?;
+    if !is_projected_exclusive_leaf(result_referent) {
+        return None;
+    }
+    let Some(Stmt::Expr(Expr::Unary { op: UnOp::BorrowMut, expr })) = declaration.body.stmts.last() else {
+        return None;
+    };
+    let Expr::Field { base, field } = expr.as_ref() else { return None };
+    let Expr::Var(owner_name) = base.as_ref() else { return None };
+    let owners = declaration.params.iter().enumerate().filter_map(|(index, parameter)| {
+        let Type::Qualified(TypeQual::BorrowMut(candidate_lifetime), owner) = parameter.ty.as_ref()? else {
+            return None;
+        };
+        (parameter.convention == witchy_syntax::ast::Convention::Let
+            && candidate_lifetime == lifetime
+            && parameter.name == *owner_name
+            && matches!(owner.unqualified(), Type::Named(_, arguments) if arguments.is_empty()))
+            .then_some((index, owner.as_ref()))
+    }).collect::<Vec<_>>();
+    let [(parameter, owner)] = owners.as_slice() else { return None };
+    let Type::Named(name, arguments) = owner.unqualified() else { return None };
+    if !arguments.is_empty() { return None; }
+    let definition = records.get(name).or_else(|| name.rsplit('.').next().and_then(|bare| records.get(bare)))?;
+    if definition.packed || definition.variants.len() != 1 { return None; }
+    let variant = &definition.variants[0];
+    let field_index = variant.field_names.iter().position(|candidate| candidate == field)?;
+    if !variant.fields.get(field_index).is_some_and(is_projected_exclusive_leaf) {
+        return None;
+    }
+    Some(ProjectedExclusiveReturn {
+        parameter: *parameter,
+        field: u32::try_from(field_index).ok()?,
+    })
+}
+
+fn projected_exclusive_result_contract_matches(
+    signature: &super::FunctionSignature,
+    declaration: &witchy_syntax::ast::Function,
+    records: &ScalarRecordFields,
+) -> bool {
+    let Some(expected) = projected_exclusive_return_source(declaration, records) else { return true };
+    matches!(signature.contract.results.first(),
+        Some(super::ResultContract::AliasesWriteBackParameter {
+            parameter,
+            projection: Some(field),
+            ..
+        }) if usize::try_from(*parameter).ok() == Some(expected.parameter) && *field == expected.field)
+}
+
 /// A family selects environment variants, not callable authority. Resolve
 /// checked nominal aliases and spell out default conventions before grouping;
 /// full signature, capture, transfer, and tag checks remain independent above.
@@ -1275,21 +1448,42 @@ pub(super) fn candidate_signature_matches_source_with_layouts<S: ModuleStage>(
 }
 
 /// Check the original source graph before any ABI comparison erases wrappers.
-/// Only the outer Unique of a Var parameter denotes existing write-back ABI.
+/// A root Unique on an own/var input or result is represented by the callable
+/// ownership contract. The exact Result-Ok collection carrier is the one
+/// authenticated nested exception; all other nested qualifiers remain
+/// unsupported.
 fn source_abi_qualifiers_supported(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> bool {
     use witchy_syntax::ast::{Convention, Type, TypeQual};
     let Type::Fn(parameters, result, conventions, _) = source.unqualified() else { return false };
-    // Only a whole scalar parameter may preserve a shared loan in canonical
-    // v1. Results, nested callables, projections, and every mutable qualifier
-    // continue through the ordinary fail-closed walk below.
-    let mut pending = vec![(result.as_ref(), false)];
+    // The direct shared-reference slice carries an already-addressable
+    // reference-counted shell (String/Bytes/List(Int)) or the separately
+    // authenticated scalar-place owner. Direct exclusive references are a
+    // second shallow exception: only a plain declaration parameter receives
+    // the authenticated hidden write-back lane. It is deliberately not a
+    // recursive qualifier exception.
+    let mut pending = (!(is_direct_shared_reference(result)
+        || is_direct_rooted_view_int(result) || is_direct_rooted_view_int_slice(result)
+        || is_direct_exclusive_reference(result)
+        || is_aggregate_reference_carrier(result)
+        || is_direct_rooted_view_aggregate_carrier(result, records)
+        || witchy_syntax::ast::is_direct_unique_result_ok_collection(result)))
+        .then_some((result.as_ref(), true))
+        .into_iter()
+        .collect::<Vec<_>>();
     pending.extend(parameters.iter().enumerate().filter_map(|(index, parameter)| {
-        (!is_direct_shared_int(parameter)).then_some((
+        (!(
+            is_direct_shared_reference(parameter)
+            || is_direct_rooted_view_int(parameter) || is_direct_rooted_view_int_slice(parameter)
+            || is_direct_rooted_view_aggregate_carrier(parameter, records)
+            || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
+                && is_direct_exclusive_reference(parameter))
+            || projected_exclusive_signature_parameter(parameters, result, conventions) == Some(index)
+        )).then_some((
             parameter,
-            conventions.get(index) == Some(&Convention::Var),
+            matches!(conventions.get(index), Some(Convention::Own | Convention::Var)),
         ))
     }));
     let mut definitions = HashSet::new();
@@ -1302,10 +1496,18 @@ fn source_abi_qualifiers_supported(
             Type::Qualified(TypeQual::Unique, inner) if var_parameter => pending.push((inner, false)),
             Type::Qualified(_, _) => return false,
             Type::Fn(parameters, result, conventions, _) => {
+                // A callable value can carry the one direct mutable String
+                // lane only through the adapter contract checked below.  Do
+                // not recurse into its `&mut` spelling: this is not a general
+                // nested-reference exception, and all other callable shapes
+                // remain unsupported at this source boundary.
+                if is_direct_callable_writeback_carrier(ty) {
+                    continue;
+                }
                 if !conventions.is_empty() && conventions.len() != parameters.len() { return false; }
-                pending.push((result, false));
+                pending.push((result, true));
                 pending.extend(parameters.iter().enumerate().map(|(index, parameter)| {
-                    (parameter, conventions.get(index) == Some(&Convention::Var))
+                    (parameter, matches!(conventions.get(index), Some(Convention::Own | Convention::Var)))
                 }));
             }
             Type::Named(name, arguments) => {
@@ -1330,11 +1532,212 @@ fn source_abi_qualifiers_supported(
     true
 }
 
+/// The only nested callable ABI whose hidden write-back lane is presently
+/// authenticated by canonical lowering and the adapter binding checker.
+/// This is intentionally structural *only after* the outer source declaration
+/// has been bound to its checked access contract; it never admits shared,
+/// returned, projected, generic, or multi-parameter reference callables.
+fn is_direct_callable_writeback_carrier(ty: &witchy_syntax::ast::Type) -> bool {
+    let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = ty.unqualified() else {
+        return false;
+    };
+    matches!(parameters.as_slice(), [parameter]
+        if matches!(conventions.as_slice(), [] | [witchy_syntax::ast::Convention::Let])
+            && is_direct_exclusive_reference(parameter))
+        && matches!(result.unqualified(),
+            witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "String" && arguments.is_empty())
+}
+
 fn is_direct_shared_int(source: &witchy_syntax::ast::Type) -> bool {
     matches!(source,
         witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(_), inner)
             if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
                 if name == "Int" && arguments.is_empty()))
+}
+
+/// The initial RFC-0167 view carrier is deliberately narrower than the
+/// legacy reference ABI: only a lifetime-free `&Int` maps to the registered
+/// opaque root-plus-projection owner family.  This is an exact source-type
+/// match, not a representation or shape fallback.
+fn is_direct_rooted_view_int(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+            if matches!(inner.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty()))
+}
+
+fn is_direct_rooted_view_int_slice(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+            if matches!(inner.as_ref(), witchy_syntax::ast::Type::Slice(element)
+                if matches!(element.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                    if name == "Int" && arguments.is_empty())))
+}
+
+/// The only non-scalar reference carriers the current canonical ABI can move
+/// without manufacturing a place token.  Their source relation is still
+/// authenticated by the retained access signature and an alias-result
+/// contract; this predicate is intentionally shallow so a borrowed field,
+/// aggregate, callable, or mutable handle cannot inherit the exception.
+fn is_direct_shared_owned_reference(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(_), inner)
+            if matches!(inner.unqualified(),
+                witchy_syntax::ast::Type::Named(name, arguments)
+                    if (matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty())
+                        || (name == "List" && arguments.len() == 1
+                            && matches!(arguments[0].unqualified(),
+                                witchy_syntax::ast::Type::Named(element, element_arguments)
+                                    if element == "Int" && element_arguments.is_empty()))))
+}
+
+fn is_direct_shared_reference(source: &witchy_syntax::ast::Type) -> bool {
+    is_direct_shared_int(source) || is_direct_shared_owned_reference(source)
+}
+
+/// The physical aggregate ABI can store only these bounded reference leaves.
+/// This deliberately proves no alias authority by itself: a declaration must
+/// also pass `aggregate_reference_result_relation_is_checked` against its
+/// pointer-bound access facts before this structural exception is usable.
+fn is_aggregate_reference_carrier(source: &witchy_syntax::ast::Type) -> bool {
+    match source.unqualified() {
+        witchy_syntax::ast::Type::Tuple(items) => !items.is_empty()
+            && items.iter().all(|item| {
+                is_direct_shared_owned_reference(item) || is_direct_exclusive_reference(item)
+            }),
+        witchy_syntax::ast::Type::Named(name, arguments)
+            if name == "List" && arguments.len() == 1 =>
+        {
+            is_direct_shared_owned_reference(&arguments[0])
+        }
+        // `Result` carries a tagged owned shell.  The only aggregate Result
+        // admitted by this ABI is an `Ok` tuple of direct shared roots with a
+        // String `Err` lane.  Its tag and every payload projection are then
+        // checked below against the retained source relation product.
+        witchy_syntax::ast::Type::Named(name, arguments)
+            if name == "Result" && arguments.len() == 2 =>
+        {
+            is_shared_reference_tuple_carrier(&arguments[0])
+                && is_string_source_type(&arguments[1])
+        }
+        // `Option(&Int)` has one rooted-view payload in `Some` and no payload
+        // in `None`.  Its opaque aggregate owner is checked against the exact
+        // source identity below; do not erase it into the linear Option(Int)
+        // physical layout.
+        witchy_syntax::ast::Type::Named(name, arguments)
+            if name == "Option" && arguments.len() == 1 =>
+        {
+            is_direct_rooted_view_int(&arguments[0])
+        }
+        _ => false,
+    }
+}
+
+/// A non-packed scalar aggregate can carry the installed lifetime-free
+/// `&Int` owner directly in a tuple, builtin sum, or nominal field. This is
+/// deliberately shallow: a nested aggregate does not acquire this ABI merely
+/// because one of its descendants has a view. The opaque aggregate family and
+/// constructor are revalidated independently; this predicate only prevents
+/// source correspondence from erasing the exact checked aggregate identity.
+fn is_direct_rooted_view_aggregate_carrier(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    matches!(source.unqualified(), witchy_syntax::ast::Type::Named(..) | witchy_syntax::ast::Type::Tuple(_))
+        && witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
+            if shape.packed { return false; }
+            let mut seen_direct_view = false;
+            let mut active_definitions = BTreeSet::new();
+            shape.fields.iter().all(|field| {
+                if is_direct_rooted_view_int(field) {
+                    seen_direct_view = true;
+                    true
+                } else {
+                    !contains_rooted_view_descendant(field, records, &mut active_definitions)
+                }
+            }) && seen_direct_view
+        })
+}
+
+/// This is intentionally stricter than scalar aggregate layout formation.
+/// A direct authenticated `&Int` field does not authorize a second view hidden
+/// in an aggregate, generic argument, or callable field; those need their own
+/// carrier contract. Ordinary non-view scalar descendants remain valid.
+fn contains_rooted_view_descendant(
+    source: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+    active_definitions: &mut BTreeSet<String>,
+) -> bool {
+    match source {
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, _) => true,
+        witchy_syntax::ast::Type::Qualified(_, inner) | witchy_syntax::ast::Type::Slice(inner) => {
+            contains_rooted_view_descendant(inner, records, active_definitions)
+        }
+        witchy_syntax::ast::Type::Named(name, arguments)
+        | witchy_syntax::ast::Type::Dyn(name, arguments) => {
+            arguments.iter().any(|argument| {
+                contains_rooted_view_descendant(argument, records, active_definitions)
+            }) || records.get(name).is_some_and(|definition| {
+                if !active_definitions.insert(name.clone()) { return false; }
+                let contains = definition.variants.iter().any(|variant| {
+                    variant.fields.iter().any(|field| {
+                        contains_rooted_view_descendant(field, records, active_definitions)
+                    })
+                });
+                active_definitions.remove(name);
+                contains
+            })
+        }
+        witchy_syntax::ast::Type::Tuple(items) => items.iter().any(|item| {
+            contains_rooted_view_descendant(item, records, active_definitions)
+        }),
+        witchy_syntax::ast::Type::RecordCompose { base, fields } => {
+            contains_rooted_view_descendant(base, records, active_definitions)
+                || fields.iter().any(|(_, field)| {
+                    contains_rooted_view_descendant(field, records, active_definitions)
+                })
+        }
+        witchy_syntax::ast::Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(|parameter| {
+                contains_rooted_view_descendant(parameter, records, active_definitions)
+            }) || contains_rooted_view_descendant(result, records, active_definitions)
+        }
+    }
+}
+
+fn is_shared_reference_tuple_carrier(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source.unqualified(), witchy_syntax::ast::Type::Tuple(items)
+        if !items.is_empty() && items.iter().all(is_direct_shared_owned_reference))
+}
+
+fn is_string_source_type(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+        if name == "String" && arguments.is_empty())
+}
+
+fn is_direct_exclusive_referent(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source.unqualified(),
+        witchy_syntax::ast::Type::Named(name, arguments)
+            if arguments.is_empty() && matches!(name.as_str(), "String" | "Int"))
+}
+
+// This is a leaf prefilter only.  Projected return authority is minted below
+// from the declaration's final field expression and its pointer-bound loan,
+// never from this physical type predicate.
+fn is_projected_exclusive_leaf(source: &witchy_syntax::ast::Type) -> bool {
+    is_direct_exclusive_referent(source)
+}
+
+fn is_direct_exclusive_reference(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::BorrowMut(_), inner)
+            if is_direct_exclusive_referent(inner))
+}
+
+fn is_root_unique(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _))
 }
 
 fn direct_shared_int_matches(
@@ -1349,25 +1752,153 @@ fn direct_shared_int_matches(
             .is_some_and(|descriptor| descriptor.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::Int))
 }
 
-fn restore_direct_shared_scalar_parameters(
+fn restore_source_abi_qualifiers(
     checked: &witchy_syntax::ast::Type,
     declaration: Option<&witchy_syntax::ast::Function>,
+    records: &ScalarRecordFields,
 ) -> witchy_syntax::ast::Type {
     let mut restored = checked.clone();
-    let (witchy_syntax::ast::Type::Fn(parameters, result, _, _), Some(declaration)) =
+    let (witchy_syntax::ast::Type::Fn(parameters, result, conventions, _), Some(declaration)) =
         (&mut restored, declaration)
     else {
         return restored;
     };
-    for (parameter, declared) in parameters.iter_mut().zip(&declaration.params) {
-        if let Some(ty) = &declared.ty && is_direct_shared_int(ty) {
+    let projected = projected_exclusive_return_source(declaration, records);
+    for (index, (parameter, declared)) in parameters.iter_mut().zip(&declaration.params).enumerate() {
+        if let Some(ty) = &declared.ty
+            && (is_direct_shared_reference(ty)
+                || is_direct_rooted_view_int(ty) || is_direct_rooted_view_int_slice(ty)
+                || is_direct_rooted_view_aggregate_carrier(ty, records)
+                || (matches!(declared.convention,
+                    witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own)
+                    && is_direct_exclusive_reference(ty))
+                || is_direct_callable_writeback_carrier(ty)
+                || projected.is_some_and(|projected| projected.parameter == index)
+                || is_root_unique(ty))
+        {
             *parameter = ty.clone();
         }
+        // The closed callable signature records the source default `Let`.
+        // Only this separately authenticated field-carrier has the physical
+        // checked write-back ABI convention; other source Lets stay Lets.
+        if projected.is_some_and(|projected| projected.parameter == index) {
+            conventions[index] = witchy_syntax::ast::Convention::Var;
+        }
     }
-    if let Some(declared) = &declaration.ret && is_direct_shared_int(declared) {
+    if let Some(declared) = &declaration.ret
+        && (is_direct_shared_reference(declared)
+            || is_direct_rooted_view_int(declared) || is_direct_rooted_view_int_slice(declared)
+            || is_direct_exclusive_reference(declared)
+            || is_aggregate_reference_carrier(declared)
+            || is_direct_rooted_view_aggregate_carrier(declared, records)
+            || is_root_unique(declared))
+    {
         **result = declared.clone();
     }
     restored
+}
+
+/// A generated trait relay may return the fixed projected scalar selected by
+/// its concrete implementation rather than spelling that field in its own
+/// body. The relay remains admissible only when all three pointer-bound access
+/// products agree: the relay declaration, its exact body call, and the
+/// selected concrete callee. This is a relation check, never a trait-shape or
+/// layout inference.
+fn authenticated_projected_scalar_relay_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    module: &witchy_syntax::ast::Module,
+    access_facts: &witchy_types::access::CheckedAccessFacts,
+    records: &ScalarRecordFields,
+) -> bool {
+    let [witchy_syntax::ast::Stmt::Expr(call @ witchy_syntax::ast::Expr::Call { name, args })] = declaration.body.stmts.as_slice() else {
+        return false;
+    };
+    let [witchy_syntax::ast::Expr::Var(receiver), witchy_syntax::ast::Expr::Var(owner)] = args.as_slice() else {
+        return false;
+    };
+    let [receiver_parameter, owner_parameter] = declaration.params.as_slice() else {
+        return false;
+    };
+    if receiver != &receiver_parameter.name
+        || owner != &owner_parameter.name
+        || owner_parameter.ty.is_none()
+    {
+        return false;
+    }
+    let Some(callee) = module.items.iter().find_map(|item| match item {
+        witchy_syntax::ast::Item::Function(candidate) if candidate.name == *name => Some(candidate),
+        _ => None,
+    }) else {
+        return false;
+    };
+    if callee.ret.is_none()
+        || !projected_exclusive_return_source(callee, records)
+            .is_some_and(|projected| projected.parameter == 1)
+    {
+        return false;
+    }
+    let (Some(result), Some(caller), Some(call_contract), Some(callee_contract)) = (
+        declaration.ret.as_ref(),
+        access_facts.declaration(&declaration.name),
+        access_facts.call_at(module, call),
+        access_facts.declaration(name),
+    ) else {
+        return false;
+    };
+    caller.verify_exact(call_contract).is_ok()
+        && callee_contract.verify_exact(call_contract).is_ok()
+        && direct_exclusive_reference_parts(result).is_some_and(|(_, leaf)| {
+            matches!(leaf.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty())
+        })
+}
+
+/// Reinstall the physical root lane for the one projected-scalar relay only
+/// after proving the exact generated body call and its selected concrete
+/// callee.  This deliberately does not infer a field from a trait shape,
+/// result layout, or convention: the pointer-bound caller/call/callee access
+/// products and the callee's final field witness must all agree.
+fn restore_authenticated_projected_scalar_relay_abi(
+    restored: &mut witchy_syntax::ast::Type,
+    declaration: Option<&witchy_syntax::ast::Function>,
+    module: &witchy_syntax::ast::Module,
+    access_facts: &witchy_types::access::CheckedAccessFacts,
+    records: &ScalarRecordFields,
+) {
+    let (witchy_syntax::ast::Type::Fn(parameters, result, conventions, _), Some(declaration)) =
+        (restored, declaration)
+    else { return };
+    let [witchy_syntax::ast::Stmt::Expr(call @ witchy_syntax::ast::Expr::Call { name, args })] = declaration.body.stmts.as_slice() else {
+        return;
+    };
+    let [witchy_syntax::ast::Expr::Var(receiver), witchy_syntax::ast::Expr::Var(owner)] = args.as_slice() else { return };
+    let [receiver_parameter, owner_parameter] = declaration.params.as_slice() else { return };
+    if receiver != &receiver_parameter.name || owner != &owner_parameter.name { return; }
+    let Some(callee) = module.items.iter().find_map(|item| match item {
+        witchy_syntax::ast::Item::Function(candidate) if candidate.name == *name => Some(candidate),
+        _ => None,
+    }) else { return };
+    let Some(_callee_result) = callee.ret.as_ref() else { return };
+    let Some(projected) = projected_exclusive_return_source(callee, records) else { return };
+    if projected.parameter != 1 { return; }
+    let (Some(caller), Some(call_contract), Some(callee_contract)) = (
+        access_facts.declaration(&declaration.name),
+        access_facts.call_at(module, call),
+        access_facts.declaration(name),
+    ) else { return };
+    if caller.verify_exact(call_contract).is_err() || callee_contract.verify_exact(call_contract).is_err() {
+        return;
+    }
+    if !direct_exclusive_reference_parts(result)
+        .is_some_and(|(_, leaf)| matches!(leaf.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+            if name == "Int" && arguments.is_empty()))
+    {
+        return;
+    }
+    let Some(owner_type) = owner_parameter.ty.as_ref() else { return };
+    if parameters.len() != declaration.params.len() || conventions.len() != parameters.len() { return; }
+    parameters[1] = owner_type.clone();
+    conventions[1] = witchy_syntax::ast::Convention::Var;
 }
 
 fn candidate_signature_matches_source_inner(
@@ -1417,6 +1948,44 @@ fn candidate_signature_matches_source_inner(
         if direct_shared_int_matches(actual.value_type, source, layouts) {
             return actual.ownership == super::ParameterOwnership::Shared;
         }
+        if is_direct_exclusive_reference(source) {
+            // The hidden lane is authenticated below against this exact plain
+            // declaration parameter. An `own` direct handle consumes the
+            // handle but still writes its referent replacement back through
+            // that lane. No `var` alias, projection, or callable ABI can
+            // borrow this exception.
+            return matches!(convention,
+                witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own)
+                && actual.ownership == super::ParameterOwnership::WriteBack;
+        }
+        if is_direct_shared_owned_reference(source) {
+            // The checked reference is already a linear-memory RC token.  It
+            // is transferred as a value token, while an aliasing result below
+            // records the retained source relation instead of relabeling this
+            // ordinary owner as an untracked shared allocation.
+            // An authenticated aggregate result differs narrowly: lowering
+            // must clone every source root into a distinct aggregate field,
+            // so the callee receives an explicit shared token to consume or
+            // release.  `aggregate_reference_result_relation_is_checked`
+            // separately proves the source relation product; a matching Ref
+            // layout or parameter spelling is never sufficient.
+            return actual.ownership == if is_aggregate_reference_carrier(result) {
+                super::ParameterOwnership::Shared
+            } else {
+                super::ParameterOwnership::Value
+            };
+        }
+        if matches!(source, witchy_syntax::ast::Type::Qualified(
+            witchy_syntax::ast::TypeQual::Unique, _
+        )) && convention == witchy_syntax::ast::Convention::Own {
+            // Root `unique` is a source-level affine fact. Managed roots
+            // carry it in SafeWIR's ownership token, while an inline scalar
+            // has no addressable storage and therefore retains its ordinary
+            // value lane. Keep the distinction in the candidate witness:
+            // accepting `Value` is confined to the scalar representations
+            // which cannot carry or erase a managed ownership token.
+            return root_unique_parameter_ownership_matches(actual.value_type, actual.ownership);
+        }
         match (actual.value_type, convention) {
             (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (super::ValueType::Gc(_), _) => false,
@@ -1433,22 +2002,108 @@ fn candidate_signature_matches_source_inner(
         context.finish_callable(key, false);
         return false;
     }
-    let result_is_unit = matches!(result.unqualified(), witchy_syntax::ast::Type::Named(name, arguments) if (name == "Nil" || name == "Unit") && arguments.is_empty());
+    let result_is_unit = is_unit_source_type(result);
+    // The Result wrapper has the ordinary physical layout. Its authenticated
+    // Unique contract above proves the exact declared Ok carrier, so only this
+    // bounded case compares the physical projection rather than recursively
+    // erasing nested qualifiers during correspondence.
+    let physical_result = witchy_syntax::ast::direct_unique_result_ok_collection_physical_type(result);
     let ordinary_results = usize::from(!result_is_unit);
     let write_back_parameters = parameters.iter().enumerate()
         .filter(|(index, _)| matches!(convention_at(*index), witchy_syntax::ast::Convention::Var))
         .collect::<Vec<_>>();
-    let unique_results_match = actual.contract.results.iter().enumerate().all(|(index, result)| {
-        let unique_parameter = index.checked_sub(ordinary_results)
+    let direct_exclusive_parameters = parameters.iter().enumerate()
+        .filter(|(index, parameter)| {
+            matches!(convention_at(*index),
+                witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own)
+                && is_direct_exclusive_reference(parameter)
+        })
+        .collect::<Vec<_>>();
+    // The only extra ordinary ABI lane is the authenticated Bool selector for
+    // the bounded two-root direct result. It precedes every hidden write-back
+    // lane, so no generic arity arithmetic can mistake it for a replacement.
+    let disjunctive_selector_lanes = usize::from(
+        direct_exclusive_parameters.len() == 2
+            && direct_exclusive_reference_parts(result).is_some(),
+    );
+    let abi_ordinary_results = ordinary_results + disjunctive_selector_lanes;
+    let source_unique_result = matches!(result,
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _))
+        || witchy_syntax::ast::is_direct_unique_result_ok_collection(result);
+    let unique_results_match = actual.contract.results.iter().enumerate().all(|(index, contract)| {
+        let unique_parameter = index.checked_sub(abi_ordinary_results)
             .and_then(|offset| write_back_parameters.get(offset))
             .is_some_and(|(parameter, _)| actual.contract.parameters[*parameter].ownership == super::ParameterOwnership::UniqueWriteBack);
-        unique_parameter == matches!(result, super::ResultContract::Unique { .. })
+        let expected_unique = (index == 0 && !result_is_unit && source_unique_result
+            && actual.results.get(index).is_some_and(root_unique_result_requires_token))
+            || unique_parameter;
+        expected_unique == matches!(contract, super::ResultContract::Unique { .. })
     });
-    let matched = unique_results_match && actual.results.len() == ordinary_results + write_back_parameters.len()
-        && (result_is_unit || value_type_matches_source(actual.results[0], result, layouts, signatures, context, records, closure_layouts))
+    let direct_alias_matches = direct_shared_alias_result_matches(
+        actual,
+        parameters,
+        result,
+        layouts,
+    );
+    let direct_exclusive_alias_matches = direct_exclusive_alias_result_matches(
+        actual,
+        parameters,
+        result,
+        conventions,
+        layouts,
+    );
+    // A checked `&mut Record.fixed_int` has no physical Int address to pass
+    // around.  The candidate carries the authenticated record root instead;
+    // its only readable/writable child remains the exact result-contract
+    // projection, independently bound by the declaration's loan relation.
+    let projected_scalar_result_matches = projected_exclusive_signature_parameter(
+        parameters,
+        result,
+        conventions,
+    ).is_some_and(|parameter| {
+        direct_exclusive_reference_parts(result)
+            .is_some_and(|(_, leaf)| matches!(leaf.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+                if name == "Int" && arguments.is_empty()))
+            && matches!(
+                (actual.results.first(), actual.contract.results.first(), actual.parameters.get(parameter)),
+                (
+                    Some(super::ValueType::Ref(root)),
+                    Some(super::ResultContract::AliasesWriteBackParameter {
+                        parameter: result_parameter,
+                        layout,
+                        projection: Some(_),
+                    }),
+                    Some(super::ValueType::Ref(parameter_root)),
+                ) if *root == *layout && *root == *parameter_root
+                    && usize::try_from(*result_parameter).ok() == Some(parameter)
+            )
+    });
+    let ordinary_result_matches = result_is_unit
+        || projected_scalar_result_matches
+        || value_type_matches_source(
+            actual.results[0],
+            physical_result.as_ref().unwrap_or(result),
+            layouts,
+            signatures,
+            context,
+            records,
+            closure_layouts,
+        );
+    let matched = unique_results_match && direct_alias_matches && direct_exclusive_alias_matches
+        && aggregate_reference_result_contract_matches(actual, result, records)
+        && actual.results.len() == abi_ordinary_results + write_back_parameters.len() + direct_exclusive_parameters.len()
+        && ordinary_result_matches
         && write_back_parameters.iter().enumerate().all(|(offset, (parameter, source))| {
-            value_type_matches_source(actual.results[ordinary_results + offset], source, layouts, signatures, context, records, closure_layouts)
+            value_type_matches_source(actual.results[abi_ordinary_results + offset], source, layouts, signatures, context, records, closure_layouts)
                 && matches!(actual.contract.parameters[*parameter].ownership, super::ParameterOwnership::WriteBack | super::ParameterOwnership::UniqueWriteBack)
+        })
+        && direct_exclusive_parameters.iter().enumerate().all(|(offset, (parameter, source))| {
+            let result_index = abi_ordinary_results + write_back_parameters.len() + offset;
+            value_type_matches_source(actual.results[result_index], source, layouts, signatures, context, records, closure_layouts)
+                && actual.contract.parameters[*parameter].ownership == super::ParameterOwnership::WriteBack
+                && direct_exclusive_result_contract_matches(
+                    actual.contract.results.get(result_index), actual.results[result_index],
+                )
         })
         && actual.contract.parameter_effects.iter().all(|(parameter, effects)| {
             matches!(actual.parameters.get(*parameter as usize), Some(super::ValueType::Ref(_) | super::ValueType::Gc(_)))
@@ -1459,7 +2114,762 @@ fn candidate_signature_matches_source_inner(
     matched
 }
 
+fn direct_exclusive_result_contract_matches(
+    contract: Option<&super::ResultContract>,
+    value_type: super::ValueType,
+) -> bool {
+    match (contract, value_type) {
+        (Some(super::ResultContract::Shared { layout }), super::ValueType::Ref(actual)) => *layout == actual,
+        (Some(super::ResultContract::Value(actual)), value_type) => *actual == value_type,
+        _ => false,
+    }
+}
+
+/// The aggregate shell is an independently owned, shared result token.  The
+/// leaf-to-owner proof lives in the retained source `BorrowRelation` product;
+/// this SafeWIR-side check merely refuses to let that proven carrier degrade
+/// into a fresh/value result with the same physical layout.
+fn aggregate_reference_result_contract_matches(
+    actual: &super::FunctionSignature,
+    result: &witchy_syntax::ast::Type,
+    records: &ScalarRecordFields,
+) -> bool {
+    if !(is_aggregate_reference_carrier(result)
+        || is_direct_rooted_view_aggregate_carrier(result, records)) {
+        return true;
+    }
+    if is_direct_rooted_view_aggregate_carrier(result, records) {
+        return matches!(
+            (actual.results.first(), actual.contract.results.first()),
+            (Some(super::ValueType::Gc(owner)), Some(super::ResultContract::Value(super::ValueType::Gc(contract_owner))))
+                if owner == contract_owner
+        );
+    }
+    matches!(
+        (actual.results.first(), actual.contract.results.first()),
+        (Some(super::ValueType::Ref(value_layout)), Some(super::ResultContract::Shared { layout }))
+            if value_layout == layout
+    )
+}
+
+/// An inline scalar has no addressable storage and no SafeWIR ownership token.
+/// This is deliberately the same narrow physical family canonical lowering
+/// permits for a root `unique` result. All managed values must still carry the
+/// explicit `Unique` parameter/result contract.
+const fn inline_scalar_value_type(value: super::ValueType) -> bool {
+    matches!(
+        value,
+        super::ValueType::Int
+            | super::ValueType::Float
+            | super::ValueType::Bool
+            | super::ValueType::Unit
+            | super::ValueType::Size
+            | super::ValueType::V128
+    )
+}
+
+/// The source witness cannot let an inline scalar impersonate a managed owner,
+/// nor a managed (`Ref` or `Gc`) owner erase its token.
+fn root_unique_parameter_ownership_matches(
+    value: super::ValueType,
+    ownership: super::ParameterOwnership,
+) -> bool {
+    match value {
+        super::ValueType::Ref(_) | super::ValueType::Gc(_) => {
+            ownership == super::ParameterOwnership::Unique
+        }
+        value if inline_scalar_value_type(value) => ownership == super::ParameterOwnership::Value,
+        _ => false,
+    }
+}
+
+fn root_unique_result_requires_token(value: &super::ValueType) -> bool {
+    matches!(value, super::ValueType::Ref(_) | super::ValueType::Gc(_))
+}
+
+/// A direct shared result must retain the exact one checked input relation.
+/// This is intentionally narrower than general loan lowering: it accepts only
+/// the direct, whole-value carriers admitted above.  A projected/nested or
+/// ambiguous result stays unsupported instead of being made to look like an
+/// ordinary owned result.
+fn direct_shared_alias_result_matches(
+    actual: &super::FunctionSignature,
+    parameters: &[witchy_syntax::ast::Type],
+    result: &witchy_syntax::ast::Type,
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    let Some((lifetime, referent)) = direct_shared_reference_parts(result) else {
+        return !is_direct_shared_reference(result);
+    };
+    let candidates = parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        direct_shared_reference_parts(parameter).and_then(|(candidate_lifetime, candidate_referent)| {
+            (candidate_lifetime == lifetime && candidate_referent.unqualified() == referent.unqualified())
+                .then_some(index)
+        })
+    }).collect::<Vec<_>>();
+    let [parameter] = candidates.as_slice() else { return false };
+    let Some(super::ResultContract::AliasesParameter { parameter: actual_parameter, layout }) =
+        actual.contract.results.first()
+    else {
+        return false;
+    };
+    usize::try_from(*actual_parameter).ok() == Some(*parameter)
+        && matches!(actual.results.first(), Some(super::ValueType::Ref(actual_layout)) if actual_layout == layout)
+        && layouts.resolve_nominal(*layout).is_ok()
+}
+
+fn direct_shared_reference_parts(
+    source: &witchy_syntax::ast::Type,
+) -> Option<(&str, &witchy_syntax::ast::Type)> {
+    let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Borrow(lifetime), referent) = source else {
+        return None;
+    };
+    is_direct_shared_reference(source).then_some((lifetime, referent))
+}
+
+fn direct_exclusive_reference_parts(
+    source: &witchy_syntax::ast::Type,
+) -> Option<(&str, &witchy_syntax::ast::Type)> {
+    let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::BorrowMut(lifetime), referent) = source else {
+        return None;
+    };
+    is_direct_exclusive_referent(referent).then_some((lifetime, referent))
+}
+
+/// The direct result is the same checked loan relation as one exact direct
+/// exclusive input. The distinct hidden write-back lane is checked separately
+/// below; this ordinary lane may never be forged from matching physical refs.
+fn direct_exclusive_alias_result_matches(
+    actual: &super::FunctionSignature,
+    parameters: &[witchy_syntax::ast::Type],
+    result: &witchy_syntax::ast::Type,
+    conventions: &[witchy_syntax::ast::Convention],
+    layouts: &crate::layout::LayoutInterner,
+) -> bool {
+    let Some((lifetime, referent)) = direct_exclusive_reference_parts(result) else {
+        return true;
+    };
+    if !is_projected_exclusive_leaf(referent) {
+        return false;
+    }
+    let candidates = parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        direct_exclusive_reference_parts(parameter).and_then(|(candidate_lifetime, candidate_referent)| {
+            (candidate_lifetime == lifetime
+                && candidate_referent.unqualified() == referent.unqualified())
+                .then_some(index)
+        })
+    }).collect::<Vec<_>>();
+    if let [parameter] = candidates.as_slice() {
+        let Some(super::ResultContract::AliasesWriteBackParameter {
+            parameter: actual_parameter,
+            layout,
+            projection: None,
+        }) = actual.contract.results.first()
+        else {
+            return false;
+        };
+        return usize::try_from(*actual_parameter).ok() == Some(*parameter)
+            && actual.contract.parameters.get(*parameter).is_some_and(|contract| {
+                contract.ownership == super::ParameterOwnership::WriteBack
+                    && contract.value_type == super::ValueType::Ref(*layout)
+            })
+            && matches!(actual.results.first(), Some(super::ValueType::Ref(actual_layout)) if actual_layout == layout)
+            && layouts.resolve_nominal(*layout).is_ok();
+    }
+    if candidates.len() >= 2 {
+        let expected = candidates
+            .iter()
+            .map(|parameter| u32::try_from(*parameter).ok())
+            .collect::<Option<Vec<_>>>();
+        let Some(expected) = expected else { return false };
+        let Some(super::ResultContract::AliasesOneOfWriteBackParameters {
+            parameters: actual_parameters,
+            layout,
+        }) = actual.contract.results.first()
+        else {
+            return false;
+        };
+        return expected.len() == 2
+            && actual_parameters == &expected
+            && matches!(actual.contract.results.get(1), Some(super::ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result: 0,
+                parameters,
+                selector_parameter,
+            }) if parameters == &expected
+                && matches!(actual.results.get(1), Some(super::ValueType::Bool))
+                && matches!(actual.contract.parameters.get(*selector_parameter as usize), Some(super::ParameterContract {
+                    value_type: super::ValueType::Bool,
+                    ownership: super::ParameterOwnership::Value,
+                })))
+            && actual.contract.parameters.iter().enumerate().all(|(index, contract)| {
+                !expected.contains(&(index as u32))
+                    || (contract.ownership == super::ParameterOwnership::WriteBack
+                        && contract.value_type == super::ValueType::Ref(*layout))
+            })
+            && matches!(actual.results.first(), Some(super::ValueType::Ref(actual_layout)) if actual_layout == layout)
+            && layouts.resolve_nominal(*layout).is_ok();
+    }
+    let Some(parameter) = projected_exclusive_signature_parameter(parameters, result, conventions) else {
+        return false;
+    };
+    let Some(super::ResultContract::AliasesWriteBackParameter {
+        parameter: actual_parameter,
+        layout,
+        projection: Some(_),
+    }) =
+        actual.contract.results.first()
+    else {
+        return false;
+    };
+    usize::try_from(*actual_parameter).ok() == Some(parameter)
+        && actual.contract.parameters.get(parameter).is_some_and(|contract| {
+            contract.ownership == super::ParameterOwnership::WriteBack
+                && matches!(contract.value_type, super::ValueType::Ref(_))
+        })
+        && matches!(actual.results.first(), Some(super::ValueType::Ref(actual_layout)) if actual_layout == layout)
+        && layouts.resolve_nominal(*layout).is_ok()
+}
+
+/// Type-level prefilter only. `direct_exclusive_result_relation_is_checked`
+/// binds this candidate to the declaration's exact field relation; a function
+/// type cannot itself name a record field.
+fn projected_exclusive_signature_parameter(
+    parameters: &[witchy_syntax::ast::Type],
+    result: &witchy_syntax::ast::Type,
+    conventions: &[witchy_syntax::ast::Convention],
+) -> Option<usize> {
+    let (lifetime, result_inner) = direct_exclusive_reference_parts(result)?;
+    if !is_projected_exclusive_leaf(result_inner) {
+        return None;
+    }
+    let candidates = parameters.iter().enumerate().filter_map(|(index, parameter)| {
+        let witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::BorrowMut(candidate_lifetime), owner) = parameter else {
+            return None;
+        };
+        (conventions.get(index).copied().unwrap_or_default() == witchy_syntax::ast::Convention::Var
+            && candidate_lifetime == lifetime
+            && matches!(owner.unqualified(), witchy_syntax::ast::Type::Named(_, arguments) if arguments.is_empty())
+            && !is_direct_exclusive_referent(owner))
+            .then_some(index)
+    }).collect::<Vec<_>>();
+    let [parameter] = candidates.as_slice() else { return None };
+    Some(*parameter)
+}
+
+/// A source signature that returns a direct shared reference has no safe
+/// syntax-only fallback.  Admission must be grounded in both the closed
+/// declaration and the pointer-bound access product for that declaration.
+fn direct_reference_binding_is_checked(
+    source_signature: &witchy_syntax::ast::Type,
+    declaration: Option<&witchy_syntax::ast::Function>,
+    access: Option<&witchy_types::access::AccessSignature>,
+    loan_facts_available: bool,
+    records: &ScalarRecordFields,
+) -> bool {
+    let witchy_syntax::ast::Type::Fn(_, checked_result, _, _) = source_signature.unqualified() else {
+        return false;
+    };
+    // Closed callable signatures may erase the reference leaves of an owned
+    // aggregate shell.  The declaration is the source contract whose retained
+    // access product must authorize those leaves; never let the erased closed
+    // signature turn a missing Result/tuple/list relation into a value-only
+    // fallback.
+    let result = declaration
+        .and_then(|declaration| declaration.ret.as_ref())
+        .unwrap_or(checked_result);
+    let shared_ok = !is_direct_shared_reference(result)
+        || declaration.is_some_and(|declaration| {
+            direct_shared_reference_relation_is_checked(declaration, access)
+        });
+    let exclusive_result_ok = !is_direct_exclusive_reference(result)
+        || declaration.is_some_and(|declaration| {
+            direct_exclusive_result_relation_is_checked(declaration, access, records)
+        });
+    let aggregate_result_ok = !(is_aggregate_reference_carrier(result)
+        || is_direct_rooted_view_aggregate_carrier(result, records))
+        || declaration.is_some_and(|declaration| {
+            aggregate_reference_result_relation_is_checked(declaration, access, records)
+        });
+    shared_ok && exclusive_result_ok && aggregate_result_ok && declaration.map_or_else(
+        || !source_signature_contains_direct_exclusive_reference(source_signature),
+        |declaration| direct_exclusive_reference_relation_is_checked(declaration, access, loan_facts_available),
+    )
+}
+
+/// Authenticate the bounded aggregate result carrier from the checker-owned
+/// relation product.  A tuple has one exact output slot per reference leaf;
+/// a homogeneous shared list has one `AnyIndex` slot whose complete owner set
+/// is explicit.  No aggregate layout, field name, or matching physical Ref is
+/// ever treated as an owner relation.
+fn aggregate_reference_result_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    access: Option<&witchy_types::access::AccessSignature>,
+    records: &ScalarRecordFields,
+) -> bool {
+    let Some(result) = declaration.ret.as_ref() else { return false };
+    let Some(access) = access else { return false };
+    if is_option_rooted_int_view_carrier(result) {
+        return option_rooted_int_view_result_relation_is_checked(declaration, access);
+    }
+    if is_direct_rooted_view_aggregate_carrier(result, records) {
+        // Structural and builtin aggregates retain the complete immediate
+        // ownership tree in the checker product. A nominal type carries no
+        // expanded field tree here; its exact source identity and each field
+        // storage class are instead bound by the opaque-owner family.
+        return matches!(result.unqualified(), witchy_syntax::ast::Type::Named(_, arguments)
+            if arguments.is_empty())
+            || witchy_types::access::ownership_state_class(result).ok().flatten().as_ref()
+                == access.result().ownership_output();
+    }
+    if let witchy_syntax::ast::Type::Named(name, arguments) = result.unqualified()
+        && name == "Result"
+        && arguments.len() == 2
+    {
+        let (ok, error) = (&arguments[0], &arguments[1]);
+        // The first `Result` alternative is the exact `Ok` tag.  The access
+        // catalog represents builtin positional constructor payloads by their
+        // constructor field index, so both the tag and inner tuple slot must
+        // be present in order.  A missing, swapped, or stale relation cannot
+        // authorize this carrier.
+        return is_string_source_type(error)
+            && aggregate_tuple_reference_result_relation_is_checked(
+                declaration,
+                access,
+                ok,
+                &[witchy_types::access::LoanProjectionStep::Tuple(0)],
+            );
+    }
+    match result.unqualified() {
+        witchy_syntax::ast::Type::Tuple(_) => {
+            aggregate_tuple_reference_result_relation_is_checked(declaration, access, result, &[])
+        }
+        witchy_syntax::ast::Type::Named(name, arguments)
+            if name == "List" && arguments.len() == 1 =>
+        {
+            let Some((lifetime, referent, kind)) = aggregate_reference_leaf(&arguments[0]) else {
+                return false;
+            };
+            if kind != witchy_types::access::BorrowKind::Shared {
+                return false;
+            }
+            matches!(access.borrow_relations(), [relation]
+                if relation.lifetime() == lifetime
+                    && relation.kind() == kind
+                    && relation.storage_type().unqualified() == referent.unqualified()
+                    && relation.output_projection().steps
+                        == [witchy_types::access::LoanProjectionStep::AnyIndex]
+                    && aggregate_relation_owners_match(declaration, relation.owners(), lifetime, referent, kind))
+        }
+        _ => false,
+    }
+}
+
+/// `&Int` is an opaque rooted carrier rather than a lifetime-derived alias.
+/// Consequently an `Option(&Int)` result has no borrow relation to inspect;
+/// its checked access identity must instead retain the exact rooted `Some`
+/// child. The owner-family and constructor checks independently authenticate
+/// where that child came from, so parameter count never grants authority.
+fn option_rooted_int_view_result_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    access: &witchy_types::access::AccessSignature,
+) -> bool {
+    use witchy_types::access::OwnershipStateClass;
+
+    declaration.ret.as_ref().is_some_and(is_option_rooted_int_view_carrier)
+        && matches!(access.result().ownership_output(),
+            Some(OwnershipStateClass::LayoutDependent { children })
+                if matches!(children.as_slice(), [Some(OwnershipStateClass::RootedViewCarrier)]))
+}
+
+fn is_option_rooted_int_view_carrier(source: &witchy_syntax::ast::Type) -> bool {
+    matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
+        if name == "Option" && matches!(arguments.as_slice(), [payload] if is_direct_rooted_view_int(payload)))
+}
+
+/// Match the complete, ordered leaf-to-owner relation product for one tuple
+/// carrier.  `prefix` is empty for a bare tuple and `[Tuple(0)]` for the
+/// builtin `Result` `Ok` payload.  It is supplied by the caller rather than
+/// inferred from physical layout so a tagged Result cannot be mistaken for a
+/// bare aggregate with the same reference fields.
+fn aggregate_tuple_reference_result_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    access: &witchy_types::access::AccessSignature,
+    payload: &witchy_syntax::ast::Type,
+    prefix: &[witchy_types::access::LoanProjectionStep],
+) -> bool {
+    let witchy_syntax::ast::Type::Tuple(items) = payload.unqualified() else {
+        return false;
+    };
+    !items.is_empty()
+        && items.iter().all(|item| is_direct_shared_owned_reference(item) || is_direct_exclusive_reference(item))
+        // The access product is itself the complete result authority for this
+        // carrier.  Compare its full ordered multiset against the source
+        // slots: accepting an `any` match here would let a duplicate relation
+        // satisfy two slots, or let an unrelated relation survive.
+        && access.borrow_relations().len() == items.len()
+        && access.borrow_relations().iter().zip(items).enumerate().all(|(slot, (relation, item))| {
+            let Some((lifetime, referent, kind)) = aggregate_reference_leaf(item) else {
+                return false;
+            };
+            let [owner] = relation.owners() else { return false };
+            let Some(parameter) = declaration.params.get(owner.position()) else {
+                return false;
+            };
+            let mut expected_projection = prefix.to_vec();
+            expected_projection.push(witchy_types::access::LoanProjectionStep::Tuple(slot));
+            relation.lifetime() == lifetime
+                && relation.kind() == kind
+                && relation.storage_type().unqualified() == referent.unqualified()
+                && relation.output_projection().steps == expected_projection
+                && owner.input_projection().steps.is_empty()
+                && parameter.ty.as_ref().and_then(aggregate_reference_leaf)
+                    .is_some_and(|(candidate_lifetime, candidate_referent, candidate_kind)| {
+                        candidate_lifetime == lifetime
+                            && candidate_referent.unqualified() == referent.unqualified()
+                            && candidate_kind == kind
+                    })
+        })
+}
+
+/// Relation owner positions are source declarations, not type-shaped aliases.
+/// The checker publishes them in declaration order; require a strictly
+/// increasing distinct sequence so a duplicated or reordered owner cannot
+/// manufacture a list carrier authority.
+fn aggregate_relation_owners_match(
+    declaration: &witchy_syntax::ast::Function,
+    owners: &[witchy_types::access::BorrowOwnerRelation],
+    lifetime: &str,
+    referent: &witchy_syntax::ast::Type,
+    kind: witchy_types::access::BorrowKind,
+) -> bool {
+    !owners.is_empty()
+        && owners.windows(2).all(|pair| pair[0].position() < pair[1].position())
+        && owners.iter().all(|owner| {
+            owner.input_projection().steps.is_empty()
+                && declaration.params.get(owner.position())
+                    .and_then(|parameter| parameter.ty.as_ref())
+                    .and_then(aggregate_reference_leaf)
+                    .is_some_and(|(candidate_lifetime, candidate_referent, candidate_kind)| {
+                        candidate_lifetime == lifetime
+                            && candidate_referent.unqualified() == referent.unqualified()
+                            && candidate_kind == kind
+                    })
+        })
+}
+
+fn aggregate_reference_leaf(
+    source: &witchy_syntax::ast::Type,
+) -> Option<(&str, &witchy_syntax::ast::Type, witchy_types::access::BorrowKind)> {
+    if let Some((lifetime, referent)) = direct_shared_reference_parts(source) {
+        return Some((lifetime, referent, witchy_types::access::BorrowKind::Shared));
+    }
+    direct_exclusive_reference_parts(source)
+        .map(|(lifetime, referent)| (lifetime, referent, witchy_types::access::BorrowKind::Exclusive))
+}
+
+/// A generic shared return may use the ordinary `AliasesParameter` contract
+/// only when the source witness retains this exact monomorphized forwarding
+/// identity.  Do not reconstruct it from the mangled function name or from a
+/// matching physical `Ref` layout: either would let a different generic body
+/// borrow the direct carrier's authority.
+fn exact_generic_shared_relay_binding(
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    source_signature: &witchy_syntax::ast::Type,
+    declaration: &witchy_syntax::ast::Function,
+    candidate_signature: &super::FunctionSignature,
+) -> bool {
+    use witchy_syntax::ast::{Convention, Expr, Stmt, Type, TypeQual};
+
+    let Some(identity) = source.generic_specialization(&declaration.name) else {
+        return false;
+    };
+    let Some(template) = identity.template() else {
+        return false;
+    };
+    let ([type_parameter], [Some(template_parameter)], Some(template_result), [concrete]) = (
+        template.type_parameters(),
+        template.parameters(),
+        template.result(),
+        identity.concrete_types(),
+    ) else {
+        return false;
+    };
+    let Some((parameter_lifetime, parameter_inner)) = direct_shared_reference_parts(template_parameter) else {
+        return false;
+    };
+    let Some((result_lifetime, result_inner)) = direct_shared_reference_parts(template_result) else {
+        return false;
+    };
+    if parameter_lifetime != result_lifetime
+        || !matches!(parameter_inner.unqualified(), Type::Named(name, arguments)
+            if name == type_parameter && arguments.is_empty())
+        || !matches!(result_inner.unqualified(), Type::Named(name, arguments)
+            if name == type_parameter && arguments.is_empty())
+    {
+        return false;
+    }
+    let concrete_reference = Type::Qualified(
+        TypeQual::Borrow(parameter_lifetime.to_owned()),
+        Box::new(concrete.clone()),
+    );
+    if !is_direct_shared_owned_reference(&concrete_reference) {
+        return false;
+    }
+    let Type::Fn(parameters, result, conventions, _) = source_signature.unqualified() else {
+        return false;
+    };
+    let convention = conventions.first().copied().unwrap_or(Convention::Let);
+    let Some(parameter) = declaration.params.first() else {
+        return false;
+    };
+    let ([super::ValueType::Ref(parameter_layout)], [super::ValueType::Ref(result_layout)]) = (
+        candidate_signature.parameters.as_slice(),
+        candidate_signature.results.as_slice(),
+    ) else {
+        return false;
+    };
+    let ([parameter_contract], [result_contract]) = (
+        candidate_signature.contract.parameters.as_slice(),
+        candidate_signature.contract.results.as_slice(),
+    ) else {
+        return false;
+    };
+    parameters.as_slice() == [concrete.clone()]
+        && result.as_ref() == concrete
+        && conventions.len() <= 1
+        && convention == Convention::Let
+        && declaration.params.len() == 1
+        && parameter.convention == Convention::Let
+        && parameter.ty.as_ref() == Some(&concrete_reference)
+        && declaration.ret.as_ref() == Some(&concrete_reference)
+        && matches!(declaration.body.stmts.as_slice(), [Stmt::Expr(Expr::Var(value))] if value == &parameter.name)
+        && *parameter_layout == *result_layout
+        && parameter_contract.value_type == super::ValueType::Ref(*parameter_layout)
+        && parameter_contract.ownership == super::ParameterOwnership::Value
+        && matches!(
+            result_contract,
+            super::ResultContract::AliasesParameter { parameter: 0, layout }
+                if *layout == *parameter_layout
+        )
+        && candidate_signature.contract.parameter_effects
+            == BTreeMap::from([(
+                0,
+                vec![
+                    super::MemoryEffect::Read,
+                    super::MemoryEffect::Retain,
+                    super::MemoryEffect::Release,
+                ],
+            )])
+}
+
+/// Identify only the specialization class whose retained template proves the
+/// source `&'l a -> &'l a` relation. The closed source ABI below is physical
+/// `[Concrete] -> Concrete`, so it cannot serve as this predicate itself.
+fn generic_shared_relay_template_candidate(
+    source: &witchy_types::pipeline::CanonicalCheckedSource,
+    name: &str,
+) -> bool {
+    use witchy_syntax::ast::Type;
+
+    let Some(identity) = source.generic_specialization(name) else {
+        return false;
+    };
+    let Some(template) = identity.template() else {
+        return false;
+    };
+    let ([type_parameter], [Some(template_parameter)], Some(template_result), [concrete]) = (
+        template.type_parameters(),
+        template.parameters(),
+        template.result(),
+        identity.concrete_types(),
+    ) else {
+        return false;
+    };
+    let Some((parameter_lifetime, parameter_inner)) = direct_shared_reference_parts(template_parameter) else {
+        return false;
+    };
+    let Some((result_lifetime, result_inner)) = direct_shared_reference_parts(template_result) else {
+        return false;
+    };
+    parameter_lifetime == result_lifetime
+        && matches!(parameter_inner.unqualified(), Type::Named(parameter, arguments)
+            if parameter == type_parameter && arguments.is_empty())
+        && matches!(result_inner.unqualified(), Type::Named(parameter, arguments)
+            if parameter == type_parameter && arguments.is_empty())
+        && is_direct_shared_owned_reference(&Type::Qualified(
+            witchy_syntax::ast::TypeQual::Borrow(parameter_lifetime.to_owned()),
+            Box::new(concrete.clone()),
+        ))
+}
+
+fn source_signature_contains_direct_exclusive_reference(
+    source_signature: &witchy_syntax::ast::Type,
+) -> bool {
+    let witchy_syntax::ast::Type::Fn(parameters, result, conventions, _) = source_signature.unqualified() else {
+        return false;
+    };
+    is_direct_exclusive_reference(result) || parameters.iter().enumerate().any(|(index, parameter)| {
+        matches!(conventions.get(index).copied().unwrap_or_default(),
+            witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own)
+            && is_direct_exclusive_reference(parameter)
+    })
+}
+
+/// Exact checked declaration/access correspondence for the sole exclusive
+/// carrier admitted in this phase.  The loan product must also be retained by
+/// this exact source; its availability is intentionally not inferred from a
+/// lowerer's reconstructed AST traversal.
+fn direct_exclusive_reference_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    access: Option<&witchy_types::access::AccessSignature>,
+    loan_facts_available: bool,
+) -> bool {
+    let direct = declaration.params.iter().enumerate().filter(|(_, parameter)| {
+        matches!(parameter.convention,
+            witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own)
+            && parameter.ty.as_ref().is_some_and(is_direct_exclusive_reference)
+    }).collect::<Vec<_>>();
+    if direct.is_empty() {
+        return true;
+    }
+    loan_facts_available && access.is_some_and(|access| {
+        direct.iter().all(|(index, parameter)| {
+            let expected_kind = match parameter.convention {
+                witchy_syntax::ast::Convention::Let => witchy_types::access::AccessKind::ExclusiveWriteback,
+                witchy_syntax::ast::Convention::Own => witchy_types::access::AccessKind::Consuming,
+                _ => return false,
+            };
+            access.params().get(*index).is_some_and(|actual| {
+                actual.ty() == parameter.ty.as_ref().expect("filtered above")
+                    && actual.kind() == expected_kind
+                    && actual.qualifiers().iter().any(|qualifier|
+                        matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(_)))
+            })
+        })
+    })
+}
+
+/// A direct exclusive result has an exact checked owner set in the
+/// pointer-bound access product. This is the authority mint for the direct
+/// carrier; matching Ref layouts or a merely present loan graph do not
+/// suffice.  A multi-owner relation stays finite and explicit rather than
+/// degrading to a shape-derived shared result.
+fn direct_exclusive_result_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    access: Option<&witchy_types::access::AccessSignature>,
+    records: &ScalarRecordFields,
+) -> bool {
+    let Some(result) = declaration.ret.as_ref() else { return true };
+    let Some((lifetime, referent)) = direct_exclusive_reference_parts(result) else {
+        return true;
+    };
+    if !is_projected_exclusive_leaf(referent) {
+        return false;
+    }
+    let candidates = declaration.params.iter().enumerate().filter_map(|(index, parameter)| {
+        parameter.ty.as_ref().and_then(direct_exclusive_reference_parts).and_then(|(candidate_lifetime, candidate_referent)| {
+            (candidate_lifetime == lifetime
+                && candidate_referent.unqualified() == referent.unqualified())
+                .then_some(index)
+        })
+    }).collect::<Vec<_>>();
+    if let [owner] = candidates.as_slice() {
+        return access.is_some_and(|access| {
+        access.result().ty() == result
+            && access.result().qualifiers().iter().any(|qualifier| {
+                matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
+            })
+            && matches!(access.borrow_relations(), [relation]
+                if relation.lifetime() == lifetime
+                    && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                    && relation.storage_type().unqualified() == referent.unqualified()
+                    && relation.output_projection().steps.is_empty()
+                    && matches!(relation.owners(), [candidate]
+                        if candidate.position() == *owner && candidate.input_projection().steps.is_empty()))
+        });
+    }
+
+    if candidates.len() >= 2 {
+        return access.is_some_and(|access| {
+            access.result().ty() == result
+                && access.result().qualifiers().iter().any(|qualifier| {
+                    matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
+                })
+                && matches!(access.borrow_relations(), [relation]
+                    if relation.lifetime() == lifetime
+                        && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                        && relation.storage_type().unqualified() == referent.unqualified()
+                        && relation.output_projection().steps.is_empty()
+                        && relation.owners().iter().map(|owner| owner.position()).eq(candidates.iter().copied())
+                        && relation.owners().iter().all(|owner| owner.input_projection().steps.is_empty()))
+        });
+    }
+
+    let Some(projected) = projected_exclusive_return_source(declaration, records) else { return false };
+    access.is_some_and(|access| {
+        access.result().ty() == result
+            && access.result().qualifiers().iter().any(|qualifier| {
+                matches!(qualifier, witchy_types::access::AccessQualifier::BorrowMut(candidate) if candidate == lifetime)
+            })
+            && matches!(access.borrow_relations(), [relation]
+                if relation.lifetime() == lifetime
+                    && relation.kind() == witchy_types::access::BorrowKind::Exclusive
+                    && relation.storage_type().unqualified() == referent.unqualified()
+                    && relation.output_projection().steps.is_empty()
+                    && matches!(relation.owners(), [candidate]
+                        if candidate.position() == projected.parameter
+                            && candidate.input_projection().steps.is_empty()))
+    })
+}
+
+/// Consult the type-checker-owned access product before accepting the one
+/// source-level alias contract the direct carrier can express.  This is not a
+/// lowering-time reconstruction: the product is pointer-bound to the exact
+/// typed module and was already used to reject stale or missing facts.
+fn direct_shared_reference_relation_is_checked(
+    declaration: &witchy_syntax::ast::Function,
+    access: Option<&witchy_types::access::AccessSignature>,
+) -> bool {
+    let Some(result) = declaration.ret.as_ref() else { return true };
+    let Some((lifetime, referent)) = direct_shared_reference_parts(result) else {
+        // A shared-reference argument which is not returned does not create an
+        // output alias. Its ABI contract is checked by the ordinary parameter
+        // correspondence below; no checked borrow relation is required here.
+        return true;
+    };
+    let candidates = declaration.params.iter().enumerate().filter_map(|(index, parameter)| {
+        parameter.ty.as_ref().and_then(direct_shared_reference_parts).and_then(|(candidate_lifetime, candidate_referent)| {
+            (candidate_lifetime == lifetime && candidate_referent.unqualified() == referent.unqualified())
+                .then_some(index)
+        })
+    }).collect::<Vec<_>>();
+    let [owner] = candidates.as_slice() else { return false };
+    access.is_some_and(|access| access.borrow_relations().iter().any(|relation| {
+        relation.lifetime() == lifetime
+            && relation.kind() == witchy_types::access::BorrowKind::Shared
+            && relation.storage_type().unqualified() == referent.unqualified()
+            && relation.output_projection().steps.is_empty()
+            && matches!(relation.owners(), [candidate]
+                if candidate.position() == *owner && candidate.input_projection().steps.is_empty())
+    }))
+}
+
 fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
+    let source = match source {
+        // The outer qualifier is a checked source ownership fact.  Its inner
+        // physical lane is still the ordinary own ABI.  Do not recurse
+        // through nested qualifiers: an element-level ownership token is not
+        // part of this scalar exception.
+        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner) => inner.as_ref(),
+        _ => source,
+    };
+    ordinary_unqualified_own_source_type_supported(source)
+}
+
+fn ordinary_unqualified_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool {
+    if is_unit_source_type(source) {
+        return true;
+    }
     match source {
         // This admits the convention, not a signature or pointer claim:
         // value_type_matches_source independently checks the closure record
@@ -1473,8 +2883,21 @@ fn ordinary_own_source_type_supported(source: &witchy_syntax::ast::Type) -> bool
             matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit" | "String" | "Bytes" | "Console" | "Env" | "Listener" | "Socket")
         }
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            ordinary_own_source_type_supported(&arguments[0])
+            ordinary_unqualified_own_source_type_supported(&arguments[0])
         }
+        _ => false,
+    }
+}
+
+/// The canonical `()` spelling is structurally an empty tuple.  Keep legacy
+/// names accepted at this compatibility boundary, but never require them for
+/// a zero-lane result or parameter correspondence.
+fn is_unit_source_type(source: &witchy_syntax::ast::Type) -> bool {
+    match source.unqualified() {
+        witchy_syntax::ast::Type::Named(name, arguments) => {
+            (name == "Nil" || name == "Unit") && arguments.is_empty()
+        }
+        witchy_syntax::ast::Type::Tuple(items) => items.is_empty(),
         _ => false,
     }
 }
@@ -1488,12 +2911,15 @@ pub(super) fn value_type_matches_source(
     records: &ScalarRecordFields,
     closure_layouts: &BTreeMap<crate::layout::LayoutId, super::FunctionSignatureId>,
 ) -> bool {
+    if is_unit_source_type(source) {
+        return actual == super::ValueType::Unit;
+    }
     if let super::ValueType::Gc(id) = actual {
         let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
         if let super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
             return id == family.owner_type
-                && is_direct_shared_int(expected)
-                && is_direct_shared_int(source);
+                && ((is_direct_rooted_view_int(expected) && is_direct_rooted_view_int(source))
+                    || (is_direct_rooted_view_int_slice(expected) && is_direct_rooted_view_int_slice(source)));
         }
         if let super::closure_owner_contract::OwnerFamilySource::Aggregate(expected) = &family.source {
             let aggregate = if id == family.list_type {
@@ -1504,7 +2930,7 @@ pub(super) fn value_type_matches_source(
             } else {
                 source
             };
-            return witchy_types::canonical_aggregates::concrete_aggregate_identity(aggregate, records)
+            return witchy_types::canonical_aggregates::canonical_owner_aggregate_identity(aggregate, records)
                 .is_some_and(|normalized| &normalized == expected);
         }
         let callable = if id == family.list_type {
@@ -1666,6 +3092,9 @@ fn enqueue_record_fields_with_closures(
     actual.len() == fields.len()
         && actual.iter().zip(fields).all(|(actual, field)| {
             let Some(actual) = layouts.get(*actual) else { return false };
+            if is_unit_source_type(field) {
+                return matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Unit));
+            }
             match field.unqualified() {
                 witchy_syntax::ast::Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(), "Int" | "Duration" | "Float" | "Bool" | "Nil" | "Unit") => match name.as_str() {
                     "Int" => matches!(actual.kind(), LayoutKind::Scalar(ScalarKind::Int)),
@@ -1759,6 +3188,9 @@ fn enqueue_layout_children(
         witchy_syntax::ast::Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
             let LayoutKind::PackedList { element, .. } = descriptor.kind() else { return false };
             let Some(element) = layouts.get(*element) else { return false };
+            if is_unit_source_type(&arguments[0]) {
+                return matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Unit));
+            }
             match arguments[0].unqualified() {
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Int)),
                 witchy_syntax::ast::Type::Named(name, arguments) if name == "Float" && arguments.is_empty() => matches!(element.kind(), LayoutKind::Scalar(ScalarKind::Float)),
@@ -2506,6 +3938,65 @@ mod tests {
     }
 
     #[test]
+    fn root_unique_keeps_gc_owners_tokenized_while_scalars_stay_value_lanes() {
+        use crate::canonical_safewir::{GcTypeId, ParameterOwnership};
+
+        let owner = ValueType::Gc(GcTypeId::new(7));
+        assert!(root_unique_parameter_ownership_matches(owner, ParameterOwnership::Unique));
+        assert!(!root_unique_parameter_ownership_matches(owner, ParameterOwnership::Value));
+        assert!(root_unique_result_requires_token(&owner));
+
+        assert!(root_unique_parameter_ownership_matches(ValueType::Int, ParameterOwnership::Value));
+        assert!(!root_unique_parameter_ownership_matches(ValueType::Int, ParameterOwnership::Unique));
+        assert!(!root_unique_result_requires_token(&ValueType::Int));
+    }
+
+    #[test]
+    fn result_unique_ok_authority_refuses_nested_or_arbitrary_qualifiers() {
+        use witchy_syntax::ast::{Type, TypeQual};
+        let int = || Type::Named("Int".into(), Vec::new());
+        let string = || Type::Named("String".into(), Vec::new());
+        let exact = Type::Named(
+            "Result".into(),
+            vec![
+                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()]))),
+                string(),
+            ],
+        );
+        assert!(witchy_syntax::ast::is_direct_unique_result_ok_collection(&exact));
+
+        let nested = Type::Named(
+            "Result".into(),
+            vec![
+                Type::Qualified(
+                    TypeQual::Unique,
+                    Box::new(Type::Named(
+                        "List".into(),
+                        vec![Type::Qualified(TypeQual::Unique, Box::new(int()))],
+                    )),
+                ),
+                string(),
+            ],
+        );
+        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&nested));
+
+        let arbitrary = Type::Named(
+            "Result".into(),
+            vec![Type::Qualified(TypeQual::Unique, Box::new(Type::Tuple(vec![int()]))), string()],
+        );
+        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&arbitrary));
+
+        let qualified_error = Type::Named(
+            "Result".into(),
+            vec![
+                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()]))),
+                Type::Qualified(TypeQual::Unique, Box::new(Type::Named("List".into(), vec![int()])))
+            ],
+        );
+        assert!(!witchy_syntax::ast::is_direct_unique_result_ok_collection(&qualified_error));
+    }
+
+    #[test]
     fn unique_pop_source_abi_requires_checked_unique_input_and_output() {
         use witchy_syntax::ast::{Convention, Type, TypeQual};
         use crate::canonical_safewir::ParameterOwnership;
@@ -2574,103 +4065,107 @@ mod tests {
     }
 
     #[test]
-    fn source_owned_aggregate_abi_rejects_deep_qualifier_erasure() {
-        use witchy_syntax::ast::{CallableQualifiers, Convention, Item, Type, TypeQual};
-        use crate::layout::{PointerSlot, ScalarKind};
-        use crate::canonical_safewir::{ParameterContract, ParameterOwnership};
-        let string_ty = Type::Named("String".into(), vec![]);
-        let function = |parameter, result, convention| Type::Fn(
-            vec![parameter], Box::new(result), vec![convention], CallableQualifiers::default());
-        let mut layouts = LayoutInterner::new();
-        let byte = layouts.intern_scalar(ScalarKind::RawByte).unwrap();
-        let string = layouts.intern_runtime_buffer(byte).unwrap();
-        let slot = layouts.intern_runtime_pointer_value_slot(string, PointerSlot::Owned).unwrap();
-        let record = layouts.intern_packed_record(vec![slot]).unwrap();
-        let list = layouts.intern_packed_list(slot, crate::layout::RcHeader::Required).unwrap();
-        let code = layouts.intern_scalar(ScalarKind::Callable).unwrap();
-        let environment = layouts.intern_runtime_pointer_value_slot(record, PointerSlot::Owned).unwrap();
-        let closure = layouts.intern_packed_record(vec![code, environment]).unwrap();
-        let signature = |id, parameters: Vec<ValueType>, results: Vec<ValueType>| FunctionSignature {
-            id: FunctionSignatureId::new(id),
-            contract: CallableContract {
-                parameters: parameters.iter().map(|ty| ParameterContract {
-                    value_type: *ty, ownership: ParameterOwnership::Shared,
-                }).collect(),
-                results: results.iter().map(|ty| match ty {
-                    ValueType::Ref(layout) => ResultContract::Shared { layout: *layout },
-                    _ => unreachable!(),
-                }).collect(),
-                parameter_effects: BTreeMap::new(),
-            },
-            parameters, results,
+    fn direct_shared_result_without_closed_declaration_is_not_admissible() {
+        use witchy_syntax::ast::{CallableQualifiers, Convention, Type, TypeQual};
+        let string = Type::Named("String".into(), vec![]);
+        let shared = Type::Qualified(TypeQual::Borrow("a".into()), Box::new(string.clone()));
+        let direct_alias = Type::Fn(
+            vec![shared.clone()],
+            Box::new(shared),
+            vec![Convention::Let],
+            CallableQualifiers::default(),
+        );
+        let owned = Type::Fn(
+            vec![string.clone()],
+            Box::new(string),
+            vec![Convention::Let],
+            CallableQualifiers::default(),
+        );
+
+        assert!(!direct_reference_binding_is_checked(&direct_alias, None, None, false, &BTreeMap::new()));
+        assert!(direct_reference_binding_is_checked(&owned, None, None, false, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn exclusive_reference_prefilter_keeps_direct_let_and_projected_var_disjoint() {
+        use witchy_syntax::ast::{CallableQualifiers, Convention, Type, TypeQual};
+
+        let mutable = |name: &str| Type::Qualified(
+            TypeQual::BorrowMut("a".into()),
+            Box::new(Type::Named(name.into(), vec![])),
+        );
+        let callable = |parameter, convention| Type::Fn(
+            vec![parameter],
+            Box::new(mutable("String")),
+            vec![convention],
+            CallableQualifiers::default(),
+        );
+        assert!(source_abi_qualifiers_supported(
+            &callable(mutable("String"), Convention::Let), &BTreeMap::new(),
+        ));
+        assert!(source_abi_qualifiers_supported(
+            &callable(mutable("Pair"), Convention::Var), &BTreeMap::new(),
+        ));
+        assert!(!source_abi_qualifiers_supported(
+            &callable(mutable("String"), Convention::Var), &BTreeMap::new(),
+        ));
+        assert!(!source_abi_qualifiers_supported(
+            &callable(mutable("Pair"), Convention::Let), &BTreeMap::new(),
+        ));
+    }
+
+    #[test]
+    fn rooted_view_aggregate_authority_is_shallow_through_nominals_and_generics() {
+        let carrier = |source: &str, name: &str| {
+            let module = witchy_syntax::parser::parse_module(source).expect("parse aggregate fixture");
+            let records = witchy_types::canonical_aggregates::type_definitions(&module);
+            is_direct_rooted_view_aggregate_carrier(
+                &witchy_syntax::ast::Type::Named(name.into(), Vec::new()),
+                &records,
+            )
         };
-        let mut candidate = candidate().with_closure_layouts(
-            [(closure, FunctionSignatureId::new(1))].into_iter().collect());
-        candidate.layouts = LayoutBundle::from_interner(&layouts, [string, record, list, closure]).unwrap();
-        candidate.signatures = vec![
-            signature(0, vec![ValueType::Ref(string)], vec![ValueType::Ref(string)]),
-            signature(1, vec![ValueType::Ref(closure), ValueType::Ref(string)], vec![ValueType::Ref(string)]),
-        ];
-        let module = witchy_syntax::parser::parse_module("type Holder:\n    value: String\n").unwrap();
-        let Item::Type(definition) = &module.items[0] else { panic!("record") };
-        let qualifiers = [TypeQual::Unique, TypeQual::LocalUnique,
-            TypeQual::Borrow("a".into()), TypeQual::LegacyBorrow("a".into()), TypeQual::BorrowMut("a".into())];
-        for form in 0..6 {
-            let wrap = |leaf: Type| {
-                let mut records = BTreeMap::new();
-                let (ty, layout) = match form {
-                    0 => (leaf, string),
-                    1 => (Type::Tuple(vec![leaf]), record),
-                    2 => (Type::Named("List".into(), vec![leaf]), list),
-                    3 => {
-                        let mut definition = definition.clone();
-                        definition.variants[0].fields[0] = leaf;
-                        records.insert(definition.name.clone(), definition);
-                        (Type::Named("Holder".into(), vec![]), record)
-                    }
-                    4 => (function(leaf, string_ty.clone(), Convention::Own), closure),
-                    _ => (function(string_ty.clone(), leaf, Convention::Own), closure),
-                };
-                (ty, layout, records)
-            };
-            for leaf in [string_ty.clone(), Type::Qualified(TypeQual::Frozen, Box::new(string_ty.clone()))] {
-                let (ty, layout, records) = wrap(leaf);
-                candidate.signatures[0] = signature(0, vec![ValueType::Ref(layout)], vec![ValueType::Ref(layout)]);
-                assert!(candidate_signature_matches_source_with_records(
-                    &candidate.signatures[0], &function(ty.clone(), ty, Convention::Own), &candidate, &records,
-                ), "plain/Frozen form {form} must match");
-            }
-            for qualifier in &qualifiers {
-                let (bad, layout, records) = wrap(Type::Qualified(qualifier.clone(), Box::new(string_ty.clone())));
-                let (plain, _, _) = wrap(string_ty.clone());
-                candidate.signatures[0] = signature(0, vec![ValueType::Ref(layout)], vec![ValueType::Ref(layout)]);
-                for source in [function(bad.clone(), plain.clone(), Convention::Own),
-                    function(plain.clone(), bad.clone(), Convention::Own)] {
-                    assert!(!candidate_signature_matches_source_with_records(
-                        &candidate.signatures[0], &source, &candidate, &records,
-                    ), "qualifier {qualifier:?}, form {form} must not disappear");
-                }
-                let composed = Type::RecordCompose { base: Box::new(plain), fields: vec![("bad".into(), bad)] };
-                assert!(!source_abi_qualifiers_supported(&composed, &records));
-            }
+
+        assert!(carrier(
+            "type Holder:\n    view: &Int\n    count: Int\n",
+            "Holder",
+        ));
+        for (name, source) in [
+            (
+                "OptionDecoy",
+                "type OptionDecoy:\n    direct: &Int\n    hidden: Option(&Int)\n",
+            ),
+            (
+                "NominalDecoy",
+                "type Inner:\n    view: &Int\n\ntype NominalDecoy:\n    direct: &Int\n    hidden: Inner\n",
+            ),
+            (
+                "CallableDecoy",
+                "type CallableDecoy:\n    direct: &Int\n    hidden: fn() -> &Int\n",
+            ),
+            (
+                "GenericDecoy",
+                "type Box(a):\n    value: a\n\ntype GenericDecoy:\n    direct: &Int\n    hidden: Box(&Int)\n",
+            ),
+        ] {
+            assert!(
+                !carrier(source, name),
+                "the authority predicate must reject the nested view descendant in {name}",
+            );
         }
-        candidate.signatures[0] = signature(0, vec![ValueType::Ref(string)],
-            vec![ValueType::Ref(string), ValueType::Ref(string)]);
-        candidate.signatures[0].contract.parameters[0].ownership = ParameterOwnership::UniqueWriteBack;
-        candidate.signatures[0].contract.results[1] = ResultContract::Unique { layout: string };
-        let unique = Type::Qualified(TypeQual::Unique, Box::new(string_ty.clone()));
-        assert!(candidate_signature_matches_source(&candidate.signatures[0],
-            &function(unique.clone(), string_ty.clone(), Convention::Var), &candidate));
-        let nested_var = function(unique.clone(), string_ty.clone(), Convention::Var);
-        assert!(source_abi_qualifiers_supported(&nested_var, &BTreeMap::new()));
-        let double_unique = Type::Qualified(TypeQual::Unique, Box::new(unique));
-        assert!(!candidate_signature_matches_source(&candidate.signatures[0],
-            &function(double_unique, string_ty.clone(), Convention::Var), &candidate));
-        for qualifier in qualifiers.into_iter().skip(1) {
-            assert!(!candidate_signature_matches_source(&candidate.signatures[0],
-                &function(Type::Qualified(qualifier, Box::new(string_ty.clone())),
-                    string_ty.clone(), Convention::Var), &candidate));
-        }
+    }
+
+    #[test]
+    fn option_rooted_int_view_requires_checked_payload_state() {
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".into(), b"fn select(present: Bool, value: &Int) -> Option(&Int):\n    if present: Some(value) else: None\n".to_vec())],
+            "main",
+            |_, _, _| Ok(Default::default()),
+        ).expect("checked Option rooted-view source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let declaration = canonical.closed_callable_declaration(0).expect("Option declaration");
+        let access = canonical.access_facts().expect("retained access facts")
+            .declaration(&declaration.name).expect("exact declaration access");
+        assert!(option_rooted_int_view_result_relation_is_checked(declaration, access));
     }
 
     #[test]
@@ -2929,7 +4424,7 @@ mod tests {
     #[test]
     fn source_higher_order_unit_callable_requires_zero_result_lanes() {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("apply".to_string(), b"fn apply(f: fn(Int) -> Nil):\n    f(1)\n".to_vec())],
+            vec![("apply".to_string(), b"fn apply(f: fn(Int) -> ()):\n    f(1)\n".to_vec())],
             "apply", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).unwrap();
         let source = checked.canonical_source().unwrap().closed_callable_signature(0).unwrap();
@@ -3094,11 +4589,14 @@ mod unit_storage_authority_tests {
     use witchy_syntax::ast::Type;
 
     #[test]
-    fn unit_storage_authority_distinguishes_nil_fields_and_lists() {
+    fn unit_storage_authority_accepts_structural_unit_fields_and_lists() {
         let mut layouts = LayoutInterner::new();
         let int = layouts.intern_scalar(ScalarKind::Int).unwrap();
-        for name in ["Nil", "Unit"] {
-            let ty = Type::Named(name.into(), vec![]);
+        for ty in [
+            Type::Tuple(Vec::new()),
+            Type::Named("Nil".into(), vec![]),
+            Type::Named("Unit".into(), vec![]),
+        ] {
             for scalar in [ScalarKind::Unit, ScalarKind::Bool, ScalarKind::Int, ScalarKind::U32, ScalarKind::Callable] {
                 let element = layouts.intern_scalar(scalar).unwrap();
                 let record = layouts.intern_packed_record(vec![element, int]).unwrap();

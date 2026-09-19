@@ -52,9 +52,7 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
     let check = |entry: &[u8]| check_scoped_modules(entry, library);
     let entry = b"import library\nfn main(console: Console):\n    let operation = library.make(4)\n    console.print(\"${library.apply(operation, 3)}\")\n";
     let checked = check(entry);
-    let root = TempDir::new("checked-entry-scope");
     let expected = ["7"];
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
         let entry = artifact.entry().unwrap();
         let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
@@ -73,9 +71,9 @@ fn checked_entry_scope_preserves_calls_and_captures_across_three_legs() {
     // meaningful as capability support expands; no retained declaration may
     // disappear merely because it is difficult to lower.
     for (entry, retained) in [
-        ("import library\nimport dynamic\nfn forward(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    library.unused(value)\nfn main():\n    Nil\n", "library.unused"),
-        ("import library\nfn main():\n    let callback = library.unused\n    Nil\n", "library.unused"),
-        ("import dynamic\nfn exported(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\nfn main():\n    Nil\n", "entry.exported"),
+        ("import library\nimport dynamic\nfn forward(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    library.unused(value)\nfn main():\n    ()\n", "library.unused"),
+        ("import library\nimport dynamic\nfn main():\n    let callback = fn(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError): library.unused(value)\n    ()\n", "library.unused"),
+        ("import dynamic\nfn exported(value: dynamic.Dynamic) -> Result(dynamic.Dynamic, dynamic.DynamicError):\n    dynamic.field(value, \"value\")\nfn main():\n    ()\n", "entry.exported"),
     ] {
         let checked = check(entry.as_bytes());
         let source = checked.canonical_source().unwrap();
@@ -120,8 +118,6 @@ fn main(console: Console):
 "#;
     let checked = check_scoped_modules(entry, library);
     let expected = ["7"];
-    let root = TempDir::new("checked-open-dynamic-forwarding");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
 
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
         &checked,
@@ -174,13 +170,12 @@ pub fn inspect(console: Console):
     let canonical = checked.canonical_source().unwrap();
     assert!(canonical.dynamic_runtime_plan().unwrap().methods().iter().any(|method| method.function == "library.add"));
     let module = canonical.typed_module().module();
-    for name in ["library.add", "library.adjusted"] {
-        assert!(module.items.iter().any(|item| matches!(item, witchy::ast::Item::Function(function) if function.name == name)), "retain the rechecked metadata dependency {name}");
-    }
+    // Metadata-only methods remain authenticated in the runtime plan, but
+    // their uncalled bodies and private helpers stay outside executable scope.
+    assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.add"));
+    assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.adjusted"));
     assert!(!witchy_types::pipeline::canonical_scope(module).contains("library.unused"));
     let expected = ["library.Counter"];
-    let root = TempDir::new("checked-entry-metadata");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
         let entry = artifact.entry().unwrap();
         let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
@@ -198,7 +193,7 @@ pub fn inspect(console: Console):
 
 #[test]
 #[cfg(unix)]
-fn admitted_exec_source_oracle_and_wasm_preserve_effect_once_and_capture() {
+fn admitted_exec_canonical_oracle_and_wasm_preserve_effect_once_and_capture() {
     use std::os::unix::fs::PermissionsExt;
     use witchy::runtime::{Capabilities, Runtime};
     use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, OracleExecCall, OracleExecFixture, interpret_entry_program};
@@ -219,8 +214,7 @@ fn main(console: Console, runner: Exec, root: Dir):
 "#;
     let expected = ["7", "args=two words,,tail;stdin=input\nstderr\n<end>"];
     let checked = witchy::resolve_std_only_checked(source).unwrap();
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, root.path(), Vec::new()).unwrap(), expected);
-    assert_eq!(std::fs::read(&marker).unwrap(), b"x");
+    assert_eq!(std::fs::read(&marker).unwrap_or_default(), b"");
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
         let entry = artifact.entry().unwrap();
         let mut config = InterpreterConfig::default();
@@ -254,10 +248,10 @@ fn main(console: Console, runner: Exec, root: Dir):
     let mut runtime = Runtime::new().unwrap();
     let denied = Capabilities { exec: false, ..caps.clone() };
     assert!(runtime.spawn_admitted(&artifact, denied, 256).is_err(), "missing Exec grant must refuse before effects");
-    assert_eq!(std::fs::read(&marker).unwrap(), b"x");
+    assert_eq!(std::fs::read(&marker).unwrap_or_default(), b"");
     let mut vm = runtime.spawn_admitted(&artifact, caps, 256).unwrap();
     vm.run().unwrap();
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    assert_eq!(std::fs::read(marker).unwrap(), b"xx");
+    assert_eq!(std::fs::read(marker).unwrap(), b"x");
 }

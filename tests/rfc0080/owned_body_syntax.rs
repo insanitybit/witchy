@@ -19,7 +19,7 @@ comptime fn direct_body() -> meta.BlockSyntax:
 fn selected() -> Number:
     42
 
-fn touched() -> Nil:
+fn touched() -> ():
     ()
 
 comptime fn call_site_body() -> meta.BlockSyntax:
@@ -164,4 +164,40 @@ comptime:
         error.contains("meta.type_expr") && error.contains("unknown qualifier `shared`"),
         "{error}"
     );
+}
+
+#[test]
+fn rfc0167_typed_builders_reject_retired_view_and_local_unique() {
+    for builder in [
+        "meta.type_expr(meta.TNamed(\"View\", [meta.TNamed(\"String\", []), meta.TNamed(\"'a\", [])]))",
+        "meta.type_expr(meta.TNamed(\"List\", [meta.TNamed(\"View\", [meta.TNamed(\"String\", []), meta.TNamed(\"'a\", [])])]))",
+        "meta.type_named(meta.ident(\"View\"), [meta.type_expr(meta.TNamed(\"String\", [])), meta.type_expr(meta.TNamed(\"'a\", []))])",
+        "meta.type_named(meta.call_site(\"View\"), [meta.type_expr(meta.TNamed(\"String\", [])), meta.type_expr(meta.TNamed(\"'a\", []))])",
+        "meta.type_expr(meta.TQualified(\"local unique\", meta.TNamed(\"String\", [])))",
+        "__meta_type_qualified(\"local unique\", meta.type_expr(meta.TNamed(\"String\", [])))",
+    ] {
+        let source = format!("import meta\n\ncomptime:\n    let _ = {builder}\n");
+        let parsed = parser::parse_module(&source).expect("parse builder call");
+        let error = pipeline::link(vec![("main".into(), parsed)], "main")
+            .expect_err("retired type shape must fail during expansion").to_string();
+        let expected = if builder.starts_with("__meta_") { "compiler-private intrinsic" }
+            else if builder.contains("local unique") { "unknown qualifier `local unique`" }
+            else { "`View(T, 'a)` is retired" };
+        assert!(error.contains(expected), "{builder}: {error}");
+    }
+}
+
+#[test]
+fn rfc0167_typed_builders_retain_nominal_view_lifetimes() {
+    let source = r#"import meta
+
+comptime:
+    let lifetime = meta.type_expr(meta.TNamed("'a", []))
+    let _ = meta.type_named(meta.ident("View"), [lifetime])
+    let _ = meta.type_named(meta.call_site("View"), [lifetime])
+    let _ = meta.type_expr(meta.TNamed("View", [meta.TNamed("'a", [])]))
+"#;
+    let parsed = parser::parse_module(source).expect("parse nominal builders");
+    pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect("nominal View with one lifetime is not the retired builtin");
 }

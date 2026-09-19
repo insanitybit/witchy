@@ -13,9 +13,7 @@ comptime fn generated_body() -> meta.ExprSyntax:
         ${record}.value + 2
 
 comptime fn add_one(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    let value = meta.expr_raw(list.at(holes, 0))
-    quote expr:
-        ${value} + 1
+    meta.expr_binary("+", meta.expr_tag_hole(holes.at(0)), meta.expr_int(1))
 
 comptime:
     let body = generated_body()
@@ -33,9 +31,10 @@ fn main(console: Console):
 #[test]
 fn expression_holes_remain_structural_through_items_and_tags() {
     let parsed = parser::parse_module(SOURCE).expect("parse structural expression holes");
-    assert!(
-        parsed.compiler_expr_syntax.len() >= 3,
-        "expected expression templates to be compiler-owned"
+    assert_eq!(
+        parsed.compiler_expr_syntax.len(),
+        2,
+        "only the two quote expressions belong to the parser-owned syntax table; add_one is a direct structural builder"
     );
 
     let linked = pipeline::link(vec![("main".into(), parsed)], "main")

@@ -821,6 +821,7 @@ mod tests {
             comptime_only: false,
             attributes: Vec::new(),
             name: "relay__Point".to_string(),
+            type_params: Vec::new(),
             params: vec![Param {
                 name: "values".to_string(),
                 ty: Some(list_point()),
@@ -842,6 +843,7 @@ mod tests {
     fn generic_relay_template(parameter_count: usize) -> Function {
         let mut function = relay_function();
         function.name = "relay".to_string();
+        function.type_params = vec!["a".to_string()];
         function.params = (0..parameter_count)
             .map(|position| Param {
                 name: format!("value{position}"),

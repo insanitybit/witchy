@@ -34,7 +34,7 @@ fn layout(children: Vec<Option<OwnershipStateClass>>) -> OwnershipStateClass {
 }
 
 fn catalog_signature(source: &str, function_name: &str) -> AccessSignature {
-    let module = witchy_syntax::parser::parse_module(source).expect("parse access fixture");
+    let module = witchy_syntax::parser::parse_reference_migration(source).expect("parse access fixture");
     let catalog = BorrowRelationCatalog::from_module(&module);
     let function = module
         .items
@@ -87,7 +87,7 @@ fn public_catalog_free_constructors_preserve_coarse_nominal_lifetime_relations()
             .expect("public function-type derivation keeps a conservative nominal relation"),
     );
 
-    let module = witchy_syntax::parser::parse_module(
+    let module = witchy_syntax::parser::parse_reference_migration(
         "fn parse(value: Parser('scope)) -> Parser('scope):\n    value\n",
     )
     .expect("parse public constructor fixture");
@@ -195,8 +195,8 @@ fn option_list_tuple_relations_preserve_success_payload_projections() {
 fn nominal_borrow_relations_preserve_exact_input_and_output_projections() {
     let signature = catalog_signature(
         "mode opt\n\n\
-         type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
-         fn pair(left: let('left) String, right: let('right) String) \
+         type PairView('left, 'right):\n    first: &'left String\n    second: &'right String\n\n\
+         fn pair(left: &'left String, right: &'right String) \
              -> PairView('left, 'right):\n    PairView(left, right)\n",
         "pair",
     );
@@ -242,9 +242,9 @@ fn list_borrow_relations_preserve_an_element_slot_without_indexing_the_owner() {
 fn implicit_nominal_type_parameters_preserve_nested_borrow_slots() {
     let signature = catalog_signature(
         "mode opt\n\n\
-         type Leaf('scope):\n    value: View(String, 'scope)\n\n\
+         type Leaf('scope):\n    value: &'scope String\n\n\
          type Wrapper('scope):\n    item: x\n\n\
-         fn wrap(value: let('scope) String) -> Wrapper('scope, Leaf('scope)):\n    Wrapper(Leaf(value))\n",
+         fn wrap(value: &'scope String) -> Wrapper('scope, Leaf('scope)):\n    Wrapper(Leaf(value))\n",
         "wrap",
     );
 
@@ -273,9 +273,9 @@ fn finite_nominal_chains_deeper_than_the_old_limit_preserve_relations() {
     );
     let source = format!(
         "mode opt\n\n\
-         type Leaf('scope):\n    value: View(String, 'scope)\n\n\
+         type Leaf('scope):\n    value: &'scope String\n\n\
          type Wrapper(x):\n    item: x\n\n\
-         fn deep(value: let('scope) String) -> {result}:\n    value\n"
+         fn deep(value: &'scope String) -> {result}:\n    value\n"
     );
     let signature = catalog_signature(&source, "deep");
 
@@ -297,8 +297,8 @@ fn finite_nominal_chains_deeper_than_the_old_limit_preserve_relations() {
 fn recursive_nominal_cycles_terminate_without_erasing_direct_borrow_slots() {
     let signature = catalog_signature(
         "mode opt\n\n\
-         type Node('scope):\n    next: Node('scope)\n    value: View(String, 'scope)\n\n\
-         fn node(value: let('scope) String) -> Node('scope):\n    Node(value, value)\n",
+         type Node('scope):\n    next: Node('scope)\n    value: &'scope String\n\n\
+         fn node(value: &'scope String) -> Node('scope):\n    Node(value, value)\n",
         "node",
     );
 
@@ -315,14 +315,14 @@ fn recursive_nominal_cycles_terminate_without_erasing_direct_borrow_slots() {
 fn exact_verifier_rejects_nominal_projection_erasure() {
     let required = catalog_signature(
         "mode opt\n\n\
-         type Wrapper('scope):\n    view: View(String, 'scope)\n\n\
-         fn wrap(value: let('scope) String) -> Wrapper('scope):\n    Wrapper(value)\n",
+         type Wrapper('scope):\n    view: &'scope String\n\n\
+         fn wrap(value: &'scope String) -> Wrapper('scope):\n    Wrapper(value)\n",
         "wrap",
     );
     let erased = catalog_signature(
         "mode opt\n\n\
          type Wrapper('scope):\n    value: String\n\n\
-         fn wrap(value: let('scope) String) -> Wrapper('scope):\n    Wrapper(value)\n",
+         fn wrap(value: &'scope String) -> Wrapper('scope):\n    Wrapper(value)\n",
         "wrap",
     );
 
@@ -335,17 +335,17 @@ fn exact_verifier_rejects_nominal_projection_erasure() {
 fn exact_verifier_rejects_swapped_generic_nominal_projections() {
     let required = catalog_signature(
         "mode opt\n\n\
-         type Leaf(a, 'scope):\n    value: View(a, 'scope)\n\n\
+         type Leaf(a, 'scope):\n    value: &'scope a\n\n\
          type Pair(a, b):\n    first: a\n    second: b\n\n\
-         fn pair(left: let('left) String, right: let('right) String) \
+         fn pair(left: &'left String, right: &'right String) \
              -> Pair(Leaf(String, 'left), Leaf(String, 'right)):\n    Pair(Leaf(left), Leaf(right))\n",
         "pair",
     );
     let swapped = catalog_signature(
         "mode opt\n\n\
-         type Leaf(a, 'scope):\n    value: View(a, 'scope)\n\n\
+         type Leaf(a, 'scope):\n    value: &'scope a\n\n\
          type Pair(a, b):\n    first: b\n    second: a\n\n\
-         fn pair(left: let('left) String, right: let('right) String) \
+         fn pair(left: &'left String, right: &'right String) \
              -> Pair(Leaf(String, 'left), Leaf(String, 'right)):\n    Pair(Leaf(left), Leaf(right))\n",
         "pair",
     );
@@ -394,29 +394,20 @@ fn every_parameter_convention_has_a_distinct_access_and_state_flow() {
 #[test]
 fn qualifiers_are_preserved_and_drive_ownership_requirements() {
     let unique = qualified(TypeQual::Unique, list(named("Int")));
-    let local = qualified(TypeQual::LocalUnique, list(named("Int")));
     let frozen = qualified(TypeQual::Frozen, list(named("Int")));
     let sig = signature(
-        vec![unique, local, frozen],
+        vec![unique, frozen],
         named("Nil"),
-        vec![Convention::Let; 3],
+        vec![Convention::Let; 2],
     );
 
     assert_eq!(sig.params()[0].qualifiers(), &[AccessQualifier::Unique]);
-    assert_eq!(
-        sig.params()[1].qualifiers(),
-        &[AccessQualifier::LocalUnique]
-    );
-    assert_eq!(sig.params()[2].qualifiers(), &[AccessQualifier::Frozen]);
+    assert_eq!(sig.params()[1].qualifiers(), &[AccessQualifier::Frozen]);
     assert_eq!(
         sig.params()[0].ownership().input(),
         Some(&layout(vec![None]))
     );
-    assert_eq!(
-        sig.params()[1].ownership().input(),
-        Some(&layout(vec![None]))
-    );
-    assert_eq!(sig.params()[2].ownership().input(), None);
+    assert_eq!(sig.params()[1].ownership().input(), None);
 }
 
 #[test]
@@ -441,15 +432,10 @@ fn unique_results_return_representation_classed_state() {
 }
 
 #[test]
-fn nested_local_unique_results_are_rejected_recursively() {
-    let result = Type::Tuple(vec![
-        qualified(TypeQual::LocalUnique, list(named("Int"))),
-        named("Int"),
-    ]);
-    assert_eq!(
-        AccessSignature::from_parts(Vec::new(), result, Vec::new()),
-        Err(AccessSignatureError::LocalUniqueResult)
-    );
+fn nested_retired_qualifiers_cannot_enter_access_signatures() {
+    let source = "fn result() -> (local unique List(Int), Int):\n    ([1], 0)\n";
+    let error = witchy_syntax::parser::parse_module(source).expect_err("retired qualifier");
+    assert!(error.message.contains("`local unique` is retired"), "{error}");
 }
 
 #[test]
@@ -587,6 +573,7 @@ fn from_function_requires_a_finalized_result_type() {
         comptime_only: false,
         attributes: Vec::new(),
         name: "inferred".to_string(),
+        type_params: Vec::new(),
         params: vec![Param {
             name: "value".to_string(),
             ty: Some(named("Int")),
@@ -915,7 +902,7 @@ fn exact_verifier_rejects_convention_erasure() {
 
 #[test]
 fn exact_verifier_rejects_unique_and_frozen_erasure() {
-    for qualifier in [TypeQual::Unique, TypeQual::Frozen, TypeQual::LocalUnique] {
+    for qualifier in [TypeQual::Unique, TypeQual::Frozen] {
         let required = signature(
             vec![qualified(qualifier, list(named("Int")))],
             named("Nil"),
@@ -981,22 +968,18 @@ fn malformed_checked_contracts_fail_loudly() {
             conventions: 2
         })
     );
-    assert_eq!(
-        AccessSignature::from_parts(
-            vec![qualified(TypeQual::Frozen, list(named("Int")))],
-            named("Nil"),
-            vec![Convention::Var]
-        ),
-        Err(AccessSignatureError::FrozenMutableParameter { position: 0 })
-    );
-    assert_eq!(
-        AccessSignature::from_parts(
-            Vec::new(),
-            qualified(TypeQual::LocalUnique, list(named("Int"))),
-            Vec::new()
-        ),
-        Err(AccessSignatureError::LocalUniqueResult)
-    );
+    AccessSignature::from_parts(
+        vec![qualified(TypeQual::Frozen, list(named("Int")))],
+        named("Nil"),
+        vec![Convention::Var],
+    )
+    .expect("a var parameter may replace its frozen value");
+    AccessSignature::from_parts(
+        vec![qualified(TypeQual::Borrow("a".to_string()), named("String"))],
+        named("Nil"),
+        vec![Convention::Var],
+    )
+    .expect("a var parameter may replace its shared-reference handle");
     assert_eq!(
         AccessSignature::from_parts(
             Vec::new(),
@@ -1011,7 +994,7 @@ fn malformed_checked_contracts_fail_loudly() {
 
 #[test]
 fn checked_query_exposes_declaration_and_exact_call_access_identities() {
-    let module = witchy_syntax::parser::parse_module(
+    let module = witchy_syntax::parser::parse_reference_migration(
         "fn consume(own xs: unique List(Int)) -> unique List(Int):\n    xs\n\n\
          fn caller() -> unique List(Int):\n    consume([1])\n\n\
          fn main():\n    return\n",
@@ -1043,7 +1026,7 @@ fn checked_query_exposes_declaration_and_exact_call_access_identities() {
 
 #[test]
 fn checked_query_publishes_fixed_and_dynamic_place_paths() {
-    let module = witchy_syntax::parser::parse_module(
+    let module = witchy_syntax::parser::parse_reference_migration(
         "type State:\n    items: List(Int)\n\n\
          fn take_list(var xs: List(Int)):\n    return\n\n\
          fn take_int(var value: Int):\n    return\n\n\
@@ -1136,13 +1119,13 @@ fn checked_query_is_tied_to_its_exact_typed_module() {
     let source = "fn id(x: Int) -> Int:\n    x\n\n\
                   fn caller() -> Int:\n    id(1)\n\n\
                   fn main():\n    return\n";
-    let first = witchy_syntax::parser::parse_module(source).expect("parse first module");
+    let first = witchy_syntax::parser::parse_reference_migration(source).expect("parse first module");
     let first = crate::typeck::annotate_checked(first).expect("annotate first module");
     let facts = checked_facts(first.module(), first.table()).expect("build first facts");
     let first_call = caller_expression(first.module());
     assert!(facts.call_at(first.module(), first_call).is_some());
 
-    let second = witchy_syntax::parser::parse_module(source).expect("parse second module");
+    let second = witchy_syntax::parser::parse_reference_migration(source).expect("parse second module");
     let second = crate::typeck::annotate_checked(second).expect("annotate second module");
     let second_call = caller_expression(second.module());
     assert!(
@@ -1153,7 +1136,7 @@ fn checked_query_is_tied_to_its_exact_typed_module() {
 
 #[test]
 fn generic_lambda_access_uses_checked_context_without_a_concrete_type() {
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "type Step:\n    Empty\n    Item(a)\n\n\
          type Iter:\n    Iter(fn() -> Step(a))\n\n\
          fn empty() -> Iter(a):\n    Iter(fn(): Empty)\n\n\
@@ -1167,8 +1150,25 @@ fn generic_lambda_access_uses_checked_context_without_a_concrete_type() {
 }
 
 #[test]
+fn diverging_callable_branch_is_neutral_but_completing_mismatch_rejects() {
+    crate::typeck::check_reference_migration_str(
+        "fn select(flag: Bool) -> Int:\n    let factory: fn() -> unique String = fn() -> unique String:\n        \"fresh\"\n    let selected = if flag:\n        factory\n    else:\n        return 0\n    let produced: unique String = selected()\n    produced.length()\n",
+    )
+    .expect("a return-only branch supplies no callable value to the access-contract join");
+
+    let error = crate::typeck::check_reference_migration_str(
+        "fn fresh() -> unique String:\n    \"fresh\"\n\nfn ordinary() -> String:\n    \"ordinary\"\n\nfn select(flag: Bool) -> String:\n    let selected = if flag:\n        fresh\n    else:\n        ordinary\n    selected()\n",
+    )
+    .expect_err("two completing callable paths must retain their incompatible result contracts");
+    assert!(
+        error.contains("ownership/access contract"),
+        "two completing callable branches must not be treated as neutral: {error}"
+    );
+}
+
+#[test]
 fn generic_call_specializes_type_variables_without_erasing_access() {
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "fn fold(xs: List(a), init: b, combine: fn(b, a) -> b) -> b:\n    init\n\n\
          fn generic(xs: List(m), seed: m, combine: fn(m, m) -> m) -> m:\n    fold(xs, seed, combine)\n\n\
          fn inline(xs: List(m), seed: m) -> m:\n    fold(xs, seed, fn(acc: m, item: m) -> m: acc)\n\n\
@@ -1178,7 +1178,7 @@ fn generic_call_specializes_type_variables_without_erasing_access() {
         "generic call-site substitution gives alpha-equivalent callback types one access identity, including a lambda checked under the unspecialized hint",
     );
 
-    let error = crate::typeck::check_str(
+    let error = crate::typeck::check_reference_migration_str(
         "fn use(f: fn(unique List(a)) -> Int) -> Int:\n    0\n\n\
          fn generic(f: fn(List(m)) -> Int) -> Int:\n    use(f)\n\n\
          fn main() -> Int:\n    0\n",
@@ -1192,14 +1192,14 @@ fn generic_call_specializes_type_variables_without_erasing_access() {
 
 #[test]
 fn callee_substitution_does_not_capture_caller_generic_names() {
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "fn identity(value: a) -> a:\n    value\n\n\
          fn preserve(callback: fn(a) -> a) -> fn(a) -> a:\n    identity(callback)\n\n\
          fn main() -> Int:\n    0\n",
     )
     .expect("callee type variables are scoped independently from same-spelled caller variables");
 
-    let error = crate::typeck::check_str(
+    let error = crate::typeck::check_reference_migration_str(
         "fn identity(value: a) -> a:\n    value\n\n\
          fn erase(callback: fn(unique a) -> a) -> fn(a) -> a:\n    identity(callback)\n\n\
          fn main() -> Int:\n    0\n",
@@ -1213,13 +1213,13 @@ fn callee_substitution_does_not_capture_caller_generic_names() {
 
 #[test]
 fn result_only_generics_use_the_contextual_call_result_access_shape() {
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "fn empty() -> Option(a):\n    None\n\n\
          fn main() -> Int:\n    let callbacks: Option(fn(Int) -> Int) = empty()\n    0\n",
     )
     .expect("a result-only generic specializes from the checked contextual call result");
 
-    let error = crate::typeck::check_str(
+    let error = crate::typeck::check_reference_migration_str(
         "fn empty() -> Option(unique a):\n    None\n\n\
          fn main() -> Int:\n    let callbacks: Option(fn(Int) -> Int) = empty()\n    0\n",
     )
@@ -1240,7 +1240,7 @@ fn generated_generator_lambda_uses_the_specialized_unfold_contract() {
         Ok(witchy_syntax::origin::OriginTable::default())
     }
 
-    let main = witchy_syntax::parser::parse_module(
+    let main = witchy_syntax::parser::parse_reference_migration(
         "import iter\n\ngen fn numbers() -> Iter(Int):\n    yield 1\n\nfn main() -> Int:\n    0\n",
     )
     .expect("parse generator source");
@@ -1257,7 +1257,7 @@ fn generated_generator_lambda_uses_the_specialized_unfold_contract() {
 
 #[test]
 fn earlier_argument_flow_refines_a_dependent_lambda_hint() {
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "fn higher(seed: a, callback: fn(a) -> Int) -> Int:\n    callback(seed)\n\n\
          fn strict(xs: unique List(Int)) -> Int:\n    0\n\n\
          fn wrapper(seed: fn(unique List(Int)) -> Int) -> Int:\n    higher(seed, fn(callback): callback([1]))\n\n\
@@ -1267,7 +1267,7 @@ fn earlier_argument_flow_refines_a_dependent_lambda_hint() {
         "a prior argument's callable access flow specializes the callee-owned hint for a later lambda",
     );
 
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "fn reversed(callback: fn(a) -> Int, seed: a) -> Int:\n    callback(seed)\n\n\
          fn strict(xs: unique List(Int)) -> Int:\n    0\n\n\
          fn wrapper(seed: fn(unique List(Int)) -> Int) -> Int:\n    reversed(fn(callback: fn(unique List(Int)) -> Int): callback([1]), seed)\n\n\
@@ -1275,7 +1275,7 @@ fn earlier_argument_flow_refines_a_dependent_lambda_hint() {
     )
     .expect("an explicitly typed dependent lambda is independent of argument order");
 
-    let error = crate::typeck::check_str(
+    let error = crate::typeck::check_reference_migration_str(
         "fn higher(seed: a, callback: fn(a) -> Int) -> Int:\n    callback(seed)\n\n\
          fn bad(seed: fn(unique List(Int)) -> Int) -> Int:\n    higher(seed, fn(callback: fn(List(Int)) -> Int): callback([1]))\n\n\
          fn main() -> Int:\n    0\n",
@@ -1289,18 +1289,18 @@ fn earlier_argument_flow_refines_a_dependent_lambda_hint() {
 
 #[test]
 fn try_propagation_preserves_nested_callable_access() {
-    crate::typeck::check_str(
+    crate::typeck::check_reference_migration_str(
         "fn option(value: Option(fn(unique List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
          fn result(value: Result(fn(unique List(Int)) -> Int, String)) -> Result(fn(unique List(Int)) -> Int, String):\n    let callback = value?\n    Ok(callback)\n\n\
          fn replace(var values: List(a), value: a) -> List(a):\n    [value]\n\n\
-         fn preserve(callback: fn(unique List(Int)) -> Int) -> Int:\n    var callbacks = [callback]\n    replace(callbacks, callback)\n    0\n\n\
+         fn preserve(callback: fn(unique List(Int)) -> Int) -> Int:\n    var callbacks = [callback]\n    let _ = replace(callbacks, callback)\n    0\n\n\
          fn main() -> Int:\n    0\n",
     )
     .expect(
         "Option and Result propagation unwrap the success callable flow, and generic writeback preserves the same nested contract",
     );
 
-    let error = crate::typeck::check_str(
+    let error = crate::typeck::check_reference_migration_str(
         "fn erase(value: Option(fn(List(Int)) -> Int)) -> Option(fn(unique List(Int)) -> Int):\n    let callback = value?\n    Some(callback)\n\n\
          fn main() -> Int:\n    0\n",
     )
@@ -1313,7 +1313,7 @@ fn try_propagation_preserves_nested_callable_access() {
 
 #[test]
 fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
-    let qualifier = crate::typeck::check_str(
+    let qualifier = crate::typeck::check_reference_migration_str(
         "fn accept(f: fn(unique List(Int)) -> Int) -> Int:\n    0\n\n\
          fn generic(x: a) -> Int:\n    accept(fn(xs: List(Int)): 0)\n\n\
          fn main() -> Int:\n    0\n",
@@ -1325,7 +1325,7 @@ fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
         "{qualifier}"
     );
 
-    let convention = crate::typeck::check_str(
+    let convention = crate::typeck::check_reference_migration_str(
         "fn accept(f: fn(own List(Int)) -> Int) -> Int:\n    0\n\n\
          fn generic(x: a) -> Int:\n    accept(fn(xs: List(Int)): 0)\n\n\
          fn main() -> Int:\n    0\n",
@@ -1345,7 +1345,7 @@ fn indirect_apply_context_checks_a_generic_lambda_contract() {
         "fn identity(f: fn(fn(List(a)) -> Int) -> Int) -> fn(fn(List(a)) -> Int) -> Int:\n    f\n\n\
          fn generic(x: a) -> Int:\n    identity(fn(callback: fn(List(a)) -> Int): callback([x]))(fn(xs: List(a)): 0)\n\n\
          fn main() -> Int:\n    0\n";
-    let parsed = witchy_syntax::parser::parse_module(accepted).expect("parse indirect fixture");
+    let parsed = witchy_syntax::parser::parse_reference_migration(accepted).expect("parse indirect fixture");
     let tail = parsed
         .items
         .iter()
@@ -1360,14 +1360,14 @@ fn indirect_apply_context_checks_a_generic_lambda_contract() {
         matches!(tail, witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Apply { .. })),
         "fixture must exercise Expr::Apply: {tail:?}"
     );
-    crate::typeck::check_str(accepted)
+    crate::typeck::check_reference_migration_str(accepted)
         .expect("an indirect generic lambda preserves its checked callable contract");
 
     let erased =
         "fn identity(f: fn(fn(unique List(a)) -> Int) -> Int) -> fn(fn(unique List(a)) -> Int) -> Int:\n    f\n\n\
          fn generic(x: a) -> Int:\n    identity(fn(callback: fn(unique List(a)) -> Int): callback([x]))(fn(xs: List(a)): 0)\n\n\
          fn main() -> Int:\n    0\n";
-    let error = crate::typeck::check_str(erased)
+    let error = crate::typeck::check_reference_migration_str(erased)
         .expect_err("indirect application must reject generic lambda qualifier erasure");
     assert!(
         error.contains("ownership/access contract") && error.contains("Qualifier"),
@@ -1381,14 +1381,14 @@ fn tuple_context_checks_a_nested_generic_lambda_contract() {
         "fn accept(pair: (Int, fn(List(a)) -> Int)) -> Int:\n    0\n\n\
          fn generic(x: a) -> Int:\n    accept((0, fn(xs: List(a)): 0))\n\n\
          fn main() -> Int:\n    0\n";
-    crate::typeck::check_str(accepted)
+    crate::typeck::check_reference_migration_str(accepted)
         .expect("a tuple-contained generic lambda preserves its checked callable contract");
 
     let erased =
         "fn accept(pair: (Int, fn(unique List(a)) -> Int)) -> Int:\n    0\n\n\
          fn generic(x: a) -> Int:\n    accept((0, fn(xs: List(a)): 0))\n\n\
          fn main() -> Int:\n    0\n";
-    let error = crate::typeck::check_str(erased)
+    let error = crate::typeck::check_reference_migration_str(erased)
         .expect_err("tuple context must reject nested generic lambda qualifier erasure");
     assert!(
         error.contains("ownership/access contract") && error.contains("Qualifier"),
@@ -1398,7 +1398,7 @@ fn tuple_context_checks_a_nested_generic_lambda_contract() {
 
 #[test]
 fn build_annotation_keys_types_to_the_returned_module_allocation() {
-    let module = witchy_syntax::parser::parse_module(
+    let module = witchy_syntax::parser::parse_reference_migration(
         "fn main() -> Int:\n    let value = 1\n    value\n",
     )
     .expect("parse build module");

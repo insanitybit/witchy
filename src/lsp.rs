@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use lsp_server::{Connection, Message, Notification};
 use serde_json::{Value, json};
 
-use witchy_syntax::{ast, parser, unstable};
+use witchy_syntax::{ast, parser};
 
 type LspResult = Result<(), Box<dyn Error + Sync + Send>>;
 
@@ -312,7 +312,7 @@ const BUILTIN_TYPES: &[(&str, &str)] = &[
     ("String", "UTF-8 string"),
     ("Bool", "Boolean value (true or false)"),
     ("Bytes", "Byte buffer"),
-    ("Nil", "Unit type and value"),
+    ("()", "Unit type and value"),
     ("Duration", "Time duration (e.g. 30s, 250ms)"),
     ("List", "Dynamically sized sequence: List(T) or [T]"),
     ("Dict", "Hash map collection: Dict(K, V)"),
@@ -335,37 +335,37 @@ const CONSTRUCTORS: &[(&str, &str)] = &[
     ("None", "None — Option variant representing absence of value"),
     ("Ok", "Ok(value) — Result variant representing successful outcome"),
     ("Err", "Err(error) — Result variant representing failure"),
-    ("Nil", "Nil — unit value"),
+    ("()", "() - unit value"),
     ("true", "true — boolean true literal"),
     ("false", "false — boolean false literal"),
 ];
 
 const BUILTINS: &[(&str, &str)] = &[
-    ("print", "fn(console: Console, message: String) -> Nil\nPrint message to standard output."),
+    ("print", "fn(console: Console, message: String) -> ()\nPrint message to standard output."),
     ("now", "fn(clock: Clock) -> Int\nCurrent time in milliseconds."),
     ("get_env", "fn(env: Env, key: String) -> Option(String)\nRead an environment variable."),
     ("read", "fn(file: File) -> Result(String, Error)\nRead entire file as string."),
-    ("write", "fn(file: File, content: String) -> Result(Nil, Error)\nWrite string to file."),
-    ("append", "fn(file: File, content: String) -> Result(Nil, Error)\nAppend string to file."),
+    ("write", "fn(file: File, content: String) -> Result((), Error)\nWrite string to file."),
+    ("append", "fn(file: File, content: String) -> Result((), Error)\nAppend string to file."),
     ("exists", "fn(dir: Dir, path: String) -> Bool\nCheck if path exists."),
     ("is_dir", "fn(dir: Dir, path: String) -> Bool\nCheck if path is a directory."),
     ("list", "fn(dir: Dir) -> Result([String], Error)\nList directory entries."),
     ("subtree", "fn(dir: Dir, path: String) -> Dir\nNarrow directory to subtree."),
     ("read_file", "fn(path: String) -> Result(String, Error)\nRead file directly."),
-    ("write_file", "fn(path: String, content: String) -> Result(Nil, Error)\nWrite file directly."),
-    ("make_dir", "fn(path: String) -> Result(Nil, Error)\nCreate directory."),
+    ("write_file", "fn(path: String, content: String) -> Result((), Error)\nWrite file directly."),
+    ("make_dir", "fn(path: String) -> Result((), Error)\nCreate directory."),
     ("exec", "fn(cmd: Exec, command: String, args: [String]) -> Result(String, Error)\nExecute external process."),
     ("connect", "fn(net: Net, address: String) -> Result(NetConn, Error)\nConnect TCP socket."),
     ("try_connect", "fn(net: Net, address: String) -> Result(NetConn, Error)\nAttempt TCP connection."),
     ("listen", "fn(net: Net, address: String) -> Result(NetListener, Error)\nListen on TCP port."),
     ("accept", "fn(listener: NetListener) -> Result(NetConn, Error)\nAccept incoming TCP connection."),
-    ("send_line", "fn(conn: NetConn, line: String) -> Result(Nil, Error)\nSend line over connection."),
-    ("send_bytes", "fn(conn: NetConn, bytes: Bytes) -> Result(Nil, Error)\nSend bytes over connection."),
+    ("send_line", "fn(conn: NetConn, line: String) -> Result((), Error)\nSend line over connection."),
+    ("send_bytes", "fn(conn: NetConn, bytes: Bytes) -> Result((), Error)\nSend bytes over connection."),
     ("recv_line", "fn(conn: NetConn) -> Result(String, Error)\nReceive line from connection."),
     ("recv_all", "fn(conn: NetConn) -> Result(String, Error)\nReceive all data from connection."),
     ("recv_bytes", "fn(conn: NetConn, count: Int) -> Result(Bytes, Error)\nReceive byte count from connection."),
-    ("close", "fn(handle: Closeable) -> Nil\nClose open handle."),
-    ("send", "fn(tx: Sender(T), value: T) -> Future(Nil)\nSend value on channel."),
+    ("close", "fn(handle: Closeable) -> ()\nClose open handle."),
+    ("send", "fn(tx: Sender(T), value: T) -> Future(())\nSend value on channel."),
     ("fail", "fn(message: String) -> Never\nAbort with error message."),
 ];
 
@@ -459,31 +459,31 @@ const RESULT_METHODS: &[(&str, &str, &str)] = &[
 ];
 
 const CAPABILITY_CONSOLE_METHODS: &[(&str, &str, &str)] = &[
-    ("print", "fn(message: String) -> Nil", "Prints message to standard output followed by newline."),
+    ("print", "fn(message: String) -> ()", "Prints message to standard output followed by newline."),
     ("input", "fn() -> String", "Reads a line of text from standard input."),
 ];
 
 const CAPABILITY_CLOCK_METHODS: &[(&str, &str, &str)] = &[
     ("now", "fn() -> Int", "Returns current system time in milliseconds since Unix epoch."),
-    ("sleep", "fn(duration: Duration) -> Nil", "Pauses execution for the specified duration."),
+    ("sleep", "fn(duration: Duration) -> ()", "Pauses execution for the specified duration."),
 ];
 
 const CAPABILITY_DIR_METHODS: &[(&str, &str, &str)] = &[
     ("read", "fn(path: String) -> Result(String, Error)", "Reads contents of a file at path within directory."),
     ("read_bytes", "fn(path: String) -> Result(Bytes, Error)", "Reads binary contents of a file at path."),
-    ("write", "fn(path: String, content: String) -> Result(Nil, Error)", "Writes content to file at path."),
-    ("write_bytes", "fn(path: String, content: Bytes) -> Result(Nil, Error)", "Writes binary data to file at path."),
-    ("append", "fn(path: String, content: String) -> Result(Nil, Error)", "Appends content to file at path."),
-    ("append_bytes", "fn(path: String, content: Bytes) -> Result(Nil, Error)", "Appends binary data to file at path."),
+    ("write", "fn(path: String, content: String) -> Result((), Error)", "Writes content to file at path."),
+    ("write_bytes", "fn(path: String, content: Bytes) -> Result((), Error)", "Writes binary data to file at path."),
+    ("append", "fn(path: String, content: String) -> Result((), Error)", "Appends content to file at path."),
+    ("append_bytes", "fn(path: String, content: Bytes) -> Result((), Error)", "Appends binary data to file at path."),
     ("exists", "fn(path: String) -> Bool", "Returns true if path exists within directory."),
     ("is_dir", "fn(path: String) -> Bool", "Returns true if path is a subdirectory."),
     ("list", "fn() -> Result([String], Error)", "Lists entry names in this directory."),
     ("subtree", "fn(subpath: String) -> Dir", "Narrows directory capability to a sub-path."),
-    ("make_dir", "fn(path: String) -> Result(Nil, Error)", "Creates a directory at path."),
+    ("make_dir", "fn(path: String) -> Result((), Error)", "Creates a directory at path."),
     ("create_new", "fn(path: String, content: String) -> Result(Bool, Error)", "Creates new file only if it does not exist."),
-    ("replace", "fn(path: String, content: String) -> Result(Nil, Error)", "Atomically replaces file contents."),
-    ("rename", "fn(from: String, to: String) -> Result(Nil, Error)", "Renames or moves a file or directory."),
-    ("set_executable", "fn(path: String) -> Result(Nil, Error)", "Sets executable permission on file."),
+    ("replace", "fn(path: String, content: String) -> Result((), Error)", "Atomically replaces file contents."),
+    ("rename", "fn(from: String, to: String) -> Result((), Error)", "Renames or moves a file or directory."),
+    ("set_executable", "fn(path: String) -> Result((), Error)", "Sets executable permission on file."),
     ("only", "fn(policy: DirPolicy) -> Dir", "Narrows directory capability to permitted paths."),
 ];
 
@@ -499,11 +499,11 @@ const CAPABILITY_SECRET_METHODS: &[(&str, &str, &str)] = &[
 
 const CAPABILITY_FILE_METHODS: &[(&str, &str, &str)] = &[
     ("read", "fn() -> Result(String, Error)", "Reads entire file contents as UTF-8 string."),
-    ("write", "fn(content: String) -> Result(Nil, Error)", "Overwrites file with content."),
-    ("append", "fn(content: String) -> Result(Nil, Error)", "Appends content to file."),
+    ("write", "fn(content: String) -> Result((), Error)", "Overwrites file with content."),
+    ("append", "fn(content: String) -> Result((), Error)", "Appends content to file."),
     ("read_bytes", "fn() -> Result(Bytes, Error)", "Reads entire file contents as bytes."),
-    ("write_bytes", "fn(content: Bytes) -> Result(Nil, Error)", "Writes bytes to file."),
-    ("close", "fn() -> Nil", "Closes open file handle."),
+    ("write_bytes", "fn(content: Bytes) -> Result((), Error)", "Writes bytes to file."),
+    ("close", "fn() -> ()", "Closes open file handle."),
 ];
 
 const CAPABILITY_NET_METHODS: &[(&str, &str, &str)] = &[
@@ -1768,7 +1768,6 @@ fn send_diagnostics(connection: &Connection, uri: &str, diagnostics: Vec<Value>)
 /// falling back to the bundled std library — mirroring how `witchy <file>` loads
 /// a program.
 fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) -> Vec<Value> {
-    let unstable_features = unstable::feature_uses(text);
     let path = uri_to_path(uri);
     let dir = path
         .as_ref()
@@ -1954,7 +1953,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                     }
                     let line0 = miss.line.saturating_sub(1);
                     let advice = if miss.reason.contains("first-class call ABI") {
-                        "call it directly so the capacity token stays in the compiled ABI, or use normal mode"
+                        "call it directly so the checked capacity state stays in the compiled ABI, or use normal mode"
                     } else {
                         "keep the receiver uniquely owned and free of aliases or active loans"
                     };
@@ -1962,7 +1961,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                         line0,
                         text,
                         &format!(
-                            "`{}` cannot satisfy the no-copy `var` contract of `{}`: {} — `mode {modes}` requires a `unique` or `local unique` ownership proof; {advice}",
+                            "`{}` cannot satisfy the no-copy `var` contract of `{}`: {} - `mode {modes}` requires a `unique` ownership proof; {advice}",
                             miss.var, miss.callee, miss.reason,
                         ),
                     ));
@@ -1984,7 +1983,8 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
 
             // Signature contract (mode files only): every ownership-relevant parameter
             // must declare its convention (`let`/`own`/`var`), so the interprocedural
-            // summaries are declared facts. A bare (default) `let` is the violation.
+            // summaries are declared facts. Explicit reference types already
+            // declare their access contract; owned payloads still need a convention.
             if enforce {
                 for item in &linked.items {
                     let ast::Item::Function(f) = item else { continue };
@@ -1992,7 +1992,12 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                         continue;
                     }
                     for p in &f.params {
-                        if p.convention == ast::Convention::Let && witchy::ownership_relevant(&p.ty) {
+                        let explicit_reference = matches!(p.ty.as_ref(), Some(ast::Type::Qualified(
+                            ast::TypeQual::Borrow(_) | ast::TypeQual::BorrowMut(_), _
+                        )));
+                        if p.convention == ast::Convention::Let && !explicit_reference
+                            && witchy::ownership_relevant(&p.ty)
+                        {
                             let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
                             let line0 = fn_decl_line(text, bare).unwrap_or(0);
                             diags.push(line_diag(
@@ -2006,16 +2011,6 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                         }
                     }
                 }
-            }
-            for feature in unstable_features {
-                diags.push(severity_diag(
-                    feature.line.saturating_sub(1),
-                    feature.column.saturating_sub(1),
-                    feature.end_line.saturating_sub(1),
-                    feature.end_column.saturating_sub(1),
-                    2,
-                    feature.warning,
-                ));
             }
             diags
 }

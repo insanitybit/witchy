@@ -168,7 +168,7 @@ fn test_set_executable(dir: Dir):
 ```
 
 You supply the starting contents in a small JSON fixture plan and run it with
-`witchy test --fixtures plan.json --backend both file.witchy`. The plan for the
+`witchy test --fixtures plan.json --backend wasm file.witchy`. The plan for the
 tests above declares `Read`/`Write` rights and one seed file:
 
 ```json

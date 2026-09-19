@@ -48,7 +48,7 @@ impl Runtime {
             || entry.capabilities().is_empty()
             || entry.capabilities().iter().any(|kind| *kind != CanonicalEntryCapability::Console)
         {
-            bail!("admitted Console fixture requires a Nil entry with only Console and argv parameters; other recipes are unsupported");
+            bail!("admitted Console fixture requires a unit entry with only Console and argv parameters; other recipes are unsupported");
         }
         let mut host = witchy_test_host::FixtureHost::new(plan)
             .map_err(|error| Error::msg(format!("invalid fixture plan: {error}")))?;

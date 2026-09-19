@@ -129,21 +129,32 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                     return Err("run-source does not emit or execute an external Wasm file".into());
                 }
                 let claim = package_owner.as_ref().ok_or("run-source requires the resolver's workspace owner assertion")?;
-                let (checked, stem, _) = crate::source::capture_project_source(
+                let linked = crate::source::capture_project_source_with_precompiled(
                     &entry, &deps, manifest.as_deref(), claim, &dep_owners,
                 )?;
-                enforce_performance_modes(checked.module(), &stem)?;
-                let (lines, code) = super::execution::run_checked_compiled(
-                    &checked, dir_roots, Vec::new(), net_allow, Vec::new(),
-                    None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
-                    true, witchy_confinement::EnforcementMode::BestEffort,
-                )?;
+                enforce_performance_modes(linked.checked.module(), &linked.entry)?;
+                let (lines, code) = if linked.external_libraries.is_empty() {
+                    super::execution::run_checked_compiled(
+                        &linked.checked, dir_roots, Vec::new(), net_allow, Vec::new(),
+                        None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
+                        true, witchy_confinement::EnforcementMode::BestEffort,
+                    )?
+                } else {
+                    super::execution::run_precompiled_checked_compiled(
+                        &linked, dir_roots, Vec::new(), net_allow, Vec::new(),
+                        None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
+                        true, witchy_confinement::EnforcementMode::BestEffort,
+                    )?
+                };
                 for line in lines { println!("{line}"); }
                 std::process::exit(code.unwrap_or(0));
             }
             if target == "trusted-publisher" {
                 let output = out.as_ref().ok_or("`--target trusted-publisher` requires `--out <executable>`")?;
                 let manifest = manifest.as_ref().ok_or("`--target trusted-publisher` requires `--manifest <witchy.toml>`")?;
+                if crate::source::project_declares_precompiled_dependencies(&entry, Some(manifest))? {
+                    return Err("trusted-publisher output cannot embed precompiled external libraries".into());
+                }
                 let (checked, stem, inputs) = if let Some(claim) = &package_owner {
                     crate::source::capture_project_source(&entry, &deps, Some(manifest), claim, &dep_owners)?
                 } else if !dep_owners.is_empty() {
@@ -163,6 +174,9 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 let launcher = std::env::current_exe().map_err(|error| error.to_string())?;
                 trusted_publisher::package_file(&launcher, std::path::Path::new(output), artifact.wasm(), &bindings, &inputs)?;
                 return Ok(());
+            }
+            if crate::source::project_declares_precompiled_dependencies(&entry, manifest.as_deref())? {
+                return Err("precompiled external libraries may only be launched by authenticated `run-source`, not compiled to a standalone Wasm file".into());
             }
             let (checked, stem) = if package_owner.is_some() || !dep_owners.is_empty() {
                 let package_owner = package_owner.as_ref().ok_or_else(|| {

@@ -30,7 +30,7 @@ pub(crate) enum Tok {
     Str(String),
     Ident(String),
     /// A lifetime name `'a` (RFC-0083). Only meaningful in a `mode opt` type
-    /// position (`let('a) T`, `View(T, 'a)`); the checker rejects it elsewhere.
+    /// position (`&'a T`, `&'a mut T`); the checker rejects it elsewhere.
     /// Carries the bare name without the leading quote (`'a` → `"a"`).
     Lifetime(String),
     /// A compile-time tagged literal `tag"a${x}b"` (RFC-0006). Produced when a

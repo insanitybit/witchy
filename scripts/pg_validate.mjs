@@ -1,7 +1,8 @@
 // Validates the browser playground's codegen path WITHOUT a browser: it loads the
 // very same web/witchy.wasm and the very same host shim the page uses (the shared
 // web/witchy-host.js module — Node and Chrome share V8), then diffs its output
-// against the interpreter oracle (`WITCHY_INTERP=1 witchy run`) for the examples.
+// against the production checked-SafeWIR -> admitted-Wasm run path for the
+// examples. The source tree walker is intentionally not a language oracle.
 //
 //   ./scripts/build-playground.sh && node scripts/pg_validate.mjs examples/*.witchy
 import { readFileSync, writeFileSync } from "node:fs";
@@ -22,7 +23,6 @@ for (const path of examples) {
     source = readFileSync(path, "utf8");
     writeFileSync(tmp, source);
     oracle = execFileSync("./target/release/witchy", [tmp], {
-      env: { ...process.env, WITCHY_INTERP: "1" },
       encoding: "utf8",
     }).replace(/\n$/, "");
   } catch {
@@ -39,7 +39,7 @@ for (const path of examples) {
     );
   }
 }
-console.log(`\nplayground vs interpreter: ${pass} agree, ${fail} diverge`);
+console.log(`\nplayground vs admitted Wasm: ${pass} agree, ${fail} diverge`);
 // Vacuity guard (RFC-0058 §4): if no example actually validated (empty argv, or every
 // one skipped), the check compared nothing — do not pass silently.
 if (pass + fail === 0) {

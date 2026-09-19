@@ -154,7 +154,7 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), want, "wasm must agree and not trap");
     }
 
-    /// (BUG-335, spec §16) `main` may return only Nil/Int/Float; a String/Bool/List
+    /// (BUG-335, spec §16) `main` may return only `()`/Int/Float; a String/Bool/List
     /// return is a CHECK-TIME error (the interpreter echoes it but the compiled run
     /// wrapper drops it — a silent divergence, now rejected loud by construction).
     #[test]
@@ -164,7 +164,7 @@ use crate::{codegen, interpreter, parser, typeck};
         assert!(typeck::check_str("fn main(console: Console) -> List(Int):\n    [1, 2]\n").is_err(), "List main rejected");
         typeck::check_str("fn main(console: Console) -> Int:\n    0\n").expect("Int main ok");
         typeck::check_str("fn main(console: Console) -> Float:\n    2.5\n").expect("Float main ok");
-        typeck::check_str("fn main(console: Console):\n    console.print(\"hi\")\n").expect("Nil main ok");
+        typeck::check_str("fn main(console: Console):\n    console.print(\"hi\")\n").expect("unit main ok");
     }
 
     /// RFC-0006 regression: an IMPORTED tag used inside a NON-`main` function
@@ -187,7 +187,7 @@ use crate::{codegen, interpreter, parser, typeck};
         // signature/body reach `Wrapped`, so it must be kept for the comptime
         // program to type-check), and prove a tag works when defined in an
         // IMPORTED rune, not just locally.
-        let widget = "import meta\n\ntype Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub comptime fn box(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    var out = \"unwrap(wrap(\\\"\"\n    var i = 0\n    let n = list.length(parts)\n    for p in parts:\n        out = out + p\n        if i < n - 1:\n            out = out + \"\\\" + \" + list.at(holes, i) + \" + \\\"\"\n        i = i + 1\n    meta.expr_raw(out + \"\\\"))\")\n";
+        let widget = "import meta\n\ntype Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub comptime fn box(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    let prefix = meta.expr_string(parts.at(0))\n    let value = meta.expr_tag_hole(holes.at(0))\n    let suffix = meta.expr_string(parts.at(1))\n    let content = meta.expr_binary(\"+\", meta.expr_binary(\"+\", prefix, value), suffix)\n    let wrapped = meta.expr_named_call(meta.ident(\"wrap\"), [content])\n    meta.expr_named_call(meta.ident(\"unwrap\"), [wrapped])\n";
         // The CONSUMER: the tag appears in `render`, a NON-`main` function. This is
         // the exact shape that recursed before the fix (cf. glamour's `view`).
         let app = "import widget\n\nfn render(x: String) -> String:\n    box\"[${x}]\"\n\nfn main(console: Console):\n    console.print(render(\"hi\"))\n";

@@ -1,7 +1,7 @@
 # The witchy browser playground
 
-A static page that runs the **actual witchy interpreter**, compiled to
-WebAssembly, entirely client-side — no server, no backend.
+A static page that runs the **admitted Witchy WebAssembly backend**, entirely
+client-side — no server, no source tree-walking runtime.
 
 ```sh
 ./scripts/build-playground.sh        # compiles src/lib.rs -> web/witchy.wasm
@@ -14,9 +14,9 @@ python3 -m http.server -d web 8000   # any static file server works
 
 ## How it works
 
-- `src/lib.rs` is the witchy interpreter as a library (lexer → parser → type
-  checker → linker → tree-walking interpreter) with the wasmtime sandbox, the
-  package manager, and the LSP excluded, so it builds for
+- `src/lib.rs` is the browser-facing compiled-Wasm entrypoint (lexer → parser →
+  type checker → canonical lowering) with the wasmtime sandbox, the package
+  manager, and the LSP excluded, so it builds for
   `wasm32-unknown-unknown`. It exports a tiny C ABI: `witchy_alloc` /
   `witchy_free` for marshaling and `witchy_run(ptr, len)`.
 - `playground.js` loads the module, sends the editor's source in, and renders

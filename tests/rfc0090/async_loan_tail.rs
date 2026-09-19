@@ -134,7 +134,7 @@ fn ended_loan_allows_recursive_tail_lowering() {
 mode opt
 import list
 
-fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):
+fn view(xs: &'a List(Int)) -> &'a List(Int):
     xs
 
 fn descend(xs: List(Int), n: Int) -> Int:
@@ -160,7 +160,7 @@ fn live_loan_after_recursive_call_keeps_the_edge_non_tail() {
 mode opt
 import list
 
-fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):
+fn view(xs: &'a List(Int)) -> &'a List(Int):
     xs
 
 fn descend(xs: List(Int), n: Int) -> Int:
@@ -186,16 +186,16 @@ fn returned_view_obligation_transfers_across_mutual_tail_edges() {
 mode opt
 import list
 
-fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):
+fn view(xs: &'a List(Int)) -> &'a List(Int):
     xs
 
-fn left(xs: let('a) List(Int), n: Int) -> View(List(Int), 'a):
+fn left(xs: &'a List(Int), n: Int) -> &'a List(Int):
     if n <= 0:
         view(xs)
     else:
         right(xs, n - 1)
 
-fn right(xs: let('a) List(Int), n: Int) -> View(List(Int), 'a):
+fn right(xs: &'a List(Int), n: Int) -> &'a List(Int):
     if n <= 0:
         view(xs)
     else:

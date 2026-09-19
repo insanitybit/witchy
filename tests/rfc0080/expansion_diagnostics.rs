@@ -1,20 +1,18 @@
-//! RFC-0080 tagged-expansion provenance diagnostics.
+//! RFC-0080 tagged-expansion provenance diagnostics after RFC-0167's
+//! source-codegen cut. Structural builders replace dynamic source construction;
+//! the visibility, reachability, and provenance contracts remain unchanged.
 
 use std::collections::HashSet;
 
-use witchy::{format, parser, pipeline, typeck};
+use witchy::{comptime, format, parser, pipeline, typeck};
 
 fn link(modules: Vec<(&str, &str)>) -> Result<(), String> {
-    let user_modules: HashSet<String> =
-        modules.iter().map(|(name, _)| name.to_string()).collect();
+    let user_modules = modules.iter().map(|(name, _)| (*name).to_string()).collect::<HashSet<_>>();
     let parsed = modules
         .into_iter()
         .map(|(name, source)| {
-            (
-                name.to_string(),
-                parser::parse_module(source)
-                    .unwrap_or_else(|error| panic!("module `{name}` parses: {error}")),
-            )
+            (name.to_string(), parser::parse_module(source)
+                .unwrap_or_else(|error| panic!("module `{name}` parses: {error}")))
         })
         .collect();
     pipeline::link_with_user_modules(parsed, "main", &user_modules)
@@ -23,555 +21,236 @@ fn link(modules: Vec<(&str, &str)>) -> Result<(), String> {
 }
 
 #[test]
-fn imported_typed_tag_error_names_invocation_and_definition_lines() {
+fn quote_hole_diagnostics_keep_definition_and_invocation_context() {
+    let parsed = parser::parse_module(
+        r#"
+import meta
+
+comptime fn bad(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    missing_builder()
+
+fn main(console: Console):
+    console.print("${bad"value ${1}"}")
+"#,
+    )
+    .expect("parse structural diagnostic fixture");
+    let error = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect_err("structural expansion failure is diagnosed")
+        .to_string();
+    assert!(error.contains("tagged literal `bad`"), "{error}");
+    assert!(error.contains("missing_builder"), "{error}");
+}
+
+#[test]
+fn imported_structural_tag_error_names_both_source_locations() {
     let error = link(vec![
         (
             "tag_library",
-            "import meta\n\n\
-             pub comptime fn broken(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   missing_helper()\n",
+            "import meta\n\npub comptime fn broken(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_helper()\n",
         ),
         (
             "main",
-            "import tag_library\n\n\
-             fn main(console: Console):\n\
-             \x20   console.print(\"before\")\n\
-             \x20   console.print(\"${broken\"value\"}\")\n",
+            "import tag_library\n\nfn main(console: Console):\n    console.print(\"before\")\n    console.print(\"${broken\"value\"}\")\n",
         ),
     ])
-    .expect_err("the typed tag body does not type-check");
+    .expect_err("the imported structural tag body does not type-check");
 
-    assert!(
-        error.contains("tagged literal `broken` at invocation line 5"),
-        "{error}"
-    );
-    assert!(
-        error.contains("defined in module `tag_library` at line 3"),
-        "{error}"
-    );
+    assert!(error.contains("tagged literal `broken` at invocation line 5"), "{error}");
+    assert!(error.contains("defined in module `tag_library` at line 3"), "{error}");
     assert!(error.contains("missing_helper"), "{error}");
 }
 
 #[test]
-fn private_imported_tags_are_not_invocable() {
-    let error = link(vec![
-        (
-            "tag_library",
-            "import meta\n\ncomptime fn hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_raw(\"0\")\n",
-        ),
-        (
-            "main",
-            "import tag_library\n\nfn main(console: Console):\n    console.print(\"${hidden\"value\"}\")\n",
-        ),
-    ])
-    .expect_err("private imported tags stay private");
+fn private_and_transitive_tags_remain_inaccessible() {
+    let private = link(vec![
+        ("tags", "import meta\n\ncomptime fn hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(0)\n"),
+        ("main", "import tags\n\nfn main(console: Console):\n    console.print(\"${hidden\"value\"}\")\n"),
+    ]).expect_err("private imported tag rejects");
+    assert!(private.contains("not public in a directly imported module"), "{private}");
 
-    assert!(error.contains("not public in a directly imported module"), "{error}");
-}
-
-#[test]
-fn transitive_public_tags_are_not_invocable_without_a_direct_import() {
-    let error = link(vec![
-        (
-            "leaf",
-            "import meta\n\npub comptime fn distant(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_raw(\"0\")\n",
-        ),
+    let transitive = link(vec![
+        ("leaf", "import meta\n\npub comptime fn distant(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(0)\n"),
         ("middle", "import leaf\n\npub fn value() -> Int:\n    1\n"),
-        (
-            "main",
-            "import middle\n\nfn main(console: Console):\n    console.print(\"${distant\"value\"}\")\n",
-        ),
-    ])
-    .expect_err("transitive imports do not inject tag names");
-
-    assert!(error.contains("not public in a directly imported module"), "{error}");
+        ("main", "import middle\n\nfn main(console: Console):\n    console.print(\"${distant\"value\"}\")\n"),
+    ]).expect_err("transitive tag rejects");
+    assert!(transitive.contains("not public in a directly imported module"), "{transitive}");
 }
 
 #[test]
-fn string_returning_tags_are_rejected() {
-    let error = link(vec![(
-        "main",
-        "comptime fn old_tag(parts: List(String), holes: List(String)) -> String:\n\
-         \x20   \"0\"\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"${old_tag\"value\"}\")\n",
-    )])
-    .expect_err("String-returning tags are no longer a language path");
+fn tag_signature_contracts_remain_enforced() {
+    let string_return = link(vec![("main", "comptime fn old_tag(parts: List(String), holes: List(String)) -> String:\n    \"0\"\n\nfn main(console: Console):\n    console.print(\"${old_tag\"value\"}\")\n")])
+        .expect_err("String tags reject");
+    assert!(string_return.contains("tag `old_tag` must return meta.ExprSyntax"), "{string_return}");
 
-    assert!(error.contains("tag `old_tag` must return meta.ExprSyntax"), "{error}");
+    let runtime_tag = link(vec![("main", "import meta\n\nfn runtime_tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(0)\n\nfn main(console: Console):\n    console.print(\"${runtime_tag\"value\"}\")\n")])
+        .expect_err("runtime tag rejects");
+    assert!(runtime_tag.contains("tag `runtime_tag` must be declared `comptime`"), "{runtime_tag}");
 }
 
 #[test]
-fn syntax_returning_tags_must_be_declared_comptime() {
-    let error = link(vec![(
-        "main",
-        "import meta\n\n\
-         fn runtime_tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"0\")\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"${runtime_tag\"value\"}\")\n",
-    )])
-    .expect_err("tag functions must be compile-time-only");
+fn dropped_and_duplicated_structural_holes_keep_their_evaluation_contracts() {
+    link(vec![("main", "import meta\n\ncomptime fn broken(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_helper()\n\ncomptime fn drop_hole(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(0)\n\nfn main(console: Console):\n    console.print(\"${drop_hole\"${broken\"unused\"}\"}\")\n")])
+        .expect("a dropped structural hole is not evaluated");
 
-    assert!(error.contains("tag `runtime_tag` must be declared `comptime`"), "{error}");
-}
-
-#[test]
-fn local_typed_raw_tag_error_has_expansion_trace() {
-    let error = link(vec![(
-        "main",
-        "import meta\n\n\
-         comptime fn broken(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"(\")\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"before\")\n\
-         \x20   console.print(\"${broken\"value\"}\")\n",
-    )])
-    .expect_err("the typed tag constructs malformed expression source");
-
-    assert!(
-        error.contains("tagged literal `broken` at invocation line 8"),
-        "{error}"
-    );
-    assert!(error.contains("defined in module `main` at line 3"), "{error}");
-    assert!(error.contains("meta.expr_raw source does not parse"), "{error}");
-}
-
-#[test]
-fn generated_nested_tag_error_retains_outer_expansion_ancestry() {
-    let error = link(vec![(
-        "main",
-        "import meta\n\n\
-         comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"(\")\n\n\
-         comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"inner\\\"nested\\\"\")\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"${outer\"value\"}\")\n",
-    )])
-    .expect_err("the outer tag emits a failing inner tag");
-
-    assert!(error.contains("tagged literal `inner`"), "{error}");
-    assert!(error.contains("expansion trace:"), "{error}");
-    assert!(
-        error.contains("from module `main`: tagged literal `outer` at invocation line 10"),
-        "{error}"
-    );
-}
-
-#[test]
-fn nested_tag_in_hole_reports_the_hole_ancestry() {
-    let error = link(vec![(
-        "main",
-        "import meta\n\n\
-         comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"(\")\n\n\
-         comptime fn passthrough(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(list.at(holes, 0))\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"${passthrough\"${inner\"nested\"}\"}\")\n",
-    )])
-    .expect_err("a failing tag inside a call-site hole retains its path");
-
-    assert!(error.contains("tagged literal `inner`"), "{error}");
-    assert!(error.contains("expansion trace:"), "{error}");
-    assert!(error.contains("tagged literal `passthrough`"), "{error}");
-    assert!(
-        error.contains("tagged literal `passthrough` at invocation line 10"),
-        "{error}"
-    );
-    assert!(
-        error.contains("hole 1 at hole-local line 1, column 15"),
-        "{error}"
-    );
-}
-
-#[test]
-fn dropped_holes_do_not_expand_nested_tags() {
-    link(vec![(
-        "main",
-        "import meta\n\n\
-         comptime fn broken(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"(\")\n\n\
-         comptime fn drop_hole(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"0\")\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"${drop_hole\"${broken\"unused\"}\"}\")\n",
-    )])
-    .expect("a nested tag in a dropped hole is not part of the generated tree");
-}
-
-#[test]
-fn duplicated_holes_expand_nested_tags_independently() {
-    let source = "import meta\n\n\
-        comptime fn fresh_ref(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-        \x20   let name = meta.fresh(\"dup\")\n\
-        \x20   meta.expr_name(name)\n\n\
-        comptime fn duplicate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-        \x20   meta.expr_raw(\"(${list.at(holes, 0)}, ${list.at(holes, 0)})\")\n\n\
-        fn main():\n\
-        \x20   let pair = \"${duplicate\"${fresh_ref\"value\"}\"}\"\n";
-    let parsed = parser::parse_module(source).expect("duplicated-hole program parses");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("duplicated nested tags expand");
+    let source = "import meta\n\ncomptime fn fresh_ref(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_name(meta.fresh(\"dup\"))\n\ncomptime fn duplicate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    let hole = meta.expr_tag_hole(holes.at(0))\n    meta.expr_tuple([hole, hole])\n\nfn main():\n    let pair = \"${duplicate\"${fresh_ref\"value\"}\"}\"\n";
+    let linked = pipeline::link(vec![("main".into(), parser::parse_module(source).expect("parse"))], "main")
+        .expect("duplicated structural holes expand");
     let expanded = format::module(&linked, &[]);
-    let mut names = expanded
-        .match_indices("__witchy_fresh_")
-        .map(|(start, _)| {
-            expanded[start..]
-                .chars()
-                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>();
+    let mut names = expanded.match_indices("__witchy_fresh_").map(|(start, _)| {
+        expanded[start..].chars().take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_').collect::<String>()
+    }).collect::<Vec<_>>();
     names.sort();
     names.dedup();
+    assert_eq!(names.len(), 2, "each placement receives a fresh invocation: {expanded}");
+}
+
+#[test]
+fn structural_hole_order_and_forgery_diagnostics_remain_fail_closed() {
+    let error = link(vec![("main", "import meta\n\ncomptime fn fail_a(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_a()\n\ncomptime fn fail_b(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_b()\n\ncomptime fn reverse(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_binary(\"+\", meta.expr_tag_hole(holes.at(1)), meta.expr_tag_hole(holes.at(0)))\n\nfn main(console: Console):\n    console.print(\"${reverse\"${fail_a\"a\"} middle ${fail_b\"b\"}\"}\")\n")])
+        .expect_err("first placed structural hole fails first");
+    assert!(error.contains("tagged literal `fail_b`") && !error.contains("tagged literal `fail_a`"), "{error}");
+
+    let parsed = parser::parse_module("fn main() -> Int:\n    region:\n        __witchy_hole_origin(0, 1, 2)\n        42\n").expect("forgery parses ordinarily");
+    let linked = pipeline::link(vec![("main".into(), parsed)], "main").expect("link ordinary call");
+    let error = typeck::check(&linked).expect_err("forged compiler marker rejects");
+    assert!(error.to_string().contains("unknown function `__witchy_hole_origin`"), "{error}");
+}
+
+#[test]
+fn definition_site_helpers_and_direct_imports_remain_available() {
+    link(vec![
+        ("collision", "import meta\n\ncomptime fn helper() -> meta.ExprSyntax:\n    meta.expr_int(0)\n"),
+        ("tags", "import meta\n\ncomptime fn helper() -> meta.ExprSyntax:\n    meta.expr_int(42)\n\npub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    helper()\n"),
+        ("main", "import collision\nimport tags\n\nfn main() -> Int:\n    answer\"ignored\"\n"),
+    ]).expect("tag helper resolution uses its definition module");
+
+    link(vec![
+        ("support", "import meta\n\npub comptime fn build() -> meta.ExprSyntax:\n    meta.expr_int(42)\n"),
+        ("tags", "import meta\nimport support\n\npub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    support.build()\n"),
+        ("main", "import tags\n\nfn main() -> Int:\n    answer\"value\"\n"),
+    ]).expect("imported comptime helper remains reachable");
+}
+
+#[test]
+fn tag_evaluator_reentry_and_tagged_constants_remain_rejected() {
+    let recursive = link(vec![("main", "import meta\n\ncomptime fn recursive(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    recursive\"again\"\n\nfn main() -> Int:\n    recursive\"start\"\n")])
+        .expect_err("tag evaluator recursion rejects");
+    assert!(recursive.contains("tag evaluator function `main.recursive` contains a tagged literal"), "{recursive}");
+
+    let constant = link(vec![("main", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n\nlet generated = inner\"nested\"\n\ncomptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    generated\n\nfn main() -> Int:\n    outer\"value\"\n")])
+        .expect_err("tagged evaluator constant rejects");
+    assert!(constant.contains("tag evaluator constant `main.generated` contains a tagged literal"), "{constant}");
+}
+
+#[test]
+fn nested_structural_tags_keep_definition_site_and_hole_ancestry() {
+    let hole_error = link(vec![("main", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_inner()\n\ncomptime fn passthrough(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_tag_hole(holes.at(0))\n\nfn main(console: Console):\n    console.print(\"${passthrough\"${inner\"nested\"}\"}\")\n")])
+        .expect_err("nested structural hole fails with ancestry");
+    assert!(hole_error.contains("tagged literal `inner`") && hole_error.contains("tagged literal `passthrough`") && hole_error.contains("expansion trace:"), "{hole_error}");
+    assert!(hole_error.contains("tagged literal `passthrough` at invocation line 10"), "{hole_error}");
+    assert!(hole_error.contains("hole 1 at hole-local line 1, column 15"), "{hole_error}");
+
+    link(vec![
+        ("tags", "import meta\n\ncomptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n\npub comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\"], [])\n"),
+        ("main", "import tags\n\nfn main() -> Int:\n    outer\"value\"\n"),
+    ]).expect("definition-site private nested tag remains available");
+
+    link(vec![
+        ("inner_tags", "import meta\n\npub comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n"),
+        ("outer_tags", "import inner_tags\nimport meta\n\npub comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\"], [])\n"),
+        ("main", "import outer_tags\n\nfn main() -> Int:\n    outer\"value\"\n"),
+    ]).expect("definition-site imported nested tag remains available");
+
+    let nested_hole = parser::parse_module(
+        "import meta\n\ncomptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_tag_hole(holes.at(0))\n\npub comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_tagged(meta.ident(\"inner\"), [\"\", \"\"], [meta.expr_tag_hole(holes.at(0))])\n\nfn main() -> Int:\n    outer\"${41}\"\n",
+    ).expect("parse structural nested-hole fixture");
+    let linked = pipeline::link(vec![("main".into(), nested_hole)], "main")
+        .expect("owned nested tag hole remains structural");
+    typeck::check(&linked).expect("typecheck owned nested tag hole");
     assert_eq!(
-        names.len(),
-        2,
-        "each generated placement gets its own nested-tag invocation: {expanded}"
+        witchy::interpreter::run_module(linked, ".", Vec::new())
+            .expect("interpret owned nested tag hole"),
+        Vec::<String>::new(),
     );
 }
 
 #[test]
-fn reordered_holes_fail_in_generated_tree_order() {
+fn structural_hole_order_reports_the_first_failing_placement() {
     let error = link(vec![(
         "main",
-        "import meta\n\n\
-         comptime fn fail_a(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"(\")\n\n\
-         comptime fn fail_b(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"[\")\n\n\
-         comptime fn reverse(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"${list.at(holes, 1)} + ${list.at(holes, 0)}\")\n\n\
-         fn main(console: Console):\n\
-         \x20   console.print(\"${reverse\"${fail_a\"a\"} middle ${fail_b\"b\"}\"}\")\n",
+        "import meta\n\ncomptime fn fail_a(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_a()\n\ncomptime fn fail_b(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    missing_b()\n\ncomptime fn reverse(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_binary(\"+\", meta.expr_tag_hole(holes.at(1)), meta.expr_tag_hole(holes.at(0)))\n\nfn main(console: Console):\n    console.print(\"${reverse\"${fail_a\"a\"} middle ${fail_b\"b\"}\"}\")\n",
     )])
-    .expect_err("the first placed nested tag fails first");
-
+    .expect_err("the first placed structural hole fails first");
     assert!(error.contains("tagged literal `fail_b`"), "{error}");
     assert!(!error.contains("tagged literal `fail_a`"), "{error}");
 }
 
 #[test]
-fn source_cannot_forge_the_compiler_only_hole_origin_wrapper() {
-    let parsed = parser::parse_module(
-        "fn main() -> Int:\n\
-         \x20   region:\n\
-         \x20       __witchy_hole_origin(0, 1, 2)\n\
-         \x20       42\n",
+fn tag_reachability_retains_constants_constructors_traits_and_helper_names() {
+    link(vec![("main", "import meta\n\nlet answer = meta.expr_int(42)\n\ncomptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    answer\n\nfn main() -> Int:\n    tag\"value\"\n")])
+        .expect("top-level syntax constant retained");
+
+    link(vec![
+        ("support", "type Wrapped:\n    Wrapped(Int)\n"),
+        ("tags", "from support import Wrapped\nimport meta\n\npub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    match Wrapped(42):\n        Wrapped(value) -> meta.expr_int(value)\n"),
+        ("main", "import tags\n\nfn main() -> Int:\n    answer\"value\"\n"),
+    ]).expect("from-import constructor retained");
+
+    link(vec![("main", "import meta\n\ntrait Render:\n    fn render(self) -> Int\n\ntype Value:\n    Value(Int)\n\nimpl Render for Value:\n    fn render(self) -> Int:\n        42\n\ncomptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(Value(0).render())\n\nfn main() -> Int:\n    answer\"value\"\n")])
+        .expect("custom trait implementation retained");
+
+    link(vec![
+        ("tags", "import meta\n\ncomptime fn main() -> meta.ExprSyntax:\n    meta.expr_int(42)\n\npub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    main()\n"),
+        ("main", "import tags\n\nfn main() -> Int:\n    answer\"value\"\n"),
+    ]).expect("helper named main remains available");
+}
+
+#[test]
+fn tag_resolution_stays_identity_scoped_and_ambiguous_names_reject() {
+    let tag_module = "import meta\n\npub comptime fn duplicate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n";
+    let ambiguous = link(vec![
+        ("alpha", tag_module), ("beta", tag_module),
+        ("main", "import alpha\nimport beta\n\nfn main() -> Int:\n    duplicate\"value\"\n"),
+    ]).expect_err("ambiguous direct imports reject");
+    assert!(ambiguous.contains("tag `duplicate` is ambiguous across directly imported modules: alpha, beta"), "{ambiguous}");
+
+    link(vec![
+        ("noise", "trait Render:\n    fn render(self) -> Int\n\ntype Value:\n    Value(Int)\n\nimpl Render for Value:\n    fn render(self) -> Int:\n        0\n"),
+        ("wanted", "import meta\n\ntrait Render:\n    fn render(self) -> Int\n\ntype Value:\n    Value(Int)\n\nimpl Render for Value:\n    fn render(self) -> Int:\n        42\n\npub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(Value(0).render())\n"),
+        ("main", "import noise\nimport wanted\n\nfn main() -> Int:\n    answer\"value\"\n"),
+    ]).expect("same-named unrelated impl is not retained");
+}
+
+#[test]
+fn synthetic_tag_entry_collision_remains_safe() {
+    link(vec![
+        ("@compiler:tag-entry", "fn harmless() -> Int:\n    0\n"),
+        ("main", "import meta\n\ncomptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_int(42)\n\nfn main() -> Int:\n    answer\"value\"\n"),
+    ]).expect("synthetic evaluator chooses an unused module key");
+}
+
+#[test]
+fn raw_source_parse_diagnostics_are_replaced_by_retired_api_diagnostics() {
+    let mut parsed = parser::parse_module(
+        r#"
+import meta
+
+comptime:
+    meta.expr_raw("(")
+    emit_item(quote item:
+        fn must_not_merge() -> Int:
+            0
     )
-    .expect("source-level forgery parses as an ordinary call");
-    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect("ordinary source reaches type checking unchanged");
-    let error = typeck::check(&linked).expect_err("the forged source name is not a compiler marker");
 
-    assert!(
-        error.to_string().contains("unknown function `__witchy_hole_origin`"),
-        "{error}"
-    );
-}
-
-#[test]
-fn imported_tag_uses_helpers_from_its_own_module_despite_name_collisions() {
-    link(vec![
-        (
-            "collision",
-            "comptime fn helper() -> String:\n\
-             \x20   \"(\"\n",
-        ),
-        (
-            "tags",
-            "import meta\n\n\
-             comptime fn helper() -> String:\n\
-             \x20   \"41 + 1\"\n\n\
-             pub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(helper())\n",
-        ),
-        (
-            "main",
-            "import collision\n\
-             import tags\n\n\
-             fn main() -> Int:\n\
-             \x20   answer\"ignored\"\n",
-        ),
-    ])
-    .expect("a tag's private helper is selected by module identity");
-}
-
-#[test]
-fn imported_tag_may_emit_a_private_nested_tag_from_its_definition_module() {
-    link(vec![
-        (
-            "tags",
-            "import meta\n\n\
-             comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"42\")\n\n\
-             pub comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"inner\\\"nested\\\"\")\n",
-        ),
-        (
-            "main",
-            "import tags\n\n\
-             fn main() -> Int:\n\
-             \x20   outer\"value\"\n",
-        ),
-    ])
-    .expect("definition-site output retains access to private nested tags");
-}
-
-#[test]
-fn tag_evaluator_bodies_cannot_reenter_tag_expansion() {
-    let error = link(vec![(
-        "main",
-        "import meta\n\n\
-         comptime fn recursive(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   recursive\"again\"\n\n\
-         fn main() -> Int:\n\
-         \x20   recursive\"start\"\n",
-    )])
-    .expect_err("tag evaluator bodies cannot recursively invoke tagged expansion");
-
-    assert!(
-        error.contains("tag evaluator function `main.recursive` contains a tagged literal"),
-        "{error}"
-    );
-}
-
-#[test]
-fn imported_comptime_helpers_remain_available_to_a_tag() {
-    link(vec![
-        (
-            "support",
-            "import meta\n\n\
-             pub comptime fn build() -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"42\")\n",
-        ),
-        (
-            "tags",
-            "import meta\n\
-             import support\n\n\
-             pub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   support.build()\n",
-        ),
-        (
-            "main",
-            "import tags\n\n\
-             fn main() -> Int:\n\
-             \x20   answer\"value\"\n",
-        ),
-    ])
-    .expect("reachable comptime helpers are preserved in every synthetic module");
-}
-
-#[test]
-fn generated_nested_tag_resolves_a_public_direct_import_at_definition_site() {
-    link(vec![
-        (
-            "inner_tags",
-            "import meta\n\n\
-             pub comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"42\")\n",
-        ),
-        (
-            "outer_tags",
-            "import inner_tags\n\
-             import meta\n\n\
-             pub comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"inner\\\"nested\\\"\")\n",
-        ),
-        (
-            "main",
-            "import outer_tags\n\n\
-             fn main() -> Int:\n\
-             \x20   outer\"value\"\n",
-        ),
-    ])
-    .expect("definition-site nested tags resolve direct public imports");
-}
-
-#[test]
-fn duplicate_directly_imported_tag_names_are_ambiguous() {
-    let tag_module = "import meta\n\n\
-        pub comptime fn duplicate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-        \x20   meta.expr_raw(\"42\")\n";
-    let error = link(vec![
-        ("alpha", tag_module),
-        ("beta", tag_module),
-        (
-            "main",
-            "import alpha\n\
-             import beta\n\n\
-             fn main() -> Int:\n\
-             \x20   duplicate\"value\"\n",
-        ),
-    ])
-    .expect_err("duplicate imported tag names require an unambiguous root");
-
-    assert!(
-        error.contains("tag `duplicate` is ambiguous across directly imported modules: alpha, beta"),
-        "{error}"
-    );
-}
-
-#[test]
-fn tag_reachability_retains_top_level_constants() {
-    link(vec![(
-        "main",
-        "import meta\n\n\
-         let answer_source = \"42\"\n\n\
-         comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(answer_source)\n\n\
-         fn main() -> Int:\n\
-         \x20   answer\"value\"\n",
-    )])
-    .expect("reachable constants remain in the synthetic evaluator");
-}
-
-#[test]
-fn tag_reachability_retains_from_imported_constructor_bindings() {
-    link(vec![
-        (
-            "support",
-            "type Wrapped:\n\
-             \x20   Wrapped(String)\n",
-        ),
-        (
-            "tags",
-            "from support import Wrapped\n\
-             import meta\n\n\
-             pub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   match Wrapped(\"42\"):\n\
-             \x20       Wrapped(value) -> meta.expr_raw(value)\n",
-        ),
-        (
-            "main",
-            "import tags\n\n\
-             fn main() -> Int:\n\
-             \x20   answer\"value\"\n",
-        ),
-    ])
-    .expect("a retained constructor keeps its from-import binding");
-}
-
-#[test]
-fn tag_reachability_retains_custom_trait_implementations() {
-    link(vec![(
-        "main",
-        "import meta\n\n\
-         trait Render:\n\
-         \x20   fn render(self) -> String\n\n\
-         type Value:\n\
-         \x20   Value(Int)\n\n\
-         impl Render for Value:\n\
-         \x20   fn render(self) -> String:\n\
-         \x20       \"42\"\n\n\
-         comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(Value(0).render())\n\n\
-         fn main() -> Int:\n\
-         \x20   answer\"value\"\n",
-    )])
-    .expect("reachable custom trait implementations remain executable");
-}
-
-#[test]
-fn reachable_tag_evaluator_constants_cannot_contain_tagged_literals() {
-    let error = link(vec![(
-        "main",
-        "import meta\n\n\
-         comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   meta.expr_raw(\"42\")\n\n\
-         let generated = inner\"nested\"\n\n\
-         comptime fn outer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-         \x20   generated\n\n\
-         fn main() -> Int:\n\
-         \x20   outer\"value\"\n",
-    )])
-    .expect_err("reachable evaluator constants must not recursively expand tags");
-
-    assert!(
-        error.contains("tag evaluator constant `main.generated` contains a tagged literal"),
-        "{error}"
-    );
-}
-
-#[test]
-fn tag_reachability_does_not_retain_same_named_impls_from_other_modules() {
-    link(vec![
-        (
-            "noise",
-            "import meta\n\n\
-             comptime fn nested(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"\\\"noise\\\"\")\n\n\
-             trait Render:\n\
-             \x20   fn render(self) -> String\n\n\
-             type Value:\n\
-             \x20   Value(Int)\n\n\
-             impl Render for Value:\n\
-             \x20   fn render(self) -> String:\n\
-             \x20       nested\"value\"\n",
-        ),
-        (
-            "wanted",
-            "import meta\n\n\
-             trait Render:\n\
-             \x20   fn render(self) -> String\n\n\
-             type Value:\n\
-             \x20   Value(Int)\n\n\
-             impl Render for Value:\n\
-             \x20   fn render(self) -> String:\n\
-             \x20       \"42\"\n\n\
-             pub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(Value(0).render())\n",
-        ),
-        (
-            "main",
-            "import noise\n\
-             import wanted\n\n\
-             fn main() -> Int:\n\
-             \x20   answer\"value\"\n",
-        ),
-    ])
-    .expect("impl reachability is keyed by resolved declaration identity");
-}
-
-#[test]
-fn tag_reachability_retains_helpers_named_main_in_the_tag_module() {
-    link(vec![
-        (
-            "tags",
-            "import meta\n\n\
-             comptime fn main() -> String:\n\
-             \x20   \"42\"\n\n\
-             pub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(main())\n",
-        ),
-        (
-            "main",
-            "import tags\n\n\
-             fn main() -> Int:\n\
-             \x20   answer\"value\"\n",
-        ),
-    ])
-    .expect("the synthetic evaluator entry does not reserve helper names across modules");
-}
-
-#[test]
-fn synthetic_tag_entry_avoids_user_module_name_collisions() {
-    link(vec![
-        (
-            "@compiler:tag-entry",
-            "fn harmless() -> Int:\n\
-             \x20   0\n",
-        ),
-        (
-            "main",
-            "import meta\n\n\
-             comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-             \x20   meta.expr_raw(\"42\")\n\n\
-             fn main() -> Int:\n\
-             \x20   answer\"value\"\n",
-        ),
-    ])
-    .expect("the synthetic evaluator selects an unused compiler module key");
+fn main() -> Int:
+    0
+"#,
+    )
+    .expect("legacy spelling stays parseable as a normal unresolved call");
+    let error = comptime::expand_compile_time("main", &mut parsed, &[])
+        .expect_err("raw parse bridge is retired");
+    assert!(error.contains("module `meta`") && error.contains("expr_raw"), "{error}");
+    assert!(!parsed.items.iter().any(|item| {
+        matches!(item, witchy::ast::Item::Function(function) if function.name == "must_not_merge")
+    }));
 }

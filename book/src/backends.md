@@ -1,59 +1,51 @@
 # Execution Backends: One Meaning
 
-Shipping two implementations of one language is normally a bad idea. You pay
-for every feature twice, and the second one is always slightly wrong in a way
-nobody notices until it matters.
-
-witchy does it anyway. There's one production run path and one independent
-semantic oracle, and every compiled run can be checked against the oracle. That
-choice is expensive, and it's why several of the language's design constraints
-look the way they do - this chapter is the argument for paying it.
+witchy has one production language pipeline. Checked source lowers to canonical
+SafeWIR; that same admitted program can be interpreted directly or encoded as
+WebAssembly. This keeps one implementation of language semantics while still
+checking that Wasm encoding and execution preserve the admitted program.
 
 | Backend | How | Role |
 |---|---|---|
-| **Compiled WebAssembly** | lowered to a structured IR, encoded to a wasm binary, run on wasmtime | the run path: every program runs here - confinement *and* speed, and the browser playground |
-| **Interpreter** | tree-walking, in Rust | the *reference* semantics: the independent oracle every compiled run is checked against |
+| **Admitted WebAssembly** | canonical SafeWIR encoded to a Wasm binary and run on Wasmtime | the production run path: confinement, speed, and the browser playground |
+| **Canonical interpreter** | executes admitted canonical SafeWIR directly | the executable IR oracle used to check Wasm encoding and runtime behavior |
 
 ```sh
 witchy program.witchy            # compile to wasm, run with a development grant
 witchy sandbox program.witchy    # compile to wasm, granted exactly its footprint
 ```
 
-Both commands run the **compiled** backend; they differ only in the capability
-grant. The interpreter is the reference implementation that *defines* what a
-program means and provides the comparison target for compiled execution.
-
-The interpreter is kept direct enough to serve as the readable reference
-semantics. The WebAssembly tier is the optimized, confined implementation: the
-VM boundary is also the capability boundary, and an ungranted host function is
-absent from the instance. A third backend would add another independent
-implementation to the parity obligation, so the project maintains these two.
+Both commands run admitted **compiled** Wasm; they differ only in the capability
+grant. The language contract and independent expected results define what a
+program means. The canonical interpreter checks the already-lowered SafeWIR;
+it is not a second source-language implementation. The VM boundary is also the
+capability boundary, and an ungranted host function is absent from the instance.
 
 ## Parity: the invariant that makes it safe
 
-The two backends implement *one* language under a single rule:
+The two executors consume *one admitted program* under a single rule:
 
-> Every supported program has identical results and failures on both backends.
+> Every supported program matches its independent expectation in the canonical
+> interpreter and in admitted unoptimized Wasm.
 > A construct that can't meet that contract is rejected loudly.
 
-The interpreter defines the result; the compiled tier must match it. Hundreds of
-differential tests run the same source through both implementations. Property
-tests generate additional programs, and CI runs the maintained examples through
-`witchy parity`. The CLI exposes that same check so a user can inspect the
-invariant on a particular program. Ordinary `run` doesn't secretly execute the
-interpreter first; the test and parity harnesses are what keep the production
-compiler honest.
+Independent expected results adjudicate semantics. Acceptance tests lower the
+same checked source once, execute canonical SafeWIR, encode and admit
+unoptimized Wasm, and require both executions to match the expectation.
+Property tests generate additional programs, and `witchy parity` exposes the
+canonical-interpreter/Wasm comparison for diagnosis. Backend agreement alone
+is never treated as semantic proof. Ordinary `run` executes admitted Wasm only.
 
 Parity includes edge and failure cases:
 
 - `Int` arithmetic **wraps** on overflow everywhere (that's why it wraps rather
-  than being undefined - a portable choice both backends can honor).
-- Float formatting is the shortest round-trip on every backend; `NaN` and
+  than being undefined - a portable choice both executors can honor).
+- Float formatting is the shortest round-trip on every executor; `NaN` and
   infinities behave identically; ordering a `NaN` errors on both.
 - Structural equality is deep and identical for every comparable type.
 - Out-of-bounds indexing, divide-by-zero, parse overflow, and `fail` abort on
-  *every* backend - a trap in the VM, a runtime error in the interpreter, never
-  a silently different result.
+  both executors - a trap in the VM and a canonical runtime error in the IR
+  interpreter, never a silently different result.
 
 Owned existential values (`dyn Trait`) are part of that parity contract. A
 heterogeneous list retains one static trait surface while each value selects its
@@ -116,10 +108,9 @@ concrete payload into an explicit trait-method parameter. `dyn PartialEq` and
 implicit downcasts are intentionally unavailable; declare a domain-specific
 comparison/key method, or use a closed enum when concrete recovery is required.
 
-When a backend genuinely can't express something the same way - historically,
-say, comparing certain generic types - witchy makes it a **loud compile-time
-error** rather than letting the two backends diverge. The rule is zero silent
-divergence.
+When canonical lowering or admitted Wasm cannot preserve a checked construct,
+witchy produces a **loud compile-time error**. The rule is zero silent
+divergence and no fallback to the frozen source tree walker.
 
 ## Run path and portability
 

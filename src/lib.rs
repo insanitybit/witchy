@@ -1,6 +1,7 @@
-//! The witchy library: the wasm-safe interpreter front-end (lexer, parser, type
-//! checker, linker, and the tree-walking interpreter) plus the pure codegen/
-//! format/doc passes. The wasmtime sandbox, the package manager, and the LSP
+//! The witchy library: the wasm-safe compiler front-end (lexer, parser, type
+//! checker, linker, and temporary comptime/build services) plus the pure codegen/
+//! format/doc passes. The frozen source tree evaluator is not a production
+//! runtime or semantic oracle. The wasmtime sandbox, the package manager, and the LSP
 //! live only in the binary (`main.rs`), so this crate compiles to
 //! `wasm32-unknown-unknown` — which is what powers the in-browser playground.
 //!
@@ -289,10 +290,10 @@ pub fn enforce_performance_modes(
     for miss in witchy_lower::analysis::try_module_no_copy_misses(linked)? {
         let Some(mode_names) = declaration_modes(&miss.function) else { continue; };
         let advice = if miss.reason.contains("first-class call ABI") {
-            "call the function directly so its capacity token stays in the compiled ABI, or use normal mode for the copy-correct indirect call".to_string()
+            "call the function directly so its checked capacity state stays in the compiled ABI, or use normal mode for the copy-correct indirect call".to_string()
         } else {
             format!(
-                "keep `{}` uniquely owned: initialize it from fresh storage or a `var` parameter typed `unique`/`local unique`, and do not alias or loan it before this call",
+                "keep `{}` uniquely owned: initialize it from fresh storage or a `var` parameter typed `unique`, and do not alias or loan it before this call",
                 miss.var
             )
         };
@@ -359,7 +360,18 @@ fn ownership_relevant_type(ty: &witchy_syntax::ast::Type) -> bool {
         witchy_syntax::ast::Type::Dyn(_, _) => true,
         witchy_syntax::ast::Type::Fn(_, _, _, _) => false,
         witchy_syntax::ast::Type::Slice(inner) => ownership_relevant_type(inner),
-        witchy_syntax::ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
+        witchy_syntax::ast::Type::Qualified(qualifier, inner) => match qualifier {
+            // Explicit reference syntax already declares shared/exclusive access.
+            // Requiring a second `let` convention would create two spellings for
+            // the same contract and incorrectly reject canonical RFC-0167 source.
+            witchy_syntax::ast::TypeQual::View
+            | witchy_syntax::ast::TypeQual::Borrow(_)
+            | witchy_syntax::ast::TypeQual::BorrowMut(_)
+            | witchy_syntax::ast::TypeQual::LegacyBorrow(_) => false,
+            witchy_syntax::ast::TypeQual::Frozen | witchy_syntax::ast::TypeQual::Unique => {
+                ownership_relevant_type(inner)
+            }
+        },
     }
 }
 
@@ -529,11 +541,11 @@ fn main(console: Console):
         let linked = super::resolve_std_only(
             r#"mode opt
 
-fn take(var xs: unique List(Int)) -> Nil:
+fn take(var xs: unique List(Int)) -> ():
     return
 
 fn main() -> Int:
-    let work = fn() -> Nil:
+    let work = fn() -> ():
         var xs = [1]
         let snapshot = xs
         take(xs)
@@ -579,10 +591,21 @@ fn main() -> Int:
     #[test]
     fn performance_gate_keeps_normal_caller_costs_separate_from_opt_callee() {
         let linked = linked_performance_boundary(
-            "mode opt\n\npub fn update(var xs: List(Int)) -> Nil:\n    xs[0] = 2\n",
+            "mode opt\n\npub fn update(var xs: List(Int)) -> ():\n    xs[0] = 2\n",
             "import helper\n\nfn main() -> Int:\n    var xs = [1]\n    let snapshot = xs\n    helper.update(xs)\n    snapshot[0] + xs[0]\n");
         super::enforce_performance_modes(&linked, "main")
             .expect("normal caller may retain a snapshot while calling an ordinary-var opt helper");
+    }
+
+    #[test]
+    fn explicit_reference_parameters_need_no_redundant_convention() {
+        let linked = super::resolve_std_only(
+            "mode opt\n\nfn shared(value: &'a String) -> &'a String:\n    value\n\nfn edit(value: &'a mut String):\n    *value = \"edited\"\n\nfn main() -> Int:\n    0\n",
+        )
+        .expect("resolve canonical reference signatures");
+        witchy_types::typeck::check(&linked).expect("type-check canonical reference signatures");
+        super::enforce_performance_modes(&linked, "main")
+            .expect("reference access is already explicit in the type");
     }
 }
 

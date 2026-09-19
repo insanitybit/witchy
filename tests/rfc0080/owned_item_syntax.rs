@@ -13,8 +13,10 @@ comptime fn make_first() -> ItemSyntax:
 
 comptime:
     emit_item(make_first())
-    let source_middle = "pub fn source_middle() -> Int:\n    2"
-    emit_item(meta.item(source_middle))
+    emit_item(quote item:
+        pub fn structural_middle() -> Int:
+            2
+    )
     emit_item(quote item:
         pub fn structural_last() -> Int:
             3
@@ -22,7 +24,7 @@ comptime:
 
 fn main(console: Console):
     console.print("${structural_first()}")
-    console.print("${source_middle()}")
+    console.print("${structural_middle()}")
     console.print("${structural_last()}")
 "#;
 
@@ -31,12 +33,12 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
     let parsed = parser::parse_module(SOURCE).expect("parse structural item quotes");
     assert_eq!(
         parsed.compiler_item_syntax.len(),
-        2,
-        "only the two hole-free item quotes belong to the compiler-owned table"
+        3,
+        "all emitted items are compiler-owned quotes"
     );
     assert!(parsed.compiler_item_syntax.iter().all(|syntax| {
         matches!(&syntax.item, ast::Item::Function(function)
-            if function.name == "structural_first" || function.name == "structural_last")
+            if matches!(function.name.as_str(), "structural_first" | "structural_middle" | "structural_last"))
     }));
 
     let mut expanded_for_tooling = parsed.clone();
@@ -44,7 +46,7 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
         .expect("expand through the tooling callback");
     let expanded_source = format::module(&expanded_for_tooling, &[]);
     assert!(expanded_source.contains("pub fn structural_first()"), "{expanded_source}");
-    assert!(expanded_source.contains("pub fn source_middle()"), "{expanded_source}");
+    assert!(expanded_source.contains("pub fn structural_middle()"), "{expanded_source}");
     assert!(expanded_source.contains("pub fn structural_last()"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_item"), "{expanded_source}");
 
@@ -62,7 +64,7 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
         .filter_map(|item| match item {
             ast::Item::Function(function)
                 if function.name.ends_with("structural_first")
-                    || function.name.ends_with("source_middle")
+                    || function.name.ends_with("structural_middle")
                     || function.name.ends_with("structural_last") =>
             {
                 Some(function.name.rsplit('.').next().unwrap_or(&function.name).to_string())
@@ -72,7 +74,7 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
         .collect::<Vec<_>>();
     assert_eq!(
         generated,
-        ["structural_first", "source_middle", "structural_last"],
+        ["structural_first", "structural_middle", "structural_last"],
         "typed item events must preserve their emission order"
     );
 
@@ -92,37 +94,31 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
 }
 
 #[test]
-fn dynamic_item_source_becomes_an_owned_module_fragment_with_imports() {
+fn dynamic_item_source_is_retired() {
     let source = r#"
 import meta
 
 comptime fn build(name: String) -> ItemSyntax:
-    let nl = "\n"
-    let declaration = "import show" + nl + nl + "pub fn " + name + "() -> String:" + nl + "    show.render(7)"
-    meta.item(declaration)
+    meta.item("pub fn retired() -> Int:\n    1")
 
 comptime:
-    emit_item(build("dynamic_owned"))
+    emit_item(build("retired"))
 
 fn main(console: Console):
-    console.print(dynamic_owned())
+    console.print(retired())
 "#;
     let parsed = parser::parse_module(source).expect("parse dynamic item producer");
-    let linked = pipeline::link_with_origins(vec![("main".into(), parsed)], "main")
-        .expect("dynamic item parses once and preserves its import fragment");
-    typeck::check(linked.module()).expect("typecheck dynamic owned item");
-    let generated = linked
-        .module()
-        .items
-        .iter()
-        .position(|item| matches!(item, ast::Item::Function(function) if function.name.ends_with("dynamic_owned")))
-        .expect("dynamic generated function");
-    assert!(linked.origins().origin_for_item(generated).is_some());
-
-    let expected = vec!["7".to_string()];
-    assert_eq!(
-        interpreter::run_module(linked.module().clone(), ".", Vec::new()).expect("interpret"),
-        expected
+    assert!(
+        !parsed.items.iter().any(
+            |item| matches!(item, ast::Item::Function(function) if function.name.ends_with("retired"))
+        ),
+        "the rejected meta.item call must not merge its later generated item"
     );
-    super::assert_compiled_output(linked.module(), &expected, "compile", 128);
+    let error = pipeline::link_with_origins(vec![("main".into(), parsed)], "main")
+        .expect_err("dynamic item parser bridge is retired before an item can merge")
+        .to_string();
+    assert!(
+        error.contains("module `meta`") && error.contains("function `item`"),
+        "{error}"
+    );
 }

@@ -50,7 +50,7 @@ use crate::{codegen, interpreter, parser};
     #[test]
     fn for_tuple_patterns_destructure() {
         // Parenthesized and canonical unparenthesized tuple patterns agree.
-        let head = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n";
+        let head = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    let _ = dict.insert(d, \"b\", 2)\n";
         let paren = format!("{head}    for (k, v) in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n");
         let unparen = format!("{head}    for k, v in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n");
         let want: Vec<String> = ["a=1", "b=2"].iter().map(|s| s.to_string()).collect();
@@ -221,8 +221,8 @@ type Item:
     qty: Int
 fn main(console: Console):
     var d = dict.new()
-    dict.insert(d, "apple", Item(3, 10))
-    dict.insert(d, "bread", Item(2, 5))
+    let _ = dict.insert(d, "apple", Item(3, 10))
+    let _ = dict.insert(d, "bread", Item(2, 5))
     let it = dict.get_or(d, "apple", Item(0, 0))
     console.print("${((it).price * (it).qty)}")
     let missing = dict.get_or(d, "milk", Item(0, 0))

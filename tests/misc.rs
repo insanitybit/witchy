@@ -7,6 +7,9 @@
 #[path = "support/temp_dir.rs"]
 mod temp_dir;
 
+#[path = "support/precompiled_registry.rs"]
+mod precompiled_registry;
+
 #[path = "misc/rfc0165_bounded_heap.rs"]
 mod rfc0165_bounded_heap;
 
@@ -164,7 +167,41 @@ mod rfc0165_loop_shadowing;
 mod rfc0165_reference_list_patterns;
 #[path = "misc/rfc0167_mode_interop.rs"]
 mod rfc0167_mode_interop;
+#[path = "misc/rfc0167_result_reference_carriers.rs"]
+mod rfc0167_result_reference_carriers;
+#[path = "misc/rfc0167_exact_core_parity.rs"]
+mod rfc0167_exact_core_parity;
+#[path = "misc/rfc0167_opt_callable_provenance.rs"]
+mod rfc0167_opt_callable_provenance;
+#[path = "misc/rfc0167_precompiled_run_source.rs"]
+mod rfc0167_precompiled_run_source;
+#[path = "misc/rfc0167_unit_results.rs"]
+mod rfc0167_unit_results;
 #[path = "misc/rfc0165_nested_patterns.rs"]
 mod rfc0165_nested_patterns;
 #[path = "misc/rfc0165_owner_adapters.rs"]
 mod rfc0165_owner_adapters;
+#[path = "misc/rfc0167_normal_unique.rs"]
+mod rfc0167_normal_unique;
+#[path = "misc/rfc0167_ownership_parity.rs"]
+mod rfc0167_ownership_parity;
+#[path = "misc/rfc0167_reference_carrier_repros.rs"]
+mod rfc0167_reference_carrier_repros;
+#[path = "misc/rfc0167_aggregate_reference_carriers.rs"]
+mod rfc0167_aggregate_reference_carriers;
+#[path = "misc/rfc0167_callable_reference_carrier.rs"]
+mod rfc0167_callable_reference_carrier;
+#[path = "misc/rfc0167_region_qualifier_matrix.rs"]
+mod rfc0167_region_qualifier_matrix;
+#[path = "misc/rfc0167_optimization_readiness.rs"]
+mod rfc0167_optimization_readiness;
+#[path = "misc/rfc0167_opt_callable_cross_module.rs"]
+mod rfc0167_opt_callable_cross_module;
+#[path = "misc/rfc0167_reference_contract_matrix.rs"]
+mod rfc0167_reference_contract_matrix;
+#[path = "misc/rfc0167_resource_composition.rs"]
+mod rfc0167_resource_composition;
+#[path = "misc/rfc0167_unique_writeback_matrix.rs"]
+mod rfc0167_unique_writeback_matrix;
+#[path = "misc/rfc0167_view_witnesses.rs"]
+mod rfc0167_view_witnesses;

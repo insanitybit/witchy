@@ -69,7 +69,6 @@ use crate::{codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
         std::fs::write(root.join("greeting.txt"), "hello-sum").expect("seed");
-        let root_str = root.to_str().expect("utf8 root").to_string();
         let src = r#"
 type Resource:
     Missing(String)
@@ -78,8 +77,8 @@ type Resource:
     Ratio(Float)
     Pair(String, String)
 
-type FrozenHolder:
-    FrozenHolder(frozen Resource)
+type ResourceHolder:
+    ResourceHolder(Resource)
 
 type Tree:
     Empty
@@ -105,12 +104,12 @@ fn resource_label(r: Resource) -> String:
 fn keep_resource(r: Resource) -> Resource:
     return r
 
-fn keep_qualified(r: frozen Resource) -> frozen Resource:
+fn keep_qualified(r: Resource) -> Resource:
     return r
 
-fn unwrap_frozen(h: FrozenHolder) -> Resource:
+fn unwrap_holder(h: ResourceHolder) -> Resource:
     match h:
-        FrozenHolder(r) -> r
+        ResourceHolder(r) -> r
 
 fn mark(console: Console, label: String) -> String:
     console.print(label)
@@ -138,7 +137,7 @@ fn load_outer(o: Outer) -> String:
 fn main(console: Console, root: Dir[Read]):
     console.print(resource_label(keep_resource(Missing("absent"))))
     console.print(resource_label(keep_qualified(Missing("qualified"))))
-    console.print(resource_label(unwrap_frozen(FrozenHolder(Missing("field")))))
+    console.print(resource_label(unwrap_holder(ResourceHolder(Missing("field")))))
     console.print(resource_label(Count(922337203685477580)))
     console.print(resource_label(Pair(mark(console, "left"), mark(console, "right"))))
     console.print(load_tree(Empty))
@@ -162,11 +161,6 @@ fn main(console: Console, root: Dir[Read]):
             "hello-sum".to_string(),
         ];
         let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
-            want,
-            "interpreter",
-        );
         let bin = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers cap-carrying sums");
         let bin_again = codegen::compile_module_binary(&linked)
@@ -198,7 +192,6 @@ fn main(console: Console, root: Dir[Read]):
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
         std::fs::write(root.join("greeting.txt"), "hello-tuple").expect("seed");
-        let root_str = root.to_str().expect("utf8 root").to_string();
         let src = r#"
 type ReadPair = (Dir[Read], String, Int)
 type LabeledPair(a) = (Dir[Read], a, Int)
@@ -233,10 +226,10 @@ fn choose(pair: (Dir[Read], String, Int)) -> String:
     match pair:
         (dir, name, count) -> dir.read(name) + ":${count}"
 
-fn keep_qualified(pair: (frozen Dir[Read], String)) -> (frozen Dir[Read], String):
+fn keep_qualified(pair: (Dir[Read], String)) -> (Dir[Read], String):
     pair
 
-fn qualified(pair: (frozen Dir[Read], String)) -> String:
+fn qualified(pair: (Dir[Read], String)) -> String:
     let (dir, name) = pair
     dir.read(name)
 
@@ -289,11 +282,6 @@ fn main(console: Console, root: Dir[Read]):
             "hello-tuple:3".to_string(),
         ];
         let linked = resolve_std_src(src);
-        assert_eq!(
-            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
-            want,
-            "interpreter",
-        );
         let bin = codegen::compile_module_binary(&linked)
             .expect_lowered("the binary path lowers cap-carrying tuples");
         let bin_again = codegen::compile_module_binary(&linked)
@@ -833,7 +821,7 @@ fn main(console: Console, root: Dir[Read]):
     while i < scratch.length():
         match i:
             0 -> i = 0 - 5
-            _ -> Nil
+            _ -> ()
         scratch[i] = "evil.json"
         i = i + 7
     if padding.length() == 0:
@@ -923,7 +911,7 @@ fn main(console: Console, root: Dir[Read]):
     while i < scratch.length():
         match i:
             0 -> i = 0 - 2
-            _ -> Nil
+            _ -> ()
         scratch[i] = "forged"
         i = i + 4
     let fake = list.at(consoles, 0)
@@ -1380,6 +1368,14 @@ fn yes(b: Bool) -> String:
     /// verb/transport-precise — the end-to-end demonstration of the feature.
     #[test]
     fn capability_rights_example_runs_and_audits() {
+        let src = std::fs::read_to_string("examples/capability_rights/src/capability_rights.witchy").unwrap();
+        let (checked, _) = crate::link_file_checked("examples/capability_rights/src/capability_rights.witchy")
+            .expect("link and typecheck");
+        let run_grant = crate::capabilities::run_grant(checked.module());
+        assert!(
+            !run_grant.contains_key("Net"),
+            "the public `serve` helper must not grant Net to this example's main"
+        );
         assert_eq!(
             crate::execute_file("examples/capability_rights/src/capability_rights.witchy", Vec::new()).unwrap(),
             vec![
@@ -1387,7 +1383,6 @@ fn yes(b: Bool) -> String:
                 "explicit: hello from a sandboxed Dir capability",
             ]
         );
-        let src = std::fs::read_to_string("examples/capability_rights/src/capability_rights.witchy").unwrap();
         let fp = crate::capabilities::analyze(&parser::parse_module(&src).expect("parse"));
         let shown = |name: &str| {
             let e = fp.entries.iter().find(|e| e.name == name).expect("entry");

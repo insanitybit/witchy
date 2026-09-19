@@ -871,7 +871,7 @@ mod tests {
 
     #[test]
     fn canonical_anonymous_shapes_ignore_nominal_resolution() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "fn f(record: .{a: Int, b: String}, event: .[Text(String) | Quit]) -> Int:\n    0\n",
         )
         .expect("parse structural types");
@@ -996,7 +996,7 @@ mod tests {
         assert_ne!(identity(&plain), identity(&qualified_callable));
         assert_ne!(identity(&plain), identity(&qualified_argument));
 
-        let empty = witchy_syntax::parser::parse_module("").expect("empty module");
+        let empty = witchy_syntax::parser::parse_reference_migration("").expect("empty module");
         let plan = RuntimeTypePlan::build_with_runtime_shapes(
             [&plain, &qualified_callable],
             &RuntimeDeclarationCatalog::default(),
@@ -1088,10 +1088,10 @@ mod tests {
 
     #[test]
     fn checked_callable_reflection_retains_nominal_projection_relations() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "mode opt\n\n\
-             type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
-             fn pair(left: let('left) String, right: let('right) String, \
+             type PairView('left, 'right):\n    first: &'left String\n    second: &'right String\n\n\
+             fn pair(left: &'left String, right: &'right String, \
                  pair: PairView('left, 'right)) -> PairView('left, 'right):\n    pair\n",
         )
         .expect("parse projected relation fixture");
@@ -1122,12 +1122,12 @@ mod tests {
 
     #[test]
     fn checked_function_identity_retains_nominal_projections_and_owner_mismatch() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "mode opt\n\n\
-             type PairView('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\n\
-             fn pair(left: let('left) String, right: let('right) String, \
+             type PairView('left, 'right):\n    first: &'left String\n    second: &'right String\n\n\
+             fn pair(left: &'left String, right: &'right String, \
                  pair: PairView('left, 'right)) -> PairView('left, 'right):\n    pair\n\n\
-             fn reversed(right: let('right) String, left: let('left) String, \
+             fn reversed(right: &'right String, left: &'left String, \
                  pair: PairView('left, 'right)) -> PairView('left, 'right):\n    pair\n",
         )
         .expect("parse checked callable identity fixture");
@@ -1209,7 +1209,7 @@ mod tests {
 
     #[test]
     fn checked_callable_authority_is_identity_but_not_a_value_descriptor() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "fn announce(console: Console, text: String) -> String:\n    text\n",
         )
         .expect("parse authority-bearing callable fixture");
@@ -1275,9 +1275,9 @@ mod tests {
 
     #[test]
     fn direct_and_function_value_reflection_share_checked_access_identity() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "mode opt\n\n\
-             fn keep(text: let('source) String) -> View(String, 'source):\n    text\n\n\
+             fn keep(text: &'source String) -> &'source String:\n    text\n\n\
              fn main() -> Int:\n    let callback = keep\n    0\n",
         )
         .expect("parse direct/function-value fixture");
@@ -1602,7 +1602,7 @@ mod tests {
 
     #[test]
     fn capability_free_identity_reports_the_nominal_retaining_path() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "type Inner:\n    Inner(Console)\n\ntype Outer:\n    Outer(Inner)\n",
         )
         .expect("parse retaining types");
@@ -1637,7 +1637,7 @@ mod tests {
 
     #[test]
     fn capability_free_identity_substitutes_generics_and_terminates_recursion() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "type Boxed:\n    Boxed(a)\n\ntype Grow:\n    More(Grow(List(a)))\n\ntype UnsafeGrow(a):\n    More(UnsafeGrow(Console))\n\ntype BadGrow(a):\n    More(BadGrow(a, String))\n\ntype Recursive:\n    Empty\n    Next(List(Recursive))\n",
         )
         .expect("parse generic and recursive types");
@@ -1724,7 +1724,7 @@ mod tests {
 
     #[test]
     fn runtime_record_shapes_substitute_inferred_type_parameters() {
-        let module = witchy_syntax::parser::parse_module(
+        let module = witchy_syntax::parser::parse_reference_migration(
             "type Boxed:\n    value: a\n\ntype Grow(a):\n    next: Grow(List(a))\n\ntype Node(a):\n    value: a\n    next: Node(a)\n\ntype Left(a):\n    right: Right(a)\n\ntype Right(a):\n    left: Left(a)\n",
         )
         .expect("parse inferred generic record");

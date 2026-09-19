@@ -19,6 +19,8 @@ pub(super) fn compiler_expr_leaf(kind: &str, payload: &str) -> Result<Expr, Runt
         Ok(Expr::Bool(payload.parse().map_err(|_| RuntimeError {
             message: "meta.expr_bool carried an invalid Bool payload".into(),
         })?))
+    } else if kind == "string" {
+        Ok(Expr::Str(payload.to_string()))
     } else {
         err(format!("unknown compiler-owned expression leaf `{kind}`"))
     }
@@ -98,6 +100,33 @@ pub(super) fn compiler_expr_syntax_value(
         ("CompilerExprSyntax", _) => err("CompilerExprSyntax carried an invalid payload"),
         ("ExprSyntax", _) => err("ExprSyntax carried an invalid source payload"),
         (other, _) => err(format!("meta.expr_call expected ExprSyntax, got `{other}`")),
+    }
+}
+
+/// Decode only an interpreter-issued expression handle. Structural tagged
+/// literals deliberately exclude the legacy source-backed `ExprSyntax` shape:
+/// their interpolation payloads must remain owned AST nodes end to end.
+pub(super) fn compiler_owned_expr_syntax_value(
+    value: &Value,
+    compiler_expr_syntax: &HashMap<String, Expr>,
+    operation: &str,
+) -> Result<Expr, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err(format!("{operation} expects compiler-owned ExprSyntax holes"));
+    };
+    match (tail(name), fields.as_slice()) {
+        ("CompilerExprSyntax", [Value::Str(handle), Value::Str(_source)]) => compiler_expr_syntax
+            .get(handle.as_str())
+            .cloned()
+            .ok_or_else(|| RuntimeError {
+                message: "CompilerExprSyntax carried an invalid syntax handle".into(),
+            }),
+        ("CompilerExprSyntax", _) => err("CompilerExprSyntax carried an invalid payload"),
+        _ => err(format!("{operation} expects compiler-owned ExprSyntax holes")),
     }
 }
 
@@ -273,6 +302,28 @@ pub(super) fn compiler_binding_ident_name(value: &Value, operation: &str) -> Res
             "{operation} requires a binding identifier; meta.call_site is reference-only"
         )),
         _ => err(format!("{operation} expected an Ident binding name")),
+    }
+}
+
+pub(super) fn compiler_definition_ident_name(
+    value: &Value,
+    operation: &str,
+) -> Result<String, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    match value {
+        Value::Ctor { name, fields }
+            if tail(name) == "Ident" && matches!(fields.as_slice(), [Value::Str(_)]) =>
+        {
+            let Value::Str(name) = &fields[0] else { unreachable!() };
+            Ok(name.to_string())
+        }
+        Value::Ctor { name, .. } if tail(name) == "CallSiteIdent" => err(format!(
+            "{operation} requires a definition-site identifier; meta.call_site is reference-only"
+        )),
+        _ => err(format!("{operation} expected an Ident name")),
     }
 }
 
@@ -655,6 +706,18 @@ pub(super) fn compiler_type_holes(
         .collect()
 }
 
+/// Typed builders must obey the same retired-spelling boundary as source and
+/// quotes. A nominal `View('a)` remains legal; only the old builtin shape is gone.
+pub(super) fn validate_compiler_named_type(name: &str, args: &[Type]) -> Result<(), RuntimeError> {
+    if name == "View" && args.len() == 2
+        && let Type::Named(lifetime, nested) = &args[1]
+        && nested.is_empty() && lifetime.starts_with('\'')
+    {
+        return err("`View(T, 'a)` is retired; build an explicit `&'a T` reference instead");
+    }
+    Ok(())
+}
+
 pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeError> {
     fn tail(name: &str) -> &str {
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
@@ -669,6 +732,7 @@ pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeErro
                 .iter()
                 .map(compiler_reflected_type)
                 .collect::<Result<Vec<_>, _>>()?;
+            validate_compiler_named_type(name, &args)?;
             Ok(Type::Named(name.to_string(), args))
         }
         ("TTuple", [Value::List(items)]) => {
@@ -700,7 +764,6 @@ pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeErro
             let qualifier = match qualifier.as_str() {
                 "frozen" => TypeQual::Frozen,
                 "unique" => TypeQual::Unique,
-                "local unique" => TypeQual::LocalUnique,
                 other => {
                     return err(format!(
                         "meta.type_expr unknown qualifier `{other}`"
@@ -712,22 +775,14 @@ pub(super) fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeErro
                 Box::new(compiler_reflected_type(inner)?),
             ))
         }
-        ("TBorrowed", [inner, Value::Str(lifetime)]) => Ok(Type::Qualified(
-            TypeQual::Borrow(lifetime.to_string()),
+        ("TView", [inner]) => Ok(Type::Qualified(
+            TypeQual::View,
             Box::new(compiler_reflected_type(inner)?),
         )),
-        ("TReference", [Value::Str(kind), inner, Value::Str(lifetime)]) => {
-            let qualifier = match kind.as_str() {
-                "shared" => TypeQual::Borrow(lifetime.to_string()),
-                "mut" => TypeQual::BorrowMut(lifetime.to_string()),
-                other => return err(format!("meta.TReference has unknown kind `{other}`")),
-            };
-            Ok(Type::Qualified(qualifier, Box::new(compiler_reflected_type(inner)?)))
-        }
         (kind, _)
             if matches!(
                 kind,
-                "TNamed" | "TTuple" | "TFn" | "TQualified" | "TBorrowed" | "TReference"
+                "TNamed" | "TTuple" | "TFn" | "TQualified" | "TView"
             ) => {
             err(format!("meta.type_expr `{kind}` carried an invalid payload"))
         }
@@ -785,12 +840,51 @@ pub(super) fn compiler_ctor_tail(name: &str) -> &str {
 mod tests {
     use std::rc::Rc;
 
+    use crate::interpreter::Interpreter;
+
     use super::*;
 
     #[test]
-    fn reflected_borrowed_type_retains_its_lifetime_relation() {
+    fn retired_local_unique_reflection_is_rejected_recursively() {
+        let retired = Value::Ctor {
+            name: "meta.TQualified".into(),
+            fields: Rc::new(vec![
+                Value::Str(Rc::new("local unique".into())),
+                Value::Ctor {
+                    name: "meta.TNamed".into(),
+                    fields: Rc::new(vec![
+                        Value::Str(Rc::new("String".into())),
+                        Value::List(Rc::new(Vec::new())),
+                    ]),
+                },
+            ]),
+        };
+        let nested = Value::Ctor {
+            name: "meta.TTuple".into(),
+            fields: Rc::new(vec![Value::List(Rc::new(vec![retired.clone()]))]),
+        };
+        for reflected in [retired, nested] {
+            let error = compiler_reflected_type(&reflected).expect_err("retired qualifier");
+            assert!(error.to_string().contains("unknown qualifier `local unique`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn retired_local_unique_typed_builder_is_rejected_before_handle_decoding() {
+        let module = witchy_syntax::parser::parse_module("").expect("empty module");
+        let mut interpreter = Interpreter::new(module);
+        interpreter.fresh_ident_scope = Some("retired-qualifier-test".into());
+        let error = interpreter.call_builtin(
+            "__meta_type_qualified",
+            &[Value::Str(Rc::new("local unique".into())), Value::Unit],
+        ).expect_err("retired qualifier cannot construct compiler-owned TypeSyntax");
+        assert!(error.to_string().contains("unknown qualifier `local unique`"), "{error}");
+    }
+
+    #[test]
+    fn reflected_view_type_roundtrips_without_lifetime_or_mutability() {
         let reflected = Value::Ctor {
-            name: "meta.TBorrowed".into(),
+            name: "meta.TView".into(),
             fields: Rc::new(vec![
                 Value::Ctor {
                     name: "meta.TNamed".into(),
@@ -799,74 +893,106 @@ mod tests {
                         Value::List(Rc::new(Vec::new())),
                     ]),
                 },
-                Value::Str(Rc::new("owner".into())),
             ]),
         };
         assert_eq!(
-            compiler_reflected_type(&reflected).expect("borrow relation converts to type syntax"),
+            compiler_reflected_type(&reflected).expect("rooted view converts to type syntax"),
             Type::Qualified(
-                TypeQual::Borrow("owner".into()),
+                TypeQual::View,
                 Box::new(Type::Named("String".into(), Vec::new())),
             )
         );
     }
 
     #[test]
-    fn reflected_mutable_reference_retains_its_lifetime_and_access_kind() {
-        let reflected = Value::Ctor {
-            name: "meta.TReference".into(),
-            fields: Rc::new(vec![
-                Value::Str(Rc::new("mut".into())),
-                Value::Ctor {
-                    name: "meta.TNamed".into(),
-                    fields: Rc::new(vec![
-                        Value::Str(Rc::new("String".into())),
-                        Value::List(Rc::new(Vec::new())),
-                    ]),
-                },
-                Value::Str(Rc::new("owner".into())),
-            ]),
+    fn nested_aggregate_views_roundtrip_as_views() {
+        let named = |name: &str| Value::Ctor {
+            name: "meta.TNamed".into(),
+            fields: Rc::new(vec![Value::Str(Rc::new(name.into())), Value::List(Rc::new(Vec::new()))]),
         };
-        assert_eq!(
-            compiler_reflected_type(&reflected).expect("mutable reference converts to type syntax"),
-            Type::Qualified(
-                TypeQual::BorrowMut("owner".into()),
-                Box::new(Type::Named("String".into(), Vec::new())),
-            )
-        );
-    }
-
-    #[test]
-    fn reflected_shared_reference_retains_its_lifetime_and_access_kind() {
         let reflected = Value::Ctor {
-            name: "meta.TReference".into(),
-            fields: Rc::new(vec![
-                Value::Str(Rc::new("shared".into())),
-                Value::Ctor {
-                    name: "meta.TNamed".into(),
-                    fields: Rc::new(vec![
-                        Value::Str(Rc::new("Parser".into())),
-                        Value::List(Rc::new(vec![Value::Ctor {
+            name: "meta.TView".into(),
+            fields: Rc::new(vec![Value::Ctor {
+                name: "meta.TTuple".into(),
+                fields: Rc::new(vec![Value::List(Rc::new(vec![
+                    named("Header"),
+                    Value::Ctor {
+                        name: "meta.TView".into(),
+                        fields: Rc::new(vec![Value::Ctor {
                             name: "meta.TNamed".into(),
                             fields: Rc::new(vec![
-                                Value::Str(Rc::new("'input".into())),
-                                Value::List(Rc::new(Vec::new())),
+                                Value::Str(Rc::new("[Int]".into())),
+                                Value::List(Rc::new(vec![named("Int")])),
                             ]),
-                        }])),
-                    ]),
-                },
-                Value::Str(Rc::new("parser".into())),
-            ]),
+                        }]),
+                    },
+                ]))]),
+            }]),
         };
         assert_eq!(
-            compiler_reflected_type(&reflected).expect("shared reference converts to type syntax"),
+            compiler_reflected_type(&reflected).expect("nested rooted views convert to type syntax"),
             Type::Qualified(
-                TypeQual::Borrow("parser".into()),
-                Box::new(Type::Named(
-                    "Parser".into(),
-                    vec![Type::Named("'input".into(), Vec::new())],
-                )),
+                TypeQual::View,
+                Box::new(Type::Tuple(vec![
+                    Type::Named("Header".into(), Vec::new()),
+                    Type::Qualified(
+                        TypeQual::View,
+                        Box::new(Type::Named("[Int]".into(), vec![Type::Named("Int".into(), Vec::new())])),
+                    ),
+                ])),
             )
+        );
+    }
+
+    #[test]
+    fn legacy_reference_metadata_is_rejected_instead_of_reentering_the_type_ast() {
+        let named = Value::Ctor {
+            name: "meta.TNamed".into(),
+            fields: Rc::new(vec![Value::Str(Rc::new("String".into())), Value::List(Rc::new(Vec::new()))]),
+        };
+        for reflected in [
+            Value::Ctor {
+                name: "meta.TBorrowed".into(),
+                fields: Rc::new(vec![named.clone(), Value::Str(Rc::new("owner".into()))]),
+            },
+            Value::Ctor {
+                name: "meta.TReference".into(),
+                fields: Rc::new(vec![
+                    Value::Str(Rc::new("mut".into())),
+                    named.clone(),
+                    Value::Str(Rc::new("owner".into())),
+                ]),
+            },
+            Value::Ctor {
+                name: "meta.TReference".into(),
+                fields: Rc::new(vec![
+                    Value::Str(Rc::new("shared".into())),
+                    named,
+                    Value::Str(Rc::new("owner".into())),
+                ]),
+            },
+        ] {
+            let error = compiler_reflected_type(&reflected).expect_err("legacy reference metadata must reject");
+            assert!(error.to_string().contains("expected TypeExpr"), "{error}");
+        }
+    }
+
+    #[test]
+    fn structural_tagged_holes_reject_source_backed_expr_syntax() {
+        let source_backed = Value::Ctor {
+            name: "meta.ExprSyntax".into(),
+            fields: Rc::new(vec![Value::str("not parsed")]),
+        };
+        let error = compiler_owned_expr_syntax_value(
+            &source_backed,
+            &HashMap::new(),
+            "meta.expr_tagged",
+        )
+        .expect_err("structural tagged holes must not parse source payloads");
+        assert!(
+            error.message.contains("compiler-owned ExprSyntax holes"),
+            "{}",
+            error.message,
         );
     }
 }

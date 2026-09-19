@@ -70,6 +70,17 @@ pub(crate) fn into_metadata(self) -> (Instances, Vec<(Type, String)>) {
     (self.instances, comparators)
 }
 
+    /// Carry specializations produced after a fallible canonical rewrite into
+    /// the original reservation session. A repeated exact identity is benign;
+    /// reusing a generated name for a different checked identity is not.
+    pub(crate) fn merge_specialization_instances(&mut self, additional: Instances) -> Result<(), String> {
+        merge_specialization_instances(&mut self.instances, additional)
+    }
+
+    pub(crate) fn has_specialization_instance(&self, name: &str) -> bool {
+        self.instances.contains_key(name)
+    }
+
 pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, String> {
     let catalog = self.equality.catalog;
     let preparation = &mut self.equality;
@@ -205,6 +216,21 @@ pub(crate) fn extend(&mut self, mut typed: TypedModule) -> Result<TypedModule, S
 }
 }
 
+fn merge_specialization_instances(into: &mut Instances, additional: Instances) -> Result<(), String> {
+    for (name, identity) in additional {
+        match into.get(&name) {
+            Some(existing) if existing == &identity => {}
+            Some(_) => return Err(format!(
+                "canonical specialization `{name}` has conflicting checked identities"
+            )),
+            None => {
+                into.insert(name, identity);
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Preparation<'_> {
     fn rewrite(&mut self, expression: &mut Expr, table: &TypeTable, changed: &mut bool) -> Result<(), String> {
         let Expr::Binary { op: operator @ (BinOp::Eq | BinOp::NotEq), lhs, rhs } = expression else {
@@ -253,6 +279,7 @@ impl Preparation<'_> {
         let function = Function {
             line: 0, public: false, pure: true, comptime_only: false, attributes: Vec::new(),
             name: name.clone(),
+            type_params: Vec::new(),
             params: ["left", "right"].into_iter().map(|name| Param {
                 name: name.into(), ty: Some(ty.clone()), convention: Convention::Let, default: None,
             }).collect(),
@@ -403,4 +430,27 @@ fn index(name: &str) -> Expr { indexed(name) }
 fn reject_if(condition: Expr) -> Stmt {
     Stmt::Expr(Expr::If { cond: Box::new(condition),
         then_block: block(vec![Stmt::Return(Some(Expr::Bool(false)))]), else_block: None })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn specialization_identity_conflict_is_rejected_while_duplicate_coalesces() {
+        let int = LogicalSpecializationIdentity::from_types(&[Type::Named("Int".into(), vec![])]);
+        let string = LogicalSpecializationIdentity::from_types(&[Type::Named("String".into(), vec![])]);
+        let mut instances = Instances::from([("same".into(), int.clone())]);
+
+        merge_specialization_instances(
+            &mut instances,
+            Instances::from([("same".into(), int)]),
+        ).expect("the same checked specialization identity coalesces");
+
+        let error = merge_specialization_instances(
+            &mut instances,
+            Instances::from([("same".into(), string)]),
+        ).expect_err("a reused specialization name needs the same identity");
+        assert!(error.contains("conflicting checked identities"), "{error}");
+    }
 }

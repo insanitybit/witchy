@@ -4,6 +4,19 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn documentation_edits_do_not_run_the_deferred_source_interpreter_sweep() {
+    for path in ["README.md", "spec/language.md"] {
+        let commands = selected(&[path]);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command.contains("documentation_examples_are_valid")),
+            "{path} selected the frozen source-interpreter documentation sweep: {commands:?}",
+        );
+    }
+}
+
+#[test]
 fn wasm_abi_doc_uses_catalog_contracts_without_deferred_docs_sweep() {
     for paths in [
         vec!["spec/wasm-abi.md"],
@@ -160,13 +173,13 @@ fn gate_nextest(paths: &[&str]) -> String {
 
 #[test]
 fn gate_nextest_example_tests_only_is_not_workspace() {
-    let output = gate_nextest(&["src/example_tests/rfc0122_wasm_list_carrier.rs"]);
+    let output = gate_nextest(&["src/example_tests/rfc0167_views.rs"]);
     assert!(
-        output.contains("example_tests::rfc0122_wasm_list_carrier"),
+        output.contains("example_tests::rfc0167_views"),
         "example_tests-only mapping did not partition to the touched module: {output}",
     );
     assert!(
-        !output.contains("test(/^example_tests::/)") || output.contains("rfc0122_wasm_list_carrier"),
+        !output.contains("test(/^example_tests::/)") || output.contains("rfc0167_views"),
         "example_tests-only mapping kept the whole matrix: {output}",
     );
     assert!(
@@ -267,7 +280,7 @@ fn example_tests_is_declared_in_the_bin_target() {
 fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
     let output = gate_nextest(&[
         "crates/witchy-interp/src/lib.rs",
-        "src/example_tests/rfc0122_wasm_list_carrier.rs",
+        "src/example_tests/rfc0167_views.rs",
     ]);
     let lines: Vec<_> = output.lines().collect();
     assert!(
@@ -275,7 +288,7 @@ fn gate_nextest_crate_plus_example_tests_unions_without_workspace() {
         "crate+example_tests mapping dropped the crate: {output}",
     );
     assert!(
-        output.contains("example_tests::rfc0122_wasm_list_carrier"),
+        output.contains("example_tests::rfc0167_views"),
         "crate+example_tests mapping did not partition to the touched module: {output}",
     );
     assert!(
@@ -1088,7 +1101,7 @@ fn lower_codegen_edits_run_the_known_fast_failure_probe_first() {
     assert_eq!(commands.len(), 1, "{commands:?}");
     assert_eq!(
         commands[0],
-        "cargo nextest run -p witchy-lower --test codegen -E 'test(=grantful_build_primitives_compile_to_build_imports_only)'"
+        "cargo nextest run -p witchy-lower --test codegen -E 'test(=tests::grantful_build_primitives_compile_to_build_imports_only)'"
     );
 }
 
@@ -1195,7 +1208,9 @@ fn async_region_edits_run_complete_rfc0152_modules() {
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
         assert!(
             commands[0].contains(&format!("test(/^{}::/)", module))
-                && commands[0].contains("cargo nextest run --test misc"),
+                && commands[0].contains("cargo nextest run --test misc")
+                && commands[0].contains("nextest-admitted.sh")
+                && !commands[0].contains("--ignore-default-filter"),
             "{path}: {commands:?}"
         );
         assert_ne!(
@@ -1475,7 +1490,7 @@ fn nested_e2e_module_uses_the_real_cargo_target_and_module_filter() {
 #[test]
 fn nested_integration_module_uses_its_root_cargo_target() {
     assert_eq!(
-        selected(&["--edit-loop", "tests/rfc0122/migration.rs"]),
+        selected(&["--edit-loop", "tests/rfc0122.rs"]),
         ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0122"],
     );
 }

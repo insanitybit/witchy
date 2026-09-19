@@ -321,7 +321,7 @@ fn int_field_or_zero(doc: Json, key: String) -> Int:
 // the stored one; refuse a regression, and persist the higher value atomically. A
 // reported `0` means the authenticator implements no counter and is never a
 // regression. `_wa_cred.json` already exists at every call site (the handlers check).
-fn counter_check(store: Dir, auth_data_hex: String) -> Result(Nil, String):
+fn counter_check(store: Dir, auth_data_hex: String) -> Result((), String):
     match webauthn.assertion_sign_count(auth_data_hex):
         Err(e) -> Err(webauthn.assertion_error_message(e))
         Ok(reported) ->
@@ -332,7 +332,7 @@ fn counter_check(store: Dir, auth_data_hex: String) -> Result(Nil, String):
             else:
                 if reported > stored:
                     store.replace("_wa_cred.json", json.encode(JsonObject([("credentialId", JsonString(string_field_or_empty(cred, "credentialId"))), ("publicKey", JsonString(string_field_or_empty(cred, "publicKey"))), ("signCount", JsonInt(reported))])))
-                Ok(Nil)
+                Ok(())
 
 fn h_wa_challenge(store: Dir, rand: Rand) -> fn(Request) -> Response:
     fn(req: Request):

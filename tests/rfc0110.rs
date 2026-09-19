@@ -398,21 +398,21 @@ fn direct_access(var values: unique List(Int), value: Int) -> unique List(Int):
 fn identity(operation: fn(var unique List(Int), Int) -> unique List(Int)) -> fn(var unique List(Int), Int) -> unique List(Int):
     operation
 
-fn diagnostic_direct() -> Nil:
+fn diagnostic_direct() -> ():
     var values = []
     let alias = values
     let _ = direct_access(values, 1)
     let _ = alias
     return
 
-fn diagnostic_method() -> Nil:
+fn diagnostic_method() -> ():
     var values = []
     let alias = values
     let _ = Box(1).touch(values)
     let _ = alias
     return
 
-fn diagnostic_function_value() -> Nil:
+fn diagnostic_function_value() -> ():
     let operation = direct_access
     var values = []
     let alias = values
@@ -420,7 +420,7 @@ fn diagnostic_function_value() -> Nil:
     let _ = alias
     return
 
-fn diagnostic_lambda() -> Nil:
+fn diagnostic_lambda() -> ():
     let operation = fn(var values: unique List(Int), value: Int) -> unique List(Int): [value]
     var values = []
     let alias = values
@@ -428,21 +428,21 @@ fn diagnostic_lambda() -> Nil:
     let _ = alias
     return
 
-fn diagnostic_apply() -> Nil:
+fn diagnostic_apply() -> ():
     var values = []
     let alias = values
     let _ = identity(direct_access)(values, 1)
     let _ = alias
     return
 
-fn diagnostic_trait() -> Nil:
+fn diagnostic_trait() -> ():
     var values = []
     let alias = values
     let _ = Box(1).revise(values)
     let _ = alias
     return
 
-fn diagnostic_existential() -> Nil:
+fn diagnostic_existential() -> ():
     let item: dyn Lists = Box(1)
     var values = []
     let alias = values
@@ -1406,7 +1406,7 @@ fn combined_access_envelope_cannot_be_erased_at_any_ascription_boundary() {
         (
             "higher-order argument",
             format!(
-                "fn accept(operation: {erased}) -> Nil:\n    return\n\n\
+                "fn accept(operation: {erased}) -> ():\n    return\n\n\
                  fn main():\n    accept(strict)\n"
             ),
             "argument 1 passed to `accept`",
@@ -1461,7 +1461,7 @@ fn exchange(var left: Int, var right: Int) -> Int:
     right = right + 20
     left + right
 
-fn reserve(var whole: Pair, var part: Int) -> Nil:
+fn reserve(var whole: Pair, var part: Int) -> ():
     return
 "#;
 
@@ -1497,7 +1497,7 @@ fn checked_place_overlap_matrix_is_shared_by_every_var_call_entrypoint() {
             declarations: r#"
 trait ProjectionOps:
     fn exchange(let self, var left: Int, var right: Int) -> Int
-    fn reserve(let self, var whole: Pair, var part: Int) -> Nil
+    fn reserve(let self, var whole: Pair, var part: Int) -> ()
 
 type Ops:
     Ops
@@ -1508,7 +1508,7 @@ impl ProjectionOps for Ops:
         right = right + 20
         left + right
 
-    fn reserve(let self, var whole: Pair, var part: Int) -> Nil:
+    fn reserve(let self, var whole: Pair, var part: Int) -> ():
         return
 "#,
             setup: "    let operation: dyn ProjectionOps = Ops\n",

@@ -5,6 +5,7 @@
 // with the signed TUF metadata (*.json) and `_policy` trust state at the root.
 
 import crypto
+import bytes
 import fs
 import semver
 import vm
@@ -147,6 +148,118 @@ pub fn read_artifact_part(store: Dir, name: String, version: String, target: Str
         Some(store.read_bytes(artifact_part_path(name, version, target, seq)))
     else:
         None
+
+// --- precompiled library artifact storage -----------------------------------
+// Library module keys have already passed coven_artifact.valid_library_module at
+// the HTTP boundary. They remain logical identities, not client-provided paths:
+// only the two fixed components below ever become filenames. A precompiled
+// library cannot share the target-indexed application artifact namespace.
+fn library_part_path(name: String, version: String, module: String, component: String, seq: Int) -> String:
+    "${name}/${version}/libraries/${module}.${component}.part.${seq}"
+
+fn library_count_path(name: String, version: String, module: String, component: String) -> String:
+    "${name}/${version}/libraries/${module}.${component}.count"
+
+fn ensure_library_parent(store: Dir, name: String, version: String, module: String, component: String):
+    let sample = library_part_path(name, version, module, component, 0)
+    fs.ensure_dir(store, fs.parent_dir(sample) ?? "")
+
+pub fn stage_precompiled_wasm_part(store: Dir, name: String, version: String, module: String, seq: Int, data: Bytes):
+    ensure_library_parent(store, name, version, module, "wasm")
+    store.write_bytes(library_part_path(name, version, module, "wasm", seq), data)
+
+pub fn stage_precompiled_sidecar_part(store: Dir, name: String, version: String, module: String, seq: Int, data: Bytes):
+    ensure_library_parent(store, name, version, module, "opt")
+    store.write_bytes(library_part_path(name, version, module, "opt", seq), data)
+
+// Beginning a replacement invalidates any prior completion marker first. A
+// partial re-upload is therefore unreadable rather than mixing new staging
+// parts with an older published count.
+pub fn begin_precompiled_wasm_upload(store: Dir, name: String, version: String, module: String):
+    ensure_library_parent(store, name, version, module, "wasm")
+    store.replace(library_count_path(name, version, module, "wasm"), "0")
+
+pub fn begin_precompiled_sidecar_upload(store: Dir, name: String, version: String, module: String):
+    ensure_library_parent(store, name, version, module, "opt")
+    store.replace(library_count_path(name, version, module, "opt"), "0")
+
+pub fn commit_precompiled_wasm_parts(store: Dir, name: String, version: String, module: String, count: Int):
+    store.replace(library_count_path(name, version, module, "wasm"), "${count}")
+
+pub fn commit_precompiled_sidecar_parts(store: Dir, name: String, version: String, module: String, count: Int):
+    store.replace(library_count_path(name, version, module, "opt"), "${count}")
+
+// A completion marker is authoritative only after every numbered staging part
+// exists and their decoded total exactly matches the signed length. Returning
+// -1 keeps a missing intermediate part distinct from a valid positive length.
+// We sum lengths rather than concatenate so the registry never needs a second
+// unbounded Wasm-sized allocation merely to publish an upload.
+pub fn precompiled_wasm_staged_size(store: Dir, name: String, version: String, module: String, count: Int) -> Int:
+    precompiled_staged_size(store, name, version, module, "wasm", count, 0, 0)
+
+pub fn precompiled_sidecar_staged_size(store: Dir, name: String, version: String, module: String, count: Int) -> Int:
+    precompiled_staged_size(store, name, version, module, "opt", count, 0, 0)
+
+// The precompiled manifest caps Wasm at 64 MiB and the sidecar at 1 MiB, so
+// only this explicitly bounded upload-finalization path may reassemble staged
+// bytes. It is intentionally unavailable to the unbounded application artifact
+// storage route.
+pub fn precompiled_wasm_staged_bytes(store: Dir, name: String, version: String, module: String, count: Int) -> Option(Bytes):
+    precompiled_staged_bytes(store, name, version, module, "wasm", count, 0, bytes.from_string(""))
+
+pub fn precompiled_sidecar_staged_bytes(store: Dir, name: String, version: String, module: String, count: Int) -> Option(Bytes):
+    precompiled_staged_bytes(store, name, version, module, "opt", count, 0, bytes.from_string(""))
+
+fn precompiled_staged_size(store: Dir, name: String, version: String, module: String, component: String, count: Int, seq: Int, total: Int) -> Int:
+    if seq == count:
+        total
+    else:
+        let path = library_part_path(name, version, module, component, seq)
+        if !store.exists(path):
+            -1
+        else:
+            precompiled_staged_size(store, name, version, module, component, count, seq + 1, total + bytes.length(store.read_bytes(path)))
+
+fn precompiled_staged_bytes(store: Dir, name: String, version: String, module: String, component: String, count: Int, seq: Int, data: Bytes) -> Option(Bytes):
+    if seq == count:
+        Some(data)
+    else:
+        let path = library_part_path(name, version, module, component, seq)
+        if !store.exists(path):
+            None
+        else:
+            precompiled_staged_bytes(store, name, version, module, component, count, seq + 1, bytes.concat(data, store.read_bytes(path)))
+
+pub fn precompiled_wasm_exists(store: Dir, name: String, version: String, module: String) -> Bool:
+    committed_part_count(store, name, version, module, "wasm").is_some()
+
+pub fn precompiled_sidecar_exists(store: Dir, name: String, version: String, module: String) -> Bool:
+    committed_part_count(store, name, version, module, "opt").is_some()
+
+pub fn read_precompiled_wasm_part(store: Dir, name: String, version: String, module: String, seq: Int) -> Option(Bytes):
+    read_committed_part(store, name, version, module, "wasm", seq)
+
+pub fn read_precompiled_sidecar_part(store: Dir, name: String, version: String, module: String, seq: Int) -> Option(Bytes):
+    read_committed_part(store, name, version, module, "opt", seq)
+
+fn committed_part_count(store: Dir, name: String, version: String, module: String, component: String) -> Option(Int):
+    let path = library_count_path(name, version, module, component)
+    if !store.exists(path):
+        None
+    else:
+        match store.read(path).parse_int():
+            Some(count) -> if count > 0: Some(count) else: None
+            None -> None
+
+fn read_committed_part(store: Dir, name: String, version: String, module: String, component: String, seq: Int) -> Option(Bytes):
+    match committed_part_count(store, name, version, module, component):
+        None -> None
+        Some(count) ->
+            let path = library_part_path(name, version, module, component, seq)
+            if seq >= 0 && seq < count && store.exists(path):
+                Some(store.read_bytes(path))
+            else:
+                None
 
 // --- walking -----------------------------------------------------------------
 // Every published version of a rune.

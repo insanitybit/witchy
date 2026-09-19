@@ -6,11 +6,11 @@ description: Systematically hunt security-relevant bugs and vulnerabilities in w
 # vuln-hunt
 
 Hunt vulnerabilities in witchy **the way its threat model actually breaks**, not
-generically. witchy is a capability-secure language with **twin backends**: the
-tree-walking interpreter is the **reference oracle**; the compiled-WASM path is
-the **sole run path** in production. The highest-value bugs live in the gap
-between those two, and in the hand-written WASM-heap runtime that the compiled
-path depends on.
+generically. Its executable contract is three-routed: an independent expected
+result, the canonical SafeWIR interpreter, and admitted Wasm. The source tree
+walker is frozen, not a semantic oracle or RFC-0167 acceptance evidence, and is
+retained temporarily only for compiler services. The highest-value bugs live in
+disagreement among those three routes and in the hand-written WASM-heap runtime.
 
 This skill fuses three things:
 1. **witchy's threat model** (below) — where to look.
@@ -30,10 +30,10 @@ highest-risk surfaces in priority order (below).
 
 | Rationalization | Why it's wrong | Required action |
 |---|---|---|
-| "Both backends print the same, so it's fine" | `witchy <file>` runs the **COMPILED** backend, not the interpreter. Running it twice tests the same backend. | Compare against the **interpreter oracle** via the `interp()` test helper, not the CLI. |
+| "Both executable forms print the same, so it's fine" | Agreement alone can preserve the same bug. | Start with an **independent expected result**, then compare canonical SafeWIR and admitted Wasm. |
 | "This helper is simple" | The dict-corruption bug (W-001) was one wrong term in a heap-pointer expression. | Read every `ensure()`, every `heap =`, every offset, by hand. |
 | "It type-checks / the suite is green" | The suite is green *for the patterns it covers*. W-001 slipped through because no test did remove→reinsert→iterate. | Hunt the **untested pattern**, then add the test. |
-| "The interpreter is correct, so the program is correct" | The interpreter is the *oracle for behavior*, but the **compiled backend** is what ships and what's memory-unsafe. | Always run the compiled path too and diff. |
+| "The canonical interpreter is correct, so the program is correct" | Canonical SafeWIR must agree with an independent expected result, and admitted Wasm is what ships. | Always establish the independent result, run canonical SafeWIR, and run admitted Wasm. |
 | "I found and fixed the bug, done" | ~40% of 0-days are *variants* of a known bug. | Do the **variant sweep** (Phase 4) before closing. |
 | "This is taking too long" | Rushed context → hallucinated or shallow findings. | Slow is fast. |
 
@@ -43,17 +43,14 @@ highest-risk surfaces in priority order (below).
 
 Ranked by severity-of-class. Hunt high to low.
 
-1. **Twin-backend parity divergence (PRIME).** Any observable behavior must be
-   identical on interpreter and compiled WASM, or loudly error on both. A silent
-   divergence where the **compiled** side is wrong/unsafe is the crown-jewel bug
-   (W-001: compiled dict corruption, interpreter correct). Oracle = the
-   interpreter. **Technique: differential execution** — same program, both
-   backends, diff the output (and the *error*). The compiled side being wrong is
-   high/crit; the interpreter being wrong is also a bug (the oracle is broken).
-   - **Gotcha:** `witchy <file>` and `witchy sandbox` BOTH run the compiled
-     backend. To see the interpreter oracle, use the `interp(src)` / `link_run`
-     test helpers (`= interpreter::run`) in `src/example_tests.rs`, or write a
-     differential test.
+1. **Canonical-conformance divergence (PRIME).** Any observable behavior must
+   match the independent expected result, canonical SafeWIR, and admitted Wasm,
+   or loudly error consistently. A silent admitted-Wasm divergence is the
+   crown-jewel bug; a canonical mismatch with the independent result is also a
+   bug. Use three-way execution, including errors.
+   - **Gotcha:** `witchy <file>` and `witchy sandbox` exercise admitted Wasm;
+     they do not establish an independent expected result. Use canonical
+     SafeWIR execution helpers and an explicit expected value in the test.
 
 2. **Compiled-WASM memory safety.** The WIR runtime helpers
    (`crates/witchy-wir/src/wir_helpers/` — `memory.rs`, `dict/`, `collections/`,
@@ -80,7 +77,7 @@ Ranked by severity-of-class. Hunt high to low.
    - **Sealing escape** (RFC-0002): constructing or destructuring a `capability`
      (sealed type) outside its declaring module (`check_sealing` in the linker).
    - A capability **reachable without being passed** (e.g. a host intrinsic
-     callable without the cap value) — both backends.
+     callable without the cap value) — canonical SafeWIR and admitted Wasm.
    - Footprint **under-reporting**: `witchy caps` claims fewer rights than the
      program can actually exercise (the footprint analyzer in `pm`/`compiler`).
 
@@ -135,15 +132,16 @@ Ranked by severity-of-class. Hunt high to low.
 - Use the GRAPE **bug model** to characterize any candidate (next section).
 
 ### Phase 3 — Verify (don't ship a guess)
-- **Minimal repro**, deterministic, on both backends. State the oracle's answer
-  vs the compiled answer explicitly.
+- **Minimal repro**, deterministic, with the independent expected result,
+  canonical SafeWIR result, and admitted-Wasm result stated explicitly.
 - Confirm it's real, not a measurement artifact: re-run, shrink, vary the type.
 - Rate severity by class (see VULNS.md). For a *parity* bug, identify which side
   is wrong. For a *memory* bug, show the OOB/garbage/trap.
 
 ### Phase 4 — Record + variant sweep (the highest-leverage step)
 - Append an entry to `security-eval/VULNS.md` (template at the top of that file).
-- If fixing: surgical fix → re-run the repro → **full suite both backends** (no
+- If fixing: surgical fix → re-run the repro → **full canonical-conformance
+  suite** (independent expectation, SafeWIR, and admitted Wasm; no
   regression) → un-ignore/add the regression test.
 - **VARIANT SWEEP (do not skip):** the root cause is a *pattern*; find its other
   instances using GRAPE's four properties:

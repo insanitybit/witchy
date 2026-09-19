@@ -131,16 +131,16 @@ fn test_greeting(root: TestRoot):
             console.print("hello, " + args.at(0))
 ```
 
-Run the same plan against both local backends:
+Run the plan through the production runtime:
 
 ```sh
-witchy test --fixtures fixtures.json --backend both fixture_suite.witchy
+witchy test --fixtures fixtures.json --backend wasm fixture_suite.witchy
 ```
 
-`both` is the default for fixture runs. It executes the interpreter and compiled
-Wasm adapters against the same state machines, then compares result kind,
-guest-visible output, ordered events, and transcript. Use `interpreter` or
-`wasm` only when isolating a backend.
+Checked admitted Wasm is the sole production test backend. Use `witchy parity`
+when you need the acceptance chain from an independent expectation through the
+canonical SafeWIR interpreter to admitted Wasm; the frozen source interpreter
+is not a semantic oracle or a selectable fixture backend.
 
 The plan can provide:
 
@@ -275,13 +275,14 @@ the same whichever backend runs it.
 
 Three project-level checks run alongside your tests:
 
-- **`witchy parity`** (from the last chapter) is differential testing for the
-  *language itself* - it catches either backend disagreeing with the other.
+- **`witchy parity`** (from the last chapter) compares the canonical SafeWIR
+  interpreter with admitted Wasm; the frozen source tree walker is not a
+  selectable semantic backend.
 - **The independent conformance corpus** pins exact language results,
   rejections, and capability footprints without deriving its expectations from
   either backend. This matters because two implementations can agree on the
   same wrong answer. Its positive-control mutation deliberately preserves
-  interpreter/Wasm agreement while changing a result, then proves the
+  canonical-interpreter/Wasm agreement while changing a result, then proves the
   independently stated expectation still fails.
 - The documentation you're reading is tested. Every witchy block is extracted
   and checked. Complete examples execute through compiled Wasm in fresh opaque

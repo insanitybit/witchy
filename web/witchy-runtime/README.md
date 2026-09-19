@@ -59,8 +59,8 @@ run();          // synchronous without Fetch/SecretStore; returns the output arr
   denied because `mint_secret` is not provided.
 - `opts.capabilities.vm = true` — opt into fresh zero-authority worker
   instances for ordered `vm.par_map` and lock-step `vm.serve`. The browser
-  drives them sequentially, matching the interpreter oracle without claiming
-  multi-core execution. Parent authority imports are linked as traps inside
+  drives them sequentially, matching the canonical SafeWIR interpreter oracle
+  without claiming multi-core execution. Parent authority imports are linked as traps inside
   each worker.
 - `opts.fetchImpl` — inject a fetch-compatible function for deterministic tests;
   production defaults to `globalThis.fetch`.

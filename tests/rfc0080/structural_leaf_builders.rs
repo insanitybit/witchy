@@ -89,3 +89,32 @@ comptime:
         .to_string();
     assert!(error.contains("meta.pattern_var") && error.contains("reference-only"), "{error}");
 }
+
+#[test]
+fn try_and_lambda_builders_preserve_typed_expression_shape() {
+    let source = r#"
+import meta
+
+comptime:
+    let int = meta.type_named(meta.ident("Int"), [])
+    let option_int = meta.type_named(meta.ident("Option"), [int])
+    let value = meta.ident("value")
+    let param = meta.param(value, int)
+    let lambda = meta.expr_lambda([param], None, meta.expr_binary("+", meta.expr_name(value), meta.expr_int(1)))
+    emit_item(meta.function(true, meta.ident("increment"), [], Some(meta.type_fn([int], int)), lambda))
+    let wrapped = meta.expr_call(meta.expr_name(meta.ident("Some")), [meta.expr_try(meta.expr_call(meta.expr_name(meta.ident("Some")), [meta.expr_int(41)]))])
+    emit_item(meta.function(true, meta.ident("unwrap_some"), [], Some(option_int), wrapped))
+
+fn main(console: Console):
+    let f = increment()
+    console.print("${f(41)}")
+    console.print("${unwrap_some()}")
+"#;
+    let expected = ["42".to_string(), "Some(41)".to_string()];
+    let parsed = parser::parse_module(source).expect("parse try/lambda builders");
+    let linked = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect("expand try/lambda builders");
+    typeck::check(&linked).expect("typecheck try/lambda builders");
+    assert_eq!(interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"), expected);
+    super::assert_compiled_output(&linked, &expected, "try_lambda", 128);
+}

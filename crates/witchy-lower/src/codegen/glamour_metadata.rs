@@ -623,6 +623,7 @@ fn checked_glamour_execution_module<'authority>(
             comptime_only: false,
             attributes: vec!["browser".into()],
             name: generated_owner_name(&generated_owner, "export_glamour_worker_execute"),
+            type_params: Vec::new(),
             params: vec![generated_param(
                 input_name.clone(),
                 Type::Named("String".into(), Vec::new()),
@@ -1026,6 +1027,7 @@ fn glamour_completion_capture_dispatch(
         comptime_only: false,
         attributes: Vec::new(),
         name: capture_dispatch_name,
+        type_params: Vec::new(),
         params: vec![
             generated_param(
                 completion_name.clone(),
@@ -1068,6 +1070,7 @@ fn glamour_completion_dispatch(
         comptime_only: false,
         attributes: Vec::new(),
         name,
+        type_params: Vec::new(),
         params: vec![
             generated_param(
                 "__glamour_completion".into(),
@@ -1191,6 +1194,7 @@ fn generated_development_codec_function(
         comptime_only: false,
         attributes: Vec::new(),
         name,
+        type_params: Vec::new(),
         params: vec![generated_param(parameter, parameter_type)],
         ret: Some(return_type),
         body: Block {
@@ -1652,7 +1656,7 @@ impl GlamourCaptureCodecs {
                     } else {
                         format!("glamour.IslandCapture{variant}(inner)")
                     };
-                    let decoded = if variant == "Nil" { "Nil" } else { "inner" };
+                    let decoded = if variant == "Nil" { "()" } else { "inner" };
                     return Ok(format!(
                         "pub fn {encoder}(value: {type_source}) -> glamour.IslandCapture:\n    glamour.IslandCapture{variant}{}\n\npub fn {decoder}(value: glamour.IslandCapture) -> {type_source}:\n    match value:\n        {pattern} -> {decoded}\n        _ -> {decoder}_abort()\n\nfn {decoder}_abort() -> {type_source}:\n    fail(\"glamour island: callback environment does not match `{type_source}`\")\n    {decoder}_abort()\n",
                         if variant == "Nil" { "".to_string() } else { "(value)".to_string() },

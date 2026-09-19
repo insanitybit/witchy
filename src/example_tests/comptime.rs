@@ -23,17 +23,25 @@ comptime:
             match t.kind:
                 meta.TypeRecord ->
                     let f = list.at(t.fields, 0)
-                    emit("fn generated_type_shape() -> String:")
-                    emit("    \"record:" + meta.type_source(f.type_expr) + "\"")
-                _ -> Nil
+                    emit_item(quote item:
+                        fn generated_type_shape() -> String:
+                            ${meta.expr_string("record:" + meta.type_source(f.type_expr))}
+                    )
+                _ -> ()
         if t.name == "Choice":
             match t.kind:
-                meta.TypeSum -> emit("fn generated_sum_kind() -> String:\n    \"sum\"")
-                _ -> Nil
+                meta.TypeSum -> emit_item(quote item:
+                    fn generated_sum_kind() -> String:
+                        "sum"
+                )
+                _ -> ()
         if t.name == "Never":
             match t.kind:
-                meta.TypeUninhabited -> emit("fn generated_empty_kind() -> String:\n    \"uninhabited\"")
-                _ -> Nil
+                meta.TypeUninhabited -> emit_item(quote item:
+                    fn generated_empty_kind() -> String:
+                        "uninhabited"
+                )
+                _ -> ()
 
 fn main(console: Console):
     console.print(generated_type_shape())
@@ -54,7 +62,35 @@ fn main(console: Console):
     /// inferred before TypeInfo reaches comptime code.
     #[test]
     fn comptime_typeinfo_normalizes_aliases_and_implicit_params_on_both_backends() {
-        let src = "import list\nimport meta\n\ntype UserId = String\n\ntype Box:\n    value: a\n\ntype Config:\n    id: UserId\n\ncomptime:\n    for t in module_types:\n        if t.name == \"Box\":\n            emit(\"fn generated_box_params() -> String:\")\n            emit(\"    \\\"\" + list.join(t.params, \",\") + \"\\\"\")\n        if t.name == \"Config\":\n            let f = list.at(t.fields, 0)\n            emit(\"fn generated_config_field() -> String:\")\n            emit(\"    \\\"\" + meta.type_source(f.type_expr) + \"\\\"\")\n\nfn main(console: Console):\n    console.print(generated_box_params())\n    console.print(generated_config_field())\n";
+        let src = r#"import list
+import meta
+
+type UserId = String
+
+type Box:
+    value: a
+
+type Config:
+    id: UserId
+
+comptime:
+    for t in module_types:
+        if t.name == "Box":
+            emit_item(quote item:
+                fn generated_box_params() -> String:
+                    ${meta.expr_string(list.join(t.params, ","))}
+            )
+        if t.name == "Config":
+            let f = list.at(t.fields, 0)
+            emit_item(quote item:
+                fn generated_config_field() -> String:
+                    ${meta.expr_string(meta.type_source(f.type_expr))}
+            )
+
+fn main(console: Console):
+    console.print(generated_box_params())
+    console.print(generated_config_field())
+"#;
         let expected = ["a", "String"];
         assert_eq!(link_run(src), expected, "interp sees normalized TypeInfo");
         assert_eq!(
@@ -64,54 +100,60 @@ fn main(console: Console):
         );
     }
 
-    /// (RFC-0112) A borrowed nominal declaration reaches `module_types` without
-    /// constructing a borrowed value. Explicit type and lifetime parameters keep
-    /// their source order, inferred ordinary parameters follow them, and borrowed
-    /// fields remain structured owner relations rather than rendered strings.
-    /// (RFC-0112) Explicit shared and mutable reference fields and nominal
-    /// lifetime relations reach `module_types` as structured `meta.TReference`
-    /// values at the comptime boundary on both backends.
+    /// RFC-0167 rooted views reach `module_types` as the single lifetime-free
+    /// `meta.TView` form.  A nested aggregate descriptor stays structural and
+    /// `meta.type_source` can regenerate only canonical `&T` source.
     #[test]
-    fn comptime_typeinfo_preserves_reference_kinds_and_lifetime_relations_on_both_backends() {
-        let src = r#"mode opt
-
-import list
+    fn comptime_typeinfo_preserves_rooted_view_descriptors_on_both_backends() {
+        let src = r#"import list
 import meta
 
-type Pair(a, 'left, 'right):
-    shared: View(a, 'left)
-    mutable: &'right mut String
+type Pair(a):
+    shared: &a
+    aggregate: &(a, &[a])
     metadata: b
 
 comptime:
     for t in module_types:
         if t.name == "Pair":
-            emit("fn generated_pair_params() -> String:")
-            emit("    \"" + list.join(t.params, ",") + "\"")
+            emit_item(quote item:
+                fn generated_pair_params() -> String:
+                    ${meta.expr_string(list.join(t.params, ","))}
+            )
             let first = list.at(t.fields, 0)
             match first.type_expr:
-                meta.TReference("shared", inner, lifetime) ->
-                    emit("fn generated_shared_relation() -> String:")
-                    emit("    \"shared:" + meta.type_source(inner) + ":'" + lifetime + "\"")
-                _ -> emit("fn generated_shared_relation() -> String:\n    \"wrong\"")
+                meta.TView(inner) ->
+                    emit_item(quote item:
+                        fn generated_view_relation() -> String:
+                            ${meta.expr_string("view:" + meta.type_source(inner))}
+                    )
+                _ -> emit_item(quote item:
+                    fn generated_view_relation() -> String:
+                        "wrong"
+                )
             let second = list.at(t.fields, 1)
             match second.type_expr:
-                meta.TReference("mut", inner, lifetime) ->
-                    emit("fn generated_mutable_relation() -> String:")
-                    emit("    \"mut:" + meta.type_source(inner) + ":'" + lifetime + "\"")
-                _ -> emit("fn generated_mutable_relation() -> String:\n    \"wrong\"")
+                meta.TView(inner) ->
+                    emit_item(quote item:
+                        fn generated_aggregate_view_relation() -> String:
+                            ${meta.expr_string("view:" + meta.type_source(inner))}
+                    )
+                _ -> emit_item(quote item:
+                    fn generated_aggregate_view_relation() -> String:
+                        "wrong"
+                )
 
 fn main(console: Console):
     console.print(generated_pair_params())
-    console.print(generated_shared_relation())
-    console.print(generated_mutable_relation())
+    console.print(generated_view_relation())
+    console.print(generated_aggregate_view_relation())
 "#;
-        let expected = ["a,'left,'right,b", "shared:a:'left", "mut:String:'right"];
-        assert_eq!(link_run(src), expected, "interp preserves reference metadata");
+        let expected = ["a,b", "view:a", "view:(a, &[a])"];
+        assert_eq!(link_run(src), expected, "interp preserves rooted-view metadata");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
-            "compiled code preserves reference metadata",
+            "compiled code preserves rooted-view metadata",
         );
     }
 
@@ -204,7 +246,7 @@ fn main(console: Console):
                            \n\
                            impl PublicState for Forged:\n\
                            \x20   fn public_state_proof(self):\n\
-                           \x20       Nil\n\
+                           \x20       ()\n\
                            \n\
                            fn main(console: Console):\n\
                            \x20   console.print(\"unreachable\")\n";
@@ -214,18 +256,22 @@ fn main(console: Console):
         assert!(rendered.contains("sealed public-boundary proof"), "{rendered}");
         assert!(rendered.contains("derive(PublicState)"), "{rendered}");
 
-        let generated = "import bytes\n\
-                         import public_state\n\
-                         from meta import ItemSyntax, TypeInfo\n\
-                         \n\
-                         comptime fn derive_forged(t: TypeInfo) -> ItemSyntax:\n\
-                         \x20   item(\"impl PublicState for \" + t.name + \":\\n    fn public_state_proof(self):\\n        Nil\")\n\
-                         \n\
-                         type Forged derive(Forged):\n\
-                         \x20   payload: Bytes\n\
-                         \n\
-                         fn main(console: Console):\n\
-                         \x20   console.print(\"unreachable\")\n";
+        let generated = r#"import bytes
+import public_state
+from meta import ItemSyntax, TypeInfo
+
+comptime fn derive_forged(_t: TypeInfo) -> ItemSyntax:
+    quote item:
+        impl PublicState for Forged:
+            fn public_state_proof(self):
+                ()
+
+type Forged derive(Forged):
+    payload: Bytes
+
+fn main(console: Console):
+    console.print("unreachable")
+"#;
         let linked = resolve_std_src(generated);
         let error =
             typeck::check(&linked).expect_err("a user-generated proof must not widen PublicState");
@@ -309,7 +355,7 @@ fn main(console: Console):
     /// comptime code is a smaller import language than ordinary Witchy source.
     #[test]
     fn comptime_preserves_std_from_imports_on_both_backends() {
-        let src = "from meta import TypeInfo\n\ntype Point:\n    x: Int\n\ncomptime:\n    let types: List(TypeInfo) = module_types\n    var n = 0\n    for _t in types:\n        n = n + 1\n    emit(\"fn generated_type_count() -> Int:\")\n    emit(\"    ${n}\")\n\nfn main(console: Console):\n    console.print(\"${generated_type_count()}\")\n";
+        let src = "from meta import TypeInfo, expr_int\n\ntype Point:\n    x: Int\n\ncomptime:\n    let types: List(TypeInfo) = module_types\n    var n = 0\n    for _t in types:\n        n = n + 1\n    emit_item(quote item:\n        fn generated_type_count() -> Int:\n            ${expr_int(n)}\n    )\n\nfn main(console: Console):\n    console.print(\"${generated_type_count()}\")\n";
         let expected = ["1"];
         assert_eq!(link_run(src), expected, "interp comptime sees from-imported std type");
         assert_eq!(
@@ -320,13 +366,11 @@ fn main(console: Console):
     }
 
     /// RFC-0080 first slice: comptime can append a typed `meta.ItemSyntax`
-    /// through `emit_item`, so the compiler-facing generation boundary is no
-    /// longer only `emit(String)`. The payload is still source-backed in this
-    /// slice, then parsed/typechecked/footprint-analyzed exactly like handwritten
-    /// code.
+    /// through `emit_item`, with a compiler-owned quote payload that is linked,
+    /// typechecked, and footprint-analyzed exactly like handwritten code.
     #[test]
     fn comptime_emit_item_adds_typed_generated_items_on_both_backends() {
-        let src = "comptime:\n    let generated = item(\"fn generated() -> Int:\\n    42\")\n    emit_item(generated)\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
+        let src = "comptime:\n    emit_item(quote item:\n        fn generated() -> Int:\n            42\n    )\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
         let expected = ["42"];
         assert_eq!(link_run(src), expected, "interp emits typed item");
         assert_eq!(
@@ -359,12 +403,6 @@ fn main(console: Console):
         if !is_nightly() {
             return;
         }
-        let runtime_value = "import meta\n\nfn main(console: Console):\n    let generated = meta.item(\"fn hidden() -> Int:\\n    1\")\n    console.print(\"runtime item\")\n";
-        let err = typeck::check(&resolve_std_src(runtime_value))
-            .expect_err("runtime meta.item must be rejected")
-            .message;
-        assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
-
         for (source, type_name, label) in [
             ("from meta import TypeSyntax\n\nfn leak(x: TypeSyntax) -> TypeSyntax:\n    x\n", "meta.TypeSyntax", "TypeSyntax"),
             ("import meta\n\nfn main(console: Console):\n    let id = meta.ident(\"x\")\n    console.print(\"runtime ident\")\n", "meta.Ident", "meta.ident"),
@@ -443,8 +481,8 @@ comptime:
     let value = meta.ident("value")
     let int = meta.type_named(meta.ident("Int"), [])
     let string_ty = meta.type_named(meta.ident("String"), [])
-    let small_arm = meta.match_arm(meta.pattern_anon_ctor(meta.ident("Small"), []), meta.expr_raw("\"small\""))
-    let big_body = meta.expr_raw("\"big:\" + \"$" + "{value}\"")
+    let small_arm = meta.match_arm(meta.pattern_anon_ctor(meta.ident("Small"), []), meta.expr_string("small"))
+    let big_body = meta.expr_binary("+", meta.expr_string("big:"), meta.expr_name(value))
     let big_arm = meta.match_arm(meta.pattern_anon_ctor(meta.ident("Big"), [meta.pattern_var(value)]), big_body)
     let matched = meta.expr_match(meta.expr_call(meta.expr_name(meta.ident("classify")), [meta.expr_name(n)]), [small_arm, big_arm])
     let body = meta.block([meta.stmt_let(false, n, Some(int), meta.expr_int(12))], Some(matched))
@@ -478,7 +516,7 @@ fn main(console: Console):
     /// before the runtime module is linked/type-checked.
     #[test]
     fn comptime_fn_helpers_emit_typed_items_and_do_not_escape_runtime() {
-        let src = "comptime fn generated_item() -> ItemSyntax:\n    item(\"fn generated() -> Int:\\n    77\")\n\ncomptime:\n    emit_item(generated_item())\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
+        let src = "from meta import ItemSyntax\n\ncomptime fn generated_item() -> ItemSyntax:\n    quote item:\n        fn generated() -> Int:\n            77\n\ncomptime:\n    emit_item(generated_item())\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
         let expected = ["77"];
         assert_eq!(link_run(src), expected, "interp comptime fn typed helper");
         assert_eq!(
@@ -504,7 +542,7 @@ fn main(console: Console):
     /// derive routes through the same reachable helper closure.
     #[test]
     fn comptime_and_custom_derives_can_call_local_helpers_on_both_backends() {
-        let comptime_src = "fn make_source() -> String:\n    \"pub fn generated() -> Int:\\n    1\"\n\ncomptime:\n    emit(make_source())\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
+        let comptime_src = "from meta import ItemSyntax\n\ncomptime fn make_item() -> ItemSyntax:\n    quote item:\n        pub fn generated() -> Int:\n            1\n\ncomptime:\n    emit_item(make_item())\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
         let expected = ["1"];
         assert_eq!(link_run(comptime_src), expected, "interp comptime local helper");
         assert_eq!(
@@ -513,7 +551,7 @@ fn main(console: Console):
             "compiled comptime local helper",
         );
 
-        let derive_src = "from meta import TypeInfo\n\nfn derive_hello(t: TypeInfo) -> String:\n    \"pub fn generated() -> Int:\\n    2\"\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
+        let derive_src = "from meta import ItemSyntax, TypeInfo\n\ncomptime fn generated_item() -> ItemSyntax:\n    quote item:\n        pub fn generated() -> Int:\n            2\n\ncomptime fn derive_hello(_t: TypeInfo) -> ItemSyntax:\n    generated_item()\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
         let expected = ["2"];
         assert_eq!(link_run(derive_src), expected, "interp custom derive local helper");
         assert_eq!(
@@ -524,14 +562,13 @@ fn main(console: Console):
     }
 
     /// RFC-0080 custom-derive migration: a local `comptime fn derive_x` may
-    /// return `ItemSyntax` or `List(ItemSyntax)`. Legacy string-returning derives
-    /// remain supported by the previous test.
+    /// return `ItemSyntax` or `List(ItemSyntax)` through compiler-owned quotes.
     #[test]
     fn custom_derives_can_return_typed_items_on_both_backends() {
         if !is_nightly() {
             return;
         }
-        let one = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_hello(t: TypeInfo) -> ItemSyntax:\n    item(\"pub fn generated_one() -> Int:\\n    3\")\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_one()}\")\n";
+        let one = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_hello(_t: TypeInfo) -> ItemSyntax:\n    quote item:\n        pub fn generated_one() -> Int:\n            3\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_one()}\")\n";
         let expected = ["3"];
         assert_eq!(link_run(one), expected, "interp typed custom derive item");
         assert_eq!(
@@ -540,7 +577,7 @@ fn main(console: Console):
             "compiled typed custom derive item",
         );
 
-        let many = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_pair(t: TypeInfo) -> List(ItemSyntax):\n    [item(\"pub fn generated_left() -> Int:\\n    4\"), item(\"pub fn generated_right() -> Int:\\n    5\")]\n\ntype Marker derive(Pair):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_left() + generated_right()}\")\n";
+        let many = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_pair(_t: TypeInfo) -> List(ItemSyntax):\n    let left = quote item:\n        pub fn generated_left() -> Int:\n            4\n    let right = quote item:\n        pub fn generated_right() -> Int:\n            5\n    [left, right]\n\ntype Marker derive(Pair):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_left() + generated_right()}\")\n";
         let expected = ["9"];
         assert_eq!(link_run(many), expected, "interp typed custom derive item list");
         assert_eq!(

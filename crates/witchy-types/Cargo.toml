@@ -18,3 +18,4 @@ witchy-syntax = { path = "../witchy-syntax" }
 # (ASLR-seeded, no getrandom), so the wasm playground build keeps working.
 foldhash = "0.2.0"
 blake3 = "1.8.3"
+sha2 = "0.11.0"

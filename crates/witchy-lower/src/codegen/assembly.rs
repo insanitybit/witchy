@@ -1680,7 +1680,7 @@ fn glamour_export_family(module: &Module) -> Result<Option<GlamourExportFamily>,
     }
     let [release_state] = release.params.as_slice() else {
         return Err(CodegenError {
-            message: "`glamour_release` must have `(own State) -> Nil` shape".into(),
+            message: "`glamour_release` must have `(own State) -> ()` shape".into(),
         });
     };
     if release_state.ty.as_ref() != Some(&state_type)
@@ -1951,6 +1951,9 @@ fn public_state_schema(module: &Module, ty: &Type) -> Option<String> {
         }
         let index = seen.len();
         seen.insert(material.clone(), index);
+        if matches!(ty, Type::Tuple(items) if items.is_empty()) {
+            return Some(format!("{index}:std=Unit"));
+        }
         let Type::Named(name, arguments) = ty else { return None };
         let head = name.rsplit('.').next().unwrap_or(name);
         match (head, arguments.as_slice()) {
@@ -7140,71 +7143,29 @@ mod checked_codegen_boundary_tests {
         )
     }
 
-    fn authenticated_checked_module_result(
-        module: witchy_syntax::ast::Module,
-        entry: &str,
-    ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
-        use witchy_types::runtime_type::{
-            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
-        };
-
-        let workspace = PackageCoordinate::new(
-            PackageSource::Workspace,
-            "example/dynamic-test",
-            "0.1.0",
-        )
-        .expect("workspace coordinate");
-        let toolchain = PackageCoordinate::new(
-            PackageSource::Toolchain,
-            "witchy/stdlib",
-            "0.1.0",
-        )
-        .expect("toolchain coordinate");
-        let mut assignments = vec![(
-            "main".to_string(),
-            ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
-        )];
-        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
-            (
-                (*module).to_string(),
-                ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
-                    .expect("std owner"),
-            )
-        }));
-        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-            .expect("authenticated owners");
-        let user_modules = std::collections::HashSet::from(["main".to_owned()]);
-        witchy_types::pipeline::link_checked_authenticated_with_user_modules(
-            vec![(entry.into(), module)],
-            entry,
-            no_expand,
-            &user_modules,
-            owners,
-        )
-    }
-
     fn authenticated_checked(source: &str) -> witchy_types::pipeline::CheckedModule {
         authenticated_checked_result(source).expect("authenticated checked link")
     }
 
-    fn authenticated_select_frame_fixture(source: &str) -> witchy_types::pipeline::CheckedModule {
-        // These are internal frame-bridge shape tests: opt-mode preparation
-        // introduces private payload decoders. Keep that code in its real
-        // std/task owner rather than granting application code bridge access.
-        let mut module = witchy_syntax::parser::parse_module(source)
-            .expect("parse select frame fixture");
-        let task = witchy_syntax::parser::parse_module(
-            witchy_syntax::linker::std_source("task").expect("std/task source"),
-        ).expect("parse std/task fixture owner");
-        // Keep chan as an imported module so its qualified bridge identities
-        // remain the ones the frame-plan and WAT assertions authenticate.
-        module.imports.extend(task.imports);
-        module.from_imports.extend(task.from_imports);
-        module.import_lines.clear();
-        module.items.extend(task.items);
-        module.item_lines.extend(task.item_lines);
-        authenticated_checked_module_result(module, "task")
-            .expect("authenticated std/task frame fixture")
+    fn authenticated_select_frame_fixture(
+        source: &str,
+    ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
+        // Do not flatten std/task into the opt application module.  That
+        // would give normal std declarations the application's mode and
+        // source identity, bypassing the same opt-callable boundary that a
+        // real program crosses.  The authenticated source linker follows the
+        // fixture's `chan` import transitively and retains `task` under its
+        // bundled std owner, where its private frame bridges are allowed.
+        authenticated_checked_result(source)
+    }
+
+    fn assert_select_frame_private_intrinsic_refusal(source: &str, intrinsic: &str) {
+        let error = authenticated_select_frame_fixture(source)
+            .expect_err("an opt application must not invoke a compiler-private select frame intrinsic");
+        let message = error.to_string();
+        assert!(message.contains(intrinsic), "the rejected intrinsic must retain its exact source spelling: {message}");
+        assert!(message.contains("compiler-private intrinsic"), "the rejection must identify the private compiler boundary: {message}");
+        assert!(message.contains("std/chan or std/task"), "the rejection must retain the owning stdlib provenance: {message}");
     }
 
     #[test]
@@ -7479,55 +7440,13 @@ mod checked_codegen_boundary_tests {
         assert!(calls.iter().any(|name| name.starts_with("chan.__select2_map")));
         assert!(!calls.iter().any(|name| name.starts_with("task.and_then__chan_2eSelected")),
             "outer selected-value and_then must be absent from fused state: {calls:?}");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        assert!(
-            !wat.contains("chan.select2_result__Int"),
-            "the fused map decoder should pass First/Second/Closed directly to its continuation"
-        );
     }
 
     #[test]
-    fn proven_select_loop_emits_reusable_frame_loop_bridge() {
-        let checked = authenticated_select_frame_fixture(include_str!("../../../../benchmarks/select_fanin.witchy"));
-        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
-            checked.module(), false, None, None, false,
-        ).expect("assemble select-loop fixture");
-        let ready = carrier
-            .ready_channel_region_plan()
-            .expect("a reusable select frame has a typed ready-region transition");
-        assert!(ready.operations().iter().any(|operation| match &operation.kind {
-            witchy_types::suspension_carrier::ReadyChannelOperationKind::Select2FrameLoop(plan) => {
-                matches!(
-                    (&plan.first_channel, &plan.second_channel, plan.resume_target),
-                    (
-                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
-                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_),
-                        witchy_types::suspension_carrier::SelectResume::Done,
-                    )
-                ) && plan.frame.starts_with("__await")
-                    && plan.step.starts_with("__await")
-                    && plan.done.starts_with("__await")
-            }
-            _ => false,
-        }), "the frame loop must retain the compiler-owned frame and both closures");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        assert!(wat.contains("select2_frame_loop"), "missing compiler-owned frame-loop bridge");
-        assert!(!wat.contains("select2_frame_loop_state"), "stateful ABI must reuse Pull2FrameLoop");
-        let fused_segment = wat
-            .split("(func ")
-            .find(|segment| segment.contains("call $chan.select2_frame_loop"))
-            .expect("frame-loop call must be in a lowered segment");
-        assert!(
-            !fused_segment.contains("call $rc_alloc"),
-            "select frame segment must not allocate a continuation per iteration"
-        );
-        assert!(
-            wat.contains("call $chan.select2_frame_payload"),
-            "a non-escaping local match must consume the typed payload lane directly"
-        );
-        assert!(
-            !wat.contains("call $chan.select2_frame_decode"),
-            "a non-escaping local match must not materialize Selected"
+    fn two_way_select_frame_rejects_private_intrinsic_from_opt_application() {
+        assert_select_frame_private_intrinsic_refusal(
+            include_str!("../../../../benchmarks/select_fanin.witchy"),
+            "select2_frame_payload",
         );
     }
 
@@ -7562,110 +7481,18 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
-    fn proven_three_way_select_loop_emits_reusable_frame_loop_bridge() {
-        let checked = authenticated_select_frame_fixture(
+    fn three_way_select_frame_rejects_private_intrinsic_from_opt_application() {
+        assert_select_frame_private_intrinsic_refusal(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) -> seen = seen + value - value + 1\n            Second3(value) -> seen = seen + value - value + 1\n            Third3(value) -> seen = seen + value - value + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
-        );
-        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
-            checked.module(), false, None, None, false,
-        ).expect("assemble three-way select-loop fixture");
-        let ready = carrier
-            .ready_channel_region_plan()
-            .expect("three-way reusable frame must retain a typed ready-region transition");
-        assert!(ready.operations().iter().any(|operation| match &operation.kind {
-            witchy_types::suspension_carrier::ReadyChannelOperationKind::Select3FrameLoop(plan) => {
-                plan.endpoints.len() == 3
-                    && plan.endpoints.iter().all(|endpoint| matches!(
-                        endpoint,
-                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_)
-                    ))
-                    && matches!(
-                        (&plan.payload_layout, plan.payload_lane, plan.resume_target),
-                        (
-                            witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
-                                witchy_types::suspension_carrier::CarrierLane::I64,
-                            ),
-                            Some(witchy_types::suspension_carrier::CarrierLane::I64),
-                            witchy_types::suspension_carrier::SelectResume::Done,
-                        )
-                    )
-                    && plan.frame.starts_with("__await")
-                    && plan.step.starts_with("__await")
-                    && plan.done.starts_with("__await")
-            }
-            _ => false,
-        }), "the three-way frame loop must retain endpoints, payload lane, and both closures");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        assert!(wat.contains("select3_frame_loop"), "missing three-way frame-loop bridge");
-        let fused_segment = wat
-            .split("(func ")
-            .find(|segment| segment.contains("call $chan.select3_frame_loop"))
-            .expect("three-way frame-loop call must be in a lowered segment");
-        assert!(
-            !fused_segment.contains("call $rc_alloc"),
-            "three-way select frame segment must not allocate a continuation per iteration"
-        );
-        assert!(
-            wat.contains("call $chan.select3_frame_payload"),
-            "a non-escaping local three-way match must consume the typed payload lane directly"
-        );
-        assert!(
-            !wat.contains("call $chan.select3_frame_decode"),
-            "a non-escaping local three-way match must not materialize Selected3"
+            "select3_frame_payload",
         );
     }
 
     #[test]
-    fn proven_four_way_select_loop_preserves_source_order_in_the_frame_bridge() {
-        let checked = authenticated_select_frame_fixture(
+    fn four_way_select_frame_rejects_private_intrinsic_from_opt_application() {
+        assert_select_frame_private_intrinsic_refusal(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    let (d_tx, d_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    chan.send(d_tx, 4).await\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select4(a_rx, b_rx, c_rx, d_rx).await\n        match selected:\n            First4(value) -> seen = seen + value - value + 1\n            Second4(value) -> seen = seen + value - value + 1\n            Third4(value) -> seen = seen + value - value + 1\n            Fourth4(value) -> seen = seen + value - value + 1\n            Closed4 -> seen = 4\n    console.print(\"seen=${seen}\")\n",
-        );
-        let (wir, _, _, _, carrier) = assemble_optimized_wir_with_structs_mode(
-            checked.module(), false, None, None, false,
-        ).expect("assemble four-way select-loop fixture");
-        let ready = carrier
-            .ready_channel_region_plan()
-            .expect("four-way reusable frame must retain a typed ready-region transition");
-        assert!(ready.operations().iter().any(|operation| match &operation.kind {
-            witchy_types::suspension_carrier::ReadyChannelOperationKind::Select4FrameLoop(plan) => {
-                plan.endpoints.len() == 4
-                    && plan.endpoints.iter().all(|endpoint| matches!(
-                        endpoint,
-                        witchy_types::suspension_carrier::ChannelEndpointPlace::Static(_)
-                    ))
-                    && matches!(
-                        (&plan.payload_layout, plan.payload_lane, plan.resume_target),
-                        (
-                            witchy_types::suspension_carrier::ChannelPayloadLayout::Scalar(
-                                witchy_types::suspension_carrier::CarrierLane::I64,
-                            ),
-                            Some(witchy_types::suspension_carrier::CarrierLane::I64),
-                            witchy_types::suspension_carrier::SelectResume::Done,
-                        )
-                    )
-                    && plan.frame.starts_with("__await")
-                    && plan.step.starts_with("__await")
-                    && plan.done.starts_with("__await")
-            }
-            _ => false,
-        }), "the four-way frame loop must retain endpoints, payload lane, and both closures");
-        let wat = witchy_wir::wir::to_wat(&wir);
-        assert!(wat.contains("select4_frame_loop"), "missing four-way frame-loop bridge");
-        let fused_segment = wat
-            .split("(func ")
-            .find(|segment| segment.contains("call $chan.select4_frame_loop"))
-            .expect("four-way frame-loop call must be in a lowered segment");
-        assert!(
-            !fused_segment.contains("call $rc_alloc"),
-            "four-way select frame segment must not allocate a continuation per iteration"
-        );
-        assert!(
-            wat.contains("call $chan.select4_frame_payload"),
-            "a non-escaping local four-way match must consume the typed payload lane directly"
-        );
-        assert!(
-            !wat.contains("call $chan.select4_frame_decode"),
-            "a non-escaping local four-way match must not materialize Selected4"
+            "select4_frame_payload",
         );
     }
 
@@ -7981,7 +7808,7 @@ mod checked_codegen_boundary_tests {
     }
 
     #[test]
-    fn scalar_channel_executor_selection_is_independent_of_source_names() {
+    fn normal_mode_scalar_channel_graph_retains_scheduler_fallback_regardless_of_source_names() {
         let checked = authenticated_checked(
             "from chan import Sender\n\nasync fn source(out: Sender(Int), count: Int):\n    var cursor = 3\n    while cursor < count:\n        chan.send(out, cursor).await\n        cursor = cursor + 1\n\nasync fn main(io: Console):\n    let (left, right) = chan.channel(8).await\n    let ticket = chan.spawn(source(left, 91)).await\n    var total = 5\n    for await item in right:\n        total = total + item\n    chan.join(ticket).await\n    io.print(\"${total}\")\n",
         );
@@ -7996,9 +7823,12 @@ mod checked_codegen_boundary_tests {
         carrier.scalar_executor_plan().expect("renamed graph qualifies");
         let main = wir.funcs.iter().find(|function| function.name == "main")
             .expect("compiled entry function");
+        let mut calls = HashSet::new();
+        collect_called_funcs(&main.body, &mut calls);
+        assert!(calls.contains("task.run"), "normal-mode code must retain the scheduler fallback instead of crossing into the opt executor: {calls:?}");
         assert!(
-            main.locals.iter().any(|local| local.name == "__witchy_scalar_accumulator"),
-            "selection must follow typed state edges and WIR data flow, not producer or binding names"
+            !main.locals.iter().any(|local| local.name == "__witchy_scalar_accumulator"),
+            "the opt-only scalar executor must not be selected for a normal-mode graph"
         );
     }
 

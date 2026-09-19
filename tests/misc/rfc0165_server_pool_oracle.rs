@@ -14,7 +14,7 @@ fn connection(socket: u64) -> Vec<Event> {
 
 #[test]
 fn server_pool_oracle_rejects_unused_worker_scripts() {
-    let checked = witchy::resolve_std_only_checked("fn main():\n    Nil\n").unwrap();
+    let checked = witchy::resolve_std_only_checked("fn main():\n    ()\n").unwrap();
     let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("ordinary empty entry admits");
     let function = FunctionId::new(artifact.entry().unwrap().export().strip_prefix('f').unwrap().parse().unwrap());
     let validated = codegen::validate_checked_module_for_oracle(&checked).unwrap();

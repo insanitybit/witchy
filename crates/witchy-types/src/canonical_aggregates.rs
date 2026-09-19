@@ -73,8 +73,14 @@ impl ScalarAggregateShape {
 }
 
 pub fn is_scalar_type(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
-        if arguments.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit"))
+    match ty.unqualified() {
+        Type::Tuple(items) => items.is_empty(),
+        Type::Named(name, arguments) => {
+            arguments.is_empty()
+                && matches!(name.as_str(), "Int" | "Float" | "Duration" | "Bool" | "Nil" | "Unit")
+        }
+        _ => false,
+    }
 }
 
 /// A v1 list element: a scalar (a `Bool` element is one byte), a string,
@@ -109,8 +115,9 @@ const MAX_AGGREGATE_SHAPE_EXPANSION: usize = 64;
 /// bounds changing generic recursion before it clones its next expanded field.
 const MAX_AGGREGATE_SHAPE_NODES: usize = 4_096;
 
-// Per-query proofs over immutable definitions. A proof can be reused only at
-// equal or shallower depth, with every recursion assumption still active.
+// Per-query proofs over immutable definitions. A proof records its additional
+// expansion height and can be reused wherever that height still fits, with
+// every recursion assumption it actually used still active.
 // Extra active owners can shorten a traversal, but cannot grant an assumption
 // the original proof required. Packed back-edges are rejected before lookup.
 #[derive(Default)]
@@ -138,8 +145,40 @@ fn field_type_ok_at(
     budget: &mut usize,
     completed: &mut ShapeMemo,
 ) -> bool {
+    let mut observed_depth = depth;
+    field_type_ok_at_with_dependencies(
+        ty,
+        definitions,
+        active,
+        depth,
+        budget,
+        completed,
+        &mut BTreeSet::new(),
+        &mut observed_depth,
+    )
+}
+
+fn field_type_ok_at_with_dependencies(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+    active: &mut BTreeSet<String>,
+    depth: usize,
+    budget: &mut usize,
+    completed: &mut ShapeMemo,
+    required: &mut BTreeSet<String>,
+    observed_depth: &mut usize,
+) -> bool {
+    *observed_depth = (*observed_depth).max(depth);
     if depth == MAX_AGGREGATE_SHAPE_EXPANSION || !consume_shape_nodes(budget, 1) {
         return false;
+    }
+    // A direct immutable scalar view is not a scalar slot.  It is an
+    // authenticated rooted-owner field selected by the canonical layout
+    // catalog.  Admit only the installed `&Int` carrier here so an aggregate
+    // can describe that field without granting a representation to arbitrary
+    // views (in particular, not `&mut`, region, or projected views).
+    if is_direct_rooted_int_view(ty) {
+        return true;
     }
     // This recognizes source fields, not linear-memory slots. Capability
     // fields require the catalog's checked opaque-owner representation.
@@ -149,19 +188,33 @@ fn field_type_ok_at(
         None => {}
     }
     if let Some(tuple) = dictionary_as_tuple(ty) {
-        return field_type_ok_at(&tuple, definitions, active, depth + 1, budget, completed);
+        return field_type_ok_at_with_dependencies(&tuple, definitions, active, depth + 1, budget, completed, required, observed_depth);
     }
     match ty.unqualified() {
         _ if is_scalar_type(ty) => true,
         Type::Named(name, arguments) if matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty() => true,
+        // An anonymous union carries its complete, checked constructor shape
+        // in the synthetic head: the type arguments are the flattened
+        // payload lanes in tag order.  It has no declaration to find in
+        // `definitions`, but it is otherwise an ordinary finite aggregate.
+        Type::Named(name, arguments)
+            if crate::typeck::anon_union_synthetic_variants(name)
+                .is_some_and(|variants| variants.iter().map(|(_, arity)| *arity).sum::<usize>() == arguments.len()) =>
+        {
+            arguments.iter().all(|argument| {
+                field_type_ok_at_with_dependencies(
+                    argument, definitions, active, depth + 1, budget, completed, required, observed_depth,
+                )
+            })
+        }
         Type::Named(name, arguments) if name == "List" && arguments.len() == 1 => {
-            field_type_ok_at(&arguments[0], definitions, active, depth + 1, budget, completed)
+            field_type_ok_at_with_dependencies(&arguments[0], definitions, active, depth + 1, budget, completed, required, observed_depth)
         }
         Type::Named(name, arguments) if matches!(name.as_str(), "Option" | "Result") => {
             arguments.len() == if name == "Option" { 1 } else { 2 }
-                && arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget, completed))
+                && arguments.iter().all(|argument| field_type_ok_at_with_dependencies(argument, definitions, active, depth + 1, budget, completed, required, observed_depth))
         }
-        Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok_at(item, definitions, active, depth + 1, budget, completed)),
+        Type::Tuple(items) => !items.is_empty() && items.iter().all(|item| field_type_ok_at_with_dependencies(item, definitions, active, depth + 1, budget, completed, required, observed_depth)),
         Type::Fn(parameters, result, conventions, _) => {
             // The closure occupies an owned pointer slot. Its signature still
             // has to close over supported concrete types; a nominal back-edge
@@ -171,13 +224,13 @@ fn field_type_ok_at(
                     if is_callable_only_lane(lane, definitions) {
                         consume_shape_nodes(budget, 1)
                     } else {
-                        field_type_ok_at(lane, definitions, active, depth + 1, budget, completed)
+                        field_type_ok_at_with_dependencies(lane, definitions, active, depth + 1, budget, completed, required, observed_depth)
                     }
                 })
         }
         Type::Named(name, arguments) => {
             definitions.get(name).is_some_and(|definition| {
-                definition_fields_ok(definition, arguments, definitions, active, depth + 1, budget, completed)
+                definition_fields_ok(definition, arguments, definitions, active, depth + 1, budget, completed, required, observed_depth)
             })
         }
         _ => false,
@@ -187,8 +240,7 @@ fn field_type_ok_at(
 // Capability parameters/results have callable ABI lanes without granting a
 // linear-memory field representation. Unit also has its own scalar layout.
 fn is_callable_only_lane(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments)
-        if arguments.is_empty() && matches!(name.as_str(), "Nil" | "Unit"))
+    crate::pipeline::is_unit_type(ty)
         || crate::canonical_capabilities::representation(ty, definitions).is_some()
 }
 
@@ -200,6 +252,8 @@ fn definition_fields_ok(
     depth: usize,
     budget: &mut usize,
     completed: &mut ShapeMemo,
+    required: &mut BTreeSet<String>,
+    observed_depth: &mut usize,
 ) -> bool {
     let parameters = effective_type_def_params(definition);
     if parameters.len() != arguments.len()
@@ -212,7 +266,9 @@ fn definition_fields_ok(
     // Arguments are part of the concrete instantiation even when a phantom
     // parameter has no field occurrence. Do not let an unused `a` smuggle an
     // unresolved or unsupported type through shape recognition.
-    if !arguments.iter().all(|argument| field_type_ok_at(argument, definitions, active, depth + 1, budget, completed)) {
+    let mut local_required = BTreeSet::new();
+    let mut local_max_depth = depth;
+    if !arguments.iter().all(|argument| field_type_ok_at_with_dependencies(argument, definitions, active, depth + 1, budget, completed, &mut local_required, &mut local_max_depth)) {
         return false;
     }
     // Validate arguments before cloning/rendering a key: memo lookup must not
@@ -226,18 +282,25 @@ fn definition_fields_ok(
         completed.packed_keys.insert(key.clone());
     }
     if active.contains(&key) {
+        local_required.insert(key);
+        required.extend(local_required);
+        *observed_depth = (*observed_depth).max(local_max_depth);
         return !definition.packed;
     }
     // Additional active owners can close more finite graph edges, but an
     // additional packed ancestor can invalidate a descendant hidden by reuse.
     // Every packed key encountered while deriving a proof is retained here.
-    if completed.completed.get(&key).is_some_and(|proofs| proofs.iter().any(|(proven_depth, assumptions)| {
-        *proven_depth >= depth && assumptions.is_subset(active)
-            && active.difference(assumptions).all(|key| !completed.packed_keys.contains(key))
+    if let Some((height, assumptions)) = completed.completed.get(&key).and_then(|proofs| proofs.iter().find_map(|(height, assumptions)| {
+        (depth.checked_add(*height).is_some_and(|maximum| maximum < MAX_AGGREGATE_SHAPE_EXPANSION)
+            && assumptions.is_subset(active)
+            && active.difference(assumptions).all(|key| !completed.packed_keys.contains(key)))
+            .then(|| (*height, assumptions.clone()))
     })) {
+        local_required.extend(assumptions);
+        required.extend(local_required);
+        *observed_depth = (*observed_depth).max(depth + height);
         return true;
     }
-    let assumptions = active.clone();
     active.insert(key.clone());
     let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect();
     let valid = definition.variants.iter().all(|variant| {
@@ -250,15 +313,18 @@ fn definition_fields_ok(
             // accounting and recursive checks, but borrow the immutable
             // declaration instead of cloning its complete field-type tree.
             if substitutions.is_empty() {
-                field_type_ok_at(field, definitions, active, depth + 1, budget, completed)
+                field_type_ok_at_with_dependencies(field, definitions, active, depth + 1, budget, completed, &mut local_required, &mut local_max_depth)
             } else {
                 substitute_type(field, &substitutions)
-                    .is_some_and(|field| field_type_ok_at(&field, definitions, active, depth + 1, budget, completed))
+                    .is_some_and(|field| field_type_ok_at_with_dependencies(&field, definitions, active, depth + 1, budget, completed, &mut local_required, &mut local_max_depth))
             }
         })
     });
     active.remove(&key);
-    if valid { completed.completed.entry(key).or_default().push((depth, assumptions)); }
+    local_required.remove(&key);
+    if valid { completed.completed.entry(key).or_default().push((local_max_depth.saturating_sub(depth), local_required.clone())); }
+    required.extend(local_required);
+    *observed_depth = (*observed_depth).max(local_max_depth);
     valid
 }
 
@@ -500,6 +566,51 @@ mod shape_memo {
     }
 }
 
+/// The aggregate identity that authorizes typed opaque owner fields.
+///
+/// Ordinary aggregates use the concrete physical identity.  A non-packed
+/// aggregate with a direct `&Int` field is the bounded exception: that field
+/// carries the authenticated rooted-view owner, so erasing the nested `View`
+/// qualifier would change the carrier into linear storage.  Preserve the
+/// qualifier only at direct aggregate arguments; nested carriers remain
+/// outside this ABI until they have their own provenance contract.
+pub fn canonical_owner_aggregate_identity(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<Type> {
+    let identity = concrete_aggregate_identity(ty, definitions)?;
+    let carries_direct_rooted_view = scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
+        !shape.packed && shape.fields.iter().any(is_direct_rooted_int_view)
+    });
+    if !carries_direct_rooted_view {
+        return Some(identity);
+    }
+    match (ty.unqualified(), identity) {
+        (Type::Named(_, source_arguments), Type::Named(name, arguments))
+            if source_arguments.len() == arguments.len() =>
+        {
+            Some(Type::Named(name, source_arguments.iter().zip(arguments).map(|(source, identity)| {
+                if is_direct_rooted_int_view(source) { source.clone() } else { identity }
+            }).collect()))
+        }
+        (Type::Tuple(source_items), Type::Tuple(items)) if source_items.len() == items.len() => {
+            Some(Type::Tuple(source_items.iter().zip(items).map(|(source, identity)| {
+                if is_direct_rooted_int_view(source) { source.clone() } else { identity }
+            }).collect()))
+        }
+        // A nominal declaration can carry a direct rooted view in one of its
+        // fields even though its outer identity has no type argument.  The
+        // normalized declaration identity is already exact in that case.
+        (_, identity) => Some(identity),
+    }
+}
+
+fn is_direct_rooted_int_view(ty: &Type) -> bool {
+    matches!(ty, Type::Qualified(witchy_syntax::ast::TypeQual::View, inner)
+        if matches!(inner.unqualified(), Type::Named(name, arguments)
+            if name == "Int" && arguments.is_empty()))
+}
+
 fn aggregate_declaration<'a>(
     name: &str,
     definitions: &'a BTreeMap<String, TypeDef>,
@@ -634,7 +745,18 @@ fn shape_from_instantiation(
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
     let mut budget = MAX_AGGREGATE_SHAPE_NODES;
-    if !definition_fields_ok(definition, arguments, definitions, &mut BTreeSet::new(), 0, &mut budget, &mut ShapeMemo::new()) {
+    let mut observed_depth = 0;
+    if !definition_fields_ok(
+        definition,
+        arguments,
+        definitions,
+        &mut BTreeSet::new(),
+        0,
+        &mut budget,
+        &mut ShapeMemo::new(),
+        &mut BTreeSet::new(),
+        &mut observed_depth,
+    ) {
         return None;
     }
     let substitutions = effective_type_def_params(definition).into_iter().zip(arguments.iter().cloned()).collect();
@@ -720,7 +842,7 @@ mod recursive_shape_tests {
     fn unit_payloads_preserve_generic_and_sum_shapes() {
         let payload = generic_definition("Payload", &["a"], vec![named("a"), named("Int")], false);
         let definitions = BTreeMap::from([("Payload".into(), payload)]);
-        for unit in [named("Nil"), named("Unit")] {
+        for unit in [named("Nil"), named("Unit"), Type::Tuple(Vec::new())] {
             let applied = Type::Named("Payload".into(), vec![unit.clone()]);
             assert_eq!(scalar_aggregate_shape(&applied, &definitions).unwrap().fields,
                 vec![unit.clone(), named("Int")]);
@@ -971,6 +1093,37 @@ fn scalar_aggregate_shape_uncached(
         });
     }
     let Type::Named(name, arguments) = ty.unqualified() else { return None };
+    if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+        let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
+        if expected != arguments.len()
+            || !arguments.iter().all(|argument| is_v1_field_type(argument, definitions))
+        {
+            return None;
+        }
+        let mut fields = vec![int_type()];
+        let mut shape_variants = Vec::with_capacity(variants.len());
+        let mut offset = 0usize;
+        for (tag, arity) in variants {
+            let end = offset.checked_add(arity)?;
+            shape_variants.push(ScalarVariant {
+                name: tag,
+                first_field: fields.len(),
+                arity,
+            });
+            fields.extend_from_slice(&arguments[offset..end]);
+            offset = end;
+        }
+        return Some(ScalarAggregateShape {
+            // The synthetic head is the physical aggregate identity.  Two
+            // source unions with the same tag spelling but different payload
+            // schema must never share a layout.
+            name: name.clone(),
+            fields,
+            variants: shape_variants,
+            tagged: true,
+            packed: false,
+        });
+    }
     match (name.as_str(), arguments.as_slice()) {
         ("Option", [payload]) if is_v1_field_type(payload, definitions) => Some(ScalarAggregateShape {
             name: "Option".into(),
@@ -1042,7 +1195,7 @@ mod scheduler_shape_tests {
             ((*name).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", name]).unwrap())
         }));
         let checked = crate::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-            vec![("main".into(), b"import task\nfn main():\n    task.run(task.done(Nil))\n".to_vec()),
+            vec![("main".into(), b"import task\nfn main():\n    task.run(task.done(()))\n".to_vec()),
                 ("task".into(), include_bytes!("../../../std/task.witchy").to_vec())],
             "main", |_, _, _| Ok(Default::default()),
             &std::collections::HashSet::from(["main".into()]),

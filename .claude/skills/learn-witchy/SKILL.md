@@ -5,11 +5,12 @@ description: Learn or refresh witchy's syntax, semantics, and capability model b
 
 # learn-witchy
 
-witchy is a capability-secure language with twin backends: a tree-walking
-interpreter (the reference semantics) and a compiled-WASM path that must match
-it. **The prime directive of the whole project is parity** — any observable
-behavior works (or loudly errors) identically on both backends. Keep this in
-mind as you learn: there is one meaning, enforced by differential tests.
+witchy is a capability-secure language whose executable contract is checked in
+three stages: an independent expected result, the canonical SafeWIR
+interpreter, and admitted Wasm. **The prime directive is conformance** — the
+admitted Wasm must match canonical SafeWIR and the independent expectation. The
+source tree walker is frozen, not a semantic oracle or RFC-0167 acceptance
+evidence, and remains temporarily only for compiler services.
 
 Your goal here is to become fluent enough to read and write correct witchy.
 Do that by reading the sources below — **not by guessing from memory.** witchy's
@@ -21,8 +22,10 @@ enough that recalled "looks like Python/Rust" intuitions will mislead you.
 When sources disagree, trust them in this order. Earlier wins.
 
 1. **`crates/` + `std/*.witchy` + the tests** — what actually IS.
-   `crates/witchy-interp/src/interpreter.rs` is the reference semantics;
-   `src/example_tests.rs` (+ `src/example_tests/`) holds the differential tests.
+   Checked canonical SafeWIR and its interpreter define executable semantics;
+   tests should record an independent expected result and then check canonical
+   SafeWIR against admitted Wasm. The frozen source tree walker is not RFC-0167
+   acceptance evidence.
 2. **`spec/language.md`** — the authoritative syntax + semantics reference. Every
    ` ```witchy ` block in it is a complete program the suite type-checks and runs.
 3. **`spec/capabilities.md`**, **`spec/stdlib.md`** — the security model and the
@@ -88,8 +91,9 @@ type errors — witchy's errors are written to teach the correct form.
 - **Capabilities are explicit values**, threaded from `main(console: Console, …)`
   inward. A function that does I/O takes the capability as a parameter; there are
   no ambient globals. This is the part most unlike other languages — study it.
-- **Two backends, one meaning.** If you ever find behavior that differs between
-  `witchy <file>` and `witchy sandbox <file>`, that is a bug, not a feature.
+- **Independent expectation, canonical SafeWIR, admitted Wasm.** If either
+  executable form differs from the independent expected result, or the two
+  executable forms differ, that is a bug, not a feature.
 - If you have edited `src/` (the compiler) yourself, the PATH `witchy` is the
   **release** binary and may be stale; build and use `./target/debug/witchy`
   or `cargo build --release`. For pure language learning (running existing

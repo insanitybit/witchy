@@ -11,18 +11,20 @@ pub(crate) fn compiler_version(version: &str, build_commit: Option<&str>) -> Str
 
 /// One-screen overview of the command-line interface, shown for bare `witchy`.
 pub(crate) fn print_usage() {
-    println!(
-        "\
-witchy — a capability-secure language with twin interpreter and WASM backends
+    println!("{CLI_USAGE}");
+}
+
+const CLI_USAGE: &str = "\
+witchy — a capability-secure language with canonical SafeWIR execution
 
 USAGE:
     witchy [--net <host:port>]... [--fetch <origin>]... <file.witchy>
                                                   run a program
     witchy check    <file.witchy>                 check + verify compiled acceptance without running
-    witchy parity   <file.witchy>                 run on both backends, confirm identical output
+    witchy parity   <file.witchy>                 compare canonical SafeWIR interpretation with admitted Wasm
                                                   (a verify-the-compiler tool, not a workflow step)
-    witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
-                                                  run zero-authority fixture tests on one or both backends, or explicit integration tests
+    witchy test [--fixtures <plan.json>] [--backend wasm] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
+                                                  run zero-authority fixture tests on admitted Wasm, or explicit integration tests
     witchy new --web <directory>                  create a capability-safe Glamour project
     witchy test --web [directory]                 validate a Glamour project and optimized browser artifact
     witchy build --web [--out <directory>] [directory]
@@ -57,9 +59,7 @@ Package commands: new, init, add, build, run [args...], update, audit, tree,
 outdated, why, why-cap, verify, vendor, publish, promote, yank, list — run
 `witchy pm` for the full package-manager help. All of them accept
 `-C <dir>`; `witchy run` passes everything after `run` (or after `--`) to the
-program as `main`'s `args`, including `--help`."
-    );
-}
+program as `main`'s `args`, including `--help`.";
 
 /// (RFC-0037) The optimization mode a LEADING global flag selects (`--release` /
 /// `--debug`), or `None`. `args` is the argv WITHOUT the program name. Only the
@@ -181,7 +181,7 @@ mod version_tests {
 
 #[cfg(test)]
 mod cli_flag_tests {
-    use super::{leading_opt_mode, parse_confinement_mode};
+    use super::{leading_opt_mode, parse_confinement_mode, CLI_USAGE};
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
@@ -216,6 +216,15 @@ mod cli_flag_tests {
         assert_eq!(leading_opt_mode(&argv(&["app.wasm", "--debug", "hello"])), None);
         assert_eq!(leading_opt_mode(&argv(&["foo.witchy"])), None);
         assert_eq!(leading_opt_mode(&argv(&[])), None);
+    }
+
+    #[test]
+    fn help_describes_the_canonical_runtime_only() {
+        assert!(CLI_USAGE.contains("canonical SafeWIR execution"));
+        assert!(CLI_USAGE.contains("fixture tests on admitted Wasm"));
+        assert!(!CLI_USAGE.contains("twin interpreter"));
+        assert!(!CLI_USAGE.contains("one or both backends"));
+        assert!(!CLI_USAGE.contains("backend interpreter|wasm|both"));
     }
 }
 

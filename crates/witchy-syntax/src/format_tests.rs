@@ -88,7 +88,7 @@
 
     #[test]
     fn comptime_functions_round_trip_through_formatting() {
-        let src = "comptime fn make() -> ItemSyntax:\n    item(\"fn generated() -> Int:\\n    1\")\n\ncomptime:\n    emit_item(make())\n";
+        let src = "from meta import ItemSyntax\n\ncomptime fn make() -> ItemSyntax:\n    quote item:\n        fn generated() -> Int:\n            1\n\ncomptime:\n    emit_item(make())\n";
         let out = reformat(src).expect("comptime fn round-trips");
         assert!(out.contains("comptime fn make() -> ItemSyntax:"), "{out}");
         assert!(out.contains("emit_item(make())"), "{out}");
@@ -111,7 +111,7 @@
     fn compiler_owned_item_quotes_round_trip_through_formatting() {
         let src = "import meta\n\ncomptime fn make() -> ItemSyntax:\n    quote item:\n        pub fn generated() -> Int:\n            1\n\ncomptime:\n    emit_item(make())\n";
         let out = reformat(src).expect("compiler-owned item quote round-trips");
-        assert!(out.contains("meta.item(\"pub fn generated()"), "{out}");
+        assert!(out.contains("quote item:\n        pub fn generated()"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted quote parses");
         assert_eq!(reparsed.compiler_item_syntax.len(), 1);
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
@@ -121,7 +121,9 @@
     fn compiler_owned_item_holes_round_trip_through_formatting() {
         let src = "import meta\n\ncomptime fn make(ty: TypeSyntax, value: ExprSyntax) -> ItemSyntax:\n    quote item:\n        pub fn generated() -> ${ty}:\n            ${value}\n";
         let out = reformat(src).expect("compiler-owned item holes round-trip");
-        assert!(out.contains("meta.item_join_syntax("), "{out}");
+        assert!(out.contains("quote item:\n        pub fn generated()"), "{out}");
+        assert!(out.contains("${ty}"), "{out}");
+        assert!(out.contains("${value}"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted item holes parse");
         assert_eq!(reparsed.compiler_item_syntax.len(), 1);
         let crate::ast::Item::Function(make) = &reparsed.items[0] else {
@@ -135,11 +137,50 @@
     }
 
     #[test]
+    fn compiler_owned_quotes_round_trip_as_direct_qualified_and_method_call_arguments() {
+        let src = r#"import meta
+
+comptime:
+    let ty = quote type:
+        Int
+    let pat = quote pattern:
+        value
+    let value = quote expr:
+        40
+    emit_item(quote item:
+        pub fn generated(input: ${ty}) -> Int:
+            match input:
+                ${pat} -> ${value}
+    )
+    meta.accept_type(quote type:
+        List(${ty})
+    )
+    value.accept_expr(quote expr:
+        ${value} + 2
+    )
+    accept_pattern(quote pattern:
+        ${pat} | _
+    )
+"#;
+        let out = reformat(src).expect("compiler-owned quotes in call arguments round-trip");
+        assert!(out.contains("emit_item(quote item:\n        pub fn generated"), "{out}");
+        assert!(out.contains("meta.accept_type(quote type:\n        List(${ty})\n    )"), "{out}");
+        assert!(out.contains("value.accept_expr(quote expr:\n        ${value} + 2\n    )"), "{out}");
+        assert!(out.contains("accept_pattern(quote pattern:\n        ${pat} | _\n    )"), "{out}");
+        assert!(!out.contains("@compiler:") && !out.contains("_join_syntax") && !out.contains("_raw("), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted call-argument quotes parse");
+        assert_eq!(reparsed.compiler_item_syntax.len(), 1);
+        assert_eq!(reparsed.compiler_type_syntax.len(), 2);
+        assert_eq!(reparsed.compiler_pattern_syntax.len(), 2);
+        assert_eq!(reparsed.compiler_expr_syntax.len(), 2);
+    }
+
+    #[test]
     fn compiler_owned_expression_quotes_round_trip_through_formatting() {
         let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        40 + 2\n";
         let out = reformat(src).expect("compiler-owned expression quote round-trips");
         assert!(out.starts_with("import meta\n"), "{out}");
-        assert!(out.contains("meta.expr_raw(\"40 + 2\")"), "{out}");
+        assert!(out.contains("quote expr:\n        40 + 2"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted expression parses");
         assert_eq!(reparsed.compiler_expr_syntax.len(), 1);
         let crate::ast::Item::Function(make) = &reparsed.items[0] else {
@@ -157,7 +198,7 @@
         let src = "comptime fn make(x: meta.ExprSyntax) -> meta.ExprSyntax:\n    quote expr:\n        ${x} + 2\n";
         let out = reformat(src).expect("compiler-owned expression holes round-trip");
         assert!(
-            out.contains("meta.expr_join_syntax([\"\", \" + 2\"], [meta.expr_hole(x)])"),
+            out.contains("quote expr:\n        ${x} + 2"),
             "{out}"
         );
         let reparsed = crate::parser::parse_module(&out).expect("formatted expression holes parse");
@@ -173,16 +214,70 @@
     }
 
     #[test]
+    fn tagged_literal_formatter_covers_source_and_owned_holes() {
+        let source = crate::parser::parse_module("fn main():\n    tag\"a${value}b\"\n")
+            .expect("source tagged literal parses");
+        let crate::ast::Item::Function(main) = &source.items[0] else {
+            panic!("expected main");
+        };
+        let crate::ast::Stmt::Expr(source_tag) = &main.body.stmts[0] else {
+            panic!("expected source tagged expression");
+        };
+        assert_eq!(crate::format::expr_str(source_tag), "tag\"a${value}b\"");
+
+        let owned_tag = crate::ast::Expr::TaggedLit {
+            tag: "tag".into(),
+            parts: vec!["a".into(), "b".into()],
+            holes: vec![crate::ast::TaggedHole::Owned(Box::new(
+                crate::ast::Expr::Binary {
+                    op: crate::ast::BinOp::Add,
+                    lhs: Box::new(crate::ast::Expr::Int(40)),
+                    rhs: Box::new(crate::ast::Expr::Int(2)),
+                },
+            ))],
+            hole_spans: vec![(0, 0)],
+            line: 0,
+        };
+        let rendered = crate::format::expr_str(&owned_tag);
+        assert_eq!(rendered, "tag\"a${40 + 2}b\"");
+        assert!(crate::parser::parse_module(&format!("fn main():\n    {rendered}\n")).is_ok());
+    }
+
+    #[test]
+    fn compiler_quote_hole_rendering_preserves_non_meta_hole_calls() {
+        let src = "import helper\n\ncomptime fn make(value: meta.ExprSyntax) -> meta.ExprSyntax:\n    quote expr:\n        ${value}\n";
+        let mut parsed = crate::parser::parse_module(src).expect("quote-hole fixture parses");
+        let crate::ast::Item::Function(make) = &mut parsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { args, .. }) = &mut make.body.stmts[0]
+        else {
+            panic!("expected compiler-owned quote-hole call");
+        };
+        let [_, _, crate::ast::Expr::List(holes)] = args.as_mut_slice() else {
+            panic!("expected compiler quote-hole registry");
+        };
+        holes[0] = crate::ast::Expr::Call {
+            name: "helper.expr_hole".into(),
+            args: vec![crate::ast::Expr::Var("value".into())],
+        };
+
+        let out = crate::format::module(&parsed, &[]);
+        assert!(out.contains("quote expr:\n        ${helper.expr_hole(value)}"), "{out}");
+        assert!(crate::parser::parse_module(&out).is_ok(), "{out}");
+    }
+
+    #[test]
     fn compiler_owned_mixed_expression_holes_keep_their_categories_after_formatting() {
         let src = "comptime fn make(ty: meta.TypeSyntax, pattern: meta.PatternSyntax, value: meta.ExprSyntax) -> meta.ExprSyntax:\n    quote expr:\n        match ${value} as ${ty}:\n            ${pattern} -> 1\n";
         let parsed = crate::parser::parse_module(src).expect("mixed expression holes parse");
         let candidate = crate::format::module(&parsed, &[]);
         let out = reformat(src)
             .unwrap_or_else(|| panic!("mixed expression holes failed to round-trip:\n{candidate}"));
-        assert!(out.contains("meta.expr_join_syntax("), "{out}");
-        assert!(out.contains("meta.type_hole(ty)"), "{out}");
-        assert!(out.contains("meta.expr_hole(value)"), "{out}");
-        assert!(out.contains("meta.pattern_hole(pattern)"), "{out}");
+        assert!(out.contains("quote expr:\n        match ${value} as ${ty}:\n            ${pattern} -> 1"), "{out}");
+        assert!(out.contains("${ty}"), "{out}");
+        assert!(out.contains("${value}"), "{out}");
+        assert!(out.contains("${pattern}"), "{out}");
 
         let reparsed =
             crate::parser::parse_module(&out).expect("formatted mixed expression holes parse");
@@ -201,7 +296,7 @@
         let src = "comptime fn make() -> meta.TypeSyntax:\n    quote type:\n        .{value: Int}\n";
         let out = reformat(src).expect("compiler-owned type quote round-trips");
         assert!(out.starts_with("import meta\n"), "{out}");
-        assert!(out.contains("meta.type_join([\".{value: Int}\"], [])"), "{out}");
+        assert!(out.contains("quote type:\n        .{value: Int}"), "{out}");
         assert!(!out.contains("__anon"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted type parses");
         assert_eq!(reparsed.compiler_type_syntax.len(), 1);
@@ -225,7 +320,7 @@
         let src = "comptime fn wrap(inner: meta.TypeSyntax) -> meta.TypeSyntax:\n    quote type:\n        List(${inner})\n";
         let out = reformat(src).expect("compiler-owned type holes round-trip");
         assert!(out.starts_with("import meta\n"), "{out}");
-        assert!(out.contains("meta.type_join([\"List(\", \")\"], [inner])"), "{out}");
+        assert!(out.contains("quote type:\n        List(${inner})"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted type holes parse");
         assert_eq!(reparsed.compiler_type_syntax.len(), 1);
         let crate::ast::Item::Function(wrap) = &reparsed.items[0] else {
@@ -244,7 +339,7 @@
         let src = "comptime fn make() -> meta.PatternSyntax:\n    quote pattern:\n        [1 | 2, ..rest]\n";
         let out = reformat(src).expect("compiler-owned pattern quote round-trips");
         assert!(out.starts_with("import meta\n"), "{out}");
-        assert!(out.contains("meta.pattern_join([\"[1 | 2, ..rest]\"], [])"), "{out}");
+        assert!(out.contains("quote pattern:\n        [1 | 2, ..rest]"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted pattern parses");
         assert_eq!(reparsed.compiler_pattern_syntax.len(), 1);
         let crate::ast::Item::Function(make) = &reparsed.items[0] else {
@@ -262,7 +357,7 @@
         let src = "comptime fn either(first: meta.PatternSyntax) -> meta.PatternSyntax:\n    quote pattern:\n        ${first} | 2\n";
         let out = reformat(src).expect("compiler-owned pattern holes round-trip");
         assert!(out.starts_with("import meta\n"), "{out}");
-        assert!(out.contains("meta.pattern_join([\"\", \" | 2\"], [first])"), "{out}");
+        assert!(out.contains("quote pattern:\n        ${first} | 2"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted pattern holes parse");
         assert_eq!(reparsed.compiler_pattern_syntax.len(), 1);
         let crate::ast::Item::Function(either) = &reparsed.items[0] else {
@@ -280,8 +375,8 @@
     fn compiler_owned_body_quotes_round_trip_through_formatting() {
         let src = "comptime fn statement() -> meta.StmtSyntax:\n    quote stmt:\n        let x = 40\n\ncomptime fn body() -> meta.BlockSyntax:\n    quote block:\n        let x = 40\n        x + 2\n";
         let out = reformat(src).expect("compiler-owned body quotes round-trip");
-        assert!(out.contains("meta.stmt_raw(\"let x = 40\")"), "{out}");
-        assert!(out.contains("meta.block_raw(\"let x = 40\\nx + 2\")"), "{out}");
+        assert!(out.contains("quote stmt:\n        let x = 40"), "{out}");
+        assert!(out.contains("quote block:\n        let x = 40\n        x + 2"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted bodies parse");
         assert_eq!(reparsed.compiler_stmt_syntax.len(), 1);
         assert_eq!(reparsed.compiler_block_syntax.len(), 1);
@@ -301,8 +396,8 @@
     fn compiler_owned_body_holes_round_trip_through_formatting() {
         let src = "comptime fn statement(ty: meta.TypeSyntax, value: meta.ExprSyntax) -> meta.StmtSyntax:\n    quote stmt:\n        let x: ${ty} = ${value}\n\ncomptime fn body(ty: meta.TypeSyntax, pat: meta.PatternSyntax, value: meta.ExprSyntax) -> meta.BlockSyntax:\n    quote block:\n        let x: ${ty} = ${value}\n        let ${pat} = x\n        x + 2\n";
         let out = reformat(src).expect("compiler-owned body holes round-trip");
-        assert!(out.contains("meta.stmt_join_syntax("), "{out}");
-        assert!(out.contains("meta.block_join_syntax("), "{out}");
+        assert!(out.contains("quote stmt:\n        let x: ${ty} = ${value}"), "{out}");
+        assert!(out.contains("quote block:\n        let x: ${ty} = ${value}\n        let ${pat} = x\n        x + 2"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted body holes parse");
         assert_eq!(reparsed.compiler_stmt_syntax.len(), 1);
         assert_eq!(reparsed.compiler_block_syntax.len(), 1);
@@ -322,7 +417,7 @@
     fn compiler_owned_anonymous_expression_round_trips_through_formatting() {
         let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        .{value: 40}.value\n";
         let out = reformat(src).expect("anonymous compiler-owned expression quote round-trips");
-        assert!(out.contains("meta.expr_raw(\".{value: 40}.value\")"), "{out}");
+        assert!(out.contains("quote expr:\n        .{value: 40}.value"), "{out}");
         assert!(!out.contains("__anon"), "{out}");
         let reparsed = crate::parser::parse_module(&out).expect("formatted expression parses");
         assert_eq!(reparsed.compiler_expr_syntax.len(), 1);
@@ -450,6 +545,7 @@
                 comptime_only: false,
                 attributes: Vec::new(),
                 name: "main".into(),
+                type_params: Vec::new(),
                 params: vec![Param {
                     name: "console".into(),
                     ty: Some(Type::Named("Console".into(), vec![])),
@@ -746,7 +842,7 @@
         // `chan.serve(s, fn(..): match ...).await` shape) keeps its multi-line
         // form: the `.await` rides as a suffix after the closing `)`, and must
         // not force the whole call inline and corrupt the block lambda.
-        let awaited = "async fn loop_it() -> Nil:\n    serve(0, fn(n, m):\n        match m:\n            0 -> n + 1\n            _ -> n).await\n";
+        let awaited = "async fn loop_it() -> ():\n    serve(0, fn(n, m):\n        match m:\n            0 -> n + 1\n            _ -> n).await\n";
         let out = reformat(awaited).expect("block-lambda call + .await round-trips");
         assert!(out.contains("serve(0, fn(n, m):"), "block lambda lost: {out}");
         assert!(out.contains(").await"), "postfix .await lost: {out}");
@@ -844,26 +940,25 @@
     }
 
     #[test]
-    fn borrowed_views_round_trip_canonically() {
-        // RFC-0122 canonicalizes retired view spellings to explicit references.
+    fn shared_references_round_trip_canonically() {
         let src =
-            "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n";
-        let out = reformat(src).expect("view signature round-trips");
-        assert!(out.contains("text: &'a String"), "param reference canonicalized: {out}");
-        assert!(out.contains("-> &'a String"), "result reference survives: {out}");
+            "mode opt\n\nfn first(text: &String) -> &String:\n    text\n";
+        let out = reformat(src).expect("reference signature round-trips");
+        assert!(out.contains("text: &String"), "param reference canonicalized: {out}");
+        assert!(out.contains("-> &String"), "result reference survives: {out}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
 
     #[test]
     fn borrowed_nominal_lifetime_parameters_round_trip_in_mixed_order() {
-        let src = "mode opt\n\ntype Pair(a, 'left, 'right) packed derive(Reflect, Show):\n    first: View(a, 'left)\n    second: View(a, 'right)\n\ntype Span('a):\n    Span(View(Bytes, 'a), Int, Int)\n\nfn keep(let left: let('left) Int, let right: let('right) Int, pair: Pair(Int, 'left, 'right)) -> Pair(Int, 'left, 'right):\n    pair\n";
+        let src = "mode opt\n\ntype Pair(a) packed derive(Reflect, Show):\n    first: &a\n    second: &a\n\ntype Span:\n    Span(&Bytes, Int, Int)\n\nfn keep(left: &Int, right: &Int, pair: Pair(Int)) -> Pair(Int):\n    pair\n";
         let out = reformat(src).expect("borrowed nominal declarations round-trip");
         assert!(
-            out.contains("type Pair(a, 'left, 'right) packed derive(Reflect, Show):"),
+            out.contains("type Pair(a) packed derive(Reflect, Show):"),
             "mixed parameters/modifiers drifted: {out}"
         );
-        assert!(out.contains("type Span('a):\n    Span(&'a Bytes, Int, Int)"), "{out}");
-        assert!(out.contains("Pair(Int, 'left, 'right)"), "lifetime arguments drifted: {out}");
+        assert!(out.contains("type Span:\n    Span(&Bytes, Int, Int)"), "{out}");
+        assert!(out.contains("Pair(Int)"), "nominal arguments drifted: {out}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
 
@@ -871,8 +966,8 @@
     fn rfc0122_reference_migration_canonicalizes_legacy_type_positions() {
         let src = "mode opt\n\nfn first(let value: let('a) String) -> View(String, 'a):\n    value\n";
         let out = reformat_references(src).expect("opt legacy reference types migrate");
-        assert!(out.contains("fn first(value: &'a String) -> &'a String"), "{out}");
-        assert!(!out.contains("let value: &'a String"), "{out}");
+        assert!(out.contains("fn first(value: &String) -> &String"), "{out}");
+        assert!(!out.contains("let value: &String"), "{out}");
         assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
         assert!(reformat_references("fn plain(value: String) -> String:\n    value\n").is_none());
     }
@@ -880,32 +975,48 @@
     #[test]
     fn rfc0122_reference_migration_rewrites_legacy_var_lifetime_parameters() {
         let src = "mode opt\n\nfn normalize(var('a) value: String) -> &'a mut String:\n    value\n";
-        let out = reformat_references(src).expect("legacy mutable reference parameter migrates");
-        assert!(out.contains("fn normalize(value: &'a mut String) -> &'a mut String"), "{out}");
+        assert!(reformat_references(src).is_none(), "mutable legacy references have no canonical migration");
+    }
+
+    #[test]
+    fn ordinary_formatting_does_not_enable_reference_migration() {
+        for src in [
+            "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n",
+            "mode opt\n\nfn first(let('a) text: String) -> &String:\n    text\n",
+            "mode opt\n\nfn edit(var('a) text: String) -> &'a mut String:\n    text\n",
+        ] {
+            assert!(reformat(src).is_none(), "ordinary formatting must reject: {src}");
+            let Some(migrated) = reformat_references(src) else {
+                assert!(src.contains("var('a)"), "only mutable legacy migration may be unavailable");
+                continue;
+            };
+            crate::parser::parse_module(&migrated).expect("migration output is current source");
+            assert_eq!(reformat(&migrated).as_deref(), Some(migrated.as_str()));
+        }
+        assert!(reformat("mode opt\n\nfn f(x: local unique String):\n    x\n").is_none());
     }
 
     #[test]
     fn rfc0122_reference_migration_distinguishes_nominal_and_direct_lifetimes() {
         let src = "mode opt\n\n\
                    type Token:\n    value: String\n\n\
-                   type Parser('a):\n    input: String('a)\n\n\
-                   type Holder:\n    token: Token('a)\n    items: List(Token, 'a)\n\n\
+                   type Holder:\n    input: String('a)\n    token: Token('a)\n    items: List(Token, 'a)\n\n\
                    fn first(text: String('a)) -> Token('a):\n    Token(text)\n";
         let out = reformat_references(src).expect("direct lifetime relations migrate");
-        assert!(out.contains("input: &'a String"), "{out}");
-        assert!(out.contains("token: &'a Token"), "{out}");
-        assert!(out.contains("items: &'a List(Token)"), "{out}");
-        assert!(out.contains("first(text: &'a String) -> &'a Token"), "{out}");
-        assert!(out.contains("type Parser('a):"), "{out}");
-        assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
+        assert!(out.contains("input: &String"), "{out}");
+        assert!(out.contains("token: &Token"), "{out}");
+        assert!(out.contains("items: &List(Token)"), "{out}");
+        assert!(out.contains("first(text: &String) -> &Token"), "{out}");
+        assert!(!out.contains("'a"), "lifetime syntax leaked: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()));
     }
 
     #[test]
     fn rfc0122_reference_migration_rewrites_typed_local_declarations() {
         let src = "mode opt\n\nfn first(text: String('a)) -> String('a):\n    let held: String('a) = text\n    held\n";
         let out = reformat_references(src).expect("local direct relation migrates");
-        assert!(out.contains("fn first(text: &'a String) -> &'a String"), "{out}");
-        assert!(out.contains("let held: &'a String = text"), "{out}");
+        assert!(out.contains("fn first(text: &String) -> &String"), "{out}");
+        assert!(out.contains("let held: &String = text"), "{out}");
         assert_eq!(reformat_references(&out).as_deref(), Some(out.as_str()));
     }
 
@@ -1020,4 +1131,49 @@ fn callable_qualifiers_round_trip_in_canonical_order() {
     let formatted = reformat(source).expect("qualified callable formatting");
     assert_eq!(formatted, source);
     assert_eq!(reformat(&formatted).as_deref(), Some(source));
+}
+
+#[test]
+fn unit_ast_prints_only_the_parenthesized_source_spelling() {
+    let unit = Type::Named("Nil".into(), Vec::new());
+    assert_eq!(type_str(&unit), "()");
+    assert_eq!(reformat("fn unit() -> ():\n    ()\n").as_deref(), Some("fn unit() -> ():\n    ()\n"));
+}
+
+#[test]
+fn rfc0167_formatter_emits_only_lifetime_free_rooted_views() {
+    let source = "fn first(items: &[Int]) -> Option(&Int):\n    if items.length() == 0: None else: Some(&items[0])\n";
+    let formatted = reformat(source).expect("rooted view source formats");
+    assert!(formatted.contains("items: &[Int]"), "{formatted}");
+    assert!(formatted.contains("Option(&Int)"), "{formatted}");
+    assert!(!formatted.contains("&'"), "{formatted}");
+    assert_eq!(reformat(&formatted).as_deref(), Some(formatted.as_str()));
+
+    let legacy_shared = "mode opt\n\nfn first(value: &'a String) -> &'a String:\n    value\n";
+    let migrated = reformat_references(legacy_shared).expect("shared legacy migration");
+    assert!(migrated.contains("value: &String"), "{migrated}");
+    assert!(!migrated.contains("&'"), "{migrated}");
+    crate::parser::parse_module(&migrated).expect("migration output is canonical source");
+}
+
+#[test]
+fn rfc0167_mutable_legacy_migration_never_becomes_an_immutable_view() {
+    for source in [
+        "mode opt\n\nfn edit(value: &'a mut String) -> &'a mut String:\n    value\n",
+        "mode opt\n\nfn edit(value: String):\n    &mut value\n",
+        "mode opt\n\nfn write(value: &'a mut String):\n    *value = \"next\"\n",
+    ] {
+        assert!(migrate_references(source).is_none(), "mutable source was silently rewritten: {source}");
+        assert!(reformat_references(source).is_none(), "mutable source was emitted as a view: {source}");
+    }
+}
+
+#[test]
+fn rfc0167_formatter_preserves_bracketed_function_type_params() {
+    let source = "fn first[a](items: &[a]) -> Option(&a):\n    if items.length() == 0: None else: Some(&items[0])\n\nfn pair[a, b](left: a, right: b) -> (a, b):\n    (left, right)\n\nimpl Box(a):\n    fn choose[b](self, value: b) -> b:\n        value\n";
+    let formatted = reformat(source).expect("generic rooted-view signatures format");
+    assert!(formatted.contains("fn first[a](items: &[a]) -> Option(&a)"), "{formatted}");
+    assert!(formatted.contains("fn pair[a, b](left: a, right: b) -> (a, b)"), "{formatted}");
+    assert!(formatted.contains("fn choose[b](self, value: b) -> b"), "{formatted}");
+    assert_eq!(reformat(&formatted).as_deref(), Some(formatted.as_str()));
 }

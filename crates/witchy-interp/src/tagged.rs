@@ -34,14 +34,13 @@
 //! This is RFC-0006's hygiene + hole-precise-diagnostics, delivered by one change.
 //!
 //! Typed RFC-0080 tags emit an expression event through the same interpreter
-//! expansion channel as `comptime` item events. A compiler-owned quotation
-//! transfers its AST directly. `meta.expr_raw` is the one explicit bridge for a
-//! tag that must construct source dynamically. Both runtime backends then
+//! expansion channel as `comptime` item events. A compiler-owned quotation and
+//! structural builder transfer their AST directly. Both runtime backends then
 //! compile the same expanded AST. `Expr::TaggedLit` is therefore UNREACHABLE
 //! after this pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use std::cell::{Cell, RefCell};
-use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Stmt, Type};
+use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Stmt, TaggedHole, Type};
 use witchy_syntax::origin::{OriginTable, SourcePosition, SourceSpan};
 
 // foldhash (not SipHash): keys are module/tag names, compiler-internal and
@@ -606,7 +605,7 @@ fn expand_one(
     ctx: &Context,
     tag: &str,
     parts: &[String],
-    holes: &[String],
+    holes: &[TaggedHole],
     hole_spans: &[(u32, u32)],
     invocation_line: u32,
     ancestry: &[String],
@@ -660,6 +659,7 @@ fn expand_one(
         comptime_only: true,
         attributes: Vec::new(),
         name: bridge_name.into(),
+        type_params: Vec::new(),
         params: Vec::new(),
         ret: None,
         body: Block {
@@ -678,6 +678,7 @@ fn expand_one(
         comptime_only: false,
         attributes: Vec::new(),
         name: "main".into(),
+        type_params: Vec::new(),
         params: Vec::new(),
         ret: None,
         body: Block {
@@ -886,6 +887,7 @@ fn expand_one(
             }
             qualifiers
         }),
+        Some(markers),
     )
     .map_err(|e| format!("{}: {e}", where_()))?;
     if !item_output.is_empty() {
@@ -922,16 +924,20 @@ fn expand_one(
         }
     };
 
-    // Parse each hole's ORIGINAL source ONCE, into an expression carrying the
-    // author's own AST (resolved at the CALL site), wrapped in a one-statement
-    // block stamped with the hole's `(line, col)` so a type error inside the hole
-    // reports the hole's position in the literal — not the tag-emitted constructor.
-    // Parsing once here (not inside the tag's generated source) is the hygiene win:
-    // the hole expression is never re-lexed in the generated context.
+    // Parser-created holes parse their ORIGINAL source once at the call site;
+    // compiler-owned structural holes transfer their AST directly. Both are
+    // wrapped with the tag-local origin marker before substitution. In particular,
+    // `Owned` never re-enters a source parser and retains active outer-hole
+    // sentinels for a later expansion step.
     let mut hole_exprs: Vec<Expr> = Vec::with_capacity(holes.len());
     for (i, hole) in holes.iter().enumerate() {
         let span = hole_spans.get(i).copied().unwrap_or((0, 0));
-        let hole_expr = parse_hole(hole, span, &ctx.invocation_qualifiers, &where_)?;
+        let hole_expr = match hole {
+            TaggedHole::Source(source) => {
+                parse_hole(source, span, &ctx.invocation_qualifiers, &where_)?
+            }
+            TaggedHole::Owned(expr) => *expr.clone(),
+        };
         hole_exprs.push(wrap_hole_origin(hole_expr, i, span));
     }
 
@@ -994,55 +1000,6 @@ fn reindent_body(src: &str) -> String {
             // A structural newline: keep the body indented under `__tagsplice`.
             '\n' => out.push_str("\n    "),
             _ => out.push(c),
-        }
-    }
-    out
-}
-
-pub(crate) fn parse_generated_splice_expr(
-    src: &str,
-    qualifiers: &[String],
-) -> Result<Expr, String> {
-    parse_splice_expr(&escape_generated_string_interpolations(src), qualifiers)
-}
-
-/// Tag output is generated expression source, but RFC-0006 hygiene says only the
-/// original `${...}` holes resolve at the call site. A tag-emitted string literal
-/// containing raw `${...}` is therefore static text, not a fresh interpolation
-/// opportunity. Escape those sigils before the throwaway parse; hole source uses
-/// `parse_splice_expr` directly and keeps normal interpolation semantics.
-fn escape_generated_string_interpolations(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut chars = src.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(c) = chars.next() {
-        if in_string {
-            if escaped {
-                out.push(c);
-                escaped = false;
-                continue;
-            }
-            match c {
-                '\\' => {
-                    out.push(c);
-                    escaped = true;
-                }
-                '"' => {
-                    out.push(c);
-                    in_string = false;
-                }
-                '$' if chars.peek() == Some(&'{') => {
-                    out.push('\\');
-                    out.push('$');
-                }
-                _ => out.push(c),
-            }
-        } else {
-            out.push(c);
-            if c == '"' {
-                in_string = true;
-            }
         }
     }
     out
@@ -1306,10 +1263,17 @@ fn substitute_holes_children(
             substitute_holes(scrutinee, holes, where_)?;
             substitute_holes_block(body, holes, where_)?;
         }
-        // A typed tag can still construct a nested tagged literal through
-        // `meta.expr_raw`; that nested `tag"…"` is
-        // re-expanded by `walk_expr_depth` AFTER substitution, never reached here).
-        Expr::TaggedLit { .. } => {}
+        // A typed tag can construct a nested literal structurally. Its owned
+        // payloads may contain active OUTER sentinels, so substitute those before
+        // the nested tag re-expands. Parser-source payload strings remain opaque:
+        // traversing them would reintroduce source interpretation here.
+        Expr::TaggedLit { holes: nested_holes, .. } => {
+            for hole in nested_holes {
+                if let TaggedHole::Owned(expr) = hole {
+                    substitute_holes(expr, holes, where_)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1339,7 +1303,8 @@ fn substitute_holes_block(
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_generated_string_interpolations, reindent_body};
+    use super::{reindent_body, substitute_holes};
+    use witchy_syntax::ast::{Expr, TaggedHole};
 
     #[test]
     fn reindents_structural_newlines_only() {
@@ -1360,18 +1325,18 @@ mod tests {
     }
 
     #[test]
-    fn generated_string_interpolation_is_escaped() {
-        assert_eq!(
-            escape_generated_string_interpolations(r#"glamour.text("${price}")"#),
-            r#"glamour.text("\${price}")"#
-        );
-        assert_eq!(
-            escape_generated_string_interpolations(r#""${a}" + show.render(x) + "\${b}""#),
-            r#""\${a}" + show.render(x) + "\${b}""#
-        );
-        assert_eq!(
-            escape_generated_string_interpolations("\"line\n${x}\""),
-            "\"line\n\\${x}\""
-        );
+    fn substitution_never_traverses_parser_source_tag_holes() {
+        let mut nested = Expr::TaggedLit {
+            tag: "inner".into(),
+            parts: vec!["".into(), "".into()],
+            holes: vec![TaggedHole::Source("__witchy_hole_0".into())],
+            hole_spans: vec![(0, 0)],
+            line: 0,
+        };
+        substitute_holes(&mut nested, &[Expr::Int(42)], &|| "test".into())
+            .expect("source hole remains opaque to structural substitution");
+        let Expr::TaggedLit { holes, .. } = nested else { unreachable!() };
+        assert!(matches!(holes.as_slice(), [TaggedHole::Source(source)] if source == "__witchy_hole_0"));
     }
+
 }

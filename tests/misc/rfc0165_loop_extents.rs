@@ -1,14 +1,9 @@
 //! Nested joins must reload live headers, not reuse a previous object's count.
-use super::super::super::temp_dir::TempDir;
 use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{InterpreterConfig, InterpreterValue, interpret_entry_program};
 
 fn positive(source: &str, expected: &[&str]) {
-    let dir = TempDir::new("canonical-loop-extents");
     let checked = witchy::resolve_std_only_checked(source).expect("source checks");
-    let output = witchy::interpreter::run_checked_module(&checked, dir.path(), Vec::new())
-        .expect("source executes");
-    assert_eq!(output, expected);
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
         &checked, |validated, artifact| {
             let entry = artifact.entry().expect("source-bound entry");
@@ -130,11 +125,7 @@ fn main(console: Console):
     console.print("before")
     console.print(words[1])
 "#;
-    let dir = TempDir::new("canonical-loop-extents-bounds");
     let checked = witchy::resolve_std_only_checked(source).expect("source checks");
-    let error = witchy::interpreter::run_checked_module(&checked, dir.path(), Vec::new())
-        .expect_err("the current list has length one, not the old length two");
-    assert!(error.to_string().contains("list index 1 out of bounds (length 1)"), "{error}");
     let (artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(
         &checked, |_, _| (),
     ).expect_lowered("current-count bounds probe admits independently");

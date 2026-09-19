@@ -84,7 +84,8 @@ pub enum RuntimeQualifierPathStep {
 pub enum RuntimeAccessQualifier {
     Frozen,
     Unique,
-    LocalUnique,
+    /// Immutable rooted-view carrier; it has no lifetime component.
+    View,
     /// Canonical callable-local lifetime number. Source lifetime spelling is
     /// deliberately not part of runtime identity.
     Borrow(u32),
@@ -271,7 +272,7 @@ impl RuntimeLifetimeNormalizer {
         Ok(match qualifier {
             AccessQualifier::Frozen => RuntimeAccessQualifier::Frozen,
             AccessQualifier::Unique => RuntimeAccessQualifier::Unique,
-            AccessQualifier::LocalUnique => RuntimeAccessQualifier::LocalUnique,
+            AccessQualifier::View => RuntimeAccessQualifier::View,
             AccessQualifier::Borrow(lifetime) => RuntimeAccessQualifier::Borrow(self.id(lifetime)?),
             AccessQualifier::BorrowMut(lifetime) => {
                 RuntimeAccessQualifier::BorrowMut(self.id(lifetime)?)

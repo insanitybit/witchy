@@ -1,29 +1,28 @@
-import chan
 import list
 from chan import Receiver, Sender
 
 type Packet:
     Packet(Int, List(Int))
 
-async fn bounded_producer(tx: Sender(Int)) -> Nil:
+async fn bounded_producer(tx: Sender(Int)) -> ():
     chan.send(tx, 10).await
     chan.send(tx, 20).await
     chan.send(tx, 30).await
 
-async fn cancelled_child(console: Console) -> Nil:
+async fn cancelled_child(console: Console) -> ():
     chan.yield_now().await
     console.print("cancel leaked")
 
-async fn quiescent_join_child(console: Console, tx: Sender(Int)) -> Nil:
+async fn quiescent_join_child(console: Console, tx: Sender(Int)) -> ():
     chan.send(tx, 1).await
     chan.send(tx, 2).await
     console.print("quiescent child done")
 
-async fn joined_child(console: Console, label: String) -> Nil:
+async fn joined_child(console: Console, label: String) -> ():
     chan.yield_now().await
     console.print("join ${label}")
 
-async fn packet_producer(tx: Sender(Packet), count: Int) -> Nil:
+async fn packet_producer(tx: Sender(Packet), count: Int) -> ():
     var i = 0
     while i < count:
         chan.send(tx, Packet(i, [i, i + 1])).await
@@ -52,11 +51,13 @@ async fn main(console: Console):
         First(value) -> console.print("select first ${value}")
         Second(value) -> console.print("select second ${value}")
         Closed -> console.print("select closed")
+
     let selected_second = chan.select(first_rx, second_rx).await
     match selected_second:
         First(value) -> console.print("select first ${value}")
         Second(value) -> console.print("select second ${value}")
         Closed -> console.print("select closed")
+
     let selected_closed = chan.select(first_rx, second_rx).await
     match selected_closed:
         First(value) -> console.print("select first ${value}")

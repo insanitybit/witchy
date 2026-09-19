@@ -431,7 +431,7 @@ fn queue_script_batch_is_queue_infra_only_not_workspace_nextest() {
 
 #[test]
 fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
-    let fixture = QueueFixture::stack(&["src/example_tests/rfc0122_wasm_list_carrier.rs"]);
+    let fixture = QueueFixture::stack(&["src/example_tests/rfc0167_views.rs"]);
     fixture.mq_ok(&["submit", "a"], "true");
     let env_log = fixture._temp.path().join("gate-env");
     let gate = format!(
@@ -458,7 +458,7 @@ fn example_tests_only_batch_classifies_focused_nextest_and_skips_heavy_legs() {
     );
     assert!(
         env.contains("nextest=[-p witchy")
-            && env.contains("rfc0122_wasm_list_carrier")
+            && env.contains("rfc0167_views")
             && !env.contains("expr=[test(/^example_tests::/)"),
         "example_tests-only batch did not partition to the touched module: {env}",
     );
@@ -483,11 +483,11 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
     run_git(&fixture.root, &["switch", "a"]);
     fs::create_dir_all(fixture.root.join("src/example_tests")).expect("create example_tests dir");
     fs::write(
-        fixture.root.join("src/example_tests/rfc0122_wasm_list_carrier.rs"),
+        fixture.root.join("src/example_tests/rfc0167_views.rs"),
         "examples\n",
     )
     .expect("write example_tests file");
-    run_git(&fixture.root, &["add", "src/example_tests/rfc0122_wasm_list_carrier.rs"]);
+    run_git(&fixture.root, &["add", "src/example_tests/rfc0167_views.rs"]);
     run_git(&fixture.root, &["commit", "-m", "add example_tests"]);
     run_git(&fixture.root, &["switch", "master"]);
     fixture.mq_ok(&["submit", "a"], "true");
@@ -506,7 +506,7 @@ fn crate_plus_example_tests_batch_keeps_compile_legs_and_unions_nextest() {
         "interp+example_tests should skip rust-class/wasm and keep compile: {env}",
     );
     assert!(
-        env.contains("-p witchy-interp") && env.contains("rfc0122_wasm_list_carrier"),
+        env.contains("-p witchy-interp") && env.contains("rfc0167_views"),
         "crate+example_tests did not union the mapped crate with the touched module: {env}",
     );
     assert!(

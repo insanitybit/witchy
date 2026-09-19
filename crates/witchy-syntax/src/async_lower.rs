@@ -87,7 +87,7 @@ impl BorrowedShellCatalog {
     fn type_is_borrowed(&self, ty: &Type) -> bool {
         match ty {
             Type::Qualified(
-                TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
+                TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
                 _,
             ) => true,
             Type::Qualified(_, inner) => self.type_is_borrowed(inner),
@@ -669,7 +669,7 @@ impl<'a> Ctx<'a> {
     /// in scope. The tail of the sequence is the async fn's result (`task.done(V)`
     /// for a value, become-the-task for a tail `await`, `task.ready_unit()` on
     /// falling off the end); a `for`/`for await`/`while` body is transformed the
-    /// same way and coerced to `Task(Nil)` by its caller.
+    /// same way and coerced to `Task(())` by its caller.
     fn go(
         &mut self,
         stmts: &[Stmt],
@@ -910,7 +910,7 @@ impl<'a> Ctx<'a> {
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
         if accs.is_empty() {
-            // `Task(Nil)` loop. In tail-return position it IS the result.
+            // `Task(())` loop. In tail-return position it IS the result.
             if cont.rest.is_empty() && matches!(cont.tail, Tail::Return) {
                 return Ok(loop_future);
             }
@@ -1170,6 +1170,7 @@ impl<'a> Ctx<'a> {
             comptime_only: false,
             attributes,
             name: seg_name.clone(),
+            type_params: Vec::new(),
             params,
             ret: None,
             body: tail_block_at(cont_expr, line),
@@ -1215,7 +1216,7 @@ impl<'a> Ctx<'a> {
 
     /// `for x in xs:` whose body awaits — lowered to `task.for_each(xs', fn(x):
     /// <body>)`. The body is transformed (its awaits lifted to segments) and
-    /// coerced to `Task(Nil)`. The loop variable stays a lambda parameter so its
+    /// coerced to `Task(())`. The loop variable stays a lambda parameter so its
     /// element type is inferred. (A `for x in xs:` body cannot fold into an outer
     /// var — that shape is `for await` or `while`.)
     fn lower_for(
@@ -1928,6 +1929,7 @@ impl<'a> Ctx<'a> {
                     comptime_only: false,
                     attributes,
                     name: recv_name.clone(),
+                    type_params: Vec::new(),
                     params: recv_params,
                     ret: None,
                     body: tail_block_at(recv_match, first_line(&body.lines)),
@@ -1966,6 +1968,7 @@ impl<'a> Ctx<'a> {
             comptime_only: false,
             attributes,
             name: seg_name.clone(),
+            type_params: Vec::new(),
             params,
             ret: None,
             body: tail_block_at(loop_body, first_line(&body.lines)),
@@ -2148,9 +2151,10 @@ fn lower_async_fn_with(
         comptime_only: false,
         attributes: entry_attributes,
         name: f.name,
+        type_params: f.type_params,
         params: f.params,
         // Source `async fn f() -> T` describes the completed value, so callers
-        // receive `Task(T)`. `main` is different: its wrapper drives `Task(Nil)`
+        // receive `Task(T)`. `main` is different: its wrapper drives `Task(())`
         // and returns `Nil` directly. An omitted annotation remains inferred.
         ret: if is_entry {
             declared_ret
@@ -3045,7 +3049,7 @@ mod tests {
 
     #[test]
     fn lowering_preserves_explicit_async_return_contracts() {
-        let source = "async fn value() -> Int:\n    1\n\nasync fn main(console: Console) -> Nil:\n    return\n";
+        let source = "async fn value() -> Int:\n    1\n\nasync fn main(console: Console) -> ():\n    return\n";
         let module = crate::parser::parse_module(source).expect("parse async declarations");
         let lowered = lower_module(module).expect("lower async declarations");
 
@@ -3070,7 +3074,7 @@ mod tests {
                 _ => None,
             })
             .expect("lowered main function");
-        assert_eq!(main.ret, Some(Type::Named("Nil".to_string(), Vec::new())));
+        assert_eq!(main.ret, Some(Type::Tuple(Vec::new())));
     }
 
     #[test]
@@ -3274,7 +3278,7 @@ mod tests {
 
     #[test]
     fn lowering_rejects_a_borrowed_view_live_across_await() {
-        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let source = "mode opt\n\nfn view(text: &String) -> &String:\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
         let error = lower_module(module).expect_err("a view cannot be carried through a segment");
         assert!(
@@ -3289,7 +3293,7 @@ mod tests {
 
     #[test]
     fn lowering_preserves_a_view_relation_through_a_function_value() {
-        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = view\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let source = "mode opt\n\nfn view(text: &String) -> &String:\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = view\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module =
             crate::parser::parse_module(source).expect("parse indirect borrowed async body");
         let error = lower_module(module).expect_err("an indirect view cannot cross a segment");
@@ -3301,7 +3305,7 @@ mod tests {
 
     #[test]
     fn lowering_preserves_a_view_relation_through_a_returned_function_value() {
-        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nfn make() -> fn(View(String, 'a)) -> View(String, 'a):\n    view\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = make()\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let source = "mode opt\n\nfn view(text: &String) -> &String:\n    text\n\nfn make() -> fn(&String) -> &String:\n    view\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = make()\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse returned callable");
         let error =
             lower_module(module).expect_err("a returned callable's view cannot cross a segment");
@@ -3313,7 +3317,7 @@ mod tests {
 
     #[test]
     fn lowering_tracks_a_view_returning_method_across_await() {
-        let source = "mode opt\n\ntype Holder:\n    text: String\n\nimpl Holder:\n    fn view(self: let('a) Holder) -> View(String, 'a):\n        self.text\n\nasync fn bad(console: Console):\n    let holder = Holder(\"x\")\n    let w = holder.view()\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let source = "mode opt\n\ntype Holder:\n    text: String\n\nimpl Holder:\n    fn view(self: &Holder) -> &String:\n        self.text\n\nasync fn bad(console: Console):\n    let holder = Holder(\"x\")\n    let w = holder.view()\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse method borrowed async body");
         let error =
             lower_module(module).expect_err("a method-returned view cannot cross a segment");
@@ -3325,8 +3329,8 @@ mod tests {
 
     #[test]
     fn lowering_rejects_lifetime_bearing_nominal_async_signatures() {
-        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nasync fn bad(input: (Holder('a), Int)):\n    task.done(0).await\n";
-        let module = crate::parser::parse_module(source).expect("parse borrowed nominal signature");
+        let source = "mode opt\n\ntype Holder('a):\n    view: &'a String\n\nasync fn bad(input: (Holder('a), Int)):\n    task.done(0).await\n";
+        let module = crate::parser::parse_reference_migration(source).expect("parse borrowed nominal signature");
         let error = lower_module(module)
             .expect_err("a nested lifetime-bearing shell cannot enter an async task");
 
@@ -3337,8 +3341,8 @@ mod tests {
     #[test]
     fn lowering_rejects_exclusive_reference_async_signatures() {
         let source =
-            "mode opt\n\nasync fn bad(input: &'a mut String) -> Nil:\n    task.done(0).await\n";
-        let module = crate::parser::parse_module(source).expect("parse exclusive async signature");
+            "mode opt\n\nasync fn bad(input: &'a mut String) -> ():\n    task.done(0).await\n";
+        let module = crate::parser::parse_reference_migration(source).expect("parse exclusive async signature");
         let error = lower_module(module)
             .expect_err("an exclusive reference cannot cross an async boundary");
 
@@ -3348,8 +3352,8 @@ mod tests {
 
     #[test]
     fn source_validation_rejects_a_lifetime_bearing_async_method_receiver() {
-        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nimpl Holder('a):\n    async fn bad(self):\n        task.done(0).await\n";
-        let module = crate::parser::parse_module(source)
+        let source = "mode opt\n\ntype Holder('a):\n    view: &'a String\n\nimpl Holder('a):\n    async fn bad(self):\n        task.done(0).await\n";
+        let module = crate::parser::parse_reference_migration(source)
             .expect("parse lifetime-bearing async method receiver");
         let error = crate::source_check::check(module)
             .expect_err("source validation must reject an implicit borrowed-shell receiver")
@@ -3362,8 +3366,8 @@ mod tests {
 
     #[test]
     fn lowering_rejects_an_unannotated_borrowed_nominal_live_across_await() {
-        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nasync fn bad():\n    let text = \"x\"\n    let holder = Holder(text)\n    let _ = task.done(0).await\n    let keep = holder\n";
-        let module = crate::parser::parse_module(source).expect("parse borrowed nominal local");
+        let source = "mode opt\n\ntype Holder('a):\n    view: &'a String\n\nasync fn bad():\n    let text = \"x\"\n    let holder = Holder(text)\n    let _ = task.done(0).await\n    let keep = holder\n";
+        let module = crate::parser::parse_reference_migration(source).expect("parse borrowed nominal local");
         let error = lower_module(module)
             .expect_err("a lifetime-bearing constructor result cannot cross suspension");
 
@@ -3376,8 +3380,8 @@ mod tests {
 
     #[test]
     fn lowering_rejects_a_nested_borrowed_nominal_live_across_await() {
-        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nasync fn bad():\n    let text = \"x\"\n    let holder = Holder(text)\n    let nested = (0, holder)\n    let _ = task.done(0).await\n    let keep = nested\n";
-        let module = crate::parser::parse_module(source).expect("parse nested borrowed nominal");
+        let source = "mode opt\n\ntype Holder('a):\n    view: &'a String\n\nasync fn bad():\n    let text = \"x\"\n    let holder = Holder(text)\n    let nested = (0, holder)\n    let _ = task.done(0).await\n    let keep = nested\n";
+        let module = crate::parser::parse_reference_migration(source).expect("parse nested borrowed nominal");
         let error = lower_module(module)
             .expect_err("an aggregate containing a borrowed shell cannot cross suspension");
 
@@ -3396,7 +3400,7 @@ mod tests {
 
     #[test]
     fn lowering_allows_a_view_whose_last_use_precedes_await() {
-        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn okay(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    console.print(w)\n    task.done(0).await\n";
+        let source = "mode opt\n\nfn view(text: &String) -> &String:\n    text\n\nasync fn okay(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    console.print(w)\n    task.done(0).await\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
         lower_module(module).expect("a dead view is not carried across suspension");
     }

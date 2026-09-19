@@ -69,18 +69,18 @@ pub fn defer(thunk: fn() -> a) -> Future(a):
 pub fn lazy(thunk: fn() -> Future(a)) -> Future(a):
     Future(fn(): poll(thunk()))
 
-// The unit value (`Nil`), for async bodies that complete without a value.
+// The unit value (`()`), for async bodies that complete without a value.
 fn unit():
     let _ignore = 0
 
-// An already-complete `Future(Nil)` - the lowering target for an async body that
+// An already-complete `Future(())` - the lowering target for an async body that
 // falls off its end.
-pub fn ready_unit() -> Future(Nil):
+pub fn ready_unit() -> Future(()):
     ready(unit())
 
 // Yield control to the executor once, then continue. `await yield_now()` is a
 // cooperative scheduling point an async task uses to let its peers run.
-pub fn yield_now() -> Future(Nil):
+pub fn yield_now() -> Future(()):
     pending(unit())
 
 // ---- driver ----
@@ -115,7 +115,7 @@ fn step_slot(s: Slot(a)) -> Slot(a):
 // Extract a slot's value. `join_all` only calls this once every slot is
 // Finished, so the Running branch is unreachable; it drives the future to
 // completion anyway, which keeps the function TOTAL (no partial `fail` that would
-// pin the generic `a` to Nil).
+// pin the generic `a` to ()).
 fn slot_value(s: Slot(a)) -> a:
     match s:
         Finished(v) -> v

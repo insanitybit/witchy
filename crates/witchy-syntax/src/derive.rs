@@ -382,17 +382,15 @@ fn derive_item_via_comptime(generator: &str, t: &TypeDef) -> Item {
     })
 }
 
-/// Desugar a user-defined derive through the legacy source-string contract,
-/// then wrap that source as `meta.ItemSyntax` at the append boundary.
+/// Desugar a user-defined derive through the typed item contract. A generator
+/// that still returns source text is rejected by the typed `emit_item` call;
+/// there is deliberately no parser bridge here.
 fn derive_source_via_comptime(generator: &str, t: &TypeDef) -> Item {
     let emit = Expr::Call {
         name: "emit_item".into(),
         args: vec![Expr::Call {
-            name: "item".into(),
-            args: vec![Expr::Call {
-                name: generator.into(),
-                args: vec![crate::reflect::type_info_expr(t)],
-            }],
+            name: generator.into(),
+            args: vec![crate::reflect::type_info_expr(t)],
         }],
     };
     Item::Comptime(Block {
@@ -433,8 +431,8 @@ mod borrowed_nominal_tests {
 
     #[test]
     fn borrowed_nominal_reflect_derive_preserves_typeinfo_only() {
-        let mut module = crate::parser::parse_module(
-            "mode opt\n\nimport reflect\n\ntype Holder('a) derive(Reflect):\n    view: View(String, 'a)\n",
+        let mut module = crate::parser::parse_reference_migration(
+            "mode opt\n\nimport reflect\n\ntype Holder('a) derive(Reflect):\n    view: &'a String\n",
         )
         .expect("parse borrowed Reflect derive");
         let error =
@@ -450,8 +448,8 @@ mod borrowed_nominal_tests {
 
     #[test]
     fn borrowed_nominal_deserialize_derive_requires_an_owned_companion() {
-        let mut module = crate::parser::parse_module(
-            "mode opt\n\nimport json\n\ntype Holder('a) derive(Deserialize):\n    view: View(String, 'a)\n",
+        let mut module = crate::parser::parse_reference_migration(
+            "mode opt\n\nimport json\n\ntype Holder('a) derive(Deserialize):\n    view: &'a String\n",
         )
         .expect("parse borrowed Deserialize derive");
         let error = expand(&mut module)

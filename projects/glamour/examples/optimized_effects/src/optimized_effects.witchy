@@ -134,4 +134,4 @@ pub fn glamour_emit(state: BrowserState) -> Bytes:
 @browser
 pub fn glamour_release(own state: BrowserState):
     match state:
-        BrowserState(_, _) -> Nil
+        BrowserState(_, _) -> ()

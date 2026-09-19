@@ -199,6 +199,7 @@ fn move_range_completeness_includes_unmaterialized_owned_prefix() {
     checker.state.constants.extend([(ZERO, 0), (LENGTH, 1)]);
     checker.state.objects.insert(SOURCE, ObjectState {
         identity: SOURCE,
+        owner_generation: 0,
         layout: list,
         extent: Extent::Counted {
             header_bytes, count: LENGTH, capacity: LENGTH, stride_bytes,

@@ -133,11 +133,12 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
         | Operation::MakeInlineAggregate { destination, .. } | Operation::ExtractInlineField { destination, .. }
         | Operation::FunctionValue { destination, .. } | Operation::CloneRef { destination, .. } => vec![*destination],
         Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. }
+        | Operation::ExternalCall { destinations, .. }
         | Operation::HostCall { destinations, .. } => destinations.clone(),
         Operation::Guard { .. } | Operation::InitNullableOwned { .. } | Operation::Store { .. }
         | Operation::CopyBytes { .. } | Operation::MoveRange { .. } | Operation::CloneRange { .. }
         | Operation::UpdateCount { .. } | Operation::Retain { .. } | Operation::Release { .. }
-        | Operation::DropRef { .. } | Operation::Reclaim { .. } => Vec::new(),
+        | Operation::DropRef { .. } | Operation::Reclaim { .. } | Operation::ReauthenticateRawHeaderExtent { .. } => Vec::new(),
     }
 }
 

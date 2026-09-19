@@ -130,7 +130,8 @@ and its limits.
 
 Pre-1.0 and compatibility-unstable; anything may break without a deprecation
 period. The dependable path is deliberately small - language fundamentals,
-capability inspection, check/format/test, interpreter-versus-WASM parity,
+capability inspection, check/format/test, independent-expectation to canonical
+interpreter to admitted-WASM parity,
 portable WASM sandboxing, and self-contained
 [`trusted-publisher`](rfcs/0092-trusted-application-executables.md) builds. Everything
 else (runes + the Coven registry, the Glamour frontend, the in-browser

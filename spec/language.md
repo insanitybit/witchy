@@ -1,14 +1,12 @@
 # The witchy language reference
 
 This is the reference for witchy's syntax and semantics. The behavioral
-contract is enforced at support by independent expected results plus
-interpreter/Wasm agreement ([RFC-0135](../rfcs/0135-stable-semantics-converge.md)):
-the tree-walking interpreter is a source-level oracle, and the compiled
-backend (WebAssembly) is the user run path. Both must match the expected
-result, or loudly error. The test suite and a CI sweep (the project's
-`witchy parity` harness) catch silent splits, including error paths. Experimental
-runtime work may lead on Wasm with a named interpreter debt; pure
-optimizations never enter the interpreter.
+contract is enforced by independent expected results, the canonical SafeWIR
+interpreter, and admitted unoptimized WebAssembly. Both executions must match
+the expectation or loudly error. The production run path is admitted Wasm;
+the frozen source tree walker is retained temporarily only for comptime/build
+compatibility and provides no language-acceptance evidence. Pure optimizations
+are checked against the unoptimized admitted program and its expectation.
 
 Every ` ```witchy ` block below is a complete program that the test suite
 type-checks - and, when it needs nothing beyond `Console`, runs on both
@@ -35,7 +33,7 @@ Companion documents: [capabilities.md](capabilities.md) (the security model),
 [13. Entry point](#13-entry-point) ·
 [14. Concurrency](#14-concurrency-async-spawn-and-channels) ·
 [15. In-language tests](#15-in-language-tests) ·
-[16. Semantics guarantees](#16-semantics-guarantees-the-parity-contract)
+[16. Semantics guarantees](#16-semantics-guarantees-the-canonical-conformance-contract)
 
 ## 1. Lexical structure
 
@@ -87,7 +85,7 @@ fn main(console: Console):
 
 **Rendering values to strings.** Reach for interpolation first: `"${x}"` renders
 ordinary data values - scalars, record fields, lists, tuples, records, sum types,
-dicts, and their supported nesting - identically on both backends. Function
+dicts, and their supported nesting - identically in both canonical executors. Function
 values aren't data rendering targets and are rejected before runtime. `Show`
 is preluded, so interpolation always honors a relevant implementation; imports
 never select rendering semantics. Thus
@@ -103,7 +101,7 @@ type a custom rendering.
 
 ## 2. Types
 
-Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `Nil` (the unit type),
+Builtins: `Int`, `Float`, `Bool`, `String`, `Duration`, `()` (the unit type),
 `List(a)`, `Dict(k, v)`, tuples `(a, b, ...)`, function types
 `fn(Int, String) -> Bool` (optionally qualified `pure`, `once`, or canonical
 `pure once`), and the capability types (`Console`, `Clock`, `Env`, `Rand`,
@@ -358,8 +356,9 @@ Top-level `let` declares a module constant (inlined at compile time).
 Assigning to a `let` is a check-time error. A closure also cannot assign to a
 variable it captured: closures capture **by value**, so return the new value or
 use a `var` parameter when a closure-like helper should write through.
-`let _ = expr` evaluates and discards - the same meaning as the bare
-expression statement, which is the form `fmt` prints.
+`let _ = expr` evaluates and explicitly discards a non-`must` result. It is the
+sole explicit discard form. A bare expression statement is accepted only when
+the expression has type `()`; `fmt` never erases a required discard.
 
 **Assigning to a place.** Beyond a bare variable, the left of `=` may be a
 subscript or a field - `xs[i] = v`, `d[k] = v`, `acct.balance = b` (the binding
@@ -389,10 +388,11 @@ argument must be a mutable place; the callee receives its current value and ever
 structured return writes the callee's final parameter value back to that place.
 The ordinary return value is independent, so `pop(var xs) -> Option(a)` both
 updates `xs` and produces an element. Free, method, trait, closure, and indirect
-calls use the same rule; statement position merely permits discarding an
-independent result from a call that has a resolved `var` effect.
+calls use the same rule. A call's `var` effect does not change the ordinary
+result rule: a non-`()` result must be used or explicitly discarded with
+`let _ =`.
 
-A non-`var`, non-`Nil` call whose result is thrown away is a **compile error**:
+A non-`()` call whose result is thrown away is a **compile error**:
 bind it or discard it explicitly with `let _ =`. A `var` call on a `let` binding
 or temporary is also an error. To derive a changed copy, create a mutable copy
 explicitly (`var ys = xs; ys.push(4)`).
@@ -522,22 +522,21 @@ don't pass the capability - a function that never receives a capability cannot
 use it, alias it, or forge it. That structural boundary (capture-as-DI) is
 witchy's firewall; see [the capability reference](capabilities.md).
 
-A `region:` block (optionally `region -> T:`) is an **unstable** user-controlled
+A `region:` block (optionally `region -> T:`) is an explicit user-controlled
 allocation scope: everything allocated inside is reclaimed at the block's end,
-and the block's VALUE is what escapes - on the compiled backend it's deep-copied
+and the block's VALUE is what escapes - on the canonical route it is deep-copied
 out, except sub-values from outside the region, which are shared rather than
 copied. Assigning a non-scalar variable declared outside the region is a type
 error (the value is the only pointer escape; scalar assignments are fine), and
-`yield` is rejected. A region never changes observable behavior - only when
-memory is reclaimed - so the interpreter runs it as a plain block. The
-optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
+`yield` is rejected. A region never changes observable behavior, only when
+memory is reclaimed. The optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
 when inference cannot see it.
 
-The compiler warns on every `region:` use. Its value semantics remain safe and
-interpreter/Wasm parity remains required, but the keyword, boundary rules, and
-performance contract may change or be removed. Prefer ownership annotations and
-compiler-inferred reclamation unless measurement shows that an explicit region
-materially improves the target workload.
+Its value semantics are part of the language contract and canonical
+interpreter/admitted-Wasm conformance is required. Reclamation strategy and
+allocation savings remain measured implementation properties. Prefer ownership annotations and compiler-inferred
+reclamation unless measurement shows that an explicit region materially
+improves the target workload.
 
 ```witchy
 import option
@@ -896,7 +895,7 @@ callable and exposes consuming operations for every allowed disposition:
 
 ```witchy-static
 must sealed type Completion:
-    Completion(once fn(String) -> Nil)
+    Completion(once fn(String) -> ())
 
 fn finish(own completion: Completion, message: String):
     match completion:
@@ -908,7 +907,7 @@ fn cancel(own completion: Completion):
 ```
 
 `pure` and `once` are erased from the physical closure representation after
-checking. The interpreter and compiled backends use the same function-value
+checking. The canonical SafeWIR interpreter and admitted Wasm use the same function-value
 layout and invocation ABI for all four qualified forms; the qualifiers remain
 observable only through checked logical type and reflection identity.
 
@@ -1007,20 +1006,16 @@ aliasing. Concretely:
   yielding CFG outside the supported frame catalog is rejected at the source
   declaration.
 
-**Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`, and
-borrowed `View`) are
-compile-time *contracts* on a type - distinct from the calling conventions above,
-they live on the type and propagate through it. They have no runtime
-representation (both backends lower `frozen T`/`unique T` to `T`), so they never
-change observable behavior; they only let the checker enforce, and a library
-*promise*, an ownership fact:
+**Ownership/immutability qualifiers** (`frozen` and `unique`) are compile-time
+*contracts* on owned types. Immutable rooted views (`&T` and `&[T]`) are values
+with an authenticated retained root plus projection. These are distinct from
+the calling conventions above and propagate through function types:
 
 | qualifier | meaning |
 |---|---|
-| `frozen T` | deeply immutable - sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
-| `unique T` | the sole reference - may be mutated in place and returned as `unique` |
-| `local unique T` | unique within this call only - may be mutated but **may not escape** (returning it's a check-time error) |
-| `&'a T` / `&'a mut T` | shared / exclusive reference with explicit lifetime `'a`; available in `mode opt` |
+| `frozen T` | deeply immutable - sharing is safe; whole-value transfer and replacement are allowed, while field/index mutation rejects |
+| `unique T` | one owning handle for the root storage; immutable views may retain snapshots without duplicating that owned root proof |
+| `&T` / `&[T]` | immutable rooted value-semantic view; valid in normal and opt modes, with no explicit lifetime or mutable form |
 
 ```witchy
 import show
@@ -1037,112 +1032,100 @@ fn main(console: Console):
 ```
 
 The qualifiers don't change values or representation, but they can strengthen
-the performance contract. For a `var` parameter typed `unique` or `local unique`,
-`mode opt` rejects a missing ownership proof and names the alias, move, or loan
-that invalidated it. Normal mode remains value-correct through the collection's
-copy-on-write fallback when storage is shared. `List.pop`, `Dict.insert`, and
-`Dict.remove` use this rule for their no-container-copy guarantee. See
+the performance contract. For a `var` parameter typed `unique`, `mode opt`
+rejects a missing ownership proof and names the alias, move, or loan that
+invalidated it. Normal mode repairs a missing proof with copy-on-write so the
+call remains value-correct while preserving existing snapshots. `List.pop`,
+`Dict.insert`, and `Dict.remove` use this rule for their no-container-copy guarantee. See
 [performance.md](performance.md).
 
 A callable that returns a `unique List` or `unique Dict` carries the producer's
-hidden capacity state into the receiving binding. The same logical envelope is
-used by direct calls, typed function values, typed lambdas, and existential
-trait witnesses: the ordinary result, each `var` write-back, and their ownership
-state cross the call together. Each reachable return must establish the state
-from fresh list/dict storage or another typed `unique` collection result. A
-proper self-tail accepted by the ownership-envelope lowering forwards that
-complete envelope through its loop. Callable type identity also preserves
-parameter conventions, uniqueness qualifiers, write-back ownership outputs,
-and borrowed-view owner relations; an ascription that erases those contracts is
-rejected.
+root-owner proof into the receiving binding. It does **not** promise spare
+capacity. The same logical envelope is used by direct calls, typed function
+values, typed lambdas, and existential trait witnesses: the ordinary result,
+each `var` write-back, and their ownership state cross the call together. Each
+reachable return must establish root ownership from fresh list/dict storage,
+another typed `unique` collection result, or a directly transferred matching
+`own unique` parameter. A proper self-tail accepted by ownership-envelope
+lowering forwards that complete envelope through its loop. Callable type
+identity also preserves parameter conventions, uniqueness qualifiers,
+write-back ownership outputs, and reference-owner relations; an ascription that
+erases those contracts is rejected.
 
-### Borrowed views and reference types
+### Immutable rooted views
 
-In `mode opt`, functions may accept and return first-class shared (`&'a T`) or exclusive mutable (`&'a mut T`) references tied to an explicit lifetime `'a`. Legacy `let('a) T` parameter bounds and `View(T, 'a)` return types remain supported through the migration compatibility path:
-
-```witchy
-mode opt
-
-fn inspect(let xs: let('a) List(Int)) -> View(List(Int), 'a):
-    xs
-```
-
-The relation is part of the function type. Direct calls, resolved trait calls,
-and indirect function values preserve it; assigning a function value to a type
-that erases or changes the owner positions or parameter conventions is a
-check-time error.
-
-#### Borrowed nominal declarations
-
-A nominal type declared in a `mode opt` module may bind lifetime parameters in
-the same parameter list as ordinary type parameters. Lifetime parameters carry
-a leading apostrophe and have a distinct kind from ordinary type parameters,
-even when their names otherwise have the same spelling:
+`&T` and `&[T]` are immutable, rooted, value-semantic views in both normal and
+opt modes. A view retains its backing root together with an authenticated
+projection, so it may be returned, stored in an aggregate, passed through a
+generic or trait boundary, and captured by a callable without a lifetime
+parameter.
 
 ```witchy
-mode opt
+fn first[a](items: &[a]) -> Option(&a):
+    if items.length() == 0:
+        None
+    else:
+        Some(&items[0])
 
-type Parser(a, 'input):
-    value: View(a, 'input)
-    offset: Int
+fn read(value: &Int) -> Int:
+    *value
 ```
 
-Each declared lifetime must be unique and used by at least one field, and each
-lifetime used by a field must appear in the nominal type's parameter list. This
-form is available for records and single-variant positional types; a
-lifetime-parameterized multi-variant sum isn't supported. Applying the type
-requires a type argument for each ordinary parameter and a lifetime argument
-for each lifetime parameter in the declared order.
+`*view` is an immutable read. It never denotes a mutable place. There is no
+`&mut`, no mutable-reference type, and no write-through dereference. Explicit
+lifetimes, `View(T, 'a)`, `&'a T`, `let('a) T`, and lifetime parameters are
+retired. The explicit migration tool may parse old spellings only to produce
+current source; `check`, formatting, generated-source admission, and ordinary
+parsing reject them.
 
-Compile-time reflection exposes the normalized declaration through
-`module_types`. `meta.TypeInfo.params` preserves explicit type and lifetime
-parameters in source order, including the apostrophe on lifetime parameters;
-inferred ordinary parameters follow in first-use order. A `View(a, 'input)`
-field is represented structurally as `meta.TBorrowed(meta.TNamed("a", []),
-"input")`, so generators can inspect the owner relation without parsing source
-text.
+#### Roots, projections, and snapshots
 
-Borrowed nominal values may be constructed, copied, projected, and returned
-when their declared lifetime relations preserve the checked owner roots. A
-mutable borrowed record shell may update an owned scalar field; the write-back
-keeps the shell's hidden owner-root companions unchanged for a scalar update.
-Replacing a declared borrowed field is also permitted when the replacement
-preserves its declared lifetime relation: lowering closes the retired root set
-after reading the shell and opens the replacement set after the write-back.
-Replacing an owned aggregate field is outside the current scalar-mutation
-slice. Calls or storage that erase the declared lifetime relation remain
-rejected.
+Taking `&place` records the exact checked root and projection. Field and index
+views retain the whole backing root; slice views additionally carry their
+authenticated range. Dereference rechecks any dynamic bounds against that
+retained root. No source construct can forge a root, projection, or range.
 
-A `List(B('a))`, where `B` is a direct lifetime-parameterized nominal, may be
-constructed, read with `list.at`, and traversed with `for`. The compiler keeps
-hidden owner-root companions for the list and transfers the selected companions
-to a value read from `list.at`; a dynamic index conservatively retains every
-possible element root. A loop binder is a read-only borrowed shell and keeps
-the list companions live for the iterator expression. Overwrite, drop, and nested
-containers are now supported; relation-erasing boundaries remain rejected unless
-explicitly materialized through a typed owned-companion conversion.
+A view is a snapshot value. Taking a view from a `var` does not freeze that
+binding and does not create a mutable alias. A later assignment, field/index
+update, or `var` call uses copy-on-write when necessary, preserving the root
+held by existing views:
 
-Binding a returned view loans the corresponding owner until the view's final
-use. During that interval the owner may be read, but it may not be moved,
-reassigned, mutated, or passed to a `var`/`own` parameter, and the view may not
-escape through a closure, task, channel, mutable binding, or owned aggregate.
-Forwarding a bound view preserves its original owner loan. Persisting a view of
-a temporary is rejected because there's no stable owner; immediately calling
-`.owned()` on that result is allowed. A projection of an already-bound view
-must likewise be materialized before it's persisted, so the new alias cannot
-lose the projected storage layout. A live view may not cross `await`, `break`,
-or `continue`, and lambda bodies are checked as independent scopes. Last-use
-precision is statement-level within a straight-line block; an enclosing loan is
-conservatively live throughout a nested branch or loop body. Calling `.owned()`
-from `import borrow` produces an owned snapshot and is such a final use.
+```witchy
+fn main() -> Int:
+    var values = [7]
+    let first = &values[0]
+    values.push(9)
+    let snapshot_value = *first
+    snapshot_value
+```
 
-Views have the same logical value representation as their inner type. On the
-compiled backend, lowering retains a hidden root for refcounted linear-memory
-owners until the checked final use and releases it on normal, explicit-return,
-and `?` paths. Opening the loan also invalidates the owner's uniqueness token,
-so later update/extract operations copy and re-own rather than mutating storage
-still observed by the materialized value. Host-backed views and capability
-leases require a capability-specific API and aren't introduced by this rule.
+This returns `7`. Normal and opt mode have the same observable behavior. Opt
+mode may require a checked uniqueness fact before mutating in place; normal
+mode may repair a missing fact with a copy. Either choice is unobservable to
+the view.
+
+#### Binding and call conventions
+
+`let` makes a binding immutable. `var` permits rebinding and is the sole
+parameter write-back convention. Those rules apply to a view carrier exactly
+as they apply to other values: `own view: &T` consumes the carrier binding, and
+`var view: &T` writes back a replacement carrier. Neither convention transfers
+ownership of the viewed payload or grants mutation through the projection.
+
+`frozen &T` and `unique &T` are rejected because a view already has fixed
+immutable carrier semantics. `&frozen T` is meaningful: it is a rooted view
+whose payload retains the frozen contract. Views of `must`, `once`, capability,
+or other authority-bearing payloads cannot erase their existing obligations.
+
+Region-born roots may not escape a region rewind. A view formed inside a region
+over a parent-owned root may escape because the view safely retains that parent
+root. Aggregate view fields must preserve each field's authenticated root and
+projection independently.
+
+The initial runtime representation is an opaque retained-root-plus-projection
+carrier. Future optimization may elide provably redundant retains, copies, or
+carrier materialization, but it may not change snapshot behavior, bounds,
+write-back, or destruction order.
 
 ## 8. Generics and traits
 
@@ -1263,8 +1246,8 @@ dispatch, write-back, failures, and supertrait upcasts.
   its second `Self` parameter violates the `Self`-position rule).
 - Capability-carrying payloads are rejected transitively (records, sums,
   tuples, containers): a directed or explicit conversion whose concrete type
-  contains a `Dir`/`File`/`Net`/… fails at check time. Borrowed existentials
-  (`View(dyn T, 'a)`) are excluded from v1.
+  contains a `Dir`/`File`/`Net`/… fails at check time. Rooted views of
+  existentials (`&dyn T`) are excluded from v1.
 - Bare, `let`, `var`, and `own` receivers keep their ordinary conventions.
   `var self` and explicit `var` arguments move in and write back together on a
   structured return; nested places are rebuilt only after success, overlapping
@@ -1418,63 +1401,46 @@ of any reflectable type.
 
 A top-level `comptime:` block runs **at compile time** with no capabilities
 reachable (there's no parameter list to receive one), making it
-deterministic by construction. Legacy `emit(line)` output, and direct
-`console.print(line)` for compatibility, are parsed as witchy source and
-**appended** to the module before type checking and footprint analysis.
-`emit_item(item)` is the typed RFC-0080 migration channel for
-`meta.ItemSyntax`. `quote item:` and a literal whole-item
-`meta.item("...")` are stored as compiler-owned item AST and appended without
+deterministic by construction. `emit_item(item)` appends a compiler-owned
+`meta.ItemSyntax` to the module before type checking and footprint analysis.
+`quote item:` values are stored as compiler-owned item AST and appended without
 formatting or reparsing. A hole-bearing item keeps that AST and replaces its
-exact expression, type, and pattern placeholder nodes with the typed hole
-payloads. Dynamic `meta.item(source)` input is parsed exactly once at its
-constructor boundary and then remains compiler-owned. A
-single `comptime:` block may use the legacy source channel or the typed item
-channel, but not both.
+exact expression, type, and pattern placeholder nodes with typed hole payloads.
+Dynamic source-to-item construction is retired: use a quote or a structural
+item builder.
 Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
 `meta.ExprSyntax`, `meta.PatternSyntax`, `meta.StmtSyntax`, `meta.BlockSyntax`,
 `meta.MatchArmSyntax`, and `meta.Ident` are compile-time-only: runtime
 functions, fields, aliases, and expressions cannot store or return them.
-`quote expr:` retains a compiler-owned expression AST plus a canonical source
-projection. When the quote contains holes, the compiler stores an expression
-template and structurally replaces its exact hole nodes. A compiler-owned hole
-transfers its AST directly; a source-backed compatibility hole parses only its
-own payload, never the enclosing expression. Literal `meta.expr_raw("...")`
-plans are promoted to the same owned representation when parsed; dynamic input
-is parsed exactly once at the constructor boundary. Direct item holes and typed
-tagged-literal output consume the resulting AST without reparsing. Structural
-`meta.expr_*` builders retain their owned child nodes.
+`quote expr:` retains a compiler-owned expression AST. When the quote contains
+holes, the compiler stores an expression template and structurally replaces its
+exact hole nodes. Direct item holes and typed tagged-literal output consume the
+resulting AST without reparsing. Structural `meta.expr_*` builders retain their
+owned child nodes.
 `quote type:` values likewise retain a compiler-owned type AST. A hole-bearing
-quote stores a type template and structurally replaces its exact hole nodes. A
-compiler-owned hole transfers its AST directly; a source-backed compatibility
-hole parses only its own payload. Literal `meta.type_join(parts, holes)` plans
-are promoted to the same owned representation when parsed. Direct item holes
-consume the result without reparsing, including anonymous record/union types and
-borrowed views. Other `meta.type_*` builders project canonical source and remain
-the compatibility construction path.
+quote stores a type template and structurally replaces its exact hole nodes.
+Direct item holes consume the result without reparsing, including anonymous
+record/union types and explicit references. Other `meta.type_*` builders remain the
+structural construction path.
 `quote pattern:` values retain a compiler-owned pattern AST as well. A
 hole-bearing quote stores a pattern template and structurally replaces its exact
-hole nodes. Compiler-owned holes transfer their AST directly; source-backed
-compatibility holes parse only their payload. Literal
-`meta.pattern_join(parts, holes)` plans are promoted to the same owned
-representation. Direct item holes consume the result without reparsing; other
-`meta.pattern_*` builders remain the compatibility construction path.
+hole nodes. Direct item holes consume the result without reparsing; other
+`meta.pattern_*` builders remain the structural construction path.
 `quote stmt:` and `quote block:` values retain compiler-owned body AST. Their
 expression, type, and pattern holes are exact template nodes and are substituted
-structurally through the mixed `meta.SyntaxHole` envelope. Literal
-`meta.stmt_raw`, `meta.block_raw`, `meta.stmt_join_syntax`, and
-`meta.block_join_syntax` plans are promoted back to owned syntax when they
-contain one parser-valid body. Existing statement/block builders may project
-canonical source for compatibility when constructing an item.
+structurally through the mixed `meta.SyntaxHole` envelope. Existing
+statement/block builders retain their structural children when constructing an
+item.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
 module is linked and type-checked. Imported tags remain available to sibling
 expansion even after their defining module has been expanded. Runtime code cannot
 call them.
-`std/meta` also exposes compatibility source-backed syntax builders such as `ident`,
-`type_named`, `expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`,
-`block`, `param`, and `function_block`; they make generated item structure
-typed at the API boundary and validate identifier spelling. `meta.fresh(hint)`
+`std/meta` exposes structural syntax builders such as `ident`, `type_named`,
+`expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`, `block`, `param`,
+and `function_block`; they transfer typed child nodes directly and validate
+identifier spelling. `meta.fresh(hint)`
 returns a deterministic compiler-owned `Ident` for generated bindings. Repeated
 calls and separate comptime blocks or tagged-literal invocations produce distinct
 names in the source-reserved `__` namespace, so a handwritten binding cannot
@@ -1489,8 +1455,8 @@ in the syntax consumer's scope. Its consumer fixes the category:
 `meta.type_named` creates a type with structural arguments, and
 `meta.pattern_ctor` creates a constructor pattern with structural subpatterns.
 Structural quotation and typed-tag transport preserve those invocation-site
-origins without a forgeable source spelling. Qualified-name composition and
-source-projecting compatibility builders still consume only validated spelling.
+origins without a forgeable source spelling. Qualified-name composition remains
+structural and consumes only validated identifiers.
 A call-site type alias expands in the consuming module's alias environment, not
 the generator's. General field and item origin channels remain future work.
 `quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`,
@@ -1499,8 +1465,7 @@ expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
 `meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Every hole-free
 quote category uses the compiler-owned channels described above. Hole-bearing
-quotations in every category are structural; only general compatibility-builder
-composition may still project and parse canonical source.
+quotations in every category are structural.
 Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
@@ -1510,12 +1475,11 @@ type, or pattern positions. `quote item:` accepts the same expression, type,
 and pattern holes anywhere those grammar positions occur inside the quoted
 item. Holes are typed by the surrounding `comptime`/tag generator, not by
 runtime interpolation. Item-hole placement is structural. Directly supplied
-compiler-owned expression, type, and pattern values retain their AST. An
-Every quote retains its enclosing template AST across hole substitution; values
-composed by other compatibility builders remain source-backed until their
-structural slices land.
+compiler-owned expression, type, and pattern values retain their AST. Every
+quote retains its enclosing template AST across hole substitution; typed
+builders retain their compiler-owned children as well.
 `quote type:` covers named, generic, module-qualified, tuple, function,
-ownership-qualified, capability-right, anonymous structural, and borrowed-view
+ownership-qualified, capability-right, anonymous structural, and reference
 types.
 `witchy expand <file.witchy>` prints the entry module after `comptime:` item
 generation and tagged-literal expansion, rendered as canonical witchy source.
@@ -1527,12 +1491,12 @@ can be rewritten, so a comptime block cannot launder authority out of a
 signature.
 
 ```witchy
+import meta
+
 comptime:
     var i = 0
     while i < 3:
-        emit("pub fn lucky_${i}() -> Int:")
-        emit("    ${i * 7}")
-        emit("")
+        emit_item(meta.function(true, meta.ident("lucky_${i}"), [], Some(meta.type_named(meta.ident("Int"), [])), meta.expr_int(i * 7)))
         i = i + 1
 
 fn main(console: Console):
@@ -1564,8 +1528,9 @@ with `parts` = the static fragments and `holes` = an **opaque marker** per hole 
 a token the tag *places* where that hole's value belongs (the tag doesn't read
 the hole's source). A tag returns `meta.ExprSyntax`; String-returning tags are
 rejected. A compiler-owned expression transfers its AST through the expansion
-event directly. A tag that must construct source dynamically uses the explicit
-`meta.expr_raw` bridge, which parses once when the syntax value is constructed.
+event directly. A tag constructs generated expressions with a quote,
+`meta.expr_tag_hole`, and the structural `meta.expr_*` builders; it cannot parse
+source text dynamically.
 Reachable tag evaluator items may not contain tagged literals in their bodies or
 initializers; nested tags are returned as expression syntax and expanded after the outer tag
 returns. Generated dynamic source resolves against the definition module's
@@ -1607,7 +1572,7 @@ import meta
 // compiler substitutes the real hole expression (here `name`, resolved at the
 // call site) at the marker.
 comptime fn greet(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    meta.expr_raw("\"Hello, \" + " + holes.at(0))
+    meta.expr_binary("+", meta.expr_string("Hello, "), meta.expr_tag_hole(holes.at(0)))
 
 fn main(console: Console):
     let name = "witch"
@@ -1677,12 +1642,12 @@ fn main(console: Console):
         Err(e) -> console.print(e)
 ```
 
-Unexpected failure is **loud on every backend**: out-of-bounds indexing,
+Unexpected failure is **loud in every canonical executor**: out-of-bounds indexing,
 division by zero, unparseable `string.to_int`, NaN ordering, and the `fail(msg)`
-primitive all abort (a runtime error interpreted, a trap compiled). The parity
-invariant covers these too - a program that errors on one backend errors on
-both. An abort is terminal for that VM instance: it cannot be resumed after a
-partially unwound call. Structured `return` and `?` paths aren't aborts and run
+primitive all abort (a canonical-interpreter error, an admitted-Wasm trap). The
+conformance invariant covers these too: a program that errors in one canonical
+executor errors in both. An abort is terminal for that VM instance: it cannot
+be resumed after a partially unwound call. Structured `return` and `?` paths aren't aborts and run
 their ordinary ownership cleanup.
 
 **Unwrapping with `??`.** For a quick value-or-default, `Option(T) ?? T` unwraps
@@ -1735,7 +1700,7 @@ Nested yielding loops do not silently use a slower or effect-repeating
 implementation. Put the inner yielding traversal in its own generator; the
 compiler otherwise reports the unsupported suspension CFG at the `gen fn`.
 The public `Iter(T)` protocol yields owned values, so explicit references and
-borrowed views may not enter the frame or be yielded.
+references may not enter the frame or be yielded.
 
 ```witchy
 import iter
@@ -1804,7 +1769,7 @@ come from the manifest - see [package-manager.md](../rfcs/package-manager.md).
 
 The program's root authority. `main` may take any number of **capability**
 parameters plus an optional `args: List(String)` (the command-line arguments),
-and may return `Nil` or `Int` (the process exit code):
+and may return `()` or `Int` (the process exit code):
 
 ```witchy
 fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:
@@ -1981,7 +1946,8 @@ until driven. `chan.spawn` starts a task concurrently, and a `chan.channel` is a
 first-class value you create and pass to whichever tasks share it - spawning and
 channels are *independent* (no task has an implicit mailbox). Tasks share no
 memory, so there are no locks or data races, and the round-robin schedule is
-deterministic - identical output on the interpreter and the compiled WebAssembly.
+deterministic - the independent expected result, canonical SafeWIR interpreter,
+and admitted WebAssembly must produce identical output.
 
 ```witchy
 from chan import Sender
@@ -2009,7 +1975,7 @@ channel is typed independently - a program may use channels of many different
 message types. The compiled executor carries one opaque GC message envelope with
 i32, i64, f64, host-reference, and erased structural-reference fields; each
 checked endpoint statically recovers its own field and type, without bit-casting
-references through integer slots. A spawned task returns `Nil`, reporting
+references through integer slots. A spawned task returns `()`, reporting
 results over a channel.
 Its `Handle` is must-consume: every control-flow path must join, cancel, return,
 or transfer it, so accidentally detached work is rejected before execution.
@@ -2034,10 +2000,10 @@ fixture plans (`--fixtures`, deterministic and transcripted) or explicit owned
 integration grants (`--integration`); dependency tests never inherit real
 grants or the ability to construct fixture records.
 
-## 16. Semantics guarantees (the parity contract)
+## 16. Semantics guarantees (the canonical conformance contract)
 
-The full behavioral surface below is identical on the interpreter and the
-compiled backends, verified by differential tests:
+The full behavioral surface below matches an independent expectation in both
+the canonical SafeWIR interpreter and admitted unoptimized Wasm:
 
 - Integer arithmetic wraps; division/modulo by zero errors; shifts mask.
 - Float formatting is shortest-round-trip everywhere; NaN/±infinity behave
@@ -2048,11 +2014,11 @@ compiled backends, verified by differential tests:
   compile-time error (no meaningful, stable equality - this replaces a former
   backend divergence). `Dict` keys and `Set` members require `Eq`, so a `Float`
   key/member is a compile-time error (closing the NaN-key hole).
-- String operations are byte-precise across backends; `trim`/case-mapping are
+- String operations are byte-precise across canonical executors; `trim`/case-mapping are
   ASCII-scoped by design.
-- Out-of-bounds, overflow-on-parse, and `fail` abort on every backend.
+- Out-of-bounds, overflow-on-parse, and `fail` abort in every canonical executor.
 - Capability confinement (`Dir` path resolution, `Net` allowlists) uses the
-  same rules in the interpreter and the sandbox.
+  same rules in canonical interpretation and the Wasm sandbox.
 
-Anything a backend cannot run identically is a **loud compile or runtime error,
+Anything a canonical executor cannot run identically is a **loud compile or runtime error,
 never a silently different answer**.

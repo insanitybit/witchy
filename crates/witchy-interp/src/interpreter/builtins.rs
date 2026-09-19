@@ -7,11 +7,11 @@ use std::io::{BufReader, Read, Write};
 use std::rc::Rc;
 
 use witchy_runtime::net::Stream;
-use witchy_syntax::ast::*;
 use witchy_syntax::diag::DiagTemplate;
 use witchy_syntax::intrinsics;
 
 use super::*;
+use super::reflection::validate_compiler_named_type;
 
 impl Interpreter {
     pub(super) fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
@@ -289,6 +289,85 @@ impl Interpreter {
                 }
                 _ => err("meta expression builder expects a kind and scalar payload"),
             },
+            name if intrinsics::is_meta_expr_tag_hole(name) => match one(args)? {
+                Value::Str(marker) => {
+                    let valid_shape = marker
+                        .strip_prefix("__witchy_hole_")
+                        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()));
+                    let active = self
+                        .compiler_tag_hole_markers
+                        .as_ref()
+                        .is_some_and(|markers| markers.iter().any(|candidate| candidate.as_str() == marker.as_str()));
+                    if !valid_shape || !active {
+                        return err(
+                            "meta.expr_tag_hole expects a compiler-issued hole marker for the active tagged literal",
+                        );
+                    }
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "tag-hole-expression",
+                        Expr::Var(marker.to_string()),
+                        Vec::new(),
+                    )?))
+                }
+                other => err(format!(
+                    "meta.expr_tag_hole expects an opaque hole marker String, got `{other}`"
+                )),
+            },
+            name if intrinsics::is_meta_expr_tagged(name) => match args {
+                [tag, Value::List(parts), Value::List(holes)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_tagged is available only during compile-time expansion",
+                        );
+                    }
+                    let tag = compiler_ident_name(tag, "meta.expr_tagged")?;
+                    let parts = parts
+                        .iter()
+                        .map(|part| match part {
+                            Value::Str(part) => Ok(part.to_string()),
+                            _ => err("meta.expr_tagged expects List(String) parts"),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if parts.len() != holes.len() + 1 {
+                        return err(format!(
+                            "meta.expr_tagged expects parts.len() == holes.len() + 1, got {} parts and {} holes",
+                            parts.len(),
+                            holes.len(),
+                        ));
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        holes,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let holes = holes
+                        .iter()
+                        .map(|hole| {
+                            compiler_owned_expr_syntax_value(
+                                hole,
+                                &self.compiler_expr_syntax,
+                                "meta.expr_tagged",
+                            )
+                            .map(|expr| TaggedHole::Owned(Box::new(expr)))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let hole_spans = vec![(0, 0); holes.len()];
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-tagged",
+                        Expr::TaggedLit {
+                            tag,
+                            parts,
+                            holes,
+                            hole_spans,
+                            line: self.cur_line,
+                        },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_tagged expects Ident, List(String), and List(ExprSyntax)"),
+            },
             name if intrinsics::is_meta_pattern_leaf(name) => match args {
                 [Value::Str(kind), Value::Str(first), Value::Str(second), Value::Bool(inclusive)] => {
                     if self.fresh_ident_scope.is_none() {
@@ -352,6 +431,7 @@ impl Interpreter {
                         self.cur_line,
                     );
                     let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
+                    validate_compiler_named_type(name, &args)?;
                     let source = witchy_syntax::linker::call_site_type_source(name, &args);
                     let ty = witchy_syntax::linker::call_site_type(name, args);
                     let handle = self.next_compiler_syntax_handle("call-site-type")?;
@@ -388,6 +468,7 @@ impl Interpreter {
                         self.cur_line,
                     );
                     let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
+                    validate_compiler_named_type(name, &args)?;
                     let ty = Type::Named(name.to_string(), args);
                     Ok(Some(self.store_compiler_type_syntax(
                         "named-type",
@@ -472,7 +553,6 @@ impl Interpreter {
                     let qualifier = match qualifier.as_str() {
                         "frozen" => TypeQual::Frozen,
                         "unique" => TypeQual::Unique,
-                        "local unique" => TypeQual::LocalUnique,
                         other => {
                             return err(format!(
                                 "meta.type_qualified unknown qualifier `{other}`"
@@ -757,6 +837,210 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_call expects an ExprSyntax callee and List(ExprSyntax) arguments"),
             },
+            name if intrinsics::is_meta_expr_named_call(name) => match args {
+                [callee, Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_named_call is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        args,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let name = compiler_ident_name(callee, "meta.expr_named_call")?;
+                    let args = args
+                        .iter()
+                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-named-call",
+                        Expr::Call { name, args },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_named_call expects an Ident and List(ExprSyntax) arguments"),
+            },
+            name if intrinsics::is_meta_expr_try(name) => match args {
+                [value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_try is available only during compile-time expansion");
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(value),
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let expr = Expr::Try(Box::new(value));
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-try")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.expr_try expects an ExprSyntax"),
+            },
+            name if intrinsics::is_meta_expr_lambda(name) => match args {
+                [params, ret, body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_lambda is available only during compile-time expansion");
+                    }
+                    let params = compiler_params(params, &self.compiler_param_syntax)?;
+                    let ret = compiler_optional_type_syntax_value(ret, &self.compiler_type_syntax)?;
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(body),
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let body = compiler_expr_syntax_value(body, &self.compiler_expr_syntax)?;
+                    let expr = Expr::Lambda {
+                        params,
+                        body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![0], region: None },
+                        ret,
+                        qualifiers: CallableQualifiers::ORDINARY,
+                    };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-lambda")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.expr_lambda expects List(ParamSyntax), Option(TypeSyntax), and ExprSyntax"),
+            },
+            name if intrinsics::is_meta_expr_method_call(name) => match args {
+                [receiver, method, Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_method_call is available only during compile-time expansion");
+                    }
+                    let mut inputs = Vec::with_capacity(args.len() + 1);
+                    inputs.push(receiver.clone());
+                    inputs.extend(args.iter().cloned());
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let receiver = compiler_expr_syntax_value(receiver, &self.compiler_expr_syntax)?;
+                    let method = compiler_ident_name(method, "meta.expr_method_call")?;
+                    let args = args
+                        .iter()
+                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let expr = Expr::MethodCall { receiver: Box::new(receiver), method, args };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-method")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.expr_method_call expects ExprSyntax, Ident, and List(ExprSyntax)"),
+            },
+            name if intrinsics::is_meta_expr_qualified_call(name) => match args {
+                [module, member, Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() { return err("meta.expr_qualified_call is available only during compile-time expansion"); }
+                    let module = compiler_ident_name(module, "meta.expr_qualified_call")?;
+                    let member = compiler_ident_name(member, "meta.expr_qualified_call")?;
+                    let args = args.iter().map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax)).collect::<Result<Vec<_>, _>>()?;
+                    let expr = Expr::Call { name: format!("{module}.{member}"), args };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-qualified-call")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
+                }
+                _ => err("meta.expr_qualified_call expects Ident, Ident, and List(ExprSyntax)"),
+            },
+            name if intrinsics::is_meta_expr_qualified_call_path(name) => match args {
+                [Value::List(path), member, Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_qualified_call_path is available only during compile-time expansion",
+                        );
+                    }
+                    if path.is_empty() {
+                        return err("meta.expr_qualified_call_path expects a non-empty Ident path");
+                    }
+                    let mut path = path
+                        .iter()
+                        .map(|segment| {
+                            compiler_ident_name(segment, "meta.expr_qualified_call_path")
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let member = compiler_ident_name(member, "meta.expr_qualified_call_path")?;
+                    let args = args
+                        .iter()
+                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    // A path supplied by `meta.expr_qualified_call_path` names a
+                    // TYPE, not a module function.  Preserve that distinction in
+                    // the structural AST: `Child.from_json(j)` is a static trait
+                    // call on the nominal constructor, while `a.from_json(j)` is
+                    // a static trait call deferred to generic monomorphization.
+                    // Flattening either to `Expr::Call("…from_json")` makes the
+                    // linker apply its module-function namespace rules first.
+                    let receiver = if path.len() == 1
+                        && path[0].chars().next().is_some_and(char::is_lowercase)
+                    {
+                        Expr::Var(path.remove(0))
+                    } else {
+                        Expr::Ctor { name: path.join("."), args: Vec::new() }
+                    };
+                    let expr = Expr::MethodCall {
+                        receiver: Box::new(receiver),
+                        method: member,
+                        args,
+                    };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-qualified-call-path")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err(
+                    "meta.expr_qualified_call_path expects List(Ident), Ident, and List(ExprSyntax)",
+                ),
+            },
+            name if intrinsics::is_meta_expr_dynamic_descriptor(name) => match args {
+                [value] => {
+                    if self.fresh_ident_scope.is_none() { return err("meta.expr_dynamic_descriptor is available only during compile-time expansion"); }
+                    let value = compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    let expr = Expr::Call { name: witchy_syntax::intrinsics::DYNAMIC_DESCRIPTOR_ID.into(), args: vec![value] };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-dynamic-descriptor")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
+                }
+                _ => err("meta.expr_dynamic_descriptor expects ExprSyntax"),
+            },
             name if intrinsics::is_meta_expr_field(name) => match args {
                 [base, field] => {
                     if self.fresh_ident_scope.is_none() {
@@ -787,6 +1071,182 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_field expects an ExprSyntax base and Ident field"),
+            },
+            name if intrinsics::is_meta_expr_binary(name) => match args {
+                [Value::Str(op), lhs, rhs] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_binary is available only during compile-time expansion",
+                        );
+                    }
+                    let op = match op.as_str() {
+                        "+" => BinOp::Add,
+                        "-" => BinOp::Sub,
+                        "*" => BinOp::Mul,
+                        "/" => BinOp::Div,
+                        "%" => BinOp::Mod,
+                        "==" => BinOp::Eq,
+                        "!=" => BinOp::NotEq,
+                        "<" => BinOp::Lt,
+                        "<=" => BinOp::LtEq,
+                        ">" => BinOp::Gt,
+                        ">=" => BinOp::GtEq,
+                        "&&" => BinOp::And,
+                        "||" => BinOp::Or,
+                        "??" => BinOp::Coalesce,
+                        "&" => BinOp::BitAnd,
+                        "|" => BinOp::BitOr,
+                        "^" => BinOp::BitXor,
+                        "<<" => BinOp::Shl,
+                        ">>" => BinOp::Shr,
+                        _ => return err(format!("meta.expr_binary: unsupported operator `{op}`")),
+                    };
+                    let inputs = [lhs.clone(), rhs.clone()];
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let lhs = compiler_expr_syntax_value(lhs, &self.compiler_expr_syntax)?;
+                    let rhs = compiler_expr_syntax_value(rhs, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-binary",
+                        Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_binary expects an operator and two ExprSyntax operands"),
+            },
+            name if intrinsics::is_meta_expr_list(name) => match args {
+                [Value::List(elements)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_list is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        elements,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let elements = elements
+                        .iter()
+                        .map(|element| {
+                            compiler_expr_syntax_value(element, &self.compiler_expr_syntax)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-list",
+                        Expr::List(elements),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_list expects List(ExprSyntax) elements"),
+            },
+            name if intrinsics::is_meta_expr_tuple(name) => match args {
+                [Value::List(elements)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_tuple is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        elements,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let elements = elements
+                        .iter()
+                        .map(|element| {
+                            compiler_expr_syntax_value(element, &self.compiler_expr_syntax)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-tuple",
+                        Expr::Tuple(elements),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.expr_tuple expects List(ExprSyntax) elements"),
+            },
+            name if intrinsics::is_meta_expr_record(name) => match args {
+                [name, Value::List(fields), base] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_record is available only during compile-time expansion",
+                        );
+                    }
+                    let name = compiler_definition_ident_name(name, "meta.expr_record")?;
+                    let mut inputs = Vec::with_capacity(fields.len() + 1);
+                    for field in fields.iter() {
+                        let Value::Tuple(pair) = field else {
+                            return err(
+                                "meta.expr_record expected List((Ident, ExprSyntax)) fields",
+                            );
+                        };
+                        let [field_name, value] = pair.as_slice() else {
+                            return err(
+                                "meta.expr_record expected (Ident, ExprSyntax) field pairs",
+                            );
+                        };
+                        compiler_definition_ident_name(field_name, "meta.expr_record")?;
+                        inputs.push(value.clone());
+                    }
+                    let base_input = match base {
+                        Value::Ctor { name, fields }
+                            if compiler_ctor_tail(name) == "Some" && fields.len() == 1 =>
+                        {
+                            Some(fields[0].clone())
+                        }
+                        _ => None,
+                    };
+                    let base = compiler_optional_expr_syntax_value(base, &self.compiler_expr_syntax)?;
+                    if let Some(base_input) = base_input {
+                        inputs.push(base_input);
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let mut seen = std::collections::HashSet::with_capacity(fields.len());
+                    let fields = fields
+                        .iter()
+                        .map(|field| {
+                            let Value::Tuple(pair) = field else { unreachable!() };
+                            let [field_name, value] = pair.as_slice() else { unreachable!() };
+                            let field_name = compiler_definition_ident_name(
+                                field_name,
+                                "meta.expr_record",
+                            )?;
+                            if !seen.insert(field_name.clone()) {
+                                return err(format!(
+                                    "meta.expr_record: duplicate field `{field_name}`"
+                                ));
+                            }
+                            Ok((
+                                field_name,
+                                compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-record",
+                        Expr::Record { name, fields, spread: base.map(Box::new) },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err(
+                    "meta.expr_record expects an Ident name, List((Ident, ExprSyntax)) fields, and Option(ExprSyntax) base",
+                ),
             },
             name if intrinsics::is_meta_match_arm(name) => match args {
                 [pattern, body] => {
@@ -851,6 +1311,18 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_match expects an ExprSyntax scrutinee and List(MatchArmSyntax) arms"),
+            },
+            name if intrinsics::is_meta_expr_block(name) => match args {
+                [body] => {
+                    if self.fresh_ident_scope.is_none() { return err("meta.expr_block is available only during compile-time expansion"); }
+                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let expr = Expr::Block(body);
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-block")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    Ok(Some(Value::Ctor { name: "meta.CompilerExprSyntax".into(), fields: Rc::new(vec![Value::str(handle), Value::str(source)]) }))
+                }
+                _ => err("meta.expr_block expects BlockSyntax"),
             },
             name if intrinsics::is_meta_stmt_expr(name) => match args {
                 [expr] => {
@@ -1052,20 +1524,85 @@ impl Interpreter {
                     "meta.impl_block expects TypeSyntax, TypeSyntax, and List(ItemSyntax)",
                 ),
             },
-            name if intrinsics::is_meta_item(name) => match args {
-                [Value::Str(source)] => {
+            name if intrinsics::is_meta_impl_block_where(name) => match args {
+                [trait_ty, target_ty, bounds, items] => {
                     if self.fresh_ident_scope.is_none() {
-                        return err("meta.item is available only during compile-time expansion");
+                        return err("meta.impl_block_where is available only during compile-time expansion");
                     }
-                    let module = parse_module(source).map_err(|error| RuntimeError {
-                        message: format!("meta.item source does not parse: {error}"),
-                    })?;
-                    if !module.modes.is_empty() || module.items.len() != 1 {
-                        return err("meta.item expects exactly one complete declaration");
+                    let trait_ty = compiler_type_syntax_value(trait_ty, &self.compiler_type_syntax)?;
+                    let target_ty = compiler_type_syntax_value(target_ty, &self.compiler_type_syntax)?;
+                    let (trait_name, trait_args) = compiler_impl_head(trait_ty, "trait", "meta.impl_block_where")?;
+                    let (type_name, target_args) = compiler_impl_head(target_ty, "target", "meta.impl_block_where")?;
+                    let bounds = compiler_impl_bounds(bounds)?;
+                    let methods = compiler_impl_methods(items, &self.compiler_item_syntax)?;
+                    let item = Item::Impl(ImplDef { origin: ImplOrigin::Source, trait_name: Some(trait_name), trait_args, type_name, target_args, bounds, methods });
+                    let handle = self.next_compiler_syntax_handle("impl-item")?;
+                    self.compiler_item_syntax.insert(handle.clone(), item);
+                    Ok(Some(Value::Ctor { name: OWNED_ITEM_SYNTAX_CTOR.into(), fields: Rc::new(vec![Value::str(handle), Value::Int(i64::from(self.cur_line))]) }))
+                }
+                _ => err("meta.impl_block_where expects TypeSyntax, TypeSyntax, List((Ident, Ident)), and List(ItemSyntax)"),
+            },
+            name if intrinsics::is_meta_item_with_imports(name) => match args {
+                [Value::List(imports), Value::Ctor { name, fields }]
+                    if &**name == OWNED_ITEM_SYNTAX_CTOR
+                        && matches!(fields.as_slice(), [Value::Str(_), Value::Int(_)]) =>
+                {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.item_with_imports is available only during compile-time expansion",
+                        );
                     }
-                    let handle = self.next_compiler_syntax_handle("dynamic-item")?;
-                    self.compiler_item_syntax
-                        .insert(handle.clone(), module.items[0].clone());
+                    let imports = imports
+                        .iter()
+                        .map(|import| match import {
+                            Value::Str(import) if
+                                witchy_syntax::linker::STD_MODULES.contains(&import.as_str()) =>
+                            {
+                                Ok(import.to_string())
+                            }
+                            _ => Err(RuntimeError {
+                                message: "meta.item_with_imports expects a list of standard-module names"
+                                    .into(),
+                            }),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let Value::Str(item_handle) = &fields[0] else {
+                        unreachable!()
+                    };
+                    let item = self
+                        .compiler_item_syntax
+                        .get(item_handle.as_str())
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            message: "meta.item_with_imports referenced an invalid compiler-owned item handle"
+                                .into(),
+                        })?;
+                    let mut module = self
+                        .compiler_item_modules
+                        .get(item_handle.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| Module {
+                            modes: Vec::new(),
+                            imports: Vec::new(),
+                            from_imports: Vec::new(),
+                            items: vec![item.clone()],
+                            import_lines: Vec::new(),
+                            item_lines: vec![0],
+                            compiler_item_syntax: Vec::new(),
+                            compiler_expr_syntax: Vec::new(),
+                            compiler_type_syntax: Vec::new(),
+                            compiler_pattern_syntax: Vec::new(),
+                            compiler_stmt_syntax: Vec::new(),
+                            compiler_block_syntax: Vec::new(),
+                            linked_entry: None,
+                        });
+                    for import in imports {
+                        if !module.imports.contains(&import) {
+                            module.imports.push(import);
+                        }
+                    }
+                    let handle = self.next_compiler_syntax_handle("item-with-imports")?;
+                    self.compiler_item_syntax.insert(handle.clone(), item);
                     self.compiler_item_modules.insert(handle.clone(), module);
                     Ok(Some(Value::Ctor {
                         name: OWNED_ITEM_SYNTAX_CTOR.into(),
@@ -1075,29 +1612,9 @@ impl Interpreter {
                         ]),
                     }))
                 }
-                _ => err("meta.item expects one String declaration fragment"),
-            },
-            name if intrinsics::is_meta_expr(name) => match args {
-                [Value::Str(source)] => {
-                    if self.fresh_ident_scope.is_none() {
-                        return err("meta.expr_raw is available only during compile-time expansion");
-                    }
-                    let parsed = match &self.compiler_expr_qualifiers {
-                        Some(qualifiers) => {
-                            crate::tagged::parse_generated_splice_expr(source, qualifiers)
-                        }
-                        None => witchy_syntax::syntax_holes::parse_expr_payload(source),
-                    };
-                    let expr = parsed.map_err(|error| RuntimeError {
-                        message: format!("meta.expr_raw source does not parse: {error}"),
-                    })?;
-                    Ok(Some(self.store_compiler_expr_syntax(
-                        "dynamic-expression",
-                        expr,
-                        Vec::new(),
-                    )?))
-                }
-                _ => err("meta.expr_raw expects one String expression"),
+                _ => err(
+                    "meta.item_with_imports expects List(String) and compiler-owned ItemSyntax",
+                ),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {
@@ -3890,4 +4407,19 @@ fn compiler_impl_methods(
         methods.push(function);
     }
     Ok(methods)
+}
+
+fn compiler_impl_bounds(value: &Value) -> Result<Vec<(String, String, Vec<Type>)>, RuntimeError> {
+    let Value::List(bounds) = value else {
+        return err("meta.impl_block_where expects a list of typed bounds");
+    };
+    let mut out = Vec::with_capacity(bounds.len());
+    for bound in bounds.iter() {
+        let Value::Tuple(parts) = bound else { return err("meta.impl_block_where bounds must be (Ident, Ident)"); };
+        if parts.len() != 2 { return err("meta.impl_block_where bounds must be (Ident, Ident)"); }
+        let var = compiler_ident_name(&parts[0], "meta.impl_block_where")?;
+        let trait_name = compiler_ident_name(&parts[1], "meta.impl_block_where")?;
+        out.push((var, trait_name, Vec::new()));
+    }
+    Ok(out)
 }

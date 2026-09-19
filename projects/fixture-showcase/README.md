@@ -7,7 +7,7 @@ This rune demonstrates Witchy's testing boundary in one small application:
 - the root test package declares an owned `capability FixtureWorld` record;
 - the runner assembles that record from a validated fixture plan;
 - exact provider call counts make unexpected effects fail the test;
-- the same fixture test runs under the interpreter and Wasmtime.
+- the same fixture test runs under the canonical SafeWIR interpreter and admitted Wasm.
 
 Run the data-only unit test:
 
@@ -15,12 +15,12 @@ Run the data-only unit test:
 witchy test --filter release_line projects/fixture-showcase
 ```
 
-Run the capability test with deterministic providers and backend parity:
+Run the capability test with deterministic providers on admitted Wasm:
 
 ```sh
 witchy test \
   --fixtures projects/fixture-showcase/release.fixture.json \
-  --backend both \
+  --backend wasm \
   --filter fixture_world \
   --show-output \
   projects/fixture-showcase

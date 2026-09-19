@@ -109,7 +109,7 @@ chooses what behavior to provide. Taking the callback with `own` transfers the
 caller's binding, but the callback remains reusable inside the callee.
 
 ```witchy
-fn log_twice(own logger: fn(String) -> Nil):
+fn log_twice(own logger: fn(String) -> ()):
     logger("first")
     logger("second")
 
@@ -128,7 +128,7 @@ closure captures `Console` and calls it under a `pure fn` promise:
 
 ```witchy-static
 fn main(console: Console):
-    let logger: pure fn(String) -> Nil =
+    let logger: pure fn(String) -> () =
         pure fn(message: String): console.print(message)
     logger("effect")
 ```
@@ -140,11 +140,11 @@ Use `once fn` for a callback that may be invoked at most once. Passing it to an
 consumes it even if the call returns an error or traps.
 
 ```witchy
-fn complete(own callback: once fn(String) -> Nil, message: String):
+fn complete(own callback: once fn(String) -> (), message: String):
     callback(message)
 
 fn main(console: Console):
-    let completion: once fn(String) -> Nil =
+    let completion: once fn(String) -> () =
         once fn(message: String): console.print("completed: ${message}")
     complete(completion, "ready")
 ```
@@ -172,7 +172,7 @@ does not hide that obligation in the closure environment.
 
 ```witchy
 must sealed type Completion:
-    Completion(once fn(String) -> Nil)
+    Completion(once fn(String) -> ())
 
 fn finish(own completion: Completion, message: String):
     match completion:
@@ -205,7 +205,7 @@ end of its scope without disposition:
 
 ```witchy-static
 must sealed type Completion:
-    Completion(once fn(String) -> Nil)
+    Completion(once fn(String) -> ())
 
 fn main():
     let completion = Completion(once fn(message: String): ())

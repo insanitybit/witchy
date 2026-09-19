@@ -40,7 +40,7 @@ pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq
     dict.__insert_extract(d, key, val)
 
 // The value for `key`, or `default` when absent.
-pub fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq:
+pub fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Eq:
     dict.get_or(d, key, default)
 
 // The value for `key`, inserting `default` first when the key is absent. Returns
@@ -51,12 +51,12 @@ pub fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k:
     if dict.contains_key(d, key):
         dict.at(d, key)
     else:
-        dict.insert(d, key, default)
+        let _ = dict.insert(d, key, default)
         default
 
 // The value for `key`, or a runtime error when absent. This is the read half of
 // the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
-pub fn at(d: Dict(k, v), key: k) -> v where k: Eq:
+pub fn at(let d: Dict(k, v), key: k) -> v where k: Eq:
     dict.at(d, key)
 
 // Single-lookup upsert: apply `f` to the current value (or `default` when
@@ -68,24 +68,24 @@ pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq:
     d = dict.__update(d, key, default, f)
     return
 
-// Single-lookup upsert with a borrowed string slice key (RFC-0139).
+// Single-lookup upsert with a rooted string slice view key (RFC-0139).
 // On Hit: zero allocations (in-place value update).
 // On Miss: clones string slice to insert entry.
-pub fn update_str(var d: Dict(String, v), key: &'a str, default: v, f: fn(v) -> v):
+pub fn update_str(var d: Dict(String, v), key: &str, default: v, f: fn(v) -> v):
     d = dict.__update(d, key.to_string(), default, f)
     return
 
 // String slice lookup without allocating an owned String (RFC-0139).
-pub fn contains_str(d: Dict(String, v), key: &'a str) -> Bool:
+pub fn contains_str(let d: Dict(String, v), key: &str) -> Bool:
     dict.contains_key(d, key.to_string())
 
-pub fn get_str_or(d: Dict(String, v), key: &'a str, default: v) -> v:
+pub fn get_str_or(let d: Dict(String, v), key: &str, default: v) -> v:
     dict.get_or(d, key.to_string(), default)
 
-pub fn at_str(d: Dict(String, v), key: &'a str) -> v:
+pub fn at_str(let d: Dict(String, v), key: &str) -> v:
     dict.at(d, key.to_string())
 
-pub fn get_str(d: Dict(String, v), key: &'a str) -> Option(v):
+pub fn get_str(let d: Dict(String, v), key: &str) -> Option(v):
     if dict.contains_str(d, key):
         Some(dict.at_str(d, key))
     else:
@@ -93,7 +93,7 @@ pub fn get_str(d: Dict(String, v), key: &'a str) -> Option(v):
 
 // Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
 // key/value pairs, so bare `contains` would be ambiguous between keys and values.
-pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
+pub fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Eq:
     dict.contains_key(d, key)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
@@ -112,19 +112,19 @@ pub fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq:
     dict.__remove_extract(d, key)
 
 // The keys, in insertion order.
-pub fn keys(d: Dict(k, v)) -> List(k):
+pub fn keys(let d: Dict(k, v)) -> List(k):
     dict.keys(d)
 
 // The values, in insertion order.
-pub fn values(d: Dict(k, v)) -> List(v):
+pub fn values(let d: Dict(k, v)) -> List(v):
     dict.values(d)
 
 // The (key, value) pairs, in insertion order.
-pub fn pairs(d: Dict(k, v)) -> List((k, v)):
+pub fn pairs(let d: Dict(k, v)) -> List((k, v)):
     dict.pairs(d)
 
 // The number of entries.
-pub fn length(d: Dict(k, v)) -> Int:
+pub fn length(let d: Dict(k, v)) -> Int:
     dict.length(d)
 
 // Methods are the primary surface. The module level keeps only the native
@@ -132,23 +132,23 @@ pub fn length(d: Dict(k, v)) -> Int:
 // constructor `from_pairs`; the compositional layer lives here.
 impl Dict(k, v):
     // The number of entries.
-    pub fn length(self) -> Int:
+    pub fn length(let self) -> Int:
         dict.length(self)
 
     // Whether the dict has no entries.
-    pub fn is_empty(self) -> Bool:
+    pub fn is_empty(let self) -> Bool:
         dict.length(self) == 0
 
     // The keys, in insertion order.
-    pub fn keys(self) -> List(k):
+    pub fn keys(let self) -> List(k):
         dict.keys(self)
 
     // The values, in insertion order.
-    pub fn values(self) -> List(v):
+    pub fn values(let self) -> List(v):
         dict.values(self)
 
     // The (key, value) pairs, in insertion order.
-    pub fn pairs(self) -> List((k, v)):
+    pub fn pairs(let self) -> List((k, v)):
         dict.pairs(self)
 
     // The values whose keys satisfy `pred`, in the Dict's iteration order.
@@ -165,20 +165,20 @@ impl Dict(k, v) where k: Eq:
         dict.insert(self, key, val)
 
     pub fn update(var self, key: k, default: v, f: fn(v) -> v):
-        dict.update(self, key, default, f)
+        let _ = dict.update(self, key, default, f)
 
     pub fn remove(var self: unique Dict(k, v), key: k) -> Option(v):
         dict.remove(self, key)
 
     // A lookup that says whether the key was present, rather than forcing a
     // default (O(1) hash lookup).
-    pub fn get(self, key: k) -> Option(v):
+    pub fn get(let self, key: k) -> Option(v):
         if dict.contains_key(self, key):
             Some(dict.at(self, key))
         else:
             None
 
-    pub fn get_or(self, key: k, default: v) -> v:
+    pub fn get_or(let self, key: k, default: v) -> v:
         dict.get_or(self, key, default)
 
     // The value for `key`, inserting `default` first when the key is absent -
@@ -190,13 +190,13 @@ impl Dict(k, v) where k: Eq:
     // The value for `key`, or a runtime error when absent. This is the read
     // half of the `d[key]` subscript surface; use `get`/`get_or` when absence
     // is ordinary.
-    pub fn at(self, key: k) -> v:
+    pub fn at(let self, key: k) -> v:
         dict.at(self, key)
 
     // Whether `key` is present. The `_key` suffix is deliberate: a Dict
     // contains key/value pairs, so bare `contains` would be ambiguous between
     // keys and values.
-    pub fn contains_key(self, key: k) -> Bool:
+    pub fn contains_key(let self, key: k) -> Bool:
         dict.contains_key(self, key)
 
     // A new Dict with every value passed through `f` (keys unchanged).
@@ -204,7 +204,7 @@ impl Dict(k, v) where k: Eq:
         var out = dict.new()
         for entry in dict.pairs(self):
             let (key, value) = entry
-            dict.insert(out, key, f(value))
+            let _ = dict.insert(out, key, f(value))
         out
 
     // Keep only the entries for which `keep(key, value)` holds.
@@ -213,7 +213,7 @@ impl Dict(k, v) where k: Eq:
         for entry in dict.pairs(self):
             let (key, value) = entry
             if keep(key, value):
-                dict.insert(out, key, value)
+                let _ = dict.insert(out, key, value)
         out
 
     // `self` with `other`'s entries laid over it (on a key collision, `other`
@@ -222,7 +222,7 @@ impl Dict(k, v) where k: Eq:
         var out = self
         for entry in dict.pairs(other):
             let (key, value) = entry
-            dict.insert(out, key, value)
+            let _ = dict.insert(out, key, value)
         out
 
 impl Dict(k, v) where v: Eq:
@@ -231,7 +231,7 @@ impl Dict(k, v) where v: Eq:
         var out = dict.new()
         for entry in dict.pairs(self):
             let (key, value) = entry
-            dict.insert(out, value, key)
+            let _ = dict.insert(out, value, key)
         out
 
 // Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
@@ -239,5 +239,5 @@ pub fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq:
     var d = dict.new()
     for entry in entries:
         let (key, value) = entry
-        dict.insert(d, key, value)
+        let _ = dict.insert(d, key, value)
     d

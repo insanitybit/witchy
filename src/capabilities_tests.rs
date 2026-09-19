@@ -86,7 +86,7 @@ pub fn add(a: Int, b: Int) -> Int:
     #[test]
     fn callable_signatures_do_not_demand_their_named_host_capabilities() {
         let fp = footprint(r#"
-pub fn install(callback: fn(Console, Dir[Read]) -> Net[Connect, Tcp], callbacks: List(fn(Secret[Seal]) -> Fetch)) -> Nil:
+pub fn install(callback: fn(Console, Dir[Read]) -> Net[Connect, Tcp], callbacks: List(fn(Secret[Seal]) -> Fetch)) -> ():
     return
 "#);
         assert!(
@@ -106,7 +106,7 @@ type Handler:
 type Context:
     Context(Dir[Read], Console, Handler)
 
-pub fn run(context: Context, callback: fn(Net[Listen, Tcp]) -> Nil) -> Nil:
+pub fn run(context: Context, callback: fn(Net[Listen, Tcp]) -> ()) -> ():
     return
 "#);
         assert_eq!(
@@ -122,7 +122,7 @@ pub fn run(context: Context, callback: fn(Net[Listen, Tcp]) -> Nil) -> Nil:
     #[test]
     fn direct_capability_root_is_preserved_alongside_an_opaque_callback() {
         let module = parse_module(r#"
-fn main(console: Console, callback: fn(Console, Net) -> Nil):
+fn main(console: Console, callback: fn(Console, Net) -> ()):
     return
 "#)
         .expect("parse");
@@ -145,11 +145,11 @@ fn build(out: BuildOut, direct: (BuildRead, Int), callback: fn(BuildRead, BuildN
     #[test]
     fn changing_only_callback_behavior_does_not_widen_root_footprint() {
         let old = footprint(r#"
-pub fn run(callback: fn(Int) -> Nil) -> Nil:
+pub fn run(callback: fn(Int) -> ()) -> ():
     callback(1)
 "#);
         let new = footprint(r#"
-pub fn run(callback: fn(Console, Net) -> Secret) -> Nil:
+pub fn run(callback: fn(Console, Net) -> Secret) -> ():
     return
 "#);
         let change = diff(&old, &new);
@@ -231,7 +231,7 @@ impl Client:
     pub fn open(net: Net[Connect, Tcp], host: String) -> Client:
         Client(host)
 
-    pub fn send(self, net: Net[Connect, Tcp]) -> Nil:
+    pub fn send(self, net: Net[Connect, Tcp]) -> ():
         return
 
     fn helper(secret: Secret) -> Client:

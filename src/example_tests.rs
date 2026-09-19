@@ -394,12 +394,6 @@
     mod comptime;
     mod quote;
     mod ownership;
-    mod rfc0122_control_flow;
-    mod rfc0122_references;
-    mod rfc0122_wasm_list_carrier;
-    mod rfc0122_wasm_exclusive_list_return;
-    mod rfc0122_wasm_result_list;
-    mod rfc0122_wasm_result_tuple;
     mod json;
     mod capabilities;
     mod region;
@@ -451,6 +445,9 @@
     mod examples_programs;
     mod modes;
     mod must_consume;
+    mod rfc0167_views;
+    mod rfc0167_callable_views;
+    mod rfc0167_rooted_slices;
 
     fn wasm_run(src: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();

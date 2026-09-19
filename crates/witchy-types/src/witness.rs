@@ -997,7 +997,7 @@ mod tests {
         let module = parser::parse_module(
             "trait Notify:\n    fn notify(let self)\n\n\
              type Label:\n    Label(Int)\n\n\
-             impl Notify for Label:\n    fn notify(let self):\n        Nil\n",
+             impl Notify for Label:\n    fn notify(let self):\n        ()\n",
         )
         .expect("parse");
         let existential = Type::Dyn("Notify".into(), Vec::new());

@@ -24,7 +24,7 @@
 // heterogeneous scalars and direct references in one
 // scheduler ABI without bit-casting references through an integer slot. Erasure
 // is observationally invisible, so interleavings stay byte-identical. Spawned
-// tasks return `Nil`; a task reports a result by sending it on a channel, not by
+// tasks return `()`; a task reports a result by sending it on a channel, not by
 // returning it (a typed `JoinHandle(T)` would force a native runtime and break
 // the parity contract).
 //
@@ -41,16 +41,16 @@ import option
 sealed type Step(a):
     Done(a)
     Yield(Task(a))
-    Fork(Task(Nil), fn(Int) -> Task(a))
+    Fork(Task(()), fn(Int) -> Task(a))
     Open(Int, fn(Int) -> Task(a))
-    Push(Int, __Msg, fn(Nil) -> Task(a))
+    Push(Int, __Msg, fn(()) -> Task(a))
     Pull(Int, fn(Option(__Msg)) -> Task(a))
     // Compiler-private typed-ring steps. These share ChannelId numbering with
     // the erased scheduler ring, but keep an Int payload out of `__Msg` until
     // the first blocking or ordinary operation materializes FIFO contents.
     // User source cannot construct these variants.
     OpenI64(Int, fn(Int) -> Task(a))
-    PushI64(Int, Int, fn(Nil) -> Task(a))
+    PushI64(Int, Int, fn(()) -> Task(a))
     PullI64(Int, fn(Option(Int)) -> Task(a))
     Pull2(Int, Int, fn(Int, Option(__Msg)) -> Task(a))
     // Fixed-arity select keeps its endpoint set and source order explicit.
@@ -64,39 +64,39 @@ sealed type Step(a):
     // Compiler-owned reusable frame. `step` mutates the scalar lane record and
     // returns true when the frame has completed; the executor activates `done`
     // only on completion, so ready iterations do not rebuild a Task/closure.
-    Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))
+    Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))
     // One-way counterpart of Pull2FrameLoop. It retains one receiver, frame,
     // step, and completion closure across a receive-until-closed fold.
-    PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Compiler-private ready-probing entry form. As with the fixed-arity
     // select entry, task.run owns the sole ring and retains PullFrameLoop's
     // ordinary reusable-wait fallback whenever an eager probe is not proven.
-    PullReadyFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    PullReadyFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Reusable compiler-owned frame loop. Unlike Pull2Frame, a false step
     // result re-arms the same parked frame instead of returning through a new
     // task. The frame, step closure, and done task can therefore remain live
     // for the entire scalar select loop.
-    Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // The ready-probing entry form of Pull2FrameLoop. It is compiler-private:
     // task.run owns the only channel-ring state and either consumes the first
     // ready arm immediately or installs the exact same Wait2FrameLoop fallback.
     // The separate tag gives typed Wasm lowering a scheduler-local seam; it is
     // not a second channel representation or a different scheduling contract.
-    Pull2ReadyFrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull2ReadyFrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Three-way counterpart of Pull2FrameLoop. The endpoint fields remain
     // separate so the scheduler can preserve the source-order first-ready
     // rule without allocating a receiver-id list on each iteration.
-    Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Eager entry for the fixed three-way frame. An empty probe retains the
     // ordinary Wait3FrameLoop suspension representation.
-    Pull3ReadyFrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull3ReadyFrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Four-way counterpart; endpoint order is the source-order tie rule.
-    Pull4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Eager entry for the fixed four-way frame with the same bounded fallback.
-    Pull4ReadyFrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
+    Pull4ReadyFrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))
-    Wait(Int, fn(Nil) -> Task(a))
-    Cancel(Int, fn(Nil) -> Task(a))
+    Wait(Int, fn(()) -> Task(a))
+    Cancel(Int, fn(()) -> Task(a))
 
 // A task communicating via channels, producing an `a`.
 sealed type Task(a):
@@ -110,7 +110,7 @@ fn unit():
     let _ignore = 0
 
 // Private deterministic-instrumentation marker. The interpreter executes this
-// as `Nil`; instrumented WIR recognizes the exact call site and increments the
+// as `()`; instrumented WIR recognizes the exact call site and increments the
 // scheduler wake-claim counter without adding work to normal artifacts.
 fn __rfc0152_wake_claim():
     unit()
@@ -130,13 +130,13 @@ fn direct_frame_unreachable() -> Task(a):
 pub fn done(own x: a) -> Task(a):
     Task(fn(): Done(x))
 
-// An already-complete `Task(Nil)` - the async/await lowering target for a body
+// An already-complete `Task(())` - the async/await lowering target for a body
 // that falls off its end.
-pub fn ready_unit() -> Task(Nil):
+pub fn ready_unit() -> Task(()):
     Task(fn(): Done(unit()))
 
 // Hand control back to the executor once, then continue.
-pub fn yield_now() -> Task(Nil):
+pub fn yield_now() -> Task(()):
     Task(fn(): Yield(Task(fn(): Done(unit()))))
 
 // Sequence: run `t`, then continue with `k` applied to its result. This is what
@@ -194,7 +194,7 @@ pub fn lazy(thunk: fn() -> Task(a)) -> Task(a):
 
 // Run `f(x)` as a task for each `x` in `xs`, in order - the lowering target for an
 // `await` inside a `for x in xs:` loop.
-pub fn for_each(xs: List(a), f: fn(a) -> Task(Nil)) -> Task(Nil):
+pub fn for_each(xs: List(a), f: fn(a) -> Task(())) -> Task(()):
     if list.is_empty(xs):
         ready_unit()
     else:
@@ -213,7 +213,7 @@ sealed type ChannelId:
 fn __channel_open(capacity: Int) -> Task(ChannelId):
     Task(fn(): Open(capacity, fn(id): Task(fn(): Done(ChannelId(id)))))
 
-fn __channel_send(channel: ChannelId, msg: __Msg) -> Task(Nil):
+fn __channel_send(channel: ChannelId, msg: __Msg) -> Task(()):
     match channel:
         ChannelId(id) -> Task(fn(): Push(id, msg, fn(_done): ready_unit()))
 
@@ -228,7 +228,7 @@ fn __channel_recv(channel: ChannelId, decode: fn(Option(__Msg)) -> a) -> Task(a)
 pub fn __channel_open_i64(capacity: Int) -> Task(ChannelId):
     Task(fn(): OpenI64(capacity, fn(id): Task(fn(): Done(ChannelId(id)))))
 
-pub fn __channel_send_i64(channel: ChannelId, msg: Int) -> Task(Nil):
+pub fn __channel_send_i64(channel: ChannelId, msg: Int) -> Task(()):
     match channel:
         ChannelId(id) -> Task(fn(): PushI64(id, msg, fn(_done): ready_unit()))
 
@@ -273,7 +273,7 @@ pub fn __channel_select4_map(a: ChannelId, b: ChannelId, c: ChannelId, d: Channe
 // Compiler-owned entry point for a reusable scalar select frame. The frame
 // lane record and completion task are allocated once by the lowering pass;
 // the scheduler keeps them in the slot across ready and parked iterations.
-fn __channel_select2_frame(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_task: Task(Nil)) -> Task(Nil):
+fn __channel_select2_frame(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), List(Int)) -> Bool, done_task: Task(())) -> Task(()):
     match a:
         ChannelId(ia) ->
             match b:
@@ -282,26 +282,26 @@ fn __channel_select2_frame(a: ChannelId, b: ChannelId, frame: List(Int), step: f
 // Compiler-owned reusable scalar select frame. The scheduler keeps the same
 // task/frame/step closure parked until `step` returns true, so a hot loop does
 // not rebuild a continuation task for every ready message.
-fn __channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+fn __channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     match a:
         ChannelId(ia) ->
             match b:
                 ChannelId(ib) -> Task(fn(): Pull2ReadyFrameLoop(ia, ib, frame, step, done_fn))
 
-pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn channel_select2_frame_loop(a: ChannelId, b: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_select2_frame_loop(a, b, frame, step, done_fn)
 
 // Compiler-owned reusable one-way receive frame. The frame itself is shared
 // only by the scheduler slot and its step closure; a false step re-arms that
 // same registration and a final `None` is delivered by the close pass.
-fn __channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+fn __channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     match ch:
         ChannelId(id) -> Task(fn(): PullReadyFrameLoop(id, frame, step, done_fn))
 
-pub fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_recv_frame_loop(ch, frame, step, done_fn)
 
-fn __channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+fn __channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     match a:
         ChannelId(ia) ->
             match b:
@@ -309,10 +309,10 @@ fn __channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame:
                     match c:
                         ChannelId(ic) -> Task(fn(): Pull3ReadyFrameLoop(ia, ib, ic, frame, step, done_fn))
 
-pub fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_select3_frame_loop(a, b, c, frame, step, done_fn)
 
-fn __channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+fn __channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     match a:
         ChannelId(ia) ->
             match b:
@@ -322,7 +322,7 @@ fn __channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: Cha
                             match d:
                                 ChannelId(id) -> Task(fn(): Pull4ReadyFrameLoop(ia, ib, ic, id, frame, step, done_fn))
 
-pub fn channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(Nil)) -> Task(Nil):
+pub fn channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_select4_frame_loop(a, b, c, d, frame, step, done_fn)
 
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
@@ -334,43 +334,64 @@ fn channel_ids(channels: List(ChannelId)) -> List(Int):
             ChannelId(id) -> id
     )
 
-// Start `child` as a concurrent task; the returned handle completes when it does.
-pub fn spawn(child: Task(Nil)) -> Task(Handle):
-    Task(fn(): Fork(child, fn(h): Task(fn(): Done(Handle(h)))))
+// The scheduler owns raw task IDs. They are not public handles: only this
+// compiler-private bridge may mint or consume the `must` Handle wrapper. This
+// keeps scheduler continuations scalar while preserving the public obligation
+// that every Handle is joined, cancelled, or returned.
+pub fn __spawn_raw(child: Task(())) -> Task(Int):
+    Task(fn(): Fork(child, fn(id): done(id)))
+
+pub fn __join_raw(id: Int) -> Task(()):
+    Task(fn(): Wait(id, fn(u): done(u)))
+
+pub fn __cancel_raw(id: Int) -> Task(()):
+    Task(fn(): Cancel(id, fn(u): done(u)))
+
+pub fn __handle_from_raw(id: Int) -> Handle:
+    Handle(id)
+
+pub fn __handle_into_raw(own h: Handle) -> Int:
+    match h:
+        Handle(id) -> id
+
+// Start `child` as a concurrent task. Mint the public `must` Handle only at
+// the public result boundary; the scheduler continuation carries its raw ID.
+pub fn spawn(child: Task(())) -> Task(Handle):
+    Task(fn(): Fork(child, fn(id): Task(fn(): Done(__handle_from_raw(id)))))
 
 // Wait for the spawned task behind `h` while the executor can make progress. If
 // the whole executor reaches quiescence with this join parked, the close pass
 // releases it even if the joined task has a continuation that will run afterward.
-pub fn join(own h: Handle) -> Task(Nil):
-    match h:
-        Handle(id) -> Task(fn(): Wait(id, fn(u): Task(fn(): Done(u))))
+pub fn join(own h: Handle) -> Task(()):
+    let id = __handle_into_raw(h)
+    __join_raw(id)
 
 // Cancel the spawned task behind `h`: it is stepped no further and is treated as
 // finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its
 // descendants) and idempotent (already-finished is a no-op). Deterministic on the
 // round-robin schedule, hence byte-identical on both backends.
-pub fn cancel(own h: Handle) -> Task(Nil):
-    match h:
-        Handle(id) -> Task(fn(): Cancel(id, fn(u): Task(fn(): Done(u))))
+pub fn cancel(own h: Handle) -> Task(()):
+    let id = __handle_into_raw(h)
+    __cancel_raw(id)
 
 // ---- executor ----
 
 // A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 // Parked messages are the erased `__Msg` (RFC-0055).
 sealed type Slot:
-    Active(Task(Nil))
-    WaitRecv(Int, fn(Option(__Msg)) -> Task(Nil))
-    WaitSend(Int, __Msg, fn(Nil) -> Task(Nil))
-    Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
-    Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
-    Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(Nil))
-    Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(Nil))
-    WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
-    Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
-    Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
-    Wait4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(Nil))
-    WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(Nil))
-    WaitJoin(Int, fn(Nil) -> Task(Nil))
+    Active(Task(()))
+    WaitRecv(Int, fn(Option(__Msg)) -> Task(()))
+    WaitSend(Int, __Msg, fn(()) -> Task(()))
+    Wait2(Int, Int, fn(Int, Option(__Msg)) -> Task(()))
+    Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))
+    Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))
+    Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))
+    WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
+    Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
+    Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
+    Wait4FrameLoop(Int, Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
+    WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(()))
+    WaitJoin(Int, fn(()) -> Task(()))
     Ended
 
 fn is_live(s: Slot) -> Bool:
@@ -540,7 +561,7 @@ fn is_only_live_slot(k: Int, ignored: Int, slots: List(Slot)) -> Bool:
 
 // Drive `root` (and everything it spawns) to completion on a deterministic
 // round-robin schedule. An async `main` lowers to a single `run` of its body.
-pub fn run(root: Task(Nil)):
+pub fn run(root: Task(())):
     // (RFC-0036 Design B) The scheduler OWNS its state: `slots` and `channels` are
     // confined-unique local `var` accumulators, mutated in place with
     // (`list.set_at(slots, …)` / `list.push(…)`). Every effect is inlined

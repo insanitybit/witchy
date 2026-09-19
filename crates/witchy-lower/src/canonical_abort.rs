@@ -5,7 +5,11 @@ pub(super) const IMPORT: &str = "__witchy_abort_at";
 pub(super) const BOUNDS_IMPORT: &str = "__witchy_list_bounds_at";
 
 pub(super) fn is_list_access(expression: &Expr) -> bool {
-    matches!(expression, Expr::Index { .. }) || matches!(expression,
+    // A range subscript is projection syntax consumed by authenticated
+    // rooted-slice formation. It never reaches `lower_index` and therefore
+    // must not register an unreferenced bounds-diagnostic payload.
+    matches!(expression, Expr::Index { index, .. } if !matches!(index.as_ref(), Expr::Range { .. }))
+        || matches!(expression,
         Expr::Call { name, .. } if matches!(name.as_str(), "list.at" | "list.__at" | "list.__set_at"))
 }
 

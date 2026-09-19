@@ -60,6 +60,25 @@ pub enum CanonicalReferenceKind {
     Bytes,
     Aggregate(CanonicalTypeKey),
     Capability(CanonicalCapabilityKind),
+    /// A local rooted-view lane.  The payload key binds the checked payload
+    /// identity; the carrier kind says how the retained root/projection is
+    /// represented.  This is deliberately not an open, separately compiled
+    /// reference ABI.
+    RootedView {
+        payload: CanonicalTypeKey,
+        carrier: CanonicalRootedViewCarrier,
+    },
+}
+
+/// Physical family selected for an authenticated rooted view.  New payloads
+/// require a new explicit carrier family; they may not reuse the scalar cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CanonicalRootedViewCarrier {
+    IntScalarRoot,
+    /// Retained `List(Int)` root plus checked `{start, len}` projection.
+    /// This remains local-only: it is not an open List ABI and exposes no
+    /// by-value element read.
+    IntListSliceRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -233,7 +252,7 @@ pub(crate) fn checked_declaration_signature(typed: &TypedModule, name: &str) -> 
         Item::Function(function) if function.name == name => Some(function),
         _ => None,
     }).ok_or_else(|| CanonicalAbiError::InvalidCallable(format!("missing checked declaration `{name}`")))?;
-    let Type::Fn(parameters, _, conventions, _) = &mut signature else {
+    let Type::Fn(parameters, result, conventions, _) = &mut signature else {
         return Err(CanonicalAbiError::InvalidCallable("checked declaration is not callable".into()));
     };
     if parameters.len() != declaration.params.len() {
@@ -248,6 +267,15 @@ pub(crate) fn checked_declaration_signature(typed: &TypedModule, name: &str) -> 
             }
             *parameter = Type::Qualified(ast::TypeQual::Unique, Box::new(parameter.unqualified().clone()));
         }
+    }
+    if let Some(declared) = declaration.ret.as_ref()
+        && let Some(physical) = ast::direct_unique_result_ok_collection_physical_type(declared)
+        && result.as_ref() == &physical
+    {
+        // The finalized value type establishes the physical Result shape;
+        // restore only the exact checked source carrier relation that its
+        // canonical ABI needs to authenticate the returned owned wrapper.
+        *result = Box::new(declared.clone());
     }
     Ok(signature)
 }
@@ -286,7 +314,14 @@ fn collect_ty_callables(
 ) -> Result<(), CanonicalAbiError> {
     match ty {
         Ty::Fn(..) => {
-            entries.insert(callable_from_ty(ty, policy, context)?);
+            // A concrete checked function type can describe an external
+            // callable slot.  A rooted view has no separately compiled ABI:
+            // only the closed declaration entry, source-bound below, can
+            // install its retained root-plus-projection carrier.  Do not
+            // accidentally promote a local view callable into OpenAbi.
+            if !contains_rooted_view(ty) {
+                entries.insert(callable_from_ty(ty, policy, context)?);
+            }
         }
         Ty::List(element) => collect_ty_callables(element, CanonicalTargetPolicy::OpenAbi, context, entries)?,
         Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
@@ -400,6 +435,7 @@ fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, Canon
         Ty::String => CanonicalValueKind::Reference(CanonicalReferenceKind::String),
         Ty::Bytes => CanonicalValueKind::Reference(CanonicalReferenceKind::Bytes),
         Ty::Fn(..) => CanonicalValueKind::Callable(CanonicalCallableAbiKey(*blake3::hash(&bytes).as_bytes())),
+        Ty::View(payload) => CanonicalValueKind::Reference(rooted_view_from_ty(payload, context)?),
         Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret(_) | Ty::Exec | Ty::Fetch
         | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener | Ty::BuildOut
         | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {
@@ -418,6 +454,9 @@ fn value_from_ty(ty: &Ty, context: &Context) -> Result<CanonicalValueKind, Canon
 }
 
 fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, CanonicalAbiError> {
+    if let Type::Qualified(ast::TypeQual::View, payload) = ty {
+        return Ok(CanonicalValueKind::Reference(rooted_view_from_ast(payload, context)?));
+    }
     let mut bytes = Vec::new();
     encode_ast(ty, context, &mut bytes)?;
     let key = CanonicalTypeKey(*blake3::hash(&bytes).as_bytes());
@@ -428,6 +467,7 @@ fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, Ca
         Type::Named(name, args) if name == "Duration" && args.is_empty() => CanonicalValueKind::Scalar(CanonicalScalarKind::Duration),
         Type::Named(name, args) if name == "Bool" && args.is_empty() => CanonicalValueKind::Scalar(CanonicalScalarKind::Bool),
         Type::Named(name, args) if (name == "Nil" || name == "Unit") && args.is_empty() => CanonicalValueKind::Scalar(CanonicalScalarKind::Unit),
+        Type::Tuple(items) if items.is_empty() => CanonicalValueKind::Scalar(CanonicalScalarKind::Unit),
         Type::Named(name, args) if name == "String" && args.is_empty() => CanonicalValueKind::Reference(CanonicalReferenceKind::String),
         Type::Named(name, args) if name == "Bytes" && args.is_empty() => CanonicalValueKind::Reference(CanonicalReferenceKind::Bytes),
         Type::Fn(..) => CanonicalValueKind::Callable(CanonicalCallableAbiKey(*blake3::hash(&bytes).as_bytes())),
@@ -436,6 +476,94 @@ fn value_from_ast(ty: &Type, context: &Context) -> Result<CanonicalValueKind, Ca
         Type::RecordCompose { .. } => return Err(CanonicalAbiError::Unsupported("record composition survived type checking".into())),
         Type::Qualified(_, _) => unreachable!("Type::unqualified removes qualifiers"),
     })
+}
+
+fn rooted_view_from_ty(
+    payload: &Ty,
+    _context: &Context,
+) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
+    match payload {
+        Ty::Int => Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
+            carrier: CanonicalRootedViewCarrier::IntScalarRoot,
+        }),
+        Ty::Named(name, arguments)
+            if name.as_ref() == "Slice"
+                && arguments.len() == 1
+                && matches!(arguments.get(0), Some(Ty::Int)) =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_slice_int_payload_key(),
+            carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
+            })
+        }
+        _ => Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        )),
+    }
+}
+
+fn rooted_view_from_ast(
+    payload: &Type,
+    _context: &Context,
+) -> Result<CanonicalReferenceKind, CanonicalAbiError> {
+    match payload.unqualified() {
+        Type::Named(name, arguments) if name == "Int" && arguments.is_empty() => Ok(CanonicalReferenceKind::RootedView {
+            payload: rooted_scalar_payload_key(CanonicalScalarKind::Int),
+            carrier: CanonicalRootedViewCarrier::IntScalarRoot,
+        }),
+        Type::Slice(element)
+            if matches!(element.unqualified(), Type::Named(name, arguments) if name == "Int" && arguments.is_empty()) =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_slice_int_payload_key(),
+                carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
+            })
+        }
+        Type::Named(name, arguments)
+            if name == "Slice"
+                && matches!(arguments.as_slice(), [element]
+                    if matches!(element.unqualified(), Type::Named(name, arguments)
+                        if name == "Int" && arguments.is_empty())) =>
+        {
+            Ok(CanonicalReferenceKind::RootedView {
+                payload: rooted_slice_int_payload_key(),
+                carrier: CanonicalRootedViewCarrier::IntListSliceRoot,
+            })
+        }
+        _ => Err(CanonicalAbiError::Unsupported(
+            "rooted view payload has no admitted authenticated carrier".into(),
+        )),
+    }
+}
+
+/// Rooted views need one payload identity regardless of whether the caller
+/// reached the boundary through a checked HM type or a checked declaration
+/// annotation.  Those encodings deliberately differ elsewhere, so never hash
+/// either representation here.  Each admitted carrier family gets an explicit
+/// source-level payload identity instead.
+fn rooted_scalar_payload_key(kind: CanonicalScalarKind) -> CanonicalTypeKey {
+    let mut bytes = b"witchy.canonical-rooted-view-payload.v1".to_vec();
+    bytes.push(kind as u8);
+    CanonicalTypeKey(*blake3::hash(&bytes).as_bytes())
+}
+
+fn rooted_slice_int_payload_key() -> CanonicalTypeKey {
+    CanonicalTypeKey(*blake3::hash(b"witchy.canonical-rooted-view-payload.v1/slice-int").as_bytes())
+}
+
+fn contains_rooted_view(ty: &Ty) -> bool {
+    match ty {
+        Ty::View(_) => true,
+        Ty::List(item) => contains_rooted_view(item),
+        Ty::Tuple(items) | Ty::Named(_, items) | Ty::Dyn(_, items) => {
+            items.iter().any(contains_rooted_view)
+        }
+        Ty::Fn(parameters, result, _, _, _) => {
+            parameters.iter().any(contains_rooted_view) || contains_rooted_view(result)
+        }
+        _ => false,
+    }
 }
 
 fn encode_callable_parts(parameters: &[CanonicalParameterAbi], result: &CanonicalResultKind, qualifiers: CanonicalCallableQualifiers) -> Vec<u8> {
@@ -474,6 +602,11 @@ fn encode_reference(bytes: &mut Vec<u8>, kind: &CanonicalReferenceKind) {
         CanonicalReferenceKind::Bytes => bytes.push(1),
         CanonicalReferenceKind::Aggregate(key) => { bytes.push(2); bytes.extend_from_slice(&key.0); }
         CanonicalReferenceKind::Capability(kind) => { bytes.push(3); bytes.push(*kind as u8); }
+        CanonicalReferenceKind::RootedView { payload, carrier } => {
+            bytes.push(4);
+            bytes.extend_from_slice(&payload.0);
+            bytes.push(*carrier as u8);
+        }
     }
 }
 
@@ -504,8 +637,12 @@ fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), Cano
         Ty::Net(rights) => { bytes.push(17); bytes.push(u8::from(rights.connect)); bytes.push(u8::from(rights.listen)); bytes.push(u8::from(rights.tcp)); bytes.push(u8::from(rights.udp)); bytes.push(u8::from(rights.uds)); }
         Ty::Socket => bytes.push(18), Ty::Listener => bytes.push(19), Ty::BuildOut => bytes.push(20), Ty::BuildRead => bytes.push(21), Ty::BuildEnv => bytes.push(22), Ty::BuildNet => bytes.push(23), Ty::BuildExec => bytes.push(24),
         Ty::List(element) => { bytes.push(25); encode_ty(element, context, bytes)?; }
+        Ty::View(payload) => { bytes.push(32); encode_ty(payload, context, bytes)?; }
         Ty::Tuple(items) => { bytes.push(26); put_len(bytes, items.len()); for item in items.iter() { encode_ty(item, context, bytes)?; } }
         Ty::Named(name, args) if name.as_ref() == "SecretStore" && args.is_empty() => { bytes.push(30); }
+        Ty::Named(name, args) if crate::typeck::anon_union_synthetic_variants(name).is_some() => {
+            encode_anonymous_union_ty(name, args, context, bytes)?;
+        }
         Ty::Named(name, args) => { bytes.push(27); bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes()); put_len(bytes, args.len()); for arg in args.iter() { encode_ty(arg, context, bytes)?; } }
         Ty::Dyn(name, args) => { bytes.push(28); bytes.extend_from_slice(&context.nominal(name)?.to_le_bytes()); put_len(bytes, args.len()); for arg in args.iter() { encode_ty(arg, context, bytes)?; } }
         Ty::Fn(params, result, conventions, mutable, qualifiers) => { bytes.push(29); put_len(bytes, params.len()); for (index, param) in params.iter().enumerate() { bytes.push(convention(conventions.get(index).copied().unwrap_or_default()) as u8); bytes.push(u8::from(mutable.get(index).copied().unwrap_or(false))); encode_ty(param, context, bytes)?; } encode_ty(result, context, bytes)?; bytes.push(u8::from(qualifiers.pure)); bytes.push(u8::from(qualifiers.once)); }
@@ -514,9 +651,49 @@ fn encode_ty(ty: &Ty, context: &Context, bytes: &mut Vec<u8>) -> Result<(), Cano
     Ok(())
 }
 
+/// Anonymous unions are checked structural types, not declarations, so their
+/// synthetic head must never be looked up in the nominal declaration table.
+/// Encode the validated tag schema and its flattened payload lanes directly.
+fn encode_anonymous_union_ty(
+    name: &str,
+    args: &[Ty],
+    context: &Context,
+    bytes: &mut Vec<u8>,
+) -> Result<(), CanonicalAbiError> {
+    let variants = crate::typeck::anon_union_synthetic_variants(name).ok_or_else(|| {
+        CanonicalAbiError::InvalidCallable("invalid anonymous-union head".into())
+    })?;
+    let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
+    if expected != args.len() {
+        return Err(CanonicalAbiError::InvalidCallable(format!(
+            "anonymous union head has {expected} payload lanes, got {}", args.len()
+        )));
+    }
+    bytes.push(31);
+    put_len(bytes, variants.len());
+    for (tag, arity) in variants {
+        put_len(bytes, tag.len());
+        bytes.extend_from_slice(tag.as_bytes());
+        put_len(bytes, arity);
+    }
+    put_len(bytes, args.len());
+    for arg in args {
+        encode_ty(arg, context, bytes)?;
+    }
+    Ok(())
+}
+
 fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), CanonicalAbiError> {
+    if let Type::Qualified(ast::TypeQual::View, payload) = ty {
+        bytes.push(6);
+        encode_ast(payload, context, bytes)?;
+        return Ok(());
+    }
     match ty.unqualified() {
         Type::Named(name, args) => {
+            if crate::typeck::anon_union_synthetic_variants(name).is_some() {
+                return encode_anonymous_union_ast(name, args, context, bytes);
+            }
             bytes.push(0);
             let tag = match (name.as_str(), args.is_empty()) {
                 ("Int", true) => 0,
@@ -564,6 +741,35 @@ fn encode_ast(ty: &Type, context: &Context, bytes: &mut Vec<u8>) -> Result<(), C
         Type::Fn(params, result, conventions, qualifiers) => { bytes.push(3); put_len(bytes, params.len()); for (index, param) in params.iter().enumerate() { bytes.push(convention(conventions.get(index).copied().unwrap_or_default()) as u8); encode_ast(param, context, bytes)?; } encode_ast(result, context, bytes)?; bytes.push(u8::from(qualifiers.pure)); bytes.push(u8::from(qualifiers.once)); }
         Type::Dyn(name, args) => { bytes.push(4); bytes.extend_from_slice(&(context.nominal(name)?).to_le_bytes()); put_len(bytes, args.len()); for arg in args { encode_ast(arg, context, bytes)?; } }
         Type::Qualified(_, _) => unreachable!("Type::unqualified removes qualifiers"),
+    }
+    Ok(())
+}
+
+fn encode_anonymous_union_ast(
+    name: &str,
+    args: &[Type],
+    context: &Context,
+    bytes: &mut Vec<u8>,
+) -> Result<(), CanonicalAbiError> {
+    let variants = crate::typeck::anon_union_synthetic_variants(name).ok_or_else(|| {
+        CanonicalAbiError::InvalidCallable("invalid anonymous-union head".into())
+    })?;
+    let expected = variants.iter().map(|(_, arity)| *arity).sum::<usize>();
+    if expected != args.len() {
+        return Err(CanonicalAbiError::InvalidCallable(format!(
+            "anonymous union head has {expected} payload lanes, got {}", args.len()
+        )));
+    }
+    bytes.push(5);
+    put_len(bytes, variants.len());
+    for (tag, arity) in variants {
+        put_len(bytes, tag.len());
+        bytes.extend_from_slice(tag.as_bytes());
+        put_len(bytes, arity);
+    }
+    put_len(bytes, args.len());
+    for arg in args {
+        encode_ast(arg, context, bytes)?;
     }
     Ok(())
 }
@@ -644,5 +850,125 @@ mod tests {
         let result = manifest("fn apply(value: Int) -> String:\n    \"x\"\n\nfn main() -> Int:\n    let ignored = apply(1)\n    0\n");
         assert_ne!(base.digest(), convention.digest());
         assert_ne!(base.digest(), result.digest());
+    }
+
+    #[test]
+    fn rooted_view_callable_metadata_binds_payload_and_stays_closed_local() {
+        let rooted = manifest(
+            "fn relay(view: &Int) -> &Int:\n    view\n",
+        );
+        let plain = manifest(
+            "fn relay(value: Int) -> Int:\n    value\n",
+        );
+        assert_ne!(rooted.digest(), plain.digest(), "a rooted carrier must not erase to Int");
+        assert!(
+            rooted.entries().iter().all(|entry| !matches!(entry.target_policy, CanonicalTargetPolicy::OpenAbi)),
+            "a rooted callable has only its authenticated local declaration ABI",
+        );
+        let relay = rooted.entries().iter().find(|entry| {
+            matches!(entry.target_policy, CanonicalTargetPolicy::ClosedLocal(target) if target.function_ordinal == 0)
+        }).expect("closed relay ABI");
+        let CanonicalValueKind::Reference(CanonicalReferenceKind::RootedView {
+            payload: parameter_payload,
+            carrier: CanonicalRootedViewCarrier::IntScalarRoot,
+        }) = &relay.parameters[0].value else {
+            panic!("relay parameter must retain the rooted Int carrier");
+        };
+        let CanonicalResultKind::Reference(CanonicalReferenceKind::RootedView {
+            payload: result_payload,
+            carrier: CanonicalRootedViewCarrier::IntScalarRoot,
+        }) = &relay.result else {
+            panic!("relay result must retain the rooted Int carrier");
+        };
+        assert_eq!(parameter_payload, result_payload, "the exact payload identity crosses the local callable");
+    }
+
+    #[test]
+    fn rooted_view_payload_identity_is_checked_and_declaration_invariant() {
+        let typed = typed("fn relay(view: &Int) -> &Int:\n    view\n");
+        let context = Context::from_module(typed.module());
+        let checked = rooted_view_from_ty(&Ty::Int, &context)
+            .expect("admitted checked rooted Int payload");
+        let signature = checked_declaration_signature(&typed, "relay")
+            .expect("checked declaration signature");
+        let Type::Fn(parameters, _, _, _) = signature else {
+            panic!("callable signature");
+        };
+        let declared = rooted_view_from_ast(&parameters[0], &context)
+            .expect("admitted declaration rooted Int payload");
+        assert_eq!(checked, declared, "&Int has one payload key at every source boundary");
+    }
+
+    #[test]
+    fn rooted_slice_payload_identity_is_checked_and_declaration_invariant() {
+        let typed = typed("fn relay(view: &[Int]) -> &[Int]:\n    view\n");
+        let context = Context::from_module(typed.module());
+        let checked = rooted_view_from_ty(
+            &Ty::Named("Slice".into(), vec![Ty::Int].into()),
+            &context,
+        ).expect("admitted checked rooted Int slice payload");
+        let signature = checked_declaration_signature(&typed, "relay")
+            .expect("checked declaration signature");
+        let Type::Fn(parameters, _, _, _) = signature else {
+            panic!("callable signature");
+        };
+        let Type::Qualified(ast::TypeQual::View, declared_payload) = &parameters[0] else {
+            panic!("rooted slice parameter");
+        };
+        let declared = rooted_view_from_ast(declared_payload, &context)
+            .expect("admitted declaration rooted Int slice payload");
+        assert_eq!(checked, declared, "&[Int] has one payload key at every source boundary");
+
+        assert!(rooted_view_from_ty(&Ty::List(std::rc::Rc::new(Ty::Int)), &context).is_err(),
+            "&List(Int) must not acquire slice projection authority");
+    }
+
+    #[test]
+    fn rooted_view_tags_do_not_collide_with_anonymous_unions() {
+        let rooted = typed("fn relay(view: &Int) -> &Int:\n    view\n");
+        let union = typed(
+            "fn select(choice: .[Left(Int) | Right(Int)]) -> Int:\n    match choice:\n        .Left(value) -> value\n        .Right(value) -> value\n",
+        );
+
+        let rooted_checked = canonical_checked_ty_bytes(
+            &rooted,
+            &Ty::View(std::rc::Rc::new(Ty::Int)),
+        ).expect("rooted checked type encoding");
+        let union_checked = union.table().concrete_types()
+            .find(|ty| matches!(ty, Ty::Named(name, _) if crate::typeck::anon_union_synthetic_variants(name).is_some()))
+            .and_then(|ty| canonical_checked_ty_bytes(&union, ty).ok())
+            .expect("anonymous union checked type encoding");
+        assert_eq!(rooted_checked.first(), Some(&32));
+        assert_eq!(union_checked.first(), Some(&31));
+        assert_ne!(rooted_checked, union_checked);
+
+        let rooted_signature = checked_declaration_signature(&rooted, "relay")
+            .expect("rooted declaration signature");
+        let union_signature = checked_declaration_signature(&union, "select")
+            .expect("anonymous union declaration signature");
+        let Type::Fn(rooted_parameters, _, _, _) = rooted_signature else {
+            panic!("rooted callable signature");
+        };
+        let Type::Fn(union_parameters, _, _, _) = union_signature else {
+            panic!("anonymous union callable signature");
+        };
+        let rooted_ast = canonical_ast_type_bytes(&rooted, &rooted_parameters[0])
+            .expect("rooted declaration type encoding");
+        let union_ast = canonical_ast_type_bytes(&union, &union_parameters[0])
+            .expect("anonymous union declaration type encoding");
+        assert_eq!(rooted_ast.first(), Some(&6));
+        assert_eq!(union_ast.first(), Some(&5));
+        assert_ne!(rooted_ast, union_ast);
+    }
+
+    #[test]
+    fn checked_declaration_signature_retains_exact_result_unique_ok_carrier() {
+        let typed = typed(
+            "fn split(var values: unique List(Int), succeed: Bool) -> Result(unique List(Int), String):\n    if succeed:\n        return Ok([7])\n    Err(\"no result\")\n",
+        );
+        let signature = checked_declaration_signature(&typed, "split")
+            .expect("exact Result unique Ok declaration signature");
+        let Type::Fn(_, result, _, _) = signature else { panic!("callable signature") };
+        assert!(ast::is_direct_unique_result_ok_collection(&result));
     }
 }

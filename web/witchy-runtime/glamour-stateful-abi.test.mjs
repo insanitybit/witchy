@@ -46,8 +46,8 @@ pub fn glamour_emit(state: BrowserState) -> Bytes:
 @browser
 pub fn glamour_release(own state: BrowserState):
     match state:
-        Active(_, _) -> Nil
-        Dormant(_) -> Nil
+        Active(_, _) -> ()
+        Dormant(_) -> ()
 `,
   );
   execFileSync(BIN, ["compile", source, "--out", wasmPath], { cwd: work });

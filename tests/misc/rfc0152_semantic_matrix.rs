@@ -126,12 +126,12 @@ fn run_interpreted(source: &str, label: &str) -> Vec<String> {
 fn run_compiled(source: &str, label: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .unwrap_or_else(|error| panic!("{label}: source must check: {error}"));
-    let wasm = codegen::compile_checked_module_binary(&checked)
-        .expect_lowered(&format!("{label}: compile channel schedule"));
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered(&format!("{label}: admit channel schedule"));
     let mut runtime = Runtime::batch().unwrap_or_else(|error| panic!("{label}: create runtime: {error}"));
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -170,6 +170,17 @@ fn assert_case(case: &ChannelCase) {
         let optimized_source = format!("mode opt\n\n{}", case.source);
         let optimized_compiled = run_compiled(&optimized_source, case.label);
         assert_eq!(optimized_compiled, interpreted, "{}: interpreter vs optimized Wasm parity", case.label);
+    }
+}
+
+#[test]
+fn rfc0152_phase0_sources_remain_accepted_in_both_modes() {
+    for case in CASES {
+        for source in [case.source.to_owned(), format!("mode opt\n\n{}", case.source)] {
+            witchy::resolve_std_only_checked(&source).unwrap_or_else(|error| {
+                panic!("{}: migrated source must check in both modes: {error}", case.label)
+            });
+        }
     }
 }
 

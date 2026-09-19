@@ -446,10 +446,10 @@ from glamour import Ui
 fn view(value: Int) -> Ui(Int):
     var attrs = []
     match glamour.css_length_property("gap"):
-        Err(_) -> Nil
+        Err(_) -> ()
         Ok(gap) ->
             match glamour.css_px(value):
-                Err(_) -> Nil
+                Err(_) -> ()
                 Ok(current) -> attrs.push(glamour.css_custom_properties([glamour.css_assign(gap, current)]))
     glamour.ui(glamour.element("div", attrs, []))
 

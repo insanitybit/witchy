@@ -208,7 +208,7 @@ fn validate_generator_reference_boundary(function: &Function) -> Result<(), Stri
 fn type_carries_reference(ty: &Type) -> bool {
     match ty {
         Type::Qualified(
-            TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
+            TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_),
             _,
         ) => true,
         Type::Qualified(_, inner) => type_carries_reference(inner),
@@ -2555,6 +2555,7 @@ fn lower_owned_loop_frame(
         comptime_only: false,
         attributes: helper_attributes,
         name: helper_name.to_string(),
+        type_params: Vec::new(),
         params: vec![Param {
             name: frame_name,
             ty: Some(frame_ty.clone()),
@@ -2597,6 +2598,7 @@ fn lower_owned_loop_frame(
         comptime_only: false,
         attributes: wrapper_attributes,
         name: f.name.clone(),
+        type_params: f.type_params.clone(),
         params: f.params.clone(),
         ret: f.ret.clone(),
         body: Block { stmts: wrapper_statements, lines: Vec::new(), region: None },

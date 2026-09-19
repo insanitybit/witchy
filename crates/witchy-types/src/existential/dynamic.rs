@@ -1,10 +1,11 @@
 use super::*;
 
 use crate::access::{AccessSignature, CheckedAccessFacts};
+use witchy_syntax::ast::visit::{visit_block, visit_expr};
 #[derive(Clone, Debug)]
 pub(super) struct DynamicMethodDefinition {
     name: String,
-    function: String,
+    pub(super) function: String,
     pub(super) receiver: Type,
     pub(super) parameters: Vec<DynamicMethodParameterDefinition>,
     pub(super) result: Type,
@@ -17,10 +18,26 @@ pub(super) enum DynamicMethodParameterDefinition {
     Capability(Type),
 }
 
+fn contains_rooted_view(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(witchy_syntax::ast::TypeQual::View, _) => true,
+        Type::Qualified(_, inner) | Type::Slice(inner) => contains_rooted_view(inner),
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
+            arguments.iter().any(contains_rooted_view)
+        }
+        Type::RecordCompose { base, fields } => {
+            contains_rooted_view(base) || fields.iter().any(|(_, field)| contains_rooted_view(field))
+        }
+        Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(contains_rooted_view) || contains_rooted_view(result)
+        }
+    }
+}
+
 pub(super) fn collect_dynamic_method_definitions(
     module: &Module,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
-    access_facts: &CheckedAccessFacts<'_>,
+    access_facts: &CheckedAccessFacts,
 ) -> Result<Vec<DynamicMethodDefinition>, String> {
     let functions = module.items.iter().filter_map(|item| match item {
         Item::Function(function) if function.attributes.iter().any(|attr| attr == "dynamic") => {
@@ -88,6 +105,16 @@ pub(super) fn collect_dynamic_method_definitions(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let result = function.ret.clone().unwrap_or_else(|| Type::Tuple(Vec::new()));
+        if std::iter::once(&receiver)
+            .chain(parameter_types.iter())
+            .chain(std::iter::once(&result))
+            .any(contains_rooted_view)
+        {
+            return Err(format!(
+                "@dynamic function `{}` cannot admit an immutable rooted-view carrier until dynamic has authenticated root retention support",
+                function.name
+            ));
+        }
         for (role, ty) in [("receiver", &receiver), ("result", &result)] {
             runtime_catalog
                 .capability_free_type_identity(ty, module)
@@ -301,9 +328,15 @@ pub(super) fn collect_dynamic_types(
     module: &Module,
     table: &TypeTable,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+    runtime_functions: &BTreeSet<String>,
 ) -> Result<Vec<Type>, String> {
     let mut requested = Vec::new();
-    visit_module_exprs::<String>(module, &mut |expr| {
+    // Canonical admission compiles only the shared reachable callable scope.
+    // Runtime descriptor requests in a pruned library body cannot expand the
+    // final Dynamic plan merely because compiler-owned syntax outlives that
+    // body in the linked module.
+    let scope = dynamic_rewrite_scope(module, runtime_functions);
+    let mut collect = |expr: &Expr| {
         if let Some(ty) =
             dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?
         {
@@ -315,7 +348,70 @@ pub(super) fn collect_dynamic_types(
             requested.push((ty, descriptor_only));
         }
         Ok(())
-    })?;
+    };
+    for item in &module.items {
+        match item {
+            Item::Function(function) if scope.contains(&function.name) => {
+                visit_block::<String>(&function.body, &mut collect)?;
+            }
+            Item::Const { value, .. } => visit_expr::<String>(value, &mut collect)?,
+            _ => {}
+        }
+    }
+    drop(collect);
+    // Derive(Reflect) installs `__dynamic_descriptor_id` in a compiler-owned
+    // impl body, before that method is materialized as a callable function.
+    // Include only an impl for a concrete type already requested by an
+    // executable Dynamic expression; an arbitrary linked impl never joins the
+    // descriptor plan merely because it happens to carry a compiler helper.
+    let selected_impls = module.items.iter().filter_map(|item| match item {
+        Item::Impl(implementation)
+            if generated_impl_matches_requested(implementation, &requested) =>
+        {
+            Some(implementation)
+        }
+        _ => None,
+    }).collect::<Vec<_>>();
+    let mut collect = |expr: &Expr| {
+        if let Some(ty) =
+            dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?
+        {
+            let descriptor_only = matches!(
+                expr,
+                Expr::Call { name, .. }
+                    if dynamic_intrinsic(name, intrinsics::DYNAMIC_RUNTIME_TYPE)
+            );
+            requested.push((ty, descriptor_only));
+        }
+        Ok(())
+    };
+    for implementation in selected_impls {
+        for method in &implementation.methods {
+            visit_block::<String>(&method.body, &mut collect)?;
+        }
+    }
+    // Canonical preparation consumes raw `runtime_type` calls into ordinary
+    // RuntimeType constructors. A later plan rebuild must recover precisely
+    // those descriptor-only requests from the retained compiler-owned type
+    // syntax, never from their display strings or an inferred callable shape.
+    // Before preparation, the raw call path above remains mandatory so a
+    // forged/missing handle is still rejected at the call site.
+    if !requested.iter().any(|(_, descriptor_only)| *descriptor_only) {
+        let mut owned_requests: Vec<(&str, &Type)> = Vec::new();
+        for syntax in module.compiler_type_syntax.iter().filter(|syntax| syntax.runtime_identity) {
+            if let Some((_, existing)) = owned_requests
+                .iter()
+                .find(|(handle, _)| *handle == syntax.handle)
+            {
+                if *existing != &syntax.ty {
+                    return Err("dynamic.runtime_type has an ambiguous compiler-owned type handle".into());
+                }
+            } else {
+                owned_requests.push((&syntax.handle, &syntax.ty));
+            }
+        }
+        requested.extend(owned_requests.into_iter().map(|(_, ty)| (ty.clone(), true)));
+    }
     if requested.is_empty() {
         return Ok(Vec::new());
     }
@@ -338,6 +434,157 @@ pub(super) fn collect_dynamic_types(
         }
     }
     Ok(requested.into_iter().map(|(ty, _)| ty).collect())
+}
+
+fn generated_impl_matches_requested(
+    implementation: &witchy_syntax::ast::ImplDef,
+    requested: &[(Type, bool)],
+) -> bool {
+    implementation.origin == witchy_syntax::ast::ImplOrigin::CompilerGenerated
+        && requested.iter().any(|(requested, _)| {
+            matches!(requested.unqualified(), Type::Named(name, arguments)
+                if name == &implementation.type_name && arguments == &implementation.target_args)
+        })
+}
+
+pub(super) fn generated_impl_selected_by_runtime_plan(
+    implementation: &witchy_syntax::ast::ImplDef,
+    runtime_catalog: &RuntimeDeclarationCatalog,
+    runtime_types: &RuntimeTypePlan,
+) -> bool {
+    if implementation.origin != witchy_syntax::ast::ImplOrigin::CompilerGenerated {
+        return false;
+    }
+    let target = Type::Named(implementation.type_name.clone(), implementation.target_args.clone());
+    let selected = runtime_catalog
+        .type_identity(&target)
+        .ok()
+        .and_then(|identity| runtime_types.id(&identity))
+        .is_some();
+    selected
+}
+
+/// The Dynamic rewrite is limited to functions that it actually traverses:
+/// canonical executable roots plus the checked runtime-method bodies selected
+/// for this plan, and their direct callable dependencies.  Trait and impl
+/// declarations are intentionally not roots here; a selected concrete default
+/// is represented by its materialized function and joins only through that
+/// function's exact call edge.
+pub(super) fn dynamic_rewrite_scope(
+    module: &Module,
+    runtime_functions: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let functions = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some((function.name.as_str(), function)),
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut scope = (*crate::pipeline::canonical_scope(module)).clone();
+    if runtime_functions.is_empty() {
+        // Entry-module export roots normally retain every public declaration.
+        // An uninvoked `@dynamic` method is different: its descriptor contract
+        // is reflected as data, while its body is not an executable Dynamic
+        // call target. Keep it only for an ordinary direct call, which then
+        // receives the normal lowering checks rather than a metadata exemption.
+        let mut direct_calls = BTreeSet::new();
+        for function in functions.values() {
+            let _: Result<(), ()> = visit_block(&function.body, &mut |expression| {
+                if let Expr::Call { name, .. } | Expr::Var(name) = expression {
+                    direct_calls.insert(name.clone());
+                }
+                Ok(())
+            });
+        }
+        for function in functions.values() {
+            if function.attributes.iter().any(|attribute| attribute == "dynamic")
+                && !direct_calls.contains(&function.name)
+            {
+                scope.remove(&function.name);
+            }
+        }
+    }
+    let mut pending = runtime_functions
+        .iter()
+        .filter(|name| !scope.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let runtime_roots = runtime_functions.clone();
+    while let Some(name) = pending.pop() {
+        let Some(function) = functions.get(name.as_str()) else { continue };
+        // Runtime methods are verified closed before they become roots.  Their
+        // helper edges follow the ordinary canonical rule: a free generic
+        // template is not executable until a named concrete instance calls it.
+        if !runtime_roots.contains(&name)
+            && crate::pipeline::function_has_free_signature_variables(function)
+        {
+            continue;
+        }
+        if !runtime_roots.contains(&name) && name == "vm.serve" {
+            continue;
+        }
+        if !runtime_roots.contains(&name)
+            && matches!(
+                witchy_syntax::intrinsics::lookup(&name),
+                Some(spec)
+                    if !matches!(
+                        spec.lowering,
+                        witchy_syntax::intrinsics::IntrinsicLowering::SourceFunction
+                    )
+            )
+        {
+            continue;
+        }
+        if !scope.insert(name.clone()) {
+            continue;
+        }
+        let _: Result<(), ()> = visit_block(&function.body, &mut |expression| {
+            let callee = match expression {
+                Expr::Call { name, .. } | Expr::Var(name) => Some(name),
+                _ => None,
+            };
+            if let Some(callee) = callee
+                && functions.contains_key(callee.as_str())
+                && !scope.contains(callee)
+            {
+                pending.push(callee.clone());
+            }
+            Ok(())
+        });
+    }
+    scope
+}
+
+/// A reflected Dynamic method needs executable storage only when an exact
+/// reachable source call will be rewritten into its dispatch arm.  Metadata
+/// inspection (`dynamic.methods`) carries its authenticated access contract as
+/// ordinary data and must not materialize an otherwise unsupported parameter
+/// lane such as `unique String`.
+pub(super) fn dynamic_method_bodies_requested(module: &Module) -> bool {
+    let scope = crate::pipeline::canonical_scope(module);
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let mut requested = false;
+        let _: Result<(), ()> = visit_block(&function.body, &mut |expression| {
+            if matches!(
+                expression,
+                Expr::Call { name, .. }
+                    if dynamic_intrinsic(name, intrinsics::DYNAMIC_CALL) || dynamic_call_with(name)
+            ) {
+                requested = true;
+            }
+            Ok(())
+        });
+        if requested {
+            return true;
+        }
+    }
+    false
 }
 
 pub(super) fn prepare_dynamic_trait_relations(
@@ -383,11 +630,14 @@ pub(super) fn rewrite_dynamic_module(
     table: &TypeTable,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     runtime_types: &RuntimeTypePlan,
+    executable_scope: Option<&BTreeSet<String>>,
 ) -> Result<(), String> {
     let dynamic_context = module.clone();
     for item in &mut module.items {
         match item {
-            Item::Function(function) => {
+            Item::Function(function)
+                if executable_scope.is_none_or(|scope| scope.contains(&function.name)) =>
+            {
                 rewrite_dynamic_block(
                     &mut function.body,
                     &dynamic_context,
@@ -396,7 +646,8 @@ pub(super) fn rewrite_dynamic_module(
                     runtime_types,
                 )?;
             }
-            Item::Trait(definition) => {
+            Item::Function(_) => {}
+            Item::Trait(definition) if executable_scope.is_none() => {
                 for method in &mut definition.methods {
                     if let Some(default) = &mut method.default {
                         rewrite_dynamic_block(
@@ -409,7 +660,8 @@ pub(super) fn rewrite_dynamic_module(
                     }
                 }
             }
-            Item::Impl(definition) => {
+            Item::Trait(_) => {}
+            Item::Impl(definition) if executable_scope.is_none() => {
                 for method in &mut definition.methods {
                     rewrite_dynamic_block(
                         &mut method.body,
@@ -420,6 +672,26 @@ pub(super) fn rewrite_dynamic_module(
                     )?;
                 }
             }
+            Item::Impl(definition)
+                if generated_impl_selected_by_runtime_plan(
+                    definition,
+                    runtime_catalog.ok_or_else(|| {
+                        "Dynamic operations require authenticated runtime declaration ownership".to_string()
+                    })?,
+                    runtime_types,
+                ) =>
+            {
+                for method in &mut definition.methods {
+                    rewrite_dynamic_block(
+                        &mut method.body,
+                        &dynamic_context,
+                        table,
+                        runtime_catalog,
+                        runtime_types,
+                    )?;
+                }
+            }
+            Item::Impl(_) => {}
             Item::Const { value, .. } => {
                 rewrite_dynamic_expr(
                     value,
@@ -429,7 +701,7 @@ pub(super) fn rewrite_dynamic_module(
                     runtime_types,
                 )?;
             }
-            Item::Comptime(block) => {
+            Item::Comptime(block) if executable_scope.is_none() => {
                 rewrite_dynamic_block(
                     block,
                     &dynamic_context,
@@ -438,6 +710,7 @@ pub(super) fn rewrite_dynamic_module(
                     runtime_types,
                 )?;
             }
+            Item::Comptime(_) => {}
             Item::Type(_) | Item::TypeAlias { .. } => {}
         }
     }
@@ -981,7 +1254,10 @@ fn runtime_access_qualifier_expr(qualifier: &crate::runtime_type::RuntimeAccessQ
     let (name, args) = match qualifier {
         Qualifier::Frozen => ("dynamic.AccessFrozen", Vec::new()),
         Qualifier::Unique => ("dynamic.AccessUnique", Vec::new()),
-        Qualifier::LocalUnique => ("dynamic.AccessLocalUnique", Vec::new()),
+        // Dynamic admission rejects rooted carriers before it reaches this
+        // reflection-only spelling; retain a stable identity if an internal
+        // descriptor is inspected while reporting that rejection.
+        Qualifier::View => ("dynamic.AccessRootedView", Vec::new()),
         Qualifier::Borrow(lifetime) => (
             "dynamic.AccessView",
             vec![Expr::Int(i64::from(*lifetime))],
@@ -1241,6 +1517,12 @@ fn runtime_method_invocation(
     with_capabilities: bool,
     capability_type: Option<&Type>,
 ) -> Expr {
+    // Dynamic is an owned payload boundary. Retain borrowed-result contracts in
+    // reflection, but do not decode or invoke a method whose result would need
+    // to carry a loan through `Dynamic`.
+    if !method.access.borrow_relations().is_empty() {
+        return dynamic_error("BorrowedResult", vec![Expr::Str(method.name.clone())]);
+    }
     let receiver = "$dynamic_call_receiver";
     let self_name = format!("$dynamic_self_{method_index}");
     let arguments = method

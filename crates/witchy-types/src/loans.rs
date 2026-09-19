@@ -1,6 +1,6 @@
-//! RFC-0083 phase 1: static lifetime relations and owner loans for borrowed views.
+//! Static lifetime relations and owner loans for explicit references.
 //!
-//! A borrowed view is `ast::Type::Qualified(TypeQual::Borrow(lifetime), inner)`
+//! A reference is `ast::Type::Qualified(TypeQual::Borrow(lifetime), inner)`
 //! (see `witchy-syntax`). It carries NO runtime representation — `to_ty` erases it
 //! to its owned inner type, so both backends run identical owned-value semantics
 //! (parity by construction). This module adds the COMPILE-TIME contract the RFC
@@ -38,7 +38,10 @@ use witchy_syntax::ast::{
 use witchy_syntax::intrinsics;
 
 pub use crate::access::{BorrowKind, LoanProjection, LoanProjectionStep};
-use crate::access::{AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog};
+use crate::access::{
+    checked_assignment_place, AccessKind, AccessSignature, BorrowRelation, BorrowRelationCatalog,
+    CheckedPlaceStep,
+};
 use crate::typeck::{TypeError, TypeTable, ty_to_ast};
 
 fn terr(message: String) -> TypeError {
@@ -110,7 +113,7 @@ struct BorrowSig {
     /// Declared input relations remain available when result inference has not
     /// produced a complete access signature. Omitting `-> T` cannot erase them.
     parameter_types: Vec<Option<Type>>,
-    /// `true` when the return type is a borrowed view.
+    /// `true` when the return type is a reference.
     returns_view: bool,
     /// `true` when the result is a nominal value containing authenticated
     /// lifetime-linked fields. This remains available to the untyped loan pass,
@@ -157,10 +160,9 @@ fn view_lifetime(ty: &Type) -> Option<&str> {
 /// representation qualifiers.
 fn direct_reference_kind(ty: &Type) -> Option<BorrowKind> {
     match ty {
-        // `Borrow` still also represents the RFC-0083 `let('a)` surface while
-        // the migration is live. Legacy calls remain source-compatible through
-        // `LegacyBorrow`; the direct `&'a T` spelling is unambiguous and must
-        // receive a reference handle, never an implicitly borrowed value.
+        // `Borrow` is the canonical `&'a T` surface. Legacy migration input is
+        // isolated in `LegacyBorrow`; ordinary checked source must receive a
+        // reference handle, never an implicitly borrowed value.
         Type::Qualified(TypeQual::Borrow(_), _) => Some(BorrowKind::Shared),
         Type::Qualified(TypeQual::BorrowMut(_), _) => Some(BorrowKind::Exclusive),
         Type::Qualified(_, inner) => direct_reference_kind(inner),
@@ -176,14 +178,14 @@ fn source_is_direct_reference(source: &BorrowSource) -> bool {
 }
 
 fn is_opt_function(name: &str, modes: &[String]) -> bool {
-    // Trait lowering can append several identity segments to the generated
-    // function name (`main.Trait__main.Type__method`). The first segment is
-    // still the linked source module; using the last dot would mistake the
-    // generated trait/type path for a module and drop its opt marker.
-    if let Some((module, _)) = name.split_once('.') {
-        return modes.iter().any(|mode| mode == &format!("@opt:{module}"));
+    if !name.contains('.') {
+        return modes.iter().any(|mode| mode == "opt");
     }
-    modes.iter().any(|mode| mode == "opt")
+    modes.iter().any(|mode| {
+        mode.strip_prefix("@opt:")
+            .and_then(|owner| name.strip_prefix(owner))
+            .is_some_and(|suffix| suffix.starts_with('.'))
+    })
 }
 
 /// A short callable name for diagnostics: the last `.`-segment of the canonical
@@ -460,7 +462,7 @@ fn named_return_relations(sig: &BorrowSig, params: &[Param]) -> Vec<ReturnBorrow
 }
 
 /// Authoritative events keyed by statement identity in the checked module.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct LoanFacts {
     active: HashMap<usize, Vec<LoanEvent>>,
     opens_after: HashMap<usize, Vec<LoanEvent>>,
@@ -1175,7 +1177,7 @@ fn check_lambda_body(
         .any(type_mentions_view)
         || ret.is_some_and(type_mentions_view);
     if explicitly_uses_view && !opt {
-        return Err(terr(format!("borrowed views in `{name}` require `mode opt`")));
+        return Err(terr(format!("references in `{name}` require `mode opt`")));
     }
     for ty in params.iter().filter_map(|param| param.ty.as_ref()) {
         validate_nested_fn_borrows(ty, name)?;
@@ -1355,29 +1357,16 @@ fn validate_signature(
     // optimized substrate and is exempt, matching the linker's import rule.
     if uses_view && !opt && !is_std_fn(&f.name) {
         return Err(terr(format!(
-            "`{}` uses a borrowed view (`View(T, 'a)` / `let('a) T`), which is only \
+            "`{}` uses an explicit reference (`&'a T` or `&'a mut T`), which is only \
              available in a `mode opt` module — add `mode opt` at the top of the file, \
              or return an owned value",
             short_name(&f.name)
         )));
     }
 
-    // Keep the existing `var` restriction separate from `own`: moving a shared
-    // handle transfers its binding, not write access to its referent.
-    for p in &f.params {
-        if p.ty.as_ref().is_some_and(|ty| {
-            catalog.slots(ty).iter().any(|slot| slot.kind == BorrowKind::Shared)
-        })
-            && p.convention == Convention::Var
-        {
-            return Err(terr(format!(
-                "parameter `{}` of `{}` is a borrowed view (read-only) but its convention \
-                 is mutable (`var`) — handle write-back for shared views is not supported",
-                p.name,
-                short_name(&f.name)
-            )));
-        }
-    }
+    // `var` replaces a reference handle, not its referent. A shared reference
+    // therefore remains read-only even when its caller-visible handle has a
+    // write-back lane; referent writes still require `&'a mut T` and `*r`.
 
     for slot in return_slots {
         if !input_lifetimes.contains(&slot.lifetime) {
@@ -2021,6 +2010,56 @@ fn projections_overlap_any(left: &LoanProjection, right: &LoanProjection) -> boo
     true
 }
 
+/// Whether one desugared assignment can invalidate a live loan. Assignment
+/// destinations are recovered only from the compiler-authenticated
+/// `place_depth` rebuild chain. A shared reference freezes its complete owner:
+/// a fixed field/range projection remains a retained fact for lowering and
+/// future read-only optimizations, but never licenses a concurrent owner
+/// mutation. Exclusive references may use their exact persisted projection to
+/// prove a sibling write disjoint. An incomplete recovery or any dynamic
+/// projection fact never proves disjointness.
+fn assignment_overlaps_loan(
+    name: &str,
+    value: &Expr,
+    place_depth: u32,
+    loan: &Loan,
+) -> bool {
+    if name != loan.owner {
+        return false;
+    }
+    let place = checked_assignment_place(name, value, place_depth);
+    if place.steps().len() != place_depth as usize {
+        return true;
+    }
+    // `&` denotes frozen access to its owner, rather than a capability to
+    // divide that owner into independently writable pieces. Keep checking the
+    // authenticated destination above so an incomplete place reconstruction
+    // cannot turn this policy into a permissive fallback.
+    if loan.kind == BorrowKind::Shared {
+        return true;
+    }
+    let mut steps = Vec::new();
+    for step in place.steps() {
+        match step {
+            CheckedPlaceStep::Field(field) => steps.push(LoanProjectionStep::Field(field.clone())),
+            CheckedPlaceStep::Index(index) => steps.push(LoanProjectionStep::Index(*index)),
+            // A slice destination can overlap any subprojection unless a
+            // rooted-view carrier proves a disjoint range. Lexical loans have
+            // no such carrier and must remain conservative.
+            CheckedPlaceStep::Range { .. } => return true,
+            // A runtime coordinate cannot establish that the destination is
+            // disjoint from any borrowed place.
+            CheckedPlaceStep::DynamicIndex => return true,
+        }
+    }
+    if loan.projection.steps.iter().chain(&loan.borrower_projection.steps).any(|step| {
+        matches!(step, LoanProjectionStep::AnyIndex)
+    }) {
+        return true;
+    }
+    projections_overlap_any(&loan.projection, &LoanProjection { steps })
+}
+
 #[cfg(test)]
 fn projections_overlap(left: &LoanProjection, right: &LoanProjection) -> bool {
     projections_overlap_any(left, right)
@@ -2251,9 +2290,7 @@ impl LoanCtx<'_> {
             let resumed: Vec<String> = suspended_exclusive
                 .iter()
                 .filter_map(|(parent, (child, _))| {
-                    (!local.iter().any(|loan| {
-                        loan.view == *child && loan.kind == BorrowKind::Exclusive
-                    }))
+                    (!local.iter().any(|loan| loan.view == *child))
                     .then(|| parent.clone())
                 })
                 .collect();
@@ -2278,7 +2315,7 @@ impl LoanCtx<'_> {
                 Stmt::Let {
                     value:
                         Expr::Unary {
-                            op: UnOp::BorrowMut,
+                            op: UnOp::Borrow | UnOp::BorrowMut,
                             expr,
                         },
                     ..
@@ -2423,7 +2460,7 @@ impl LoanCtx<'_> {
                     affine_aggregates.insert(name.clone());
                 }
                 if let Expr::Unary {
-                    op: UnOp::BorrowMut,
+                    op: borrow_kind @ (UnOp::Borrow | UnOp::BorrowMut),
                     expr,
                 } = value
                     && let Expr::Unary {
@@ -2455,6 +2492,14 @@ impl LoanCtx<'_> {
                             );
                             let mut next = old.clone();
                             next.view = name.clone();
+                            // `&*parent` is a shared reborrow of the exact
+                            // parent place. It does not duplicate the mutable
+                            // capability, but still keeps that capability
+                            // suspended until the shared child reaches last
+                            // use.
+                            if matches!(borrow_kind, UnOp::Borrow) {
+                                next.kind = BorrowKind::Shared;
+                            }
                             let next_event = LoanEvent::from(next.clone());
                             push_unique_event(
                                 self.facts.opens_after.entry(stmt_key(stmt)).or_default(),
@@ -3065,8 +3110,8 @@ impl LoanCtx<'_> {
 
             let mut sources = self.borrow_sources(replacement, callables, live);
             self.collect_alias_sources(replacement, live, &mut sources);
-            // A direct owner local (rather than a `let('a)` parameter or an
-            // existing view) has no alias source. For a field that already
+            // A direct owner local (rather than an explicit reference parameter
+            // or an existing reference) has no alias source. For a field that already
             // carries a checked borrowed relation, recover that direct root
             // from its exact place instead of silently materializing it.
             if sources.is_empty() && !old.is_empty() {
@@ -3406,6 +3451,16 @@ impl LoanCtx<'_> {
                         PlaceProjection::Dynamic => LoanProjection::default(),
                     };
                     let root_type = self.checked_root_type(expr);
+                    // The root layout and the borrowed storage are distinct
+                    // facts for a projected explicit reference. Keep the
+                    // aggregate root for retention, but record the exact
+                    // projected expression type as the loan's storage type.
+                    let owner_type = self
+                        .type_table
+                        .and_then(|table| table.type_of(expr))
+                        .and_then(ty_to_ast)
+                        .or_else(|| root_type.clone())
+                        .unwrap_or_else(|| Type::Named("Unknown".into(), Vec::new()));
                     self.push_source(BorrowSource {
                         owner: root.to_string(),
                         root_type: root_type.clone(),
@@ -3417,7 +3472,7 @@ impl LoanCtx<'_> {
                         } else {
                             BorrowKind::Shared
                         },
-                        owner_type: root_type.unwrap_or_else(|| Type::Named("Unknown".into(), Vec::new())),
+                        owner_type,
                         temporary: false,
                     }, out);
                 } else {
@@ -3815,7 +3870,7 @@ impl LoanCtx<'_> {
 
     fn temporary_owner(&self, origin: &str) -> TypeError {
         terr(format!(
-            "in `{}`: `{}` returns a borrowed view of a temporary value with no stable owner — \
+            "in `{}`: `{}` returns a reference to a temporary value with no stable owner — \
              bind the owner first, or materialize the result with `.owned()` in the same expression",
             short_name(self.fn_name),
             short_name(origin),
@@ -3824,7 +3879,7 @@ impl LoanCtx<'_> {
 
     fn mutable_view_storage(&self, binding: &str) -> TypeError {
         terr(format!(
-            "in `{}`: mutable binding `{binding}` cannot store a borrowed view — keep the \
+            "in `{}`: mutable binding `{binding}` cannot store a reference — keep the \
              view in an immutable `let` binding, or materialize it with `.owned()` first",
             short_name(self.fn_name),
         ))
@@ -4438,7 +4493,7 @@ impl LoanCtx<'_> {
         {
             let edge = if matches!(stmt, Stmt::Break) { "break" } else { "continue" };
             return Err(terr(format!(
-                "in `{}`: `{edge}` would leave the borrowed view `{}` (from `{}`) live \
+                "in `{}`: `{edge}` would leave the reference `{}` (from `{}`) live \
                  across a loop control-flow edge while it borrows `{}` — finish using the \
                  view before the edge, or materialize it with `{}.owned()`",
                 short_name(self.fn_name),
@@ -4450,14 +4505,14 @@ impl LoanCtx<'_> {
         }
         for loan in open {
             // Reassigning the owner place invalidates every view of it.
-            if let Stmt::Assign { name, .. } = stmt {
-                if name == &loan.owner {
+            if let Stmt::Assign { name, value, place_depth } = stmt {
+                if assignment_overlaps_loan(name, value, *place_depth, loan) {
                     return Err(self.conflict(loan, "reassigned"));
                 }
             }
             if stmt_stores_view_in_dynamic(stmt, &loan.view) {
                 return Err(terr(format!(
-                    "in `{}`: borrowed view `{}` from `{}` cannot be stored in Dynamic — \
+                    "in `{}`: reference `{}` from `{}` cannot be stored in Dynamic — \
                      materialize it with `{}.owned()` before calling `dynamic.dynamic`",
                     short_name(self.fn_name),
                     loan.view,
@@ -4726,7 +4781,7 @@ impl LoanCtx<'_> {
 
     fn conflict(&self, loan: &Loan, what: &str) -> TypeError {
         terr(format!(
-            "in `{}`: owner `{}` is {what} while the borrowed view `{}` (from `{}`){} is still \
+            "in `{}`: owner `{}` is {what} while the reference `{}` (from `{}`){} is still \
              live — a view keeps its owner borrowed until its last use. End the view's use \
              first, or materialize it with `{}.owned()` before touching `{}`",
             short_name(self.fn_name),
@@ -4752,7 +4807,7 @@ impl LoanCtx<'_> {
 
     fn escape(&self, loan: &Loan) -> TypeError {
         terr(format!(
-            "in `{}`: the borrowed view `{}` (from `{}`){} escapes through a closure, task, or \
+            "in `{}`: the reference `{}` (from `{}`){} escapes through a closure, task, or \
              channel, or is stored in an owned aggregate/mutable binding, while it still \
              borrows `{}` — a view cannot outlive its owner. \
              Materialize it with `{}.owned()` first to send an owned value",
@@ -4884,7 +4939,7 @@ fn stmt_lets_view_escape(
     escapes
 }
 
-/// RFC-0082 Dynamic is an owned persistence boundary. A borrowed view may
+/// RFC-0082 Dynamic is an owned persistence boundary. A reference may
 /// reach it only after `.owned()` has ended the loan and produced ordinary data.
 fn stmt_stores_view_in_dynamic(stmt: &Stmt, view: &str) -> bool {
     let mut stores = false;

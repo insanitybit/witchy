@@ -39,6 +39,12 @@ pub enum ClosureCaptureTransfer {
     CopyScalar,
     CopyCapability,
     ManagedReferenceByValue,
+    /// An already-authenticated immutable root-plus-projection carrier.
+    ///
+    /// This is deliberately not the generic managed-reference case: lowering
+    /// may retain the carrier, but must never recover a root or projection
+    /// from its physical layout and synthesize a new view.
+    RootedViewByValue,
     ExplicitOwnedMove,
 }
 
@@ -53,13 +59,19 @@ pub struct ClosureCaptureWitness {
 impl ClosureCaptureWitness {
     pub fn binding(&self) -> &ClosureBindingId { &self.binding }
     pub fn checked_type(&self) -> &Type { &self.checked_type }
+    pub fn checked_type_encoding(&self) -> &[u8] { &self.checked_type_encoding }
     pub fn transfer(&self) -> ClosureCaptureTransfer { self.transfer }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosureWitness {
     id: ProperTailCallableId,
+    /// The runtime type-table view used for physical closure-family layout.
     signature: Ty,
+    /// The checked source declaration used to authenticate the callable ABI.
+    /// `Ty` intentionally omits qualifier-only state, so a compiler-generated
+    /// eta lambda must retain its declared parameter contract separately.
+    declared_signature: Type,
     signature_encoding: Vec<u8>,
     captures: Vec<ClosureCaptureWitness>,
 }
@@ -67,6 +79,7 @@ pub struct ClosureWitness {
 impl ClosureWitness {
     pub fn id(&self) -> &ProperTailCallableId { &self.id }
     pub fn signature(&self) -> &Ty { &self.signature }
+    pub fn declared_signature(&self) -> &Type { &self.declared_signature }
     pub fn captures(&self) -> &[ClosureCaptureWitness] { &self.captures }
 }
 
@@ -230,6 +243,10 @@ fn expr_kind(expr: &Expr) -> ProperTailExprKind {
 
 fn explicit_borrow(ty: &Type) -> bool {
     match ty {
+        // Rooted views are ordinary copyable capture carriers, not lexical
+        // references.  Only migration-only reference forms stay on the old
+        // closure escape path.
+        Type::Qualified(ast::TypeQual::View, _) => false,
         Type::Qualified(ast::TypeQual::Borrow(_) | ast::TypeQual::LegacyBorrow(_) | ast::TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => explicit_borrow(inner),
         Type::Slice(inner) => explicit_borrow(inner),
@@ -250,15 +267,57 @@ fn is_capability(ty: &Type, module: &ast::Module) -> bool {
 fn capture_transfer(ty: &Type, module: &ast::Module) -> ClosureCaptureTransfer {
     // Ordinary closures capture by value, including values received by own.
     // Parameter transfer conventions do not describe closure construction.
+    // A rooted view is a retained root-plus-projection carrier.  Give it a
+    // distinct manifest transfer before asking whether the payload happens to
+    // have an ordinary managed representation: later lowering must carry this
+    // exact authenticated carrier, not reconstruct its projection.
+    if matches!(ty, Type::Qualified(ast::TypeQual::View, _)) {
+        return ClosureCaptureTransfer::RootedViewByValue;
+    }
     if is_capability(ty, module) { return ClosureCaptureTransfer::CopyCapability; }
-    match ty.unqualified() {
-        Type::Named(name, args) if args.is_empty() && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "Nil") => ClosureCaptureTransfer::CopyScalar,
-        _ => ClosureCaptureTransfer::ManagedReferenceByValue,
+    if crate::canonical_aggregates::is_scalar_type(ty) {
+        ClosureCaptureTransfer::CopyScalar
+    } else {
+        ClosureCaptureTransfer::ManagedReferenceByValue
     }
 }
 
 fn type_from_expr(typed: &TypedModule, expr: &Expr) -> Option<Type> {
     typed.table().type_of(expr).and_then(typeck::ty_to_ast)
+}
+
+/// The runtime `Ty` authenticates inference, while the lambda annotation is
+/// the source authority for qualifier-bearing callable lanes.  Fill only
+/// omitted annotations from the checked runtime type; never manufacture a
+/// qualifier that the checked AST did not declare.
+fn lambda_declared_callable_type(expr: &Expr, checked: &Ty) -> Option<Type> {
+    let Expr::Lambda {
+        params,
+        ret,
+        qualifiers,
+        ..
+    } = expr else {
+        return None;
+    };
+    let checked = typeck::ty_to_ast(checked)?;
+    let Type::Fn(checked_parameters, checked_result, _, _) = checked.unqualified() else {
+        return None;
+    };
+    if params.len() != checked_parameters.len() {
+        return None;
+    }
+    let parameters = params
+        .iter()
+        .zip(checked_parameters)
+        .map(|(parameter, checked)| parameter.ty.clone().unwrap_or_else(|| checked.clone()))
+        .collect();
+    let result = ret.clone().unwrap_or_else(|| (**checked_result).clone());
+    Some(Type::Fn(
+        parameters,
+        Box::new(result),
+        params.iter().map(|parameter| parameter.convention).collect(),
+        *qualifiers,
+    ))
 }
 
 fn pattern_names(pattern: &Pattern) -> Vec<String> {
@@ -352,7 +411,9 @@ impl<'a> Builder<'a> {
                 Stmt::Let { name, ty, value, .. } => {
                     self.child(value, callable.clone(), path, 0)?;
                     let checked = ty.clone().or_else(|| type_from_expr(self.typed, value));
-                    let borrowed = ty.as_ref().is_some_and(explicit_borrow) || matches!(value, Expr::Unary { op: ast::UnOp::Borrow | ast::UnOp::BorrowMut, .. }) || matches!(value, Expr::Var(source) if self.resolve(source).is_some_and(|binding| binding.borrowed));
+                    let borrowed = ty.as_ref().is_some_and(explicit_borrow)
+                        || matches!(value, Expr::Unary { op: ast::UnOp::BorrowMut, .. })
+                        || matches!(value, Expr::Var(source) if self.resolve(source).is_some_and(|binding| binding.borrowed));
                     self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId { owner: callable.clone(), path: vec![ClosureBindingPathStep::Statement(index)], name: name.clone() }, ty: checked, borrowed });
                 }
                 Stmt::Assign { value, .. } => self.child(value, callable.clone(), path, 0)?,
@@ -398,8 +459,16 @@ impl<'a> Builder<'a> {
                 self.sites.push(LambdaSite { id: id.clone(), expr_address: expr as *const Expr as usize });
                 let signature = self.typed.table().type_of(expr).cloned().ok_or_else(|| ClosureWitnessError::MissingCallableType { path: path.clone() })?;
                 if !matches!(signature, Ty::Fn(..)) { return Err(ClosureWitnessError::CallableTypeNotFunction { path: path.clone(), ty: signature }); }
-                let signature_encoding = canonical_abi::canonical_checked_ty_bytes(self.typed, &signature)
+                let declared_signature = lambda_declared_callable_type(expr, &signature)
+                    .ok_or_else(|| ClosureWitnessError::CallableTypeNotFunction {
+                        path: path.clone(),
+                        ty: signature.clone(),
+                    })?;
+                let mut signature_encoding = canonical_abi::canonical_checked_ty_bytes(self.typed, &signature)
                     .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
+                let declared_signature_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &declared_signature)
+                    .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
+                put_bytes(&mut signature_encoding, &declared_signature_encoding);
                 let captures = witchy_syntax::lambda_scan::scan_lambda(params, body).captures();
                 let param_types = match self.typed.table().type_of(expr) {
                     Some(Ty::Fn(inputs, _, _, _, _)) => inputs.iter().filter_map(typeck::ty_to_ast).collect::<Vec<_>>(),
@@ -428,7 +497,13 @@ impl<'a> Builder<'a> {
                         .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
                     capture_witnesses.push(ClosureCaptureWitness { binding: binding.id, transfer: capture_transfer(&checked_type, self.module), checked_type, checked_type_encoding });
                 }
-                self.entries.push(ClosureWitness { id, signature, signature_encoding, captures: capture_witnesses });
+                self.entries.push(ClosureWitness {
+                    id,
+                    signature,
+                    declared_signature,
+                    signature_encoding,
+                    captures: capture_witnesses,
+                });
             }
             Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } | Expr::List(args) | Expr::Tuple(args) => for (index, arg) in args.iter().enumerate() { self.child(arg, callable.clone(), path, index)?; },
             Expr::LabeledCall { args, .. } => for (index, (_, arg)) in args.iter().enumerate() { self.child(arg, callable.clone(), path, index)?; },
@@ -560,6 +635,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn closure_witness_retains_declared_unique_var_parameter_contract() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn main() -> Int:\n    let append = fn(var values: unique List(Int), value: Int) -> ():\n        return\n    let frozen_append = fn(var values: frozen List(Int), value: Int) -> ():\n        return\n    0\n",
+        )
+        .expect("parse qualifier-bearing lambda");
+        let typed = typeck::annotate_checked(module).expect("check qualifier-bearing lambda");
+        let witness = derive_closure_witness(&typed).expect("derive closure witness");
+        let Type::Fn(parameters, result, conventions, _) = witness.entries()[0].declared_signature() else {
+            panic!("closure witness must retain callable declaration");
+        };
+        assert!(matches!(parameters.as_slice(), [
+            Type::Qualified(ast::TypeQual::Unique, inner),
+            Type::Named(name, arguments),
+        ] if matches!(inner.as_ref(), Type::Named(name, arguments) if name == "List" && arguments.len() == 1)
+            && name == "Int" && arguments.is_empty()));
+        assert_eq!(conventions.as_slice(), &[ast::Convention::Var, ast::Convention::Let]);
+        assert!(
+            matches!(result.as_ref(), Type::Tuple(items) if items.is_empty())
+                || matches!(result.as_ref(), Type::Named(name, arguments) if (name == "Unit" || name == "Nil") && arguments.is_empty())
+        );
+        let Type::Fn(parameters, _, _, _) = witness.entries()[1].declared_signature() else {
+            panic!("closure witness must retain frozen callable declaration");
+        };
+        assert!(matches!(parameters.first(), Some(Type::Qualified(ast::TypeQual::Frozen, _))));
+    }
+
+    #[test]
     fn intrinsic_calls_do_not_become_environment_captures() {
         let module = witchy_syntax::parser::parse_module(
             "fn make(xs: List(Int)) -> fn() -> Int:\n    fn(): list.length(xs)\n",
@@ -586,6 +688,7 @@ mod tests {
     fn own_parameter_capture_uses_checked_value_semantics() {
         for (ty, transfer) in [
             ("Int", ClosureCaptureTransfer::CopyScalar),
+            ("()", ClosureCaptureTransfer::CopyScalar),
             ("String", ClosureCaptureTransfer::ManagedReferenceByValue),
             ("List(String)", ClosureCaptureTransfer::ManagedReferenceByValue),
         ] {
@@ -599,6 +702,27 @@ mod tests {
             assert_eq!(captures[0].transfer(), transfer);
             assert_eq!(captures[0].binding().path(), &[ClosureBindingPathStep::Parameter(0)]);
         }
+    }
+
+    #[test]
+    fn rooted_view_capture_has_a_distinct_source_transfer_and_digest() {
+        let source = "fn first[a](items: List(a)) -> &a:\n    &items[0]\n\nfn main() -> Int:\n    var values = [7, 8]\n    let selected: &Int = first(values)\n    let read = fn() -> Int:\n        *selected\n    values = [9, 10]\n    read() * 10 + values[0]\n";
+        let module = witchy_syntax::parser::parse_module(source).expect("parse rooted-view closure");
+        let typed = typeck::annotate_checked(module).expect("check rooted-view closure");
+        let manifest = derive_closure_witness(&typed).expect("derive rooted-view witness");
+        let capture = &manifest.entries()[0].captures()[0];
+        assert_eq!(capture.transfer(), ClosureCaptureTransfer::RootedViewByValue);
+        assert!(matches!(capture.checked_type(), Type::Qualified(ast::TypeQual::View, _)));
+        assert!(!capture.checked_type_encoding().is_empty());
+        assert!(matches!(capture.binding().path(), [ClosureBindingPathStep::Statement(_)]));
+        let rooted_digest = manifest.digest();
+
+        let ordinary = witchy_syntax::parser::parse_module(
+            "fn main() -> Int:\n    let value = 7\n    let read = fn() -> Int:\n        value\n    read()\n",
+        ).expect("parse scalar closure");
+        let ordinary = typeck::annotate_checked(ordinary).expect("check scalar closure");
+        let ordinary = derive_closure_witness(&ordinary).expect("derive scalar witness");
+        assert_ne!(rooted_digest, ordinary.digest(), "capture transfer participates in the manifest digest");
     }
 
     #[test]

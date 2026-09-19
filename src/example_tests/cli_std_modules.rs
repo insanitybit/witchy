@@ -1,7 +1,7 @@
 use crate::{interpreter, parser};
 
     /// `main -> Int` sets the process exit code (C/Go/Rust convention) and is
-    /// *not* printed; `main` returning Nil exits 0 and shows its `print` output.
+    /// *not* printed; `main` returning `()` exits 0 and shows its `print` output.
     #[test]
     fn main_int_return_is_the_process_exit_code() {
         let run = |src: &str| {

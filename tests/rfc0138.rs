@@ -22,18 +22,18 @@ type OnceBox:
     OnceBox(once fn(Int) -> Int)
 
 must sealed type Completion:
-    Completion(once fn(String) -> Nil)
+    Completion(once fn(String) -> ())
 
 must sealed type Transaction:
     Transaction(Int)
 
 must sealed type TransactionCompletion:
-    TransactionCompletion(Transaction, once fn(own Transaction) -> Nil)
+    TransactionCompletion(Transaction, once fn(own Transaction) -> ())
 
 pure fn apply_pure(callback: pure fn(Int) -> Int, value: Int) -> Int:
     callback(value)
 
-fn log_twice(own callback: fn(String) -> Nil):
+fn log_twice(own callback: fn(String) -> ()):
     callback("first")
     callback("second")
 
@@ -255,7 +255,7 @@ fn main():
             name: "pure capability capture",
             source: r#"
 fn main(console: Console):
-    let invalid: pure fn(String) -> Nil =
+    let invalid: pure fn(String) -> () =
         pure fn(message: String): console.print(message)
     invalid("effect")
 "#,
@@ -330,7 +330,7 @@ fn main():
             name: "must wrapper cannot be dropped",
             source: r#"
 must sealed type Completion:
-    Completion(once fn(String) -> Nil)
+    Completion(once fn(String) -> ())
 
 fn main():
     let completion = Completion(once fn(message: String): ())

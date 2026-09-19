@@ -2,6 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static HEADER_LENGTH_PAIR_SCANS: Cell<usize> = const { Cell::new(0) };
+}
+
 use crate::layout::{
     FieldKind, HeaderLayout, LayoutDescriptor, LayoutInterner, LayoutKind, LayoutSize, PointerSlot,
     RcHeader, ScalarKind,
@@ -30,6 +38,10 @@ struct ObjectState {
     /// The allocation or entry parameter from which this reference originates.
     /// SSA edge arguments rename values, never object identity.
     identity: ValueId,
+    /// The logical owner epoch of this allocation.  It is checker-derived,
+    /// never an annotation supplied by a transform.  Bounds evidence must
+    /// name this exact epoch before it can justify an indexed access.
+    owner_generation: u64,
     layout: crate::layout::LayoutId,
     extent: Extent,
     ownership: Ownership,
@@ -43,6 +55,11 @@ struct ObjectState {
     /// local slot facts.
     initialized_owned_slots: bool,
 }
+
+/// Abstract owner epoch for a merge of paths with different concrete mutation
+/// histories. It is a finite dataflow-top marker, not a concrete mutation
+/// counter, and remains stable through later mutations and loop iterations.
+const JOINED_OWNER_GENERATION: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy)]
 struct CheckedRange {
@@ -78,6 +95,15 @@ struct Comparison {
     operator: ComparisonOperator,
     left: ValueId,
     right: ValueId,
+}
+
+/// A bound extracted from one particular live owner generation.  Scalar SSA
+/// values can describe several owners (for example, a shared loop count), so
+/// the relation is stored separately from the scalar value itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct OwnerGeneration {
+    identity: ValueId,
+    epoch: u64,
 }
 
 /// Private storage sharing, never a source of checker facts. Reads retain the
@@ -180,6 +206,17 @@ pub(super) struct MemoryState {
     /// is distinct from an uninitialized slot and from a live stored edge.
     nullable_absent_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
     range_states: CowFacts<BTreeMap<RangeIdentity, RangeState>>,
+    /// Count/capacity SSA values authenticated by the current generation of
+    /// the owner from which they were read or carried.
+    bound_generations: CowFacts<BTreeMap<ValueId, BTreeSet<OwnerGeneration>>>,
+    /// Bounds guards retain the owner generations of their operands.  A
+    /// mutation, move, consume, unknown call, or disagreeing join cannot
+    /// reuse the old guard for the next generation.
+    guard_generations: CowFacts<BTreeMap<(ComparisonOperator, ValueId, ValueId), BTreeSet<OwnerGeneration>>>,
+    /// A scalar loaded from a dynamic object's length header on this owner
+    /// generation.  It is not a usable extent by itself: only the exact,
+    /// allocation-checked bounds guard below may promote it to one.
+    fresh_header_lengths: CowFacts<BTreeMap<ValueId, BTreeSet<OwnerGeneration>>>,
     /// This exact live range covered its allocation's entire current logical
     /// prefix on every predecessor. This relates storage to its current count,
     /// not two scalar SSA values, and grants no child ownership authority.
@@ -235,6 +272,9 @@ impl<'a> MemoryChecker<'a> {
                 stored_objects: BTreeMap::new().into(),
                 nullable_absent_slots: BTreeSet::new().into(),
                 range_states: BTreeMap::new().into(),
+                bound_generations: BTreeMap::new().into(),
+                guard_generations: BTreeMap::new().into(),
+                fresh_header_lengths: BTreeMap::new().into(),
                 full_current_prefixes: BTreeSet::new().into(),
                 constants: BTreeMap::new().into(),
                 exact_additions: BTreeMap::new().into(),
@@ -426,6 +466,62 @@ impl<'a> MemoryChecker<'a> {
             }
         }
 
+        // Object phis may rebase a sole token's allocation identity without
+        // representing that change as an ordinary SSA value rename. Owner-
+        // generation facts name physical allocation identities, so carry the
+        // exact root rebase into those facts as well.
+        //
+        // A checked shared result carrier can be one of several physical
+        // write-back roots. On each predecessor it is another phi for that
+        // predecessor's root, but after the CFG meet it intentionally has its
+        // own abstract SSA identity and an origin set. It must not acquire
+        // either root's mutable-owner facts. When one identity reaches both a
+        // direct root lane and such a carrier, preserve facts on the direct
+        // root lane only. If the direct identity is not one of the candidate
+        // lanes, no exact physical rebase is available and validation remains
+        // fail-closed. Multiple Unique candidates remain invalid: a unique
+        // physical allocation cannot be represented by more than one live
+        // token.
+        let mut owner_identity_candidates = BTreeMap::<ValueId, (BTreeSet<ValueId>, bool)>::new();
+        for (argument, parameter) in &unique_phi_rebases {
+            let identity = self.state.objects[argument].identity;
+            let entry = owner_identity_candidates
+                .entry(identity)
+                .or_insert_with(|| (BTreeSet::new(), false));
+            entry.0.insert(*parameter);
+            entry.1 = true;
+        }
+        for (argument, parameter) in &shared_phi_rebases {
+            let identity = self.state.objects[argument].identity;
+            owner_identity_candidates
+                .entry(identity)
+                .or_insert_with(|| (BTreeSet::new(), false))
+                .0
+                .insert(*parameter);
+        }
+        let mut owner_identity_rebases = BTreeMap::new();
+        for (identity, (candidates, has_unique_candidate)) in owner_identity_candidates {
+            let direct = remap_value(&renames, identity);
+            if candidates.len() != 1 && has_unique_candidate {
+                return Err(InitialCheckError::InvalidOwnership {
+                    function: self.function.id,
+                    object: direct,
+                });
+            }
+            let rebase = if candidates.len() == 1 {
+                *candidates.first().expect("one candidate exists")
+            } else if candidates.contains(&direct) {
+                direct
+            } else {
+                // The shared value is carried by more than one target lane
+                // and no target lane is its direct SSA root. It may be a
+                // selected result alongside a write-back replacement. No
+                // exact owner-identity rebase exists, so leave all old owner
+                // facts stale rather than attaching them to either lane.
+                continue;
+            };
+            owner_identity_rebases.insert(identity, rebase);
+        }
         let mut objects = BTreeMap::new();
         for (value, state) in &self.state.objects {
             let original_value = *value;
@@ -440,6 +536,14 @@ impl<'a> MemoryChecker<'a> {
                 if state.ownership == Ownership::Unique {
                     state.ownership = Ownership::Shared;
                 }
+                // A dynamic shared phi can join an old promoted edge with a
+                // HeaderPrefix edge. Give its rebased owner the stable joined
+                // generation from the first visit, but carry no proof into
+                // that generation. A later header reload is therefore the
+                // only way to authenticate a counted access.
+                if matches!(self.descriptor(state.layout)?.size(), LayoutSize::Dynamic { .. }) {
+                    state.owner_generation = JOINED_OWNER_GENERATION;
+                }
                 match &state.extent {
                     Extent::Counted { count, capacity, .. }
                         if target.parameters.iter().any(|parameter| {
@@ -448,6 +552,13 @@ impl<'a> MemoryChecker<'a> {
                             parameter.value == *capacity
                                 && parameter.value_type == ValueType::Size
                         }) => {}
+                    // A header prefix is deliberately not a counted extent:
+                    // its checked fact is only that the allocation holds the
+                    // dynamic layout's fixed header.  It therefore has no
+                    // count or capacity SSA lane to carry across this edge.
+                    // Detailed observations are discarded below, so a later
+                    // access must reload and authenticate its own bounds.
+                    Extent::HeaderPrefix { .. } => {}
                     Extent::FixedBytes(_) => {}
                     extent => {
                         if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
@@ -472,6 +583,53 @@ impl<'a> MemoryChecker<'a> {
                 }
             }
         }
+        let shared_prefix_phi_values = shared_phi_rebases
+            .values()
+            .copied()
+            .filter(|value| {
+                matches!(
+                    objects.get(value).map(|state| &state.extent),
+                    Some(Extent::HeaderPrefix { .. })
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        // A counted shared phi has an explicit two-lane transport contract.
+        // Its predecessor bounds cannot name the rebased owner generation,
+        // but the exact count and capacity lanes themselves may do so.  Keep
+        // this deliberately narrower than a general scalar fact transfer:
+        // HeaderPrefix phis have no lanes and remain proofless below.
+        let shared_counted_phi_lanes = shared_phi_rebases
+            .values()
+            .filter_map(|value| {
+                let state = objects.get(value)?;
+                let Extent::Counted { count, capacity, .. } = state.extent else {
+                    return None;
+                };
+                let is_size_parameter = |lane| target.parameters.iter().any(|parameter| {
+                    parameter.value == lane && parameter.value_type == ValueType::Size
+                });
+                (is_size_parameter(count) && is_size_parameter(capacity)).then_some((
+                    *value,
+                    count,
+                    capacity,
+                    OwnerGeneration {
+                        identity: state.identity,
+                        epoch: state.owner_generation,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        let canonical_identities = objects
+            .iter()
+            .map(|(value, state)| (*value, state.identity))
+            .collect::<BTreeMap<_, _>>();
+        let remap_owner_identity = |identity| {
+            let token = owner_identity_rebases
+                .get(&identity)
+                .copied()
+                .unwrap_or_else(|| remap_value(&renames, identity));
+            canonical_identities.get(&token).copied().unwrap_or(token)
+        };
         for parameter in &target.parameters {
             // Only a linear-memory reference carries object state across an
             // edge. Capabilities, GC references, and callables are opaque host
@@ -492,22 +650,66 @@ impl<'a> MemoryChecker<'a> {
             .iter()
             .map(|(value, origins)| (remap_value(&renames, *value), origins.clone()))
             .collect::<BTreeMap<_, _>>();
-        for (argument, parameter) in shared_phi_rebases {
+        for (argument, parameter) in &shared_phi_rebases {
             let origins = self
                 .state
                 .shared_phi_origins
-                .get(&argument)
+                .get(argument)
                 .cloned()
-                .unwrap_or_else(|| BTreeSet::from([self.state.objects[&argument].identity]));
+                .unwrap_or_else(|| BTreeSet::from([self.state.objects[argument].identity]));
             shared_phi_origins
-                .entry(parameter)
+                .entry(*parameter)
                 .or_default()
                 .extend(origins);
         }
 
-        Ok(MemoryState {
+        let mut edge = MemoryState {
             objects: objects.into(),
             shared_phi_origins: shared_phi_origins.into(),
+            // A phi rebase belongs only to the scalar evidence that crosses
+            // the edge with that reference. An uncarried `let` snapshot may
+            // name the same physical root as a `var` loop lane, but it keeps
+            // its own header/load SSA values and must retain their original
+            // root identity. Rebinding every fact for the physical identity
+            // would make that stable snapshot's current bound appear stale
+            // after the loop, even though the mutation path copied before it
+            // wrote. No evidence is invented here: carried facts still rebase
+            // exactly as before, while uncarried ones remain tied to the
+            // unchanged allocation.
+            bound_generations: self.state.bound_generations.iter().map(|(value, facts)| {
+                let carried = remap_value(&renames, *value) != *value;
+                (
+                    remap_value(&renames, *value),
+                    facts.iter().map(|fact| OwnerGeneration {
+                        identity: carried.then(|| remap_owner_identity(fact.identity))
+                            .unwrap_or(fact.identity),
+                        epoch: fact.epoch,
+                    }).collect(),
+                )
+            }).collect(),
+            guard_generations: self.state.guard_generations.iter().map(|((operator, left, right), facts)| {
+                let carried = remap_value(&renames, *left) != *left
+                    || remap_value(&renames, *right) != *right;
+                (
+                    (*operator, remap_value(&renames, *left), remap_value(&renames, *right)),
+                    facts.iter().map(|fact| OwnerGeneration {
+                        identity: carried.then(|| remap_owner_identity(fact.identity))
+                            .unwrap_or(fact.identity),
+                        epoch: fact.epoch,
+                    }).collect(),
+                )
+            }).collect(),
+            fresh_header_lengths: self.state.fresh_header_lengths.iter().map(|(value, facts)| {
+                let carried = remap_value(&renames, *value) != *value;
+                (
+                    remap_value(&renames, *value),
+                    facts.iter().map(|fact| OwnerGeneration {
+                        identity: carried.then(|| remap_owner_identity(fact.identity))
+                            .unwrap_or(fact.identity),
+                        epoch: fact.epoch,
+                    }).collect(),
+                )
+            }).collect(),
             initialized_scalar_slots: self
                 .state
                 .initialized_scalar_slots
@@ -615,7 +817,43 @@ impl<'a> MemoryChecker<'a> {
                 .iter()
                 .map(|object| remap_value(&renames, *object))
                 .collect(),
-        })
+        };
+        // A shared phi rebase never retains predecessor observations: a
+        // HeaderPrefix phi has no scalar lanes, while a Counted phi receives
+        // only its exact lanes below. Retaining an earlier header observation
+        // or bounds guard would make a non-dominating fact look current at
+        // the new block parameter.
+        let shared_rebased_phi_values = shared_prefix_phi_values
+            .iter()
+            .chain(shared_counted_phi_lanes.iter().map(|(value, _, _, _)| value))
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if !shared_rebased_phi_values.is_empty() {
+            let shared_rebased_identities = shared_rebased_phi_values
+                .iter()
+                .filter_map(|value| edge.objects.get(value).map(|state| state.identity))
+                .collect::<BTreeSet<_>>();
+            edge.header_values.retain(|(object, _), _| !shared_rebased_phi_values.contains(object));
+            edge.range_states.retain(|identity, _| !shared_rebased_phi_values.contains(&identity.object));
+            edge.full_current_prefixes.retain(|identity| !shared_rebased_phi_values.contains(&identity.object));
+            edge.bound_generations.retain(|_, facts| {
+                facts.retain(|fact| !shared_rebased_identities.contains(&fact.identity));
+                !facts.is_empty()
+            });
+            edge.guard_generations.retain(|_, facts| {
+                facts.retain(|fact| !shared_rebased_identities.contains(&fact.identity));
+                !facts.is_empty()
+            });
+            edge.fresh_header_lengths.retain(|_, facts| {
+                facts.retain(|fact| !shared_rebased_identities.contains(&fact.identity));
+                !facts.is_empty()
+            });
+            for (_, count, capacity, generation) in shared_counted_phi_lanes {
+                edge.bound_generations.entry(count).or_default().insert(generation);
+                edge.bound_generations.entry(capacity).or_default().insert(generation);
+            }
+        }
+        Ok(edge)
     }
 
     /// A Unique phi may change object identity only when its edge argument is
@@ -645,6 +883,12 @@ impl<'a> MemoryChecker<'a> {
         incoming: &MemoryState,
     ) -> Result<MemoryState, InitialCheckError> {
         let mut objects = BTreeMap::new();
+        // A conditional mutation may advance only the owner's epoch while
+        // both edges transport the exact same counted-extent lanes.  Those
+        // lanes remain facts about the one physical allocation; a subsequent
+        // guard must be allowed to authenticate them for the joined epoch.
+        // Keep this separate from guard facts, which are path-local evidence.
+        let mut reauthenticated_joined_extents = Vec::new();
         // Analysis facts may be intersected, but owned references are release
         // obligations. An incoming edge must not erase a live affine token.
         for (state, other) in [(existing, incoming), (incoming, existing)] {
@@ -694,6 +938,18 @@ impl<'a> MemoryChecker<'a> {
             if promoted_current != promoted_next
                 && let Some(met) = shared_phi_meet(&promoted_current, &promoted_next)
             {
+                if let Some((count, capacity)) =
+                    exact_carried_counted_extent(&promoted_current, &promoted_next)
+                {
+                    reauthenticated_joined_extents.push((
+                        count,
+                        capacity,
+                        OwnerGeneration {
+                            identity: met.identity,
+                            epoch: met.owner_generation,
+                        },
+                    ));
+                }
                 objects.insert(*value, met);
                 continue;
             }
@@ -764,6 +1020,43 @@ impl<'a> MemoryChecker<'a> {
             if current != next
                 && let Some(met) = shared_phi_meet(current, next)
             {
+                if let Some((count, capacity)) = exact_carried_counted_extent(current, next) {
+                    reauthenticated_joined_extents.push((
+                        count,
+                        capacity,
+                        OwnerGeneration {
+                            identity: met.identity,
+                            epoch: met.owner_generation,
+                        },
+                    ));
+                }
+                objects.insert(*value, met);
+                continue;
+            }
+            // A mutation on one predecessor advances this allocation's epoch,
+            // even when the other predecessor leaves the exact same owned
+            // storage untouched.  The alternatives still carry one physical
+            // token, so rejecting the join would conflate stale *bounds
+            // evidence* with an alias or release-obligation mismatch. Give
+            // the joined owner a dedicated abstract epoch instead. The
+            // ordinary fact intersections below retain only common facts, and
+            // none can name this joined epoch; a later indexed access must
+            // establish fresh bounds evidence before it is admitted. The
+            // marker is stable through loop iterations, unlike a synthetic
+            // numeric successor which would make dataflow diverge.
+            //
+            // This is intentionally an exact-state rule.  It never reconciles
+            // allocation identity, layout, extent, ownership, class, or slot
+            // initialization differences, and it cannot make a consumed token
+            // live again.
+            if let Some(met) = join_path_mutated_owner(current, next) {
+                if let Some((count, capacity)) = exact_carried_counted_extent(current, next) {
+                    reauthenticated_joined_extents.push((
+                        count,
+                        capacity,
+                        OwnerGeneration { identity: met.identity, epoch: met.owner_generation },
+                    ));
+                }
                 objects.insert(*value, met);
                 continue;
             }
@@ -779,6 +1072,13 @@ impl<'a> MemoryChecker<'a> {
                     block: block.id,
                     object: *value,
                 });
+            }
+            if let Some((count, capacity)) = exact_carried_counted_extent(current, next) {
+                reauthenticated_joined_extents.push((
+                    count,
+                    capacity,
+                    OwnerGeneration { identity: current.identity, epoch: current.owner_generation },
+                ));
             }
             objects.insert(*value, current.clone());
         }
@@ -803,9 +1103,17 @@ impl<'a> MemoryChecker<'a> {
         // prefix's Shared child status merely because its old count ID dies.
         let mut full_current_prefixes = meet_full_current_prefixes(existing, incoming, &range_states);
         self.synchronize_joined_full_prefixes(block, &objects, &mut range_states, &mut full_current_prefixes)?;
+        let mut bound_generations = intersect_map(&existing.bound_generations, &incoming.bound_generations);
+        for (count, capacity, generation) in reauthenticated_joined_extents {
+            bound_generations.entry(count).or_default().insert(generation);
+            bound_generations.entry(capacity).or_default().insert(generation);
+        }
         Ok(MemoryState {
             objects: objects.into(),
             shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
+            bound_generations: bound_generations.into(),
+            guard_generations: intersect_map(&existing.guard_generations, &incoming.guard_generations).into(),
+            fresh_header_lengths: intersect_map(&existing.fresh_header_lengths, &incoming.fresh_header_lengths).into(),
             stored_objects: intersect_map(&existing.stored_objects, &incoming.stored_objects).into(),
             nullable_absent_slots: existing.nullable_absent_slots.intersection(&incoming.nullable_absent_slots).copied().collect(),
             initialized_scalar_slots: existing.initialized_scalar_slots.intersection(&incoming.initialized_scalar_slots).copied().collect(),
@@ -945,6 +1253,7 @@ impl<'a> MemoryChecker<'a> {
                 parameter.value,
                 ObjectState {
                     identity: parameter.value,
+                    owner_generation: 0,
                     layout,
                     extent,
                     ownership,
@@ -953,6 +1262,154 @@ impl<'a> MemoryChecker<'a> {
                     initialized_owned_slots,
                 },
             );
+            self.bind_extent_generation(parameter.value)?;
+        }
+        Ok(())
+    }
+
+    /// Bind an owner's current counted extent to its scalar lanes.  This is
+    /// the source-to-canonical carrier for range facts: it is created only
+    /// from checked allocation/ABI state and is refreshed only after the
+    /// checker has accepted the new owner state.
+    fn bind_extent_generation(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(object)?.clone();
+        let Extent::Counted { count, capacity, .. } = state.extent else {
+            return Ok(());
+        };
+        let fact = OwnerGeneration { identity: state.identity, epoch: state.owner_generation };
+        self.state.bound_generations.entry(count).or_default().insert(fact);
+        self.state.bound_generations.entry(capacity).or_default().insert(fact);
+        Ok(())
+    }
+
+    /// An allocation may be introduced after arithmetic guards over its
+    /// already-defined count or capacity lanes. Those guards are valid for
+    /// the new allocation, but were necessarily created before its identity
+    /// existed, so `Operation::Guard` could not record that identity then.
+    /// Bind only this newly created allocation. Extent mutation deliberately
+    /// does not use this path: it must leave predecessor guards stale.
+    fn bind_preallocation_extent_guards(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(object)?.clone();
+        let Extent::Counted { count, capacity, .. } = state.extent else {
+            return Ok(());
+        };
+        let generation = self.current_generation(object)?;
+        for (operator, left, right) in self.state.guards.clone() {
+            if self.same_scalar(right, count) || self.same_scalar(right, capacity) {
+                self.state.guard_generations
+                    .entry((operator, left, right))
+                    .or_default()
+                    .insert(generation);
+            }
+        }
+        Ok(())
+    }
+
+    fn current_generation(&self, object: ValueId) -> Result<OwnerGeneration, InitialCheckError> {
+        let state = self.live_object(object)?;
+        Ok(OwnerGeneration { identity: state.identity, epoch: state.owner_generation })
+    }
+
+    fn bound_is_current(&self, object: ValueId, bound: ValueId) -> bool {
+        // Literal bounds are arithmetic facts, not observations of mutable
+        // owner state.  Every nonliteral dynamic extent must carry its owner
+        // generation explicitly. A fresh length load is also an observation
+        // of that owner, but only when it names this exact allocation and
+        // generation. This does not trust scalar equivalence: a stale or
+        // other-allocation header lane cannot authorize an indexed access.
+        self.state.constants.contains_key(&bound)
+            || self.current_generation(object).ok().is_some_and(|generation| {
+                self.state.bound_generations.get(&bound)
+                    .is_some_and(|facts| facts.contains(&generation))
+                    || self.fresh_header_generations(bound).contains(&generation)
+            })
+    }
+
+    /// Return only live current generations established by an exact Length
+    /// header load. The scalar lane alone is never enough: its header object
+    /// must still be live and at the generation recorded at the load.
+    fn fresh_header_generations(&self, bound: ValueId) -> BTreeSet<OwnerGeneration> {
+        self.state.fresh_header_lengths.get(&bound).into_iter()
+            .flat_map(|facts| facts.iter().copied())
+            .filter(|generation| self.state.header_values.iter().any(|((object, field), header)| {
+                *field == HeaderField::Length
+                    && *header == bound
+                    && self.current_generation(*object).ok() == Some(*generation)
+            }))
+            .collect()
+    }
+
+    /// Advance every live token for this allocation and discard the old
+    /// extent authentication.  Use this only when the logical extent itself
+    /// can have changed; element initialization and owner-token transport
+    /// advance their ownership state through their own fact tables without
+    /// changing a checked count or capacity.
+    fn invalidate_owner_generation(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        self.advance_owner_generation(object, false)
+    }
+
+    /// Advance owner state after an extent-preserving operation.  Bounds
+    /// evidence is rebound to the new generation only when it already named
+    /// this exact allocation; guards, fresh headers, and counted lanes for
+    /// other allocations remain untouched.  This retains no element-prefix
+    /// or ownership facts, which each operation updates separately.
+    fn rebase_extent_generation(&mut self, object: ValueId) -> Result<(), InitialCheckError> {
+        self.advance_owner_generation(object, true)
+    }
+
+    fn advance_owner_generation(
+        &mut self,
+        object: ValueId,
+        preserve_extent_authentication: bool,
+    ) -> Result<(), InitialCheckError> {
+        let identity = self.live_object(object)?.identity;
+        let maximum = self.state.objects.values()
+            .filter(|state| state.identity == identity)
+            .map(|state| state.owner_generation)
+            .max()
+            .unwrap_or(0);
+        let next = if maximum == JOINED_OWNER_GENERATION {
+            JOINED_OWNER_GENERATION
+        } else {
+            maximum.checked_add(1).ok_or(InitialCheckError::InvalidOwnership {
+                function: self.function.id,
+                object,
+            })?
+        };
+        for state in self.state.objects.values_mut().filter(|state| state.identity == identity) {
+            state.owner_generation = next;
+        }
+        let rebase = |facts: &mut BTreeSet<OwnerGeneration>| {
+            if facts.iter().any(|fact| fact.identity == identity) {
+                facts.retain(|fact| fact.identity != identity);
+                facts.insert(OwnerGeneration { identity, epoch: next });
+            }
+        };
+        if preserve_extent_authentication {
+            for facts in self.state.bound_generations.values_mut() {
+                rebase(facts);
+            }
+            for facts in self.state.fresh_header_lengths.values_mut() {
+                rebase(facts);
+            }
+            for facts in self.state.guard_generations.values_mut() {
+                rebase(facts);
+            }
+        } else {
+            self.state.bound_generations.retain(|_, facts| {
+                facts.retain(|fact| fact.identity != identity);
+                !facts.is_empty()
+            });
+            self.state.fresh_header_lengths.retain(|_, facts| {
+                facts.retain(|fact| fact.identity != identity);
+                !facts.is_empty()
+            });
+        }
+        let aliases = self.state.objects.iter().filter_map(|(value, state)| {
+            (state.identity == identity && state.ownership != Ownership::Consumed).then_some(*value)
+        }).collect::<Vec<_>>();
+        for alias in aliases {
+            self.bind_extent_generation(alias)?;
         }
         Ok(())
     }
@@ -971,13 +1428,38 @@ impl<'a> MemoryChecker<'a> {
 
     pub(super) fn check_call(
         &mut self,
+        callee_signature: &FunctionSignature,
         arguments: &[CallArgument],
         parameters: &[ParameterContract],
         destinations: &[ValueId],
         results: &[ResultContract],
     ) -> Result<(), InitialCheckError> {
+        if callee_signature.contract.parameters.as_slice() != parameters
+            || callee_signature.contract.results.as_slice() != results
+        {
+            return Err(InitialCheckError::CallableContractMismatch {
+                signature: callee_signature.id,
+            });
+        }
         let mut argument_states = Vec::with_capacity(arguments.len());
-        for (argument, parameter) in arguments.iter().zip(parameters) {
+        // `check::exact_moved_value_alias_parameter_transport` proves the
+        // whole one-in/one-out alias ABI. Keep this separate from ordinary
+        // `Value` calls: only that contract can consume a sole managed token
+        // and rebind it through its matching alias result below.
+        let exact_moved_value_alias = arguments.len() == 1
+            && arguments.first().is_some_and(|argument| {
+                super::exact_moved_value_alias_parameter_transport(argument, callee_signature)
+            });
+        let exact_indirect_moved_value_alias = arguments.iter().enumerate().any(|(index, argument)| {
+            super::exact_indirect_moved_value_alias_parameter_transport(index, argument, callee_signature)
+        });
+        // A fixed-field returned exclusive handle may carry a Bump-allocated
+        // aggregate root across exactly one authenticated write-back call.
+        // The ordinary result and hidden root lane establish that this is a
+        // relay, not a general Bump-memory ABI boundary.
+        let projected_bump_write_back =
+            authenticated_projected_bump_write_back_parameter(results, parameters);
+        for (parameter_index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
             let value = match argument {
                 CallArgument::Value(value) | CallArgument::Move(value) => *value,
             };
@@ -998,16 +1480,47 @@ impl<'a> MemoryChecker<'a> {
                 }
                 continue;
             }
+            if matches!(argument, CallArgument::Move(_)) {
+                // A call boundary is opaque to a future range pass unless it
+                // establishes a new checked result carrier.  Advance before
+                // consumption so any alias result receives the new generation
+                // while every pre-call guard remains stale.
+                self.invalidate_owner_generation(value)?;
+            }
             argument_states.push(Some(self.live_object(value)?.clone()));
             match argument {
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
                     self.require_complete_value_initialized(*value, "Call(uninitialized owned slot)")?;
-                    self.consume_call_move(*value, parameter.ownership)?;
+                    // A complete scalar aggregate can be proven from its
+                    // individual stored-slot facts.  A write-back call's
+                    // hidden replacement carrier intentionally drops the
+                    // old extent lanes, so retain this checked completeness
+                    // summary on its pre-consumption snapshot.  This grants
+                    // initialization only for a subsequently authenticated
+                    // current prefix; it does not retain a stale bound.
+                    if let Some(state) = argument_states
+                        .get_mut(parameter_index)
+                        .and_then(Option::as_mut)
+                    {
+                        state.initialized_owned_slots = true;
+                    }
+                    let authenticated_bump_relay = projected_bump_write_back == Some(parameter_index)
+                        && self.live_object(*value)?.allocation_class == Some(AllocationClass::Bump);
+                    if authenticated_bump_relay {
+                        self.consume_authenticated_projected_bump_write_back(*value)?;
+                    } else if (exact_moved_value_alias && parameter_index == 0
+                        || exact_indirect_moved_value_alias && parameter_index == 1)
+                        && parameter.ownership == ParameterOwnership::Value
+                    {
+                        self.consume_exact_moved_value_alias(*value)?;
+                    } else {
+                        self.consume_call_move(*value, parameter.ownership)?;
+                    }
                 }
             }
         }
-        for (destination, result) in destinations.iter().zip(results) {
+        for (result_index, (destination, result)) in destinations.iter().zip(results).enumerate() {
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
                 ResultContract::CheckedValue { layout } => {
@@ -1017,6 +1530,7 @@ impl<'a> MemoryChecker<'a> {
                         *destination,
                         ObjectState {
                             identity: *destination,
+                            owner_generation: 0,
                             layout: *layout,
                             extent,
                             ownership: Ownership::Shared,
@@ -1033,6 +1547,7 @@ impl<'a> MemoryChecker<'a> {
                         *destination,
                         ObjectState {
                             identity: *destination,
+                            owner_generation: 0,
                             layout: *layout,
                             extent,
                             ownership: Ownership::Unique,
@@ -1046,19 +1561,112 @@ impl<'a> MemoryChecker<'a> {
                     self.require_ref_type(*destination, *layout)?;
                     let extent = self.parameter_extent(*layout)?;
                     self.state.objects.insert(*destination, ObjectState {
-                        identity: *destination, layout: *layout, extent,
+                        identity: *destination, owner_generation: 0, layout: *layout, extent,
                         ownership: Ownership::Unique,
                         allocation_class: Some(AllocationClass::ReferenceCounted),
                         shared_immutable: false, initialized_owned_slots: true,
                     });
                 }
+                ResultContract::ReallocatesParameter { parameter, layout } => {
+                    let index = usize::try_from(*parameter).map_err(|_| {
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                    })?;
+                    if !matches!(parameters.get(index), Some(ParameterContract {
+                        value_type: ValueType::Ref(parameter_layout),
+                        ownership: ParameterOwnership::WriteBack,
+                    }) if *parameter_layout == *layout)
+                        || write_back_hidden_lane(results, *parameter, parameters) != Some(result_index)
+                    {
+                        return self.unsupported("Call(reallocated write-back contract)");
+                    }
+                    self.require_ref_type(*destination, *layout)?;
+                    let extent = self.parameter_extent(*layout)?;
+                    self.state.objects.insert(*destination, ObjectState {
+                        identity: *destination,
+                        owner_generation: 0,
+                        layout: *layout,
+                        extent,
+                        ownership: Ownership::Unique,
+                        allocation_class: Some(AllocationClass::ReferenceCounted),
+                        shared_immutable: false,
+                        initialized_owned_slots: true,
+                    });
+                }
                 ResultContract::Shared { layout } => {
+                    if let Some((parameter, alias_layout)) =
+                        write_back_alias_parameter_for_hidden_lane(results, result_index, parameters)
+                    {
+                        if *layout != alias_layout {
+                            return self.unsupported("Call(exclusive alias/write-back hidden layout)");
+                        }
+                        let index = usize::try_from(parameter).map_err(|_| {
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                        })?;
+                        let contract = parameters.get(index).ok_or(
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                        )?;
+                        if contract.ownership != ParameterOwnership::WriteBack
+                            || contract.value_type != ValueType::Ref(*layout)
+                        {
+                            return self.unsupported("Call(exclusive alias/write-back hidden contract)");
+                        }
+                        let mut state = argument_states.get(index).and_then(Option::as_ref).cloned()
+                            .ok_or(InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id })?;
+                        if state.layout != *layout {
+                            return self.unsupported("Call(exclusive alias/write-back hidden identity)");
+                        }
+                        self.require_ref_type(*destination, *layout)?;
+                        // A `var` call may replace its argument rather than
+                        // mutate its old allocation. Its hidden replacement
+                        // lane may therefore not retain the input's counted
+                        // lanes: they name a pre-call owner generation and
+                        // could otherwise authorize a later element access.
+                        // Keep the carrier identity, but require a fresh
+                        // guarded header observation for its extent.
+                        state.extent = self.parameter_extent(*layout)?;
+                        state.ownership = Ownership::Shared;
+                        // The callee may mutate or replace any part of the
+                        // write-back value.  The checked call admission above
+                        // establishes that the returned logical value is
+                        // complete, but predecessor-local slot and range
+                        // records describe the pre-call representation and
+                        // must not survive.  Keep only the authenticated
+                        // completeness summary and require fresh header lanes
+                        // before indexing the returned carrier.
+                        let identity = state.identity;
+                        let aliases = self
+                            .state
+                            .objects
+                            .iter()
+                            .filter_map(|(value, candidate)| {
+                                (candidate.identity == identity).then_some(*value)
+                            })
+                            .collect::<BTreeSet<_>>();
+                        self.state
+                            .initialized_scalar_slots
+                            .retain(|(container, _)| !aliases.contains(container));
+                        self.state
+                            .stored_objects
+                            .retain(|(container, _), _| !aliases.contains(container));
+                        self.state
+                            .nullable_absent_slots
+                            .retain(|(container, _)| !aliases.contains(container));
+                        self.state
+                            .range_states
+                            .retain(|range, _| !aliases.contains(&range.object));
+                        self.state
+                            .full_current_prefixes
+                            .retain(|range| !aliases.contains(&range.object));
+                        self.state.objects.insert(*destination, state);
+                        continue;
+                    }
                     self.require_ref_type(*destination, *layout)?;
                     let extent = self.parameter_extent(*layout)?;
                     self.state.objects.insert(
                         *destination,
                         ObjectState {
                             identity: *destination,
+                            owner_generation: 0,
                             layout: *layout,
                             extent,
                             ownership: Ownership::Shared,
@@ -1101,6 +1709,140 @@ impl<'a> MemoryChecker<'a> {
                         self.state.static_data_objects.insert(*destination);
                     }
                 }
+                ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+                    let index = usize::try_from(*parameter).map_err(|_| {
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                    })?;
+                    let contract = parameters.get(index).ok_or(
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                    )?;
+                    let claimed_projected = projection.is_some();
+                    let projected = authenticated_projected_bump_write_back_parameter(results, parameters)
+                        == Some(index);
+                    if claimed_projected && !projected {
+                        return self.unsupported("Call(projected exclusive alias/write-back contract)");
+                    }
+                    if contract.ownership != ParameterOwnership::WriteBack
+                        || (!projected && contract.value_type != ValueType::Ref(*layout))
+                        || (projected && !matches!(contract.value_type, ValueType::Ref(_)))
+                        || !has_distinct_write_back_lane(results, result_index, *parameter, *layout, parameters)
+                    {
+                        return self.unsupported("Call(exclusive alias/write-back contract)");
+                    }
+                    let mut state = argument_states.get(index).and_then(Option::as_ref).cloned()
+                        .ok_or(InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id })?;
+                    if !projected && state.layout != *layout {
+                        return self.unsupported("Call(exclusive alias/write-back layout)");
+                    }
+                    self.require_ref_type(*destination, *layout)?;
+                    if projected {
+                        state = ObjectState {
+                            identity: *destination,
+                            owner_generation: 0,
+                            layout: *layout,
+                            extent: self.parameter_extent(*layout)?,
+                            ownership: Ownership::Shared,
+                            // This class is authenticated by the callee's
+                            // derived `CloneShared(field) -> CloneRef`
+                            // projected carrier history. It is never taken
+                            // from the Bump owner or inferred from a bare
+                            // result contract.
+                            allocation_class: Some(AllocationClass::ReferenceCounted),
+                            shared_immutable: false,
+                            initialized_owned_slots: true,
+                        };
+                        // This is a capability marker, not initialization
+                        // inferred from layout: only the checked projected
+                        // result contract installs its exact fixed Int field
+                        // on the freshly named result token.  `store` below
+                        // consumes it only alongside this synthetic result
+                        // state, so an ordinary shared object cannot borrow
+                        // write authority from a scalar-slot fact.
+                        let Some(field) = projection else {
+                            return self.unsupported("Call(projected exclusive alias without field)");
+                        };
+                        self.state.initialized_scalar_slots.insert(
+                            (*destination, SlotIdentity::Constant(u64::from(*field))),
+                        );
+                    } else {
+                        // The ordinary alias is paired with the hidden
+                        // replacement lane above. A write-back call is an
+                        // extent boundary even when it preserves the source
+                        // storage identity, so stale input count/capacity
+                        // facts cannot cross it.
+                        state.extent = self.parameter_extent(*layout)?;
+                        state.ownership = Ownership::Shared;
+                    }
+                    self.state.objects.insert(*destination, state);
+                }
+                ResultContract::AliasesOneOfWriteBackParameters { parameters: candidates, layout } => {
+                    if candidates.len() < 2
+                        || !candidates.windows(2).all(|pair| pair[0] < pair[1])
+                    {
+                        return self.unsupported("Call(disjunctive exclusive alias candidate set)");
+                    }
+                    let mut states = candidates.iter().map(|parameter| {
+                        let index = usize::try_from(*parameter).map_err(|_| {
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                        })?;
+                        let contract = parameters.get(index).ok_or(
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                        )?;
+                        if contract.ownership != ParameterOwnership::WriteBack
+                            || contract.value_type != ValueType::Ref(*layout)
+                            || !has_distinct_write_back_lane(results, result_index, *parameter, *layout, parameters)
+                        {
+                            return self.unsupported("Call(disjunctive exclusive alias contract)");
+                        }
+                        argument_states.get(index).and_then(Option::as_ref).cloned().ok_or(
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                        )
+                    });
+                    let Some(mut state) = states.next().transpose()? else {
+                        return self.unsupported("Call(disjunctive exclusive alias empty candidate set)");
+                    };
+                    for candidate in states {
+                        let candidate = candidate?;
+                        if candidate.layout != state.layout {
+                            return self.unsupported("Call(disjunctive exclusive alias layout)");
+                        }
+                    }
+                    self.require_ref_type(*destination, *layout)?;
+                    // This SSA value is a checked one-of carrier, not a claim
+                    // that either particular argument was chosen statically.
+                    // The candidate set was authenticated above from the
+                    // exact call contract and all of its hidden lanes.
+                    state.identity = *destination;
+                    // The candidates can have different dynamic extents.  A
+                    // chosen carrier therefore cannot inherit candidate zero's
+                    // counted header fact: subsequent use must load and guard
+                    // the current selected root's extent before a slice read.
+                    state.extent = self.parameter_extent(*layout)?;
+                    state.ownership = Ownership::Shared;
+                    self.state.objects.insert(*destination, state);
+                }
+                ResultContract::DisjunctiveWriteBackSelector {
+                    carrier_result,
+                    parameters: candidates,
+                    selector_parameter,
+                } => {
+                    let Ok(carrier) = usize::try_from(*carrier_result) else {
+                        return self.unsupported("Call(disjunctive selector result index)");
+                    };
+                    if self.function.value_types.get(destination) != Some(&ValueType::Bool)
+                        || candidates.len() != 2
+                        || !candidates.windows(2).all(|pair| pair[0] < pair[1])
+                        || !matches!(parameters.get(*selector_parameter as usize), Some(ParameterContract {
+                            value_type: ValueType::Bool,
+                            ownership: ParameterOwnership::Value,
+                        }))
+                        || !matches!(results.get(carrier), Some(ResultContract::AliasesOneOfWriteBackParameters {
+                            parameters: carrier_candidates, ..
+                        }) if carrier_candidates == candidates)
+                    {
+                        return self.unsupported("Call(disjunctive selector contract)");
+                    }
+                }
                 ResultContract::StaticData { layout } => {
                     self.require_ref_type(*destination, *layout)?;
                     let extent = self.parameter_extent(*layout)?;
@@ -1108,6 +1850,7 @@ impl<'a> MemoryChecker<'a> {
                         *destination,
                         ObjectState {
                             identity: *destination,
+                            owner_generation: 0,
                             layout: *layout,
                             extent,
                             ownership: Ownership::Shared,
@@ -1122,6 +1865,21 @@ impl<'a> MemoryChecker<'a> {
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn check_current_signature_call(
+        &mut self,
+        arguments: &[CallArgument],
+        parameters: &[ParameterContract],
+        destinations: &[ValueId],
+        results: &[ResultContract],
+    ) -> Result<(), InitialCheckError> {
+        let signature = self.signature.clone();
+        let mut signature = signature;
+        signature.contract.parameters = parameters.to_vec();
+        signature.contract.results = results.to_vec();
+        self.check_call(&signature, arguments, parameters, destinations, results)
     }
 
     pub(super) fn check_exit(&self, returned: &[ValueId]) -> Result<(), InitialCheckError> {
@@ -1146,7 +1904,7 @@ impl<'a> MemoryChecker<'a> {
         results: &[ResultContract],
     ) -> Result<(), InitialCheckError> {
         let mut transferred = BTreeSet::new();
-        for (value, result) in values.iter().zip(results) {
+        for (result_index, (value, result)) in values.iter().zip(results).enumerate() {
             // Each result lane transfers one token. Repeating an SSA reference
             // does not execute CloneRef, even when both lanes claim Shared.
             if matches!(value_type(self.function, *value)?, ValueType::Ref(_))
@@ -1160,6 +1918,39 @@ impl<'a> MemoryChecker<'a> {
             }
             match result {
                 ResultContract::Value(value_type) if !value_type.is_linear_memory_ref() => {}
+                ResultContract::DisjunctiveWriteBackSelector {
+                    carrier_result,
+                    parameters: candidates,
+                    selector_parameter,
+                } => {
+                    let selector = usize::try_from(*selector_parameter).ok();
+                    let carrier = usize::try_from(*carrier_result).ok();
+                    let entry = self.function.blocks.iter().find(|block| block.id == self.function.entry)
+                        .ok_or(InitialCheckError::MissingBlock {
+                            function: self.function.id,
+                            block: self.function.entry,
+                        })?;
+                    let selector_value = selector
+                        .and_then(|index| entry.parameters.get(index))
+                        .map(|parameter| parameter.value);
+                    if self.function.value_types.get(value) != Some(&ValueType::Bool)
+                        || selector_value != Some(*value)
+                        || candidates.len() != 2
+                        || !candidates.windows(2).all(|pair| pair[0] < pair[1])
+                        || !matches!(self.signature.contract.parameters.get(*selector_parameter as usize), Some(ParameterContract {
+                            value_type: ValueType::Bool,
+                            ownership: ParameterOwnership::Value,
+                        }))
+                        || !matches!(carrier.and_then(|index| results.get(index)), Some(ResultContract::AliasesOneOfWriteBackParameters {
+                            parameters: carrier_candidates, ..
+                        }) if carrier_candidates == candidates)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                }
                 ResultContract::CheckedValue { layout } => {
                     let state = self.live_object(*value)?;
                     if state.layout != *layout
@@ -1209,8 +2000,98 @@ impl<'a> MemoryChecker<'a> {
                     }
                     self.require_complete_value_initialized(*value, "Return(uninitialized unique write-back)")?;
                 }
+                ResultContract::ReallocatesParameter { parameter, layout } => {
+                    let index = usize::try_from(*parameter).map_err(|_| {
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                    })?;
+                    let Some(ParameterContract {
+                        value_type: ValueType::Ref(parameter_layout),
+                        ownership: ParameterOwnership::WriteBack,
+                    }) = self.signature.contract.parameters.get(index) else {
+                        return Err(InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id });
+                    };
+                    let state = self.live_object(*value)?;
+                    if *parameter_layout != *layout
+                        || write_back_hidden_lane(results, *parameter, &self.signature.contract.parameters)
+                            != Some(result_index)
+                        || state.layout != *layout
+                        || state.ownership != Ownership::Unique
+                        || state.allocation_class != Some(AllocationClass::ReferenceCounted)
+                        || !self.is_sole_live_token(*value, state.identity)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                    self.require_complete_value_initialized(*value, "Return(uninitialized reallocated write-back)")?;
+                }
                 ResultContract::Shared { layout } => {
                     let state = self.live_object(*value)?;
+                    // A procedure with no source reference result returns its
+                    // write-back replacement in the terminal ABI lane.  That
+                    // lane has an exact parameter ordinal and root layout,
+                    // but (unlike an alias carrier) is allowed to replace the
+                    // parameter's allocation identity.
+                    let terminal_write_back = terminal_write_back_parameter_for_hidden_lane(
+                        results,
+                        result_index,
+                        &self.signature.contract.parameters,
+                    );
+                    if let Some((parameter, alias_layout)) = write_back_alias_parameter_for_hidden_lane(
+                        results,
+                        result_index,
+                        &self.signature.contract.parameters,
+                    ) {
+                        let index = usize::try_from(parameter).map_err(|_| {
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                        })?;
+                        let contract = self.signature.contract.parameters.get(index).ok_or(
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                        )?;
+                        let entry = self.function.blocks.iter().find(|block| block.id == self.function.entry)
+                            .ok_or(InitialCheckError::MissingBlock {
+                                function: self.function.id,
+                                block: self.function.entry,
+                            })?;
+                        let parameter_value = entry.parameters.get(index).ok_or(
+                            InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                        )?.value;
+                        let direct_identity = self.state.objects.get(&parameter_value)
+                            .is_some_and(|parameter_state| state.identity == parameter_state.identity);
+                        // The two-root carrier retains a separate hidden
+                        // write-back lane for every candidate. A CFG join may
+                        // rename that lane, but only the exact singleton
+                        // origin of its declared input is accepted; a union,
+                        // unknown origin, or unrelated Shared result remains
+                        // invalid.
+                        let disjunctive_hidden_lane = results.iter().enumerate().any(|(carrier_index, result)| {
+                            let ResultContract::AliasesOneOfWriteBackParameters {
+                                parameters: candidates,
+                                ..
+                            } = result else { return false };
+                            candidates.binary_search(&parameter).is_ok()
+                                && matches!(results.get(carrier_index + 1), Some(ResultContract::DisjunctiveWriteBackSelector {
+                                    carrier_result,
+                                    parameters: selector_candidates,
+                                    ..
+                                }) if *carrier_result as usize == carrier_index
+                                    && selector_candidates == candidates)
+                        });
+                        let rebound_exact_identity = disjunctive_hidden_lane
+                            && self.state.shared_phi_origins.get(value)
+                                == Some(&BTreeSet::from([parameter_value]));
+                        if *layout != alias_layout
+                            || contract.ownership != ParameterOwnership::WriteBack
+                            || contract.value_type != ValueType::Ref(*layout)
+                            || !(direct_identity || rebound_exact_identity || terminal_write_back.is_some())
+                        {
+                            return Err(InitialCheckError::InvalidOwnership {
+                                function: self.function.id,
+                                object: *value,
+                            });
+                        }
+                    }
                     // Shared owns either an RC token or immutable static data.
                     // The union never grants mutation or reclamation authority.
                     if state.layout != *layout
@@ -1260,6 +2141,105 @@ impl<'a> MemoryChecker<'a> {
                         });
                     }
                     self.require_complete_value_initialized(*value, "Return(borrowed alias)")?;
+                }
+                ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+                    let index = usize::try_from(*parameter).map_err(|_| {
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id }
+                    })?;
+                    let contract = self.signature.contract.parameters.get(index).ok_or(
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                    )?;
+                    let entry = self.function.blocks.iter().find(|block| block.id == self.function.entry)
+                        .ok_or(InitialCheckError::MissingBlock {
+                            function: self.function.id,
+                            block: self.function.entry,
+                        })?;
+                    let parameter_value = entry.parameters.get(index).ok_or(
+                        InitialCheckError::UnsupportedMemorySignature { signature: self.signature.id },
+                    )?.value;
+                    let state = self.live_object(*value)?;
+                    let parameter_state = self.state.objects.get(&parameter_value).ok_or(
+                        InitialCheckError::InvalidOwnership { function: self.function.id, object: *value },
+                    )?;
+                    let projected = projection.is_some();
+                    if contract.ownership != ParameterOwnership::WriteBack
+                        || (!projected && contract.value_type != ValueType::Ref(*layout))
+                        || (projected && !matches!(contract.value_type, ValueType::Ref(_)))
+                        || !has_distinct_write_back_lane(results, result_index, *parameter, *layout, &self.signature.contract.parameters)
+                        || state.layout != *layout
+                        || (!projected && state.identity != parameter_state.identity)
+                        || !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                    self.require_complete_value_initialized(*value, "Return(exclusive alias)")?;
+                }
+                ResultContract::AliasesOneOfWriteBackParameters { parameters: candidates, layout } => {
+                    if candidates.len() < 2
+                        || !candidates.windows(2).all(|pair| pair[0] < pair[1])
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                    let entry = self.function.blocks.iter().find(|block| block.id == self.function.entry)
+                        .ok_or(InitialCheckError::MissingBlock {
+                            function: self.function.id,
+                            block: self.function.entry,
+                    })?;
+                    let state = self.live_object(*value)?;
+                    // A disjunctive carrier is a CFG phi, so its current SSA
+                    // identity is deliberately the phi definition rather than
+                    // either physical root.  The checker-owned origin set is
+                    // the only authority that can recover those roots: it
+                    // must be exactly the declaration's authenticated
+                    // candidate set, never merely overlap it.
+                    let mut candidate_identities = BTreeSet::new();
+                    let candidates_match = candidates.iter().all(|parameter| {
+                        let Ok(index) = usize::try_from(*parameter) else { return false };
+                        let Some(ParameterContract {
+                            value_type: ValueType::Ref(parameter_layout),
+                            ownership: ParameterOwnership::WriteBack,
+                        }) = self.signature.contract.parameters.get(index) else { return false };
+                        let Some(parameter_value) = entry.parameters.get(index) else {
+                            return false;
+                        };
+                        if *parameter_layout != *layout
+                            || parameter_value.value_type != ValueType::Ref(*layout)
+                            || !has_distinct_write_back_lane(
+                                results,
+                                result_index,
+                                *parameter,
+                                *layout,
+                                &self.signature.contract.parameters,
+                            )
+                        {
+                            return false;
+                        }
+                        // CFG rebinding can rename the live write-back
+                        // values, but a phi origin is always the immutable
+                        // entry definition.  Compare the contract's roots at
+                        // that same stable identity rather than treating a
+                        // later token name as a third candidate.
+                        candidate_identities.insert(parameter_value.value)
+                    });
+                    let origins = self.state.shared_phi_origins.get(value);
+                    if !candidates_match
+                        || candidate_identities.len() != candidates.len()
+                        || origins != Some(&candidate_identities)
+                        || state.layout != *layout
+                        || state.ownership != Ownership::Shared
+                    {
+                        return Err(InitialCheckError::InvalidOwnership {
+                            function: self.function.id,
+                            object: *value,
+                        });
+                    }
+                    self.require_complete_value_initialized(*value, "Return(disjunctive exclusive alias)")?;
                 }
                 _ => return self.unsupported("Return(memory result contract)"),
             }
@@ -2424,12 +3404,24 @@ impl<'a> MemoryChecker<'a> {
                 object: place.object(),
             });
         }
-        let bound = if required_access == AccessMode::Write { capacity } else { logical_count };
-        if !self.range_within(*start, *length, bound) {
+        let bound = if required_access == AccessMode::Write {
+            self.state
+                .header_values
+                .get(&(place.object(), HeaderField::Capacity))
+                .copied()
+                .unwrap_or(capacity)
+        } else {
+            self.state
+                .header_values
+                .get(&(place.object(), HeaderField::Length))
+                .copied()
+                .unwrap_or(logical_count)
+        };
+        if !self.range_within_for_owner(place.object(), *start, *length, bound) {
             return Err(InitialCheckError::MissingBoundsGuard {
                 function: self.function.id,
                 index: *start,
-                count: logical_count,
+                count: bound,
             });
         }
         let _ = operation;
@@ -2525,6 +3517,39 @@ impl<'a> MemoryChecker<'a> {
         empty_at_or_before_end || from_body_start || guarded_exact_end || constant_range
     }
 
+    /// Scalar guards are only usable for the owner generation from which
+    /// their dynamic bound was observed.  This keeps the current checker
+    /// facts available for a later optimization without granting one today.
+    fn range_within_for_owner(
+        &self,
+        object: ValueId,
+        start: ValueId,
+        length: ValueId,
+        count: ValueId,
+    ) -> bool {
+        if !self.bound_is_current(object, count) {
+            return false;
+        }
+        let empty_at_or_before_end = self.is_zero(length)
+            && self.less_equal_for_owner(object, start, count);
+        let from_body_start = self.state.constants.get(&start) == Some(&0)
+            && self.less_equal_for_owner(object, length, count);
+        let guarded_exact_end = self.state.exact_additions.iter().any(|(end, (left, right))| {
+            ((*left == start && *right == length) || (*left == length && *right == start))
+                && self.less_equal_for_owner(object, *end, count)
+        });
+        let constant_range = self
+            .state
+            .constants
+            .get(&start)
+            .zip(self.state.constants.get(&length))
+            .zip(self.state.constants.get(&count))
+            .is_some_and(|((start, length), count)| {
+                start.checked_add(*length).is_some_and(|end| end <= *count)
+            });
+        empty_at_or_before_end || from_body_start || guarded_exact_end || constant_range
+    }
+
     fn check_byte_slice(
         &mut self,
         place: &Place,
@@ -2568,7 +3593,7 @@ impl<'a> MemoryChecker<'a> {
             self.state.header_values.get(&(place.object(), HeaderField::Length))
                 .copied().unwrap_or(count)
         };
-        if !self.range_within(*start, *length, bound) {
+        if !self.range_within_for_owner(place.object(), *start, *length, bound) {
             return Err(InitialCheckError::MissingBoundsGuard {
                 function: self.function.id,
                 index: *start,
@@ -2646,6 +3671,52 @@ impl<'a> MemoryChecker<'a> {
         Ok(())
     }
 
+    /// The exact one-parameter `Value` alias contract may carry a sole managed
+    /// token. Its caller-side move is token-conserving because the only result
+    /// is re-established from the pre-consumption state as the matching
+    /// `AliasesParameter` lane in `check_call`; this grants no write authority.
+    fn consume_exact_moved_value_alias(&mut self, source: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(source)?;
+        if matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+            && self.is_shared_immutable_storage(source, state)
+            && self.is_sole_live_token(source, state.identity)
+        {
+            self.invalidate_full_current_prefixes(source);
+            self.state
+                .objects
+                .get_mut(&source)
+                .expect("live object exists")
+                .ownership = Ownership::Consumed;
+            return Ok(());
+        }
+        self.consume_call_move(source, ParameterOwnership::Value)
+    }
+
+    /// The sole non-RC call transfer: `check_call` invokes this only after
+    /// proving the exact projected exclusive carrier and its hidden root lane
+    /// for the same WriteBack parameter.  It moves the existing Bump token;
+    /// it does not manufacture allocation or storage provenance.
+    fn consume_authenticated_projected_bump_write_back(
+        &mut self,
+        source: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        let state = self.live_object(source)?;
+        if !matches!(state.ownership, Ownership::Unique | Ownership::Shared)
+            || state.allocation_class != Some(AllocationClass::Bump)
+        {
+            return Err(InitialCheckError::InvalidAllocationClass {
+                function: self.function.id,
+                object: source,
+            });
+        }
+        self.invalidate_full_current_prefixes(source);
+        self.state.objects
+            .get_mut(&source)
+            .expect("live object exists")
+            .ownership = Ownership::Consumed;
+        Ok(())
+    }
+
     /// Returns true when this operation belongs to the memory judgment.
     pub(super) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
         match operation {
@@ -2669,7 +3740,7 @@ impl<'a> MemoryChecker<'a> {
                         // environment layout before this memory judgment.
                         let extent = self.parameter_extent(layout)?;
                         self.state.objects.insert(*destination, ObjectState {
-                            identity: *destination, layout, extent, ownership: Ownership::Shared,
+                            identity: *destination, owner_generation: 0, layout, extent, ownership: Ownership::Shared,
                             allocation_class: Some(AllocationClass::ReferenceCounted),
                             shared_immutable: true, initialized_owned_slots: true,
                         });
@@ -2677,6 +3748,7 @@ impl<'a> MemoryChecker<'a> {
                     OwnerOperation::ReadCapability { .. }
                     | OwnerOperation::ReadOwner { .. }
                     | OwnerOperation::ReadSharedPlace { .. }
+                    | OwnerOperation::ReadSharedSliceLength { .. }
                     | OwnerOperation::ReadTag { .. }
                     | OwnerOperation::ReadCallable { .. }
                     | OwnerOperation::Clone { .. }
@@ -2780,7 +3852,23 @@ impl<'a> MemoryChecker<'a> {
                     }
                     self.state.guards
                         .insert((comparison.operator, comparison.left, comparison.right));
+                    let generations = self.state.bound_generations
+                        .get(&comparison.left)
+                        .into_iter()
+                        .chain(self.state.bound_generations.get(&comparison.right))
+                        .flat_map(|facts| facts.iter().copied())
+                        .chain(self.fresh_header_generations(comparison.right))
+                        .collect::<BTreeSet<_>>();
+                    self.state.guard_generations.insert(
+                        (comparison.operator, comparison.left, comparison.right),
+                        generations,
+                    );
+                    self.authenticate_fresh_counted_header_guard(comparison)?;
                 }
+                Ok(false)
+            }
+            Operation::ReauthenticateRawHeaderExtent { object, header } => {
+                self.reauthenticate_raw_header_extent(*object, *header)?;
                 Ok(false)
             }
             Operation::Alloc { destination, layout, extent, class } => {
@@ -2793,8 +3881,27 @@ impl<'a> MemoryChecker<'a> {
             }
             Operation::Load { destination, place, transfer } => {
                 self.load(*destination, place, *transfer)?;
+                if matches!(
+                    (place.projection(), transfer),
+                    (Projection::Header(HeaderField::Length), LoadTransfer::CopyScalar)
+                ) {
+                    // Ordinary header loads can appear while an unrelated
+                    // release has retired the token.  They do not become a
+                    // fresh extent observation; the later slice check still
+                    // rejects that dead object through `live_object`.
+                    if let Ok(generation) = self.current_generation(place.object()) {
+                        self.state
+                            .fresh_header_lengths
+                            .entry(*destination)
+                            .or_default()
+                            .insert(generation);
+                    }
+                }
                 if matches!(transfer, LoadTransfer::MoveUnique | LoadTransfer::TakeLast) {
                     self.invalidate_full_current_prefixes(place.object());
+                }
+                if matches!(transfer, LoadTransfer::TakeLast) {
+                    self.invalidate_owner_generation(place.object())?;
                 }
                 Ok(true)
             }
@@ -2806,6 +3913,7 @@ impl<'a> MemoryChecker<'a> {
             Operation::Store { place, value, transfer } => {
                 self.store(place, *value, *transfer)?;
                 self.invalidate_full_current_prefixes(place.object());
+                self.rebase_extent_generation(place.object())?;
                 if *transfer == StoreTransfer::MoveUnique {
                     self.invalidate_full_current_prefixes(*value);
                 }
@@ -2814,12 +3922,14 @@ impl<'a> MemoryChecker<'a> {
             Operation::UpdateCount { object, count } => {
                 self.update_count(*object, *count)?;
                 self.invalidate_full_current_prefixes(*object);
+                self.invalidate_owner_generation(*object)?;
                 Ok(true)
             }
             Operation::MoveValue { destination, source }
                 if value_type(self.function, *source)?.is_memory_bearing() =>
             {
                 self.move_value(*destination, *source)?;
+                self.rebase_extent_generation(*destination)?;
                 Ok(true)
             }
             Operation::CloneRef { destination, source } => {
@@ -2835,6 +3945,9 @@ impl<'a> MemoryChecker<'a> {
                 Ok(true)
             }
             Operation::Reclaim { object } => {
+                // Reclaim consumes the token; invalidate its facts before
+                // that transition so no later malformed alias can reuse them.
+                self.invalidate_owner_generation(*object)?;
                 self.reclaim(*object)?;
                 self.invalidate_full_current_prefixes(*object);
                 Ok(true)
@@ -2842,17 +3955,21 @@ impl<'a> MemoryChecker<'a> {
             Operation::CopyBytes { destination, source, length } => {
                 self.copy_bytes(destination, source, *length)?;
                 self.invalidate_full_current_prefixes(destination.object());
+                self.rebase_extent_generation(destination.object())?;
                 Ok(true)
             }
             Operation::MoveRange { destination, source, count } => {
                 self.move_range(destination, source, *count)?;
                 self.invalidate_full_current_prefixes(source.object());
                 self.invalidate_full_current_prefixes(destination.object());
+                self.rebase_extent_generation(source.object())?;
+                self.rebase_extent_generation(destination.object())?;
                 Ok(true)
             }
             Operation::CloneRange { destination, source, count } => {
                 self.clone_range(destination, source, *count)?;
                 self.invalidate_full_current_prefixes(destination.object());
+                self.rebase_extent_generation(destination.object())?;
                 Ok(true)
             }
             Operation::Retain { .. } => Err(InitialCheckError::UnsupportedMemoryOperation {
@@ -2903,6 +4020,7 @@ impl<'a> MemoryChecker<'a> {
             destination,
             ObjectState {
                 identity: destination,
+                owner_generation: 0,
                 layout,
                 extent: extent.clone(),
                 ownership: Ownership::Unique,
@@ -2911,6 +4029,8 @@ impl<'a> MemoryChecker<'a> {
                 initialized_owned_slots: initialized_empty_scalar_prefix,
             },
         );
+        self.bind_extent_generation(destination)?;
+        self.bind_preallocation_extent_guards(destination)?;
         if let Some(element) = pointer_element {
             let Extent::Counted { count, .. } = extent else {
                 return self.unsupported("Alloc(pointer collection without counted extent)");
@@ -2953,6 +4073,7 @@ impl<'a> MemoryChecker<'a> {
             destination,
             ObjectState {
                 identity: destination,
+                owner_generation: 0,
                 layout,
                 extent: extent.clone(),
                 ownership: Ownership::Shared,
@@ -2962,6 +4083,8 @@ impl<'a> MemoryChecker<'a> {
             },
         );
         self.state.static_data_objects.insert(destination);
+        self.bind_extent_generation(destination)?;
+        self.bind_preallocation_extent_guards(destination)?;
         Ok(())
     }
 
@@ -3096,7 +4219,7 @@ impl<'a> MemoryChecker<'a> {
             let extent = self.parameter_extent(layout)?;
             // Transfer one owned reference, never manufacture child exclusivity.
             self.state.objects.insert(destination, ObjectState {
-                identity: destination, layout, extent, ownership: Ownership::Shared,
+                identity: destination, owner_generation: 0, layout, extent, ownership: Ownership::Shared,
                 allocation_class: None, shared_immutable: true, initialized_owned_slots: true,
             });
         }
@@ -3187,7 +4310,7 @@ impl<'a> MemoryChecker<'a> {
                     LayoutSize::Dynamic { base, .. } => Extent::HeaderPrefix { minimum_bytes: base },
                 };
                 ObjectState {
-                    identity: destination, layout, extent, ownership: Ownership::Shared,
+                    identity: destination, owner_generation: 0, layout, extent, ownership: Ownership::Shared,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     shared_immutable: false, initialized_owned_slots: true,
                 }
@@ -3250,6 +4373,7 @@ impl<'a> MemoryChecker<'a> {
                     // so its own owned slots need no per-slot facts.
                     self.state.objects.insert(destination, ObjectState {
                         identity: destination,
+                        owner_generation: 0,
                         layout: pointee,
                         extent,
                         ownership: Ownership::Shared,
@@ -3300,6 +4424,7 @@ impl<'a> MemoryChecker<'a> {
             // (`Store` requires it), so the loaded element is complete.
             let stored = ObjectState {
                 identity: destination,
+                owner_generation: 0,
                 layout,
                 extent,
                 ownership: Ownership::Shared,
@@ -3370,7 +4495,17 @@ impl<'a> MemoryChecker<'a> {
                 object: place.object(),
             });
         }
-        if self.live_object(place.object())?.ownership != Ownership::Unique {
+        let object = self.live_object(place.object())?;
+        let authenticated_projected_scalar_write = object.ownership == Ownership::Shared
+            && object.identity == place.object()
+            && object.allocation_class == Some(AllocationClass::ReferenceCounted)
+            && !object.shared_immutable
+            && matches!(place.projection(), Projection::Field { index }
+                if place.value_type() == ValueType::Int
+                    && self.state.initialized_scalar_slots.contains(&(
+                        place.object(), SlotIdentity::Constant(u64::from(*index)),
+                    )));
+        if object.ownership != Ownership::Unique && !authenticated_projected_scalar_write {
             return Err(InitialCheckError::InvalidOwnership {
                 function: self.function.id,
                 object: place.object(),
@@ -3738,7 +4873,7 @@ impl<'a> MemoryChecker<'a> {
                         .unwrap_or(count)
                 };
                 self.require_type(*index, ValueType::Size)?;
-                if !self.less_than(*index, *count) {
+                if !self.less_than_for_owner(place.object(), *index, *count) {
                     return Err(InitialCheckError::MissingBoundsGuard {
                         function: self.function.id,
                         index: *index,
@@ -3831,7 +4966,24 @@ impl<'a> MemoryChecker<'a> {
         } else {
             None
         };
+        let Extent::Counted { count, capacity, .. } = &extent else { unreachable!() };
+        let (count, capacity) = (*count, *capacity);
         self.state.objects.get_mut(&object).expect("live object exists").extent = extent;
+        // The explicit guard that follows authenticated header reads can
+        // precede this lazy promotion. It can name only these fresh lane
+        // definitions (older generations cannot name new SSA values), so bind
+        // it to this generation without reviving any stale guard.
+        self.bind_extent_generation(object)?;
+        let current = self.current_generation(object)?;
+        for (operator, left, right) in self.state.guards.clone() {
+            if self.same_scalar(right, count) || self.same_scalar(right, capacity) {
+                self.state
+                    .guard_generations
+                    .entry((operator, left, right))
+                    .or_default()
+                    .insert(current);
+            }
+        }
         if let Some(identity) = rebound
             && self.state.range_states.get(&identity).is_some_and(|range|
                 range_is_full_current_prefix(&self.state, &identity, range))
@@ -4559,6 +5711,28 @@ impl<'a> MemoryChecker<'a> {
             })
     }
 
+    fn less_than_for_owner(&self, object: ValueId, left: ValueId, right: ValueId) -> bool {
+        if !self.bound_is_current(object, right) {
+            return false;
+        }
+        // A literal index and literal extent are arithmetic facts, not an
+        // observation of mutable storage. They need no dynamic guard (and a
+        // later extent mutation cannot make a literal right-hand extent look
+        // current because `bound_is_current` still authenticates the lane).
+        if self.constant_relation(left, right, |left, right| left < right) {
+            return true;
+        }
+        let Ok(generation) = self.current_generation(object) else { return false };
+        self.state.guards.iter().any(|(operator, guarded_left, guarded_right)| {
+            *operator == ComparisonOperator::LessUnsigned
+                && self.same_scalar(left, *guarded_left)
+                && self.same_scalar(right, *guarded_right)
+                && self.state.guard_generations
+                    .get(&(*operator, *guarded_left, *guarded_right))
+                    .is_some_and(|facts| facts.contains(&generation))
+        })
+    }
+
     fn strict_less(&self, left: ValueId, right: ValueId) -> bool {
         self.constant_relation(left, right, |left, right| left < right)
             || self.less_than(left, right)
@@ -4585,6 +5759,8 @@ impl<'a> MemoryChecker<'a> {
     /// rescanning every header load per question, which made a straight-line
     /// program with many string temporaries take minutes to check.
     fn header_length_pairs(facts: &MemoryState) -> BTreeSet<(ValueId, ValueId)> {
+        #[cfg(test)]
+        HEADER_LENGTH_PAIR_SCANS.with(|scans| scans.set(scans.get() + 1));
         facts
             .header_values
             .iter()
@@ -4714,6 +5890,48 @@ impl<'a> MemoryChecker<'a> {
         Self::less_equal_in(&self.state, left, right)
     }
 
+    fn less_equal_for_owner(&self, object: ValueId, left: ValueId, right: ValueId) -> bool {
+        let Ok(generation) = self.current_generation(object) else { return false };
+        // This owner-sensitive traversal asks scalar equivalence for every
+        // visited value, guard, and exact addition. Header lengths are fixed
+        // for the state, so collecting them per equivalence query is only
+        // repeated work; the cached set preserves the same fail-closed facts.
+        let header_lengths = Self::header_length_pairs(&self.state);
+        let mut pending = vec![left];
+        let mut visited = BTreeSet::new();
+        while let Some(value) = pending.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            if Self::same_scalar_with(&self.state, &header_lengths, value, right)
+                || self.constant_relation(value, right, |left, right| left <= right)
+                || self.state.constants.get(&value) == Some(&0)
+            {
+                return true;
+            }
+            for (operator, guarded_left, guarded_right) in &self.state.guards {
+                let guard = (*operator, *guarded_left, *guarded_right);
+                let generation_matches = self.state.guard_generations.get(&guard)
+                    .is_some_and(|facts| facts.contains(&generation));
+                if matches!(operator,
+                    ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
+                    && generation_matches
+                    && Self::same_scalar_with(&self.state, &header_lengths, value, *guarded_left)
+                {
+                    pending.push(*guarded_right);
+                }
+            }
+            for (sum, (addend_left, addend_right)) in &self.state.exact_additions {
+                if Self::same_scalar_with(&self.state, &header_lengths, value, *addend_left)
+                    || Self::same_scalar_with(&self.state, &header_lengths, value, *addend_right)
+                {
+                    pending.push(*sum);
+                }
+            }
+        }
+        false
+    }
+
     fn less_equal_in(facts: &MemoryState, left: ValueId, right: ValueId) -> bool {
         // One header scan per query, not one per (visited value x guard x
         // exact addition): the worklist below asks `same_scalar` for every
@@ -4795,6 +6013,80 @@ impl<'a> MemoryChecker<'a> {
 
     fn allocation_fits(&self, capacity: ValueId, base: u32, stride: u32) -> bool {
         Self::allocation_fits_in(&self.state, capacity, base, stride)
+    }
+
+    /// A shared counted phi can lose the predecessor generation attached to
+    /// its scalar count when only one candidate was written.  A fresh length
+    /// header load may re-establish that fact, but only after the lowerer has
+    /// checked the raw allocation limit and guarded the exact loaded value.
+    /// This deliberately does not trust aliases, arithmetic equalities, or an
+    /// old header value that survived an owner-generation advance.
+    fn authenticate_fresh_counted_header_guard(
+        &mut self,
+        comparison: Comparison,
+    ) -> Result<(), InitialCheckError> {
+        if comparison.operator != ComparisonOperator::LessEqualUnsigned
+            || comparison.left != comparison.right
+        {
+            return Ok(());
+        }
+        let mut authenticated = Vec::new();
+        for ((object, field), header) in &self.state.header_values {
+            if *field != HeaderField::Length || *header != comparison.right {
+                continue;
+            }
+            // Header facts can outlive a released sibling token.  Such a
+            // stale entry is never a fresh observation for this guard.
+            let Ok(state) = self.live_object(*object) else { continue };
+            let Extent::Counted { .. } = state.extent else { continue };
+            let LayoutSize::Dynamic { base, stride } = self.descriptor(state.layout)?.size() else {
+                continue;
+            };
+            if !self.is_raw_byte_buffer(state.layout)? {
+                continue;
+            }
+            let Ok(generation) = self.current_generation(*object) else { continue };
+            if self.state
+                .fresh_header_lengths
+                .get(header)
+                .is_some_and(|facts| facts.contains(&generation))
+                && self.allocation_fits(*header, base, stride)
+            {
+                authenticated.push(generation);
+            }
+        }
+        for generation in authenticated {
+            self.state.bound_generations
+                .entry(comparison.right)
+                .or_default()
+                .insert(generation);
+            self.state.guard_generations
+                .entry((comparison.operator, comparison.left, comparison.right))
+                .or_default()
+                .insert(generation);
+        }
+        Ok(())
+    }
+
+    fn reauthenticate_raw_header_extent(&mut self, object: ValueId, header: ValueId) -> Result<(), InitialCheckError> {
+        let state = self.live_object(object)?;
+        if !matches!(state.extent, Extent::HeaderPrefix { .. } | Extent::Counted { .. }) {
+            return Err(InitialCheckError::UnsupportedMemoryOperation { function: self.function.id, operation: "ReauthenticateRawHeaderExtent(non-raw-extent)" });
+        }
+        let LayoutSize::Dynamic { base, stride } = self.descriptor(state.layout)?.size() else {
+            return Err(InitialCheckError::UnsupportedMemoryOperation { function: self.function.id, operation: "ReauthenticateRawHeaderExtent(fixed)" });
+        };
+        if !self.is_raw_byte_buffer(state.layout)?
+            || self.state.header_values.get(&(object, HeaderField::Length)) != Some(&header)
+            || !self.current_generation(object).is_ok_and(|generation| self.state.fresh_header_lengths.get(&header).is_some_and(|facts| facts.contains(&generation)))
+            || !self.allocation_fits(header, base, stride)
+            || !self.state.guards.contains(&(ComparisonOperator::LessEqualUnsigned, header, header)) {
+            return Err(InitialCheckError::UnsupportedMemoryOperation { function: self.function.id, operation: "ReauthenticateRawHeaderExtent(unproved)" });
+        }
+        self.state.objects.get_mut(&object).expect("live object exists").extent = Extent::Counted {
+            header_bytes: base, count: header, capacity: header, stride_bytes: stride,
+        };
+        Ok(())
     }
 
     fn allocation_fits_in(facts: &MemoryState, capacity: ValueId, base: u32, stride: u32) -> bool {
@@ -4958,6 +6250,167 @@ impl<'a> MemoryChecker<'a> {
     }
 }
 
+/// The direct-exclusive carrier always has two lanes: the ordinary alias and
+/// the declaration-derived replacement for the exact `WriteBack` input.  A
+/// standalone alias contract cannot acquire that authority.
+fn has_distinct_write_back_lane(
+    results: &[ResultContract],
+    result_index: usize,
+    parameter: u32,
+    layout: crate::layout::LayoutId,
+    parameters: &[ParameterContract],
+) -> bool {
+    let Ok(parameter) = usize::try_from(parameter) else { return false };
+    let write_back_ordinal = parameters.iter().take(parameter + 1)
+        .filter(|contract| contract.ownership == ParameterOwnership::WriteBack)
+        .count()
+        .checked_sub(1);
+    let Some(write_back_ordinal) = write_back_ordinal else { return false };
+    let write_back_count = parameters.iter()
+        .filter(|contract| contract.ownership == ParameterOwnership::WriteBack)
+        .count();
+    let ordinary_results = results.len().checked_sub(write_back_count);
+    let Some(hidden_lane) = ordinary_results.and_then(|ordinary| ordinary.checked_add(write_back_ordinal)) else {
+        return false;
+    };
+    // The declaration result is the leading ordinary lane. Keeping the
+    // dedicated carrier there prevents a manually assembled later `Ref`
+    // result from impersonating source result authority.
+    result_index == 0
+        && result_index < ordinary_results.unwrap_or_default()
+        && hidden_lane != result_index
+        && matches!(parameters.get(parameter), Some(ParameterContract {
+            value_type: ValueType::Ref(parameter_layout),
+            ownership: ParameterOwnership::WriteBack,
+        }) if match results.get(result_index) {
+            Some(ResultContract::AliasesWriteBackParameter {
+                parameter: claimed_parameter,
+                projection,
+                ..
+            }) => usize::try_from(*claimed_parameter).ok() == Some(parameter)
+                && (projection.is_some() || *parameter_layout == layout),
+            Some(ResultContract::AliasesOneOfWriteBackParameters {
+                parameters: candidates,
+                layout: claimed_layout,
+            }) => *claimed_layout == layout
+                && candidates.len() >= 2
+                && candidates.windows(2).all(|pair| pair[0] < pair[1])
+                && candidates.binary_search(&(parameter as u32)).is_ok()
+                && *parameter_layout == layout,
+            _ => false,
+        })
+        && matches!(results.get(hidden_lane), Some(ResultContract::Shared { layout: actual })
+            if parameters.get(parameter).is_some_and(|contract| contract.value_type == ValueType::Ref(*actual)))
+}
+
+/// Return the direct-exclusive carrier whose exact hidden lane is
+/// `result_index`. This is intentionally reverse lookup over the dedicated
+/// contract rather than a layout/qualifier heuristic: unrelated `Shared`
+/// results keep their existing semantics.
+fn write_back_alias_parameter_for_hidden_lane(
+    results: &[ResultContract],
+    result_index: usize,
+    parameters: &[ParameterContract],
+) -> Option<(u32, crate::layout::LayoutId)> {
+    results.iter().enumerate().find_map(|(alias_index, result)| {
+        let (candidates, layout) = match result {
+            ResultContract::AliasesWriteBackParameter { parameter, layout, .. } => (vec![*parameter], *layout),
+            ResultContract::AliasesOneOfWriteBackParameters { parameters, layout } => {
+                (parameters.clone(), *layout)
+            }
+            _ => return None,
+        };
+        candidates.into_iter().find_map(|parameter| {
+            let parameter_index = usize::try_from(parameter).ok()?;
+            let ValueType::Ref(hidden_layout) = parameters.get(parameter_index)?.value_type else {
+                return None;
+            };
+            let has_lane = has_distinct_write_back_lane(
+                results,
+                alias_index,
+                parameter,
+                layout,
+                parameters,
+            );
+            (has_lane && write_back_hidden_lane(results, parameter, parameters) == Some(result_index))
+                .then_some((parameter, hidden_layout))
+        })
+    }).or_else(|| terminal_write_back_parameter_for_hidden_lane(results, result_index, parameters))
+}
+
+/// The final ABI lanes return one replacement for each `WriteBack` parameter.
+/// A direct exclusive procedure has no source-reference result carrier, so
+/// identify that terminal lane only from its fixed ABI ordinal and exact root
+/// layout.  Any declared alias carrier suppresses this fallback: ordinary
+/// `Shared` results must never acquire write-back authority from shape alone.
+fn terminal_write_back_parameter_for_hidden_lane(
+    results: &[ResultContract],
+    result_index: usize,
+    parameters: &[ParameterContract],
+) -> Option<(u32, crate::layout::LayoutId)> {
+    if results.iter().any(|result| matches!(result,
+        ResultContract::AliasesWriteBackParameter { .. }
+            | ResultContract::AliasesOneOfWriteBackParameters { .. }
+    )) {
+        return None;
+    }
+    let candidates = parameters.iter().enumerate().filter_map(|(index, contract)| {
+        let ValueType::Ref(layout) = contract.value_type else { return None };
+        (contract.ownership == ParameterOwnership::WriteBack
+            && write_back_hidden_lane(results, index as u32, parameters) == Some(result_index)
+            && matches!(results.get(result_index), Some(ResultContract::Shared { layout: actual }) if *actual == layout))
+            .then_some((index as u32, layout))
+    }).collect::<Vec<_>>();
+    (candidates.len() == 1).then(|| candidates[0])
+}
+
+/// The Bump root exception is deliberately narrower than the generic
+/// write-back carrier: one projected ordinary result, then its one exact
+/// root-layout hidden lane.  The initial authority check binds that carrier
+/// to the source field; this local predicate only gates the physical relay.
+fn authenticated_projected_bump_write_back_parameter(
+    results: &[ResultContract],
+    parameters: &[ParameterContract],
+) -> Option<usize> {
+    let [
+        ResultContract::AliasesWriteBackParameter {
+            parameter,
+            layout,
+            projection: Some(_),
+        },
+        ResultContract::Shared { layout: hidden_layout },
+    ] = results else {
+        return None;
+    };
+    let parameter_index = usize::try_from(*parameter).ok()?;
+    let ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = parameters.get(parameter_index)? else {
+        return None;
+    };
+    (*hidden_layout == *parameter_layout
+        && has_distinct_write_back_lane(results, 0, *parameter, *layout, parameters)
+        && write_back_hidden_lane(results, *parameter, parameters) == Some(1))
+        .then_some(parameter_index)
+}
+
+fn write_back_hidden_lane(
+    results: &[ResultContract],
+    parameter: u32,
+    parameters: &[ParameterContract],
+) -> Option<usize> {
+    let parameter = usize::try_from(parameter).ok()?;
+    let write_back_ordinal = parameters.iter().take(parameter + 1)
+        .filter(|contract| contract.ownership == ParameterOwnership::WriteBack)
+        .count()
+        .checked_sub(1)?;
+    let write_back_count = parameters.iter()
+        .filter(|contract| contract.ownership == ParameterOwnership::WriteBack)
+        .count();
+    results.len().checked_sub(write_back_count)?.checked_add(write_back_ordinal)
+}
+
 fn drop_ref_layout_supported(
     layouts: &LayoutInterner,
     layout: crate::layout::LayoutId,
@@ -5043,7 +6496,9 @@ fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent
 /// identity, layout, and extent: the allocation class survives only if both
 /// sides name the same one, the object is immutable (both sides are managed
 /// storage, so `is_managed_storage` stays true), and owned slots count as
-/// initialized only if both sides say so.
+/// initialized only if both sides say so. Different owner generations meet at
+/// the stable joined epoch; predecessor-local bounds facts are intersected
+/// separately and therefore cannot authenticate that joined epoch.
 fn shared_phi_meet(left: &ObjectState, right: &ObjectState) -> Option<ObjectState> {
     // A shared object is never written, so its capacity bounds nothing; two
     // counted extents that differ only in the capacity id meet at the count.
@@ -5071,6 +6526,11 @@ fn shared_phi_meet(left: &ObjectState, right: &ObjectState) -> Option<ObjectStat
     }
     Some(ObjectState {
         identity: left.identity,
+        owner_generation: if left.owner_generation == right.owner_generation {
+            left.owner_generation
+        } else {
+            JOINED_OWNER_GENERATION
+        },
         layout: left.layout,
         extent,
         ownership: Ownership::Shared,
@@ -5106,6 +6566,38 @@ fn demoted_pair(left: &ObjectState, right: &ObjectState) -> Option<(ObjectState,
     demoted_left.extent = prefix.clone();
     demoted_right.extent = prefix;
     Some((demoted_left, demoted_right))
+}
+
+/// Join the same live object after one predecessor invalidated its owner
+/// generation. The result deliberately names an abstract joined generation:
+/// predecessor-local header and guard facts must not become facts about the
+/// conditional result.
+fn join_path_mutated_owner(left: &ObjectState, right: &ObjectState) -> Option<ObjectState> {
+    if !matches!(left.ownership, Ownership::Unique | Ownership::Shared)
+        || !matches!(right.ownership, Ownership::Unique | Ownership::Shared)
+        || left.owner_generation == right.owner_generation
+    {
+        return None;
+    }
+    let mut joined = left.clone();
+    joined.owner_generation = JOINED_OWNER_GENERATION;
+    let mut normalized_right = right.clone();
+    normalized_right.owner_generation = joined.owner_generation;
+    (joined == normalized_right).then_some(joined)
+}
+
+/// Return extent lanes only when both predecessor states carry precisely the
+/// same SSA definitions.  Arithmetic equality or a matching runtime value is
+/// insufficient: this is the narrow authorization for a fresh joined owner to
+/// use an extent lane in a *new* bounds guard.
+fn exact_carried_counted_extent(left: &ObjectState, right: &ObjectState) -> Option<(ValueId, ValueId)> {
+    match (&left.extent, &right.extent) {
+        (
+            Extent::Counted { count: left_count, capacity: left_capacity, .. },
+            Extent::Counted { count: right_count, capacity: right_capacity, .. },
+        ) if left_count == right_count && left_capacity == right_capacity => Some((*left_count, *left_capacity)),
+        _ => None,
+    }
 }
 
 fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(
@@ -5306,6 +6798,7 @@ fn returned_extent_matches(actual: &Extent, expected: &ReturnedExtent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical_safewir::MemoryEffect;
     use std::collections::BTreeMap;
 
     const COUNT: ValueId = ValueId::new(0);
@@ -5324,6 +6817,129 @@ mod tests {
     const ZERO: ValueId = ValueId::new(13);
 
     #[test]
+    fn aliases_write_back_parameter_requires_its_distinct_hidden_lane() {
+        let mut layouts = LayoutInterner::new();
+        let layout = layouts.intern_scalar(ScalarKind::Int).expect("carrier layout");
+        let other_layout = layouts.intern_scalar(ScalarKind::Bool).expect("other layout");
+        let write_back = vec![ParameterContract {
+            value_type: ValueType::Ref(layout),
+            ownership: ParameterOwnership::WriteBack,
+        }];
+        let valid = vec![
+            ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
+            ResultContract::Shared { layout },
+        ];
+
+        assert!(has_distinct_write_back_lane(&valid, 0, 0, layout, &write_back));
+        assert_eq!(
+            write_back_alias_parameter_for_hidden_lane(&valid, 1, &write_back),
+            Some((0, layout)),
+        );
+        assert!(!has_distinct_write_back_lane(&valid, 1, 0, layout, &write_back));
+
+        let missing = vec![ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None }];
+        assert!(!has_distinct_write_back_lane(&missing, 0, 0, layout, &write_back));
+
+        let wrong_layout = vec![
+            ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
+            ResultContract::Shared { layout: other_layout },
+        ];
+        assert!(!has_distinct_write_back_lane(&wrong_layout, 0, 0, layout, &write_back));
+
+        let non_write_back = vec![ParameterContract {
+            value_type: ValueType::Ref(layout),
+            ownership: ParameterOwnership::Shared,
+        }];
+        assert!(!has_distinct_write_back_lane(&valid, 0, 0, layout, &non_write_back));
+        assert_eq!(
+            write_back_alias_parameter_for_hidden_lane(&valid, 1, &non_write_back),
+            None,
+        );
+
+        // A direct `&mut T` procedure has only its final write-back lane.
+        // Its ABI ordinal and layout bind it to this exact parameter; a
+        // mismatched `Shared` result remains ordinary and cannot be forged
+        // into a replacement lane.
+        let terminal = vec![ResultContract::Shared { layout }];
+        assert_eq!(
+            terminal_write_back_parameter_for_hidden_lane(&terminal, 0, &write_back),
+            Some((0, layout)),
+        );
+        let terminal_wrong_layout = vec![ResultContract::Shared { layout: other_layout }];
+        assert_eq!(
+            terminal_write_back_parameter_for_hidden_lane(&terminal_wrong_layout, 0, &write_back),
+            None,
+        );
+        // Adding a source alias contract changes the ABI interpretation; the
+        // terminal fallback may not accept it even when the physical lane
+        // shape is otherwise identical.
+        let carrier_plus_hidden = vec![
+            ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
+            ResultContract::Shared { layout },
+        ];
+        assert_eq!(
+            terminal_write_back_parameter_for_hidden_lane(&carrier_plus_hidden, 1, &write_back),
+            None,
+        );
+
+        // A projected carrier may return a differently laid-out fixed child,
+        // but its hidden lane must remain the exact owner layout. Swapping
+        // those layouts cannot turn an ordinary result into write-back proof.
+        let projected = vec![
+            ResultContract::AliasesWriteBackParameter {
+                parameter: 0,
+                layout: other_layout,
+                projection: Some(3),
+            },
+            ResultContract::Shared { layout },
+        ];
+        assert!(has_distinct_write_back_lane(&projected, 0, 0, other_layout, &write_back));
+        assert_eq!(write_back_alias_parameter_for_hidden_lane(&projected, 1, &write_back), Some((0, layout)));
+        assert_eq!(
+            authenticated_projected_bump_write_back_parameter(&projected, &write_back),
+            Some(0),
+        );
+
+        let direct = vec![
+            ResultContract::AliasesWriteBackParameter {
+                parameter: 0,
+                layout: other_layout,
+                projection: None,
+            },
+            ResultContract::Shared { layout },
+        ];
+        assert_eq!(authenticated_projected_bump_write_back_parameter(&direct, &write_back), None);
+        let missing_hidden = vec![projected[0].clone()];
+        assert_eq!(authenticated_projected_bump_write_back_parameter(&missing_hidden, &write_back), None);
+        let duplicate_hidden = vec![projected[0].clone(), ResultContract::Shared { layout }, ResultContract::Shared { layout }];
+        assert_eq!(authenticated_projected_bump_write_back_parameter(&duplicate_hidden, &write_back), None);
+        let wrong_projected_hidden = vec![
+            ResultContract::AliasesWriteBackParameter {
+                parameter: 0,
+                layout: other_layout,
+                projection: Some(3),
+            },
+            ResultContract::Shared { layout: other_layout },
+        ];
+        assert!(!has_distinct_write_back_lane(
+            &wrong_projected_hidden,
+            0,
+            0,
+            other_layout,
+            &write_back,
+        ));
+        assert_eq!(
+            authenticated_projected_bump_write_back_parameter(&wrong_projected_hidden, &write_back),
+            None,
+        );
+        let wrong_parameter = vec![ParameterContract {
+            value_type: ValueType::Ref(layout),
+            ownership: ParameterOwnership::Shared,
+        }];
+        assert_eq!(authenticated_projected_bump_write_back_parameter(&projected, &wrong_parameter), None);
+    }
+
+    #[test]
     fn cow_memory_state_snapshot_isolates_every_fact_container() {
         with_header_promotion_checker(2, |checker, _base, _stride| {
             let base = checker.snapshot();
@@ -5334,8 +6950,8 @@ mod tests {
                 )+};
             }
             shared!(objects, shared_phi_origins, stored_objects, nullable_absent_slots,
-                range_states, full_current_prefixes, constants, exact_additions, comparisons, guards,
-                header_values, static_data_objects, initialized_scalar_slots);
+                range_states, bound_generations, guard_generations, full_current_prefixes, constants, exact_additions, comparisons, guards,
+                header_values, fresh_header_lengths, static_data_objects, initialized_scalar_slots);
 
             // Capture a deep value copy independently of the shared snapshots,
             // so an accidental write-through cannot make both sides agree.
@@ -5370,6 +6986,13 @@ mod tests {
                     RangeState { element, ownership: Ownership::Shared, allocation_class: None,
                         initialized: true, zero_width: false, zero_start: true })
             });
+            isolated!(bound_generations, |state: &mut MemoryState| {
+                state.bound_generations.entry(COUNT).or_default().insert(OwnerGeneration { identity: SOURCE, epoch: 1 })
+            });
+            isolated!(guard_generations, |state: &mut MemoryState| {
+                state.guard_generations.entry((ComparisonOperator::LessUnsigned, COUNT, CAPACITY))
+                    .or_default().insert(OwnerGeneration { identity: SOURCE, epoch: 1 })
+            });
             isolated!(full_current_prefixes, |state: &mut MemoryState| {
                 state.full_current_prefixes.insert(RangeIdentity { object: SOURCE, start: ZERO, length: COUNT })
             });
@@ -5385,6 +7008,10 @@ mod tests {
             });
             isolated!(header_values, |state: &mut MemoryState| {
                 state.header_values.insert((SOURCE, HeaderField::Length), LENGTH)
+            });
+            isolated!(fresh_header_lengths, |state: &mut MemoryState| {
+                state.fresh_header_lengths.entry(LENGTH).or_default()
+                    .insert(OwnerGeneration { identity: SOURCE, epoch: 1 })
             });
             isolated!(static_data_objects, |state: &mut MemoryState| state.static_data_objects.insert(SOURCE));
             isolated!(initialized_scalar_slots, |state: &mut MemoryState| {
@@ -5491,7 +7118,14 @@ mod tests {
             id: crate::canonical_safewir::FunctionId::new(0),
             signature: FunctionSignatureId::new(0),
             entry: crate::canonical_safewir::BlockId::new(0),
-            value_types: BTreeMap::new(),
+            value_types: [
+                (SOURCE, ValueType::Ref(layout)),
+                (LOADED, ValueType::Size),
+                (LONG_LENGTH, ValueType::Size),
+                (CONDITION, ValueType::Bool),
+            ]
+            .into_iter()
+            .collect(),
             blocks: vec![BasicBlock {
                 id: crate::canonical_safewir::BlockId::new(0),
                 parameters: Vec::new(), operations: Vec::new(),
@@ -5507,7 +7141,7 @@ mod tests {
         // White-box edge facts model a complete managed ABI result whose
         // header loads are authenticated but whose extent is still lazy.
         checker.state.objects.insert(SOURCE, ObjectState {
-            identity: SOURCE, layout, extent: Extent::HeaderPrefix { minimum_bytes: base },
+            identity: SOURCE, owner_generation: 0, layout, extent: Extent::HeaderPrefix { minimum_bytes: base },
             ownership: Ownership::Shared, allocation_class: None,
             shared_immutable: true, initialized_owned_slots: true,
         });
@@ -5589,6 +7223,53 @@ mod tests {
         });
     }
 
+    #[test]
+    fn reauthenticate_raw_header_extent_requires_current_fresh_proofs_and_rebinds_conservatively() {
+        with_header_promotion_checker(0, |checker, base, stride| {
+            let maximum = (u64::from(u32::MAX) - u64::from(base)) / u64::from(stride);
+            checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(SOURCE, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("fresh raw length load");
+            checker.check(&Operation::ConstSize { destination: LONG_LENGTH, value: maximum })
+                .expect("allocation maximum");
+            checker.check(&Operation::Compare {
+                destination: CONDITION, operator: ComparisonOperator::LessEqualUnsigned,
+                left: LOADED, right: LONG_LENGTH,
+            }).expect("allocation comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("allocation guard");
+            checker.check(&Operation::Compare {
+                destination: CONDITION, operator: ComparisonOperator::LessEqualUnsigned,
+                left: LOADED, right: LOADED,
+            }).expect("exact comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("exact guard");
+            let established = checker.snapshot();
+            let reauth = Operation::ReauthenticateRawHeaderExtent { object: SOURCE, header: LOADED };
+            checker.check(&reauth).expect("fresh guarded raw header reauthenticates");
+            assert!(matches!(checker.state.objects[&SOURCE].extent,
+                Extent::Counted { count, capacity, .. } if count == LOADED && capacity == LOADED));
+            // A second rebind starts from Counted and remains conservative.
+            checker.check(&reauth).expect("already-counted raw header may rebind to its fresh length");
+
+            for mutate in [
+                |state: &mut MemoryState| { state.header_values.remove(&(SOURCE, HeaderField::Length)); },
+                |state: &mut MemoryState| { state.fresh_header_lengths.remove(&LOADED); },
+                |state: &mut MemoryState| { state.guards.remove(&(ComparisonOperator::LessEqualUnsigned, LOADED, LONG_LENGTH)); },
+                |state: &mut MemoryState| { state.guards.remove(&(ComparisonOperator::LessEqualUnsigned, LOADED, LOADED)); },
+            ] {
+                checker.restore(established.clone());
+                mutate(&mut checker.state);
+                assert!(checker.check(&reauth).is_err(), "missing reauthentication precondition must reject");
+            }
+            checker.restore(established);
+            checker.invalidate_owner_generation(SOURCE).expect("invalidate generation");
+            assert!(checker.check(&reauth).is_err(), "stale fresh header must reject");
+        });
+    }
+
     fn with_checker(
         pointer_element: bool,
         test: impl FnOnce(&mut MemoryChecker<'_>, crate::layout::LayoutId),
@@ -5633,6 +7314,7 @@ mod tests {
                 (END, ValueType::Size),
                 (SOURCE, ValueType::Ref(list)),
                 (DESTINATION, ValueType::Ref(list)),
+                (CHILD, ValueType::Ref(list)),
                 (LOADED, ValueType::Size),
                 (CONDITION, ValueType::Bool),
             ]
@@ -5698,6 +7380,47 @@ mod tests {
     }
 
     #[test]
+    fn owner_bound_worklist_reuses_header_lengths_and_preserves_refusals() {
+        with_checker(false, |checker, _list| {
+            // Populate enough authenticated header observations and an exact
+            // addition chain to exercise every owner-bound worklist loop.
+            // The counter is structural: it proves one header collection per
+            // traversal without imposing a machine-dependent timing limit.
+            for offset in 0..64 {
+                let object = ValueId::new(100 + offset);
+                let header = ValueId::new(200 + offset);
+                checker.state.objects.insert(object, checker.state.objects[&SOURCE].clone());
+                checker.state.header_values.insert((object, HeaderField::Length), header);
+            }
+            let first = ValueId::new(300);
+            let mut value = first;
+            for offset in 0..64 {
+                let sum = ValueId::new(301 + offset);
+                checker.state.exact_additions.insert(sum, (value, START));
+                value = sum;
+            }
+            let guard = (ComparisonOperator::LessEqualUnsigned, value, COUNT);
+            checker.state.guards.insert(guard);
+            checker.state.guard_generations.insert(guard, BTreeSet::from([OwnerGeneration {
+                identity: SOURCE,
+                epoch: 0,
+            }]));
+
+            HEADER_LENGTH_PAIR_SCANS.with(|scans| scans.set(0));
+            assert!(checker.less_equal_for_owner(SOURCE, first, COUNT),
+                "the current-owner guard at the end of the exact chain remains accepted");
+            HEADER_LENGTH_PAIR_SCANS.with(|scans| assert_eq!(scans.get(), 1,
+                "one owner-bound traversal collects header lengths once"));
+
+            HEADER_LENGTH_PAIR_SCANS.with(|scans| scans.set(0));
+            assert!(!checker.less_equal_for_owner(SOURCE, LONG_LENGTH, COUNT),
+                "an unrelated scalar must not gain the chain's current-owner bound");
+            HEADER_LENGTH_PAIR_SCANS.with(|scans| assert_eq!(scans.get(), 1,
+                "the rejecting traversal also performs one header collection"));
+        });
+    }
+
+    #[test]
     fn scalar_prefix_shrink_requires_reinitialization_before_regrowth() {
         with_checker_capacity(false, 3, |checker, list| {
             checker.check(&Operation::Compare {
@@ -5733,6 +7456,172 @@ mod tests {
             ), "a removed scalar slot must be written again before regrowth");
 
             let _ = list;
+        });
+    }
+
+    #[test]
+    fn bounds_guards_name_the_current_owner_generation() {
+        let guarded_read = |checker: &mut MemoryChecker<'_>, object, list| {
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            }).expect("checked comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("checked bounds guard");
+            checker.check_place(&Place::projected(
+                object,
+                Projection::Element { index: START },
+                ValueType::Size,
+                AccessMode::Read,
+            )).map(|_| ()).expect("guard is bound to this live owner");
+            let _ = list;
+        };
+
+        with_checker(false, |checker, _list| {
+            checker.check_place(&Place::projected(
+                SOURCE,
+                Projection::Element { index: START },
+                ValueType::Size,
+                AccessMode::Read,
+            )).expect("literal index and literal count are self-authenticating arithmetic facts");
+        });
+
+        with_checker_capacity(false, 2, |checker, list| {
+            checker.state.constants.remove(&START);
+            guarded_read(checker, SOURCE, list);
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: CAPACITY,
+            }).expect("checked write comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("checked write bounds guard");
+            checker.check(&Operation::Store {
+                place: Place::projected(
+                    SOURCE,
+                    Projection::Element { index: START },
+                    ValueType::Size,
+                    AccessMode::Write,
+                ),
+                value: COUNT,
+                transfer: StoreTransfer::CopyScalar,
+            }).expect("a scalar element store keeps the collection extent");
+            checker.check_place(&Place::projected(
+                SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+            )).expect("an element store does not stale a current bounds guard");
+            assert_eq!(checker.current_generation(SOURCE).unwrap().epoch, 1,
+                "the store still advances ownership state");
+            assert!(checker.state.guard_generations
+                .get(&(ComparisonOperator::LessUnsigned, START, COUNT))
+                .is_some_and(|facts| facts.contains(&checker.current_generation(SOURCE).unwrap())),
+                "only the current allocation's extent guard is rebased");
+            checker.state.initialized_scalar_slots.insert((SOURCE, SlotIdentity::Constant(1)));
+            checker.check(&Operation::UpdateCount { object: SOURCE, count: LONG_LENGTH })
+                .expect("initialized scalar prefix may grow");
+            assert!(matches!(
+                checker.check_place(&Place::projected(
+                    SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+                )),
+                Err(InitialCheckError::MissingBoundsGuard { .. })
+            ), "a pre-mutation guard cannot prove the new owner generation");
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: LONG_LENGTH,
+            }).unwrap();
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds }).unwrap();
+            checker.check_place(&Place::projected(
+                SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+            )).expect("fresh guard admits the current generation");
+        });
+
+        with_checker_capacity(false, 2, |checker, list| {
+            checker.state.constants.remove(&START);
+            guarded_read(checker, SOURCE, list);
+            checker.state.objects.remove(&DESTINATION);
+            checker.check(&Operation::MoveValue { destination: DESTINATION, source: SOURCE })
+                .expect("sole owner moves");
+            checker.check_place(&Place::projected(
+                DESTINATION, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+            )).expect("a sole move preserves the allocation's current extent proof");
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed,
+                "moving the root still consumes the source token");
+        });
+
+        with_checker_capacity(false, 2, |checker, list| {
+            checker.state.constants.remove(&START);
+            guarded_read(checker, SOURCE, list);
+            checker.clone_ref(DESTINATION, SOURCE).expect("shared alias");
+            let callee = FunctionSignature {
+                id: checker.signature.id,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: vec![ParameterContract {
+                        value_type: ValueType::Ref(list), ownership: ParameterOwnership::Shared,
+                    }],
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
+            };
+            checker.check_call(
+                &callee,
+                &[CallArgument::Move(SOURCE)],
+                &callee.contract.parameters,
+                &[],
+                &[],
+            ).expect("checked call consumes one shared token");
+            assert!(matches!(
+                checker.check_place(&Place::projected(
+                    DESTINATION, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+                )),
+                Err(InitialCheckError::MissingBoundsGuard { .. })
+            ));
+        });
+
+        with_checker_capacity(false, 2, |checker, list| {
+            checker.state.constants.remove(&START);
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            }).expect("dynamic predecessor comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("dynamic predecessor bounds guard");
+            let stable = checker.snapshot();
+            checker.invalidate_owner_generation(SOURCE).expect("test mutation");
+            let changed = checker.snapshot();
+            let mut target = unique_phi_target(ValueId::new(99), list);
+            target.parameters.clear();
+            let joined = checker.meet(&target, &stable, &changed)
+                .expect("a same-owner conditional mutation joins with fresh bounds evidence");
+            assert_eq!(joined.objects[&SOURCE].identity, SOURCE);
+            assert_eq!(joined.objects[&SOURCE].ownership, Ownership::Unique);
+            assert_eq!(joined.objects[&SOURCE].owner_generation, JOINED_OWNER_GENERATION,
+                "the join uses the stable abstract epoch rather than a predecessor epoch");
+            checker.restore(joined);
+            assert!(matches!(
+                checker.check_place(&Place::projected(
+                    SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+                )),
+                Err(InitialCheckError::MissingBoundsGuard { .. })
+            ), "a predecessor guard cannot prove the joined owner generation");
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: CAPACITY,
+            }).expect("checked comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("fresh bounds guard");
+            checker.check_place(&Place::projected(
+                SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Write,
+            )).expect("a fresh guard may authenticate an exactly carried capacity lane");
         });
     }
 
@@ -5846,6 +7735,12 @@ mod tests {
                 ownership: None,
             });
         }
+        target
+    }
+
+    fn shared_prefix_target(layout: crate::layout::LayoutId) -> BasicBlock {
+        let mut target = unique_phi_target(ValueId::new(99), layout);
+        target.parameters[0].ownership = Some(Ownership::Shared);
         target
     }
 
@@ -6110,6 +8005,249 @@ mod tests {
     }
 
     #[test]
+    fn shared_phi_rebase_preserves_an_uncarried_snapshot_header_root() {
+        with_checker(false, |checker, list| {
+            // `snapshot` shares the pre-loop root but is not part of the
+            // loop state. Its fresh header load must remain evidence for the
+            // snapshot rather than being rebound to the loop's shared phi.
+            checker.state.objects.remove(&DESTINATION);
+            checker.check(&Operation::CloneRef { destination: DESTINATION, source: SOURCE })
+                .expect("snapshot retain");
+            checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(
+                    DESTINATION,
+                    Projection::Header(HeaderField::Length),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("snapshot header load");
+
+            let target = shared_extent_target(list);
+            let phi = target.parameters[0].value;
+            let edge = checker.transfer_edge(&target, &[SOURCE, COUNT, CAPACITY])
+                .expect("loop source and extent transport");
+            checker.restore(edge);
+
+            assert!(checker.bound_is_current(DESTINATION, LOADED),
+                "the uncarried snapshot retains its own authenticated root");
+            assert!(!checker.bound_is_current(phi, LOADED),
+                "the snapshot header never authenticates the rebased loop owner");
+        });
+    }
+
+    #[test]
+    fn shared_counted_phi_reauthenticates_only_exact_transport_lanes() {
+        with_checker(false, |checker, list| {
+            checker.state.constants.remove(&START);
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            }).expect("source comparison");
+            checker.check(&Operation::Guard {
+                condition: CONDITION,
+                kind: GuardKind::Bounds,
+            }).expect("source guard");
+
+            let mut target = shared_extent_target(list);
+            checker.state.objects.remove(&DESTINATION);
+            target.parameters[0].value = DESTINATION;
+            target.parameters[1].value = COUNT;
+            target.parameters[2].value = CAPACITY;
+            let phi = target.parameters[0].value;
+            let count = target.parameters[1].value;
+            let capacity = target.parameters[2].value;
+            let edge = checker.transfer_edge(&target, &[SOURCE, COUNT, CAPACITY])
+                .expect("exact count and capacity transport");
+            let generation = OwnerGeneration {
+                identity: phi,
+                epoch: JOINED_OWNER_GENERATION,
+            };
+            assert_eq!(edge.objects[&phi].owner_generation, JOINED_OWNER_GENERATION);
+            assert!(edge.bound_generations[&count].contains(&generation));
+            assert!(edge.bound_generations[&capacity].contains(&generation));
+            assert!(!edge.header_values.contains_key(&(phi, HeaderField::Length)));
+            assert!(edge.range_states.keys().all(|range| range.object != phi));
+            assert!(edge.full_current_prefixes.iter().all(|range| range.object != phi));
+            assert!(edge.guard_generations.values().all(|facts| !facts.contains(&generation)),
+                "the pre-phi guard is not proof for the joined generation");
+            assert!(edge.fresh_header_lengths.values().all(|facts| !facts.contains(&generation)));
+
+            checker.restore(edge);
+            let place = Place::projected(
+                phi,
+                Projection::Element { index: START },
+                ValueType::Size,
+                AccessMode::Read,
+            );
+            assert!(matches!(
+                checker.check_place(&place),
+                Err(InitialCheckError::MissingBoundsGuard { index: START, count: bound, .. }) if bound == count
+            ), "a stale predecessor guard must not survive the shared phi");
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: count,
+            }).expect("joined comparison");
+            checker.check(&Operation::Guard {
+                condition: CONDITION,
+                kind: GuardKind::Bounds,
+            }).expect("joined guard");
+            checker.check_place(&place).expect("fresh guard accepts exact transported count");
+        });
+    }
+
+    #[test]
+    fn shared_counted_phi_rejects_missing_or_mismatched_extent_lane() {
+        with_checker_capacity(true, 2, |checker, list| {
+            let mut target = shared_extent_target(list);
+            target.parameters.pop();
+            assert!(matches!(
+                checker.transfer_edge(&target, &[SOURCE, COUNT]),
+                Err(InitialCheckError::InvalidOwnership { .. })
+            ), "a shared counted phi needs an explicit capacity parameter");
+        });
+        with_checker(true, |checker, list| {
+            checker.state.constants.clear();
+            checker.check(&Operation::Load {
+                destination: LONG_LENGTH,
+                place: Place::projected(
+                    SOURCE,
+                    Projection::Header(HeaderField::Capacity),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("physical capacity read");
+            assert!(matches!(
+                checker.transfer_edge(&shared_extent_target(list), &[SOURCE, COUNT, LONG_LENGTH]),
+                Err(InitialCheckError::InvalidOwnership { .. })
+            ), "a mismatched capacity lane cannot authenticate the joined owner");
+        });
+    }
+
+    #[test]
+    fn fresh_shared_phi_header_length_authenticates_only_its_current_allocation() {
+        with_checker(false, |checker, list| {
+            checker.state.constants.remove(&START);
+            let mut target = shared_extent_target(list);
+            checker.state.objects.remove(&DESTINATION);
+            target.parameters[0].value = DESTINATION;
+            target.parameters[1].value = COUNT;
+            target.parameters[2].value = CAPACITY;
+            let phi = target.parameters[0].value;
+            let edge = checker.transfer_edge(&target, &[SOURCE, COUNT, CAPACITY])
+                .expect("exact extent transport");
+            checker.restore(edge);
+            checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(
+                    phi,
+                    Projection::Header(HeaderField::Length),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("fresh current header load");
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: LOADED,
+            }).expect("fresh header comparison");
+            checker.check(&Operation::Guard {
+                condition: CONDITION,
+                kind: GuardKind::Bounds,
+            }).expect("fresh header guard");
+            let place = Place::projected(
+                phi,
+                Projection::Element { index: START },
+                ValueType::Size,
+                AccessMode::Read,
+            );
+            checker.check_place(&place).expect("fresh same-allocation header authorizes access");
+
+            checker.invalidate_owner_generation(phi).expect("owner invalidation");
+            assert!(matches!(
+                checker.check_place(&place),
+                Err(InitialCheckError::MissingBoundsGuard { index: START, count, .. }) if count == LOADED
+            ), "an invalidated fresh header cannot authorize the joined owner");
+        });
+        with_checker(false, |checker, _list| {
+            let generation = checker.current_generation(SOURCE).expect("source generation");
+            checker.state.fresh_header_lengths.entry(LOADED).or_default().insert(generation);
+            checker.state.header_values.insert((DESTINATION, HeaderField::Length), LOADED);
+            assert!(!checker.bound_is_current(SOURCE, LOADED),
+                "a fresh lane for another allocation cannot authorize the source");
+        });
+    }
+
+    #[test]
+    fn shared_phi_prefix_transport_needs_no_scalar_lanes_and_forgets_old_bounds() {
+        with_checker(false, |checker, list| {
+            // First establish ordinary, source-local observations.  A prefix
+            // phi may carry the allocation header but not these scalar facts.
+            checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(
+                    SOURCE,
+                    Projection::Header(HeaderField::Length),
+                    ValueType::Size,
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::CopyScalar,
+            }).expect("length load is authenticated at its source");
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: LOADED,
+            }).expect("source bounds comparison");
+            checker.check(&Operation::Guard {
+                condition: CONDITION,
+                kind: GuardKind::Bounds,
+            }).expect("source bounds guard");
+
+            let Extent::Counted { header_bytes, .. } = checker.state.objects[&SOURCE].extent else {
+                unreachable!()
+            };
+            checker.state.objects.get_mut(&SOURCE).unwrap().extent =
+                Extent::HeaderPrefix { minimum_bytes: header_bytes };
+
+            let target = shared_prefix_target(list);
+            let edge = checker
+                .transfer_edge(&target, &[SOURCE])
+                .expect("a header-prefix shared phi needs no scalar lanes");
+            let phi = target.parameters[0].value;
+            assert!(matches!(edge.objects[&phi].extent, Extent::HeaderPrefix { .. }));
+            assert_eq!(edge.objects[&phi].owner_generation, JOINED_OWNER_GENERATION);
+            assert!(!edge.header_values.contains_key(&(phi, HeaderField::Length)));
+            assert!(edge.range_states.keys().all(|range| range.object != phi));
+            assert!(edge.full_current_prefixes.iter().all(|range| range.object != phi));
+            for facts in edge.bound_generations.values()
+                .chain(edge.guard_generations.values())
+                .chain(edge.fresh_header_lengths.values())
+            {
+                assert!(facts.iter().all(|fact| fact.identity != phi));
+            }
+            checker.restore(edge);
+            assert!(matches!(
+                checker.check_place(&Place::projected(
+                    phi,
+                    Projection::Element { index: START },
+                    ValueType::Size,
+                    AccessMode::Read,
+                )),
+                Err(InitialCheckError::InvalidExtent { object, .. }) if object == phi
+            ), "a shared prefix phi needs a fresh header reload before indexed access");
+        });
+    }
+
+    #[test]
     fn shared_phi_extent_transport_accepts_one_count_identity_and_constants() {
         with_checker(true, |checker, list| {
             checker.state.constants.clear();
@@ -6165,7 +8303,10 @@ mod tests {
             let object = checker.state.objects.get_mut(&SOURCE).unwrap();
             let Extent::Counted { header_bytes, .. } = object.extent else { unreachable!() };
             object.extent = Extent::HeaderPrefix { minimum_bytes: header_bytes };
-            assert!(checker.transfer_edge(&shared_extent_target(list), &[SOURCE, COUNT, CAPACITY]).is_err(), "unpromoted prefix is not a counted extent");
+            let edge = checker
+                .transfer_edge(&shared_extent_target(list), &[SOURCE, COUNT, CAPACITY])
+                .expect("prefix transport does not interpret unrelated scalar lanes");
+            assert!(matches!(edge.objects[&ValueId::new(99)].extent, Extent::HeaderPrefix { .. }));
         });
     }
 
@@ -6214,6 +8355,149 @@ mod tests {
             checker.consume_call_move(DESTINATION, ParameterOwnership::Value)
                 .expect("borrow handle transfers while its owner remains live");
             assert_ne!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+        });
+    }
+
+    #[test]
+    fn exact_value_alias_transfer_is_the_only_sole_unique_call_escape() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.remove(&DESTINATION);
+            checker.consume_exact_moved_value_alias(SOURCE)
+                .expect("exact alias carrier consumes one sole RC token");
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+        });
+        with_checker(false, |checker, _list| {
+            let duplicate = checker.state.objects[&SOURCE].clone();
+            checker.state.objects.insert(DESTINATION, duplicate);
+            checker.consume_exact_moved_value_alias(SOURCE)
+                .expect("a non-sole token takes the ordinary shared Value transfer");
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+            assert_eq!(checker.state.objects[&DESTINATION].ownership, Ownership::Unique,
+                "the separately retained token remains the live owner");
+        });
+    }
+
+    #[test]
+    fn moved_value_alias_transfer_uses_the_callee_contract_not_the_caller() {
+        fn relay_signature(
+            id: crate::canonical_safewir::FunctionSignatureId,
+            layout: crate::layout::LayoutId,
+        ) -> FunctionSignature {
+            FunctionSignature {
+                id,
+                parameters: vec![ValueType::Ref(layout)],
+                results: vec![ValueType::Ref(layout)],
+                contract: CallableContract {
+                    parameters: vec![ParameterContract {
+                        value_type: ValueType::Ref(layout),
+                        ownership: ParameterOwnership::Value,
+                    }],
+                    results: vec![ResultContract::AliasesParameter { parameter: 0, layout }],
+                    parameter_effects: BTreeMap::from([(
+                        0,
+                        vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release],
+                    )]),
+                },
+            }
+        }
+
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            let callee = relay_signature(crate::canonical_safewir::FunctionSignatureId::new(1), list);
+            checker
+                .check_call(
+                    &callee,
+                    &[CallArgument::Move(SOURCE)],
+                    &callee.contract.parameters,
+                    &[DESTINATION],
+                    &callee.contract.results,
+                )
+                .expect("the exact callee, not the unrelated caller, authorizes transfer");
+            let result = &checker.state.objects[&DESTINATION];
+            assert_eq!(result.identity, SOURCE);
+            assert_eq!(result.ownership, Ownership::Shared);
+        });
+
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            checker.state.objects.get_mut(&SOURCE).expect("source").ownership = Ownership::Shared;
+            let callee = relay_signature(crate::canonical_safewir::FunctionSignatureId::new(2), list);
+            checker
+                .check_call(
+                    &callee,
+                    &[CallArgument::Move(SOURCE)],
+                    &callee.contract.parameters,
+                    &[DESTINATION],
+                    &callee.contract.results,
+                )
+                .expect("the exact callee may rebind a sole shared managed token");
+            let result = &checker.state.objects[&DESTINATION];
+            assert_eq!(result.identity, SOURCE);
+            assert_eq!(result.ownership, Ownership::Shared);
+        });
+
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            let source = checker.state.objects.get_mut(&SOURCE).expect("source");
+            source.ownership = Ownership::Shared;
+            source.allocation_class = None;
+            source.shared_immutable = false;
+            checker.state.static_data_objects.insert(SOURCE);
+            let callee = relay_signature(crate::canonical_safewir::FunctionSignatureId::new(3), list);
+            checker
+                .check_call(
+                    &callee,
+                    &[CallArgument::Move(SOURCE)],
+                    &callee.contract.parameters,
+                    &[DESTINATION],
+                    &callee.contract.results,
+                )
+                .expect("the exact callee may rebind a sole static shared token");
+            assert!(checker.state.static_data_objects.contains(&DESTINATION));
+        });
+
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            checker.state.objects.get_mut(&SOURCE).expect("source").ownership = Ownership::Shared;
+            let mut wrong_effects = relay_signature(
+                crate::canonical_safewir::FunctionSignatureId::new(4),
+                list,
+            );
+            wrong_effects.contract.parameter_effects.insert(0, vec![MemoryEffect::Read]);
+            assert!(matches!(
+                checker.check_call(
+                    &wrong_effects,
+                    &[CallArgument::Move(SOURCE)],
+                    &wrong_effects.contract.parameters,
+                    &[DESTINATION],
+                    &wrong_effects.contract.results,
+                ),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
+        });
+
+        with_checker(false, |checker, list| {
+            checker.state.objects.remove(&DESTINATION);
+            let exact_looking_caller = Box::leak(Box::new(relay_signature(
+                crate::canonical_safewir::FunctionSignatureId::new(5),
+                list,
+            )));
+            checker.signature = exact_looking_caller;
+            let mut nonexact_callee = relay_signature(
+                crate::canonical_safewir::FunctionSignatureId::new(6),
+                list,
+            );
+            nonexact_callee.contract.results[0] = ResultContract::Shared { layout: list };
+            assert!(matches!(
+                checker.check_call(
+                    &nonexact_callee,
+                    &[CallArgument::Move(SOURCE)],
+                    &nonexact_callee.contract.parameters,
+                    &[DESTINATION],
+                    &nonexact_callee.contract.results,
+                ),
+                Err(InitialCheckError::InvalidOwnership { object: SOURCE, .. })
+            ));
         });
     }
 
@@ -6527,7 +8811,11 @@ mod tests {
         with_checker(false, |checker, _list| {
             for class in [None, Some(AllocationClass::Bump), Some(AllocationClass::Scratch)] {
                 checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class = class;
-                for ownership in [ParameterOwnership::Unique, ParameterOwnership::Shared] {
+                for ownership in [
+                    ParameterOwnership::Unique,
+                    ParameterOwnership::Shared,
+                    ParameterOwnership::WriteBack,
+                ] {
                     assert!(matches!(
                         checker.consume_call_move(SOURCE, ownership),
                         Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
@@ -6538,6 +8826,91 @@ mod tests {
                 Some(AllocationClass::ReferenceCounted);
             checker.consume_call_move(SOURCE, ParameterOwnership::Shared).unwrap();
             assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+        });
+    }
+
+    #[test]
+    fn authenticated_projected_bump_write_back_consumes_only_concrete_bump() {
+        with_checker(false, |checker, _list| {
+            checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class = Some(AllocationClass::Bump);
+            checker.consume_authenticated_projected_bump_write_back(SOURCE).unwrap();
+            assert_eq!(checker.state.objects[&SOURCE].ownership, Ownership::Consumed);
+        });
+        for class in [None, Some(AllocationClass::Scratch), Some(AllocationClass::ReferenceCounted)] {
+            with_checker(false, |checker, _list| {
+                checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class = class;
+                assert!(matches!(
+                    checker.consume_authenticated_projected_bump_write_back(SOURCE),
+                    Err(InitialCheckError::InvalidAllocationClass { object: SOURCE, .. })
+                ));
+            });
+        }
+    }
+
+    #[test]
+    fn exact_projected_write_back_result_alone_materializes_an_rc_field_token() {
+        with_checker(false, |checker, list| {
+            checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class = Some(AllocationClass::Bump);
+            let parameters = vec![ParameterContract {
+                value_type: ValueType::Ref(list),
+                ownership: ParameterOwnership::WriteBack,
+            }];
+            let projected = vec![
+                ResultContract::AliasesWriteBackParameter {
+                    parameter: 0,
+                    layout: list,
+                    projection: Some(0),
+                },
+                ResultContract::Shared { layout: list },
+            ];
+            checker.check_current_signature_call(
+                &[CallArgument::Move(SOURCE)],
+                &parameters,
+                &[DESTINATION, CHILD],
+                &projected,
+            ).expect("exact projected carrier moves its Bump owner through the hidden lane");
+            let result = &checker.state.objects[&DESTINATION];
+            assert_eq!(result.identity, DESTINATION);
+            assert_eq!(result.allocation_class, Some(AllocationClass::ReferenceCounted));
+            assert!(!result.shared_immutable);
+            assert_eq!(checker.state.objects[&CHILD].allocation_class, Some(AllocationClass::Bump));
+        });
+
+        with_checker(false, |checker, list| {
+            let source = checker.state.objects.get_mut(&SOURCE).unwrap();
+            source.allocation_class = None;
+            source.shared_immutable = true;
+            let parameters = vec![ParameterContract {
+                value_type: ValueType::Ref(list),
+                ownership: ParameterOwnership::WriteBack,
+            }];
+            let direct = vec![
+                ResultContract::AliasesWriteBackParameter {
+                    parameter: 0,
+                    layout: list,
+                    projection: None,
+                },
+                ResultContract::Shared { layout: list },
+            ];
+            checker.check_current_signature_call(
+                &[CallArgument::Move(SOURCE)],
+                &parameters,
+                &[DESTINATION, CHILD],
+                &direct,
+            ).expect("ordinary direct carrier retains its input storage fact");
+            assert_eq!(checker.state.objects[&DESTINATION].allocation_class, None);
+            assert!(matches!(checker.state.objects[&DESTINATION].extent, Extent::HeaderPrefix { .. }),
+                "the alias result must reload its post-call dynamic extent");
+            assert!(matches!(checker.state.objects[&CHILD].extent, Extent::HeaderPrefix { .. }),
+                "the hidden write-back replacement must reload its post-call dynamic extent");
+
+            checker.check_current_signature_call(
+                &[],
+                &[],
+                &[DESTINATION],
+                &[ResultContract::CheckedValue { layout: list }],
+            ).expect("checked result remains classless");
+            assert_eq!(checker.state.objects[&DESTINATION].allocation_class, None);
         });
     }
 
@@ -7020,6 +9393,11 @@ mod tests {
                 class: AllocationClass::ReferenceCounted,
             }).unwrap();
         }
+        checker.state.guard_generations.insert(
+            (ComparisonOperator::LessUnsigned, START, CAPACITY),
+            [checker.current_generation(SOURCE).unwrap(), checker.current_generation(DESTINATION).unwrap()]
+                .into_iter().collect(),
+        );
         checker.state.range_states.insert(
             RangeIdentity { object: SOURCE, start: START, length: COUNT },
             RangeState {
@@ -7154,7 +9532,7 @@ mod tests {
             };
             let result = fixed_fresh_result(checker, record);
             assert!(matches!(
-                checker.check_call(
+                checker.check_current_signature_call(
                     &[CallArgument::Move(DESTINATION)],
                     std::slice::from_ref(&parameter),
                     &[],
@@ -7182,7 +9560,7 @@ mod tests {
                 .expect("new scalar field initialization");
             let complete = checker.snapshot();
             checker
-                .check_call(
+                .check_current_signature_call(
                     &[CallArgument::Move(DESTINATION)],
                     &[parameter],
                     &[],
@@ -7239,7 +9617,7 @@ mod tests {
             };
             let result = fixed_fresh_result(checker, record);
             assert!(checker
-                .check_call(
+                .check_current_signature_call(
                     &[CallArgument::Move(DESTINATION)],
                     std::slice::from_ref(&parameter),
                     &[],
@@ -7260,7 +9638,7 @@ mod tests {
             assert!(checker.state.objects[&DESTINATION].initialized_owned_slots);
             let complete = checker.snapshot();
             checker
-                .check_call(
+                .check_current_signature_call(
                     &[CallArgument::Move(DESTINATION)],
                     &[parameter],
                     &[],
@@ -7843,10 +10221,23 @@ mod tests {
             );
             checker.state.constants.remove(&COUNT);
             checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY));
+            checker.state.guard_generations.insert(
+                (ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY),
+                [checker.current_generation(SOURCE).unwrap(), checker.current_generation(DESTINATION).unwrap()]
+                    .into_iter().collect(),
+            );
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
                 RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            }).expect("dynamic source/destination bounds comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("dynamic source/destination bounds guard");
             assert_eq!(
                 checker.check(&Operation::CloneRange {
                     destination: pointer_range_place(DESTINATION, list, COUNT, AccessMode::Write),
@@ -7865,6 +10256,22 @@ mod tests {
                 checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
                 RangeState { element: pointer_element, ownership: Ownership::Shared, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true }
             );
+            checker.check_place(&Place::projected(
+                DESTINATION,
+                Projection::Element { index: START },
+                ValueType::Ref(pointee),
+                AccessMode::Read,
+            )).expect("clone preserves the destination's extent authentication");
+            assert!(checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(
+                    SOURCE,
+                    Projection::Element { index: START },
+                    ValueType::Ref(pointee),
+                    AccessMode::Read,
+                ),
+                transfer: LoadTransfer::MoveUnique,
+            }).is_err(), "clone must not leave a stale unique source-element fact");
         });
     }
 
@@ -8011,7 +10418,7 @@ mod tests {
                 }),
                 Err(InitialCheckError::MissingBoundsGuard {
                     index: START,
-                    count: ZERO,
+                    count: CAPACITY,
                     ..
                 })
             ));
@@ -8051,10 +10458,23 @@ mod tests {
             );
             checker.state.constants.remove(&COUNT);
             checker.state.guards.insert((ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY));
+            checker.state.guard_generations.insert(
+                (ComparisonOperator::LessEqualUnsigned, COUNT, CAPACITY),
+                [checker.current_generation(SOURCE).unwrap(), checker.current_generation(DESTINATION).unwrap()]
+                    .into_iter().collect(),
+            );
             checker.state.range_states.insert(
                 RangeIdentity { object: SOURCE, start: START, length: COUNT },
                 RangeState { element: pointer_element, ownership: Ownership::Unique, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: true, zero_width: false, zero_start: true },
             );
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            }).expect("dynamic source/destination bounds comparison");
+            checker.check(&Operation::Guard { condition: CONDITION, kind: GuardKind::Bounds })
+                .expect("dynamic source/destination bounds guard");
             assert_eq!(
                 checker.check(&Operation::MoveRange {
                     destination: pointer_range_place(DESTINATION, pointee, COUNT, AccessMode::Write),
@@ -8071,6 +10491,28 @@ mod tests {
                 checker.state.range_states[&RangeIdentity { object: SOURCE, start: START, length: COUNT }],
                 RangeState { element: pointer_element, ownership: Ownership::Consumed, allocation_class: Some(AllocationClass::ReferenceCounted), initialized: false, zero_width: false, zero_start: true }
             );
+            checker.check_place(&Place::projected(
+                DESTINATION,
+                Projection::Element { index: START },
+                ValueType::Ref(pointee),
+                AccessMode::Read,
+            )).expect("move preserves the destination's extent authentication");
+            assert!(matches!(
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(
+                        SOURCE,
+                        Projection::Element { index: START },
+                        ValueType::Ref(pointee),
+                        AccessMode::Read,
+                    ),
+                    transfer: LoadTransfer::CloneShared,
+                }),
+                Err(InitialCheckError::UnsupportedMemoryOperation {
+                    operation: "Load(uninitialized reference)",
+                    ..
+                })
+            ), "move must not leave a stale initialized source-element fact");
         });
     }
 
@@ -8166,7 +10608,7 @@ mod tests {
         checker.check(&Operation::ConstSize { destination: ZERO, value: 0 }).unwrap();
         checker.check(&Operation::ConstSize { destination: LENGTH, value: 1 }).unwrap();
         if prior_completeness {
-            checker.check_call(&[], &[], &[SOURCE], &[ResultContract::Fresh {
+            checker.check_current_signature_call(&[], &[], &[SOURCE], &[ResultContract::Fresh {
                 layout: list, class: AllocationClass::ReferenceCounted,
                 extent: ReturnedExtent::Counted { header_bytes: base, stride_bytes: stride },
             }]).unwrap();
@@ -8641,6 +11083,7 @@ mod tests {
                 object,
                 ObjectState {
                     identity: object,
+                    owner_generation: 0,
                     layout: buffer,
                     extent: Extent::Counted {
                         header_bytes: 4,
@@ -8654,6 +11097,7 @@ mod tests {
                     initialized_owned_slots: false,
                 },
             );
+            checker.bind_extent_generation(object).unwrap();
         }
         checker.state.exact_additions.insert(END, (START, LENGTH));
         let operation = Operation::CopyBytes {
@@ -8682,6 +11126,10 @@ mod tests {
             .state
             .guards
             .insert((ComparisonOperator::LessEqualUnsigned, END, CAPACITY));
+        checker.state.guard_generations.insert(
+            (ComparisonOperator::LessEqualUnsigned, END, CAPACITY),
+            BTreeSet::from([checker.current_generation(DESTINATION).unwrap()]),
+        );
         let destination_only = checker.snapshot();
         assert!(matches!(
             checker.check(&operation),
@@ -8692,18 +11140,10 @@ mod tests {
             .state
             .guards
             .insert((ComparisonOperator::LessEqualUnsigned, END, COUNT));
-        checker
-            .state
-            .guards
-            .insert((ComparisonOperator::LessUnsigned, START, COUNT));
-        checker.state.constants.insert(START, 0);
-        checker.state.constants.insert(LENGTH, 1);
-        checker.state.constants.insert(COUNT, 1);
-        checker.state.constants.insert(CAPACITY, 1);
-        checker
-            .state
-            .guards
-            .insert((ComparisonOperator::LessEqualUnsigned, LENGTH, COUNT));
+        checker.state.guard_generations.insert(
+            (ComparisonOperator::LessEqualUnsigned, END, COUNT),
+            BTreeSet::from([checker.current_generation(SOURCE).unwrap()]),
+        );
         checker.state.range_states.insert(
             RangeIdentity { object: SOURCE, start: START, length: LENGTH },
             RangeState {

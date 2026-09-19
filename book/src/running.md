@@ -4,9 +4,10 @@ Once a program type-checks you have several ways to run it. What separates them
 is not convenience but who supplies the authority and how tightly the host wraps
 the guest. All of them honour the same capability contract.
 
-witchy's production execution path compiles to WebAssembly. The tree-walking
-interpreter is an independent semantic oracle used by `witchy parity` and the
-test suite; a normal run doesn't pay for executing both backends.
+witchy's production execution path lowers checked source to canonical SafeWIR,
+admits it, encodes it as WebAssembly, and runs that Wasm. `witchy parity` also
+executes the same admitted SafeWIR in the canonical interpreter; it never falls
+back to the frozen source tree walker.
 
 ## Run a source file
 
@@ -77,7 +78,7 @@ The default is best effort because kernel enforcement differs by host. This
 outer fence is defense in depth; the capability boundary remains enforced by
 the linked host interface either way.
 
-## Check both semantic implementations
+## Check both canonical executors
 
 Use parity when changing language or standard-library behavior:
 
@@ -85,10 +86,11 @@ Use parity when changing language or standard-library behavior:
 witchy parity hello.witchy
 ```
 
-It runs the same checked program through the interpreter and the compiled
-WebAssembly backend and fails if output or error behavior differs. The same
-check covers the language, the standard library, capabilities, and every
-example in this book.
+It lowers and admits the program once, then compares the canonical SafeWIR
+interpreter with admitted unoptimized WebAssembly. Language acceptance tests
+also compare both executions with an independent expected result; agreement
+between the executors alone is diagnostic evidence, not the definition of the
+language.
 
 ## Run in the browser
 

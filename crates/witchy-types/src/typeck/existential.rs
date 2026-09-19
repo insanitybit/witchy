@@ -303,7 +303,7 @@ impl<'a> ExistentialCheck<'a> {
                     unreachable!("guard matched Dyn");
                 };
                 terr(format!(
-                    "borrowed existential values (`View(dyn {name}, 'a)` / `let('a) dyn {name}`) \
+                    "borrowed existential values (`&'a dyn {name}` / `&'a mut dyn {name}`) \
                      are excluded from RFC-0081 v1"
                 ))
             }

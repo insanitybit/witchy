@@ -1,16 +1,13 @@
-// Materialization for RFC-0083 borrowed views. `value.owned()` copies a borrowed
-// `View(T, 'a)` into an owned `T`, ending the view's borrow of its owner so the
-// owner may be mutated or moved again.
+// Explicit view materialization. `value.owned()` copies a lawful immutable
+// `&T` into an independent owned `T`, leaving the rooted view unchanged so the
+// owner may subsequently be mutated or moved.
 //
-// A view has no value representation of its own, so `owned` is the logical
-// identity on both backends. The checked last use ends the loan; compiled
-// ownership facts have already made the owner shared, so a later mutation
-// copy-on-writes and the returned value remains an independent snapshot. It is a
-// blanket impl over any type and dispatches through the ordinary typed method
-// path (RFC-0046), with the same shape as `std/convert`'s `Into`. On a non-view
-// value it is a plain identity. (This module is named
-// `borrow`, not `own`, because `own` is the parameter-convention keyword and so
-// cannot be a module name.)
+// `owned` is a checked typed operation, not a `View` representation conversion.
+// It is available only where copying is lawful; `must` resources, authority,
+// and view-bearing aggregates require their own
+// checked conversion. On an already-owned copyable value it is identity. The
+// method uses the ordinary typed dispatch path. The module is named `borrow`
+// because `own` is the parameter-convention keyword and cannot be a module name.
 trait Owned:
     fn owned(self) -> Self
 

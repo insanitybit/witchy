@@ -8,12 +8,9 @@
 // This is COMPILE-TIME structure (field names + declared type expressions),
 // distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
 
-// RFC-0080's typed boundary for whole generated items. `quote item:` and literal
-// whole-item `meta.item("...")` values retain compiler-owned item AST. For an
-// item quote with holes, the compiler substitutes typed expression, type, and
-// pattern nodes into that AST. Dynamic `item(source)` input is parsed once at
-// this boundary and then travels as a compiler-owned module fragment, including
-// any imports required by the generated declaration.
+// RFC-0080's typed boundary for whole generated items. `quote item:` values
+// retain compiler-owned item AST. For an item quote with holes, the compiler
+// substitutes typed expression, type, and pattern nodes into that AST.
 sealed type ItemSyntax:
     ItemSyntax(String)
 
@@ -36,10 +33,7 @@ sealed type TypeSyntax:
     TypeSyntax(String)
     CompilerTypeSyntax(String, String)
 
-// Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a
-// compiler-owned expression AST. The second constructor is compiler-internal;
-// structural call, field, and match builders retain it, while remaining
-// compatibility builders may still project canonical source.
+// Hole-free `quote expr:` values retain a compiler-owned expression AST.
 sealed type ExprSyntax:
     ExprSyntax(String)
     CompilerExprSyntax(String, String)
@@ -77,34 +71,25 @@ sealed type Ident:
     Ident(String)
     CallSiteIdent(String)
 
-// Parse one complete dynamic declaration (and its imports) into compiler-owned
-// syntax. Literal whole-item arguments take the parser's equivalent zero-runtime
-// path; dynamic input is rejected here unless it is exactly one declaration.
-pub fn item(source: String) -> ItemSyntax:
-    __meta_item(source)
+// Attach compiler-approved standard-module imports to an already structural
+// item. The item remains sealed and the import set is carried as a compiler
+// module fragment; no source is rendered or reparsed.
+pub fn item_with_imports(imports: List(String), item_syntax: ItemSyntax) -> ItemSyntax:
+    __meta_item_with_imports(imports, item_syntax)
 
-// Compiler-private bridge. Runtime modules cannot construct ItemSyntax, and
-// the linker limits this intrinsic to std/meta.
-fn __meta_item(source: String) -> ItemSyntax:
-    ItemSyntax(source)
-
-// Join parser-checked item quote fragments with typed syntax holes.
-pub fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.item_join_syntax: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    __meta_item(out)
+fn __meta_item_with_imports(imports: List(String), item_syntax: ItemSyntax) -> ItemSyntax:
+    __meta_item_with_imports(imports, item_syntax)
 
 // A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source
 // spelling, and compiler-reserved `__` names before generated source is parsed.
 pub fn ident(name: String) -> Ident:
     if !is_identifier(name):
         fail("meta.ident: invalid identifier `" + name + "`")
+    Ident(name)
+
+fn internal_ident(name: String) -> Ident:
+    if name != "__dynamic_field" && name != "__name":
+        fail("meta.internal_ident: unsupported compiler identifier")
     Ident(name)
 
 // An explicit invocation-site reference. The syntax constructor that consumes
@@ -156,6 +141,25 @@ fn expr_ident(id: Ident) -> ExprSyntax:
 // payload directly into an Expr node; it never renders and reparses source.
 fn __meta_expr_leaf(kind: String, payload: String) -> ExprSyntax:
     __meta_expr_leaf(kind, payload)
+
+// Reify exactly one compiler-issued tagged-literal hole. This does not parse a
+// name: the compiler accepts only a sentinel issued for the active tag
+// invocation, then substitutes the call-site expression after expansion.
+pub fn expr_tag_hole(marker: String) -> ExprSyntax:
+    __meta_expr_tag_hole(marker)
+
+fn __meta_expr_tag_hole(marker: String) -> ExprSyntax:
+    __meta_expr_tag_hole(marker)
+
+// Construct a nested tagged literal from validated tag identity, static parts,
+// and compiler-owned expression handles. The bridge stores an owned AST; it
+// never concatenates or reparses source. `parts` must have exactly one more
+// member than `holes`.
+pub fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_tagged(tag, parts, holes)
+
+fn __meta_expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_tagged(tag, parts, holes)
 
 // Interpreter-owned compile-time hook. It creates a compiler-owned expression
 // node carrying call-site origin; no source spelling can mint that origin.
@@ -257,10 +261,6 @@ pub fn type_frozen(ty: TypeSyntax) -> TypeSyntax:
 pub fn type_unique(ty: TypeSyntax) -> TypeSyntax:
     __meta_type_qualified("unique", ty)
 
-// A local unique-reference type qualifier.
-pub fn type_local_unique(ty: TypeSyntax) -> TypeSyntax:
-    __meta_type_qualified("local unique", ty)
-
 // Compiler-owned ownership qualifier construction.
 fn __meta_type_qualified(qualifier: String, ty: TypeSyntax) -> TypeSyntax:
     __meta_type_qualified(qualifier, ty)
@@ -285,18 +285,6 @@ pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
 fn __meta_type_expr(ty: TypeExpr) -> TypeSyntax:
     __meta_type_expr(ty)
 
-// Join parser-checked type quote fragments with typed type holes.
-pub fn type_join(parts: List(String), holes: List(TypeSyntax)) -> TypeSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.type_join: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + type_syntax_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    TypeSyntax(out)
-
 fn type_syntax_source(ty: TypeSyntax) -> String:
     match ty:
         TypeSyntax(source) -> source
@@ -311,11 +299,62 @@ pub fn expr_name(name: Ident) -> ExprSyntax:
 pub fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_call(callee, args)
 
+// Build a direct call from a compiler-validated identifier. Unlike `expr_call`,
+// this preserves the direct-call AST shape required by declaration-site
+// resolution and generic specialization; it never accepts source text.
+pub fn expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_named_call(name, args)
+
+pub fn expr_try(value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_try(value)
+
+pub fn expr_lambda(params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ExprSyntax:
+    __meta_expr_lambda(params, ret, body)
+
+pub fn expr_method_call(receiver: ExprSyntax, method: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_method_call(receiver, method, args)
+
+pub fn expr_qualified_call(module: Ident, name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_qualified_call(module, name, args)
+
+// A qualified call with a compiler-validated nominal path, such as
+// `sibling.Child.from_json`. Each path segment remains an Ident until the
+// compiler bridge creates the AST call name; callers cannot supply dotted or
+// otherwise unvalidated source strings.
+pub fn expr_qualified_call_path(path: List(Ident), member: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_qualified_call_path(path, member, args)
+
+// Derive-internal only: arbitrary macros must not mint the private descriptor
+// intrinsic; only derive_reflect uses this sealed bridge for field identity.
+fn expr_dynamic_descriptor(value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_dynamic_descriptor(value)
+
+fn __meta_expr_dynamic_descriptor(value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_dynamic_descriptor(value)
+
+fn __meta_expr_named_call(name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_named_call(name, args)
+
+fn __meta_expr_qualified_call(module: Ident, name: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_qualified_call(module, name, args)
+
+fn __meta_expr_qualified_call_path(path: List(Ident), member: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_qualified_call_path(path, member, args)
+
 // Compiler-owned structural composition for `expr_call`. It preserves syntax
 // identity such as `meta.call_site` through a constructed call; source-backed
 // syntax values remain supported by the compatibility path in the intrinsic.
 fn __meta_expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_call(callee, args)
+
+fn __meta_expr_try(value: ExprSyntax) -> ExprSyntax:
+    __meta_expr_try(value)
+
+fn __meta_expr_lambda(params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ExprSyntax:
+    __meta_expr_lambda(params, ret, body)
+
+fn __meta_expr_method_call(receiver: ExprSyntax, method: Ident, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_method_call(receiver, method, args)
 
 pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
     __meta_expr_field(base, field)
@@ -331,34 +370,73 @@ pub fn expr_int(n: Int) -> ExprSyntax:
 pub fn expr_bool(b: Bool) -> ExprSyntax:
     __meta_expr_leaf("bool", if b: "true" else: "false")
 
+// A compiler-owned string literal. The value is stored as an `Expr::Str`, so
+// quotes, backslashes, interpolation markers, and source-looking text remain
+// data; a compatibility source projection never determines the generated AST.
+pub fn expr_string(value: String) -> ExprSyntax:
+    __meta_expr_leaf("string", value)
+
+// A compiler-owned binary expression. `op` is admitted by the compiler's
+// fixed source-operator whitelist; it is never parsed as a source fragment.
+pub fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
+    __meta_expr_binary(op, lhs, rhs)
+
+// Interpreter-owned compile-time hook for `expr_binary`. Both children retain
+// their compiler-owned expression identity through the constructed AST node.
+fn __meta_expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
+    __meta_expr_binary(op, lhs, rhs)
+
+// A compiler-owned list expression. Each element stays a typed expression node;
+// the bridge never joins their rendered source.
+pub fn expr_list(elements: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_list(elements)
+
+fn __meta_expr_list(elements: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_list(elements)
+
+// A compiler-owned tuple expression. Each member remains an expression node;
+// tuple punctuation is introduced by the AST builder rather than source text.
+pub fn expr_tuple(elements: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_tuple(elements)
+
+fn __meta_expr_tuple(elements: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_tuple(elements)
+
+// One named record field. A tuple is sufficient here: both parts are already
+// sealed syntax values, so introducing another compiler-syntax type would add
+// a runtime-leakage surface without adding authority.
+pub fn record_field(name: Ident, value: ExprSyntax) -> (Ident, ExprSyntax):
+    (name, value)
+
+// Compiler-owned construction of an explicitly named record. The record head
+// and labels are definition-site identifiers; invocation-site identifiers are
+// references and are rejected rather than having their origin erased.
+pub fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax:
+    __meta_expr_record(name, fields, None)
+
+pub fn expr_record_update(name: Ident, fields: List((Ident, ExprSyntax)), base: ExprSyntax) -> ExprSyntax:
+    __meta_expr_record(name, fields, Some(base))
+
+// This builds only nominal records. Anonymous-record shapes require compiler
+// registration and are deliberately not forged from a formatted type name.
+fn __meta_expr_record(name: Ident, fields: List((Ident, ExprSyntax)), base: Option(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_record(name, fields, base)
+
 pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     if list.is_empty(arms):
         fail("meta.expr_match: at least one match arm is required")
     __meta_expr_match(scrutinee, arms)
 
+pub fn expr_block(body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_block(body)
+
+fn __meta_expr_block(body: BlockSyntax) -> ExprSyntax:
+    __meta_expr_block(body)
+
 // The scrutinee remains compiler-owned. Match arms are still the documented
 // source-backed compatibility boundary until MatchArmSyntax has owned nodes.
 fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     __meta_expr_match(scrutinee, arms)
-
-pub fn expr_raw(source: String) -> ExprSyntax:
-    __meta_expr(source)
-
-// Compiler-private parse boundary for complete dynamic expressions.
-fn __meta_expr(source: String) -> ExprSyntax:
-    ExprSyntax(source)
-
-// Join parser-checked expression fragments with mixed typed syntax holes.
-pub fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.expr_join_syntax: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    __meta_expr(out)
 
 fn expr_source(expr: ExprSyntax) -> String:
     match expr:
@@ -453,18 +531,6 @@ pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
 fn __meta_pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
     __meta_pattern_or(patterns)
 
-// Join parser-checked pattern quote fragments with typed pattern holes.
-pub fn pattern_join(parts: List(String), holes: List(PatternSyntax)) -> PatternSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.pattern_join: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + pattern_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    PatternSyntax(out)
-
 fn pattern_with_head(head: String, args: List(PatternSyntax)) -> PatternSyntax:
     if list.is_empty(args):
         PatternSyntax(head)
@@ -537,22 +603,6 @@ pub fn stmt_return_none() -> StmtSyntax:
 fn __meta_stmt_leaf(kind: String) -> StmtSyntax:
     __meta_stmt_leaf(kind)
 
-// A source-backed statement wrapper for parser-checked `quote stmt:`.
-pub fn stmt_raw(source: String) -> StmtSyntax:
-    StmtSyntax(source)
-
-// Join parser-checked statement quote fragments with typed syntax holes.
-pub fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.stmt_join_syntax: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    StmtSyntax(out)
-
 pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
     if list.is_empty(stmts) && option.is_none(tail):
         fail("meta.block: body must contain at least one statement or tail expression")
@@ -562,22 +612,6 @@ pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
 // expression are transferred directly instead of being projected to source.
 fn __meta_block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
     __meta_block(stmts, tail)
-
-// A source-backed block wrapper for parser-checked `quote block:`.
-pub fn block_raw(source: String) -> BlockSyntax:
-    BlockSyntax(source)
-
-// Join parser-checked block quote fragments with typed syntax holes.
-pub fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.block_join_syntax: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    BlockSyntax(out)
 
 // A function parameter and function item constructors. The single-expression
 // form now delegates to the block form so item generation has one body shape.
@@ -605,6 +639,14 @@ fn __meta_function_block(public: Bool, name: Ident, params: List(ParamSyntax), r
 pub fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
     __meta_impl_block(trait_ty, target_ty, items)
 
+// Structural impl construction with typed conditional bounds. Each pair is
+// `(type_parameter, trait)`; the compiler turns it directly into ImplDef bounds.
+pub fn impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: List((Ident, Ident)), items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_impl_block_where(trait_ty, target_ty, bounds, items)
+
+fn __meta_impl_block_where(trait_ty: TypeSyntax, target_ty: TypeSyntax, bounds: List((Ident, Ident)), items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_impl_block_where(trait_ty, target_ty, bounds, items)
+
 fn __meta_impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
     __meta_impl_block(trait_ty, target_ty, items)
 
@@ -622,8 +664,9 @@ type TypeExpr:
     TTuple(List(TypeExpr))
     TFn(List(TypeExpr), TypeExpr, List(String), Bool, Bool)
     TQualified(String, TypeExpr)
-    TBorrowed(TypeExpr, String)
-    TReference(String, TypeExpr, String)
+    // A rooted immutable view owns its backing-root carrier.  It has neither a
+    // lifetime name nor a mutable/access-kind variant in reflection.
+    TView(TypeExpr)
 
 // The declaration shape. `TypeUninhabited` is intentionally not called "unit":
 // a fieldless declaration has no constructor and therefore no values.
@@ -709,7 +752,11 @@ fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> Li
 pub fn type_source(ty: TypeExpr) -> String:
     match ty:
         TNamed(name, args) ->
-            if list.is_empty(args):
+            // Slice descriptors retain their element argument for structural
+            // reflection, but `name` is already the complete `[a]` spelling.
+            if name.starts_with("["):
+                name
+            else if list.is_empty(args):
                 name
             else:
                 name + "(" + list.join(type_sources(args), ", ") + ")"
@@ -719,12 +766,7 @@ pub fn type_source(ty: TypeExpr) -> String:
             let prefix = prefix + if once: "once " else: ""
             prefix + "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
         TQualified(q, inner) -> q + " " + type_source(inner)
-        TBorrowed(inner, lifetime) -> "&'" + lifetime + " " + type_source(inner)
-        TReference(kind, inner, lifetime) ->
-            if kind == "shared":
-                "&'" + lifetime + " " + type_source(inner)
-            else:
-                "&'" + lifetime + " " + kind + " " + type_source(inner)
+        TView(inner) -> "&" + type_source(inner)
 
 // `derive(Show)` -> constructor-shaped rendering with each field/payload rendered
 // through its own `Show` impl. Primitive fields still match structural
@@ -732,7 +774,66 @@ pub fn type_source(ty: TypeExpr) -> String:
 // form. Generic parameters carry a `: Show` bound, so the same code path compiles
 // coherently on both backends.
 pub fn derive_show(t: TypeInfo) -> ItemSyntax:
-    item(derive_show_source(t))
+    let self_expr = expr_name(ident("self"))
+    let body = match t.kind:
+        TypeRecord -> record_show_expr(t.fields, self_expr, t.name)
+        _ ->
+            var arms: List(MatchArmSyntax) = []
+            for v in t.variants:
+                var pats: List(PatternSyntax) = []
+                var vals: List(ExprSyntax) = []
+                var i = 0
+                for _ft in v.field_type_exprs:
+                    let p = fresh("p")
+                    pats.push(pattern_var(p))
+                    vals.push(expr_named_call(ident("show"), [expr_name(p)]))
+                    i = i + 1
+                let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
+                let rendered = show_ctor_expr(v.name, vals)
+                arms.push(match_arm(pat, rendered))
+            expr_match(self_expr, arms)
+    let method = function(false, ident("show"), [param(ident("self"), type_expr(TNamed(t.name, type_params(t.params))) )], Some(type_named(ident("String"), [])), body)
+    impl_block_where(type_named(ident("Show"), []), type_expr(TNamed(t.name, type_params(t.params))), bound_list(t.params, "Show"), [method])
+
+fn type_params(params: List(String)) -> List(TypeExpr):
+    var out: List(TypeExpr) = []
+    for p in params:
+        out.push(TNamed(p, []))
+    out
+
+fn bound_list(params: List(String), trait_name: String) -> List((Ident, Ident)):
+    var out: List((Ident, Ident)) = []
+    for p in params:
+        if !p.starts_with("'"):
+            out.push((ident(p), ident(trait_name)))
+    out
+
+fn show_ctor_expr(name: String, values: List(ExprSyntax)) -> ExprSyntax:
+    var out: ExprSyntax = expr_string(name)
+    if !list.is_empty(values):
+        out = expr_binary("+", out, expr_string("("))
+        var i = 0
+        for value in values:
+            if i > 0:
+                out = expr_binary("+", out, expr_string(", "))
+            out = expr_binary("+", out, value)
+            i = i + 1
+        out = expr_binary("+", out, expr_string(")"))
+    out
+
+fn record_show_expr(fields: List(FieldInfo), self_expr: ExprSyntax, name: String) -> ExprSyntax:
+    var out: ExprSyntax = expr_string(name)
+    if !list.is_empty(fields):
+        out = expr_binary("+", out, expr_string("("))
+        var i = 0
+        for f in fields:
+            if i > 0:
+                out = expr_binary("+", out, expr_string(", "))
+            let field = expr_field(self_expr, ident(f.name))
+            out = expr_binary("+", out, expr_named_call(ident("show"), [field]))
+            i = i + 1
+        out = expr_binary("+", out, expr_string(")"))
+    out
 
 fn derive_show_source(t: TypeInfo) -> String:
     let head = "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n"
@@ -775,7 +876,8 @@ fn variant_show_arm(v: VariantInfo) -> String:
 
 // `derive(Eq)` → the total-equality marker. Refines `PartialEq` (derive both).
 pub fn derive_eq(t: TypeInfo) -> ItemSyntax:
-    item(derive_eq_source(t))
+    let methodless: List(ItemSyntax) = []
+    impl_block_where(type_named(ident("Eq"), []), type_expr(TNamed(t.name, type_params(t.params))), bound_list(t.params, "Eq"), methodless)
 
 fn derive_eq_source(t: TypeInfo) -> String:
     "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + "\n"
@@ -784,7 +886,49 @@ fn derive_eq_source(t: TypeInfo) -> String:
 // per field, so it is content-correct on both backends: a record compares each
 // field with `==`; a sum type matches the variant and compares payloads.
 pub fn derive_partial_eq(t: TypeInfo) -> ItemSyntax:
-    item(derive_partial_eq_source(t))
+    let self_expr = expr_name(ident("self"))
+    let other_expr = expr_name(ident("other"))
+    let body = match t.kind:
+        TypeRecord -> record_eq_expr(t.fields, self_expr, other_expr)
+        _ ->
+            var arms: List(MatchArmSyntax) = []
+            for v in t.variants:
+                var pats: List(PatternSyntax) = []
+                var opats: List(PatternSyntax) = []
+                var terms: List(ExprSyntax) = []
+                var i = 0
+                for _ft in v.field_type_exprs:
+                    let p = fresh("p")
+                    let o = fresh("o")
+                    pats.push(pattern_var(p))
+                    opats.push(pattern_var(o))
+                    terms.push(expr_binary("==", expr_name(p), expr_name(o)))
+                    i = i + 1
+                let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
+                let op = if list.is_empty(opats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), opats)
+                let same = if list.is_empty(terms): expr_bool(true) else: join_binary("&&", terms)
+                arms.push(match_arm(pat, expr_match(other_expr, [match_arm(op, same), match_arm(pattern_wildcard(), expr_bool(false))])))
+            expr_match(self_expr, arms)
+    let target = type_expr(TNamed(t.name, type_params(t.params)))
+    let method = function(false, ident("eq"), [param(ident("self"), target), param(ident("other"), target)], Some(type_named(ident("Bool"), [])), body)
+    impl_block_where(type_named(ident("PartialEq"), []), target, bound_list(t.params, "PartialEq"), [method])
+
+fn join_binary(op: String, values: List(ExprSyntax)) -> ExprSyntax:
+    var out = list.at(values, 0)
+    var i = 1
+    while i < list.length(values):
+        out = expr_binary(op, out, list.at(values, i))
+        i = i + 1
+    out
+
+fn record_eq_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_expr: ExprSyntax) -> ExprSyntax:
+    if list.is_empty(fields):
+        expr_bool(true)
+    else:
+        var terms: List(ExprSyntax) = []
+        for f in fields:
+            terms.push(expr_binary("==", expr_field(self_expr, ident(f.name)), expr_field(other_expr, ident(f.name))))
+        join_binary("&&", terms)
 
 fn derive_partial_eq_source(t: TypeInfo) -> String:
     let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n"
@@ -846,110 +990,139 @@ fn reflect_call(ty: TypeExpr, value: String) -> String:
 // record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
 // over variants to `MVariant`. (The module must `import reflect`; caller checks.)
 pub fn derive_reflect(t: TypeInfo) -> ItemSyntax:
-    item(derive_reflect_source(t))
+    let target = type_expr(TNamed(t.name, type_params(t.params)))
+    let self_expr = expr_name(ident("self"))
+    let reflect_body = match t.kind:
+        TypeRecord ->
+            var pairs: List(ExprSyntax) = []
+            for f in t.fields:
+                pairs.push(expr_tuple([expr_string(f.name), reflect_call_expr(f.type_expr, expr_field(self_expr, ident(f.name)))]))
+            qualified_call("reflect", "MRecord", [expr_string(t.name), expr_list(pairs)])
+        _ ->
+            var arms: List(MatchArmSyntax) = []
+            for v in t.variants:
+                var pats: List(PatternSyntax) = []
+                var vals: List(ExprSyntax) = []
+                var i = 0
+                for ft in v.field_type_exprs:
+                    let p = fresh("p")
+                    pats.push(pattern_var(p))
+                    vals.push(reflect_call_expr(ft, expr_name(p)))
+                    i = i + 1
+                let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
+                arms.push(match_arm(pat, qualified_call("reflect", "MVariant", [expr_string(t.name), expr_string(v.name), expr_list(vals)])))
+            expr_match(self_expr, arms)
+    let reflect_method = function(false, ident("reflect"), [param(ident("self"), target)], Some(type_qualified(ident("reflect"), ident("Mirror"), [])), reflect_body)
+    let methods = match t.kind:
+        TypeRecord -> [reflect_method, function(false, internal_ident("__dynamic_field"), [param(ident("self"), target), param(internal_ident("__name"), type_named(ident("String"), []))], Some(type_named(ident("Option"), [type_qualified(ident("reflect"), ident("DynamicFieldValue"), [])])), dynamic_field_expr(t.fields, self_expr, 0))]
+        _ -> [reflect_method]
+    impl_block_where(type_named(ident("Reflect"), []), target, bound_list(t.params, "Reflect"), methods)
 
-fn dynamic_field_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+fn dynamic_field_expr(fields: List(FieldInfo), self_expr: ExprSyntax, index: Int) -> ExprSyntax:
     if index >= list.length(fields):
-        indent + "None\n"
+        expr_name(ident("None"))
     else:
         let f = list.at(fields, index)
-        indent + "if __name == \"" + f.name + "\":\n" + indent + "    Some(reflect.DynamicFieldValue(__dynamic_descriptor_id(self), __dynamic_descriptor_id(self." + f.name + "), self." + f.name + "))\n" + indent + "else:\n" + dynamic_field_body(fields, index + 1, indent + "    ")
+        let value = qualified_call("reflect", "DynamicFieldValue", [expr_dynamic_descriptor(self_expr), expr_dynamic_descriptor(expr_field(self_expr, ident(f.name))), expr_field(self_expr, ident(f.name))])
+        let yes = expr_call(expr_name(ident("Some")), [value])
+        let cond = expr_binary("==", expr_name(internal_ident("__name")), expr_string(f.name))
+        expr_match(cond, [match_arm(pattern_bool(true), yes), match_arm(pattern_wildcard(), dynamic_field_expr(fields, self_expr, index + 1))])
 
-fn derive_reflect_source(t: TypeInfo) -> String:
-    let head = "import reflect\n\nimpl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> reflect.Mirror:\n"
-    if let TypeRecord = t.kind:
-        var pairs = []
-        for f in t.fields:
-            list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")
-        head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n\n    fn __dynamic_field(self, __name: String) -> Option(reflect.DynamicFieldValue):\n" + dynamic_field_body(t.fields, 0, "        ")
-    else:
-        var arms = []
-        for v in t.variants:
-            var pats = []
-            var refls = []
-            var i = 0
-            for ft in v.field_type_exprs:
-                let pv = "p${i}"
-                list.push(pats, pv)
-                list.push(refls, reflect_call(ft, pv))
-                i = i + 1
-            var pat = v.name
-            if list.length(pats) > 0:
-                pat = v.name + "(" + list.join(pats, ", ") + ")"
-            list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
-        head + "        match self:\n" + list.join(arms, "\n") + "\n"
+fn qualified_call(module: String, name: String, args: List(ExprSyntax)) -> ExprSyntax:
+    expr_qualified_call(ident(module), ident(name), args)
+
+fn reflect_call_expr(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
+    match ty:
+        TNamed(name, _) ->
+            if name == "List": qualified_call("reflect", "reflect_list", [value])
+            else if name == "Option": qualified_call("reflect", "reflect_option", [value])
+            else: qualified_call("reflect", "reflect_one", [value])
+        _ -> qualified_call("reflect", "reflect_one", [value])
 
 // `derive(PublicState)` proves a value can cross a public/resumable boundary.
 // The generated method checks every field through the field type's own proof;
 // capabilities, functions, Bytes, host handles, and secrets fail because they
 // deliberately have no PublicState implementation.
 pub fn derive_public_state(t: TypeInfo) -> ItemSyntax:
-    item(derive_public_state_source(t))
+    let target = type_expr(TNamed(t.name, type_params(t.params)))
+    let self_expr = expr_name(ident("self"))
+    let body = match t.kind:
+        TypeRecord ->
+            var stmts: List(StmtSyntax) = []
+            for f in t.fields:
+                stmts.push(stmt_expr(qualified_call("public_state", "check", [expr_field(self_expr, ident(f.name))])))
+            block(stmts, Some(expr_tuple([])))
+        _ ->
+            var arms: List(MatchArmSyntax) = []
+            for v in t.variants:
+                var pats: List(PatternSyntax) = []
+                var stmts: List(StmtSyntax) = []
+                var i = 0
+                for _ft in v.field_type_exprs:
+                    let p = fresh("p")
+                    pats.push(pattern_var(p))
+                    stmts.push(stmt_expr(qualified_call("public_state", "check", [expr_name(p)])))
+                    i = i + 1
+                let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
+                let arm_body = expr_block(block(stmts, Some(expr_tuple([]))))
+                arms.push(match_arm(pat, arm_body))
+            function_body_block(expr_match(self_expr, arms))
+    let method = function_block(false, ident("public_state_proof"), [param(ident("self"), target)], None, body)
+    impl_block_where(type_named(ident("PublicState"), []), target, bound_list(t.params, "PublicState"), [method])
 
-fn derive_public_state_source(t: TypeInfo) -> String:
-    let head = "import public_state\n\nimpl PublicState for " + target_with_params(t) + where_each(t.params, "PublicState") + ":\n    fn public_state_proof(self):\n"
-    if let TypeRecord = t.kind:
-        if t.fields.is_empty():
-            head + "        Nil\n"
-        else:
-            var checks: List(String) = []
-            for field in t.fields:
-                checks.push("        public_state.check(self." + field.name + ")")
-            head + checks.join("\n") + "\n"
-    else:
-        var arms: List(String) = []
-        for variant in t.variants:
-            var patterns: List(String) = []
-            var checks: List(String) = []
-            var i = 0
-            for _field in variant.field_type_exprs:
-                let binding = "p${i}"
-                patterns.push(binding)
-                checks.push("                public_state.check(" + binding + ")")
-                i = i + 1
-            let pattern = if patterns.is_empty(): variant.name else: variant.name + "(" + patterns.join(", ") + ")"
-            if checks.is_empty():
-                arms.push("            " + pattern + " -> Nil")
-            else:
-                arms.push("            " + pattern + " ->\n" + checks.join("\n"))
-        head + "        match self:\n" + arms.join("\n") + "\n"
-
-// The lexicographic body for `derive(Ord)`: compare fields in declaration order
-// through the field type's total `Ord.compare`, not through `<`/`>`. Method
-// syntax avoids shadowing by a same-module free function named `compare`.
-fn ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
-    if index >= list.length(fields):
-        indent + "Equal\n"
-    else:
-        let f = list.at(fields, index)
-        indent + "match self." + f.name + ".compare(other." + f.name + "):\n" + indent + "    Less -> Less\n" + indent + "    Greater -> Greater\n" + indent + "    Equal ->\n" + ord_lexicographic_body(fields, index + 1, indent + "        ")
-
-// The lexicographic body for `derive(PartialOrd)`: propagate an incomparable
-// field (`None`) instead of treating "neither less nor greater" as equality.
-fn partial_ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
-    if index >= list.length(fields):
-        indent + "Some(Equal)\n"
-    else:
-        let f = list.at(fields, index)
-        indent + "match self." + f.name + ".partial_compare(other." + f.name + "):\n" + indent + "    None -> None\n" + indent + "    Some(Less) -> Some(Less)\n" + indent + "    Some(Greater) -> Some(Greater)\n" + indent + "    Some(Equal) ->\n" + partial_ord_lexicographic_body(fields, index + 1, indent + "        ")
+fn function_body_block(expr: ExprSyntax) -> BlockSyntax:
+    block([], Some(expr))
 
 // `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the
 // caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
 pub fn derive_ord(t: TypeInfo) -> ItemSyntax:
-    item(derive_ord_source(t))
-
-fn derive_ord_source(t: TypeInfo) -> String:
-    "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Ordering:\n" + ord_lexicographic_body(t.fields, 0, "        ")
+    let target = type_expr(TNamed(t.name, type_params(t.params)))
+    let self_expr = expr_name(ident("self"))
+    let other_expr = expr_name(ident("other"))
+    let body = ord_lexicographic_expr(t.fields, self_expr, other_expr, 0)
+    let method = function(false, ident("compare"), [param(ident("self"), target), param(ident("other"), target)], Some(type_named(ident("Ordering"), [])), body)
+    impl_block_where(type_named(ident("Ord"), []), target, bound_list(t.params, "Ord"), [method])
 
 // `derive(PartialOrd)` → lexicographic `partial_compare` (records only).
 pub fn derive_partial_ord(t: TypeInfo) -> ItemSyntax:
-    item(derive_partial_ord_source(t))
+    let target = type_expr(TNamed(t.name, type_params(t.params)))
+    let self_expr = expr_name(ident("self"))
+    let other_expr = expr_name(ident("other"))
+    let body = partial_ord_lexicographic_expr(t.fields, self_expr, other_expr, 0)
+    let method = function(false, ident("partial_compare"), [param(ident("self"), target), param(ident("other"), target)], Some(type_named(ident("Option"), [type_named(ident("Ordering"), [])])), body)
+    impl_block_where(type_named(ident("PartialOrd"), []), target, bound_list(t.params, "PartialOrd"), [method])
 
-fn derive_partial_ord_source(t: TypeInfo) -> String:
-    "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + partial_ord_lexicographic_body(t.fields, 0, "        ")
+fn ord_lexicographic_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_expr: ExprSyntax, index: Int) -> ExprSyntax:
+    if index >= list.length(fields):
+        expr_name(ident("Equal"))
+    else:
+        let f = list.at(fields, index)
+        let compared = expr_method_call(expr_field(self_expr, ident(f.name)), ident("compare"), [expr_field(other_expr, ident(f.name))])
+        let equal = ord_lexicographic_expr(fields, self_expr, other_expr, index + 1)
+        expr_match(compared, [
+            match_arm(pattern_ctor(ident("Less"), []), expr_name(ident("Less"))),
+            match_arm(pattern_ctor(ident("Greater"), []), expr_name(ident("Greater"))),
+            match_arm(pattern_ctor(ident("Equal"), []), equal),
+        ])
+
+fn partial_ord_lexicographic_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_expr: ExprSyntax, index: Int) -> ExprSyntax:
+    if index >= list.length(fields):
+        expr_call(expr_name(ident("Some")), [expr_name(ident("Equal"))])
+    else:
+        let f = list.at(fields, index)
+        let compared = expr_method_call(expr_field(self_expr, ident(f.name)), ident("partial_compare"), [expr_field(other_expr, ident(f.name))])
+        let equal = partial_ord_lexicographic_expr(fields, self_expr, other_expr, index + 1)
+        expr_match(compared, [
+            match_arm(pattern_ctor(ident("None"), []), expr_name(ident("None"))),
+            match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Less"), [])]), expr_call(expr_name(ident("Some")), [expr_name(ident("Less"))])),
+            match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Greater"), [])]), expr_call(expr_name(ident("Some")), [expr_name(ident("Greater"))])),
+            match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Equal"), [])]), equal),
+        ])
 
 // A `Result`-producing decode of a `Json` value already in hand (recursive).
-fn json_decode_value(ty: TypeExpr, value: String) -> String:
+// Every node is built as compiler-owned syntax; in particular the postfix try
+// and callback lambda are AST nodes, not source fragments.
+fn json_decode_value(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
     match ty:
         // An `Option` value already in hand: JSON `null` decodes to `None`,
         // anything else applies the element decoder and wraps `Some`. Reuses
@@ -957,34 +1130,74 @@ fn json_decode_value(ty: TypeExpr, value: String) -> String:
         // at any depth - inside a `List`, another `Option`, or a record field.
         TNamed(name, args) ->
             if name == "Int":
-                "json.int_of(" + value + ")"
+                qualified_call("json", "int_of", [value])
             else if name == "Float":
-                "json.float_of(" + value + ")"
+                qualified_call("json", "float_of", [value])
             else if name == "Bool":
-                "json.bool_of(" + value + ")"
+                qualified_call("json", "bool_of", [value])
             else if name == "String":
-                "json.string_of(" + value + ")"
+                qualified_call("json", "string_of", [value])
             else if name == "List" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + "))"
+                let element = fresh("element")
+                let element_ty = type_qualified(ident("json"), ident("Json"), [])
+                let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
+                let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
+                let decode = expr_lambda(
+                    [param(element, element_ty)],
+                    Some(result_ty),
+                    json_decode_value(elem, expr_name(element)))
+                let array = expr_try(qualified_call("json", "array_of", [value]))
+                let mapped = qualified_call("list", "map", [array, decode])
+                qualified_call("result", "all", [mapped])
             else if name == "Option" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "json.optional(Some(" + value + "), fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + ")"
+                let element = fresh("element")
+                let element_ty = type_qualified(ident("json"), ident("Json"), [])
+                let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
+                let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
+                let decode = expr_lambda(
+                    [param(element, element_ty)],
+                    Some(result_ty),
+                    json_decode_value(elem, expr_name(element)))
+                let some = expr_call(expr_name(ident("Some")), [value])
+                qualified_call("json", "optional", [some, decode])
             else:
-                type_source(ty) + ".from_json(" + value + ")"
-        _ -> type_source(ty) + ".from_json(" + value + ")"
+                expr_qualified_call_path(nominal_path(name), ident("from_json"), [value])
+        TQualified(_, inner) -> json_decode_value(inner, value)
+        _ -> expr_call(expr_name(ident("fail")), [expr_string("derive(Deserialize): unsupported field type")])
+
+fn nominal_path(name: String) -> List(Ident):
+    var path: List(Ident) = []
+    for segment in name.split("."):
+        path.push(ident(segment))
+    path
 
 // Decode one record field from `object`: an Option reads with `get` (absent
 // allowed), everything else with `require`. Trails a `?` so it's a `let` initializer.
-fn json_decode_field(ty: TypeExpr, object: String, key: String) -> String:
+fn json_decode_field(ty: TypeExpr, object: ExprSyntax, key: String) -> ExprSyntax:
     match ty:
         TNamed(name, args) ->
             if name == "Option" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "json.optional(json.get(" + object + ", \"" + key + "\"), fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + ")?"
+                let element = fresh("element")
+                let element_ty = type_qualified(ident("json"), ident("Json"), [])
+                let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
+                let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
+                let decode = expr_lambda(
+                    [param(element, element_ty)],
+                    Some(result_ty),
+                    json_decode_value(elem, expr_name(element)))
+                expr_try(qualified_call("json", "optional", [
+                    qualified_call("json", "get", [object, expr_string(key)]),
+                    decode,
+                ]))
             else:
-                json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
-        _ -> json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
+                let required = expr_try(qualified_call("json", "require", [object, expr_string(key)]))
+                expr_try(json_decode_value(ty, required))
+        _ ->
+            let required = expr_try(qualified_call("json", "require", [object, expr_string(key)]))
+            expr_try(json_decode_value(ty, required))
 
 // `derive(Deserialize)` generates `from_json` for a record (the caller validates the
 // shape). It decodes and coerces each field, returning on the first error. There is
@@ -992,22 +1205,31 @@ fn json_decode_field(ty: TypeExpr, object: String, key: String) -> String:
 // `Into(Json)`) already encodes any value, so only this reconstruction is per-type.
 // The generated code uses only json/result/list/option.
 pub fn derive_deserialize(t: TypeInfo) -> ItemSyntax:
-    item(derive_deserialize_source(t))
-
-fn derive_deserialize_source(t: TypeInfo) -> String:
-    var lets = []
-    var names = []
-    var i = 0
+    let json_ty = type_qualified(ident("json"), ident("Json"), [])
+    let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
+    let target = type_expr(TNamed(t.name, type_params(t.params)))
+    let result_ty = type_named(ident("Result"), [target, error_ty])
+    let input = fresh("json")
+    var statements: List(StmtSyntax) = []
+    var names: List(ExprSyntax) = []
     for f in t.fields:
-        let local = "__field${i}"
-        list.push(lets, "        let " + local + " = " + json_decode_field(f.type_expr, "__j", f.name) + "\n")
-        list.push(names, local)
-        i = i + 1
-    let from_json = "    fn from_json(__j: json.Json) -> Result(Self, json.DeserializeError):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
-    // The generated body makes module-qualified calls (json.*, list.map, result.all);
-    // emitted source is parsed on its own, so it must carry those imports for the
-    // parser to qualify them (comptime merges them into the module). A generic type's
-    // impl carries its parameters and a `: Deserialize` bound per parameter - the same
-    // `target_with_params`/`where_each` convention every other standard derive uses -
-    // so `Box(a)` reconstructs coherently (each `a` field decodes via `a`'s bound).
-    "import json\nimport list\nimport result\n\nimpl Deserialize for " + target_with_params(t) + where_each(t.params, "Deserialize") + ":\n" + from_json
+        let local = fresh("field")
+        statements.push(stmt_let(false, local, None, json_decode_field(f.type_expr, expr_name(input), f.name)))
+        names.push(expr_name(local))
+    let constructed = expr_call(expr_name(ident(t.name)), names)
+    let success = expr_call(expr_name(ident("Ok")), [constructed])
+    let body = block(statements, Some(success))
+    let method = function_block(
+        false,
+        ident("from_json"),
+        [param(input, json_ty)],
+        Some(result_ty),
+        body)
+    let implementation = impl_block_where(
+        type_named(ident("Deserialize"), []),
+        target,
+        bound_list(t.params, "Deserialize"),
+        [method])
+    // The generated item makes module-qualified calls, so retain their
+    // standard-module imports in the compiler-owned module fragment.
+    item_with_imports(["json", "list", "result"], implementation)

@@ -19,32 +19,28 @@ master moves under you mid-task. §3 has the mechanics; the rule of thumb is
 
 ## 0. The one rule: converge before support
 
-Stable observable semantics converge before support
-([RFC-0135](../../../../rfcs/0135-stable-semantics-converge.md)).
-The interpreter (`crates/witchy-interp`) is a source-level oracle for
-`comptime`, tests, and parity; the compiled-WASM path
-(`crates/witchy-lower/src/codegen/`) is the user run path. Independent
-expected results adjudicate correctness. Backend agreement only proves
-the backends match.
+Stable observable semantics converge before support. RFC-0167 supersedes the
+dual source-runtime rule in RFC-0135: checked canonical SafeWIR is the single
+language implementation, its canonical interpreter is the executable oracle,
+and admitted Wasm is the production runtime. Independent expected results
+adjudicate correctness. Agreement between the two canonical executors only
+proves that they match.
 
-- **Stable language semantics:** interpreter and Wasm both match an
-  independent expected result. Focused `witchy parity` stays in the inner
-  loop.
-- **Experimental runtime representations:** Wasm-first with a named
-  interpreter debt (fixture, missing boundary, convergence milestone).
-  The interpreter loudly errors until that debt is paid.
-- **Pure optimizations** (SIMD, SROA, bounds elision): never implement
-  them in the interpreter. Compare optimized Wasm to scalar Wasm and the
-  expected result.
+- **Stable language semantics:** an independent expected result, the canonical
+  SafeWIR interpreter, and admitted unoptimized Wasm must agree.
+- **Source tree walker:** frozen for language semantics. Preserve its temporary
+  comptime/build duties, but do not add RFC-0167 views or new runtime semantics.
+- **Pure optimizations** (SIMD, SROA, bounds elision): compare optimized Wasm to
+  admitted unoptimized Wasm, the canonical interpreter, and the expected result.
 - **Capability, confinement, ABI security:** strict differential
   coverage. No debt.
-- **Full parity corpus:** stabilization, release, and periodic CI, not
-  every experimental slice.
+- **Full canonical conformance corpus:** stabilization, release, and periodic
+  CI, not every experimental slice.
 
-Disagreement is a **loud compile or runtime error, never a different
-answer.** If you add user-visible *stable* behavior, add a differential
-test with an expected result in `src/example_tests.rs`. `witchy parity
-<file>` is how you check that the backends agree.
+Disagreement is a **loud compile or runtime error, never a different answer.**
+If you add user-visible stable behavior, add an independent expected result and
+exercise both the canonical SafeWIR interpreter and admitted Wasm. Do not use
+the source interpreter as RFC-0167 acceptance evidence.
 
 ## 1. witchy the language — the 90% rundown
 
@@ -128,8 +124,9 @@ bind it or `let _ = …` it.
 **Failure is a value; there are no exceptions.** `Result(T, e)` / `Option(T)`
 with `?` to propagate, `? "msg"` to propagate with String context, and `??` as a
 lazy unwrap-or-default. Unexpected failure — out-of-bounds, `/0`,
-`string.to_int` on junk, NaN ordering, `fail(msg)` — **aborts on every backend**
-(a runtime error interpreted, a trap compiled). There is no truthiness: `""` and
+`string.to_int` on junk, NaN ordering, `fail(msg)` — **aborts in every canonical
+execution** (a runtime error in the SafeWIR interpreter, a trap in admitted
+Wasm). There is no truthiness: `""` and
 `[]` are values, not absences.
 
 **Pattern matching** has one grammar used in every binding position. `match` is
@@ -156,7 +153,8 @@ module-qualified alias (`list.map(xs, f)`). A module's `pub` types are qualified
 **Concurrency** is Go/CSP: `async`/`await`, `chan.spawn`, first-class typed
 channels, on a cooperative executor written in witchy. Tasks share no memory, so
 no locks and no data races, and the round-robin schedule is **deterministic** —
-identical output on both backends. Concurrency stays *inside* one VM; isolating
+identical output in the canonical interpreter and admitted Wasm. Concurrency
+stays *inside* one VM; isolating
 untrusted code means running it as its own sandboxed program, not as a task.
 
 **Writing witchy — the traps that actually bite:**
@@ -174,8 +172,9 @@ untrusted code means running it as its own sandboxed program, not as a task.
   fails if it drifts. Edit the doc-comment, then
   `witchy doc std/*.witchy > spec/stdlib.md`. Never hand-edit it.
 
-**Verify, don't assume:** `witchy <file>` (run), `witchy check <file>`
-(type-check), `witchy parity <file>` (both backends agree), `witchy caps <file>`
+**Verify, don't assume:** `witchy <file>` (admitted Wasm run), `witchy check <file>`
+(type-check), canonical conformance tests (SafeWIR interpreter plus admitted
+Wasm), `witchy caps <file>`
 (capability footprint), `witchy test <rune>`, `witchy fmt <file>`,
 `witchy which <name>` (find a stdlib symbol).
 
@@ -194,11 +193,11 @@ code belongs in the owning crate.**
 | `witchy-testkit` / `witchy-test-host` | backend-neutral fixture plans; the shared fixture host |
 | `witchy-syntax` | lexer, parser, AST, formatter, linker, AST-level passes |
 | `witchy-types` | typeck (HM unification), traits + monomorphization, runtime types |
-| `witchy-wir` | layout descriptors, structured IR, peephole, wasm-encoder backend |
+| `witchy-wir` | canonical SafeWIR and its interpreter, layouts, structured IR, peephole, wasm encoder |
 | `witchy-lower` | `codegen` (AST → WIR) and `analysis` (uniqueness / cap tokens) |
 | `witchy-confinement` | target-neutral confinement policy + platform providers |
 | `witchy-runtime` | runtime `Value`, native registry, Wasmtime sandbox |
-| `witchy-interp` | the interpreter (parity oracle), `comptime`, tagged literals |
+| `witchy-interp` | frozen source tree walker; temporary `comptime`/build and tagged-literal compatibility services |
 | `witchy-caps` | footprint analyzer, grant documents |
 | `witchy` (root) | CLI, LSP, wasm playground — composition only |
 
@@ -210,7 +209,7 @@ target-neutral crate and let platform-specific adapters consume it — never the
 other way around. Two exemplars already in the tree: `witchy-confinement`
 defines normalized policy and the Linux Landlock/seccomp provider consumes it
 without depending on compiler stages or Wasmtime; `witchy-testkit` defines
-backend-neutral plans and the interpreter/Wasmtime/browser adapters consume
+backend-neutral plans and canonical-interpreter/Wasmtime/browser adapters consume
 `witchy-test-host` rather than reimplementing fixture semantics. Follow that
 shape: policy and contracts point *down* the dependency DAG, enforcement points
 *up*.
@@ -386,7 +385,7 @@ The `/land` skill drives this end to end. `scripts/MERGE-QUEUE.md` is the
 operator's guide — read it before debugging or extending the queue.
 
 **Adversarial review is selective.** Before submitting a branch that touches
-parity-sensitive contracts (typeck, codegen, interpreter, `analysis.rs`, the
+canonical-runtime contracts (typeck, codegen, SafeWIR interpreter, `analysis.rs`, the
 wasm ABI), have a fresh-context reviewer read **only the diff** and try to
 reject it: every hunk must trace to the stated task, and green tests are not
 proof for changes the differential suite doesn't adjudicate. Skip the ceremony
@@ -418,17 +417,17 @@ Only when this page is genuinely insufficient:
   (executable examples). `spec/capabilities.md` — the security model.
   `spec/stdlib.md` — generated module-by-module API. `spec/architecture.md` —
   pipeline and workspace layout.
-- `CONTRIBUTING.md` — build/test/parity. `docs/agile-agent-playbook.md` — agent
-  process, boundaries, handoff format. `rfcs/0135-stable-semantics-converge.md`
-  — when dual implementation is required.
-- **Always check recent RFCs (`rfcs/`) for new language features.** The spec 
-  (`spec/language.md`) often lags behind newly implemented RFCs (e.g., RFC-0122 
-  introducing explicit `&'a T` references).
+- `CONTRIBUTING.md` — build/test/conformance. `docs/agile-agent-playbook.md` — agent
+  process, boundaries, handoff format. RFC-0167 is authoritative where it
+  supersedes RFC-0135's former dual-runtime requirement.
+- **Always check recent RFCs (`rfcs/`) for new language features.** The spec
+  (`spec/language.md`) often lags behind newly implemented RFCs; RFC-0167 removes
+  explicit lifetimes and mutable references in favor of immutable rooted views.
 - `book/src/` — narrative tour, ordered by `book/src/SUMMARY.md`.
   **`/witchy-docs`** is the skill for writing and reviewing it (and `spec/`):
   what may never appear in user docs, the executed-vs-static block trap, and the
   house voice.
 - Source of truth when docs disagree:
   `spec/` + `std/*.witchy` + independent expected results
-  (`src/example_tests/`, `tests/misc/semantic_conformance.rs`). The
-  interpreter is a source-level oracle, not the spec.
+  (`src/example_tests/`, `tests/misc/semantic_conformance.rs`). The canonical
+  SafeWIR interpreter is the executable oracle; the source tree walker is not.

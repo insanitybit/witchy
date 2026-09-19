@@ -284,14 +284,14 @@ use crate::{codegen, parser, typeck};
             // dict with String keys ($dict_new/insert/get_or/has/size →
             // $dict_find + $key_eq's $str_eq path) on the binary path.
             (
-                "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n    console.print(\"${dict.get_or(d, \"z\", 99)}\")\n    console.print(\"${dict.contains_key(d, \"b\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n",
+                "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    let _ = dict.insert(d, \"b\", 2)\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n    console.print(\"${dict.get_or(d, \"z\", 99)}\")\n    console.print(\"${dict.contains_key(d, \"b\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n",
                 vec!["1".to_string(), "99".to_string(), "true".to_string(), "false".to_string(), "2".to_string()],
             ),
             // dict iteration + remove ($dict_keys/values/pairs/remove). Asserts
             // order-independent facts (lengths, post-remove membership) so it's
             // robust to entry ordering.
             (
-                "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${list.length(dict.keys(d))}\")\n    console.print(\"${list.length(dict.values(d))}\")\n    console.print(\"${list.length(dict.pairs(d))}\")\n    var d2 = d\n    dict.remove(d2, \"a\")\n    console.print(\"${dict.length(d2)}\")\n    console.print(\"${dict.contains_key(d2, \"a\")}\")\n    console.print(\"${dict.contains_key(d2, \"b\")}\")\n",
+                "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    let _ = dict.insert(d, \"b\", 2)\n    console.print(\"${list.length(dict.keys(d))}\")\n    console.print(\"${list.length(dict.values(d))}\")\n    console.print(\"${list.length(dict.pairs(d))}\")\n    var d2 = d\n    let _ = dict.remove(d2, \"a\")\n    console.print(\"${dict.length(d2)}\")\n    console.print(\"${dict.contains_key(d2, \"a\")}\")\n    console.print(\"${dict.contains_key(d2, \"b\")}\")\n",
                 vec!["2".to_string(), "2".to_string(), "2".to_string(), "1".to_string(), "false".to_string(), "true".to_string()],
             ),
             // a capturing closure: the lambda closes over `k` (an Int local),

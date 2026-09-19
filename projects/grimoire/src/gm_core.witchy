@@ -215,7 +215,7 @@ pub fn build_options(args: List(String)) -> BuildOptions:
     var index = 0
     for value in args:
         if index == 0:
-            Nil
+            ()
         else if !pending.is_empty():
             if pending == "target":
                 target = value
@@ -282,9 +282,12 @@ type LockIntegrityError:
     LockDuplicateAlias(String)
     LockVendorMissing(String)
     LockVendorManifestMissing(String)
+    LockPrecompiledManifestMissing(String)
     LockRecordInvalid(String, String)
     LockRecordCoordinateMismatch(String, String, String, String)
     LockSourceHashMismatch(String)
+    LockPrecompiledArtifactInvalid(String, String)
+    LockPrecompiledByteMismatch(String, String)
 
 impl Show for LockIntegrityError:
     fn show(self) -> String:
@@ -297,9 +300,12 @@ impl Show for LockIntegrityError:
             LockDuplicateAlias(alias) -> "BLOCK: witchy.lock maps more than one registry dependency to vendor/${alias}"
             LockVendorMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} is missing"
             LockVendorManifestMissing(alias) -> "BLOCK: locked registry dependency vendor/${alias} has no witchy.toml"
+            LockPrecompiledManifestMissing(alias) -> "BLOCK: locked precompiled dependency vendor/${alias} has no coven-artifact.json"
             LockRecordInvalid(alias, reason) -> "BLOCK: vendor/${alias}/coven.json failed pinned-root verification — ${reason}"
             LockRecordCoordinateMismatch(alias, field, expected, actual) -> "BLOCK: vendor/${alias}/coven.json `${field}` is `${actual}`, but witchy.lock pins `${expected}`"
             LockSourceHashMismatch(alias) -> "BLOCK: vendor/${alias} source no longer matches its signed and locked hash"
+            LockPrecompiledArtifactInvalid(alias, reason) -> "BLOCK: vendor/${alias} precompiled artifact is not authenticated — ${reason}"
+            LockPrecompiledByteMismatch(alias, component) -> "BLOCK: vendor/${alias} precompiled ${component} bytes do not match the signed artifact manifest"
 
 impl Error for LockIntegrityError
 
@@ -1024,6 +1030,18 @@ pub fn manifest_upsert_dep(manifest: String, key: String, version: String) -> St
         let base = if manifest.ends_with("\n"): manifest else: "${manifest}\n"
         "${base}\n[dependencies]\n${entry}\n"
 
+// The only distinct manifest spelling for an authenticated external library.
+// Package identity and the exact resolved version remain the ordinary alias /
+// requirement and lockfile coordinate; duplicating either inline would create
+// an ambiguity between two authorities.
+pub fn manifest_upsert_precompiled_dep(manifest: String, key: String, version: String, module: String) -> String:
+    let entry = "\"${key}\" = { version = \"${version}\", kind = \"precompiled\", module = \"${module}\" }"
+    if manifest_has_dependencies(manifest):
+        rewrite_dependencies(manifest, key, entry)
+    else:
+        let base = if manifest.ends_with("\n"): manifest else: "${manifest}\n"
+        "${base}\n[dependencies]\n${entry}\n"
+
 // Whether the manifest already declares a `[dependencies]` section header.
 pub fn manifest_has_dependencies(manifest: String) -> Bool:
     var found = false
@@ -1164,6 +1182,7 @@ type VendoredRecordError:
     VendoredRecordMissingFootprint
     VendoredRecordFootprintNotArray
     VendoredRecordFootprintNonString
+    VendoredRecordPrecompiled(String)
 
 impl Show for VendoredRecordError:
     fn show(self) -> String:
@@ -1177,6 +1196,7 @@ impl Show for VendoredRecordError:
             VendoredRecordMissingFootprint -> "vendored coven.json has no `runtime_footprint` field"
             VendoredRecordFootprintNotArray -> "vendored coven.json `runtime_footprint` is not an array"
             VendoredRecordFootprintNonString -> "vendored coven.json `runtime_footprint` contains a non-string value"
+            VendoredRecordPrecompiled(reason) -> "vendored precompiled library is invalid: ${reason}"
 
 impl Error for VendoredRecordError
 
@@ -1414,7 +1434,7 @@ pub fn record_matches_coordinate(record: String, name: String, version: String) 
 
 // Fail on the first unexpected/traversing or duplicated path. Successful
 // validation proves the whole fetched file set is well-formed and unique.
-pub fn validate_source_files(files: List((String, String))) -> Result(Nil, SourceFileSetError):
+pub fn validate_source_files(files: List((String, String))) -> Result((), SourceFileSetError):
     var seen = []
     for path, _text in files:
         if !path_shape_ok(path):
@@ -1422,7 +1442,7 @@ pub fn validate_source_files(files: List((String, String))) -> Result(Nil, Sourc
         else if seen.contains(path):
             return Err(SourcePathDuplicated(path))
         seen.push(path)
-    Ok(Nil)
+    Ok(())
 
 type SourceFileSetError:
     SourcePathInvalid(String)

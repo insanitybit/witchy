@@ -1,22 +1,20 @@
 //! `comptime:` — compile-time, capability-free, ADDITIVE item generation
 //! (rfcs/language-evolution.md Phase 5).
 //!
-//! A comptime block is an ordinary witchy block executed AT COMPILE TIME with
-//! exactly one ambient ability: `print` (its emit channel). It cannot reach a
-//! capability — there is no parameter list to receive one — so its execution
-//! is deterministic by construction. Everything it prints is concatenated,
-//! parsed as witchy source, and APPENDED to the enclosing module before type
-//! checking and footprint analysis run: generated code is analyzed exactly
-//! like handwritten code, and nothing existing can be rewritten or removed,
-//! so no comptime block can launder authority out of a signature.
+//! A comptime block is an ordinary witchy block executed AT COMPILE TIME. It
+//! cannot reach a capability — there is no parameter list to receive one — so
+//! its execution is deterministic by construction. Typed `ItemSyntax` values
+//! are APPENDED to the enclosing module before type checking and footprint
+//! analysis run: generated code is analyzed exactly like handwritten code, and
+//! nothing existing can be rewritten or removed, so no comptime block can
+//! launder authority out of a signature. Source-string output is retired.
 //!
 //! v1 executes the block on the reference interpreter (the same zero-grant
-//! determinism contract the WASM build sandbox enforces structurally); the
-//! hard-isolation upgrade is mechanical because the channel is already
-//! "printed source in, items out".
+//! determinism contract the WASM build sandbox enforces structurally); typed
+//! compiler-owned syntax remains AST all the way back to this expander.
 
 use witchy_syntax::ast::{
-    BinOp, Block, CallableQualifiers, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
+    Block, CallableQualifiers, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
 };
 use witchy_syntax::origin::{ExpansionOrigin, OriginTable, SourceSpan};
 use std::hash::{Hash, Hasher};
@@ -31,10 +29,9 @@ use foldhash::{HashMap, HashMapExt as _};
 const MAX_COMPTIME_BLOCKS: usize = 256;
 // Per module, after generated `gen`/`async` helpers are lowered into real items.
 const MAX_COMPTIME_GENERATED_ITEMS: usize = 4096;
-const SOURCE_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:source:";
 
 /// Expand every `comptime:` block in `module` (consuming the items), running
-/// each and appending the items its output parses to. `name` is the module's
+/// each and appending its typed `ItemSyntax` output. `name` is the module's
 /// name, for error messages.
 pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
     expand_with_origins(name, module).map(|_| ())
@@ -93,13 +90,12 @@ fn expand_with_item_limit_and_origins(
             0
         };
 
-        // The block becomes `fn main(console: Console)` of a synthetic program
-        // carrying the enclosing module's imports. `emit(line)` is the legacy
-        // source emit channel; `emit_item(meta.ItemSyntax)` is the typed
-        // RFC-0080 migration boundary. `emit_item` calls an unspellable compiler
-        // operation so a compiler-owned item can remain AST all the way back to
-        // this expander. Direct `console.print(...)`
-        // remains legacy source output for compatibility. Linked recursively
+        // The block becomes a zero-argument `fn main()` in a synthetic,
+        // zero-capability program carrying the enclosing module's imports.
+        // `emit_item(meta.ItemSyntax)` is the typed RFC-0080 migration
+        // boundary. `emit_item` calls an unspellable compiler operation so a
+        // compiler-owned item can remain AST all the way back to this
+        // expander. Linked recursively
         // (a comptime block cannot itself contain `comptime` — it is an item,
         // not a statement).
         body.stmts.insert(
@@ -120,37 +116,6 @@ fn expand_with_item_limit_and_origins(
                             name: witchy_syntax::intrinsics::COMPILER_EMIT_ITEM.into(),
                             args: vec![Expr::Var("syntax_value".into())],
                         })],
-                        lines: vec![0],
-                        region: None,
-                    },
-                    ret: None,
-                    qualifiers: CallableQualifiers::ORDINARY,
-                },
-            },
-        );
-        if let Some(first) = body.lines.first().copied() {
-            body.lines.insert(0, first);
-        } else {
-            body.lines.push(0);
-        }
-        body.stmts.insert(
-            0,
-            witchy_syntax::ast::Stmt::Let {
-                ty: None,
-                name: "emit".into(),
-                mutable: false,
-                value: witchy_syntax::ast::Expr::Lambda {
-                    params: vec![Param {
-                        name: "line".into(),
-                        ty: Some(Type::Named("String".into(), Vec::new())),
-                        convention: Default::default(),
-                        default: None,
-                    }],
-                    body: Block {
-                        stmts: vec![witchy_syntax::ast::Stmt::Expr(marked_console_print(
-                            SOURCE_OUTPUT_MARKER,
-                            "line",
-                        ))],
                         lines: vec![0],
                         region: None,
                     },
@@ -202,7 +167,7 @@ fn expand_with_item_limit_and_origins(
             .filter(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m.as_str()))
             .cloned()
             .collect();
-        ensure_from_imports(&mut prog_from_imports, "meta", &["ItemSyntax", "item"]);
+        ensure_from_imports(&mut prog_from_imports, "meta", &["ItemSyntax"]);
         if !prog_imports.iter().any(|i| i == "meta") {
             prog_imports.push("meta".into());
         }
@@ -214,12 +179,8 @@ fn expand_with_item_limit_and_origins(
             comptime_only: false,
             attributes: Vec::new(),
             name: "main".into(),
-            params: vec![Param {
-                name: "console".into(),
-                ty: Some(Type::Named("Console".into(), Vec::new())),
-                convention: Default::default(),
-                default: None,
-            }],
+            type_params: Vec::new(),
+            params: Vec::new(),
             ret: None,
             body,
             bounds: Vec::new(),
@@ -312,46 +273,21 @@ fn item_limit_error(name: &str, max_generated_items: usize) -> String {
     )
 }
 
-fn marked_console_print(marker: &str, value_name: &str) -> Expr {
-    Expr::MethodCall {
-        receiver: Box::new(Expr::Var("console".into())),
-        method: "print".into(),
-        args: vec![Expr::Binary {
-            op: BinOp::Add,
-            lhs: Box::new(Expr::Str(marker.to_string())),
-            rhs: Box::new(Expr::Var(value_name.into())),
-        }],
-    }
-}
-
 fn decode_comptime_output(
     module_name: &str,
     invocation_line: u32,
     lines: Vec<String>,
     item_output: Vec<crate::interpreter::PositionedComptimeItem>,
 ) -> Result<(Module, OriginTable), String> {
-    if !lines.is_empty() && !item_output.is_empty() {
+    if !lines.is_empty() {
         return Err(
-            "mixed legacy source output (`emit`/`console.print`) with typed item output \
-             (`emit_item`); use one output channel per `comptime:` block"
+            "compile-time source output is retired; use typed `emit_item` with `quote item`"
                 .into(),
         );
     }
     if item_output.is_empty() {
-        let src = lines
-            .into_iter()
-            .map(|line| {
-                line.strip_prefix(SOURCE_OUTPUT_MARKER)
-                    .unwrap_or(&line)
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let emitted = witchy_syntax::parser::parse_module(&src).map_err(|e| {
-            format!(
-                "comptime block emitted source that does not parse: {e}\n--- emitted ---\n{src}"
-            )
-        })?;
+        let emitted = witchy_syntax::parser::parse_module("")
+            .expect("the empty module is always valid Witchy");
         let mut origins = OriginTable::default();
         record_emitted_items(
             &mut origins,
@@ -437,8 +373,8 @@ fn mark_typed_item_impl_compiler_generated(item: &mut Item) {
             }
         }
         Item::Impl(implementation) => {
-            // Both typed quotation and `meta.item(source)` arrive here only
-            // through the unspellable `emit_item` intrinsic. Preserve that
+            // Typed quotation arrives here only through the unspellable
+            // `emit_item` intrinsic. Preserve that
             // compiler-owned boundary so source validation can distinguish
             // generated private methods from user declarations.
             implementation.origin = ImplOrigin::CompilerGenerated;
@@ -564,10 +500,9 @@ fn merge_emitted_module(
     let n = emitted.items.len();
     origins.append_shifted(emitted_origins, item_offset);
     for mut item in emitted.items {
-        // The emitted items were parsed from a standalone blob, so every line
-        // number they carry is relative to that invisible text — a phantom offset
-        // that can point past the real file's EOF in a later type error (BUG-341).
-        // Re-stamp them to the `comptime:` block's own source line.
+        // Typed emitted items carry compiler-owned fragment lines. Re-stamp
+        // them to the `comptime:` block's own source line so later diagnostics
+        // remain anchored to the real file (BUG-341).
         stamp_item_lines(&mut item, block_line);
         module.items.push(item);
     }
@@ -937,7 +872,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn typed_item_impl_retains_compiler_ownership() {
+    fn quoted_item_impl_retains_compiler_ownership() {
         let src = r#"
 import meta
 
@@ -956,35 +891,6 @@ comptime:
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
             .expect("typed impl links");
-        let implementation = linked
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Item::Impl(implementation) => Some(implementation),
-                _ => None,
-            })
-            .expect("generated impl");
-
-        assert_eq!(implementation.origin, ImplOrigin::CompilerGenerated);
-    }
-
-    #[test]
-    fn parsed_typed_item_impl_retains_compiler_ownership() {
-        let src = r#"
-import meta
-
-type Point:
-    value: Int
-
-comptime fn build() -> ItemSyntax:
-    item("impl Point:\n    fn projected(self) -> Int:\n        self.value")
-
-comptime:
-    emit_item(build())
-"#;
-        let module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-            .expect("parsed typed impl links");
         let implementation = linked
             .items
             .iter()
@@ -1087,10 +993,14 @@ fn main(console: Console):
     fn generated_item_budget_allows_the_exact_boundary() {
         let src = r#"
 comptime:
-    emit("fn first() -> Int:")
-    emit("    1")
-    emit("fn second() -> Int:")
-    emit("    2")
+    emit_item(quote item:
+        fn first() -> Int:
+            1
+    )
+    emit_item(quote item:
+        fn second() -> Int:
+            2
+    )
 
 fn main():
     0
@@ -1105,12 +1015,18 @@ fn main():
     fn generated_item_budget_rejects_one_block_over_the_limit() {
         let src = r#"
 comptime:
-    emit("fn first() -> Int:")
-    emit("    1")
-    emit("fn second() -> Int:")
-    emit("    2")
-    emit("fn third() -> Int:")
-    emit("    3")
+    emit_item(quote item:
+        fn first() -> Int:
+            1
+    )
+    emit_item(quote item:
+        fn second() -> Int:
+            2
+    )
+    emit_item(quote item:
+        fn third() -> Int:
+            3
+    )
 
 fn main():
     0
@@ -1131,12 +1047,16 @@ fn main():
     fn generated_item_budget_is_cumulative_across_blocks() {
         let src = r#"
 comptime:
-    emit("fn first() -> Int:")
-    emit("    1")
+    emit_item(quote item:
+        fn first() -> Int:
+            1
+    )
 
 comptime:
-    emit("fn second() -> Int:")
-    emit("    2")
+    emit_item(quote item:
+        fn second() -> Int:
+            2
+    )
 
 fn main():
     0
@@ -1157,8 +1077,10 @@ fn main():
     fn generated_item_budget_counts_lowered_helpers() {
         let src = r#"
 comptime:
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    yield 1")
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            yield 1
+    )
 
 fn main():
     0
@@ -1179,12 +1101,16 @@ fn main():
     fn generated_item_budget_does_not_recount_retained_generators() {
         let src = r#"
 comptime:
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    yield 1")
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            yield 1
+    )
 
 comptime:
-    emit("fn ordinary() -> Int:")
-    emit("    1")
+    emit_item(quote item:
+        fn ordinary() -> Int:
+            1
+    )
 
 fn main():
     0
@@ -1199,14 +1125,18 @@ fn main():
     fn later_blocks_see_imports_required_by_retained_generators() {
         let src = r#"
 comptime:
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    yield 1")
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            yield 1
+    )
 
 comptime:
     let xs: List(Int) = iter.collect(iter.range(0, 1))
     for _ in xs:
-        emit("fn saw_iter() -> Bool:")
-        emit("    true")
+        emit_item(quote item:
+            fn saw_iter() -> Bool:
+                true
+        )
 "#;
 
         let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -1221,8 +1151,10 @@ comptime:
     fn generated_item_budget_excludes_temporary_derive_blocks() {
         let src = r#"
 comptime:
-    emit("type Generated derive(Show):")
-    emit("    value: Int")
+    emit_item(quote item:
+        type Generated derive(Show):
+            value: Int
+    )
 
 fn main():
     0
@@ -1237,8 +1169,10 @@ fn main():
     fn module_types_include_types_emitted_by_earlier_comptime_blocks() {
         let src = r#"
 comptime:
-    emit("type Generated:")
-    emit("    value: Int")
+    emit_item(quote item:
+        type Generated:
+            value: Int
+    )
 
 type Handwritten:
     value: Int
@@ -1251,10 +1185,14 @@ comptime:
             saw_generated = true
         if t.name == "Handwritten":
             saw_handwritten = true
-    emit("fn saw_generated() -> Bool:")
-    emit("    " + "${saw_generated}")
-    emit("fn saw_handwritten() -> Bool:")
-    emit("    " + "${saw_handwritten}")
+    emit_item(quote item:
+        fn saw_generated() -> Bool:
+            ${meta.expr_bool(saw_generated)}
+    )
+    emit_item(quote item:
+        fn saw_handwritten() -> Bool:
+            ${meta.expr_bool(saw_handwritten)}
+    )
 
 fn main(console: Console):
     console.print("${saw_generated()}")
@@ -1273,11 +1211,13 @@ fn main(console: Console):
     #[test]
     fn emitted_from_imports_bind_generated_items() {
         let src = r#"
+import json
+
 comptime:
-    emit("from json import Json")
-    emit("")
-    emit("pub fn generated(j: Json) -> Int:")
-    emit("    1")
+    emit_item(quote item:
+        pub fn generated(j: json.Json) -> Int:
+            1
+    )
 
 fn main(console: Console):
     console.print("ok")
@@ -1310,56 +1250,63 @@ fn main(console: Console):
     }
 
     #[test]
-    fn mixed_source_and_typed_item_output_is_rejected() {
+    fn legacy_compile_time_source_output_is_rejected() {
         fn link_error(src: &str) -> String {
             let module = witchy_syntax::parser::parse_module(src).expect("parse");
             crate::pipeline::link(vec![("main".into(), module)], "main")
-                .expect_err("mixed comptime channels must be rejected")
+                .expect_err("retired comptime source output must be rejected")
                 .message
         }
 
         let via_emit = r#"
 comptime:
     emit("fn legacy() -> Int:")
-    emit("    1")
-    emit_item(item("fn typed() -> Int:\n    2"))
-
-fn main(console: Console):
-    console.print("x")
 "#;
         let err = link_error(via_emit);
-        assert!(err.contains("mixed legacy source output"), "got: {err}");
+        assert!(err.contains("emit"), "got: {err}");
 
         let via_console_print = r#"
 comptime:
-    emit_item(item("fn typed() -> Int:\n    2"))
     console.print("fn legacy() -> Int:")
-    console.print("    1")
-
-fn main(console: Console):
-    console.print("x")
 "#;
         let err = link_error(via_console_print);
-        assert!(err.contains("mixed legacy source output"), "got: {err}");
+        assert!(err.contains("console"), "got: {err}");
     }
 
     #[test]
-    fn incomplete_typed_item_fragments_fail_at_construction() {
+    fn raw_item_fragments_are_retired() {
         let src = r#"
+import meta
+
 comptime:
     let head = "fn split_item() -> Int:"
-    let body = "    2"
-    emit_item(item(head))
-    emit_item(item(body))
+    meta.item(head)
+    emit_item(quote item:
+        fn must_not_merge() -> Int:
+            0
+    )
 
 fn main(console: Console):
-    console.print("${split_item()}")
+    console.print("unreachable")
 "#;
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
-            .expect_err("incomplete typed item fragments must fail")
+        let err = crate::pipeline::link(vec![("main".into(), module.clone())], "main")
+            .expect_err("raw item construction is retired during comptime expansion")
             .message;
-        assert!(err.contains("meta.item source does not parse"), "got: {err}");
+        assert!(
+            err.contains("module `meta`") && err.contains("function `item`"),
+            "got: {err}"
+        );
+
+        let mut expansion_probe = module;
+        super::expand_compile_time("main", &mut expansion_probe, &[])
+            .expect_err("retired comptime member must reject before later output merges");
+        assert!(
+            !expansion_probe.items.iter().any(|item| {
+                matches!(item, Item::Function(function) if function.name == "must_not_merge")
+            }),
+            "rejected comptime must not merge later structural output"
+        );
     }
 
     #[test]
@@ -1370,8 +1317,10 @@ type Point:
     y: Int
 
 comptime:
-    emit("fn made() -> Point:")
-    emit("    Point(x: 1, y: 2)")
+    emit_item(quote item:
+        fn made() -> Point:
+            Point(x: 1, y: 2)
+    )
 
 fn main(console: Console):
     let p = made()
@@ -1392,8 +1341,10 @@ fn main(console: Console):
 import show
 
 comptime:
-    emit("type Generated derive(Show):")
-    emit("    value: Int")
+    emit_item(quote item:
+        type Generated derive(Show):
+            value: Int
+    )
 
 fn main(console: Console):
     console.print(show.render(Generated(value: 7)))
@@ -1412,9 +1363,11 @@ fn main(console: Console):
 import iter
 
 comptime:
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    yield 1")
-    emit("    yield 2")
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            yield 1
+            yield 2
+    )
 
 fn main(console: Console):
     let xs: List(Int) = iter.collect(generated())
@@ -1432,14 +1385,22 @@ fn main(console: Console):
     fn expansion_retains_emitted_source_nodes_until_link_lowering() {
         let src = r#"
 comptime:
-    emit("type Point:")
-    emit("    x: Int")
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    yield 1")
-    emit("async fn delayed() -> Int:")
-    emit("    1")
-    emit("fn point() -> Point:")
-    emit("    Point(x: 1)")
+    emit_item(quote item:
+        type Point:
+            x: Int
+    )
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            yield 1
+    )
+    emit_item(quote item:
+        async fn delayed() -> Int:
+            1
+    )
+    emit_item(quote item:
+        fn point() -> Point:
+            Point(x: 1)
+    )
 "#;
 
         let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -1475,11 +1436,15 @@ comptime:
     fn lowered_generator_and_async_fanout_keep_valid_item_origins() {
         let src = r#"
 comptime:
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    yield 1")
-    emit("async fn delayed() -> Int:")
-    emit("    let value = task.done(1).await")
-    emit("    value")
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            yield 1
+    )
+    emit_item(quote item:
+        async fn delayed() -> Int:
+            let value = task.done(1).await
+            value
+    )
 "#;
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
@@ -1520,10 +1485,12 @@ comptime:
     fn emitted_generator_source_is_checked_before_lowering() {
         let generated = r#"
 comptime:
-    emit("gen fn generated() -> Iter(Int):")
-    emit("    region:")
-    emit("        yield 1")
-    emit("        0")
+    emit_item(quote item:
+        gen fn generated() -> Iter(Int):
+            region:
+                yield 1
+                0
+    )
 
 fn main(console: Console):
     console.print("unreachable")
@@ -1558,8 +1525,10 @@ fn main(console: Console):
     fn emitted_async_functions_are_lowered() {
         let src = r#"
 comptime:
-    emit("async fn generated() -> Int:")
-    emit("    7")
+    emit_item(quote item:
+        async fn generated() -> Int:
+            7
+    )
 
 async fn main(console: Console):
     let n = generated().await

@@ -318,13 +318,18 @@ fn item_str(s: &mut String, item: &Item, c: &mut Comments, next_item_line: u32) 
     }
 }
 
-fn sig(name: &str, params: &[Param], ret: &Option<Type>, bounds: &[(String, String, Vec<Type>)]) -> String {
+fn sig(name: &str, type_params: &[String], params: &[Param], ret: &Option<Type>, bounds: &[(String, String, Vec<Type>)]) -> String {
     // `impl Trait` params are stored desugared (a fresh `impltrait_N` type var
     // plus a bound). Render them back to `impl Trait` and omit those bounds from
     // the `where` clause, so the surface syntax round-trips through `witchy fmt`.
     let is_impl_var = |v: &str| v.starts_with("impltrait_");
     let mut h = String::new();
     h.push_str(name);
+    if !type_params.is_empty() {
+        h.push('[');
+        h.push_str(&type_params.join(", "));
+        h.push(']');
+    }
     h.push('(');
     for (i, p) in params.iter().enumerate() {
         if i > 0 {
@@ -413,7 +418,7 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments, uppe
         s.push_str("gen ");
     }
     s.push_str("fn ");
-    s.push_str(&sig(&f.name, &f.params, &f.ret, &f.bounds));
+    s.push_str(&sig(&f.name, &f.type_params, &f.params, &f.ret, &f.bounds));
     s.push_str(":\n");
     block(s, &f.body, depth + 1, c, upper);
 }
@@ -546,7 +551,7 @@ fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments, upper: u32) {
             s.push_str("pure ");
         }
         s.push_str("fn ");
-        s.push_str(&sig(&m.name, &m.params, &m.ret, &[]));
+        s.push_str(&sig(&m.name, &m.type_params, &m.params, &m.ret, &[]));
         match &m.default {
             Some(b) => {
                 s.push_str(":\n");
@@ -879,6 +884,14 @@ fn block_stmt(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, upper: u
         call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c, upper);
         return;
     }
+    if let Some((category, source)) = compiler_quote_source(e) {
+        pad(s, depth);
+        quote_source_at(s, category, &source, depth);
+        return;
+    }
+    if quote_call_argument(s, e, depth, true) {
+        return;
+    }
     match e {
         Expr::If { .. }
         | Expr::Match { .. }
@@ -969,6 +982,13 @@ fn value_or_block(s: &mut String, e: &Expr, depth: usize, c: &mut Comments, uppe
     if let Some((prefix, call, suffix)) = unwrap_block_lambda_call(e) {
         s.push_str(&prefix);
         call_block_lambda(s, &call_head(call).unwrap(), call_args(call), &suffix, depth, c, upper);
+        return;
+    }
+    if let Some((category, source)) = compiler_quote_source(e) {
+        quote_source_at(s, category, &source, depth);
+        return;
+    }
+    if quote_call_argument(s, e, depth, false) {
         return;
     }
     match e {
@@ -1231,7 +1251,95 @@ fn duration_literal(ms: i64) -> String {
     format!("{ms}ms")
 }
 
-/// Inline expression. Anything that could regroup on re-parse is parenthesized.
+fn quote_source_with_holes(parts: &Expr, holes: &Expr) -> Option<String> {
+    let (Expr::List(parts), Expr::List(holes)) = (parts, holes) else {
+        return None;
+    };
+    if parts.len() != holes.len() + 1 {
+        return None;
+    }
+    let mut source = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        let Expr::Str(part) = part else {
+            return None;
+        };
+        source.push_str(part);
+        if let Some(hole) = holes.get(index) {
+            source.push_str("${");
+            source.push_str(&expr(quote_hole_payload(hole)));
+            source.push('}');
+        }
+    }
+    Some(source)
+}
+
+/// The parser registers quote holes through these exact `meta` constructors.
+/// Recognize them only while reconstructing an enclosing compiler quote-holes
+/// intrinsic. A bare or differently-qualified `expr_hole` remains an ordinary
+/// user call and is printed inside the `${...}` payload unchanged.
+fn quote_hole_payload(hole: &Expr) -> &Expr {
+    let Expr::Call { name, args } = hole else {
+        return hole;
+    };
+    if matches!(
+        name.as_str(),
+        "meta.expr_hole" | "meta.type_hole" | "meta.pattern_hole"
+    ) && let [payload] = args.as_slice()
+    {
+        payload
+    } else {
+        hole
+    }
+}
+
+/// The compiler quote intrinsics have no surface spelling. Their payloads stay
+/// compiler-owned; the formatter reconstructs only the direct `quote category:`
+/// form and never a string-to-syntax bridge.
+fn compiler_quote_source(e: &Expr) -> Option<(&'static str, String)> {
+    let Expr::Call { name, args } = e else {
+        return None;
+    };
+    let fixed = |category: &'static str, args: &[Expr]| match args {
+        [Expr::Str(_handle), Expr::Str(source)] => Some((category, source.clone())),
+        _ => None,
+    };
+    let with_holes = |category: &'static str, args: &[Expr]| match args {
+        [Expr::Str(_handle), parts, holes] => {
+            quote_source_with_holes(parts, holes).map(|source| (category, source))
+        }
+        _ => None,
+    };
+    match name.as_str() {
+        crate::intrinsics::COMPILER_QUOTE_ITEM => fixed("item", args),
+        crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES => with_holes("item", args),
+        crate::intrinsics::COMPILER_QUOTE_EXPR => fixed("expr", args),
+        crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES => with_holes("expr", args),
+        crate::intrinsics::COMPILER_QUOTE_TYPE => fixed("type", args),
+        crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES => with_holes("type", args),
+        crate::intrinsics::COMPILER_QUOTE_PATTERN => fixed("pattern", args),
+        crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES => with_holes("pattern", args),
+        crate::intrinsics::COMPILER_QUOTE_STMT => fixed("stmt", args),
+        crate::intrinsics::COMPILER_QUOTE_STMT_HOLES => with_holes("stmt", args),
+        crate::intrinsics::COMPILER_QUOTE_BLOCK => fixed("block", args),
+        crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES => with_holes("block", args),
+        _ => None,
+    }
+}
+
+/// Render a direct quote through Witchy's canonical off-side syntax. `source`
+/// is compiler-owned parsed structure rendered by the compiler, not source that
+/// will be parsed through a public meta API.
+fn quote_source_at(s: &mut String, category: &str, source: &str, depth: usize) {
+    s.push_str("quote ");
+    s.push_str(category);
+    s.push_str(":\n");
+    for line in source.lines() {
+        pad(s, depth + 1);
+        s.push_str(line);
+        s.push('\n');
+    }
+}
+
 fn expr(e: &Expr) -> String {
     match e {
         Expr::Int(n) => n.to_string(),
@@ -1245,15 +1353,19 @@ fn expr(e: &Expr) -> String {
             }
         }
         Expr::Str(v) => string_lit(v),
-        // `tag"a${x}b"` — reconstruct from the static parts (escaped) and holes
-        // (raw source). `parts` has one more element than `holes`.
+        // `tag"a${x}b"` — reconstruct from static parts and either parser-owned
+        // source holes or compiler-owned structural hole ASTs. `parts` has one
+        // more element than `holes`.
         Expr::TaggedLit { tag, parts, holes, .. } => {
             let mut s = format!("{tag}\"");
             for (i, part) in parts.iter().enumerate() {
                 s.push_str(&tagged_part(part));
                 if let Some(hole) = holes.get(i) {
                     s.push_str("${");
-                    s.push_str(hole);
+                    match hole {
+                        TaggedHole::Source(source) => s.push_str(source),
+                        TaggedHole::Owned(expr) => s.push_str(&self::expr(expr)),
+                    }
                     s.push('}');
                 }
             }
@@ -1269,70 +1381,6 @@ fn expr(e: &Expr) -> String {
                 && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
             {
                 return format!("dynamic.runtime_type({source})");
-            }
-            // Hole-free RFC-0080 item quotation carries the parsed item in the
-            // module's compiler syntax table. Print its canonical source through
-            // the existing `meta.item` surface; the parser recognizes a literal
-            // whole-item payload and reconstructs the same compiler-owned node.
-            if name == crate::intrinsics::COMPILER_QUOTE_ITEM
-                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
-            {
-                return format!("meta.item({})", string_lit(source));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES
-                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
-            {
-                return format!("meta.item_join_syntax({}, {})", expr(parts), expr(holes));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_EXPR
-                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
-            {
-                return format!("meta.expr_raw({})", string_lit(source));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES
-                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
-            {
-                return format!("meta.expr_join_syntax({}, {})", expr(parts), expr(holes));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_TYPE
-                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
-            {
-                return format!("meta.type_join([{}], [])", string_lit(source));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES
-                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
-            {
-                return format!("meta.type_join({}, {})", expr(parts), expr(holes));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_PATTERN
-                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
-            {
-                return format!("meta.pattern_join([{}], [])", string_lit(source));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES
-                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
-            {
-                return format!("meta.pattern_join({}, {})", expr(parts), expr(holes));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_STMT
-                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
-            {
-                return format!("meta.stmt_raw({})", string_lit(source));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_STMT_HOLES
-                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
-            {
-                return format!("meta.stmt_join_syntax({}, {})", expr(parts), expr(holes));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_BLOCK
-                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
-            {
-                return format!("meta.block_raw({})", string_lit(source));
-            }
-            if name == crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES
-                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
-            {
-                return format!("meta.block_join_syntax({}, {})", expr(parts), expr(holes));
             }
             // `to_string`/`int_to_string` were retired in favor of string
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
@@ -1391,7 +1439,9 @@ fn expr(e: &Expr) -> String {
             format!("{}.{method}({})", operand(receiver, POSTFIX_PREC, false), comma(args))
         }
         Expr::Ctor { name, args } => {
-            if args.is_empty() {
+            if name == "Nil" && args.is_empty() {
+                "()".to_string()
+            } else if args.is_empty() {
                 name.clone()
             } else {
                 format!("{name}({})", comma(args))
@@ -1593,6 +1643,49 @@ fn comma(xs: &[Expr]) -> String {
     xs.iter().map(expr).collect::<Vec<_>>().join(", ")
 }
 
+/// Render a compiler-owned quotation in a direct or method-call's final
+/// argument position. `quote category:` is an off-side block, so an inline
+/// argument printer would otherwise expose the unspellable compiler intrinsic.
+/// The closing call parenthesis dedents out of the quote block; this is the
+/// grammar-backed counterpart to the existing trailing block-lambda rendering.
+///
+/// Only compiler-issued quote intrinsics take this path. Ordinary calls retain
+/// `expr`'s normal single-line rendering, and no public raw/join API is involved.
+fn quote_call_argument(s: &mut String, e: &Expr, depth: usize, at_line_start: bool) -> bool {
+    let (head, args) = match e {
+        Expr::Call { name, args } => (name.clone(), args.as_slice()),
+        Expr::MethodCall { receiver, method, args } => {
+            (format!("{}.{}", operand(receiver, POSTFIX_PREC, false), method), args.as_slice())
+        }
+        _ => return false,
+    };
+    let Some((category, source)) = args.last().and_then(compiler_quote_source) else {
+        return false;
+    };
+    // A quote opens an off-side block within the call. Keeping it final lets the
+    // enclosing `)` close that block without synthesizing an ambiguous comma
+    // continuation. Earlier arguments still render through the ordinary printer.
+    if args[..args.len() - 1]
+        .iter()
+        .any(|argument| compiler_quote_source(argument).is_some())
+    {
+        return false;
+    }
+    if at_line_start {
+        pad(s, depth);
+    }
+    s.push_str(&head);
+    s.push('(');
+    if args.len() > 1 {
+        s.push_str(&comma(&args[..args.len() - 1]));
+        s.push_str(", ");
+    }
+    quote_source_at(s, category, &source, depth);
+    pad(s, depth);
+    s.push_str(")\n");
+    true
+}
+
 /// Whether a call's LAST argument is a block-bodied lambda (no inline form) — the
 /// trailing-lambda shape that has to render across multiple lines.
 fn has_trailing_block_lambda(args: &[Expr]) -> bool {
@@ -1607,8 +1700,8 @@ fn unary_prefix(op: UnOp) -> &'static str {
         UnOp::Not => "!",
         UnOp::BitNot => "~",
         UnOp::Borrow => "&",
-        UnOp::BorrowMut => "&mut ",
-        UnOp::Deref => "*",
+        UnOp::BorrowMut => panic!("cannot format a migration-only mutable borrow as canonical source"),
+        UnOp::Deref => panic!("cannot format a migration-only dereference as canonical source"),
         UnOp::Move => "move ",
         UnOp::Await => "await ",
     }
@@ -1998,14 +2091,18 @@ fn decode_anon_union_type_name(name: &str) -> Option<Vec<(String, usize)>> {
 
 pub fn type_str(t: &Type) -> String {
     match t {
-        // (RFC-0083) A borrowed view canonicalizes to `View(T, 'a)`, which
-        // re-parses to the same node in every type position (idempotent). Both
-        // input (`let('a) T`) and result surfaces render this one way.
-        Type::Qualified(TypeQual::Borrow(life) | TypeQual::LegacyBorrow(life), inner) => {
-            format!("&'{life} {}", type_str(inner))
+        Type::Qualified(TypeQual::View, inner) => {
+            format!("&{}", type_str(inner))
         }
-        Type::Qualified(TypeQual::BorrowMut(life), inner) => {
-            format!("&'{life} mut {}", type_str(inner))
+        // A historical shared-reference node has exactly the immutable view
+        // meaning selected by RFC-0167, so canonical source drops its lifetime.
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), inner) => {
+            format!("&{}", type_str(inner))
+        }
+        // Mutable legacy references have no sound canonical source rewrite.
+        // They may only reach a migration diagnostic, never generated source.
+        Type::Qualified(TypeQual::BorrowMut(_), _) => {
+            panic!("cannot format a migration-only mutable reference as canonical source")
         }
         Type::Slice(elem) => format!("[{}]", type_str(elem)),
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
@@ -2029,6 +2126,9 @@ pub fn type_str(t: &Type) -> String {
             format!(".{{{}}}", parts.join(", "))
         }
         Type::Named(n, args) => {
+            if n == "Nil" && args.is_empty() {
+                return "()".to_string();
+            }
             if let Some(variants) = decode_anon_union_type_name(n) {
                 let total: usize = variants.iter().map(|(_, arity)| *arity).sum();
                 if total == args.len() {
@@ -2236,10 +2336,9 @@ fn canon_item(it: &mut Item) {
     }
 }
 
-/// Formatter output canonicalizes retired `let('a)` / `View(T, 'a)` syntax to
-/// `&'a T`. The parser retains legacy provenance for ABI compatibility, so the
-/// round-trip guard compares the one semantic reference relation rather than
-/// that source-only distinction.
+/// The migration round-trip guard erases shared legacy source provenance into
+/// RFC-0167's canonical immutable rooted-view node. Mutable legacy nodes are
+/// rejected before formatting; they cannot be rewritten as views.
 fn canon_type(ty: &mut Type) {
     match ty {
         Type::Named(_, arguments) | Type::Dyn(_, arguments) => {
@@ -2264,8 +2363,8 @@ fn canon_type(ty: &mut Type) {
         }
         Type::Slice(inner) => canon_type(inner),
         Type::Qualified(qualifier, inner) => {
-            if let TypeQual::LegacyBorrow(lifetime) = qualifier {
-                *qualifier = TypeQual::Borrow(lifetime.clone());
+            if matches!(qualifier, TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_)) {
+                *qualifier = TypeQual::View;
             }
             canon_type(inner);
         }
@@ -2735,7 +2834,13 @@ pub fn migrate_references_with_signatures(
     src: &str,
     external_signatures: &ReferenceParameterSignatures,
 ) -> Option<ReferenceMigration> {
-    let mut target = crate::parser::parse_module(src).ok()?;
+    let mut target = crate::parser::parse_reference_migration(src).ok()?;
+    // Mutable references and dereferences require a semantic rewrite to `var`,
+    // not textual replacement by an immutable view. This syntax-only helper has
+    // no proof for that rewrite, so it must stop before the canonical printer.
+    if module_contains_legacy_mutation(&target) {
+        return None;
+    }
     if !target.modes.iter().any(|mode| mode == "opt") {
         return None;
     }
@@ -2784,6 +2889,121 @@ pub fn migrate_references_with_signatures(
     })
 }
 
+fn module_contains_legacy_mutation(module: &Module) -> bool {
+    // A `*` may also be multiplication in source text, so inspect the parsed
+    // AST rather than using a textual filter. These type positions cover every
+    // declaration form the syntax formatter can print; expression positions are
+    // conservatively caught by the legacy `&mut` spelling before they format.
+    if module.items.iter().any(item_contains_legacy_mutable_type) {
+        return true;
+    }
+    module_has_unary_legacy_mutation(module)
+}
+
+fn item_contains_legacy_mutable_type(item: &Item) -> bool {
+    let has_function_type = |function: &Function| {
+        function.params.iter().filter_map(|parameter| parameter.ty.as_ref()).any(type_contains_legacy_mutable)
+            || function.ret.as_ref().is_some_and(type_contains_legacy_mutable)
+            || function.bounds.iter().flat_map(|(_, _, args)| args).any(type_contains_legacy_mutable)
+    };
+    match item {
+        Item::Function(function) => has_function_type(function),
+        Item::Type(definition) => definition.variants.iter().flat_map(|variant| &variant.fields).any(type_contains_legacy_mutable),
+        Item::TypeAlias { ty, .. } => type_contains_legacy_mutable(ty),
+        Item::Trait(trait_def) => trait_def.methods.iter().any(|method| {
+            method.params.iter().filter_map(|parameter| parameter.ty.as_ref()).any(type_contains_legacy_mutable)
+                || method.ret.as_ref().is_some_and(type_contains_legacy_mutable)
+        }),
+        Item::Impl(implementation) => implementation.trait_args.iter().chain(&implementation.target_args).any(type_contains_legacy_mutable)
+            || implementation.bounds.iter().flat_map(|(_, _, args)| args).any(type_contains_legacy_mutable)
+            || implementation.methods.iter().any(has_function_type),
+        Item::Const { .. } | Item::Comptime(_) => false,
+    }
+}
+
+fn type_contains_legacy_mutable(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(_, inner) | Type::Slice(inner) => type_contains_legacy_mutable(inner),
+        Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => args.iter().any(type_contains_legacy_mutable),
+        Type::RecordCompose { base, fields } => type_contains_legacy_mutable(base)
+            || fields.iter().any(|(_, field)| type_contains_legacy_mutable(field)),
+        Type::Fn(inputs, output, _, _) => inputs.iter().any(type_contains_legacy_mutable)
+            || type_contains_legacy_mutable(output),
+    }
+}
+
+fn module_has_unary_legacy_mutation(module: &Module) -> bool {
+    // `&mut` and unary `*` can only be produced from these spellings. Rejecting
+    // the migration source is intentionally conservative, but never emits a
+    // program with changed mutation semantics.
+    module.items.iter().any(|item| match item {
+        Item::Function(function) => block_has_unary_legacy_mutation(&function.body),
+        Item::Impl(implementation) => implementation.methods.iter().any(|function| block_has_unary_legacy_mutation(&function.body)),
+        Item::Trait(trait_def) => trait_def.methods.iter().filter_map(|method| method.default.as_ref()).any(block_has_unary_legacy_mutation),
+        Item::Comptime(block) => block_has_unary_legacy_mutation(block),
+        Item::Const { value, .. } => expr_has_unary_legacy_mutation(value),
+        Item::Type(_) | Item::TypeAlias { .. } => false,
+    })
+}
+
+fn block_has_unary_legacy_mutation(block: &Block) -> bool {
+    block.stmts.iter().any(|statement| match statement {
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. }
+        | Stmt::Yield(value) | Stmt::Expr(value) => expr_has_unary_legacy_mutation(value),
+        Stmt::Return(value) => value.as_ref().is_some_and(expr_has_unary_legacy_mutation),
+        Stmt::Break | Stmt::Continue => false,
+    })
+}
+
+fn expr_has_unary_legacy_mutation(expression: &Expr) -> bool {
+    match expression {
+        Expr::Unary { op: UnOp::BorrowMut | UnOp::Deref, .. } => true,
+        Expr::Unary { expr, .. } | Expr::Try(expr) => expr_has_unary_legacy_mutation(expr),
+        Expr::List(items) | Expr::Tuple(items) | Expr::Call { args: items, .. }
+        | Expr::Ctor { args: items, .. } | Expr::AnonCtor { args: items, .. } => {
+            items.iter().any(expr_has_unary_legacy_mutation)
+        }
+        Expr::LabeledCall { args, .. } | Expr::LabeledMethodCall { args, .. } => {
+            args.iter().any(|(_, argument)| expr_has_unary_legacy_mutation(argument))
+        }
+        Expr::MethodCall { receiver, args, .. } => expr_has_unary_legacy_mutation(receiver)
+            || args.iter().any(expr_has_unary_legacy_mutation),
+        Expr::Apply { func, args } => expr_has_unary_legacy_mutation(func)
+            || args.iter().any(expr_has_unary_legacy_mutation),
+        Expr::Field { base, .. } => expr_has_unary_legacy_mutation(base),
+        Expr::Lambda { body, .. } | Expr::Block(body) => block_has_unary_legacy_mutation(body),
+        Expr::RecordUpdate { base, fields, .. } => expr_has_unary_legacy_mutation(base)
+            || fields.iter().any(|(_, value)| expr_has_unary_legacy_mutation(value)),
+        Expr::Record { fields, spread, .. } => fields.iter().any(|(_, value)| expr_has_unary_legacy_mutation(value))
+            || spread.as_ref().is_some_and(|value| expr_has_unary_legacy_mutation(value)),
+        Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } | Expr::ExistentialUpcast { expr, .. } => {
+            expr_has_unary_legacy_mutation(expr)
+        }
+        Expr::ExistentialCall { receiver, args, .. } => expr_has_unary_legacy_mutation(receiver)
+            || args.iter().any(expr_has_unary_legacy_mutation),
+        Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            expr_has_unary_legacy_mutation(lhs) || expr_has_unary_legacy_mutation(rhs)
+        }
+        Expr::If { cond, then_block, else_block } => expr_has_unary_legacy_mutation(cond)
+            || block_has_unary_legacy_mutation(then_block)
+            || else_block.as_ref().is_some_and(block_has_unary_legacy_mutation),
+        Expr::Match { scrutinee, arms } => expr_has_unary_legacy_mutation(scrutinee)
+            || arms.iter().any(|arm| arm.guard.as_ref().is_some_and(expr_has_unary_legacy_mutation)
+                || expr_has_unary_legacy_mutation(&arm.body)),
+        Expr::While { cond, body } => expr_has_unary_legacy_mutation(cond) || block_has_unary_legacy_mutation(body),
+        Expr::For { iter, body, .. } | Expr::WhileLet { scrutinee: iter, body, .. } => {
+            expr_has_unary_legacy_mutation(iter) || block_has_unary_legacy_mutation(body)
+        }
+        Expr::Index { base, index } => expr_has_unary_legacy_mutation(base) || expr_has_unary_legacy_mutation(index),
+        Expr::TaggedLit { holes, .. } => holes.iter().any(|hole| match hole {
+            TaggedHole::Source(_) => false,
+            TaggedHole::Owned(expression) => expr_has_unary_legacy_mutation(expression),
+        }),
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => false,
+    }
+}
+
 pub fn reformat_references(src: &str) -> Option<String> {
     let migration = migrate_references(src)?;
     migration.ambiguities.is_empty().then_some(migration.source)
@@ -2797,7 +3017,7 @@ pub enum ReferenceParameterKind {
 
 fn reference_parameter_kind(ty: &Type) -> Option<ReferenceParameterKind> {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) => {
+        Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _) => {
             Some(ReferenceParameterKind::Shared)
         }
         Type::Qualified(TypeQual::BorrowMut(_), _) => Some(ReferenceParameterKind::Exclusive),
@@ -3032,7 +3252,7 @@ fn rewrite_reference_function(
             // preserve a second borrow operation.
             if matches!(
                 (parameter.convention, &*ty),
-                (Convention::Borrow, Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _))
+                (Convention::Borrow, Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), _))
                     | (Convention::Var, Type::Qualified(TypeQual::BorrowMut(_), _))
             )
             {
@@ -3071,18 +3291,18 @@ fn rewrite_reference_type(
                 .map(str::to_string);
             let locally_value_only = local_nominals.get(name).is_some_and(|has_lifetime| !has_lifetime);
             let builtin_value_only = matches!(name.as_str(), "String" | "Bytes");
-            if let Some(lifetime) = lifetime
+            if lifetime.is_some()
                 && (locally_value_only || builtin_value_only || (name == "List" && arguments.len() == 2))
             {
                 if arguments.len() == 1 {
                     *ty = Type::Qualified(
-                        TypeQual::Borrow(lifetime),
+                        TypeQual::View,
                         Box::new(Type::Named(name.clone(), Vec::new())),
                     );
                 } else if name == "List" && arguments.len() == 2 {
                     let element = arguments.remove(0);
                     *ty = Type::Qualified(
-                        TypeQual::Borrow(lifetime),
+                        TypeQual::View,
                         Box::new(Type::Named("List".into(), vec![element])),
                     );
                 }

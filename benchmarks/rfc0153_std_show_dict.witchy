@@ -8,7 +8,7 @@ import dict
 fn main(let console: Console, let clock: Clock):
     var values = dict.new()
     for i in 0..100000:
-        dict.insert(values, "key-${i}", i)
+        let _ = dict.insert(values, "key-${i}", i)
 
     let bench_t0 = clock.now_monotonic()
     let rendered = show(values)

@@ -17,9 +17,8 @@ sealed type RuntimeField:
     RuntimeField(String, RuntimeType)
 
 // Logical callable access metadata. Every position and projection names a
-// source type or loan relation. Borrow relations expose their logical storage
-// type and qualifier sites; compiler storage offsets and ownership-token
-// representations are intentionally absent.
+// source type and rooted-carrier relation. Compiler storage offsets and
+// ownership-token representations are intentionally absent.
 sealed type RuntimeAccessKind:
     AccessValue
     AccessBorrow
@@ -29,9 +28,7 @@ sealed type RuntimeAccessKind:
 sealed type RuntimeAccessQualifier:
     AccessFrozen
     AccessUnique
-    AccessLocalUnique
-    AccessView(Int)
-    AccessMutReference(Int)
+    AccessRootedView
 
 sealed type RuntimeQualifierPathStep:
     AccessTypeArgument(Int)
@@ -83,6 +80,7 @@ type DynamicError:
     TypeMismatch(RuntimeType)
     MissingField(String)
     MissingMethod(String)
+    BorrowedResult(String)
     ArityMismatch(String, Int, Int)
     ArgumentMismatch(Int, RuntimeType, RuntimeType)
     ResultMismatch(RuntimeType, RuntimeType)
@@ -198,8 +196,10 @@ pub fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> List(RuntimeAcce
     match site:
         RuntimeQualifierSite(_, qualifiers) -> qualifiers
 
-// Invoke only a descriptor-registered method. Arguments are checked against
-// exact authenticated descriptors before the compiler-generated typed call.
+// Invoke only a descriptor-registered owned-result method. Methods with a
+// borrowed result remain reflectable, but invocation returns `BorrowedResult`
+// before decoding an argument or calling the method: Dynamic never stores a
+// live reference.
 pub fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError):
     __dynamic_call(value, name, args)
 

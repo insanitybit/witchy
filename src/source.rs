@@ -1,14 +1,18 @@
 //! Native source discovery, loading, linking, and expansion.
 
 mod package_inputs;
-pub(crate) use package_inputs::{capture_packaged_source, capture_project_source, restore_packaged_artifact};
+mod precompiled_library;
+pub(crate) use package_inputs::{
+    capture_packaged_source, capture_project_source, capture_project_source_with_precompiled,
+    project_declares_precompiled_dependencies, restore_packaged_artifact,
+};
 use package_inputs::{AmbientFiles, SourceFiles};
 
 #[cfg(test)]
 #[path = "source/build_recipe_tests.rs"]
 mod build_recipe_tests;
 
-use witchy_syntax::{ast, format, parser, unstable};
+use witchy_syntax::{ast, format, parser};
 #[cfg(test)]
 use witchy_syntax::linker;
 use witchy_interp::{comptime, pipeline};
@@ -24,6 +28,20 @@ use std::sync::{Mutex, OnceLock};
 pub(crate) struct AuthenticatedDependency {
     pub path: std::path::PathBuf,
     pub owner: ModuleLoadIdentity,
+}
+
+/// A separately compiled dependency already verified against its signed Coven
+/// manifest. It has no source path: its only linker presence is the sealed
+/// declaration environment recovered from the authenticated sidecar.
+#[derive(Clone, Debug)]
+pub(crate) struct AuthenticatedPrecompiledDependency {
+    pub library: precompiled_library::PrecompiledLibrary,
+}
+
+pub(crate) struct PrecompiledCheckedModule {
+    pub checked: pipeline::CheckedModule,
+    pub entry: String,
+    pub external_libraries: Vec<witchy_runtime::runtime::AuthenticatedExternalLibrary>,
 }
 
 #[derive(Debug)]
@@ -136,6 +154,36 @@ pub(crate) fn link_file_checked(path: &str) -> Result<(pipeline::CheckedModule, 
     link_file_checked_with_deps(path, &std::collections::HashMap::new())
 }
 
+/// Build the compiler-owned static-evaluation recipe from the exact source
+/// bundle the loader authenticated.  The recipe rewrites Glamour's sealed
+/// static constructors before resolver/type/fact sealing; it is deliberately
+/// separate from ordinary `link_file_checked` until the admitted value ABI is
+/// ready to consume it.
+pub(crate) fn link_static_evaluation_file(
+    path: &str,
+) -> Result<(pipeline::CheckedStaticEvaluationRecipe, String), String> {
+    let entry_path = std::path::Path::new(path);
+    let entry_stem = entry_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?;
+    let entry_owner = workspace_module_owner(entry_path, entry_stem)?;
+    let (sources, entry, user_modules, owners) = load_file_modules_authenticated(
+        path,
+        &HashMap::new(),
+        entry_owner,
+        &HashMap::new(),
+    )?;
+    let recipe = pipeline::link_checked_static_evaluation_from_source_bundle(
+        sources,
+        &entry,
+        &user_modules,
+        owners,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((recipe, entry))
+}
+
 pub(crate) fn link_file_checked_with_deps(
     path: &str,
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
@@ -191,6 +239,52 @@ pub(crate) fn link_file_checked_authenticated_with_deps(
     Ok((checked, entry_stem))
 }
 
+/// Production loader-to-pipeline seam for verified precompiled libraries.
+/// Neither raw Wasm nor source declarations are accepted here: callers hand
+/// over only `PrecompiledLibrary::verify` products from the signed package
+/// resolver, and this function carries the paired runtime bytes onward.
+pub(crate) fn link_file_checked_authenticated_with_precompiled_deps(
+    path: &str,
+    deps: &std::collections::HashMap<String, AuthenticatedDependency>,
+    precompiled: &std::collections::HashMap<String, AuthenticatedPrecompiledDependency>,
+    entry_owner: ModuleLoadIdentity,
+) -> Result<PrecompiledCheckedModule, String> {
+    let paths = deps.iter().map(|(name, dep)| (name.clone(), dep.path.clone())).collect();
+    let dep_owners = deps.iter().map(|(name, dep)| (name.clone(), dep.owner.clone())).collect();
+    let precompiled_owners = precompiled.iter().map(|(name, dep)| (name.clone(), dep.library.owner().clone())).collect();
+    let (sources, entry, user_modules, owners) = load_file_modules_authenticated_with_precompiled(
+        path, &paths, entry_owner, &dep_owners, &precompiled_owners,
+    )?;
+    checked_precompiled_source_bundle(sources, entry, user_modules, owners, precompiled)
+}
+
+pub(crate) fn checked_precompiled_source_bundle(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: String,
+    user_modules: UserModuleSet,
+    owners: AuthenticatedModuleOwners,
+    precompiled: &std::collections::HashMap<String, AuthenticatedPrecompiledDependency>,
+) -> Result<PrecompiledCheckedModule, String> {
+    let mut declarations = Vec::with_capacity(precompiled.len());
+    let mut external_libraries = Vec::with_capacity(precompiled.len());
+    for (alias, dependency) in precompiled {
+        if !user_modules.contains(alias) {
+            // Match source dependencies: a resolver may carry a larger locked
+            // closure, but only an imported module becomes a source/link input
+            // or runtime library. This also keeps an unused artifact from
+            // changing the checked-source witness or launch requirements.
+            continue;
+        }
+        declarations.push(dependency.library.declaration_library(alias.clone())?);
+        external_libraries.push(dependency.library.runtime_library(alias.clone())?);
+    }
+    let environment = witchy_types::precompiled_declarations::PrecompiledDeclarationEnvironment::new(declarations)?;
+    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
+        sources, &entry, comptime::expand_compile_time, &user_modules, owners, environment,
+    ).map_err(|error| error.to_string())?;
+    Ok(PrecompiledCheckedModule { checked, entry, external_libraries })
+}
+
 #[cfg(test)]
 fn link_file_with_deps_mode(
     path: &str,
@@ -237,7 +331,7 @@ fn load_file_modules(
         }
         // Read a local source when present; the linker rejects it if its module
         // name is reserved by a non-identical bundled std module.
-        let (src, user_source) = match std::fs::read_to_string(&p) {
+        let src = match std::fs::read_to_string(&p) {
             Ok(s) => {
                 // Repository checks read canonical std sources from disk. Source
                 // identity, not the filesystem path, determines provenance: an
@@ -247,10 +341,10 @@ fn load_file_modules(
                 if user_source {
                     user_modules.insert(name.clone());
                 }
-                (s, user_source)
+                s
             }
             Err(e) => match bundled_module(&name) {
-                Some(s) => (s.to_string(), false),
+                Some(s) => s.to_string(),
                 None => {
                     // A misspelled `import` of a std module gets a suggestion.
                     let hint = if name != entry_stem {
@@ -266,9 +360,6 @@ fn load_file_modules(
         };
         let module = parse_module_cached(&p.canonicalize().unwrap_or_else(|_| p.clone()), &src)
             .map_err(|e| format!("{name}: {e}"))?;
-        if user_source {
-            emit_unstable_feature_warnings(&p, &src);
-        }
         for imp in &module.imports {
             if !loaded.contains(imp) {
                 let dep_path = deps
@@ -290,7 +381,19 @@ fn load_file_modules_authenticated(
     entry_owner: ModuleLoadIdentity,
     dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
 ) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
-    load_file_modules_with_files(path, deps, entry_owner, dep_owners, &AmbientFiles)
+    load_file_modules_authenticated_with_precompiled(
+        path, deps, entry_owner, dep_owners, &HashMap::new(),
+    )
+}
+
+fn load_file_modules_authenticated_with_precompiled(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+    entry_owner: ModuleLoadIdentity,
+    dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
+    precompiled_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
+) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
+    load_file_modules_with_files(path, deps, entry_owner, dep_owners, precompiled_owners, &AmbientFiles)
 }
 
 fn load_file_modules_with_files(
@@ -298,6 +401,7 @@ fn load_file_modules_with_files(
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
     entry_owner: ModuleLoadIdentity,
     dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
+    precompiled_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
     files: &dyn SourceFiles,
 ) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
     use std::collections::{HashSet, VecDeque};
@@ -321,6 +425,15 @@ fn load_file_modules_with_files(
             ));
         }
     }
+    if let Some(name) = precompiled_owners.keys().find(|name| deps.contains_key(*name)) {
+        return Err(format!("dependency `{name}` cannot be both source and precompiled"));
+    }
+    if let Some(name) = precompiled_owners.keys().find(|name| {
+        witchy_syntax::linker::STD_MODULES.contains(&name.as_str())
+            || witchy_syntax::linker::PLAYGROUND_MODULES.contains(&name.as_str())
+    }) {
+        return Err(format!("precompiled dependency `{name}` conflicts with a reserved toolchain module"));
+    }
     if let Some(name) = dep_owners.keys().find(|name| !deps.contains_key(*name)) {
         return Err(format!(
             "loader ownership was supplied for unknown dependency `{name}`"
@@ -338,21 +451,21 @@ fn load_file_modules_with_files(
         if !loaded.insert(name.clone()) {
             continue;
         }
-        let (source, owner, user_source) = match files.read(&module_path)? {
+        let (source, owner) = match files.read(&module_path)? {
             Some(source) => {
                 files.authenticate_module(&module_path, &proposed_owner, &source)?;
                 if bundled_module(&name) == Some(source.as_str()) {
-                    (source, bundled_module_owner(&name)?, false)
+                    (source, bundled_module_owner(&name)?)
                 } else {
                     if files.closed_package() && bundled_module(&name).is_some() {
                         return Err(format!("packaged source cannot replace bundled module `{name}`"));
                     }
                     user_modules.insert(name.clone());
-                    (source, proposed_owner, true)
+                    (source, proposed_owner)
                 }
             }
             None => match bundled_module(&name) {
-                Some(source) => (source.to_string(), bundled_module_owner(&name)?, false),
+                Some(source) => (source.to_string(), bundled_module_owner(&name)?),
                 None => {
                     let hint = if name != entry_stem {
                         witchy_syntax::linker::closest_std_module(&name)
@@ -371,9 +484,6 @@ fn load_file_modules_with_files(
         assignments.push((name.clone(), owner.clone()));
         let module = parse_module_cached(&module_path, &source)
             .map_err(|error| format!("{name}: {error}"))?;
-        if user_source {
-            emit_unstable_feature_warnings(&module_path, &source);
-        }
         for import in &module.imports {
             if loaded.contains(import) {
                 continue;
@@ -383,6 +493,18 @@ fn load_file_modules_with_files(
                     format!("authenticated dependency `{import}` is missing loader ownership")
                 })?;
                 queue.push_back((import.clone(), dep_path.clone(), dep_owner));
+                continue;
+            }
+            if let Some(owner) = precompiled_owners.get(import) {
+                // The sealed declaration module is injected by the checked
+                // pipeline, not read from a sibling path or SourceInputs.
+                // Unlike source dependencies it never enters `queue`, so it
+                // must join `loaded` here. This records exactly one loader
+                // assignment even if several source modules import it.
+                if loaded.insert(import.clone()) {
+                    user_modules.insert(import.clone());
+                    assignments.push((import.clone(), owner.clone()));
+                }
                 continue;
             }
             if bundled_module(import).is_some() {
@@ -415,27 +537,6 @@ fn load_file_modules_with_files(
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
         .map_err(|error| error.to_string())?;
     Ok((modules, entry_stem, user_modules, owners))
-}
-
-fn unstable_feature_warnings(path: &std::path::Path, source: &str) -> Vec<String> {
-    unstable::feature_uses(source)
-        .into_iter()
-        .map(|feature| {
-            format!(
-                "{}:{}:{}: warning: {}",
-                path.display(),
-                feature.line,
-                feature.column,
-                feature.warning,
-            )
-        })
-        .collect()
-}
-
-fn emit_unstable_feature_warnings(path: &std::path::Path, source: &str) {
-    for warning in unstable_feature_warnings(path, source) {
-        eprintln!("{warning}");
-    }
 }
 
 fn toolchain_module_owner(module: &str) -> Result<ModuleLoadIdentity, String> {
@@ -622,34 +723,440 @@ pub(crate) fn linked_has_main(linked: &ast::Module) -> bool {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/precompiled_registry.rs"]
+mod precompiled_registry_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::{
-        expand_file_source, link_file_checked_authenticated_with_deps,
-        unstable_feature_warnings, AuthenticatedDependency, TestFileError,
+        capture_project_source_with_precompiled, expand_file_source, link_file_checked_authenticated_with_deps,
+        link_file_checked_authenticated_with_precompiled_deps,
+        AuthenticatedDependency, AuthenticatedPrecompiledDependency, TestFileError,
     };
     use witchy_types::runtime_type::{
         DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };
 
-    fn unique_dir(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
+    use super::precompiled_registry_fixture::{
+        PrecompiledRegistryFixture, scalar_map_wasm, sha256_hex, signed_scalar_sidecar,
+        unique_dir,
+    };
+
+    fn external_owner_named(name: &str) -> ModuleLoadIdentity {
+        ModuleLoadIdentity::new(
+            PackageCoordinate::new(
+                PackageSource::Registry("https://coven.example".into()),
+                name,
+                "1.0.0",
+            )
+            .unwrap(),
+            ["src", "math"],
+        )
+        .unwrap()
+    }
+
+    fn external_owner() -> ModuleLoadIdentity { external_owner_named("acme/math") }
+
+    fn load_fixture(fixture: &PrecompiledRegistryFixture) -> Result<super::PrecompiledCheckedModule, String> {
+        capture_project_source_with_precompiled(
+            fixture.root.join("src/main.witchy").to_str().unwrap(),
+            &std::collections::HashMap::new(),
+            Some(fixture.root.join("witchy.toml").to_str().unwrap()),
+            &fixture.entry_claim(),
+            &std::collections::HashMap::new(),
+        )
     }
 
     #[test]
-    fn unstable_region_warning_names_source_location() {
-        let warnings = unstable_feature_warnings(
-            std::path::Path::new("src/main.witchy"),
-            "fn main() -> Int:\n    region:\n        1\n",
-        );
+    fn locked_precompiled_project_resolves_and_launches_the_authenticated_external_library() {
+        let fixture = PrecompiledRegistryFixture::new();
+        let loaded = load_fixture(&fixture).expect("locked precompiled dependency resolves");
+        assert_eq!(loaded.external_libraries.len(), 1);
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&loaded.checked)
+            .expect_lowered("locked precompiled dependency lowers");
+        assert_eq!(artifact.external_imports().len(), 1);
+        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+        let mut vm = runtime.spawn_admitted_with_external_libraries(
+            &artifact,
+            witchy_runtime::runtime::Capabilities {
+                print: true, print_int: true, quiet: true, ..Default::default()
+            },
+            16,
+            &loaded.external_libraries,
+        ).expect("launch receives the exact library authenticated by the resolver");
+        vm.run().unwrap();
+        assert_eq!(vm.output(), ["15"]);
+        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
+    }
 
-        assert_eq!(
-            warnings,
-            vec!["src/main.witchy:2:5: warning: `region:` is unstable and may change or be removed; do not rely on its current syntax or performance contract"],
-        );
+    #[test]
+    fn locked_precompiled_project_refuses_tamper_missing_oversize_and_source_overlap() {
+        let cases = ["manifest", "sidecar", "missing", "oversize", "v2", "wrong-kind", "version", "missing-version", "bad-version", "zero-size", "zero-sidecar-size", "non-registry", "lock-hash", "lock-kind", "lock-module", "lock-digest", "overlap"];
+        for case in cases {
+            let fixture = PrecompiledRegistryFixture::new();
+            match case {
+                "manifest" => std::fs::write(
+                    fixture.root.join("vendor/external_math/coven-artifact.json"),
+                    "{\"version\":3,\"artifacts\":{},\"libraries\":{}}",
+                ).unwrap(),
+                "sidecar" => std::fs::write(
+                    fixture.root.join("vendor/external_math/artifacts/src/math.opt"), b"tampered",
+                ).unwrap(),
+                "missing" => std::fs::remove_file(
+                    fixture.root.join("vendor/external_math/artifacts/src/math.wasm"),
+                ).unwrap(),
+                "oversize" => {
+                    let (wasm, wasm_size, sidecar, _) = fixture.artifact_fields();
+                    fixture.replace_signed_artifact_manifest(
+                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
+                            "src/math": {"kind": "precompiled", "wasm_sha256": wasm.clone(), "wasm_size": wasm_size,
+                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": 1024 * 1024 + 1},
+                        }}),
+                        format!("v3\nlibrary|src/math|precompiled|{wasm}|{wasm_size}|{sidecar}|{}", 1024 * 1024 + 1),
+                    );
+                }
+                "v2" => {
+                    let (wasm, _, sidecar, _) = fixture.artifact_fields();
+                    fixture.replace_signed_artifact_manifest(
+                        serde_json::json!({"version": 2, "artifacts": {}, "libraries": {
+                            "src/math": {"wasm_sha256": wasm.clone(), "opt_callable_export_sha256": sidecar.clone()},
+                        }}),
+                        format!("v2\nlibrary|src/math|{wasm}|{sidecar}"),
+                    );
+                }
+                "wrong-kind" => {
+                    let (wasm, wasm_size, sidecar, sidecar_size) = fixture.artifact_fields();
+                    fixture.replace_signed_artifact_manifest(
+                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
+                            "src/math": {"kind": "application", "wasm_sha256": wasm.clone(), "wasm_size": wasm_size,
+                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": sidecar_size},
+                        }}),
+                        format!("v3\nlibrary|src/math|application|{wasm}|{wasm_size}|{sidecar}|{sidecar_size}"),
+                    );
+                }
+                "version" => std::fs::write(
+                    fixture.root.join("witchy.toml"),
+                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={version=\"^2.0.0\",kind=\"precompiled\",module=\"src/math\"}\n",
+                ).unwrap(),
+                "missing-version" => std::fs::write(
+                    fixture.root.join("witchy.toml"),
+                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={kind=\"precompiled\",module=\"src/math\"}\n",
+                ).unwrap(),
+                "bad-version" => std::fs::write(
+                    fixture.root.join("witchy.toml"),
+                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={version=\"not-a-requirement\",kind=\"precompiled\",module=\"src/math\"}\n",
+                ).unwrap(),
+                "non-registry" => std::fs::write(
+                    fixture.root.join("witchy.toml"),
+                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={version=\"1.0.0\",kind=\"precompiled\",module=\"src/math\",source=\"elsewhere\"}\n",
+                ).unwrap(),
+                "lock-hash" => fixture.add_spurious_lock_hash(),
+                "zero-size" => {
+                    let (wasm, _, sidecar, sidecar_size) = fixture.artifact_fields();
+                    fixture.replace_signed_artifact_manifest(
+                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
+                            "src/math": {"kind": "precompiled", "wasm_sha256": wasm.clone(), "wasm_size": 0,
+                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": sidecar_size},
+                        }}),
+                        format!("v3\nlibrary|src/math|precompiled|{wasm}|0|{sidecar}|{sidecar_size}"),
+                    );
+                }
+                "zero-sidecar-size" => {
+                    let (wasm, wasm_size, sidecar, _) = fixture.artifact_fields();
+                    fixture.replace_signed_artifact_manifest(
+                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
+                            "src/math": {"kind": "precompiled", "wasm_sha256": wasm.clone(), "wasm_size": wasm_size,
+                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": 0},
+                        }}),
+                        format!("v3\nlibrary|src/math|precompiled|{wasm}|{wasm_size}|{sidecar}|0"),
+                    );
+                }
+                "lock-kind" => fixture.replace_lock_selection("source", "src/math", &fixture.signed_artifact_digest()),
+                "lock-module" => fixture.replace_lock_selection("precompiled", "src/other", &fixture.signed_artifact_digest()),
+                "lock-digest" => fixture.replace_lock_selection("precompiled", "src/math", "sha256:deadbeef"),
+                "overlap" => {
+                    let source = fixture.root.join("external_math.witchy");
+                    std::fs::write(&source, "pub fn map(value: Int) -> Int:\n    value\n").unwrap();
+                    let error = match capture_project_source_with_precompiled(
+                        fixture.root.join("src/main.witchy").to_str().unwrap(),
+                        &std::collections::HashMap::from([("external_math".into(), source)]),
+                        Some(fixture.root.join("witchy.toml").to_str().unwrap()),
+                        &fixture.entry_claim(),
+                        &std::collections::HashMap::new(),
+                    ) {
+                        Ok(_) => panic!("one alias cannot select source and precompiled input"),
+                        Err(error) => error,
+                    };
+                    assert!(error.contains("both source and precompiled"), "{error}");
+                    continue;
+                }
+                _ => unreachable!(),
+            }
+            let error = match load_fixture(&fixture) {
+                Ok(_) => panic!("tampered registry precompiled input must fail closed"),
+                Err(error) => error,
+            };
+            let expected = match case {
+                "manifest" => "precompiled artifact manifest differs from locked signed digest",
+                "sidecar" => "precompiled registry export-signature sidecar differs from signed size",
+                "missing" => "cannot inspect precompiled registry input",
+                "oversize" => "artifact size `opt_callable_export_size=1048577` is outside its fixed signed limit",
+                "v2" => "requires a v3 signed artifact manifest",
+                "wrong-kind" => "library kind `application` is not supported",
+                "version" => "lock version does not satisfy its manifest requirement",
+                "missing-version" => "requires a non-empty registry version requirement",
+                "bad-version" => "precompiled dependency has malformed version requirement",
+                "non-registry" => "precompiled dependency `external_math` must select the Coven registry",
+                "lock-hash" => "precompiled registry lock must not carry a source hash",
+                "zero-size" => "artifact size `wasm_size=0` is outside its fixed signed limit",
+                "zero-sidecar-size" => "artifact size `opt_callable_export_size=0` is outside its fixed signed limit",
+                "lock-kind" => "registry lock kind does not select a precompiled dependency",
+                "lock-module" => "registry lock module differs from its precompiled dependency declaration",
+                "lock-digest" => "registry lock artifact digest differs from the signed record",
+                _ => unreachable!(),
+            };
+            assert!(error.contains(expected), "{case}: expected `{expected}`, got `{error}`");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locked_precompiled_project_rejects_vendor_artifact_symlinks() {
+        let fixture = PrecompiledRegistryFixture::new();
+        let wasm = fixture.root.join("vendor/external_math/artifacts/src/math.wasm");
+        let replacement = fixture.root.join("replacement.wasm");
+        std::fs::rename(&wasm, &replacement).unwrap();
+        std::os::unix::fs::symlink(&replacement, &wasm).unwrap();
+        let error = match load_fixture(&fixture) {
+            Ok(_) => panic!("precompiled vendor artifacts must not cross symlinks"),
+            Err(error) => error,
+        };
+        assert!(error.contains("must not cross a symlink"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locked_precompiled_project_rejects_unsafe_alias_and_vendor_ancestor() {
+        let fixture = PrecompiledRegistryFixture::new();
+        std::fs::write(
+            fixture.root.join("witchy.toml"),
+            "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\n\"../external_math\"={version=\"1.0.0\",kind=\"precompiled\",module=\"src/math\"}\n",
+        ).unwrap();
+        let error = match load_fixture(&fixture) {
+            Ok(_) => panic!("a path-shaped precompiled alias must fail before vendor access"),
+            Err(error) => error,
+        };
+        assert!(error.contains("must be one safe path component"), "{error}");
+
+        let fixture = PrecompiledRegistryFixture::new();
+        let vendor = fixture.root.join("vendor");
+        let replacement = fixture.root.join("vendor-real");
+        std::fs::rename(&vendor, &replacement).unwrap();
+        std::os::unix::fs::symlink(&replacement, &vendor).unwrap();
+        let error = match load_fixture(&fixture) {
+            Ok(_) => panic!("a precompiled vendor ancestor must not be a symlink"),
+            Err(error) => error,
+        };
+        assert!(error.contains("must be a real directory"), "{error}");
+    }
+
+    fn wrongly_typed_scalar_map_wasm() -> Vec<u8> {
+        use wasm_encoder::{
+            CodeSection, ExportKind, ExportSection, Function, FunctionSection,
+            Instruction, Module, TypeSection, ValType,
+        };
+        let mut module = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function([ValType::I32], [ValType::I32]);
+        module.section(&types);
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        module.section(&functions);
+        let mut exports = ExportSection::new();
+        exports.export("map", ExportKind::Func, 0);
+        module.section(&exports);
+        let mut code = CodeSection::new();
+        let mut body = Function::new(Vec::new());
+        body.instruction(&Instruction::LocalGet(0));
+        body.instruction(&Instruction::End);
+        code.function(&body);
+        module.section(&code);
+        module.finish()
+    }
+
+    fn precompiled_scalar_fixture(wasm: Vec<u8>) -> super::PrecompiledCheckedModule {
+        let dir = unique_dir("precompiled_scalar_negative");
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("app.witchy");
+        std::fs::write(
+            &entry,
+            "import external_math\n\nfn main(console: Console):\n    console.print(\"${external_math.map(5)}\")\n",
+        )
+        .unwrap();
+        let owner = external_owner();
+        let sidecar = signed_scalar_sidecar(owner.clone());
+        let library = super::precompiled_library::PrecompiledLibrary::verify(
+            owner,
+            wasm.clone(),
+            &sidecar,
+            &sha256_hex(&wasm),
+            &sha256_hex(&sidecar),
+        )
+        .unwrap();
+        let app_owner = ModuleLoadIdentity::new(
+            PackageCoordinate::new(PackageSource::Workspace, "example/app", "1.0.0").unwrap(),
+            ["src", "app"],
+        )
+        .unwrap();
+        let precompiled = std::collections::HashMap::from([(
+            "external_math".to_owned(),
+            AuthenticatedPrecompiledDependency { library },
+        )]);
+        let loaded = link_file_checked_authenticated_with_precompiled_deps(
+            entry.to_str().unwrap(),
+            &std::collections::HashMap::new(),
+            &precompiled,
+            app_owner,
+        )
+        .expect("signed scalar precompiled fixture must link");
+        let _ = std::fs::remove_dir_all(&dir);
+        loaded
+    }
+
+    #[test]
+    fn authenticated_precompiled_scalar_calls_link_and_execute_direct_and_as_function_value() {
+        for (mode, label) in [("", "normal-to-opt"), ("mode opt\n", "opt-to-opt")] {
+            let dir = unique_dir(&format!("precompiled_scalar_call_{label}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = dir.join("app.witchy");
+            let app = format!("{mode}import external_math\n\n\
+                              fn twice(f: fn(Int) -> Int, value: Int) -> Int:\n    f(f(value))\n\n\
+                              fn main(console: Console):\n    console.print(\"${{external_math.map(5)}}\")\n    console.print(\"${{twice(external_math.map, 7)}}\")\n");
+            std::fs::write(&entry, &app).unwrap();
+
+            let wasm = scalar_map_wasm();
+            let owner = external_owner();
+            let sidecar = signed_scalar_sidecar(owner.clone());
+            let library = super::precompiled_library::PrecompiledLibrary::verify(
+                owner,
+                wasm.clone(),
+                &sidecar,
+                &sha256_hex(&wasm),
+                &sha256_hex(&sidecar),
+            )
+            .expect("fixture has a manifest-bound scalar export");
+            let app_owner = ModuleLoadIdentity::new(
+                PackageCoordinate::new(PackageSource::Workspace, "example/app", "1.0.0").unwrap(),
+                ["src", "app"],
+            )
+            .unwrap();
+            let precompiled = std::collections::HashMap::from([(
+                "external_math".to_owned(),
+                AuthenticatedPrecompiledDependency { library },
+            )]);
+            let loaded = link_file_checked_authenticated_with_precompiled_deps(
+                entry.to_str().unwrap(),
+                &std::collections::HashMap::new(),
+                &precompiled,
+                app_owner,
+            )
+            .unwrap_or_else(|error| panic!("{label} authenticated scalar import must link: {error}"));
+            let artifact = witchy_lower::codegen::compile_checked_module_artifact(&loaded.checked)
+                .expect_lowered("authenticated scalar import lowers to an external call");
+            assert_eq!(artifact.external_imports().len(), 1, "{label}");
+            let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+            let mut vm = runtime.spawn_admitted_with_external_libraries(
+                &artifact,
+                witchy_runtime::runtime::Capabilities {
+                    print: true,
+                    print_int: true,
+                    quiet: true,
+                    ..Default::default()
+                },
+                16,
+                &loaded.external_libraries,
+            )
+            .expect("runtime links the exact authenticated external instance");
+            vm.run().unwrap();
+            assert_eq!(vm.output(), ["15", "27"], "{label}");
+
+            // Independent source semantics for the same exported behavior.
+            // The precompiled sidecar deliberately carries only a checked
+            // signature, not executable source, so this is a separate
+            // authenticated-source oracle rather than interpreting a
+            // synthetic declaration stub.
+            let oracle = witchy_interp::interpreter::run_program(
+                &[
+                    ("external_math", "mode opt\npub fn map(value: Int) -> Int:\n    value + 10\n"),
+                    ("app", app.as_str()),
+                ],
+                "app",
+            )
+            .expect("independent source oracle");
+            assert_eq!(vm.output(), oracle, "{label}");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn authenticated_precompiled_runtime_rejects_missing_extra_and_wrongly_typed_exports() {
+        let loaded = precompiled_scalar_fixture(scalar_map_wasm());
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&loaded.checked)
+            .expect_lowered("authenticated scalar fixture lowers");
+        let caps = witchy_runtime::runtime::Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            ..Default::default()
+        };
+        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+        let missing = match runtime.spawn_admitted_with_external_libraries(&artifact, caps.clone(), 16, &[]) {
+            Ok(_) => panic!("an admitted external import needs its exact library"),
+            Err(error) => error,
+        };
+        assert!(missing.to_string().contains("exactly match"), "{missing:#}");
+
+        let extra_owner = external_owner_named("acme/extra");
+        let extra_wasm = scalar_map_wasm();
+        let extra_sidecar = signed_scalar_sidecar(extra_owner.clone());
+        let extra = super::precompiled_library::PrecompiledLibrary::verify(
+            extra_owner,
+            extra_wasm.clone(),
+            &extra_sidecar,
+            &sha256_hex(&extra_wasm),
+            &sha256_hex(&extra_sidecar),
+        )
+        .unwrap()
+        .runtime_library("extra_math".into())
+        .unwrap();
+        let mut supplied = loaded.external_libraries.clone();
+        supplied.push(extra);
+        let extra = match runtime.spawn_admitted_with_external_libraries(&artifact, caps, 16, &supplied) {
+            Ok(_) => panic!("an unused authenticated library is not ambient authority"),
+            Err(error) => error,
+        };
+        assert!(extra.to_string().contains("exactly match"), "{extra:#}");
+
+        let wrongly_typed = precompiled_scalar_fixture(wrongly_typed_scalar_map_wasm());
+        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&wrongly_typed.checked)
+            .expect_lowered("the signed source declaration still lowers before runtime ABI binding");
+        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
+        let error = match runtime.spawn_admitted_with_external_libraries(
+                &artifact,
+                witchy_runtime::runtime::Capabilities {
+                    print: true,
+                    print_int: true,
+                    quiet: true,
+                    ..Default::default()
+                },
+                16,
+                &wrongly_typed.external_libraries,
+            ) {
+            Ok(_) => panic!("physical Wasm export must match the sealed scalar signature"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("incompatible"), "{error:#}");
     }
 
     #[test]
@@ -680,9 +1187,11 @@ mod tests {
         let file = dir.join("app.witchy");
         std::fs::write(
             &file,
-            "from meta import item\n\n\
-             comptime:\n    \
-             emit_item(item(\"pub fn generated() -> Int:\\n    42\"))\n\n\
+            "comptime:\n    \
+             emit_item(quote item:\n        \
+                 pub fn generated() -> Int:\n            \
+                     42\n    \
+             )\n\n\
              fn main(console: Console):\n    \
              console.print(\"${generated()}\")\n",
         )
@@ -786,7 +1295,7 @@ mod tests {
         std::fs::write(
             dir.join("tags.witchy"),
             "import meta\n\npub comptime fn bump(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    \
-             meta.expr_raw(\"(\" + list.at(holes, 0) + \" + 1)\")\n",
+             meta.expr_binary(\"+\", meta.expr_tag_hole(holes.at(0)), meta.expr_int(1))\n",
         )
         .unwrap();
         let file = dir.join("app.witchy");

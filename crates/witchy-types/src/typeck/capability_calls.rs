@@ -41,7 +41,7 @@ impl Checker {
 
     /// Type-check a file-capability op (RFC-0012). A `File` is a leaf, so its ops
     /// take no path: `read(f: File[Read]) -> String` (arity 1) and
-    /// `write(f: File[Write], data) -> Nil` (arity 2). Returns `Ok(None)` when the
+    /// `write(f: File[Write], data) -> ()` (arity 2). Returns `Ok(None)` when the
     /// name/arity isn't a File op, so the Dir forms (`dir.read(path)` etc.) fall
     /// through — `read`/`write` are disambiguated from `Dir` by arity.
     pub(super) fn check_file_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
@@ -268,7 +268,7 @@ impl Checker {
             }
             // RFC-0118 atomic primitives — all `Write`. `create_new` reports whether
             // this call won the exclusive create (`true`) or the path already existed
-            // (`false`); `replace`/`rename` are atomic whole-file swaps returning Nil.
+            // (`false`); `replace`/`rename` are atomic whole-file swaps returning `()`.
             "create_new" => {
                 if !rights.write {
                     return terr(format!(

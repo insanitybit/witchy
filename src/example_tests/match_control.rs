@@ -72,7 +72,7 @@ use crate::{interpreter, typeck};
     /// this guards that they stay in sync.
     #[test]
     fn coalesce_fallback_both_backends() {
-        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match s.parse_int():\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${d.get(\"a\") ?? d.get(\"b\") ?? 0}\")\n    console.print(\"${d.get(\"z\") ?? d.get(\"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
+        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match s.parse_int():\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    console.print(\"${d.get(\"a\") ?? d.get(\"b\") ?? 0}\")\n    console.print(\"${d.get(\"z\") ?? d.get(\"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
         let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
             .iter()
             .map(|s| s.to_string())

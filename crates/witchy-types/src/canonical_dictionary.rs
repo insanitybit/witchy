@@ -82,6 +82,7 @@ impl<'catalog> Preparation<'catalog> {
         module.items.push(Item::Function(Function {
             line: 0, public: false, pure: false, comptime_only: false,
             attributes: Vec::new(), name: name.clone(),
+            type_params: Vec::new(),
             params: ["left", "right"].into_iter().map(|name| Param {
                 name: name.into(), ty: Some(key.clone()),
                 convention: Convention::Let, default: None,

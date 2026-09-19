@@ -1600,7 +1600,7 @@ struct Codegen<'types> {
     /// RFC-0110's canonical direct, indirect, closure, and witness access
     /// contracts for `checked_module`. Physical ABI selection must consume
     /// these facts instead of reconstructing access from surface syntax.
-    access_facts: witchy_types::access::CheckedAccessFacts<'types>,
+    access_facts: witchy_types::access::CheckedAccessFacts,
     /// (RFC-0110 step 5) Call-node pointers (`*const Expr as usize`, into
     /// `checked_module`) that are normal-mode one-copy repair sites — an unproven
     /// `unique` argument re-owned at the call boundary. Lever-INDEPENDENT (derived
@@ -2018,7 +2018,7 @@ impl<'types> Codegen<'types> {
         checked_module: &'types Module,
         type_table: &'types witchy_types::typeck::TypeTable,
         loan_facts: witchy_types::loans::LoanFacts,
-        access_facts: witchy_types::access::CheckedAccessFacts<'types>,
+        access_facts: witchy_types::access::CheckedAccessFacts,
     ) -> Self {
         Self {
             strings: Vec::new(),
@@ -4893,12 +4893,11 @@ impl<'types> Codegen<'types> {
         self.cur_fn_var_params = resolved_params
             .iter()
             .enumerate()
-            .filter(|(index, _)| {
+            .filter(|(index, p)| {
                 access_signature.as_ref().is_some_and(|signature| {
                     signature.params().get(*index).is_some_and(|param| {
                         param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
-                            && !Self::is_executable_reference_type(param.ty())
-                    })
+                    }) && p.convention == Convention::Var
                 })
             })
             .map(|(_, p)| p.name.clone())
@@ -9243,18 +9242,66 @@ impl<'types> Codegen<'types> {
             })
             .unwrap_or_default();
         let mut args_w = Vec::with_capacity(args.len());
-        let mut places = Vec::new();
+        // Every `var` parameter has a physical result slot.  Only a named
+        // reference handle has a caller place to commit that slot into:
+        // `replace(handle, other)` replaces `handle`, while
+        // `replace(&mut owner, other)` can still write through its referent
+        // but has no handle binding to replace.
+        let mut var_places: Vec<(Option<CodegenPlace>, Kind)> = Vec::new();
         let mut next_coordinate = 0;
         for (i, arg) in args.iter().enumerate() {
             let is_var = access.params().get(i).is_some_and(|param| {
                 param.kind() == witchy_types::access::AccessKind::ExclusiveWriteback
-            });
+            }) && self
+                .fn_params
+                .get(name)
+                .and_then(|params| params.get(i))
+                .is_some_and(|param| param.convention == Convention::Var);
             let ak = if is_var {
                 param_kinds.get(i).copied().unwrap_or_else(|| self.kind_of(arg))
             } else {
                 self.kind_of(arg)
             };
-            let w = if is_var {
+            let is_explicit_reference = self
+                .fn_params
+                .get(name)
+                .and_then(|params| params.get(i))
+                .and_then(|param| param.ty.as_ref())
+                .is_some_and(Self::is_executable_reference_type);
+            let w = if is_var && is_explicit_reference {
+                match arg {
+                    // This intentionally admits only the direct reference
+                    // handle form. Aggregate/projected/callable reference
+                    // transport remains unsupported by the binary path.
+                    Expr::Var(_) => {
+                        let mut prelude = Vec::new();
+                        let place = self.capture_codegen_place(arg, &mut next_coordinate, &mut prelude)?;
+                        let mut coordinates = Vec::new();
+                        Self::codegen_place_coordinates(&place, &mut coordinates);
+                        for (coordinate, kind, value_type) in &coordinates {
+                            self.locals.insert(coordinate.clone(), *kind);
+                            self.local_val_types.insert(coordinate.clone(), *value_type);
+                        }
+                        let read = self.lower_codegen_place_read(&place, ak)?;
+                        for (coordinate, _, _) in &coordinates {
+                            self.locals.remove(coordinate);
+                            self.local_val_types.remove(coordinate);
+                        }
+                        var_places.push((Some(place), ak));
+                        if prelude.is_empty() {
+                            read
+                        } else {
+                            prelude.push(N::Push(read));
+                            W::Seq(prelude)
+                        }
+                    }
+                    Expr::Unary { op: UnOp::BorrowMut, .. } => {
+                        var_places.push((None, ak));
+                        self.lower_expr(arg)?
+                    }
+                    _ => return None,
+                }
+            } else if is_var {
                 let mut prelude = Vec::new();
                 let place = self.capture_codegen_place(arg, &mut next_coordinate, &mut prelude)?;
                 let mut coordinates = Vec::new();
@@ -9277,7 +9324,7 @@ impl<'types> Codegen<'types> {
                         return None;
                     }
                 };
-                places.push((place, ak));
+                var_places.push((Some(place), ak));
                 if prelude.is_empty() {
                     read
                 } else {
@@ -9320,14 +9367,14 @@ impl<'types> Codegen<'types> {
         // arg's local. A single i32 tuple scratch is insufficient now that RFC-0087
         // admits independent scalar and reference returns from a `var` function.
         let result_tmp = call_result_tmp(result_kind);
-        if places.len() > SCRUT_POOL {
+        if var_places.len() > SCRUT_POOL {
             return None;
         }
         let mut dests = vec![result_tmp.clone()];
         if ownership.unique_capacity_result {
             dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
         }
-        for (index, (_, kind)) in places.iter().enumerate() {
+        for (index, (_, kind)) in var_places.iter().enumerate() {
             dests.push(var_scratch("result", index, *kind));
         }
         dests.extend(cap_dests);
@@ -9338,7 +9385,10 @@ impl<'types> Codegen<'types> {
         }];
         let mut groups: Vec<(String, Kind, Expr)> = Vec::new();
         let mut coordinates = Vec::new();
-        for (index, (place, value_kind)) in places.iter().enumerate() {
+        for (index, (place, value_kind)) in var_places.iter().enumerate() {
+            let Some(place) = place else {
+                continue;
+            };
             let result = var_scratch("result", index, *value_kind);
             let root = Self::codegen_place_root(place).to_string();
             let root_kind = self.locals.get(&root).copied()?;
@@ -9364,9 +9414,11 @@ impl<'types> Codegen<'types> {
             self.locals.insert(coordinate.clone(), *kind);
             self.local_val_types.insert(coordinate.clone(), *value_type);
         }
-        for (index, (_, value_kind)) in places.iter().enumerate() {
-            self.locals
-                .insert(var_scratch("result", index, *value_kind), *value_kind);
+        for (index, (place, value_kind)) in var_places.iter().enumerate() {
+            if place.is_some() {
+                self.locals
+                    .insert(var_scratch("result", index, *value_kind), *value_kind);
+            }
         }
         // (RFC-0110 criterion 6, Slice A) Direct-storage `var` lowering. When
         // every write-back place is a whole local (`CodegenPlace::Root`, no field
@@ -9382,10 +9434,12 @@ impl<'types> Codegen<'types> {
         // disjoint … P6 valid whole-local writeback) are already upheld: this arm
         // is reached only for a checked var-unique write-back, and the whole-local
         // shape is P1/P6 by construction.
-        let all_whole_local = places
+        let all_whole_local = var_places
             .iter()
-            .all(|(place, _)| matches!(place, CodegenPlace::Root(_)));
-        let direct_storage = all_whole_local
+            .filter_map(|(place, _)| place.as_ref())
+            .all(|place| matches!(place, CodegenPlace::Root(_)));
+        let direct_storage = !groups.is_empty()
+            && all_whole_local
             && !force_copy_mode()
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::DirectStorageVar);
         let mut commits = Vec::with_capacity(groups.len());
@@ -9410,8 +9464,10 @@ impl<'types> Codegen<'types> {
                 commits.push((root.clone(), Some(root_scratch), W::ConstI32(0)));
             }
         }
-        for (index, (_, value_kind)) in places.iter().enumerate() {
-            self.locals.remove(&var_scratch("result", index, *value_kind));
+        for (index, (place, value_kind)) in var_places.iter().enumerate() {
+            if place.is_some() {
+                self.locals.remove(&var_scratch("result", index, *value_kind));
+            }
         }
         for (coordinate, _, _) in &coordinates {
             self.locals.remove(coordinate);
@@ -11933,7 +11989,7 @@ fn task_compiler_owned_frame_entry_ctor(name: &str, owner_key: &str) -> Option<b
     }
 }
 
-/// Compile a module's functions to WAT. Requires a `main` returning Int or Nil;
+/// Compile a module's functions to WAT. Requires a `main` returning `Int` or `()`;
 /// `main` may take a single capability parameter.
 /// Collect every name that could refer to a function — call targets and bare
 /// identifiers (first-class function values) — used for reachability/DCE. Over-

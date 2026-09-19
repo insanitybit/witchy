@@ -58,7 +58,7 @@ use crate::{parser, typeck};
     /// calls must still print "first" before "second", identically on both backends.
     #[test]
     fn keyword_args_source_order_backends_agree() {
-        let src = "fn record(console: Console, a: String, b: String) -> Nil:\n    console.print(\"a=${a} b=${b}\")\n\nfn side(console: Console, tag: String, ret: String) -> String:\n    console.print(\"eval ${tag}\")\n    ret\n\nfn main(console: Console):\n    record(console, b: side(console, \"first\", \"B\"), a: side(console, \"second\", \"A\"))\n";
+        let src = "fn record(console: Console, a: String, b: String) -> ():\n    console.print(\"a=${a} b=${b}\")\n\nfn side(console: Console, tag: String, ret: String) -> String:\n    console.print(\"eval ${tag}\")\n    ret\n\nfn main(console: Console):\n    record(console, b: side(console, \"first\", \"B\"), a: side(console, \"second\", \"A\"))\n";
         let expected = ["eval first", "eval second", "a=A b=B"];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -92,7 +92,7 @@ use crate::{parser, typeck};
     /// every consumer (both backends parse the same source).
     #[test]
     fn keyword_args_var_default_is_error() {
-        let src = "fn inc(var n: Int = 0) -> Nil:\n    n = n + 1\n\nfn main(console: Console):\n    console.print(\"x\")\n";
+        let src = "fn inc(var n: Int = 0) -> ():\n    n = n + 1\n\nfn main(console: Console):\n    console.print(\"x\")\n";
         let err = parser::parse_module(src).expect_err("var + default must be rejected");
         assert!(
             format!("{err:?}").contains("`var` parameter cannot have a default"),

@@ -142,7 +142,12 @@ pub(crate) fn build_dynamic_runtime_plan_inner(
         .map_err(|error| error.to_string())?;
     let dynamic_methods =
         collect_dynamic_method_definitions(typed.module(), runtime_catalog, &access_facts)?;
-    let mut dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
+    let dynamic_function_names = dynamic::dynamic_method_bodies_requested(typed.module())
+        .then(|| dynamic_methods.iter().map(|method| method.function.clone()).collect())
+        .unwrap_or_default();
+    let mut dynamic_types = collect_dynamic_types(
+        typed.module(), typed.table(), runtime_catalog, &dynamic_function_names,
+    )?;
     for method in &dynamic_methods {
         dynamic_types.push(method.receiver.clone());
         dynamic_types.extend(
@@ -203,7 +208,7 @@ fn lower_explicit_packs_inner(
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
     let runtime_types = build_dynamic_runtime_plan_inner(&typed, catalog, runtime_catalog)?;
     let (module, _, dynamic_result) = typed.rewrite_into_module(|table, module| {
-        rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)
+        rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types, None)
     });
     dynamic_result?;
     // Dynamic expansion introduces typed calls and payload decodes. Rebuild
@@ -682,11 +687,11 @@ impl Render for Label:
         match self:
             Label(text) -> text
 
-fn accept(value: dyn Render) -> Nil:
-    Nil
+fn accept(value: dyn Render) -> ():
+    ()
 
-fn accept_owned(own value: dyn Render) -> Nil:
-    Nil
+fn accept_owned(own value: dyn Render) -> ():
+    ()
 
 fn erase_return(value: Label) -> dyn Render:
     value
@@ -703,23 +708,23 @@ fn erase_branch(flag: Bool, value: Label) -> dyn Render:
         let marker = 2
         value
 
-fn erase_argument(value: Label) -> Nil:
+fn erase_argument(value: Label) -> ():
     accept(value)
 
-fn erase_owned_argument(value: Label) -> Nil:
+fn erase_owned_argument(value: Label) -> ():
     accept_owned(value)
 
 fn erase_element(value: Label) -> List(dyn Render):
     [value]
 
-fn erase_annotation(value: Label) -> Nil:
+fn erase_annotation(value: Label) -> ():
     let item: dyn Render = value
-    Nil
+    ()
 
-fn erase_assignment(value: Label) -> Nil:
+fn erase_assignment(value: Label) -> ():
     var item: dyn Render = value
     item = value
-    Nil
+    ()
 
 fn erase_tuple(value: Label) -> (dyn Render, Int):
     (value, 1)

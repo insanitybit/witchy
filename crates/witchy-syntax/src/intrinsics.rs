@@ -59,10 +59,11 @@ pub enum IntrinsicId {
     ChannelSelect2,
     SecretStoreGet,
     SecretStoreRequire,
-    MetaItem,
-    MetaExpr,
+    MetaItemWithImports,
     MetaFreshIdent,
     MetaExprLeaf,
+    MetaExprTagHole,
+    MetaExprTagged,
     MetaPatternLeaf,
     MetaStmtLeaf,
     MetaCallSiteExpr,
@@ -80,8 +81,20 @@ pub enum IntrinsicId {
     MetaTypeExpr,
     MetaTypeCapability,
     MetaExprCall,
+    MetaExprNamedCall,
+    MetaExprTry,
+    MetaExprLambda,
+    MetaExprMethodCall,
+    MetaExprQualifiedCall,
+    MetaExprQualifiedCallPath,
+    MetaExprDynamicDescriptor,
     MetaExprField,
+    MetaExprBinary,
+    MetaExprList,
+    MetaExprTuple,
+    MetaExprRecord,
     MetaExprMatch,
+    MetaExprBlock,
     MetaMatchArm,
     MetaBlock,
     MetaStmtExpr,
@@ -90,6 +103,7 @@ pub enum IntrinsicId {
     MetaParam,
     MetaFunctionBlock,
     MetaImplBlock,
+    MetaImplBlockWhere,
     CompilerFootprint,
     CompilerDiff,
     CompilerDoc,
@@ -349,6 +363,15 @@ impl IntrinsicSignature {
         matches!(self, Self::GenericListIndex)
     }
 
+    /// The root-preserving slice carrier supports only a length query.  Element
+    /// extraction would return arbitrary `a` by value and can therefore
+    /// duplicate affine or must-consume payloads; `&items[i]` is the explicit
+    /// rooted-view spelling for that operation instead.  Mutators remain
+    /// List-only: a view never grants write access to its retained root.
+    pub fn accepts_rooted_slice_view(self) -> bool {
+        matches!(self, Self::GenericListToInt)
+    }
+
     pub fn returns_dict(self) -> bool {
         matches!(
             self,
@@ -517,9 +540,14 @@ const NO_PRIVATE_CALLERS: &[&str] = &[];
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
 // These are ordinary std source functions, not new backend intrinsics. Their
 // checked source declarations remain the typing/lowering contract; only call
-// authority belongs here. Raw channel IDs and unbound message decoders must not
-// let external callers bypass the typed endpoint's payload agreement.
-const PRIVATE_MESSAGE_SOURCE_BRIDGES: &[&str] = &[
+// authority belongs here. Raw scheduler IDs and unbound message decoders must
+// not let external callers forge authority or bypass typed endpoint agreement.
+const PRIVATE_SCHEDULER_SOURCE_BRIDGES: &[&str] = &[
+    "task.__spawn_raw",
+    "task.__join_raw",
+    "task.__cancel_raw",
+    "task.__handle_from_raw",
+    "task.__handle_into_raw",
     "task.__channel_send_i64",
     "task.__channel_recv_i64",
     "task.__channel_select2_map",
@@ -597,10 +625,11 @@ pub(crate) const CHANNEL_SELECT2: &str = "__channel_select2";
 
 pub const SECRETSTORE_GET: &str = "secretstore.get";
 pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
-pub(crate) const META_ITEM: &str = "__meta_item";
-pub(crate) const META_EXPR: &str = "__meta_expr";
+pub(crate) const META_ITEM_WITH_IMPORTS: &str = "__meta_item_with_imports";
 pub(crate) const META_FRESH_IDENT: &str = "__meta_fresh_ident";
 pub(crate) const META_EXPR_LEAF: &str = "__meta_expr_leaf";
+pub(crate) const META_EXPR_TAG_HOLE: &str = "__meta_expr_tag_hole";
+pub(crate) const META_EXPR_TAGGED: &str = "__meta_expr_tagged";
 pub(crate) const META_PATTERN_LEAF: &str = "__meta_pattern_leaf";
 pub(crate) const META_STMT_LEAF: &str = "__meta_stmt_leaf";
 pub(crate) const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
@@ -618,8 +647,20 @@ pub(crate) const META_TYPE_QUALIFIED: &str = "__meta_type_qualified";
 pub(crate) const META_TYPE_EXPR: &str = "__meta_type_expr";
 pub(crate) const META_TYPE_CAPABILITY: &str = "__meta_type_capability";
 pub(crate) const META_EXPR_CALL: &str = "__meta_expr_call";
+pub(crate) const META_EXPR_NAMED_CALL: &str = "__meta_expr_named_call";
+pub(crate) const META_EXPR_TRY: &str = "__meta_expr_try";
+pub(crate) const META_EXPR_LAMBDA: &str = "__meta_expr_lambda";
+pub(crate) const META_EXPR_METHOD_CALL: &str = "__meta_expr_method_call";
+pub(crate) const META_EXPR_QUALIFIED_CALL: &str = "__meta_expr_qualified_call";
+pub(crate) const META_EXPR_QUALIFIED_CALL_PATH: &str = "__meta_expr_qualified_call_path";
+pub(crate) const META_EXPR_DYNAMIC_DESCRIPTOR: &str = "__meta_expr_dynamic_descriptor";
 pub(crate) const META_EXPR_FIELD: &str = "__meta_expr_field";
+pub(crate) const META_EXPR_BINARY: &str = "__meta_expr_binary";
+pub(crate) const META_EXPR_LIST: &str = "__meta_expr_list";
+pub(crate) const META_EXPR_TUPLE: &str = "__meta_expr_tuple";
+pub(crate) const META_EXPR_RECORD: &str = "__meta_expr_record";
 pub(crate) const META_EXPR_MATCH: &str = "__meta_expr_match";
+pub(crate) const META_EXPR_BLOCK: &str = "__meta_expr_block";
 pub(crate) const META_MATCH_ARM: &str = "__meta_match_arm";
 pub(crate) const META_BLOCK: &str = "__meta_block";
 pub(crate) const META_STMT_EXPR: &str = "__meta_stmt_expr";
@@ -628,6 +669,7 @@ pub(crate) const META_STMT_LET: &str = "__meta_stmt_let";
 pub(crate) const META_PARAM: &str = "__meta_param";
 pub(crate) const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 pub(crate) const META_IMPL_BLOCK: &str = "__meta_impl_block";
+pub(crate) const META_IMPL_BLOCK_WHERE: &str = "__meta_impl_block_where";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
 pub const COMPILER_DIFF: &str = "compiler.diff";
@@ -1506,9 +1548,9 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
-        id: IntrinsicId::MetaItem,
-        name: META_ITEM,
-        arity: 1,
+        id: IntrinsicId::MetaItemWithImports,
+        name: META_ITEM_WITH_IMPORTS,
+        arity: 2,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
@@ -1517,22 +1559,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
         wir_host_call: None,
-        diagnostic_name: "meta.item",
-        private_callers: META_BRIDGE_CALLERS,
-    },
-    IntrinsicSpec {
-        id: IntrinsicId::MetaExpr,
-        name: META_EXPR,
-        arity: 1,
-        signature: IntrinsicSignature::DeclaredInSource,
-        effect: IntrinsicEffect::Toolchain,
-        capability_effect: CapabilityEffect::None,
-        lowering: IntrinsicLowering::FrontendGenerated,
-        runtime: IntrinsicRuntime::InterpreterBuiltin,
-        wir_helpers: NO_HELPERS,
-        dynamic_wir_helpers: false,
-        wir_host_call: None,
-        diagnostic_name: "meta.expr_raw",
+        diagnostic_name: "meta.item_with_imports",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -1563,6 +1590,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta expression builder",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprTagHole,
+        name: META_EXPR_TAG_HOLE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_tag_hole",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprTagged,
+        name: META_EXPR_TAGGED,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_tagged",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -1821,6 +1878,96 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::MetaExprNamedCall,
+        name: META_EXPR_NAMED_CALL,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_named_call",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprTry,
+        name: META_EXPR_TRY,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_try",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprLambda,
+        name: META_EXPR_LAMBDA,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_lambda",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprMethodCall,
+        name: META_EXPR_METHOD_CALL,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_method_call",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprQualifiedCall,
+        name: META_EXPR_QUALIFIED_CALL,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_qualified_call",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprQualifiedCallPath,
+        name: META_EXPR_QUALIFIED_CALL_PATH,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_qualified_call_path",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::MetaExprField,
         name: META_EXPR_FIELD,
         arity: 2,
@@ -1836,6 +1983,81 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::MetaExprDynamicDescriptor,
+        name: META_EXPR_DYNAMIC_DESCRIPTOR,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_dynamic_descriptor",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprBinary,
+        name: META_EXPR_BINARY,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_binary",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprList,
+        name: META_EXPR_LIST,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_list",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprTuple,
+        name: META_EXPR_TUPLE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_tuple",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprRecord,
+        name: META_EXPR_RECORD,
+        arity: 3,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_record",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::MetaExprMatch,
         name: META_EXPR_MATCH,
         arity: 2,
@@ -1848,6 +2070,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.expr_match",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprBlock,
+        name: META_EXPR_BLOCK,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.expr_block",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -1968,6 +2205,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.impl_block",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaImplBlockWhere,
+        name: META_IMPL_BLOCK_WHERE,
+        arity: 4,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.impl_block_where",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -3529,6 +3781,14 @@ pub fn is_meta_expr_leaf(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprLeaf)
 }
 
+pub fn is_meta_expr_tag_hole(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprTagHole)
+}
+
+pub fn is_meta_expr_tagged(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprTagged)
+}
+
 pub fn is_meta_pattern_leaf(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternLeaf)
 }
@@ -3597,12 +3857,60 @@ pub fn is_meta_expr_call(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprCall)
 }
 
+pub fn is_meta_expr_named_call(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprNamedCall)
+}
+
+pub fn is_meta_expr_try(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprTry)
+}
+
+pub fn is_meta_expr_lambda(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprLambda)
+}
+
+pub fn is_meta_expr_method_call(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprMethodCall)
+}
+
+pub fn is_meta_expr_qualified_call(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprQualifiedCall)
+}
+
+pub fn is_meta_expr_qualified_call_path(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprQualifiedCallPath)
+}
+
+pub fn is_meta_expr_dynamic_descriptor(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprDynamicDescriptor)
+}
+
 pub fn is_meta_expr_field(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprField)
 }
 
+pub fn is_meta_expr_binary(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprBinary)
+}
+
+pub fn is_meta_expr_list(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprList)
+}
+
+pub fn is_meta_expr_tuple(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprTuple)
+}
+
+pub fn is_meta_expr_record(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprRecord)
+}
+
 pub fn is_meta_expr_match(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprMatch)
+}
+
+pub fn is_meta_expr_block(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprBlock)
 }
 
 pub fn is_meta_match_arm(name: &str) -> bool {
@@ -3617,12 +3925,8 @@ pub fn is_meta_stmt_expr(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtExpr)
 }
 
-pub fn is_meta_item(name: &str) -> bool {
-    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaItem)
-}
-
-pub fn is_meta_expr(name: &str) -> bool {
-    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExpr)
+pub fn is_meta_item_with_imports(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaItemWithImports)
 }
 
 pub fn is_meta_stmt_return(name: &str) -> bool {
@@ -3645,6 +3949,10 @@ pub fn is_meta_impl_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaImplBlock)
 }
 
+pub fn is_meta_impl_block_where(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaImplBlockWhere)
+}
+
 pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
     if canonical_operation_name(bare_name) != bare_name {
         return None;
@@ -3656,7 +3964,7 @@ pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'s
 /// Ordinary source functions have declaration identity, not a reserved global
 /// intrinsic spelling. Call this only after resolving the target's module.
 pub(crate) fn private_source_bridge_callers(resolved_name: &str) -> Option<&'static [&'static str]> {
-    PRIVATE_MESSAGE_SOURCE_BRIDGES.contains(&resolved_name).then_some(MESSAGE_BRIDGE_CALLERS)
+    PRIVATE_SCHEDULER_SOURCE_BRIDGES.contains(&resolved_name).then_some(MESSAGE_BRIDGE_CALLERS)
 }
 
 #[cfg(test)]
@@ -3683,10 +3991,11 @@ mod tests {
         for name in BYTES_BRIDGES {
             assert_eq!(private_intrinsic_callers(name), Some(BYTES_BRIDGE_CALLERS));
         }
-        assert_eq!(private_intrinsic_callers(META_ITEM), Some(META_BRIDGE_CALLERS));
-        assert_eq!(private_intrinsic_callers(META_EXPR), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_ITEM_WITH_IMPORTS), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_FRESH_IDENT), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_LEAF), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_TAG_HOLE), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_TAGGED), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_PATTERN_LEAF), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_STMT_LEAF), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_EXPR), Some(META_BRIDGE_CALLERS));
@@ -3704,7 +4013,16 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_TYPE_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_TYPE_CAPABILITY), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_CALL), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_NAMED_CALL), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_TRY), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_LAMBDA), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_METHOD_CALL), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_QUALIFIED_CALL_PATH), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_FIELD), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_BINARY), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_LIST), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_TUPLE), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_RECORD), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_MATCH), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_MATCH_ARM), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_BLOCK), Some(META_BRIDGE_CALLERS));
@@ -3714,10 +4032,12 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_PARAM), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_FUNCTION_BLOCK), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_IMPL_BLOCK), Some(META_BRIDGE_CALLERS));
-        assert_eq!(lookup("meta.__meta_item"), lookup(META_ITEM));
-        assert_eq!(lookup("meta.__meta_expr"), lookup(META_EXPR));
+        assert_eq!(lookup("meta.__meta_item_with_imports"), lookup(META_ITEM_WITH_IMPORTS));
+        assert_eq!(lookup("meta.__meta_expr_qualified_call_path"), lookup(META_EXPR_QUALIFIED_CALL_PATH));
         assert_eq!(lookup("meta.__meta_fresh_ident"), lookup(META_FRESH_IDENT));
         assert_eq!(lookup("meta.__meta_expr_leaf"), lookup(META_EXPR_LEAF));
+        assert_eq!(lookup("meta.__meta_expr_tag_hole"), lookup(META_EXPR_TAG_HOLE));
+        assert_eq!(lookup("meta.__meta_expr_tagged"), lookup(META_EXPR_TAGGED));
         assert_eq!(lookup("meta.__meta_pattern_leaf"), lookup(META_PATTERN_LEAF));
         assert_eq!(lookup("meta.__meta_stmt_leaf"), lookup(META_STMT_LEAF));
         assert_eq!(lookup("meta.__meta_call_site_expr"), lookup(META_CALL_SITE_EXPR));
@@ -3738,7 +4058,15 @@ mod tests {
         assert_eq!(lookup("meta.__meta_type_expr"), lookup(META_TYPE_EXPR));
         assert_eq!(lookup("meta.__meta_type_capability"), lookup(META_TYPE_CAPABILITY));
         assert_eq!(lookup("meta.__meta_expr_call"), lookup(META_EXPR_CALL));
+        assert_eq!(lookup("meta.__meta_expr_named_call"), lookup(META_EXPR_NAMED_CALL));
+        assert_eq!(lookup("meta.__meta_expr_try"), lookup(META_EXPR_TRY));
+        assert_eq!(lookup("meta.__meta_expr_lambda"), lookup(META_EXPR_LAMBDA));
+        assert_eq!(lookup("meta.__meta_expr_method_call"), lookup(META_EXPR_METHOD_CALL));
         assert_eq!(lookup("meta.__meta_expr_field"), lookup(META_EXPR_FIELD));
+        assert_eq!(lookup("meta.__meta_expr_binary"), lookup(META_EXPR_BINARY));
+        assert_eq!(lookup("meta.__meta_expr_list"), lookup(META_EXPR_LIST));
+        assert_eq!(lookup("meta.__meta_expr_tuple"), lookup(META_EXPR_TUPLE));
+        assert_eq!(lookup("meta.__meta_expr_record"), lookup(META_EXPR_RECORD));
         assert_eq!(lookup("meta.__meta_expr_match"), lookup(META_EXPR_MATCH));
         assert_eq!(lookup("meta.__meta_match_arm"), lookup(META_MATCH_ARM));
         assert_eq!(lookup("meta.__meta_block"), lookup(META_BLOCK));
@@ -3780,10 +4108,10 @@ mod tests {
             CHANNEL_SEND,
             CHANNEL_RECV,
             CHANNEL_SELECT,
-            META_ITEM,
-            META_EXPR,
             META_FRESH_IDENT,
             META_EXPR_LEAF,
+            META_EXPR_TAG_HOLE,
+            META_EXPR_TAGGED,
             META_PATTERN_LEAF,
             META_STMT_LEAF,
             META_CALL_SITE_EXPR,
@@ -3801,7 +4129,15 @@ mod tests {
             META_TYPE_EXPR,
             META_TYPE_CAPABILITY,
             META_EXPR_CALL,
+            META_EXPR_NAMED_CALL,
+            META_EXPR_TRY,
+            META_EXPR_LAMBDA,
+            META_EXPR_METHOD_CALL,
             META_EXPR_FIELD,
+            META_EXPR_BINARY,
+            META_EXPR_LIST,
+            META_EXPR_TUPLE,
+            META_EXPR_RECORD,
             META_EXPR_MATCH,
             META_MATCH_ARM,
             META_BLOCK,
@@ -4347,38 +4683,38 @@ mod tests {
                 }
                 IntrinsicSignature::StringToStr => (
                     vec![Type::Qualified(
-                        crate::ast::TypeQual::Borrow("a".into()),
+                        crate::ast::TypeQual::View,
                         Box::new(string()),
                     )],
                     Type::Qualified(
-                        crate::ast::TypeQual::Borrow("a".into()),
+                        crate::ast::TypeQual::View,
                         Box::new(named("str")),
                     ),
                 ),
                 IntrinsicSignature::StrIntIntToStr => (
                     vec![
                         Type::Qualified(
-                            crate::ast::TypeQual::Borrow("a".into()),
+                            crate::ast::TypeQual::View,
                             Box::new(named("str")),
                         ),
                         int(),
                         int(),
                     ],
                     Type::Qualified(
-                        crate::ast::TypeQual::Borrow("a".into()),
+                        crate::ast::TypeQual::View,
                         Box::new(named("str")),
                     ),
                 ),
                 IntrinsicSignature::StrToString => (
                     vec![Type::Qualified(
-                        crate::ast::TypeQual::Borrow("a".into()),
+                        crate::ast::TypeQual::View,
                         Box::new(named("str")),
                     )],
                     string(),
                 ),
                 IntrinsicSignature::StrToInt => (
                     vec![Type::Qualified(
-                        crate::ast::TypeQual::Borrow("a".into()),
+                        crate::ast::TypeQual::View,
                         Box::new(named("str")),
                     )],
                     int(),
@@ -4782,6 +5118,11 @@ mod tests {
                 (!function.params.is_empty()).then_some(
                     if matches!(*name, DICT_INSERT_EXTRACT | DICT_REMOVE_EXTRACT) {
                         Convention::Var
+                    } else if matches!(
+                        *name,
+                        DICT_GET_OR | DICT_AT | DICT_CONTAINS_KEY | DICT_KEYS | DICT_VALUES | DICT_LENGTH | DICT_PAIRS
+                    ) {
+                        Convention::Borrow
                     } else {
                         Convention::Let
                     }

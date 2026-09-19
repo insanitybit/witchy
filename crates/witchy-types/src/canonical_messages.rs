@@ -1,6 +1,6 @@
 //! Checked, closed-world task messages. Erasure changes representation, never
 //! payload identity: recovery is an ordinary exhaustive tagged-sum match.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use witchy_syntax::ast::{Block, Expr, Item, MatchArm, Pattern, Stmt, Type, TypeDef, Variant};
 use witchy_syntax::ast::visit::{visit_block, visit_block_mut, visit_expr_mut};
@@ -32,6 +32,11 @@ pub(crate) fn prepare(
             && !crate::pipeline::function_has_free_signature_variables(function) => Some(function.name.clone()),
         _ => None,
     }).collect::<std::collections::BTreeSet<_>>();
+    // Rechecking a rewritten root still needs every exact declaration its body
+    // calls, including private generic std helpers. These are typechecking
+    // dependencies only: `runtime_functions` remains the concrete canonical
+    // execution inventory used for payload discovery and downstream ABI facts.
+    let recheck_functions = recheck_function_dependencies(typed.module(), &runtime_functions);
     let mut payloads = BTreeMap::<RuntimeTypeIdentity, Type>::new();
     let mut sites = BTreeMap::new();
     for item in &typed.module().items {
@@ -115,7 +120,7 @@ pub(crate) fn prepare(
     result?;
     if stamps.len() != sites.len() { return Err("canonical message preparation lost a checked site".into()); }
     module.items.retain(|item| match item {
-        Item::Function(function) => runtime_functions.contains(&function.name),
+        Item::Function(function) => recheck_functions.contains(&function.name),
         Item::Comptime(_) => false,
         _ => true,
     });
@@ -146,6 +151,37 @@ pub(crate) fn prepare(
         }
     }
     typeck::annotate_checked(module).map_err(|error| format!("canonical message recheck: {error}"))
+}
+
+/// The fresh checker sees only the pruned module produced by message rewriting.
+/// Keep an exact, transitive closure of declarations called by its concrete
+/// roots so private implementation helpers remain locally bound. Missing calls
+/// are deliberately not manufactured into the closure: the fresh checker must
+/// continue to reject them.
+fn recheck_function_dependencies(module: &witchy_syntax::ast::Module, roots: &BTreeSet<String>) -> BTreeSet<String> {
+    let functions = module.items.iter().filter_map(|item| match item {
+        Item::Function(function) => Some((function.name.as_str(), function)),
+        _ => None,
+    }).collect::<std::collections::HashMap<_, _>>();
+    let mut retained = roots.clone();
+    let mut pending = roots.iter().cloned().collect::<Vec<_>>();
+    while let Some(name) = pending.pop() {
+        let Some(function) = functions.get(name.as_str()) else { continue };
+        let _: Result<(), ()> = visit_block(&function.body, &mut |expr| {
+            let callee = match expr {
+                Expr::Call { name, .. } | Expr::Var(name) => Some(name),
+                _ => None,
+            };
+            if let Some(callee) = callee
+                && functions.contains_key(callee.as_str())
+                && retained.insert(callee.clone())
+            {
+                pending.push(callee.clone());
+            }
+            Ok(())
+        });
+    }
+    retained
 }
 
 fn reject_unowned(ty: &Type) -> Result<(), String> {
@@ -256,6 +292,7 @@ fn block_types(block: &mut Block) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use crate::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
     use witchy_syntax::origin::OriginTable;
 
@@ -277,6 +314,130 @@ mod tests {
             &std::collections::HashSet::from(["main".into()]),
             AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
         ).expect("approved primitive-erasure source fixture checks")
+    }
+
+    #[test]
+    fn recheck_closure_keeps_private_task_helper_for_generated_async_root() {
+        let mut module = witchy_syntax::parser::parse_module(r#"
+fn generated_async() -> Int:
+    task_and_then()
+fn task_and_then() -> Int:
+    task_and_then_step()
+fn task_and_then_step() -> Int:
+    1
+"#).expect("parse dependency fixture");
+        for item in &mut module.items {
+            let Item::Function(function) = item else { continue };
+            function.name = match function.name.as_str() {
+                "task_and_then" => "task.and_then".into(),
+                "task_and_then_step" => "task.and_then_step".into(),
+                _ => function.name.clone(),
+            };
+            visit_block_mut(&mut function.body, &mut |expr| {
+                if let Expr::Call { name, .. } | Expr::Var(name) = expr {
+                    *name = match name.as_str() {
+                        "task_and_then" => "task.and_then".into(),
+                        "task_and_then_step" => "task.and_then_step".into(),
+                        _ => name.clone(),
+                    };
+                }
+                Ok::<_, ()>(())
+            }).expect("rewrite dependency names");
+        }
+
+        let closure = recheck_function_dependencies(
+            &module,
+            &BTreeSet::from(["generated_async".to_string()]),
+        );
+        assert_eq!(
+            closure,
+            BTreeSet::from([
+                "generated_async".to_string(),
+                "task.and_then".to_string(),
+                "task.and_then_step".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn recheck_closure_terminates_on_recursive_private_helpers() {
+        let module = witchy_syntax::parser::parse_module(r#"
+fn root() -> Int:
+    first()
+fn first() -> Int:
+    second()
+fn second() -> Int:
+    first()
+"#).expect("parse recursive dependency fixture");
+        let closure = recheck_function_dependencies(
+            &module,
+            &BTreeSet::from(["root".to_string()]),
+        );
+        assert_eq!(
+            closure,
+            BTreeSet::from(["root".to_string(), "first".to_string(), "second".to_string()])
+        );
+    }
+
+    #[test]
+    fn recheck_closure_leaves_unknown_callees_for_the_fresh_checker() {
+        let mut module = witchy_syntax::parser::parse_module(r#"
+fn root() -> Int:
+    missing()
+"#).expect("parse missing dependency fixture");
+        let closure = recheck_function_dependencies(
+            &module,
+            &BTreeSet::from(["root".to_string()]),
+        );
+        assert_eq!(closure, BTreeSet::from(["root".to_string()]));
+        module.items.retain(|item| matches!(item, Item::Function(function) if closure.contains(&function.name)));
+        let error = typeck::annotate_checked(module).expect_err("missing declaration must not be synthesized");
+        assert!(error.message.contains("missing"), "{error}");
+    }
+
+    #[test]
+    fn message_preparation_respecializes_private_generic_dependencies() {
+        let checked = checked(r#"
+pub fn exercise() -> Int:
+    let payload = __erase(and_then(1))
+    let recovered: Int = __unerase(payload)
+    recovered
+
+pub fn and_then(value: a) -> a:
+    and_then_step(value)
+
+fn and_then_step(value: a) -> a:
+    value
+"#);
+        let typed = checked.canonical_source().expect("canonical source").typed_module();
+        let mut declarations = BTreeSet::new();
+        for item in &typed.module().items {
+            let Item::Function(function) = item else { continue };
+            assert!(
+                declarations.insert(function.name.clone()),
+                "post-message specialization must not retain a duplicate callable `{}`",
+                function.name,
+            );
+        }
+        let public = typed.module().items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name.starts_with("task.and_then__") => Some(function),
+            _ => None,
+        }).expect("message root has a concrete public specialization");
+        let mut calls = BTreeSet::new();
+        visit_block::<()>(&public.body, &mut |expression| {
+            if let Expr::Call { name, .. } = expression {
+                calls.insert(name.clone());
+            }
+            Ok(())
+        }).expect("concrete public helper body");
+        assert!(
+            calls.iter().any(|name| name.starts_with("task.and_then_step__")),
+            "post-message specialization must supply the private concrete helper: {calls:?}"
+        );
+        assert!(
+            !calls.contains("task.and_then_step"),
+            "a concrete public helper must not retain the private generic call: {calls:?}"
+        );
     }
 
     #[test]

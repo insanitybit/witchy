@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn internal_admitted_launch_preserves_stats_owner_bridges() {
         let source = r#"
-fn make(own text: String, console: Console) -> fn() -> Nil:
+fn make(own text: String, console: Console) -> fn() -> ():
     let captured = fn(): console.print(text)
     console.print(text)
     captured
@@ -882,7 +882,7 @@ fn main(console: Console):
 
     #[test]
     fn discarded_var_result_does_not_overwrite_the_receiver() {
-        const BARE: &str = "fn main(console: Console):\n    var d = dict.new()\n    d.insert(1, 7)\n    d.insert(2, 9)\n    d.remove(1)\n    console.print(\"${dict.at(d, 2)}\")\n    console.print(\"${dict.length(d)}\")\n";
+        const BARE: &str = "fn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(1, 7)\n    let _ = d.insert(2, 9)\n    let _ = d.remove(1)\n    console.print(\"${dict.at(d, 2)}\")\n    console.print(\"${dict.length(d)}\")\n";
 
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(BARE).expect("bare var calls with inplace on");
@@ -954,7 +954,7 @@ fn main(console: Console):
 
     #[test]
     fn named_function_value_var_call_forwards_capacity_without_reown() {
-        const SOURCE: &str = "mode opt\n\nimport list\n\nfn append(var xs: unique List(Int)) -> Nil:\n    xs.push(9)\n\nfn main(console: Console):\n    let append_value = append\n    var xs = [1]\n    append_value(xs)\n    console.print(\"${xs}\")\n";
+        const SOURCE: &str = "mode opt\n\nimport list\n\nfn append(var xs: unique List(Int)) -> ():\n    xs.push(9)\n\nfn main(console: Console):\n    let append_value = append\n    var xs = [1]\n    append_value(xs)\n    console.print(\"${xs}\")\n";
 
         let stats = accepted_opt_stats(SOURCE, "named function-value var call");
         assert_eq!(stats.output, ["[1, 9]"]);
@@ -963,7 +963,7 @@ fn main(console: Console):
 
     #[test]
     fn lambda_var_call_forwards_capacity_without_reown() {
-        const SOURCE: &str = "mode opt\n\nimport list\n\nfn main(console: Console):\n    let append = fn(var xs: unique List(Int)) -> Nil:\n        xs.push(9)\n    var xs = [1]\n    append(xs)\n    console.print(\"${xs}\")\n";
+        const SOURCE: &str = "mode opt\n\nimport list\n\nfn main(console: Console):\n    let append = fn(var xs: unique List(Int)) -> ():\n        xs.push(9)\n    var xs = [1]\n    append(xs)\n    console.print(\"${xs}\")\n";
 
         let stats = accepted_opt_stats(SOURCE, "lambda var call");
         assert_eq!(stats.output, ["[1, 9]"]);
@@ -972,7 +972,7 @@ fn main(console: Console):
 
     #[test]
     fn arbitrary_apply_var_call_forwards_capacity_without_reown() {
-        const SOURCE: &str = "mode opt\n\nimport list\n\nfn append(var xs: unique List(Int)) -> Nil:\n    xs.push(9)\n\nfn identity(f: fn(var unique List(Int)) -> Nil) -> fn(var unique List(Int)) -> Nil:\n    f\n\nfn main(console: Console):\n    var xs = [1]\n    identity(append)(xs)\n    console.print(\"${xs}\")\n";
+        const SOURCE: &str = "mode opt\n\nimport list\n\nfn append(var xs: unique List(Int)) -> ():\n    xs.push(9)\n\nfn identity(f: fn(var unique List(Int)) -> ()) -> fn(var unique List(Int)) -> ():\n    f\n\nfn main(console: Console):\n    var xs = [1]\n    identity(append)(xs)\n    console.print(\"${xs}\")\n";
 
         let stats = accepted_opt_stats(SOURCE, "arbitrary Apply var call");
         assert_eq!(stats.output, ["[1, 9]"]);
@@ -1030,7 +1030,7 @@ fn main(console: Console):
 
     #[test]
     fn existential_var_dispatch_forwards_capacity_without_reown() {
-        const SOURCE: &str = "mode opt\n\nimport list\n\ntrait Appender:\n    fn append(let self, var xs: unique List(Int)) -> Nil\n\ntype Step:\n    amount: Int\n\nimpl Appender for Step:\n    fn append(let self: Step, var xs: unique List(Int)) -> Nil:\n        xs.push(self.amount)\n\nfn main(console: Console):\n    let append: dyn Appender = Step(9)\n    var xs = [1]\n    append.append(xs)\n    console.print(\"${xs}\")\n";
+        const SOURCE: &str = "mode opt\n\nimport list\n\ntrait Appender:\n    fn append(let self, var xs: unique List(Int)) -> ()\n\ntype Step:\n    amount: Int\n\nimpl Appender for Step:\n    fn append(let self: Step, var xs: unique List(Int)) -> ():\n        xs.push(self.amount)\n\nfn main(console: Console):\n    let append: dyn Appender = Step(9)\n    var xs = [1]\n    append.append(xs)\n    console.print(\"${xs}\")\n";
 
         let stats = accepted_opt_stats(SOURCE, "existential var dispatch");
         assert_eq!(stats.output, ["[1, 9]"]);
@@ -1040,7 +1040,7 @@ fn main(console: Console):
 
     #[test]
     fn existential_var_dispatch_rejects_an_aliased_capacity() {
-        const SOURCE: &str = "mode opt\n\ntrait Appender:\n    fn append(let self, var xs: unique List(Int)) -> Nil\n\ntype Step:\n    amount: Int\n\nimpl Appender for Step:\n    fn append(let self: Step, var xs: unique List(Int)) -> Nil:\n        xs.push(self.amount)\n\nfn main():\n    let append: dyn Appender = Step(9)\n    var xs = [1]\n    let alias = xs\n    append.append(xs)\n    let _ = alias\n";
+        const SOURCE: &str = "mode opt\n\ntrait Appender:\n    fn append(let self, var xs: unique List(Int)) -> ()\n\ntype Step:\n    amount: Int\n\nimpl Appender for Step:\n    fn append(let self: Step, var xs: unique List(Int)) -> ():\n        xs.push(self.amount)\n\nfn main():\n    let append: dyn Appender = Step(9)\n    var xs = [1]\n    let alias = xs\n    append.append(xs)\n    let _ = alias\n";
 
         let linked = crate::resolve_std_only(SOURCE).expect("resolve aliased existential call");
         let error = crate::enforce_performance_modes(&linked, "main")
@@ -1219,7 +1219,7 @@ fn main(console: Console):
     /// caller capacity authorizes an out-of-bounds write into the new empty list.
     #[test]
     fn var_collection_rebind_resets_the_capacity_token() {
-        const REBIND: &str = r#"fn reset(var xs: List(Int)) -> Nil:
+        const REBIND: &str = r#"fn reset(var xs: List(Int)) -> ():
     xs = []
     xs.push(9)
 
@@ -1421,7 +1421,7 @@ fn main(console: Console):
         let corpus = [
             // accumulation (inplace) + string build + dict update + fold, with a
             // `nodes.push` statement and escape-free loop scratch (region).
-            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
+            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        let _ = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
             // `for var` write-back over record elements.
             "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${ps}\")\n",
             // confined slice VIEW: a read-only window over an unmutated param,
@@ -1456,7 +1456,7 @@ fn main(console: Console):
             // `WITCHY_OPT` setting and match the interpreter — the parity guard for
             // the residual the floor will eventually bound (see
             // `cache_eviction_leaks_without_rc_floor`).
-            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        dict.insert(d, i, i * 2)\n        dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n    dict.insert(d, 7, 70)\n    console.print(\"${dict.get_or(d, 7, 0)}\")\n",
+            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        let _ = dict.insert(d, i, i * 2)\n        let _ = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n    let _ = dict.insert(d, 7, 70)\n    console.print(\"${dict.get_or(d, 7, 0)}\")\n",
             // (RFC-0033 R2) FIELD-PATH list push: `s.items = list.push(s.items, x)`
             // grows the field's list buffer in place (build), AND a FIELD-ALIASED case
             // (`let snap = s.items`) that must NOT mutate the snapshot — value
@@ -1701,7 +1701,7 @@ fn main(console: Console):
     fn bounded_keyset_dict_cache_is_already_bounded() {
         let prog = |n: i32| {
             format!(
-                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        dict.insert(d, i % 8, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        let _ = dict.insert(d, i % 8, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
             )
         };
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -1733,7 +1733,7 @@ fn main(console: Console):
     fn cache_eviction_bounded_by_rc_floor() {
         let prog = |n: i32| {
             format!(
-                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        dict.insert(d, i, i)\n        dict.remove(d, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        let _ = dict.insert(d, i, i)\n        let _ = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
             )
         };
         // RC-floor OFF (the opt-in lever absent): the eviction garbage leaks O(n).
@@ -1852,7 +1852,7 @@ fn main(console: Console):
     fn chan_throughput_bounded_by_rc_floor() {
         let run = |messages| {
             let src = format!(
-                "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> Nil:\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    for await v in rx:\n        let _ = chan.done(v)\n    chan.join(producer_handle).await\n    console.print(\"{messages}\")\n"
+                "from chan import Receiver, Sender\nasync fn producer(tx: Sender(Int), n: Int) -> ():\n    for i in 0..n:\n        chan.send(tx, i).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(8).await\n    let producer_handle = chan.spawn(producer(tx, {messages})).await\n    for await v in rx:\n        let _ = chan.done(v)\n    chan.join(producer_handle).await\n    console.print(\"{messages}\")\n"
             );
             compute(&src).unwrap_or_else(|error| panic!("compile+run {messages} messages: {error}"))
         };
@@ -2048,7 +2048,7 @@ fn main(console: Console):
     /// the program to type-check.
     #[test]
     fn mutating_method_statement_writes_back_on_both_backends() {
-        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    let _ = ys.length()\n    console.print(\"${xs}\")\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    xs.push(1)\n    xs.push(2)\n    xs.push(3)\n    var d = dict.new()\n    let _ = d.insert(\"a\", 7)\n    var ys = [9, 9, 9]\n    let _ = ys.length()\n    console.print(\"${xs}\")\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n";
         let oracle = interp(src);
         assert_eq!(oracle, vec!["[1, 2, 3]".to_string(), "7".to_string()]);
         opt::set_for_tests(Some(OptSet::default_set()));

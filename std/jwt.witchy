@@ -320,7 +320,7 @@ pub fn verify_oidc_fresh_eddsa(token: String, ed25519_pubkey_hex: String, issuer
         check_freshness(claims, now, max_lifetime, clock_skew)?
         Ok(claims)
 
-fn check_freshness(claims: Json, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Nil, JwtError):
+fn check_freshness(claims: Json, now: Int, max_lifetime: Int, clock_skew: Int) -> Result((), JwtError):
     let iat = require_int_claim(claims, "iat")?
     let exp = require_int_claim(claims, "exp")?
     if iat < 0:
@@ -332,7 +332,7 @@ fn check_freshness(claims: Json, now: Int, max_lifetime: Int, clock_skew: Int) -
     else if iat > now && iat - now > clock_skew:
         Err(IssuedAtInFuture(iat, clock_skew))
     else:
-        Ok(Nil)
+        Ok(())
 
 // OpenID Connect Core §3.1.3.7: when an ID Token carries MORE THAN ONE audience,
 // the `azp` (authorized party) claim MUST be present and MUST be this relying

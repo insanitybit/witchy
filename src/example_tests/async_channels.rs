@@ -21,14 +21,14 @@ use crate::{interpreter, parser, typeck};
     /// errors inside an async body lose the normal `fn`, line N prefix.
     #[test]
     fn async_lowered_type_errors_keep_source_locations() {
-        let before_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    list.push(xs, \"bad\")\n    chan.yield_now().await\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
+        let before_await = "import list\nimport chan\n\nasync fn work(console: Console) -> ():\n    var xs: List(Int) = []\n    list.push(xs, \"bad\")\n    chan.yield_now().await\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
         let err = typeck::check(&resolve_std_src(before_await))
             .expect_err("async type error before await must be rejected")
             .to_string();
         assert!(err.contains("`main.work`, line 6:"), "async diagnostic lost location: {err}");
         assert!(err.contains("expected `Int`, found `String`"), "{err}");
 
-        let after_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    chan.yield_now().await\n    list.push(xs, \"bad\")\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
+        let after_await = "import list\nimport chan\n\nasync fn work(console: Console) -> ():\n    var xs: List(Int) = []\n    chan.yield_now().await\n    list.push(xs, \"bad\")\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
         let err = typeck::check(&resolve_std_src(after_await))
             .expect_err("async type error after await must be rejected")
             .to_string();
@@ -68,7 +68,7 @@ use crate::{interpreter, parser, typeck};
             "wasm bounded release",
         );
 
-        let join_release = "import chan\nfrom chan import Sender\n\nasync fn producer(console: Console, tx: Sender(Int)) -> Nil:\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    console.print(\"producer finished\")\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(1).await\n    let h = chan.spawn(producer(console, tx)).await\n    chan.join(h).await\n    console.print(\"join returned\")\n";
+        let join_release = "import chan\nfrom chan import Sender\n\nasync fn producer(console: Console, tx: Sender(Int)) -> ():\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    console.print(\"producer finished\")\n\nasync fn main(console: Console):\n    let (tx, _rx) = chan.channel(1).await\n    let h = chan.spawn(producer(console, tx)).await\n    chan.join(h).await\n    console.print(\"join returned\")\n";
         let join_expected = ["join returned", "producer finished"];
         assert_eq!(link_run(join_release), join_expected, "interp join release");
         assert_eq!(
@@ -85,7 +85,7 @@ use crate::{interpreter, parser, typeck};
         let cases = [
             (
                 "scope",
-                "import chan\nimport list\n\nasync fn noop(_n: Int) -> Nil:\n    return\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    console.print(\"scoped ${list.length(items)}\")\n",
+                "import chan\nimport list\n\nasync fn noop(_n: Int) -> ():\n    return\n\nasync fn main(console: Console):\n    let items = list.range(8)\n    chan.scope(list.map(items, fn(n): noop(n))).await\n    console.print(\"scoped ${list.length(items)}\")\n",
                 ["scoped 8"],
             ),
             (
@@ -158,7 +158,7 @@ use crate::{interpreter, parser, typeck};
         if !is_nightly() {
             return;
         }
-        let src = "from chan import Sender\nasync fn prod(tx: Sender(Int)) -> Nil:\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    chan.send(tx, 3).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0 - 1).await\n    chan.scope([prod(tx)]).await\n    let a = chan.recv(rx).await\n    let b = chan.recv(rx).await\n    let c = chan.recv(rx).await\n    console.print(\"${a}\" + \"${b}\" + \"${c}\")\n";
+        let src = "from chan import Sender\nasync fn prod(tx: Sender(Int)) -> ():\n    chan.send(tx, 1).await\n    chan.send(tx, 2).await\n    chan.send(tx, 3).await\nasync fn main(console: Console):\n    let (tx, rx) = chan.channel(0 - 1).await\n    chan.scope([prod(tx)]).await\n    let a = chan.recv(rx).await\n    let b = chan.recv(rx).await\n    let c = chan.recv(rx).await\n    console.print(\"${a}\" + \"${b}\" + \"${c}\")\n";
         let expected = ["Some(1)Some(2)Some(3)"];
         let linked = resolve_std_src(src);
         assert_eq!(

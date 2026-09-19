@@ -3,16 +3,16 @@ from glamour import Cmd, Interactive, Program, Start, Sub, Ui, UiRoot
 type Msg:
     RunnerIdle
 
-fn authorize(_root: UiRoot) -> Nil:
-    Nil
+fn authorize(_root: UiRoot) -> ():
+    ()
 
 fn initial(_start: Start) -> String:
     ""
 
-fn start(_auth: Nil, _source: String) -> Cmd(Msg):
+fn start(_auth: (), _source: String) -> Cmd(Msg):
     NoCmd
 
-fn update(_auth: Nil, source: String, _message: Msg) -> (String, Cmd(Msg)):
+fn update(_auth: (), source: String, _message: Msg) -> (String, Cmd(Msg)):
     (source, NoCmd)
 
 fn editor_rows(source: String) -> String:
@@ -25,10 +25,10 @@ fn editor_rows(source: String) -> String:
 fn view(source: String) -> Ui(Msg):
     glamour.ui(glamour.element("div", [glamour.static_class_attribute(["witchy-cell"]), glamour.attribute("data-witchy-runnable", "1")], [glamour.element("textarea", [glamour.static_class_attribute(["witchy-editor"]), glamour.attribute("rows", editor_rows(source))], [glamour.text(source)]), glamour.element("button", [glamour.static_class_attribute(["witchy-run"]), glamour.attribute("type", "button")], [glamour.text("Run")]), glamour.element("pre", [glamour.static_class_attribute(["witchy-output"])], []), glamour.element("pre", [glamour.static_class_attribute(["witchy-stats"])], []), glamour.element("button", [glamour.static_class_attribute(["witchy-copy"]), glamour.attribute("type", "button"), glamour.aria_attribute("aria-label", "Copy code to clipboard")], [glamour.text("Copy")])]))
 
-fn subscriptions(_auth: Nil, _source: String) -> Sub(Msg):
+fn subscriptions(_auth: (), _source: String) -> Sub(Msg):
     NoSub
 
-fn app() -> Program(Nil, String, Msg):
+fn app() -> Program((), String, Msg):
     glamour.program(authorize, initial, start, update, view, subscriptions)
 
 pub fn interactive_runner(source: String) -> Interactive:

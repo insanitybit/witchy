@@ -9,7 +9,7 @@ use witchy_syntax::ast::Module;
 use witchy_syntax::linker::{LinkError, LinkMode};
 
 pub use witchy_types::pipeline::{
-    CheckedModule, PipelineError, PipelineLocation, PipelineStage,
+    CheckedModule, CheckedStaticEvaluationRecipe, PipelineError, PipelineLocation, PipelineStage,
 };
 pub use witchy_types::runtime_type::AuthenticatedModuleOwners;
 
@@ -216,6 +216,24 @@ pub fn link_checked_authenticated_from_source_bundle_with_user_modules(
     )
 }
 
+/// Build the compiler-owned static-evaluation recipe from an authenticated raw
+/// source bundle.  Its fixed source rewrite happens before normal resolution,
+/// checking, and fact sealing.
+pub fn link_checked_static_evaluation_from_source_bundle(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+    module_owners: AuthenticatedModuleOwners,
+) -> Result<CheckedStaticEvaluationRecipe, PipelineError> {
+    witchy_types::pipeline::link_checked_static_evaluation_from_source_bundle(
+        sources,
+        entry,
+        crate::comptime::expand_compile_time,
+        user_modules,
+        module_owners,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,7 +263,7 @@ mod tests {
              \x20 User(Int)\n\
              \n\
              pub comptime fn located(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:\n\
-             \x20 meta.expr_raw(\"\\\"\" + origin + \"\\\"\")\n\
+             \x20 meta.expr_string(origin)\n\
              \n\
              fn main() -> Int:\n\
              \x20 let value: String = located\"value\"\n\

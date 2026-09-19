@@ -422,7 +422,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     // written in witchy and bundled into the toolchain like std + the `pm` front-end.
     // It runs capability-confined: Console, Net (the listen addr), the registry `Dir`
     // (grant ordinal 0), a `SecretStore` holding the root signing key, and a Clock. coven uses
-    // `compiler.footprint` + the blocking accept loop, so it runs on the interpreter —
+    // `compiler.footprint` + the blocking accept loop, and runs as admitted Wasm —
     // exactly like the `witchy pm` bootstrap above. This replaces the Rust `coven-serve`
     // (rfcs/0004-self-hosted-cli.md Phase 5); the IdP helpers `coven-gen-issuer` /
     // `coven-mint-token` stay on the Rust path (test-only key tooling).
@@ -489,7 +489,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                     None => { eprintln!("--signing-key needs a <seed-file>"); std::process::exit(1); }
                 },
                 // `--secret-file signing=<path>` is the general form; coven only needs
-                // its `signing` secret, which the interpreter seeds from `signing_key`.
+                // its `signing` secret, which the production runtime seeds from `signing_key`.
                 "--secret-file" => match argv.next() {
                     Some(spec) => match spec.split_once('=') {
                         Some(("signing", path)) => match load_signing_seed(path) {
@@ -541,7 +541,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Err(e) => { eprintln!("{e}"); std::process::exit(1); }
         };
         // coven runs on the COMPILED WASM tier — the production tier. It has no
-        // interpreter-only dependency (`compiler.footprint`/`diff`/`doc` all have host
+        // tree-walker-only dependency (`compiler.footprint`/`diff`/`doc` all have host
         // functions; networking and live logging work compiled), so a registry server
         // gets the compiled tier's speed and the same capability confinement.
         let mut net_allow = vec![addr];
@@ -836,7 +836,15 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         failed = true;
                         continue;
                     };
-                    if let Ok(module) = witchy_syntax::parser::parse_module(&source) {
+                    // Ordinary parsing intentionally rejects retired reference
+                    // spellings. Build only the migration command's metadata
+                    // from its canonical declaration projection, then parse
+                    // that projection through the ordinary grammar.
+                    if let Some(module) = format::migrate_references(&source)
+                        .and_then(|migration| {
+                            witchy_syntax::parser::parse_module(&migration.source).ok()
+                        })
+                    {
                         for (name, candidates) in format::reference_parameter_signatures(&module) {
                             signatures
                                 .entry(format!("{module_name}.{name}"))
@@ -853,8 +861,10 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
         for (path, source) in &sources {
-            let imported_signatures = witchy_syntax::parser::parse_module(source)
-                .ok()
+            let imported_signatures = format::migrate_references(source)
+                .and_then(|migration| {
+                    witchy_syntax::parser::parse_module(&migration.source).ok()
+                })
                 .map(|module| {
                     let mut visible = std::collections::HashMap::new();
                     for imported in &module.imports {
@@ -968,7 +978,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
-    // `witchy --bench` compares interpreter vs compiled execution.
+    // `witchy --bench` compares canonical SafeWIR interpretation with admitted Wasm.
     if std::env::args().nth(1).as_deref() == Some("--bench") {
         return run_benchmarks();
     }
@@ -1224,7 +1234,7 @@ fn spawn_embedded_coven(
 #[test]
 fn remaining_internal_admitted_coven_owner_execution() {
     let source = r#"
-fn make(console: Console, text: String) -> fn() -> Nil:
+fn make(console: Console, text: String) -> fn() -> ():
     fn(): console.print(text)
 
 fn main(console: Console, args: List(String)):

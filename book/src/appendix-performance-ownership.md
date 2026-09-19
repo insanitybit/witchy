@@ -16,7 +16,6 @@ real workload gives you a reason to isolate one backend pass.
 | `fn f(var xs: T)` | callee returns a value to the caller's slot | Update the caller slot directly when the place is proven safe |
 | `move xs` | consume this binding at one call site | Transfer the existing owner instead of copying it |
 | `unique T` | sole owner of mutable logical storage | Permit in-place mutation and extraction |
-| `local unique T` | unique only inside the current activation | Use temporary storage while preventing an escaping reference |
 | `frozen T` | deeply immutable owned value | Share reads, while rejecting mutation through the value |
 
 The default convention is intentionally useful. It means callers do not need
@@ -36,7 +35,7 @@ is sound:
 | An `own` parameter is consumed with `move` | Carry the existing buffer across the call |
 | A value is `unique` | Mutate or extract in place while the proof holds |
 | A value is `frozen` | Share reads without opening a mutable path |
-| A value is `local unique` | Reclaim or optimize temporary state without allowing it to escape |
+| A value is confined by a `let`/`var` call contract or rooted view | Reclaim temporary state when the checked scope ends |
 | A type is `packed` | Use a fixed inline layout where every boundary agrees |
 | A block is `region:` | Reclaim its temporary allocations together |
 
@@ -58,8 +57,8 @@ The checker rejects a `let` value that escapes through a result, aggregate,
 closure, task, channel, or other boundary. That restriction is what lets the
 compiled backend borrow the input temporarily. `let` does not mean that the
 caller may mutate the value during the call, and it does not create an
-explicit `&'a T` reference. For those relations, use [Opt-mode References and
-Lifetimes](opt-mode-references.md).
+explicit view. For retained read-only relations, use [Rooted views and opt
+mode](opt-mode-references.md).
 
 ## `own` and `move`: one buffer across a call
 
@@ -91,7 +90,7 @@ copy or reject the opt-mode program rather than reusing it.
 `var` is about the caller's slot, not about a hidden mutable reference:
 
 ```witchy
-fn trim(var text: String) -> Nil:
+fn trim(var text: String) -> ():
     text = text.trim()
 
 fn main(console: Console):
@@ -106,26 +105,26 @@ live loan, alias, or uncertain call preserves staged write-back. See
 [`direct-storage-var`](appendix-performance-knobs.md#direct-storage-var-direct-var-write-back)
 for the exact proof shape.
 
-## `unique`, `frozen`, and `local unique`
+## `unique` and `frozen`
 
 These qualifiers describe owned storage, not temporary reference syntax:
 
 ```text
 unique List(Int)       // the sole owned storage may be updated in place
-local unique Buffer    // unique here; cannot escape this activation
 frozen Config          // owned and deeply immutable
-&'a mut Buffer         // an exclusive reference for lifetime 'a
+&Buffer                // an immutable rooted view of this snapshot
 ```
 
-An active `&'a mut T` loan temporarily makes its owner unavailable to unrelated
-updates. Conversely, an owned `unique T` value can open a mutable reference
-only when the borrow checker can prove the owner and projection are exclusive.
-`unique` is not a synonym for `&mut`, and `var` is not a synonym for either.
+An immutable view retains its backing root and projection. A later mutation of
+the owner's `var` binding uses copy-on-write when needed, so the view continues
+to observe its original snapshot. `unique` is an owned-root proof; `var` is the
+only mutation and write-back syntax. Witchy has no mutable-reference spelling.
 
-Use `local unique` for temporary state that must be reclaimed or optimized inside
-one call but must not be returned, stored in a task, or captured by an escaping
-closure. Use `frozen` when sharing reads is the contract and mutation would be
-a bug, not merely a missed optimization.
+Use `let`/`var` call contracts or immutable views when retained read access must
+escape a checked scope. Use `frozen` when sharing reads is the contract and
+mutation would be a bug, not merely a missed optimization. A frozen value can
+still be moved or replaced as a whole; only mutation through its payload is
+forbidden.
 
 ## Aliases are local proof losses
 
@@ -167,55 +166,49 @@ return the owner, the compiler retains the ordinary representation or reports
 the opt-mode error. Verify the claim with allocator and reclaimer counters,
 not with recursion depth alone.
 
-## Explicit references are the lower-level escape hatch
+## Immutable rooted views
 
-Normal mode remains reference-free. In opt mode, use `&'a T` and `&'a mut T`
-when the access relation itself must cross a call, be projected, or be stored
-in a relation-preserving aggregate:
+Both modes use `&T` and `&[T]` when retained read access must cross a call, be
+projected, or be stored in an aggregate:
 
 ```text
-mode opt
-
-fn first(let text: &'a String) -> &'a String:
+fn first(text: &String) -> &String:
     text
 ```
 
-`let` qualifies the reference handle; it does not change what `&'a String`
-means. The full lifetime and escape model is documented in [Opt-mode
-References and Lifetimes](opt-mode-references.md).
+The view is a value-semantic root-plus-projection carrier, not a lexical
+lifetime promise. It may be returned, stored, used generically, or captured by
+an admitted callable. The full contract is documented in [Rooted views and opt
+mode](opt-mode-references.md).
 
-Here is the smallest complete borrowed-view program. The dereference at the
+Here is the smallest complete rooted-view program. Materialization at the
 print call is explicit: the console receives an owned `String` value, while
-`view` remains a reference handle:
+`view` remains a rooted view:
 
 ```witchy
-mode opt
-
-fn first(let text: &'a String) -> &'a String:
+fn first(text: &String) -> &String:
     text
 
 fn main(console: Console):
     var s = "borrowed, not copied"
     let view = first(&s)
-    console.print(*view)
-    s = "now the view is done, so the owner is free again"
+    console.print(view.owned())
+    s = "the owner detached; the view still sees its snapshot"
+    console.print(view.owned())
     console.print(s)
 ```
 
 ```text
 borrowed, not copied
-now the view is done, so the owner is free again
+borrowed, not copied
+the owner detached; the view still sees its snapshot
 ```
 
 When the owner must be used before the view's last use, materialize deliberately
 with `.owned()`:
 
 ```witchy
-mode opt
-
-import borrow
-
-fn first(let text: &'a String) -> &'a String:
+fn first(text: &String) -> &String:
     text
 
 fn main(console: Console):

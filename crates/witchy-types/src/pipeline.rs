@@ -11,12 +11,15 @@ pub use build_recipe::{BuildRecipeIdentity, CheckedBuildRecipe, check_build_reci
 mod test_driver;
 pub use test_driver::{CheckedTestSuite, TestDriverIdentity, check_bare_test_driver, check_console_fixture_test_driver, check_integration_test_driver, link_checked_test_suite_from_source_bundle};
 
+mod static_evaluation;
+pub use static_evaluation::{CheckedStaticEvaluationRecipe, link_checked_static_evaluation_from_source_bundle};
+
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use std::fmt;
 
-use witchy_syntax::ast::Module;
+use witchy_syntax::ast::{Module, Type};
 use witchy_syntax::linker::{
     self, ComptimeExpander, LinkError, LinkMode, LinkedModule, SourceCheckError,
     SourceLinkError,
@@ -31,7 +34,21 @@ use crate::runtime_type::{
 };
 use crate::canonical_abi::{self, CanonicalCallableAbi, CanonicalCallableAbiManifest, CanonicalTargetPolicy};
 use crate::canonical_closure::{ClosureWitnessError, ClosureWitnessManifest};
+use crate::precompiled_declarations::PrecompiledDeclarationEnvironment;
+use crate::optimization_readiness::OptimizationReadiness;
 use crate::typeck::{self, ProperTailSiteManifest, TypeError};
+
+/// The structural `()` spelling is canonical; legacy names remain accepted
+/// while old source is migrated.
+pub(super) fn is_unit_type(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Tuple(items) => items.is_empty(),
+        Type::Named(name, arguments) => {
+            arguments.is_empty() && matches!(name.as_str(), "Nil" | "Unit")
+        }
+        _ => false,
+    }
+}
 
 /// The executable callable inventory produced by the canonical checked
 /// frontend.  Generic templates deliberately have no entry: a direct call may
@@ -113,6 +130,7 @@ pub struct CheckedSourceWitness {
     closure_witness_digest: [u8; 32],
     launch_contract_digest: [u8; 32],
     obligations_digest: [u8; 32],
+    precompiled_declarations_digest: [u8; 32],
 }
 
 impl CheckedSourceWitness {
@@ -146,6 +164,14 @@ impl CheckedSourceWitness {
         self.launch_contract_digest
     }
 
+    /// Digest of the authenticated external declaration environment joined to
+    /// this exact source link. The empty environment has its own canonical
+    /// digest; it is omitted only from the historical bundle-input hash for
+    /// backward-compatible empty-source identities.
+    pub fn precompiled_declarations_digest(&self) -> [u8; 32] {
+        self.precompiled_declarations_digest
+    }
+
     pub fn verifies_closure_witness(&self, manifest: &ClosureWitnessManifest) -> bool {
         self.closure_witness_digest == manifest.digest()
     }
@@ -163,6 +189,7 @@ pub struct CanonicalCheckedSource {
     // Only a source-backed build recipe may select a non-main launch entry.
     build_entry: Option<String>,
     typed: typeck::TypedModule,
+    optimization_readiness: OptimizationReadiness,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     source_witness: CheckedSourceWitness,
     proper_tail_manifest: ProperTailSiteManifest,
@@ -170,6 +197,7 @@ pub struct CanonicalCheckedSource {
     callable_witness: CanonicalCallableWitness,
     launch_contract_payload: Vec<u8>,
     obligations: BTreeSet<CanonicalObligation>,
+    precompiled_declarations: PrecompiledDeclarationEnvironment,
 }
 
 impl CanonicalCheckedSource {
@@ -189,6 +217,29 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn typed_module(&self) -> &typeck::TypedModule {
         &self.typed
+    }
+
+    /// Checked RFC-0167 facts available to a future optimizer. This carrier
+    /// records effects, frozen access, and explicit discard barriers without
+    /// enabling any optimization.
+    #[doc(hidden)]
+    pub fn optimization_readiness(&self) -> &OptimizationReadiness {
+        &self.optimization_readiness
+    }
+
+    /// Borrow the exact loan graph checked for the retained canonical AST.
+    /// Canonical consumers must use this product rather than re-walking the
+    /// source or treating an absent graph as an empty one.
+    #[doc(hidden)]
+    pub fn loan_facts(&self) -> Result<&crate::loans::LoanFacts, typeck::CheckedLoanFactsError> {
+        self.typed.loan_facts()
+    }
+
+    /// Borrow the exact access-signature and place graph checked for the
+    /// retained canonical AST. Consumers must not rebuild this side product.
+    #[doc(hidden)]
+    pub fn access_facts(&self) -> Result<&crate::access::CheckedAccessFacts, typeck::CheckedAccessFactsError> {
+        self.typed.access_facts()
     }
 
     /// Borrow the source identity minted for the same typed module.
@@ -283,6 +334,13 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn obligations(&self) -> &BTreeSet<CanonicalObligation> {
         &self.obligations
+    }
+
+    /// The retained authenticated external declaration environment. Lowering
+    /// may select an external Wasm target only through these exact records.
+    #[doc(hidden)]
+    pub fn precompiled_declarations(&self) -> &PrecompiledDeclarationEnvironment {
+        &self.precompiled_declarations
     }
 }
 
@@ -426,6 +484,18 @@ impl CheckedModule {
         &self,
     ) -> Result<crate::typed_async_lowering::TypedAsyncLoweringInput, String> {
         crate::typed_async_lowering::TypedAsyncLoweringInput::from_checked(self)
+    }
+
+    /// Seal one source-addressed typed async input to its exact canonical
+    /// execution program.  Consumers must retain this checked product rather
+    /// than reconnecting lexical captures or cancellation edges from CPS.
+    #[doc(hidden)]
+    pub fn checked_async_readiness(
+        &self,
+        input: &crate::typed_async_lowering::TypedAsyncLoweringInput,
+        program: &crate::async_program::AsyncProgram,
+    ) -> Result<crate::async_readiness::CheckedAsyncReadiness, crate::async_readiness::AsyncReadinessError> {
+        crate::async_readiness::CheckedAsyncReadiness::new(self, input, program)
     }
 
     /// Build a catalog from the loader ownership retained during checked link.
@@ -705,7 +775,11 @@ fn link_checked_with(
     }, canonical_typed_source.into_inner()))
 }
 
-fn checked_source_digest(sources: &[(String, Vec<u8>)], entry: &str) -> [u8; 32] {
+fn checked_source_digest(
+    sources: &[(String, Vec<u8>)],
+    entry: &str,
+    precompiled_declarations: &PrecompiledDeclarationEnvironment,
+) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"witchy.checked-source-bundle.v2");
     // The loader's selected entry is semantic input too. Identical raw
@@ -717,6 +791,13 @@ fn checked_source_digest(sources: &[(String, Vec<u8>)], entry: &str) -> [u8; 32]
         hasher.update(name.as_bytes());
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
+    }
+    // Preserve the historical empty-environment source identity byte-for-byte.
+    // A nonempty environment is an additional authenticated source input, not
+    // a loader option that later stages may silently ignore.
+    if !precompiled_declarations.is_empty() {
+        hasher.update(b"precompiled-declarations\0");
+        hasher.update(&precompiled_declarations.digest());
     }
     *hasher.finalize().as_bytes()
 }
@@ -751,13 +832,17 @@ fn attach_canonical_source(
     callable_witness: CanonicalCallableWitness,
     obligations: BTreeSet<CanonicalObligation>,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
+    precompiled_declarations: PrecompiledDeclarationEnvironment,
 ) -> Result<CheckedModule, PipelineError> {
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
+    let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
+        .map_err(|error| PipelineError::Type(TypeError { message: error.to_string() }))?;
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
         build_entry: None,
         typed,
+        optimization_readiness,
         dynamic_runtime_plan,
         source_witness: CheckedSourceWitness {
             source_bundle_digest,
@@ -766,12 +851,14 @@ fn attach_canonical_source(
             closure_witness_digest: closure_witness.digest(),
             launch_contract_digest,
             obligations_digest: obligations_digest(&obligations),
+            precompiled_declarations_digest: precompiled_declarations.digest(),
         },
         proper_tail_manifest,
         closure_witness,
         callable_witness,
         launch_contract_payload,
         obligations,
+        precompiled_declarations,
     });
     Ok(checked)
 }
@@ -812,6 +899,55 @@ fn canonicalize_callable_instances<'catalog>(
     let typed = preparation.extend(typed)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
     Ok((typed, preparation))
+}
+
+/// Canonical message preparation can retain a private generic dependency that
+/// was not executable before the message rewrite. Re-run the same checked
+/// callable specialization over that rechecked source, then carry its exact
+/// identities into the original reservation session. This is deliberately not
+/// a second preparation session: helper-name reservations and prior identities
+/// remain authoritative for the final closed preparation below.
+fn specialize_message_prepared_callables<'catalog>(
+    typed: typeck::TypedModule,
+    preparation: &mut crate::canonical_equality::PreparationSession<'catalog>,
+) -> Result<typeck::TypedModule, PipelineError> {
+    let existing = typed.module().items.iter().filter_map(|item| match item {
+        witchy_syntax::ast::Item::Function(function) => Some(function.name.clone()),
+        _ => None,
+    }).collect::<HashSet<_>>();
+    let (mut module, instances) =
+        crate::traits::lower_for_wasm_with_specializations(typed.into_module()).into_parts();
+    let mut last_function_item = HashMap::new();
+    for (index, item) in module.items.iter().enumerate() {
+        let witchy_syntax::ast::Item::Function(function) = item else { continue };
+        if last_function_item.insert(function.name.clone(), index).is_some() {
+            if !existing.contains(&function.name)
+                || !instances.contains_key(&function.name)
+                || !preparation.has_specialization_instance(&function.name)
+            {
+                return Err(PipelineError::Type(TypeError {
+                    message: format!(
+                        "post-message specialization produced an unauthenticated duplicate callable `{}`",
+                        function.name,
+                    ),
+                }));
+            }
+        }
+    }
+    // `lower_for_wasm_with_specializations` restarts its internal memo. Its
+    // output therefore repeats a prior generated declaration before appending
+    // the same logical specialization. Keep the final rechecked declaration,
+    // whose name resolution matches the checked table, only after confirming
+    // that the existing reservation and new logical identity are both present.
+    module.items = module.items.into_iter().enumerate().filter(|(index, item)| match item {
+        witchy_syntax::ast::Item::Function(function) => last_function_item[&function.name] == *index,
+        _ => true,
+    }).map(|(_, item)| item).collect();
+    let typed = typeck::annotate_checked(module)?;
+    preparation
+        .merge_specialization_instances(instances)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    Ok(typed)
 }
 
 /// Whether a declaration claims a checked source-owned namespace. This is
@@ -1081,7 +1217,20 @@ pub fn link_checked_from_source_bundle(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<CheckedModule, PipelineError> {
-    link_checked_source_bundle_with(sources, entry, expand, None, None)
+    link_checked_source_bundle_with(sources, entry, expand, None, None, None)
+}
+
+/// Link source with declarations recovered solely from authenticated
+/// precompiled-library sidecars. The caller cannot pass a parallel source
+/// signature: `environment` materializes the sealed scalar declarations and
+/// is included in the checked-source witness before lowering may observe it.
+pub fn link_checked_from_source_bundle_with_precompiled_declarations(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    environment: PrecompiledDeclarationEnvironment,
+) -> Result<CheckedModule, PipelineError> {
+    link_checked_source_bundle_with(sources, entry, expand, None, None, Some(environment))
 }
 
 fn link_checked_source_bundle_with(
@@ -1090,10 +1239,12 @@ fn link_checked_source_bundle_with(
     expand: ComptimeExpander,
     user_modules: Option<&HashSet<String>>,
     module_owners: Option<AuthenticatedModuleOwners>,
+    precompiled_declarations: Option<PrecompiledDeclarationEnvironment>,
 ) -> Result<CheckedModule, PipelineError> {
     sources.sort_by(|left, right| left.0.cmp(&right.0));
-    let source_bundle_digest = checked_source_digest(&sources, entry);
-    let modules = sources
+    let environment = precompiled_declarations.unwrap_or_default();
+    let source_bundle_digest = checked_source_digest(&sources, entry, &environment);
+    let mut modules = sources
         .iter()
         .map(|(name, bytes)| {
             let source = std::str::from_utf8(bytes).map_err(|error| PipelineError::Link(LinkError {
@@ -1109,6 +1260,10 @@ fn link_checked_source_bundle_with(
             Ok((name.clone(), module))
         })
         .collect::<Result<Vec<_>, PipelineError>>()?;
+    modules.extend(environment.modules().map_err(|message| PipelineError::Link(LinkError {
+        message,
+        location: None,
+    }))?);
     let (checked, typed_source) = link_checked_with(
         modules,
         entry,
@@ -1123,7 +1278,7 @@ fn link_checked_source_bundle_with(
             message: "canonical checked link did not return its typed source".to_string(),
         })
     })?;
-    finish_canonical_source(checked, typed_source, source_bundle_digest)
+    finish_canonical_source(checked, typed_source, source_bundle_digest, environment)
 }
 
 // Both production source and compiler-owned driver source arrive here only
@@ -1132,6 +1287,7 @@ fn finish_canonical_source(
     checked: CheckedModule,
     typed_source: typeck::TypedModule,
     source_bundle_digest: [u8; 32],
+    precompiled_declarations: PrecompiledDeclarationEnvironment,
 ) -> Result<CheckedModule, PipelineError> {
     // Semantic checking has already erased traits from its typed projection.
     // The same checked link retains the resolved pre-erasure declarations;
@@ -1174,6 +1330,8 @@ fn finish_canonical_source(
         ).map_err(|message| PipelineError::Type(TypeError { message }))?;
         None
     };
+
+    typed_source = specialize_message_prepared_callables(typed_source, &mut preparation)?;
 
     let (prepared_traits, _) = crate::existential::prepare_closed_traits(
         typed_source, &witness_catalog,
@@ -1224,6 +1382,7 @@ fn finish_canonical_source(
         callable_witness,
         obligations,
         dynamic_runtime_plan,
+        precompiled_declarations,
     )
 }
 
@@ -1237,12 +1396,34 @@ pub fn link_checked_authenticated_from_source_bundle_with_user_modules(
     user_modules: &HashSet<String>,
     module_owners: AuthenticatedModuleOwners,
 ) -> Result<CheckedModule, PipelineError> {
+    link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
+        sources,
+        entry,
+        expand,
+        user_modules,
+        module_owners,
+        PrecompiledDeclarationEnvironment::default(),
+    )
+}
+
+/// Authenticated source-bearing link with sealed separately compiled scalar
+/// declarations. The environment is already derived from verified package
+/// artifacts; no import-site source declaration can join this route.
+pub fn link_checked_authenticated_from_source_bundle_with_precompiled_declarations(
+    sources: Vec<(String, Vec<u8>)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &HashSet<String>,
+    module_owners: AuthenticatedModuleOwners,
+    environment: PrecompiledDeclarationEnvironment,
+) -> Result<CheckedModule, PipelineError> {
     link_checked_source_bundle_with(
         sources,
         entry,
         expand,
         Some(user_modules),
         Some(module_owners),
+        Some(environment),
     )
 }
 
@@ -1719,7 +1900,7 @@ impl Reflect for Counter:
         assert_eq!(&tails, canonical.proper_tail_manifest());
         assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&[
             ("main".into(), include_bytes!("../../../examples/dynamic_reflection/src/dynamic_reflection.witchy").to_vec()),
-        ], "main"));
+        ], "main", &PrecompiledDeclarationEnvironment::default()));
     }
 
     #[test]
@@ -1729,6 +1910,7 @@ impl Reflect for Counter:
         let checked = link_checked_source_bundle_with(
             vec![("main".into(), source.to_vec())], "main", no_expand, None,
             Some(dynamic_source_owners("example/dynamic-capability")),
+            None,
         ).expect("capability arguments remain statically checked values");
         let canonical = checked.canonical_source().unwrap();
         let typed = canonical.typed_module();
@@ -1760,6 +1942,7 @@ impl Reflect for Counter:
             let error = link_checked_source_bundle_with(
                 vec![("main".into(), source.into_bytes())], "main", no_expand, None,
                 Some(dynamic_source_owners("example/forbidden-payload")),
+                None,
             ).expect_err("direct and transitive capability payloads must refuse");
             assert!(error.to_string().contains("must be capability-free"), "{error}");
         }
@@ -1770,6 +1953,7 @@ impl Reflect for Counter:
         let checked = link_checked_source_bundle_with(
             dynamic_source("Int"), "main", no_expand, None,
             Some(dynamic_source_owners("example/first")),
+            None,
         ).expect("authenticated dynamic source");
         let canonical = checked.canonical_source().expect("canonical source");
         let plan = canonical.dynamic_runtime_plan().expect("authenticated plan");
@@ -1792,14 +1976,64 @@ impl Reflect for Counter:
         ).expect_err("descriptor-only early return must not accept another plan");
         assert_eq!(error,
             "closed Dynamic runtime plan does not match its checked source and catalogs");
-        let mut has_runtime_type = false;
+        let mut has_lowered_runtime_type = false;
         witchy_syntax::ast::visit::visit_module_exprs::<String>(&before, &mut |expr| {
-            if let witchy_syntax::ast::Expr::Call { name, .. } = expr {
-                has_runtime_type |= name.contains("runtime_type");
+            match expr {
+                witchy_syntax::ast::Expr::Call { name, .. } => {
+                    assert_ne!(name, witchy_syntax::intrinsics::DYNAMIC_RUNTIME_TYPE,
+                        "canonical Dynamic preparation must consume compiler-owned type syntax");
+                }
+                witchy_syntax::ast::Expr::Ctor { name, .. } => {
+                    has_lowered_runtime_type |= name == "dynamic.RuntimeType";
+                }
+                _ => {}
             }
             Ok(())
         }).expect("visit unchanged dynamic operation");
-        assert!(has_runtime_type, "dynamic operation must remain in the AST");
+        assert!(has_lowered_runtime_type,
+            "descriptor-only Dynamic operation must remain as a lowered runtime descriptor");
+    }
+
+    #[test]
+    fn canonical_dynamic_plan_excludes_pruned_runtime_type_syntax() {
+        use witchy_syntax::ast::Type;
+
+        let application = PackageCoordinate::new(PackageSource::Workspace, "example/pruned-descriptor", "0.1.0")
+            .expect("application coordinate");
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/stdlib", "0.1.0")
+            .expect("toolchain coordinate");
+        let mut owners = vec![
+            ("main".to_string(), ModuleLoadIdentity::new(application.clone(), ["main"]).expect("main owner")),
+            ("library".to_string(), ModuleLoadIdentity::new(application, ["library"]).expect("library owner")),
+        ];
+        owners.extend(linker::STD_MODULES.iter().map(|module| (
+            (*module).to_string(),
+            ModuleLoadIdentity::new(toolchain.clone(), ["std", *module]).expect("std owner"),
+        )));
+        let checked = link_checked_source_bundle_with(
+            vec![
+                ("main".into(), b"import dynamic\nimport library\n\nfn main() -> Int:\n    let _ = dynamic.runtime_type(Int)\n    0\n".to_vec()),
+                ("library".into(), b"import dynamic\n\ntrait Latent:\n    fn descriptor() -> dynamic.RuntimeType:\n        dynamic.runtime_type(String)\n".to_vec()),
+            ],
+            "main",
+            no_expand,
+            None,
+            Some(AuthenticatedModuleOwners::from_loader_assignments(owners).expect("owners")),
+            None,
+        ).expect("authenticated descriptor source");
+        let canonical = checked.canonical_source().expect("canonical source");
+        let plan = canonical.dynamic_runtime_plan().expect("authenticated plan");
+        let catalog = checked.runtime_declaration_catalog().expect("catalog");
+        let int = Type::Named("Int".into(), vec![]);
+        let string = Type::Named("String".into(), vec![]);
+        assert!(plan.id(&catalog.descriptor_type_identity(&int, canonical.typed_module().module()).unwrap()).is_some());
+        assert!(plan.id(&catalog.descriptor_type_identity(&string, canonical.typed_module().module()).unwrap()).is_none(),
+            "a pruned library descriptor request must not join the final Dynamic plan");
+        let retained = canonical.typed_module().module().compiler_type_syntax.iter()
+            .filter(|syntax| syntax.runtime_identity)
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1, "only the reachable compiler-owned request survives");
+        assert_eq!(retained[0].ty, int);
     }
 
     #[test]
@@ -1813,7 +2047,7 @@ impl Reflect for Counter:
         ).expect("ordinary ownerless source");
         assert!(ordinary.canonical_source().unwrap().dynamic_runtime_plan().is_none());
         let check = |field, package| link_checked_source_bundle_with(
-            dynamic_source(field), "main", no_expand, None, Some(dynamic_source_owners(package)),
+            dynamic_source(field), "main", no_expand, None, Some(dynamic_source_owners(package)), None,
         ).expect("authenticated source");
         let first = check("Int", "example/first");
         let other_owner = check("Int", "example/second");
@@ -1837,7 +2071,7 @@ impl Reflect for Counter:
             .expect("existing fib/collatz generator source prepares");
         let canonical = checked.canonical_source().expect("sealed canonical product");
         let typed = canonical.typed_module();
-        assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&sources, "main"));
+        assert_eq!(canonical.source_witness().source_bundle_digest(), checked_source_digest(&sources, "main", &PrecompiledDeclarationEnvironment::default()));
         let functions = typed.module().items.iter().filter_map(|item| match item {
             Item::Function(function) => Some(function),
             _ => None,
@@ -1888,7 +2122,7 @@ impl Reflect for Counter:
             .for_canonical_functions(typed.module(), &canonical.callable_witness.runtime_functions);
         assert_eq!(&tails, canonical.proper_tail_manifest());
         let closures = typed.canonical_closure_witness().expect("prepared closure obligations")
-            .bind_source_bundle_digest(checked_source_digest(&sources, "main"));
+            .bind_source_bundle_digest(checked_source_digest(&sources, "main", &PrecompiledDeclarationEnvironment::default()));
         assert!(!closures.entries().is_empty(), "unfold's generated callable closures are included");
         assert_eq!(&closures, canonical.closure_witness());
         assert_eq!(bind_canonical_callable_witness(typed, canonical.callable_witness.generic_instances.clone())
@@ -2089,7 +2323,7 @@ impl Reflect for Counter:
 
     #[test]
     fn canonical_scope_keeps_reachable_source_backed_intrinsics() {
-        let mut module = parse("fn bridge():\n    Nil\n\nfn main():\n    bridge()\n");
+        let mut module = parse("fn bridge():\n    ()\n\nfn main():\n    bridge()\n");
         module.linked_entry = Some("main".to_string());
         for item in &mut module.items {
             if let witchy_syntax::ast::Item::Function(function) = item {
@@ -2454,7 +2688,7 @@ impl Reflect for Counter:
         );
         driver
             .items
-            .extend(parse("fn main():\n  Nil\n").items);
+            .extend(parse("fn main():\n  ()\n").items);
         check_test_driver_module(&checked, driver.clone())
             .expect("an entry-only test driver is admitted");
 

@@ -57,14 +57,20 @@ async fn main(console: Console):
 import iter
 
 comptime:
-    emit("gen fn generated_values() -> Iter(Int):")
-    emit("    yield 20")
-    emit("    yield 22")
-    emit("fn generated_region() -> Int:")
-    emit("    region -> Int:")
-    emit("        42")
-    emit("async fn generated_answer() -> Int:")
-    emit("    generated_region()")
+    emit_item(quote item:
+        gen fn generated_values() -> Iter(Int):
+            yield 20
+            yield 22
+    )
+    emit_item(quote item:
+        fn generated_region() -> Int:
+            region -> Int:
+                42
+    )
+    emit_item(quote item:
+        async fn generated_answer() -> Int:
+            generated_region()
+    )
 
 async fn main(console: Console):
     let values: List(Int) = iter.collect(generated_values())
@@ -82,11 +88,11 @@ fn checked(source: &str, context: &str) -> pipeline::CheckedModule {
 }
 
 fn compiled_output(module: &pipeline::CheckedModule, context: &str) -> Vec<String> {
-    let wasm = codegen::compile_checked_module_binary(module).expect_lowered(context);
+    let artifact = codegen::compile_checked_module_artifact(module).expect_lowered(context);
     let mut runtime = Runtime::batch().expect("create source-first runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -169,10 +175,10 @@ fn main(console: Console):
 import meta
 
 comptime fn inner(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    meta.expr_raw("(")
+    missing_helper()
 
 comptime fn passthrough(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    meta.expr_raw(list.at(holes, 0))
+    meta.expr_tag_hole(holes.at(0))
 
 fn main(console: Console):
     console.print("${passthrough"${inner"nested"}"}")

@@ -34,6 +34,19 @@ ok(hRef.includes('<span class="t-kw">mut</span>'), "mutable reference access is 
 ok(hRef.includes('<span class="t-type">String</span>'), "the referenced type is coloured");
 ok(hRef.replace(/<[^>]+>/g, "") === escapeHtml(reference), "reference syntax reconstructs the escaped source exactly");
 
+// RFC-0167 payload qualifiers survive; `local` is not an ownership keyword.
+const qualified = "fn inspect(let value: frozen String, own output: unique String):";
+const hQualified = highlightWitchy(qualified);
+ok(hQualified.includes('<span class="t-kw">frozen</span>'), "frozen payload qualifier is a keyword");
+ok(hQualified.includes('<span class="t-kw">unique</span>'), "unique payload qualifier is a keyword");
+ok(!highlightWitchy("let local = 1").includes('<span class="t-kw">local</span>'), "local is not a retired qualifier keyword");
+ok(hQualified.replace(/<[^>]+>/g, "") === escapeHtml(qualified), "qualified syntax reconstructs the escaped source exactly");
+
+// Highlighting is lossless, not validation: diagnostics own rejection and the
+// highlighter must not silently migrate text the user is still editing.
+const retired = "fn old(var('a) value: View(String, 'a), other: local unique String):";
+ok(highlightWitchy(retired).replace(/<[^>]+>/g, "") === escapeHtml(retired), "retired source is not silently migrated by highlighting");
+
 // Capability and module keywords.
 const h2 = highlightWitchy("from glamour import Ui, VNode\ntype Msg derive(Reflect):\ngrantable capability UiRoot:");
 ok(h2.includes('<span class="t-kw">from</span>'), "`from` is a keyword");

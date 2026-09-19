@@ -33,6 +33,10 @@ pub struct AsyncSurfaceItem {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AsyncSurfaceModule {
     pub module: String,
+    /// The source mode that checked this exact async surface.  Later frame
+    /// lowering must not erase whether a callable originated in ordinary or
+    /// `mode opt` source when it crosses an async call boundary.
+    pub modes: Vec<String>,
     pub items: Vec<AsyncSurfaceItem>,
 }
 
@@ -76,7 +80,7 @@ impl AsyncSurfaceModule {
                 }
             })
             .collect();
-        Self { module: module_name.to_string(), items }
+        Self { module: module_name.to_string(), modes: module.modes.clone(), items }
     }
 
     /// Recover an async callable from the preserved pre-CPS item. Consumers

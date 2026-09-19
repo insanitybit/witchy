@@ -10,20 +10,23 @@ use crate::canonical_safewir::closure_owner_contract::{
 const ENV: ValueId = ValueId::new(u32::MAX);
 const TEMP: ValueId = ValueId::new(u32::MAX - 1);
 const INDEX: ValueId = ValueId::new(u32::MAX - 2);
+const SLICE: ValueId = ValueId::new(u32::MAX - 3);
+const START: ValueId = ValueId::new(u32::MAX - 4);
 
 fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Result<(Cow<'a, Function>, Cow<'a, LocalLayout<'a>>, &'a AdmittedOwnerBridge, u32), EncodeError> {
     let error = || EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner kernel context" });
     let bridge = local.owner_bridges.iter().find(|b| b.recipe() == &OwnerBridgeRecipe::of(op)).ok_or_else(error)?;
     let scratch = local.owner_scratch.ok_or_else(error)?;
-    if function.value_types.contains_key(&ENV) || function.value_types.contains_key(&TEMP) { return Err(error()); }
+    if function.value_types.contains_key(&ENV) || function.value_types.contains_key(&TEMP)
+        || function.value_types.contains_key(&SLICE) { return Err(error()); }
     // Only environment construction/extraction uses the synthetic locals.
     // Ordinary owner calls must not copy the source CFG and the complete
     // module-wide cleanup catalog once per instruction.
-    if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. } | O::ReadSharedPlace { .. }) {
+    if !matches!(op, O::Construct { .. } | O::CloneEnvironment { .. } | O::ReadSharedPlace { .. } | O::ReadSharedSliceLength { .. }) {
         return Ok((Cow::Borrowed(function), Cow::Borrowed(local), bridge, scratch[2]));
     }
     let mut function = function.clone();
-    let owner_bridges = if matches!(op, O::ReadSharedPlace { .. }) {
+    let owner_bridges = if matches!(op, O::ReadSharedPlace { .. } | O::ReadSharedSliceLength { .. }) {
         local.owner_bridges.clone()
     } else {
         Vec::new()
@@ -40,7 +43,22 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
     local.indices.insert(TEMP, scratch[1]);
     if matches!(op, O::ReadSharedPlace { .. }) {
         function.value_types.insert(INDEX, ValueType::Size);
-        local.indices.insert(INDEX, local.scratch[0]);
+        // DropRef uses the ordinary worklist scratch locals, including slot
+        // zero. Keep a slice coordinate in the dedicated owner slot so an
+        // outer environment release cannot replace it with an address.
+        local.indices.insert(INDEX, scratch[3]);
+        if let Some(ValueType::Gc(slice_type)) = bridge.family().constructors.iter()
+            .find_map(|constructor| match constructor.shared_reference_constructor() {
+                Some(SharedReferenceConstructor::ListIntElementFromSlice { slice, .. }) =>
+                    constructor.captures.get(slice.0 as usize).map(|capture| capture.value_type),
+                _ => None,
+            })
+        {
+            function.value_types.insert(SLICE, ValueType::Gc(slice_type));
+            local.indices.insert(SLICE, scratch[2]);
+            function.value_types.insert(START, ValueType::Size);
+            local.indices.insert(START, local.scratch[1]);
+        }
     }
     Ok((Cow::Owned(function), Cow::Owned(local), bridge, scratch[2]))
 }
@@ -63,6 +81,10 @@ fn shared_place_root(
     let root = match projection {
         SharedReferenceConstructor::WholeIntCell { root }
         | SharedReferenceConstructor::ListIntElement { root, .. } => root,
+        SharedReferenceConstructor::ListIntElementFromSlice { .. }
+        | SharedReferenceConstructor::ListIntSlice { .. } => {
+            return Err(LoweringError::UnsupportedOperation { function: function.id, operation: "shared-place slice carrier" });
+        }
     };
     let capture = shared_place_capture(constructor, root)?;
     let (ValueType::Ref(layout), CaptureStorage::EnvironmentField(field)) =
@@ -84,6 +106,35 @@ fn shared_place_index(
         return Err(LoweringError::UnsupportedOperation { function, operation: "shared-place index capture" });
     };
     Ok(field)
+}
+
+/// Plan the exact typed memory load used by `emit_typed_load` when the
+/// authenticated carrier supplies a layout that is more precise than the
+/// synthetic local's outer type.  The ordinary place resolver cannot recover
+/// that nested layout from `ENV` alone.
+fn push_typed_load_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    local: &LocalLayout,
+    access: MemoryAccess,
+    destination: ValueId,
+) -> Result<(), CanonicalAdmissionError> {
+    push_projected_address_plan(plan, function, local, access)?;
+    plan.push(match access.scalar {
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte =>
+            PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
+        ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
+        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable =>
+            PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+        ScalarKind::Int | ScalarKind::Duration =>
+            PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
+        ScalarKind::Float => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
+        _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+    });
+    if access.scalar == ScalarKind::Unit {
+        plan.extend([PlanToken::Drop, PlanToken::I32Const(0)]);
+    }
+    push_set(plan, local, destination)
 }
 
 fn release_binding(bridge: &AdmittedOwnerBridge, release_import: u32) -> closure_owner_kernel::ReleaseBinding {
@@ -176,6 +227,7 @@ fn emit_read_shared_place(
     owner: ValueId,
     bridge: &AdmittedOwnerBridge,
     imports: &BTreeMap<ImportId, u32>,
+    cleanup_function: Option<u32>,
 ) -> Result<(), EncodeError> {
     use wasm_encoder::Instruction as I;
     if !matches!(bridge.family().source, OwnerFamilySource::SharedReference(_)) {
@@ -214,6 +266,114 @@ fn emit_read_shared_place(
         body.instruction(&I::StructGet { struct_type_index: clone_bridge.payload_type_index(), field_index: 0 });
         emit_set(body, local, function.id, ENV)?;
         emit_clone_ref(body, local, ENV, ENV, function)?;
+
+        if let SharedReferenceConstructor::ListIntElementFromSlice { slice, index, bounds: SharedPlaceBounds::CurrentLogicalLength } = projection {
+            let index_field = shared_place_index(function.id, constructor, index)
+                .map_err(EncodeError::Lowering)?;
+            let index_access = field_access(function.id, layouts, ENV, bridge.family().environment, index_field)
+                .map_err(EncodeError::Lowering)?;
+            emit_typed_load(body, function, local, index_access, INDEX)?;
+            // The child environment is no longer needed once the checked
+            // local coordinate is copied out. The nested owner is obtained
+            // through its artifact-derived bridge, never a payload address.
+            emit_release(body, local, function, ENV, layouts)?;
+            let read_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.recipe() == &OwnerBridgeRecipe::ReadOwner(constructor.id, slice)
+            }).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice nested owner bridge",
+            }))?;
+            let read_import = *imports.get(&read_bridge.id()).ok_or(EncodeError::Lowering(
+                LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice nested owner import" },
+            ))?;
+            let ValueType::Gc(nested_type) = function.value_types[&SLICE] else { unreachable!() };
+            let slice_clone_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.family().owner_type == nested_type
+                    && matches!(candidate.recipe(), OwnerBridgeRecipe::CloneEnvironment(_))
+            }).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice nested environment bridge",
+            }))?;
+            let nested_constructor = slice_clone_bridge.family().constructors.iter().find(|candidate| matches!(
+                candidate.shared_reference_constructor(), Some(SharedReferenceConstructor::ListIntSlice { .. })
+            )).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice nested constructor",
+            }))?;
+            let clone_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.recipe() == &OwnerBridgeRecipe::CloneEnvironment(nested_constructor.id)
+            }).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice exact nested environment bridge",
+            }))?;
+            let clone_import = *imports.get(&clone_bridge.id()).ok_or(EncodeError::Lowering(
+                LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice nested environment import" },
+            ))?;
+            emit_get(body, local, function.id, owner)?;
+            body.instruction(&I::Call(read_import));
+            emit_set(body, local, function.id, SLICE)?;
+            emit_get(body, local, function.id, SLICE)?;
+            body.instruction(&I::Call(clone_import));
+            body.instruction(&I::RefCastNonNull(wasm_encoder::HeapType::Concrete(clone_bridge.payload_type_index())));
+            body.instruction(&I::StructGet { struct_type_index: clone_bridge.payload_type_index(), field_index: 0 });
+            emit_set(body, local, function.id, ENV)?;
+            emit_clone_ref(body, local, ENV, ENV, function)?;
+            let SharedReferenceConstructor::ListIntSlice { root, start, length } =
+                nested_constructor.shared_reference_constructor().expect("matched above") else { unreachable!() };
+            let nested_root_capture = shared_place_capture(nested_constructor, root).map_err(EncodeError::Lowering)?;
+            let (ValueType::Ref(root_layout), CaptureStorage::EnvironmentField(nested_root_field)) =
+                (nested_root_capture.value_type, nested_root_capture.storage) else {
+                return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice nested root capture" }));
+            };
+            function.value_types.insert(TEMP, ValueType::Ref(root_layout));
+            let root_access = field_access(function.id, layouts, ENV, clone_bridge.family().environment, nested_root_field)
+                .map_err(EncodeError::Lowering)?;
+            emit_typed_load(body, function, local, root_access, TEMP)?;
+            emit_clone_ref(body, local, TEMP, TEMP, function)?;
+            let length_field = shared_place_index(function.id, nested_constructor, length).map_err(EncodeError::Lowering)?;
+            emit_get(body, local, function.id, INDEX)?;
+            let length_access = field_access(function.id, layouts, ENV, clone_bridge.family().environment, length_field).map_err(EncodeError::Lowering)?;
+            emit_projected_address(body, function, local, length_access)?;
+            body.instruction(&I::I32Load(memarg(4)));
+            body.instruction(&I::I32LtU);
+            body.instruction(&I::I32Eqz);
+            body.instruction(&I::If(BlockType::Empty)); body.instruction(&I::Unreachable); body.instruction(&I::End);
+            let start_field = shared_place_index(function.id, nested_constructor, start).map_err(EncodeError::Lowering)?;
+            let start_access = field_access(function.id, layouts, ENV, clone_bridge.family().environment, start_field).map_err(EncodeError::Lowering)?;
+            emit_typed_load(body, function, local, start_access, START)?;
+            emit_get(body, local, function.id, START)?;
+            emit_get(body, local, function.id, INDEX)?;
+            body.instruction(&I::I32Add);
+            emit_set(body, local, function.id, INDEX)?;
+            emit_get(body, local, function.id, INDEX)?;
+            emit_get(body, local, function.id, START)?;
+            body.instruction(&I::I32LtU); body.instruction(&I::If(BlockType::Empty)); body.instruction(&I::Unreachable); body.instruction(&I::End);
+            emit_get(body, local, function.id, INDEX)?;
+            let current_length = resolve_memory_place_for_values(function.id, &function.value_types, layouts,
+                &Place::projected(TEMP, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read),
+            ).map_err(EncodeError::Lowering)?;
+            emit_projected_address(body, function, local, current_length)?;
+            body.instruction(&I::I32Load(memarg(4))); body.instruction(&I::I32LtU);
+            body.instruction(&I::I32Eqz); body.instruction(&I::If(BlockType::Empty)); body.instruction(&I::Unreachable); body.instruction(&I::End);
+            let element = resolve_memory_place_for_values(function.id, &function.value_types, layouts,
+                &Place::projected(TEMP, Projection::Element { index: INDEX }, ValueType::Int, AccessMode::Read),
+            ).map_err(EncodeError::Lowering)?;
+            emit_typed_load(body, function, local, element, destination)?;
+            emit_release(body, local, function, TEMP, layouts)?;
+            emit_release(body, local, function, ENV, layouts)?;
+            let drop_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.recipe() == &OwnerBridgeRecipe::Drop(clone_bridge.family().signature)
+            }).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice nested drop bridge",
+            }))?;
+            let drop_import = *imports.get(&drop_bridge.id()).ok_or(EncodeError::Lowering(
+                LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice nested drop import" },
+            ))?;
+            emit_get(body, local, function.id, SLICE)?;
+            body.instruction(&I::Call(drop_import));
+            body.instruction(&I::Call(cleanup_function.ok_or(EncodeError::Lowering(
+                LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice nested drop cleanup" },
+            ))?));
+            body.instruction(&I::Br(1));
+            body.instruction(&I::End);
+            continue;
+        }
 
         let (root_field, root_layout) = shared_place_root(function, constructor, projection)
             .map_err(EncodeError::Lowering)?;
@@ -260,6 +420,12 @@ fn emit_read_shared_place(
                 ).map_err(EncodeError::Lowering)?;
                 emit_typed_load(body, function, local, element, destination)?;
             }
+            SharedReferenceConstructor::ListIntSlice { .. } => {
+                return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                    function: function.id, operation: "shared-place slice carrier",
+                }));
+            }
+            SharedReferenceConstructor::ListIntElementFromSlice { .. } => unreachable!("handled above"),
         }
         emit_release(body, local, function, TEMP, layouts)?;
         emit_release(body, local, function, ENV, layouts)?;
@@ -280,6 +446,7 @@ fn plan_read_shared_place(
     owner: ValueId,
     bridge: &AdmittedOwnerBridge,
     imports: &BTreeMap<ImportId, u32>,
+    cleanup_function: Option<u32>,
 ) -> Result<(), CanonicalAdmissionError> {
     if !matches!(bridge.family().source, OwnerFamilySource::SharedReference(_)) {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
@@ -308,6 +475,89 @@ fn plan_read_shared_place(
         ]);
         push_set(plan, local, ENV)?;
         push_share_plan(plan, local, ENV, ENV)?;
+
+        if let SharedReferenceConstructor::ListIntElementFromSlice { slice, index, bounds: SharedPlaceBounds::CurrentLogicalLength } = projection {
+            let index_field = shared_place_index(function.id, constructor, index)
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            let index_place = Place::projected(ENV, Projection::Field { index: index_field }, ValueType::Size, AccessMode::Read);
+            push_memory_load_plan(plan, function, layouts, local, &index_place, INDEX)?;
+            push_drop_ref_plan(plan, function, layouts, local, ENV)?;
+            let read_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.recipe() == &OwnerBridgeRecipe::ReadOwner(constructor.id, slice)
+            }).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let read_import = *imports.get(&read_bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let ValueType::Gc(nested_type) = function.value_types[&SLICE] else { return Err(CanonicalAdmissionError::UnsupportedPlan) };
+            let slice_clone_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.family().owner_type == nested_type
+                    && matches!(candidate.recipe(), OwnerBridgeRecipe::CloneEnvironment(_))
+            }).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let nested_constructor = slice_clone_bridge.family().constructors.iter().find(|candidate| matches!(
+                candidate.shared_reference_constructor(), Some(SharedReferenceConstructor::ListIntSlice { .. })
+            )).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let clone_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.recipe() == &OwnerBridgeRecipe::CloneEnvironment(nested_constructor.id)
+            }).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let clone_import = *imports.get(&clone_bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            push_get(plan, local, owner)?;
+            plan.push(PlanToken::Call(read_import));
+            push_set(plan, local, SLICE)?;
+            push_get(plan, local, SLICE)?;
+            plan.extend([
+                PlanToken::Call(clone_import),
+                PlanToken::RefCastNonNull(clone_bridge.payload_type_index()),
+                PlanToken::StructGet { struct_type_index: clone_bridge.payload_type_index(), field_index: 0 },
+            ]);
+            push_set(plan, local, ENV)?;
+            push_share_plan(plan, local, ENV, ENV)?;
+            let SharedReferenceConstructor::ListIntSlice { root, start, length } =
+                nested_constructor.shared_reference_constructor().expect("matched above") else { unreachable!() };
+            let root_capture = shared_place_capture(nested_constructor, root).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            let (ValueType::Ref(root_layout), CaptureStorage::EnvironmentField(root_field)) =
+                (root_capture.value_type, root_capture.storage) else { return Err(CanonicalAdmissionError::UnsupportedPlan) };
+            function.value_types.insert(TEMP, ValueType::Ref(root_layout));
+            let root_access = field_access(function.id, layouts, ENV, clone_bridge.family().environment, root_field)
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            push_typed_load_plan(plan, function, local, root_access, TEMP)?;
+            push_share_plan(plan, local, TEMP, TEMP)?;
+            let length_field = shared_place_index(function.id, nested_constructor, length).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            push_get(plan, local, INDEX)?;
+            let length = field_access(function.id, layouts, ENV, clone_bridge.family().environment, length_field)
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            push_projected_address_plan(plan, function, local, length)?;
+            plan.extend([PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::I32LtU, PlanToken::I32Eqz,
+                PlanToken::If("Empty".to_owned()), PlanToken::Unreachable, PlanToken::End]);
+            let start_field = shared_place_index(function.id, nested_constructor, start).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            let start = field_access(function.id, layouts, ENV, clone_bridge.family().environment, start_field)
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            push_typed_load_plan(plan, function, local, start, START)?;
+            push_get(plan, local, START)?;
+            push_get(plan, local, INDEX)?;
+            plan.extend([PlanToken::I32Add]);
+            push_set(plan, local, INDEX)?;
+            push_get(plan, local, INDEX)?;
+            push_get(plan, local, START)?;
+            plan.extend([PlanToken::I32LtU, PlanToken::If("Empty".to_owned()), PlanToken::Unreachable, PlanToken::End]);
+            push_get(plan, local, INDEX)?;
+            let current_length = Place::projected(TEMP, Projection::Header(HeaderField::Length), ValueType::Size, AccessMode::Read);
+            let current_length = resolve_memory_place_for_values(function.id, &function.value_types, layouts, &current_length)
+                .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+            push_projected_address_plan(plan, function, local, current_length)?;
+            plan.extend([PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::I32LtU, PlanToken::I32Eqz,
+                PlanToken::If("Empty".to_owned()), PlanToken::Unreachable, PlanToken::End]);
+            let element = Place::projected(TEMP, Projection::Element { index: INDEX }, ValueType::Int, AccessMode::Read);
+            push_memory_load_plan(plan, function, layouts, local, &element, destination)?;
+            push_drop_ref_plan(plan, function, layouts, local, TEMP)?;
+            push_drop_ref_plan(plan, function, layouts, local, ENV)?;
+            let drop_bridge = local.owner_bridges.iter().find(|candidate| {
+                candidate.recipe() == &OwnerBridgeRecipe::Drop(clone_bridge.family().signature)
+            }).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            let drop_import = *imports.get(&drop_bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+            push_get(plan, local, SLICE)?;
+            plan.push(PlanToken::Call(drop_import));
+            plan.push(PlanToken::Call(cleanup_function.ok_or(CanonicalAdmissionError::UnsupportedPlan)?));
+            plan.extend([PlanToken::Br(1), PlanToken::End]);
+            continue;
+        }
 
         let (root_field, root_layout) = shared_place_root(function, constructor, projection)
             .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -345,6 +595,10 @@ fn plan_read_shared_place(
                 let element = Place::projected(TEMP, Projection::Element { index: INDEX }, ValueType::Int, AccessMode::Read);
                 push_memory_load_plan(plan, function, layouts, local, &element, destination)?;
             }
+            SharedReferenceConstructor::ListIntSlice { .. } => {
+                return Err(CanonicalAdmissionError::UnsupportedPlan);
+            }
+            SharedReferenceConstructor::ListIntElementFromSlice { .. } => unreachable!("handled above"),
         }
         push_drop_ref_plan(plan, function, layouts, local, TEMP)?;
         push_drop_ref_plan(plan, function, layouts, local, ENV)?;
@@ -356,13 +610,126 @@ fn plan_read_shared_place(
     Ok(())
 }
 
+fn emit_read_shared_slice_length(
+    body: &mut WasmFunctionEncoder,
+    function: &mut Function,
+    local: &LocalLayout,
+    layouts: &LayoutInterner,
+    destination: ValueId,
+    owner: ValueId,
+    bridge: &AdmittedOwnerBridge,
+    imports: &BTreeMap<ImportId, u32>,
+) -> Result<(), EncodeError> {
+    use wasm_encoder::Instruction as I;
+    if !matches!(bridge.family().source, OwnerFamilySource::SharedReference(_)) {
+        return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+            function: function.id, operation: "shared-slice family",
+        }));
+    }
+    let tag_import = *imports.get(&bridge.id()).ok_or(EncodeError::Lowering(
+        LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice tag bridge" },
+    ))?;
+    body.instruction(&I::Block(BlockType::Empty));
+    for constructor in &bridge.family().constructors {
+        let SharedReferenceConstructor::ListIntSlice { length, .. } = constructor
+            .shared_reference_constructor()
+            .ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice constructor schema",
+            }))?
+        else {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "non-slice shared carrier",
+            }));
+        };
+        let clone_bridge = local.owner_bridges.iter().find(|candidate| {
+            candidate.recipe() == &OwnerBridgeRecipe::CloneEnvironment(constructor.id)
+        }).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+            function: function.id, operation: "shared-slice environment bridge",
+        }))?;
+        let clone_import = *imports.get(&clone_bridge.id()).ok_or(EncodeError::Lowering(
+            LoweringError::UnsupportedOperation { function: function.id, operation: "shared-slice environment import" },
+        ))?;
+        let capture = shared_place_capture(constructor, length).map_err(EncodeError::Lowering)?;
+        let (ValueType::Size, CaptureStorage::EnvironmentField(field)) = (capture.value_type, capture.storage) else {
+            return Err(EncodeError::Lowering(LoweringError::UnsupportedOperation {
+                function: function.id, operation: "shared-slice length capture",
+            }));
+        };
+        emit_get(body, local, function.id, owner)?;
+        body.instruction(&I::Call(tag_import));
+        body.instruction(&I::I64Const(constructor.environment_tag));
+        body.instruction(&I::I64Eq);
+        body.instruction(&I::If(BlockType::Empty));
+        emit_get(body, local, function.id, owner)?;
+        body.instruction(&I::Call(clone_import));
+        body.instruction(&I::RefCastNonNull(wasm_encoder::HeapType::Concrete(clone_bridge.payload_type_index())));
+        body.instruction(&I::StructGet { struct_type_index: clone_bridge.payload_type_index(), field_index: 0 });
+        emit_set(body, local, function.id, ENV)?;
+        emit_clone_ref(body, local, ENV, ENV, function)?;
+        let length = field_access(function.id, layouts, ENV, bridge.family().environment, field)
+            .map_err(EncodeError::Lowering)?;
+        emit_typed_load(body, function, local, length, destination)?;
+        emit_release(body, local, function, ENV, layouts)?;
+        body.instruction(&I::Br(1));
+        body.instruction(&I::End);
+    }
+    body.instruction(&I::Unreachable);
+    body.instruction(&I::End);
+    Ok(())
+}
+
+fn plan_read_shared_slice_length(
+    plan: &mut Vec<PlanToken>,
+    function: &mut Function,
+    local: &LocalLayout,
+    layouts: &LayoutInterner,
+    destination: ValueId,
+    owner: ValueId,
+    bridge: &AdmittedOwnerBridge,
+    imports: &BTreeMap<ImportId, u32>,
+) -> Result<(), CanonicalAdmissionError> {
+    if !matches!(bridge.family().source, OwnerFamilySource::SharedReference(_)) {
+        return Err(CanonicalAdmissionError::UnsupportedPlan);
+    }
+    let tag_import = *imports.get(&bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+    plan.push(PlanToken::Block("Empty".to_owned()));
+    for constructor in &bridge.family().constructors {
+        let SharedReferenceConstructor::ListIntSlice { length, .. } = constructor
+            .shared_reference_constructor().ok_or(CanonicalAdmissionError::UnsupportedPlan)?
+        else { return Err(CanonicalAdmissionError::UnsupportedPlan) };
+        let clone_bridge = local.owner_bridges.iter().find(|candidate| {
+            candidate.recipe() == &OwnerBridgeRecipe::CloneEnvironment(constructor.id)
+        }).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        let clone_import = *imports.get(&clone_bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        let capture = shared_place_capture(constructor, length).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+        let (ValueType::Size, CaptureStorage::EnvironmentField(field)) = (capture.value_type, capture.storage) else {
+            return Err(CanonicalAdmissionError::UnsupportedPlan);
+        };
+        push_get(plan, local, owner)?;
+        plan.extend([PlanToken::Call(tag_import), PlanToken::I64Const(constructor.environment_tag), PlanToken::I64Eq, PlanToken::If("Empty".to_owned())]);
+        push_get(plan, local, owner)?;
+        plan.extend([PlanToken::Call(clone_import), PlanToken::RefCastNonNull(clone_bridge.payload_type_index()), PlanToken::StructGet { struct_type_index: clone_bridge.payload_type_index(), field_index: 0 }]);
+        push_set(plan, local, ENV)?;
+        push_share_plan(plan, local, ENV, ENV)?;
+        let length = Place::projected(ENV, Projection::Field { index: field }, ValueType::Size, AccessMode::Read);
+        push_memory_load_plan(plan, function, layouts, local, &length, destination)?;
+        push_drop_ref_plan(plan, function, layouts, local, ENV)?;
+        plan.extend([PlanToken::Br(1), PlanToken::End]);
+    }
+    plan.extend([PlanToken::Unreachable, PlanToken::End]);
+    Ok(())
+}
+
 pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &LocalLayout, layouts: &LayoutInterner, op: &O, imports: &BTreeMap<ImportId, u32>, cleanup_function: Option<u32>) -> Result<(), EncodeError> {
     use wasm_encoder::Instruction as I;
     let (mut function, local, bridge, _payload) = context(function, local, op)?;
     let import = *imports.get(&bridge.id()).ok_or(EncodeError::Lowering(LoweringError::UnsupportedOperation { function: function.id, operation: "owner bridge import" }))?;
     match op {
         O::ReadSharedPlace { destination, owner, .. } => {
-            emit_read_shared_place(body, function.to_mut(), &local, layouts, *destination, *owner, bridge, imports)?;
+            emit_read_shared_place(body, function.to_mut(), &local, layouts, *destination, *owner, bridge, imports, cleanup_function)?;
+        }
+        O::ReadSharedSliceLength { destination, owner, .. } => {
+            emit_read_shared_slice_length(body, function.to_mut(), &local, layouts, *destination, *owner, bridge, imports)?;
         }
         O::Construct { destination, constructor, captures } => {
             let constructor = bridge.family().constructors.iter().find(|c| c.id == *constructor).expect("admitted constructor");
@@ -443,7 +810,10 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
     let import = *imports.get(&bridge.id()).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
     match op {
         O::ReadSharedPlace { destination, owner, .. } => {
-            plan_read_shared_place(plan, function.to_mut(), &local, layouts, *destination, *owner, bridge, imports)?;
+            plan_read_shared_place(plan, function.to_mut(), &local, layouts, *destination, *owner, bridge, imports, cleanup_function)?;
+        }
+        O::ReadSharedSliceLength { destination, owner, .. } => {
+            plan_read_shared_slice_length(plan, function.to_mut(), &local, layouts, *destination, *owner, bridge, imports)?;
         }
         O::Construct { destination, constructor, captures } => {
             let constructor = bridge.family().constructors.iter().find(|c| c.id == *constructor).ok_or(CanonicalAdmissionError::UnsupportedPlan)?;

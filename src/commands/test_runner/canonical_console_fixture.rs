@@ -1,8 +1,9 @@
 //! Whole-source fixture execution and its proof/terminal boundaries.
 use super::*;
+use crate::interpreter;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use witchy_testkit::{ConsoleFixture, FixtureFamily, FixtureOutcome, FixtureStep, FixtureValue, SourceLocation, U64Text};
+use witchy_testkit::{ConsoleFixture, FixtureFamily, FixtureOutcome, FixtureStep, FixtureValue, SourceLocation, TestResult, U64Text};
 use witchy_wir::canonical_interpreter::{self as oracle, InterpreterConfig, InterpreterValue, OracleConsoleEvent};
 
 struct Files(std::path::PathBuf);
@@ -85,7 +86,7 @@ fn canonical_console_fixture_source_admission_full_trace_and_zero_leaks() {
     let main = driver.module().items.iter().find_map(|item| match item {
         ast::Item::Function(function) if function.name == "main" => Some(function), _ => None,
     }).unwrap();
-    assert_eq!(main.ret, Some(ast::Type::Named("Nil".into(), Vec::new())));
+    assert_eq!(main.ret, Some(ast::Type::Tuple(Vec::new())));
     assert_ne!(driver.identity().unwrap().original_source_digest(), driver.identity().unwrap().derived_source_digest());
     let artifact = codegen::compile_checked_test_driver_artifact(&driver).expect_lowered("source fixture admission");
     assert_eq!(artifact.entry().unwrap().capabilities(), &[witchy_wir::CanonicalEntryCapability::Console]);
@@ -156,8 +157,8 @@ fn canonical_console_fixture_refuses_missing_provider_and_unconsumed_transcript(
 #[test]
 fn canonical_console_fixture_recipe_refuses_other_types_and_providers() {
     for source in [
-        "fn test_console(value: Int):\n    Nil\n",
-        "type Holder:\n    console: Console\nfn test_console(value: Holder):\n    Nil\n",
+        "fn test_console(value: Int):\n    ()\n",
+        "type Holder:\n    console: Console\nfn test_console(value: Holder):\n    ()\n",
         "fn test_console(console: Console) -> Int:\n    1\n",
     ] {
         let files = Files::new(source);
@@ -187,11 +188,7 @@ fn canonical_console_fixture_cli_required_step_failure_overrides_successful_gues
     assert_eq!(source.transcript.events.len(), 1);
     let plan_path = files.0.join("plan.json");
     std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
-    for (name, backend) in [
-        ("interpreter", TestBackend::Interpreter),
-        ("wasm", TestBackend::Wasm),
-        ("both", TestBackend::Both),
-    ] {
+    for (name, backend) in [("wasm", TestBackend::Wasm)] {
         let result = run_fixture_test(&driver, &plan, backend).expect("no backend divergence");
         assert!(!result.passed, "{name} must reject unused required script steps");
         assert_eq!(result.error.as_deref(), Some(expected));
@@ -232,12 +229,12 @@ fn canonical_console_fixture_owned_record_preserves_grants_source_and_transcript
     let mut confused = configured;
     confused.argv = None;
     confused.filesystem = Some(Default::default());
-    for backend in [TestBackend::Interpreter, TestBackend::Wasm, TestBackend::Both] {
+    for backend in [TestBackend::Wasm] {
         let error = run_fixture_test(&driver, &confused, backend).err().expect("unrelated provider cannot satisfy argv");
         assert!(error.contains("other providers"), "{error}");
     }
     let missing = plan(&["owned-input"]);
-    for backend in [TestBackend::Interpreter, TestBackend::Wasm, TestBackend::Both] {
+    for backend in [TestBackend::Wasm] {
         let error = run_fixture_test(&driver, &missing, backend).err().expect("argv is required independently of Console");
         assert!(error.contains("missing argv provider"), "{error}");
     }
@@ -265,7 +262,7 @@ fn canonical_console_fixture_owned_record_preserves_multiple_argv_leaf_order() {
 
 #[test]
 fn canonical_console_fixture_record_cannot_construct_an_imported_seal() {
-    let files = Files::new("from owner import TestRoot\nfn test_console(root: TestRoot):\n    Nil\n");
+    let files = Files::new("from owner import TestRoot\nfn test_console(root: TestRoot):\n    ()\n");
     std::fs::write(files.0.join("owner.witchy"), "capability TestRoot:\n    console: Console\n    args: List(String)\n").unwrap();
     let (suite, _) = crate::link_test_file(files.0.join("suite.witchy").to_str().unwrap()).unwrap();
     assert!(witchy_interp::pipeline::check_console_fixture_test_driver(&suite, "suite.test_console").is_err());

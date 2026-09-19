@@ -5,6 +5,15 @@ after the RFC's external reviews. It supersedes conflicting migration choices,
 not the independent-checker, proper-tail-call, or final-byte safety obligations.
 Implementation and acceptance remain incomplete.
 
+> 2026-09-16: [RFC-0167](0167-witchy-language-contract.md) is the accepted source
+> contract. The initial support subset below describes admission limits, not
+> permanent removal of owned uniqueness, reference returns, or regions. Its
+> managed read-only view is an internal representation, not permission for a
+> source reference to outlive its owner or for COW to bypass an active loan.
+> Scalar-only closure layouts are an initial backend limit, not a language ban
+> on capability-delegating closures. SafeWIR's independent safety obligations
+> remain unchanged, and unsupported paths must still fail closed.
+
 ## One language, one value semantics
 
 Normal Witchy and `opt` use the same observable value semantics. `opt` is a

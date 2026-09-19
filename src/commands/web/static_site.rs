@@ -1818,7 +1818,7 @@ fn compile_static_island_artifact(
     let state_auth_value = if retains_auth { "auth, " } else { "" };
     let state_auth_binding = if retains_auth { "auth, " } else { "" };
     let state_auth_ignored = if retains_auth { "_auth, " } else { "" };
-    let dispatch_auth = if retains_auth { "auth" } else { "Nil" };
+    let dispatch_auth = if retains_auth { "auth" } else { "()" };
     let program_import = plan
         .program_name
         .rsplit_once('.')
@@ -1909,7 +1909,7 @@ fn glamour_island_startup_effect_work(work: List(glamour.IslandHostWork)) -> Lis
         match operation:
             glamour.IslandStartEffect(_instance, _key, _descriptor, _request) -> retained.push(operation)
             glamour.IslandCancelEffect(_key) -> retained.push(operation)
-            _ -> Nil
+            _ -> ()
     retained
 
 fn glamour_island_without_effect_key(effects: List({pending_effect_name}), key: String, owner_instance: Int, work: List(glamour.IslandHostWork)) -> (List({pending_effect_name}), List(glamour.IslandHostWork)):
@@ -1932,7 +1932,7 @@ fn glamour_island_stage_command(command: glamour.Cmd({message}), owner_scope: In
     var pending = effects
     var staged = work
     match command:
-        glamour.NoCmd -> Nil
+        glamour.NoCmd -> ()
         glamour.CancelCmd(key) ->
             let cleaned = {adapter_module}.glamour_island_without_effect_key(pending, key, owner_instance, staged)
             pending = cleaned.0
@@ -2103,7 +2103,7 @@ fn glamour_island_collect_subscriptions(subscription: glamour.Sub({message}), ol
     var next = next_instance
     var collected = desired
     match subscription:
-        glamour.NoSub -> Nil
+        glamour.NoSub -> ()
         glamour.BatchSub(subscriptions) ->
             for child in subscriptions:
                 let advanced = {adapter_module}.glamour_island_collect_subscriptions(child, old, next, collected)
@@ -2297,7 +2297,7 @@ pub fn glamour_emit(state: {state_name}) -> Bytes:
 @browser
 pub fn glamour_release(own state: {state_name}):
     match state:
-        {state_name}({state_auth_ignored}_baseline_model, _previous_model, _model, _output_sequence, _input_sequence, _next_effect, _next_subscription, _pending_effects, _pending_subscriptions, _activation_pending, _work) -> Nil
+        {state_name}({state_auth_ignored}_baseline_model, _previous_model, _model, _output_sequence, _input_sequence, _next_effect, _next_subscription, _pending_effects, _pending_subscriptions, _activation_pending, _work) -> ()
 "#,
         model = plan.model_type,
         message = plan.message_type,

@@ -18,6 +18,14 @@ tracking: move-out is shipped for List.pop, Dict.insert, and Dict.remove with
 
 # RFC-0088: Ownership-aware update and extraction
 
+> 2026-09-16 source-contract update: [RFC-0167](0167-witchy-language-contract.md)
+> supersedes this body's implicit discard and `local unique` spellings.
+> A non-unit extraction result requires use or `let _ =`; unique storage is
+> spelled `unique T`. Normal callers may prepare copyable storage before an
+> opt entry, but the promised opt body cannot perform hidden alias repair.
+> The extraction algorithm, counters, and historical evidence below are retained,
+> not proof that the current compiler implements the entire new boundary.
+
 The lowering and measurement surfaces are exercised by the RFC-0088 cases in
 [`src/example_tests.rs`](../src/example_tests.rs) and [`src/stats.rs`](../src/stats.rs).
 

@@ -2,15 +2,15 @@
 
 Sometimes the most honest way to write repetitive code is to *generate* it. A
 top-level `comptime:` block is witchy's tool for that - a block that runs **at
-compile time** and emits new source:
+compile time** and appends compiler-owned items:
 
 ```witchy
+import meta
+
 comptime:
     var i = 0
     while i < 3:
-        emit("pub fn lucky_${i}() -> Int:")
-        emit("    ${i * 7}")
-        emit("")
+        emit_item(meta.function(true, meta.ident("lucky_${i}"), [], Some(meta.type_named(meta.ident("Int"), [])), meta.expr_int(i * 7)))
         i = i + 1
 
 fn main(console: Console):
@@ -21,12 +21,11 @@ fn main(console: Console):
 0 7 14
 ```
 
-`emit(line)` is the raw-source output channel. Everything it emits is
-concatenated, parsed as witchy source, and **appended** to the module. Structured
-generators instead use `emit_item(meta.ItemSyntax)`, which preserves the
-compiler-owned item rather than rendering and reparsing it. Only then does the
-module get type-checked and footprint-analyzed. Generated code is held to
-exactly the same rules as handwritten code.
+`emit_item(meta.ItemSyntax)` is the item-generation boundary. Quotes and typed
+builders construct compiler-owned syntax trees; they are appended without
+rendering or reparsing. Only then does the module get type-checked and
+footprint-analyzed. Generated code is held to exactly the same rules as
+handwritten code.
 
 ## Capability boundaries
 
@@ -37,16 +36,15 @@ exactly the same rules as handwritten code.
   can't be forged. No filesystem, no network, no clock: the block is
   **deterministic by construction**. The same source always generates the
   same code, which is also what makes builds cacheable.
-- **Additive only.** Emitted source is appended. A `comptime` block can't
+- **Additive only.** Generated items are appended. A `comptime` block can't
   rewrite or delete existing items, so signatures retain their reviewed
   meaning.
 - **Analyzed after expansion.** `witchy caps`, the type checker, and the
   sandbox footprint all run on the *expanded* module. If generated code
   demands authority, it shows up in the footprint like anything else.
 
-Two consequences worth knowing: a `comptime` block may not emit another
-`comptime` block, and if the emitted text fails to parse, the compiler shows
-you exactly what was emitted alongside the error.
+One consequence worth knowing: a `comptime` block may not emit another
+`comptime` block.
 
 ## Type structure at compile time
 
@@ -55,15 +53,14 @@ values for the types declared in the module. Field and variant payload types are
 available as structured `meta.TypeExpr` data, so generators can branch on
 `TNamed("List", ...)` or `TNamed("Option", ...)` without parsing rendered type
 strings. Declaration shape is a `meta.TypeKind`: `TypeRecord`, `TypeSum`, or
-`TypeUninhabited`. When a generator actually needs to write a type into emitted
-source, `meta.type_source(expr)` renders that structured value back to source
-text.
+`TypeUninhabited`. When a generator needs a type node, use `quote type:` or a
+typed `meta.type_*` builder; `meta.type_source(expr)` is display data, not a
+syntax-construction escape hatch.
 
 ## Typed generation and fresh names
 
-For structured generators, prefer `emit_item(meta.ItemSyntax)` to raw `emit`
-lines. The `meta` builders validate syntax categories before the generated item
-is appended. `meta.fresh(hint)` creates a deterministic compiler-owned identifier
+Use `emit_item(meta.ItemSyntax)` for generators. The `meta` builders validate
+syntax categories before the generated item is appended. `meta.fresh(hint)` creates a deterministic compiler-owned identifier
 for a generated binding; user source can't spell its reserved name, so a local
 with the same human-readable hint can't capture it.
 
@@ -75,12 +72,8 @@ typed holes are substituted structurally instead of joining and reparsing the
 enclosing syntax.
 
 The `meta` builders validate category boundaries and preserve compiler-owned
-children where their API is structural. Compatibility builders that accept raw
-source parse only that explicit payload. Use quotation and structural builders
-for new generators; use raw-source constructors only when the syntax isn't yet
-covered by a structural builder. A typed tagged-literal generator returns
-`meta.ExprSyntax`, and the expansion engine transfers that expression AST
-directly.
+children. A typed tagged-literal generator returns `meta.ExprSyntax`, and the
+expansion engine transfers that expression AST directly.
 
 ```witchy
 import meta
@@ -231,8 +224,8 @@ comptime fn tag(parts: List(String), holes: List(String), origin: String) -> met
 String-returning tags are rejected. With `parts` = the static fragments and `holes` = one
 **opaque marker** per hole,
 The tag returns the typed expression that replaces the literal. Convert a marker
-to its explicit expression category with `meta.expr_raw`, or compose it through
-a structural quote or builder. The compiler substitutes the real hole expression -
+with `meta.expr_tag_hole`, or compose it through a structural quote or builder.
+The compiler substitutes the real hole expression -
 resolved at the call site - and splices the result before type-checking.
 Reachable tag evaluator items don't invoke tagged literals in their bodies or
 initializers; to compose tags, return nested tagged-literal syntax. Dynamic source is parsed with
@@ -291,7 +284,7 @@ import list
 import meta
 
 comptime fn greet(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    let name = meta.expr_raw(list.at(holes, 0))
+    let name = meta.expr_tag_hole(holes.at(0))
     quote expr:
         "Hello, " + ${name} + "!"
 

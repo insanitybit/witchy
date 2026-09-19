@@ -217,7 +217,7 @@ cold and warm timings, output, and bounds/trap behavior.
 or projection overlaps it.
 
 ```text
-fn normalize(var text: String) -> Nil:
+fn normalize(var text: String) -> ():
     text = text.trim()
 
 var text = input

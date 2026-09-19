@@ -143,7 +143,7 @@ fn main(console: Console):
         assert!(json.contains("\"error\""), "type-invalid source must fail closed: {json}");
         assert!(json.contains("unknown function `missing`"), "error must include the type error: {json}");
 
-        let src = "comptime:\n    emit(\"pub fn generated(net: Net) -> Int:\")\n    emit(\"    7\")\n";
+        let src = "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net) -> Int:\n            7\n    )\n";
         let NativeValue::Str(json) = footprint(&[NativeValue::Str(src.into())]).expect("native call") else {
             panic!("compiler.footprint must return a JSON string");
         };

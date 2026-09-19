@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::{
-    AllocationClass, CallArgument, Function, FunctionId, FunctionSignature, FunctionSignatureId, MemoryEffect,
-    Extent, LoadTransfer, Operation, ParameterContract, ParameterOwnership, ResultContract,
+    AccessMode, AllocationClass, CallArgument, Function, FunctionId, FunctionSignature, FunctionSignatureId, MemoryEffect,
+    Extent, LoadTransfer, Operation, ParameterContract, ParameterOwnership, Projection, ResultContract, StoreTransfer,
     ReturnedExtent, Terminator,
     ValueId, ValueType,
 };
@@ -59,11 +59,42 @@ enum DerivedResult {
     Shared(crate::layout::LayoutId),
     Unique(crate::layout::LayoutId),
     AliasesParameter { parameter: u32, layout: crate::layout::LayoutId },
+    /// The sole direct-exclusive result proof: an actual `CloneRef` of an
+    /// entry write-back parameter plus the corresponding unmodified hidden
+    /// write-back return lane.
+    AliasesWriteBackParameter {
+        parameter: u32,
+        layout: crate::layout::LayoutId,
+        projection: Option<u32>,
+    },
+    /// One branch of a checked direct-exclusive result.  Joining branches
+    /// unions only these already-authenticated parameter indexes; it never
+    /// turns an arbitrary same-layout reference into an alias candidate.
+    AliasesOneOfWriteBackParameters {
+        parameters: Vec<u32>,
+        layout: crate::layout::LayoutId,
+    },
+    DisjunctiveWriteBackSelector {
+        carrier_result: u32,
+        parameters: Vec<u32>,
+        selector_parameter: u32,
+    },
     ReallocatesParameter { parameter: u32, layout: crate::layout::LayoutId },
 }
 
 impl DerivedResult {
     fn join(&mut self, other: Self) {
+        if let (
+            Self::AliasesOneOfWriteBackParameters { parameters, layout },
+            Self::AliasesOneOfWriteBackParameters { parameters: other_parameters, layout: other_layout },
+        ) = (&mut *self, &other)
+            && *layout == *other_layout
+        {
+            parameters.extend(other_parameters.iter().copied());
+            parameters.sort_unstable();
+            parameters.dedup();
+            return;
+        }
         if matches!(self, Self::Unseen) {
             *self = other;
         } else if matches!(other, Self::Unseen) || *self == other {
@@ -87,6 +118,28 @@ impl DerivedResult {
             Self::AliasesParameter { parameter, layout } => Ok(ResultContract::AliasesParameter {
                 parameter: *parameter,
                 layout: *layout,
+            }),
+            Self::AliasesWriteBackParameter { parameter, layout, projection } => {
+                Ok(ResultContract::AliasesWriteBackParameter {
+                    parameter: *parameter,
+                    layout: *layout,
+                    projection: *projection,
+                })
+            }
+            Self::AliasesOneOfWriteBackParameters { parameters, layout } => {
+                Ok(ResultContract::AliasesOneOfWriteBackParameters {
+                    parameters: parameters.clone(),
+                    layout: *layout,
+                })
+            }
+            Self::DisjunctiveWriteBackSelector {
+                carrier_result,
+                parameters,
+                selector_parameter,
+            } => Ok(ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result: *carrier_result,
+                parameters: parameters.clone(),
+                selector_parameter: *selector_parameter,
             }),
             Self::ReallocatesParameter { parameter, layout } => {
                 Ok(ResultContract::ReallocatesParameter {
@@ -112,6 +165,31 @@ enum Origin {
     },
     StaticData(crate::layout::LayoutId),
     Shared(crate::layout::LayoutId),
+    /// A `CloneRef` directly sourced from an entry parameter. This is not an
+    /// alias contract on its own: only the Return tuple proof may promote it
+    /// to the dedicated write-back carrier.
+    ClonedParameter { parameter: u32, layout: crate::layout::LayoutId },
+    ProjectedParameter {
+        parameter: u32,
+        owner_layout: crate::layout::LayoutId,
+        field: u32,
+        layout: crate::layout::LayoutId,
+    },
+    ClonedProjectedParameter {
+        parameter: u32,
+        owner_layout: crate::layout::LayoutId,
+        field: u32,
+        layout: crate::layout::LayoutId,
+    },
+    /// One exact direct-call relay of a proven projected write-back result.
+    /// `hidden` is the same call's declaration-derived write-back lane; it
+    /// prevents a separately acquired root from completing the relation.
+    ForwardedProjectedWriteBack {
+        parameter: u32,
+        layout: crate::layout::LayoutId,
+        field: u32,
+        hidden: ValueId,
+    },
     ReallocatesParameter { parameter: u32, layout: crate::layout::LayoutId },
 }
 
@@ -128,6 +206,15 @@ impl Origin {
             }
             (Origin::StaticData(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::StaticData(layout),
             (Origin::Shared(layout), ValueType::Ref(actual)) if layout == actual => DerivedResult::Shared(layout),
+            (Origin::ClonedParameter { layout, .. }, ValueType::Ref(actual)) if layout == actual => {
+                DerivedResult::Shared(layout)
+            }
+            (Origin::ClonedProjectedParameter { layout, .. }, ValueType::Ref(actual)) if layout == actual => {
+                DerivedResult::Shared(layout)
+            }
+            (Origin::ForwardedProjectedWriteBack { layout, .. }, ValueType::Ref(actual)) if layout == actual => {
+                DerivedResult::Shared(layout)
+            }
             (Origin::Parameter { parameter, layout: Some(layout) }, ValueType::Ref(actual)) if layout == actual => {
                 DerivedResult::AliasesParameter { parameter, layout }
             }
@@ -275,6 +362,10 @@ fn derive_summary(
         .collect::<BTreeMap<_, _>>();
     let mut origins = derive_origins(function, functions, signatures, summaries, &entry_origins, definitions)?;
     let mut summary = initial_summary(function, signatures)?;
+    let signature = signatures
+        .get(&function.signature)
+        .copied()
+        .ok_or(InitialCheckError::MissingSignature(function.signature))?;
 
     for block in &function.blocks {
         for operation in &block.operations {
@@ -293,7 +384,43 @@ fn derive_summary(
             Terminator::Return { values } => {
                 for (index, value) in values.iter().enumerate() {
                     let value_type = function.value_types.get(value).copied().unwrap_or(ValueType::Unit);
-                    let result = origins.get(value).copied().unwrap_or(Origin::Unknown).result(value_type);
+                    let result = write_back_reallocation_return_history(
+                        signature,
+                        &origins,
+                        values,
+                        index,
+                    ).or_else(|| direct_write_back_alias_return_history(
+                        function,
+                        entry,
+                        block,
+                        signature,
+                        &origins,
+                        values,
+                        index,
+                    )).or_else(|| projected_write_back_alias_return_history(
+                        function,
+                        entry,
+                        signature,
+                        &origins,
+                        values,
+                        index,
+                    )).or_else(|| projected_scalar_root_alias_return_history(
+                        function,
+                        entry,
+                        signature,
+                        &origins,
+                        values,
+                        index,
+                    )).or_else(|| projected_scalar_forwarded_alias_return_history(
+                        function,
+                        entry,
+                        signature,
+                        &origins,
+                        values,
+                        index,
+                    )).unwrap_or_else(|| {
+                        origins.get(value).copied().unwrap_or(Origin::Unknown).result(value_type)
+                    });
                     if let Some(slot) = summary.results.get_mut(index) {
                         slot.join(result);
                     }
@@ -329,10 +456,7 @@ fn derive_summary(
                     || target.results.iter().any(|result| !is_indirect_result(result))
                     || signature.contract.parameters.iter().enumerate().any(|(index, parameter)| {
                         matches!(parameter.value_type, ValueType::Ref(_))
-                            && (!matches!(parameter.ownership, ParameterOwnership::Shared | ParameterOwnership::WriteBack)
-                                || signature.contract.parameter_effects.get(&(index as u32))
-                                    .is_some_and(|effects| effects.iter().any(|effect| !matches!(effect,
-                                        MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release))))
+                            && !supported_indirect_reference_parameter(index, parameter, signature)
                     })
                 {
                     return Err(InitialCheckError::UnsupportedIndirectCall {
@@ -359,10 +483,6 @@ fn derive_summary(
     // This supports recursive calls and different allocation origins without
     // trusting an alias/freshness summary to grant memory authority. Preserve
     // effect/non-escape inference and the checks for stronger legacy results.
-    let signature = signatures
-        .get(&function.signature)
-        .copied()
-        .ok_or(InitialCheckError::MissingSignature(function.signature))?;
     for (index, declared) in signature.contract.results.iter().enumerate() {
         if let ResultContract::Shared { layout } | ResultContract::Unique { layout } = declared {
             if signature.results.get(index) != Some(&ValueType::Ref(*layout)) {
@@ -374,7 +494,206 @@ fn derive_summary(
             *result = if matches!(declared, ResultContract::Unique { .. }) { DerivedResult::Unique(*layout) } else { DerivedResult::Shared(*layout) };
         }
     }
+    // A returned two-root handle joins through an ordinary SSA reference phi,
+    // whose generic origin intentionally becomes unknown.  Reopen only this
+    // declaration-authenticated case: the paired selector contract fixes the
+    // exact ordered roots, while MemoryChecker proves each returned edge is
+    // one of those entry identities and returns the exact selector input.
+    for (index, declared) in signature.contract.results.iter().enumerate() {
+        let ResultContract::AliasesOneOfWriteBackParameters { parameters, layout } = declared else {
+            continue;
+        };
+        let selector_matches = signature.contract.results.iter().any(|result| {
+            matches!(result, ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result,
+                parameters: selector_parameters,
+                ..
+            } if *carrier_result as usize == index && selector_parameters == parameters)
+        });
+        if !selector_matches
+            || parameters.len() != 2
+            || !parameters.windows(2).all(|pair| pair[0] < pair[1])
+            || signature.results.get(index) != Some(&ValueType::Ref(*layout))
+            || parameters.iter().any(|parameter| !matches!(signature.contract.parameters.get(*parameter as usize), Some(ParameterContract {
+                value_type: ValueType::Ref(parameter_layout),
+                ownership: ParameterOwnership::WriteBack,
+            }) if *parameter_layout == *layout))
+        {
+            return Err(contract_mismatch(signature.id, "contracts.rs disjunctive declaration"));
+        }
+        summary.results[index] = DerivedResult::AliasesOneOfWriteBackParameters {
+            parameters: parameters.clone(),
+            layout: *layout,
+        };
+    }
+    // This scalar lane is not an ordinary Bool result.  It is the exact
+    // source-selector companion of the leading disjunctive alias carrier;
+    // return-memory checking additionally proves the returned SSA value is
+    // the declared entry parameter, rather than an arbitrary Bool.
+    for (index, declared) in signature.contract.results.iter().enumerate() {
+        let ResultContract::DisjunctiveWriteBackSelector {
+            carrier_result,
+            parameters,
+            selector_parameter,
+        } = declared else { continue };
+        let Some(DerivedResult::AliasesOneOfWriteBackParameters {
+            parameters: carrier_parameters,
+            ..
+        }) = summary.results.get(*carrier_result as usize) else {
+            return Err(contract_mismatch(signature.id, "contracts.rs disjunctive carrier"));
+        };
+        if signature.results.get(index) != Some(&ValueType::Bool)
+            || !matches!(summary.results.get(index), Some(DerivedResult::Value(ValueType::Bool)))
+            || parameters != carrier_parameters
+            || parameters.len() != 2
+            || !parameters.windows(2).all(|pair| pair[0] < pair[1])
+            || !matches!(signature.contract.parameters.get(*selector_parameter as usize), Some(ParameterContract {
+                value_type: ValueType::Bool,
+                ownership: ParameterOwnership::Value,
+            }))
+        {
+            return Err(contract_mismatch(signature.id, "contracts.rs disjunctive selector"));
+        }
+        summary.results[index] = DerivedResult::DisjunctiveWriteBackSelector {
+            carrier_result: *carrier_result,
+            parameters: parameters.clone(),
+            selector_parameter: *selector_parameter,
+        };
+    }
     Ok(summary)
+}
+
+/// The scalar projected carrier keeps the aggregate root token as its
+/// physical result.  It therefore cannot prove a scalar address by layout;
+/// instead the body must perform one exact fixed-Int field read before
+/// cloning that same root into the ordinary return lane.  The unmodified root
+/// is returned on its declaration-derived hidden write-back lane.  The field
+/// ordinal comes only from this history, never from the declared contract.
+fn projected_scalar_root_alias_return_history(
+    function: &Function,
+    entry: &crate::canonical_safewir::BasicBlock,
+    signature: &FunctionSignature,
+    origins: &BTreeMap<ValueId, Origin>,
+    values: &[ValueId],
+    result_index: usize,
+) -> Option<DerivedResult> {
+    if result_index != 0 { return None; }
+    let ordinary = *values.first()?;
+    let Origin::ClonedParameter { parameter, layout } = origin_of(origins, ordinary) else {
+        return None;
+    };
+    let parameter = usize::try_from(parameter).ok()?;
+    let hidden_lane = write_back_hidden_lane_from_signature(signature, parameter, layout)?;
+    let ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = signature.contract.parameters.get(parameter)? else {
+        return None;
+    };
+    if *parameter_layout != layout
+        || values.len() != signature.results.len()
+        || signature.results.first() != Some(&ValueType::Ref(layout))
+        || signature.results.get(hidden_lane) != Some(&ValueType::Ref(layout))
+    {
+        return None;
+    }
+    let entry_value = entry.parameters.get(parameter)?.value;
+    let hidden = *values.get(hidden_lane)?;
+    if ordinary == hidden
+        || hidden != entry_value
+        || function.value_types.get(&ordinary) != Some(&ValueType::Ref(layout))
+        || function.value_types.get(&hidden) != Some(&ValueType::Ref(layout))
+        || function.blocks.len() != 1
+    {
+        return None;
+    }
+    let [Operation::Load { destination: observed, place, transfer: LoadTransfer::CopyScalar },
+        Operation::CloneRef { destination, source }, suffix @ ..] = entry.operations.as_slice()
+    else { return None; };
+    let Projection::Field { index: field } = place.projection() else { return None; };
+    if *destination != ordinary
+        || *source != entry_value
+        || place.object() != entry_value
+        || place.value_type() != ValueType::Int
+        || place.access() != AccessMode::Read
+        || function.value_types.get(observed) != Some(&ValueType::Int)
+        || !suffix.iter().all(|operation| matches!(operation, Operation::DropRef { object }
+            if entry.parameters.iter().enumerate().any(|(index, parameter_value)| {
+                index != parameter && parameter_value.value == *object
+            })))
+    {
+        return None;
+    }
+    Some(DerivedResult::AliasesWriteBackParameter {
+        parameter: u32::try_from(parameter).ok()?,
+        layout,
+        projection: Some(*field),
+    })
+}
+
+/// A relay may preserve the scalar carrier only by forwarding the exact root
+/// through one direct call whose callee independently derived the selected
+/// projection.  This does not accept a matching result layout or a second
+/// root: the tagged origin records the corresponding hidden destination from
+/// that same call, and this history requires the moved entry parameter.
+fn projected_scalar_forwarded_alias_return_history(
+    function: &Function,
+    entry: &crate::canonical_safewir::BasicBlock,
+    signature: &FunctionSignature,
+    origins: &BTreeMap<ValueId, Origin>,
+    values: &[ValueId],
+    result_index: usize,
+) -> Option<DerivedResult> {
+    if result_index != 0 { return None; }
+    let ordinary = *values.first()?;
+    let Origin::ForwardedProjectedWriteBack { parameter, layout, field, hidden: expected_hidden } = origin_of(origins, ordinary) else {
+        return None;
+    };
+    let parameter = usize::try_from(parameter).ok()?;
+    let hidden_lane = write_back_hidden_lane_from_signature(signature, parameter, layout)?;
+    let ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = signature.contract.parameters.get(parameter)? else {
+        return None;
+    };
+    let entry_value = entry.parameters.get(parameter)?.value;
+    let hidden = *values.get(hidden_lane)?;
+    if *parameter_layout != layout
+        || values.len() != signature.results.len()
+        || signature.results.first() != Some(&ValueType::Ref(layout))
+        || signature.results.get(hidden_lane) != Some(&ValueType::Ref(layout))
+        || hidden != expected_hidden
+        || ordinary == hidden
+        || function.value_types.get(&ordinary) != Some(&ValueType::Ref(layout))
+        || function.value_types.get(&hidden) != Some(&ValueType::Ref(layout))
+        || function.blocks.len() != 1
+    {
+        return None;
+    }
+    let call_index = entry.operations.iter().position(|operation| matches!(operation, Operation::Call { .. }))?;
+    let (prefix, rest) = entry.operations.split_at(call_index);
+    let [Operation::Call { destinations, arguments, .. }] = &rest[..1] else { return None; };
+    let suffix = &rest[1..];
+    if destinations.first() != Some(&ordinary)
+        || destinations.get(hidden_lane) != Some(&hidden)
+        || !matches!(arguments.get(parameter), Some(crate::canonical_safewir::CallArgument::Move(value)) if *value == entry_value)
+        || !prefix.iter().all(|operation| matches!(operation, Operation::CloneRef { source, .. }
+            if entry.parameters.iter().enumerate().any(|(index, entry_parameter)| {
+                index != parameter && entry_parameter.value == *source
+            })))
+        || !suffix.iter().all(|operation| matches!(operation, Operation::DropRef { object }
+            if entry.parameters.iter().enumerate().any(|(index, entry_parameter)| {
+                index != parameter && entry_parameter.value == *object
+            })))
+    {
+        return None;
+    }
+    Some(DerivedResult::AliasesWriteBackParameter {
+        parameter: u32::try_from(parameter).ok()?,
+        layout,
+        projection: Some(field),
+    })
 }
 
 fn derive_origins(
@@ -464,6 +783,7 @@ fn propagate_operation_origins(
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
+                    | O::ReadSharedSliceLength { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -523,7 +843,13 @@ fn propagate_operation_origins(
         } => join_origin(
             origins,
             *destination,
-            load_result_origin(function, *destination, place.value_type(), *transfer),
+            load_result_origin(
+                function,
+                *destination,
+                place,
+                *transfer,
+                origin_of(origins, place.object()),
+            ),
         ),
         Operation::Call { destinations, callee, arguments } => {
             let summary = summaries.get(callee).ok_or(InitialCheckError::MissingFunction(*callee))?;
@@ -580,7 +906,9 @@ fn propagate_operation_origins(
         | Operation::Release { .. }
         | Operation::DropRef { .. }
         | Operation::Reclaim { .. }
-        | Operation::HostCall { .. } => {}
+        | Operation::ExternalCall { .. }
+        | Operation::HostCall { .. }
+        | Operation::ReauthenticateRawHeaderExtent { .. } => {}
     }
     Ok(())
 }
@@ -642,8 +970,13 @@ fn derive_operation(
         Operation::StaticData { destination, layout, .. } => { origins.insert(*destination, Origin::StaticData(*layout)); }
         Operation::CloneRef { destination, source } => {
             let origin = match origin_of(origins, *source) {
-                Origin::Parameter { layout: Some(layout), .. }
-                | Origin::Fresh { layout, .. }
+                Origin::Parameter { parameter, layout: Some(layout) } => {
+                    Origin::ClonedParameter { parameter, layout }
+                }
+                Origin::ProjectedParameter { parameter, owner_layout, field, layout } => {
+                    Origin::ClonedProjectedParameter { parameter, owner_layout, field, layout }
+                }
+                Origin::Fresh { layout, .. }
                 | Origin::StaticData(layout)
                 | Origin::Shared(layout)
                 | Origin::ReallocatesParameter { layout, .. } => Origin::Shared(layout),
@@ -663,7 +996,13 @@ fn derive_operation(
             }
             origins.insert(
                 *destination,
-                load_result_origin(function, *destination, place.value_type(), *transfer),
+                load_result_origin(
+                    function,
+                    *destination,
+                    place,
+                    *transfer,
+                    origin_of(origins, place.object()),
+                ),
             );
         }
         Operation::InitNullableOwned { place } => { add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write); }
@@ -693,9 +1032,45 @@ fn derive_operation(
             if destinations.len() != callee_summary.results.len() {
                 return Err(InitialCheckError::ArityMismatch { context: "derived call results", expected: callee_summary.results.len(), actual: destinations.len() });
             }
-            for (destination, result) in destinations.iter().zip(&callee_summary.results) {
+            let callee_signature = functions.get(callee)
+                .and_then(|callee| signatures.get(&callee.signature).copied())
+                .ok_or(InitialCheckError::MissingFunction(*callee))?;
+            for (result_index, (destination, result)) in destinations.iter().zip(&callee_summary.results).enumerate() {
                 let value_type = function.value_types.get(destination).copied().unwrap_or(ValueType::Unit);
-                origins.insert(*destination, result_origin(result, arguments, origins, value_type));
+                let forwarded = match result {
+                    DerivedResult::AliasesWriteBackParameter { parameter, layout, projection: Some(field) }
+                        if result_index == 0 =>
+                    {
+                        let parameter = usize::try_from(*parameter).ok();
+                        let hidden_lane = parameter.and_then(|parameter| {
+                            write_back_hidden_lane_from_signature(callee_signature, parameter, *layout)
+                        });
+                        match (parameter, hidden_lane) {
+                            (Some(parameter), Some(hidden_lane)) => match (
+                                arguments.get(parameter),
+                                destinations.get(hidden_lane),
+                            ) {
+                                (Some(argument), Some(hidden)) => match origin_of(origins, argument_value(argument)) {
+                                    Origin::Parameter { parameter: caller_parameter, layout: Some(caller_layout) }
+                                        if caller_layout == *layout && usize::try_from(caller_parameter).ok() == Some(parameter) =>
+                                    {
+                                        Some(Origin::ForwardedProjectedWriteBack {
+                                            parameter: caller_parameter,
+                                            layout: *layout,
+                                            field: *field,
+                                            hidden: *hidden,
+                                        })
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                origins.insert(*destination, forwarded.unwrap_or_else(|| result_origin(result, arguments, origins, value_type)));
             }
             derive_call_needs(*callee, arguments, functions, summaries, origins, summary)?;
         }
@@ -727,6 +1102,7 @@ fn derive_operation(
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
+                    | O::ReadSharedSliceLength { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::CloneEnvironment { .. }
@@ -741,6 +1117,7 @@ fn derive_operation(
                     O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
+                    | O::ReadSharedSliceLength { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -765,6 +1142,7 @@ fn derive_operation(
                     | O::ReadCapability { .. }
                     | O::ReadOwner { .. }
                     | O::ReadSharedPlace { .. }
+                    | O::ReadSharedSliceLength { .. }
                     | O::ReadTag { .. }
                     | O::ReadCallable { .. }
                     | O::Clone { .. }
@@ -780,7 +1158,7 @@ fn derive_operation(
                 origins.insert(destination, origin);
             }
         }
-        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstUnit { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::CapabilityNone { .. } | Operation::CapabilitySome { .. } | Operation::CapabilityIsPresent { .. } | Operation::CapabilityUnwrap { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::HostCall { .. } => {}
+        Operation::ConstInt { .. } | Operation::ConstFloat { .. } | Operation::ConstUnit { .. } | Operation::ConstBool { .. } | Operation::ConstSize { .. } | Operation::CapabilityNone { .. } | Operation::CapabilitySome { .. } | Operation::CapabilityIsPresent { .. } | Operation::CapabilityUnwrap { .. } | Operation::Arithmetic { .. } | Operation::Compare { .. } | Operation::NarrowSize { .. } | Operation::WidenSize { .. } | Operation::FloatUnary { .. } | Operation::Guard { .. } | Operation::ReauthenticateRawHeaderExtent { .. } | Operation::ExternalCall { .. } | Operation::HostCall { .. } => {}
     }
     Ok(())
 }
@@ -848,6 +1226,68 @@ fn authenticated_indirect_callee(
         }
         _ => false,
     })
+}
+
+/// An indirect callable may write back a unique reference only when its
+/// checked signature explicitly carries the unique lane and no effect beyond
+/// the standard read/retain/release/write protocol. The caller's `Move` and
+/// the returned `Unique` token are then independently checked by the CFG and
+/// memory judgments; a targetless shared-summary fallback never reaches this
+/// branch.
+fn supported_indirect_reference_parameter(
+    index: usize,
+    parameter: &ParameterContract,
+    signature: &FunctionSignature,
+) -> bool {
+    let effects = signature
+        .contract
+        .parameter_effects
+        .get(&(index as u32));
+    match parameter.ownership {
+        ParameterOwnership::Shared | ParameterOwnership::WriteBack | ParameterOwnership::Unique => effects
+            .is_none_or(|effects| effects.iter().all(|effect| matches!(
+                effect,
+                MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release,
+            ))),
+        ParameterOwnership::UniqueWriteBack => effects.is_some_and(|effects| {
+            effects.iter().any(|effect| *effect == MemoryEffect::Write)
+                && effects.iter().all(|effect| matches!(
+                    effect,
+                    MemoryEffect::Read
+                        | MemoryEffect::Retain
+                        | MemoryEffect::Release
+                        | MemoryEffect::Write,
+                ))
+        }),
+        ParameterOwnership::Value => exact_indirect_shared_alias_parameter(index, signature),
+    }
+}
+
+/// A targetless closure call may carry the one checked shared alias lane only
+/// past its owned environment parameter.  The exact two-lane contract prevents
+/// a raw callable, additional reference, or different result relation from
+/// acquiring this exception.
+fn exact_indirect_shared_alias_parameter(index: usize, signature: &FunctionSignature) -> bool {
+    let ([environment, ValueType::Ref(parameter_layout)], [ValueType::Ref(result_layout)]) =
+        (signature.parameters.as_slice(), signature.results.as_slice())
+    else { return false };
+    let ([environment_contract, parameter], [result]) = (
+        signature.contract.parameters.as_slice(),
+        signature.contract.results.as_slice(),
+    ) else { return false };
+    index == 1
+        && matches!(environment, ValueType::Ref(_) | ValueType::Gc(_))
+        && environment_contract.value_type == *environment
+        && environment_contract.ownership == ParameterOwnership::Shared
+        && *parameter_layout == *result_layout
+        && parameter.ownership == ParameterOwnership::Value
+        && parameter.value_type == ValueType::Ref(*parameter_layout)
+        && matches!(result, ResultContract::AliasesParameter { parameter: 1, layout }
+            if *layout == *parameter_layout)
+        && signature.contract.parameter_effects == BTreeMap::from([
+            (0, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release]),
+            (1, vec![MemoryEffect::Read, MemoryEffect::Retain, MemoryEffect::Release]),
+        ])
 }
 
 /// Convert only the ownership-neutral portion of a checked signature into a
@@ -947,6 +1387,10 @@ fn derive_tail_results(
         .get(&callee_function.signature)
         .copied()
         .ok_or(InitialCheckError::MissingSignature(callee_function.signature))?;
+    let caller_signature = signatures
+        .get(&function.signature)
+        .copied()
+        .ok_or(InitialCheckError::MissingSignature(function.signature))?;
     let expected_results = summary.results.len();
     for (index, slot) in summary.results.iter_mut().enumerate() {
         let result = callee_summary.results.get(index).ok_or(InitialCheckError::ArityMismatch { context: "derived tail-call results", expected: expected_results, actual: callee_summary.results.len() })?;
@@ -957,10 +1401,55 @@ fn derive_tail_results(
                 actual: callee_signature.results.len(),
             },
         )?;
-        slot.join(result_origin(result, arguments, origins, value_type).result(value_type));
+        let result = reallocated_tail_write_back_result(
+            caller_signature,
+            index,
+            result,
+            arguments,
+            origins,
+        ).unwrap_or_else(|| result_origin(result, arguments, origins, value_type).result(value_type));
+        slot.join(result);
     }
-    let _ = function;
     Ok(())
+}
+
+/// A tail call can return a reallocated hidden lane after the caller itself
+/// has materialized the fresh replacement. Preserve that exact relation only
+/// when the callee independently derives the same write-back fact and the
+/// moved argument is a concrete fresh allocation; an entry, shared, joined,
+/// or unknown argument intentionally falls through to ordinary origin logic.
+fn reallocated_tail_write_back_result(
+    caller: &FunctionSignature,
+    result_index: usize,
+    callee_result: &DerivedResult,
+    arguments: &[CallArgument],
+    origins: &BTreeMap<ValueId, Origin>,
+) -> Option<DerivedResult> {
+    let DerivedResult::ReallocatesParameter { parameter: callee_parameter, layout } = callee_result else {
+        return None;
+    };
+    let Origin::Fresh { layout: argument_layout, .. } = origin_of(origins, argument_value(arguments.get(*callee_parameter as usize)?)) else {
+        return None;
+    };
+    if argument_layout != *layout {
+        return None;
+    }
+    let write_back_parameters = caller.contract.parameters.iter().enumerate()
+        .filter_map(|(parameter, contract)| {
+            (contract.ownership == ParameterOwnership::WriteBack).then_some(parameter)
+        })
+        .collect::<Vec<_>>();
+    let ordinary_results = caller.results.len().checked_sub(write_back_parameters.len())?;
+    let ordinal = result_index.checked_sub(ordinary_results)?;
+    let parameter = *write_back_parameters.get(ordinal)?;
+    matches!(caller.contract.parameters.get(parameter), Some(ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    }) if *parameter_layout == *layout)
+        .then_some(DerivedResult::ReallocatesParameter {
+            parameter: u32::try_from(parameter).ok()?,
+            layout: *layout,
+        })
 }
 
 fn derive_call_needs(
@@ -996,13 +1485,300 @@ fn origin_of(origins: &BTreeMap<ValueId, Origin>, value: ValueId) -> Origin {
     origins.get(&value).copied().unwrap_or(Origin::Unknown)
 }
 
+/// Prove the dedicated returned-exclusive carrier from its actual return
+/// history. Parameter ownership and result arity determine the hidden lane;
+/// the declared result contract never supplies provenance. The bounded slice
+/// accepts only a pure direct clone, so mutation or replacement histories
+/// fail closed until they acquire their own proof.
+///
+/// A hidden `var` write-back lane has no source result position to carry this
+/// relation.  Recover it only from the lowered terminal value: every terminal
+/// reaching this lane must carry an actual fresh allocation of the matching
+/// reference layout.  The enclosing summary join turns a parameter/shared or
+/// unknown path into `Unknown`, so callers can never receive a speculative
+/// reallocation contract.
+fn write_back_reallocation_return_history(
+    signature: &FunctionSignature,
+    origins: &BTreeMap<ValueId, Origin>,
+    values: &[ValueId],
+    result_index: usize,
+) -> Option<DerivedResult> {
+    let write_back_parameters = signature.contract.parameters.iter().enumerate()
+        .filter_map(|(parameter, contract)| {
+            (contract.ownership == ParameterOwnership::WriteBack).then_some(parameter)
+        })
+        .collect::<Vec<_>>();
+    let ordinary_results = signature.results.len().checked_sub(write_back_parameters.len())?;
+    let ordinal = result_index.checked_sub(ordinary_results)?;
+    let parameter = *write_back_parameters.get(ordinal)?;
+    let ParameterContract {
+        value_type: ValueType::Ref(layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = signature.contract.parameters.get(parameter)? else {
+        return None;
+    };
+    if values.len() != signature.results.len()
+        || signature.results.get(result_index) != Some(&ValueType::Ref(*layout))
+    {
+        return None;
+    }
+    let Origin::Fresh { layout: actual_layout, .. } = origin_of(origins, *values.get(result_index)?) else {
+        return None;
+    };
+    (*layout == actual_layout).then_some(DerivedResult::ReallocatesParameter {
+        parameter: u32::try_from(parameter).ok()?,
+        layout: *layout,
+    })
+}
+
+fn direct_write_back_alias_return_history(
+    function: &Function,
+    entry: &crate::canonical_safewir::BasicBlock,
+    block: &crate::canonical_safewir::BasicBlock,
+    signature: &FunctionSignature,
+    origins: &BTreeMap<ValueId, Origin>,
+    values: &[ValueId],
+    result_index: usize,
+) -> Option<DerivedResult> {
+    if result_index != 0 {
+        return None;
+    }
+    let ordinary = *values.first()?;
+    let Origin::ClonedParameter { parameter, layout } = origin_of(origins, ordinary) else {
+        return None;
+    };
+    let parameter = usize::try_from(parameter).ok()?;
+    let hidden_lane = write_back_hidden_lane_from_signature(signature, parameter, layout)?;
+    if values.len() != signature.results.len()
+        || function.value_types.get(&ordinary) != Some(&ValueType::Ref(layout))
+    {
+        return None;
+    }
+    let ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = signature.contract.parameters.get(parameter)? else {
+        return None;
+    };
+    if *parameter_layout != layout {
+        return None;
+    }
+    let entry_value = entry.parameters.get(parameter)?.value;
+    let hidden = *values.get(hidden_lane)?;
+    if ordinary == hidden
+        || hidden != entry_value
+        || function.value_types.get(&hidden) != Some(&ValueType::Ref(layout))
+        || !is_read_only_direct_clone_history(&block.operations, ordinary, entry_value)
+    {
+        return None;
+    }
+    let parameter = u32::try_from(parameter).ok()?;
+    match signature.contract.results.first() {
+        Some(ResultContract::AliasesOneOfWriteBackParameters { parameters, layout: declared_layout })
+            if *declared_layout == layout && parameters.binary_search(&parameter).is_ok() =>
+        {
+            Some(DerivedResult::AliasesOneOfWriteBackParameters {
+                parameters: vec![parameter],
+                layout,
+            })
+        }
+        _ => Some(DerivedResult::AliasesWriteBackParameter {
+            parameter,
+            layout,
+            projection: None,
+        }),
+    }
+}
+
+/// The lowering establishes fixed-layout/string extent before cloning its
+/// returned handle. These scalar guards are observational only. Refuse every
+/// operation that can write, transfer, retain/release, or create a replacement
+/// token before the final clone.
+fn is_read_only_direct_clone_history(
+    operations: &[Operation],
+    ordinary: ValueId,
+    entry_value: ValueId,
+) -> bool {
+    let Some((last, prefix)) = operations.split_last() else { return false };
+    matches!(last, Operation::CloneRef { destination, source }
+        if *destination == ordinary && *source == entry_value)
+        && prefix.iter().all(|operation| match operation {
+            Operation::Load { transfer: LoadTransfer::CopyScalar, place, .. } => place.access == AccessMode::Read,
+            Operation::Compare { .. } | Operation::Guard { .. } | Operation::ConstSize { .. } => true,
+            _ => false,
+        })
+}
+
+/// The projected sibling of the direct carrier. It proves the sole fixed
+/// `Load CloneShared(entry.field)` followed immediately by the retained
+/// ordinary clone. The hidden lane remains the unmodified aggregate token;
+/// neither a matching result layout nor a declared contract can replace this
+/// physical history.
+fn projected_write_back_alias_return_history(
+    function: &Function,
+    entry: &crate::canonical_safewir::BasicBlock,
+    signature: &FunctionSignature,
+    origins: &BTreeMap<ValueId, Origin>,
+    values: &[ValueId],
+    result_index: usize,
+) -> Option<DerivedResult> {
+    if result_index != 0 {
+        return None;
+    }
+    let ordinary = *values.first()?;
+    let Origin::ClonedProjectedParameter { parameter, owner_layout, field, layout } = origin_of(origins, ordinary) else {
+        return None;
+    };
+    let parameter = usize::try_from(parameter).ok()?;
+    let hidden_lane = write_back_hidden_lane_from_signature(signature, parameter, layout)?;
+    let ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = signature.contract.parameters.get(parameter)? else {
+        return None;
+    };
+    if *parameter_layout != owner_layout
+        || values.len() != signature.results.len()
+        || function.value_types.get(&ordinary) != Some(&ValueType::Ref(layout))
+        || signature.results.first() != Some(&ValueType::Ref(layout))
+        || signature.results.get(hidden_lane) != Some(&ValueType::Ref(owner_layout))
+    {
+        return None;
+    }
+    let entry_value = entry.parameters.get(parameter)?.value;
+    let hidden = *values.get(hidden_lane)?;
+    if ordinary == hidden
+        || hidden != entry_value
+        || function.value_types.get(&hidden) != Some(&ValueType::Ref(owner_layout))
+        || function.blocks.len() != 1
+        || !is_read_only_projected_clone_history(
+            &entry.operations,
+            ordinary,
+            entry_value,
+            field,
+            layout,
+        )
+    {
+        return None;
+    }
+    Some(DerivedResult::AliasesWriteBackParameter {
+        parameter: u32::try_from(parameter).ok()?,
+        layout,
+        projection: Some(field),
+    })
+}
+
+fn is_read_only_projected_clone_history(
+    operations: &[Operation],
+    ordinary: ValueId,
+    entry_value: ValueId,
+    field: u32,
+    layout: crate::layout::LayoutId,
+) -> bool {
+    let [Operation::Load {
+        destination: loaded,
+        place,
+        transfer: LoadTransfer::CloneShared,
+    }, Operation::CloneRef { destination, source }, Operation::DropRef { object }, suffix @ ..] = operations else {
+        return false;
+    };
+    *destination == ordinary
+        && *source == *loaded
+        && *object == *loaded
+        && place.object() == entry_value
+        && place.projection() == &Projection::Field { index: field }
+        && place.value_type() == ValueType::Ref(layout)
+        && place.access() == AccessMode::Read
+        && is_read_only_string_extent_suffix(suffix, ordinary)
+}
+
+/// The returned projected handle may acquire its String extent after its
+/// precise clone.  That authentication reads only the clone's own scalar
+/// header fields and carries those scalars through bounds comparisons/guards;
+/// it cannot touch another object or create a second reference token.
+fn is_read_only_string_extent_suffix(operations: &[Operation], ordinary: ValueId) -> bool {
+    let mut scalars = BTreeSet::new();
+    let mut conditions = BTreeSet::new();
+    operations.iter().all(|operation| match operation {
+        Operation::Load {
+            destination,
+            place,
+            transfer: LoadTransfer::CopyScalar,
+        } if place.object() == ordinary
+            && matches!(place.projection(), Projection::Header(
+                crate::canonical_safewir::HeaderField::Length
+                    | crate::canonical_safewir::HeaderField::Capacity
+            ))
+            && place.value_type() == ValueType::Size
+            && place.access() == AccessMode::Read =>
+        {
+            scalars.insert(*destination)
+        }
+        Operation::ConstSize { destination, .. } => scalars.insert(*destination),
+        Operation::Compare { destination, left, right, .. }
+            if scalars.contains(left) && scalars.contains(right) =>
+        {
+            conditions.insert(*destination)
+        }
+        Operation::Guard { condition, kind: crate::canonical_safewir::GuardKind::Bounds }
+            if conditions.contains(condition) => true,
+        _ => false,
+    })
+}
+
+/// Reconstruct a hidden write-back position from the authenticated parameter
+/// ownership order and result ABI shape. It intentionally does not inspect a
+/// result contract: contracts are checked against this derived history later.
+fn write_back_hidden_lane_from_signature(
+    signature: &FunctionSignature,
+    parameter: usize,
+    layout: crate::layout::LayoutId,
+) -> Option<usize> {
+    let ParameterContract {
+        value_type: ValueType::Ref(parameter_layout),
+        ownership: ParameterOwnership::WriteBack,
+    } = signature.contract.parameters.get(parameter)? else {
+        return None;
+    };
+    let write_back_parameters = signature.contract.parameters.iter()
+        .enumerate()
+        .filter(|(_, contract)| contract.ownership == ParameterOwnership::WriteBack)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let ordinal = write_back_parameters.iter().position(|index| *index == parameter)?;
+    let ordinary_results = signature.results.len().checked_sub(write_back_parameters.len())?;
+    let hidden_lane = ordinary_results.checked_add(ordinal)?;
+    (ordinary_results > 0
+        && hidden_lane != 0
+        && signature.results.first() == Some(&ValueType::Ref(layout))
+        && signature.results.get(hidden_lane) == Some(&ValueType::Ref(*parameter_layout)))
+        .then_some(hidden_lane)
+}
+
 fn load_result_origin(
     function: &Function,
     destination: ValueId,
-    place_type: ValueType,
+    place: &crate::canonical_safewir::Place,
     transfer: LoadTransfer,
+    object_origin: Origin,
 ) -> Origin {
-    match (transfer, place_type, function.value_types.get(&destination).copied()) {
+    match (transfer, place.value_type(), function.value_types.get(&destination).copied()) {
+        (
+            LoadTransfer::CloneShared,
+            ValueType::Ref(layout),
+            Some(ValueType::Ref(destination_layout)),
+        ) if layout == destination_layout => match (object_origin, place.projection()) {
+            (
+                Origin::Parameter { parameter, layout: Some(owner_layout) },
+                Projection::Field { index },
+            ) => Origin::ProjectedParameter {
+                parameter,
+                owner_layout,
+                field: *index,
+                layout,
+            },
+            _ => Origin::Shared(layout),
+        },
         (
             LoadTransfer::CloneShared | LoadTransfer::TakeLast,
             ValueType::Ref(place_layout),
@@ -1022,9 +1798,12 @@ fn result_origin(result: &DerivedResult, arguments: &[CallArgument], origins: &B
         DerivedResult::StaticData(layout) => Origin::StaticData(*layout),
         DerivedResult::Shared(layout) | DerivedResult::Unique(layout) => Origin::Shared(*layout),
         DerivedResult::AliasesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).map(|origin| match origin { Origin::Parameter { parameter, .. } => Origin::Parameter { parameter, layout: Some(*layout) }, other => other }).unwrap_or(Origin::Unknown),
+        DerivedResult::AliasesWriteBackParameter { layout, .. }
+        | DerivedResult::AliasesOneOfWriteBackParameters { layout, .. } => Origin::Shared(*layout),
         DerivedResult::ReallocatesParameter { parameter, layout } => arguments.get(*parameter as usize).and_then(|argument| origins.get(&argument_value(argument)).copied()).and_then(|origin| match origin { Origin::Parameter { parameter, .. } => Some(Origin::ReallocatesParameter { parameter, layout: *layout }), _ => None }).unwrap_or(Origin::Unknown),
         DerivedResult::Unseen => Origin::Unseen,
-        DerivedResult::Unknown | DerivedResult::Value(_) => Origin::Unknown,
+        DerivedResult::DisjunctiveWriteBackSelector { .. }
+        | DerivedResult::Unknown | DerivedResult::Value(_) => Origin::Unknown,
     }
 }
 
@@ -1098,7 +1877,44 @@ fn result_matches(declared: &ResultContract, derived: &DerivedResult) -> bool {
         ) => expected_layout == actual_layout && expected_class == actual_class && expected_extent == actual_extent,
         (ResultContract::StaticData { layout: expected }, DerivedResult::StaticData(actual))
         | (ResultContract::Shared { layout: expected }, DerivedResult::Shared(actual)) => expected == actual,
-        (ResultContract::AliasesParameter { parameter, layout }, DerivedResult::AliasesParameter { parameter: actual_parameter, layout: actual_layout }) | (ResultContract::ReallocatesParameter { parameter, layout }, DerivedResult::ReallocatesParameter { parameter: actual_parameter, layout: actual_layout }) => parameter == actual_parameter && layout == actual_layout,
+        (ResultContract::AliasesParameter { parameter, layout },
+            DerivedResult::AliasesParameter { parameter: actual_parameter, layout: actual_layout })
+        | (ResultContract::ReallocatesParameter { parameter, layout },
+            DerivedResult::ReallocatesParameter { parameter: actual_parameter, layout: actual_layout }) => {
+            parameter == actual_parameter && layout == actual_layout
+        }
+        (
+            ResultContract::AliasesWriteBackParameter { parameter, layout, projection },
+            DerivedResult::AliasesWriteBackParameter {
+                parameter: actual_parameter,
+                layout: actual_layout,
+                projection: actual_projection,
+            },
+        ) => parameter == actual_parameter && layout == actual_layout && projection == actual_projection,
+        (
+            ResultContract::AliasesOneOfWriteBackParameters { parameters, layout },
+            DerivedResult::AliasesOneOfWriteBackParameters {
+                parameters: actual_parameters,
+                layout: actual_layout,
+            },
+        ) => parameters.len() >= 2
+            && parameters.windows(2).all(|pair| pair[0] < pair[1])
+            && parameters == actual_parameters
+            && layout == actual_layout,
+        (
+            ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result,
+                parameters,
+                selector_parameter,
+            },
+            DerivedResult::DisjunctiveWriteBackSelector {
+                carrier_result: actual_carrier,
+                parameters: actual_parameters,
+                selector_parameter: actual_selector,
+            },
+        ) => carrier_result == actual_carrier
+            && parameters == actual_parameters
+            && selector_parameter == actual_selector,
         _ => false,
     }
 }
@@ -1127,6 +1943,8 @@ fn is_indirect_result(result: &DerivedResult) -> bool {
             | DerivedResult::Fresh { .. }
             | DerivedResult::StaticData(_)
             | DerivedResult::Shared(_)
+            | DerivedResult::Unique(_)
+            | DerivedResult::AliasesParameter { .. }
             | DerivedResult::Unseen
     )
 }
@@ -1154,6 +1972,387 @@ mod tests {
     };
 
     const ENTRY: BlockId = BlockId::new(0);
+
+    #[test]
+    fn direct_write_back_alias_history_refuses_mutation_and_replacement_returns() {
+        let parameter = ValueId::new(0);
+        let ordinary = ValueId::new(1);
+        let count = ValueId::new(2);
+        let layout = layout();
+        let reference = ValueType::Ref(layout);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(0),
+            parameters: vec![reference],
+            results: vec![reference, reference],
+            contract: super::super::super::CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: reference,
+                    ownership: ParameterOwnership::WriteBack,
+                }],
+                results: vec![
+                    ResultContract::AliasesWriteBackParameter { parameter: 0, layout, projection: None },
+                    ResultContract::Shared { layout },
+                ],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let origins = [(ordinary, Origin::ClonedParameter { parameter: 0, layout })]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let mut function = Function {
+            id: FunctionId::new(0),
+            signature: signature.id,
+            entry: ENTRY,
+            value_types: [
+                (parameter, reference),
+                (ordinary, reference),
+                (count, ValueType::Size),
+            ].into_iter().collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![BlockParameter {
+                    value: parameter,
+                    value_type: reference,
+                    ownership: Some(Ownership::Unique),
+                }],
+                operations: vec![
+                    Operation::UpdateCount { object: parameter, count },
+                    Operation::CloneRef { destination: ordinary, source: parameter },
+                ],
+                terminator: Terminator::Return { values: vec![ordinary, parameter] },
+            }],
+        };
+        let entry = &function.blocks[0];
+        assert_eq!(
+            direct_write_back_alias_return_history(
+                &function,
+                entry,
+                entry,
+                &signature,
+                &origins,
+                &[ordinary, parameter],
+                0,
+            ),
+            None,
+        );
+
+        function.blocks[0].operations = vec![Operation::CloneRef {
+            destination: ordinary,
+            source: parameter,
+        }];
+        let entry = &function.blocks[0];
+        assert_eq!(
+            direct_write_back_alias_return_history(
+                &function,
+                entry,
+                entry,
+                &signature,
+                &origins,
+                &[parameter, parameter],
+                0,
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn projected_write_back_alias_history_requires_exact_field_and_read_only_clone() {
+        let owner = ValueId::new(20);
+        let loaded = ValueId::new(21);
+        let ordinary = ValueId::new(22);
+        let count = ValueId::new(23);
+        let capacity = ValueId::new(24);
+        let maximum = ValueId::new(25);
+        let count_fits = ValueId::new(26);
+        let capacity_fits = ValueId::new(27);
+        let replacement = ValueId::new(28);
+        let owner_layout = crate::layout::LayoutId::from_bytes([2; 32]);
+        let child_layout = crate::layout::LayoutId::from_bytes([3; 32]);
+        let owner_ref = ValueType::Ref(owner_layout);
+        let child_ref = ValueType::Ref(child_layout);
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(20),
+            parameters: vec![owner_ref],
+            results: vec![child_ref, owner_ref],
+            contract: super::super::super::CallableContract {
+                parameters: vec![ParameterContract {
+                    value_type: owner_ref,
+                    ownership: ParameterOwnership::WriteBack,
+                }],
+                results: vec![
+                    ResultContract::AliasesWriteBackParameter {
+                        parameter: 0,
+                        layout: child_layout,
+                        projection: Some(4),
+                    },
+                    ResultContract::Shared { layout: owner_layout },
+                ],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let origins = [(ordinary, Origin::ClonedProjectedParameter {
+            parameter: 0,
+            owner_layout,
+            field: 4,
+            layout: child_layout,
+        })].into_iter().collect::<BTreeMap<_, _>>();
+        let mut function = Function {
+            id: FunctionId::new(20),
+            signature: signature.id,
+            entry: ENTRY,
+            value_types: [
+                (owner, owner_ref),
+                (loaded, child_ref),
+                (ordinary, child_ref),
+                (count, ValueType::Size),
+                (capacity, ValueType::Size),
+                (maximum, ValueType::Size),
+                (count_fits, ValueType::Bool),
+                (capacity_fits, ValueType::Bool),
+                (replacement, child_ref),
+            ].into_iter().collect(),
+            blocks: vec![BasicBlock {
+                id: ENTRY,
+                parameters: vec![BlockParameter {
+                    value: owner,
+                    value_type: owner_ref,
+                    ownership: Some(Ownership::Shared),
+                }],
+                operations: vec![
+                    Operation::Load {
+                        destination: loaded,
+                        place: super::super::super::Place::projected(
+                            owner,
+                            Projection::Field { index: 4 },
+                            child_ref,
+                            AccessMode::Read,
+                        ),
+                        transfer: LoadTransfer::CloneShared,
+                    },
+                    Operation::CloneRef { destination: ordinary, source: loaded },
+                    Operation::DropRef { object: loaded },
+                    // The real String carrier lowers this read-only suffix
+                    // after cloning its exact field handle.
+                    Operation::Load {
+                        destination: count,
+                        place: super::super::super::Place::projected(
+                            ordinary,
+                            Projection::Header(crate::canonical_safewir::HeaderField::Length),
+                            ValueType::Size,
+                            AccessMode::Read,
+                        ),
+                        transfer: LoadTransfer::CopyScalar,
+                    },
+                    Operation::Load {
+                        destination: capacity,
+                        place: super::super::super::Place::projected(
+                            ordinary,
+                            Projection::Header(crate::canonical_safewir::HeaderField::Capacity),
+                            ValueType::Size,
+                            AccessMode::Read,
+                        ),
+                        transfer: LoadTransfer::CopyScalar,
+                    },
+                    Operation::Compare {
+                        destination: count_fits,
+                        operator: crate::canonical_safewir::ComparisonOperator::LessEqualUnsigned,
+                        left: count,
+                        right: capacity,
+                    },
+                    Operation::Guard {
+                        condition: count_fits,
+                        kind: crate::canonical_safewir::GuardKind::Bounds,
+                    },
+                    Operation::ConstSize { destination: maximum, value: u64::from(u32::MAX) - 4 },
+                    Operation::Compare {
+                        destination: capacity_fits,
+                        operator: crate::canonical_safewir::ComparisonOperator::LessEqualUnsigned,
+                        left: capacity,
+                        right: maximum,
+                    },
+                    Operation::Guard {
+                        condition: capacity_fits,
+                        kind: crate::canonical_safewir::GuardKind::Bounds,
+                    },
+                ],
+                terminator: Terminator::Return { values: vec![ordinary, owner] },
+            }],
+        };
+        let entry = &function.blocks[0];
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, entry, &signature, &origins, &[ordinary, owner], 0,
+            ),
+            Some(DerivedResult::AliasesWriteBackParameter {
+                parameter: 0,
+                layout: child_layout,
+                projection: Some(4),
+            }),
+        );
+
+        // The extent suffix must continue to authenticate this exact clone;
+        // a header read from the write-back owner cannot be smuggled in.
+        if let Operation::Load { place, .. } = &mut function.blocks[0].operations[3] {
+            *place = super::super::super::Place::projected(
+                owner,
+                Projection::Header(crate::canonical_safewir::HeaderField::Length),
+                ValueType::Size,
+                AccessMode::Read,
+            );
+        }
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        if let Operation::Load { place, .. } = &mut function.blocks[0].operations[3] {
+            *place = super::super::super::Place::projected(
+                ordinary,
+                Projection::Header(crate::canonical_safewir::HeaderField::Length),
+                ValueType::Size,
+                AccessMode::Read,
+            );
+        }
+        if let Operation::Load { place, .. } = &mut function.blocks[0].operations[3] {
+            *place = super::super::super::Place::projected(
+                ordinary,
+                Projection::Field { index: 4 },
+                ValueType::Size,
+                AccessMode::Read,
+            );
+        }
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        if let Operation::Load { place, .. } = &mut function.blocks[0].operations[3] {
+            *place = super::super::super::Place::projected(
+                ordinary,
+                Projection::Header(crate::canonical_safewir::HeaderField::Length),
+                ValueType::Size,
+                AccessMode::Read,
+            );
+        }
+
+        // The ownership balancing release is part of the fixed carrier
+        // sequence: it must release the transient loaded handle exactly once
+        // and immediately after the ordinary clone.
+        function.blocks[0].operations[2] = Operation::DropRef { object: owner };
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        function.blocks[0].operations[2] = Operation::DropRef { object: loaded };
+
+        let drop = function.blocks[0].operations.remove(2);
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        function.blocks[0].operations.insert(2, drop);
+
+        function.blocks[0].operations.insert(3, Operation::DropRef { object: loaded });
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        function.blocks[0].operations.remove(3);
+
+        let drop = function.blocks[0].operations.remove(2);
+        function.blocks[0].operations.insert(4, drop);
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        let drop = function.blocks[0].operations.remove(4);
+        function.blocks[0].operations.insert(2, drop);
+
+        function.blocks[0].operations.push(Operation::CloneRef {
+            destination: replacement,
+            source: ordinary,
+        });
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        function.blocks[0].operations.pop();
+
+        if let Operation::Load { place, .. } = &mut function.blocks[0].operations[0] {
+            *place = super::super::super::Place::projected(
+                owner,
+                Projection::Field { index: 5 },
+                child_ref,
+                AccessMode::Read,
+            );
+        }
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        if let Operation::Load { place, .. } = &mut function.blocks[0].operations[0] {
+            *place = super::super::super::Place::projected(
+                owner,
+                Projection::Field { index: 4 },
+                owner_ref,
+                AccessMode::Read,
+            );
+        }
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        function.blocks[0].operations[0] = Operation::Load {
+            destination: loaded,
+            place: super::super::super::Place::projected(
+                owner,
+                Projection::Field { index: 4 },
+                child_ref,
+                AccessMode::Read,
+            ),
+            transfer: LoadTransfer::CloneShared,
+        };
+        function.blocks[0].operations.insert(0, Operation::UpdateCount { object: owner, count });
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+        function.blocks[0].operations.remove(0);
+        function.blocks[0].operations.insert(0, Operation::Store {
+            place: super::super::super::Place::projected(
+                owner,
+                Projection::Field { index: 4 },
+                child_ref,
+                AccessMode::Write,
+            ),
+            value: loaded,
+            transfer: StoreTransfer::MoveUnique,
+        });
+        assert_eq!(
+            projected_write_back_alias_return_history(
+                &function, &function.blocks[0], &signature, &origins, &[ordinary, owner], 0,
+            ),
+            None,
+        );
+    }
 
     #[test]
     fn indirect_writeback_summary_requires_owned_results_without_provenance_claims() {
@@ -1491,8 +2690,14 @@ mod tests {
         let result = load_result_origin(
             &function,
             ValueId::new(0),
-            ValueType::Ref(layout()),
+            &super::super::super::Place::projected(
+                ValueId::new(1),
+                Projection::Field { index: 0 },
+                ValueType::Ref(layout()),
+                AccessMode::Read,
+            ),
             LoadTransfer::MoveUnique,
+            Origin::Unknown,
         );
         assert_eq!(result, Origin::Unknown);
     }

@@ -219,12 +219,15 @@ to the same WebAssembly; the sandbox just grants narrower authority. A sandboxed
 deploy therefore runs the same binary you developed against, not a second build
 you hope agrees with the first.
 
-That compiled backend is held honest by **parity**, the invariant from the
-introduction. The test suite runs every program on both the WebAssembly backend
-and a reference tree-walking interpreter and requires identical output, including
-identical failures. A program that traps on an out-of-bounds index in one traps
-in the other; one that prints `42` in one prints `42` in the other. When the two
-can't agree, that's a compile-time error, never a silent difference.
+That compiled backend is held honest by **canonical conformance**, the invariant
+from the introduction. Tests first state an independent expected result, then
+run the checked canonical SafeWIR interpreter and admitted Wasm and require all
+three to agree, including identical failures. A program that traps on an
+out-of-bounds index in one executable form traps in the other; one that prints
+`42` in one prints `42` in the other. When the expectation, canonical SafeWIR,
+and admitted Wasm cannot agree, that is a bug, never a silent difference. The
+source tree walker is frozen for language semantics and retained temporarily
+only for compiler services, so it is not an RFC-0167 acceptance oracle.
 
 So the confinement you reason about statically is the confinement you get at
 runtime, on a binary you can re-derive from source.

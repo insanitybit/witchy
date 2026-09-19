@@ -495,39 +495,14 @@ fn f():
 }
 
 #[test]
-fn dereference_assignment_desugars_to_the_private_place_write() {
-    let stmts = fn_body(
-        r#"
-mode opt
-
-fn replace(reference: &'a mut Int):
-    *reference = 42
-"#,
-    );
-    assert_eq!(
-        stmts[0],
-        Stmt::Expr(Expr::Call {
-            name: crate::intrinsics::REFERENCE_WRITE.into(),
-            args: vec![Expr::Var("reference".into()), Expr::Int(42)],
-        })
-    );
-
-    let local = fn_body(
-        r#"
-mode opt
-
-fn replace():
-    var value = 0
-    let reference = &mut value
-    *reference = 42
-"#,
-    );
-    assert!(matches!(
-        local.last(),
-        Some(Stmt::Expr(Expr::Call { name, args }))
-            if name == crate::intrinsics::REFERENCE_WRITE
-                && matches!(args.as_slice(), [Expr::Var(reference), Expr::Int(42)] if reference == "reference")
-    ));
+fn dereference_assignment_is_not_a_canonical_source_form() {
+    for source in [
+        "mode opt\n\nfn replace(reference: &Int):\n    *reference = 42\n",
+        "mode opt\n\nfn replace():\n    var value = 0\n    let reference = &value\n    *reference = 42\n",
+    ] {
+        let error = parse_module(source).expect_err("immutable views cannot be written through");
+        assert!(error.message.contains("write-through dereference"), "{error}");
+    }
 }
 
 #[test]
@@ -817,25 +792,14 @@ fn quote_type_owns_structural_and_borrowed_types() {
     };
     assert!(matches!(&union.ty, Type::Named(name, _) if name.starts_with("__union")));
 
-    let views = parse_module("fn f():\n    quote type:\n        View(Int, 'a)\n")
-        .expect("borrowed view type quote should parse");
+    let views = parse_module("fn f():\n    quote type:\n        &Int\n")
+        .expect("shared reference type quote should parse");
     let [view] = views.compiler_type_syntax.as_slice() else {
         panic!("expected one borrowed type payload");
     };
     assert!(matches!(
         view.ty,
-        Type::Qualified(TypeQual::LegacyBorrow(_), _)
-    ));
-
-    let references = parse_module("mode opt\n\nfn f():\n    quote type:\n        &'a mut String\n")
-        .expect("explicit reference type quote should parse");
-    let [reference] = references.compiler_type_syntax.as_slice() else {
-        panic!("expected one explicit reference type payload");
-    };
-    assert!(matches!(
-        reference.ty,
-        Type::Qualified(TypeQual::BorrowMut(ref lifetime), _)
-            if lifetime == "a"
+        Type::Qualified(TypeQual::View, _)
     ));
 }
 
@@ -1608,12 +1572,12 @@ fn yield_inside_a_lambda_in_a_gen_fn_is_rejected() {
 }
 
 #[test]
-fn borrowed_param_and_result_views_parse() {
+fn migration_parser_preserves_legacy_reference_provenance() {
     // (RFC-0083) `let('a) T` is a borrowed parameter; `View(T, 'a)` a borrowed
     // result. Both retain legacy source provenance while representing the
     // same shared borrow relation as the explicit reference surface.
     let m =
-        parse_module("mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n")
+        super::parse_reference_migration("mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n")
             .expect("borrowed view signature parses");
     let Item::Function(f) = &m.items[0] else {
         panic!("expected a function")
@@ -1630,32 +1594,66 @@ fn borrowed_param_and_result_views_parse() {
 }
 
 #[test]
+fn retired_reference_spellings_reject_at_every_source_entry() {
+    let cases = [
+        ("fn f(x: View(String, 'a)):\n    x\n", "`View(T, 'a)` is retired"),
+        ("fn f(x: let('a) String):\n    x\n", "`let('a) T` is retired"),
+        ("fn f(let('a) x: String):\n    x\n", "`let('a)` is retired"),
+        ("fn f(var('a) x: String):\n    x\n", "`var('a)` is retired"),
+        ("fn f(x: local unique String):\n    x\n", "`local unique` is retired"),
+        ("type Holder('a):\n    value: List(View(String, 'a))\n", "lifetime parameters are retired"),
+        ("fn f(x: fn(let('a) String) -> String):\n    x\n", "lifetime-bearing parameter conventions are retired"),
+        ("fn f(x: fn(var('a) String) -> String):\n    x\n", "lifetime-bearing parameter conventions are retired"),
+        ("fn f():\n    quote type:\n        View(String, 'a)\n", "`View(T, 'a)` is retired"),
+        ("fn f():\n    quote type:\n        local unique String\n", "`local unique` is retired"),
+        ("comptime:\n    quote item:\n        fn f(var('a) x: String):\n            x\n", "`var('a)` is retired"),
+    ];
+    for (body, expected) in cases {
+        for prefix in ["", "mode opt\n\n"] {
+            let source = format!("{prefix}{body}");
+            let error = parse_module(&source).expect_err("retired syntax is not ordinary source");
+            assert!(error.message.contains(expected), "{source}: {error}");
+            let spanned = super::parse_module_with_expression_spans(&source)
+                .expect_err("span collection cannot enable retired syntax");
+            assert_eq!(spanned, error);
+        }
+    }
+}
+
+#[test]
+fn nominal_view_lifetime_parameters_are_not_a_retired_builtin() {
+    let module = parse_module("mode opt\n\ntype View:\n    value: &String\n\nfn keep(value: View) -> View:\n    value\n")
+        .expect("nominal View remains an ordinary named type");
+    let Item::Function(function) = &module.items[1] else { panic!("expected function") };
+    assert_eq!(function.ret, Some(Type::Named("View".into(), vec![])));
+}
+
+#[test]
 fn explicit_reference_types_parse_and_retain_access_kind() {
     let module = parse_module(
-            "mode opt\n\nfn read(value: &'value String) -> &'value String:\n    value\n\nfn edit(value: &'value mut String) -> &'value mut String:\n    value\n",
+            "mode opt\n\nfn read(value: &String) -> &String:\n    value\n",
         )
-        .expect("RFC-0122 reference signatures parse");
+        .expect("RFC-0167 rooted-view signatures parse");
     let Item::Function(read) = &module.items[0] else {
         panic!("read function")
     };
     assert!(matches!(
         read.params[0].ty,
-        Some(Type::Qualified(TypeQual::Borrow(ref lifetime), _)) if lifetime == "value"
-    ));
-    let Item::Function(edit) = &module.items[1] else {
-        panic!("edit function")
-    };
-    assert!(matches!(
-        edit.params[0].ty,
-        Some(Type::Qualified(TypeQual::BorrowMut(ref lifetime), _)) if lifetime == "value"
+        Some(Type::Qualified(TypeQual::View, _))
     ));
 }
 
 #[test]
-fn reference_type_requires_an_explicit_lifetime() {
-    let err = parse_module("mode opt\n\nfn bad(value: &String) -> String:\n    value\n")
-        .expect_err("references without lifetimes are rejected");
-    assert!(err.message.contains("explicit lifetime"), "{err:?}");
+fn reference_type_rejects_retired_explicit_lifetimes() {
+    parse_module("mode opt\n\nfn read(value: &String) -> &String:\n    value\n")
+        .expect("rooted views do not require a source lifetime");
+    for source in [
+        "mode opt\n\nfn bad(value: &'a String) -> &String:\n    value\n",
+        "mode opt\n\nfn bad(value: &mut String) -> &String:\n    value\n",
+    ] {
+        let err = parse_module(source).expect_err("retired reference syntax is rejected");
+        assert!(err.message.contains("retired"), "{err:?}");
+    }
 }
 
 #[test]
@@ -1690,66 +1688,49 @@ fn explicit_borrow_and_deref_expressions_parse() {
 #[test]
 fn borrowed_nominal_parameters_and_arguments_keep_their_kinds() {
     let module = parse_module(
-            "mode opt\n\ntype Pair(a, 'left, 'right):\n    first: View(a, 'left)\n    second: View(a, 'right)\n\nfn keep(let left: let('left) Int, let right: let('right) Int, pair: Pair(Int, 'left, 'right)) -> Pair(Int, 'left, 'right):\n    pair\n",
+            "mode opt\n\ntype Pair(a):\n    first: &a\n    second: &a\n\nfn keep(left: &Int, right: &Int, pair: Pair(Int)) -> Pair(Int):\n    pair\n",
         )
-        .expect("mixed type/lifetime nominal parameters parse");
+        .expect("rooted-view nominal parameters parse");
     let Item::Type(definition) = &module.items[0] else {
         panic!("expected type")
     };
-    assert_eq!(definition.params, ["a", "'left", "'right"]);
+    assert_eq!(definition.params, ["a"]);
     let Item::Function(function) = &module.items[1] else {
         panic!("expected function")
     };
-    let expected = Type::Named(
-        "Pair".into(),
-        vec![
-            Type::Named("Int".into(), vec![]),
-            Type::Named("'left".into(), vec![]),
-            Type::Named("'right".into(), vec![]),
-        ],
-    );
+    let expected = Type::Named("Pair".into(), vec![Type::Named("Int".into(), vec![])]);
     assert_eq!(function.params[2].ty.as_ref(), Some(&expected));
     assert_eq!(function.ret.as_ref(), Some(&expected));
 }
 
 #[test]
 fn borrowed_single_variant_positional_nominal_parses() {
-    let module = parse_module("mode opt\n\ntype Span('a):\n    Span(View(Bytes, 'a), Int, Int)\n")
-        .expect("single positional borrowed nominal parses");
+    let module = parse_module("mode opt\n\ntype Span:\n    Span(&Bytes, Int, Int)\n")
+        .expect("single rooted-view positional nominal parses");
     let Item::Type(definition) = &module.items[0] else {
         panic!("expected type")
     };
-    assert_eq!(definition.params, ["'a"]);
+    assert!(definition.params.is_empty());
     assert_eq!(definition.variants.len(), 1);
     assert!(definition.variants[0].field_names.is_empty());
 }
 
 #[test]
 fn borrowed_nominal_sum_parses_for_a_loud_semantic_rejection() {
-    parse_module("mode opt\n\ntype MaybeSpan('a):\n    Empty\n    Span(View(Bytes, 'a))\n")
-        .expect("the parser retains borrowed sum syntax for the type checker diagnostic");
+    parse_module("mode opt\n\ntype MaybeSpan:\n    Empty\n    Span(&Bytes)\n")
+        .expect("the parser retains rooted-view sum syntax for the type checker diagnostic");
 }
 
 #[test]
 fn type_aliases_reject_lifetime_parameters_at_the_declaration() {
     let error = parse_module("type Alias('a) = Bytes\n")
         .expect_err("lifetime-parameterized aliases are outside RFC-0112");
-    assert!(
-        error
-            .message
-            .contains("only supported on a nominal type declaration")
-            && error
-                .message
-                .contains("type aliases accept ordinary type parameters only"),
-        "{error}"
-    );
+    assert!(error.message.contains("lifetime parameters are retired"), "{error}");
 }
 
 #[test]
 fn bare_let_convention_is_not_a_view() {
-    // A plain `let` parameter convention (an immutable borrow keyword) must NOT
-    // be misread as the `let('a)` view type — only `let` immediately followed
-    // by `('lifetime)` is a view.
+    // Removing lifetime-bearing conventions does not remove call-scoped `let`.
     let m = parse_module("fn f(let x: Int) -> Int:\n    x\n").expect("let convention parses");
     let Item::Function(f) = &m.items[0] else {
         panic!("expected a function")
@@ -1759,12 +1740,10 @@ fn bare_let_convention_is_not_a_view() {
 }
 
 #[test]
-fn view_lifetime_must_be_a_lifetime_token() {
-    // `View(T, X)` with an ordinary identifier where a lifetime belongs is a
-    // parse error — the second slot is a lifetime, not a type.
-    let err = parse_module("mode opt\n\nfn f(s: let('a) String) -> View(String, a):\n    s\n")
-        .expect_err("non-lifetime second arg rejected");
-    assert!(err.message.contains("lifetime"), "{err}");
+fn reference_lifetime_must_be_a_lifetime_token() {
+    let err = parse_module("mode opt\n\nfn f(s: &a String):\n    s\n")
+        .expect_err("ordinary identifier cannot stand for a lifetime");
+    assert!(err.message.contains("expected") || err.message.contains("retired"), "{err}");
 }
 
 #[test]
@@ -1831,7 +1810,7 @@ fn dyn_stays_an_ordinary_identifier_without_a_trait_head() {
 
 #[test]
 fn dyn_qualifies_under_ownership_qualifiers_and_views() {
-    let src = "mode opt\n\nfn f(a: frozen dyn Render, b: let('a) dyn Render) -> Int:\n    1\n";
+    let src = "mode opt\n\nfn f(a: frozen dyn Render, b: &dyn Render) -> Int:\n    1\n";
     let m = parse_module(src).expect("qualifiers wrap dyn types");
     let Item::Function(f) = &m.items[0] else {
         panic!("expected fn")
@@ -1846,7 +1825,7 @@ fn dyn_qualifies_under_ownership_qualifiers_and_views() {
     assert_eq!(
         f.params[1].ty,
         Some(Type::Qualified(
-            TypeQual::LegacyBorrow("a".into()),
+            TypeQual::View,
             Box::new(Type::Dyn("Render".into(), vec![]))
         ))
     );
@@ -1974,7 +1953,7 @@ fn expression_span_sidecar_retains_exact_nested_source_ranges() {
 
 #[test]
 fn slice_and_str_reference_types_parse_and_format() {
-    let source = "mode opt\n\nfn process(s: &'a str, buf: &'b [Int], mut_slice: &'c mut [String]) -> &'a str:\n    s\n";
+    let source = "mode opt\n\nfn process(s: &str, buf: &[Int]) -> &str:\n    s\n";
     let module = parse_module(source).expect("slice and str reference types should parse");
     let Item::Function(function) = &module.items[0] else {
         panic!("expected function");
@@ -1982,51 +1961,37 @@ fn slice_and_str_reference_types_parse_and_format() {
     assert_eq!(
         function.params[0].ty,
         Some(Type::Qualified(
-            TypeQual::Borrow("a".into()),
+            TypeQual::View,
             Box::new(Type::Named("str".into(), Vec::new()))
         ))
     );
     assert_eq!(
         function.params[1].ty,
         Some(Type::Qualified(
-            TypeQual::Borrow("b".into()),
+            TypeQual::View,
             Box::new(Type::Slice(Box::new(Type::Named("Int".into(), Vec::new()))))
-        ))
-    );
-    assert_eq!(
-        function.params[2].ty,
-        Some(Type::Qualified(
-            TypeQual::BorrowMut("c".into()),
-            Box::new(Type::Slice(Box::new(Type::Named(
-                "String".into(),
-                Vec::new()
-            ))))
         ))
     );
     assert_eq!(
         function.ret,
         Some(Type::Qualified(
-            TypeQual::Borrow("a".into()),
+            TypeQual::View,
             Box::new(Type::Named("str".into(), Vec::new()))
         ))
     );
     assert_eq!(
         crate::format::type_str(function.params[0].ty.as_ref().unwrap()),
-        "&'a str"
+        "&str"
     );
     assert_eq!(
         crate::format::type_str(function.params[1].ty.as_ref().unwrap()),
-        "&'b [Int]"
-    );
-    assert_eq!(
-        crate::format::type_str(function.params[2].ty.as_ref().unwrap()),
-        "&'c mut [String]"
+        "&[Int]"
     );
 }
 
 #[test]
 fn callable_qualifiers_parse_contextually_across_declarations_types_and_lambdas() {
-    let source = "pure fn identity(x: Int) -> Int:\n    x\n\nfn carry(callback: pure once fn(Int) -> Int) -> once fn() -> Nil:\n    pure once fn(value: Int) -> Int: callback(value)\n\nfn once(x: Int) -> Int:\n    let pure = x\n    pure\n";
+    let source = "pure fn identity(x: Int) -> Int:\n    x\n\nfn carry(callback: pure once fn(Int) -> Int) -> once fn() -> ():\n    pure once fn(value: Int) -> Int: callback(value)\n\nfn once(x: Int) -> Int:\n    let pure = x\n    pure\n";
     let module = parse_module(source).expect("qualified callables parse");
     let Item::Function(identity) = &module.items[0] else { panic!("identity") };
     assert!(identity.pure);
@@ -2050,26 +2015,39 @@ fn callable_qualifiers_parse_contextually_across_declarations_types_and_lambdas(
 #[test]
 fn named_once_and_unsupported_function_kind_qualifiers_are_rejected() {
     for source in [
-        "once fn run():\n    Nil\n",
-        "pure once fn run():\n    Nil\n",
-        "pure async fn run():\n    Nil\n",
-        "pure gen fn run():\n    Nil\n",
-        "pure comptime fn run():\n    Nil\n",
-        "fn run(callback: once pure fn() -> Nil):\n    Nil\n",
+        "once fn run():\n    ()\n",
+        "pure once fn run():\n    ()\n",
+        "pure async fn run():\n    ()\n",
+        "pure gen fn run():\n    ()\n",
+        "pure comptime fn run():\n    ()\n",
+        "fn run(callback: once pure fn() -> ()):\n    ()\n",
     ] {
         parse_module(source).expect_err(source);
     }
 }
 
 #[test]
+fn unit_uses_only_the_parenthesized_source_spelling() {
+    let module = parse_module("fn unit() -> ():\n    ()\n").expect("canonical unit syntax");
+    let Item::Function(function) = &module.items[0] else { panic!("unit function") };
+    assert_eq!(function.ret, Some(Type::Tuple(Vec::new())));
+    assert_eq!(function.body.stmts, [Stmt::Expr(Expr::Tuple(Vec::new()))]);
+
+    for source in ["fn unit() -> Nil:\n    ()\n", "fn unit() -> ():\n    Nil\n"] {
+        let error = parse_module(source).expect_err("the retired Nil spelling must reject");
+        assert!(error.to_string().contains("`Nil` is retired; write `()`"), "{error}");
+    }
+}
+
+#[test]
 fn and_or_not_diagnostics_suggest_witchy_operators() {
-    let and_err = parse_module("fn f(a: Bool, b: Bool):\n    if a and b:\n        Nil\n").unwrap_err();
+    let and_err = parse_module("fn f(a: Bool, b: Bool):\n    if a and b:\n        ()\n").unwrap_err();
     assert!(and_err.to_string().contains("Witchy uses `&&` for logical AND"), "{and_err}");
 
-    let or_err = parse_module("fn f(a: Bool, b: Bool):\n    if a or b:\n        Nil\n").unwrap_err();
+    let or_err = parse_module("fn f(a: Bool, b: Bool):\n    if a or b:\n        ()\n").unwrap_err();
     assert!(or_err.to_string().contains("Witchy uses `||` for logical OR"), "{or_err}");
 
-    let not_err = parse_module("fn f(a: Bool):\n    if not a:\n        Nil\n").unwrap_err();
+    let not_err = parse_module("fn f(a: Bool):\n    if not a:\n        ()\n").unwrap_err();
     assert!(not_err.to_string().contains("Witchy uses `!` for logical NOT"), "{not_err}");
 }
 
@@ -2082,6 +2060,86 @@ fn string_literal_record_field_names_are_rejected() {
     let literal_source = "fn f():\n    .{ \"host\": 1 }\n";
     let lit_err = parse_module(literal_source).unwrap_err();
     assert!(lit_err.to_string().contains("expected an identifier"), "{lit_err}");
+}
+
+#[test]
+fn rfc0167_rooted_views_are_lifetime_free_in_both_modes() {
+    for prefix in ["", "mode opt\n\n"] {
+        let source = format!(
+            "{prefix}fn first(items: &[Int]) -> Option(&Int):\n    if items.length() == 0: None else: Some(&items[0])\n\nfn middle(items: List(Int)) -> &[Int]:\n    &items[0..2]\n\nfn read(value: &Int) -> Int:\n    *value\n"
+        );
+        let module = parse_module(&source).expect("rooted-view RFC example parses");
+        let Item::Function(first) = &module.items[0] else { panic!("first function") };
+        assert!(matches!(
+            first.params[0].ty,
+            Some(Type::Qualified(TypeQual::View, ref inner)) if matches!(inner.as_ref(), Type::Slice(_))
+        ));
+        let Item::Function(middle) = &module.items[1] else { panic!("middle function") };
+        assert!(matches!(
+            middle.ret,
+            Some(Type::Qualified(TypeQual::View, ref inner)) if matches!(inner.as_ref(), Type::Slice(_))
+        ));
+        assert!(matches!(
+            middle.body.stmts.as_slice(),
+            [Stmt::Expr(Expr::Unary { op: UnOp::Borrow, .. })]
+        ));
+        let Item::Function(read) = &module.items[2] else { panic!("read function") };
+        assert!(matches!(
+            read.body.stmts.as_slice(),
+            [Stmt::Expr(Expr::Unary { op: UnOp::Deref, .. })]
+        ));
+    }
+}
+
+#[test]
+fn rfc0167_rejects_retired_reference_surface_with_targeted_diagnostics() {
+    for (source, diagnostic) in [
+        ("fn f(x: &'a Int):\n    x\n", "explicit reference lifetimes are retired"),
+        ("fn f(x: &mut Int):\n    x\n", "`&mut` is retired"),
+        ("fn f(x: View(Int, 'a)):\n    x\n", "`View(T, 'a)` is retired"),
+        ("fn f(let('a) x: Int):\n    x\n", "`let('a)` is retired"),
+        ("fn f(var('a) x: Int):\n    x\n", "`var('a)` is retired"),
+        ("fn f(x: Int):\n    &mut x\n", "`&mut` is retired"),
+        ("fn f(x: Int):\n    *x = 1\n", "write-through dereference is retired"),
+    ] {
+        let error = parse_module(source).expect_err(source);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+}
+
+#[test]
+fn rfc0167_bracketed_function_type_params_bind_rooted_view_signatures() {
+    let source = "fn first[a](items: &[a]) -> Option(&a):\n    if items.length() == 0: None else: Some(&items[0])\n\nfn pair[a, b](left: a, right: b) -> (a, b):\n    (left, right)\n\nimpl Box(a):\n    fn choose[b](self, value: b) -> b:\n        value\n\ntrait Mapper:\n    fn map[a, b](self, value: a) -> b\n";
+    let module = parse_module(source).expect("RFC-0167 generic rooted-view examples parse");
+    let Item::Function(first) = &module.items[0] else { panic!("first function") };
+    assert_eq!(first.type_params, ["a"]);
+    assert!(matches!(
+        first.params[0].ty,
+        Some(Type::Qualified(TypeQual::View, ref inner)) if matches!(inner.as_ref(), Type::Slice(_))
+    ));
+    let Item::Function(pair) = &module.items[1] else { panic!("pair function") };
+    assert_eq!(pair.type_params, ["a", "b"]);
+    let Item::Impl(implementation) = &module.items[2] else { panic!("impl") };
+    assert_eq!(implementation.methods[0].type_params, ["b"]);
+    let Item::Trait(trait_def) = &module.items[3] else { panic!("trait") };
+    assert_eq!(trait_def.methods[0].type_params, ["a", "b"]);
+}
+
+#[test]
+fn rfc0167_bracketed_function_type_params_reject_lifetimes() {
+    for source in [
+        "fn first['a](items: &[Int]) -> Option(&Int):\n    None\n",
+        "fn pair[a, 'b](left: a, right: Int):\n    (left, right)\n",
+        "fn duplicate[a, a](value: a):\n    value\n",
+    ] {
+        let error = parse_module(source).expect_err(source);
+        let message = error.to_string();
+        if source.contains("'") {
+            assert!(message.contains("lifetime parameters are retired"), "{message}");
+        } else {
+            assert!(message.contains("duplicate function type parameter"), "{message}");
+        }
+    }
 }
 
 

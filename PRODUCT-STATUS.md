@@ -36,7 +36,8 @@ The primary Witchy story is one end-to-end capability workflow:
 3. Run it with explicitly bounded authority.
 4. Observe missing grants and confinement escapes fail loudly.
 5. Compile the same program to portable WebAssembly and run it in the sandbox.
-6. Use `parity` to compare the interpreter oracle with compiled-WASM behavior.
+6. Use `parity` to compare the canonical SafeWIR interpreter with admitted
+   unoptimized-Wasm behavior.
 7. For a deliberately trusted application, build a self-contained
    `trusted-publisher` with checked root bindings.
 
@@ -52,7 +53,7 @@ adjacent work, not prerequisites for it.
 | `witchy <file.witchy>` | Supported preview | Runnable examples and installed-archive smoke exercise direct source execution and non-zero failures. |
 | `witchy check` | Supported preview | The release smoke accepts valid source and rejects invalid source; compiler tests cover diagnostics and backend acceptance. |
 | `witchy fmt` / `fmt --check` | Supported preview | Formatter round-trip tests cover repository sources and documentation examples; installed smoke proves check, rejection, rewrite, and re-check. |
-| `witchy test` | Supported preview | Plain tests have zero real authority; deterministic fixture plans run through shared interpreter/Wasmtime state machines with transcript parity and JSON CI evidence; explicit owned integration tests may receive Dir/Net grants. Dependency escalation, malformed plans, backend divergence, and CLI outcomes have focused coverage. |
+| `witchy test` | Supported preview | Plain tests have zero real authority; deterministic fixture plans run through canonical SafeWIR-interpreter/admitted-Wasm state machines with transcript parity and JSON CI evidence; explicit owned integration tests may receive Dir/Net grants. Dependency escalation, malformed plans, backend divergence, and CLI outcomes have focused coverage. |
 | `witchy caps`, `caps-diff`, `grants-check` | Supported preview | Capability tests and executable examples cover footprint reporting, widening rejection, rights precision, malformed grants, and over-request rejection. These tools report demanded authority; they do not prove that trusted host/runtime code is defect-free. |
 | `witchy sandbox` | Supported preview | E2E tests cover explicit Dir/File/Net/Secret grants, deny-by-omission, precompiled WASM, malformed inputs, and escape rejection. The documented filesystem symlink race remains a limitation. |
 | `witchy compile --target wasm` | Supported preview | Installed smoke compiles a fresh program to portable WASM and runs the resulting bytes through the same distributed sandbox host. |
@@ -74,9 +75,9 @@ adjacent work, not prerequisites for it.
 
 | Surface | Maturity | Product boundary |
 |---|---|---|
-| Core values, functions, records/ADTs, pattern matching, errors, modules, generics, traits, and `let`/`var`/`own` conventions | Supported preview | Exercised across the runnable book, examples, formatter round trips, type-checking tests, and interpreter/WASM differential tests. Compatibility remains intentionally unstable before 1.0. |
+| Core values, functions, records/ADTs, pattern matching, errors, modules, generics, traits, and `let`/`var`/`own` conventions | Supported preview | Exercised across the runnable book, examples, formatter round trips, type-checking tests, and independent-expectation/canonical-interpreter/admitted-Wasm differential tests. Compatibility remains intentionally unstable before 1.0. |
 | Typed host capabilities, rights narrowing, footprint inspection, and explicit sandbox grants | Supported preview | This is Witchy's defining product surface. The guarantee is confined to the documented compiler/runtime/host trust boundary; it is not a claim of general memory safety or independent security review. |
-| Interpreter oracle and compiled-WASM backend agreement | Supported preview | Observable success, output, exit behavior, and diagnostics are differential-gated, with a positive control proving the gate can fail. |
+| Canonical SafeWIR interpreter and admitted-Wasm agreement | Supported preview | Independent expected results, canonical interpreter execution, and admitted unoptimized-Wasm execution are differential-gated, with a positive control proving the gate can fail. |
 | Portable WASM guest execution | Supported preview | The separately installed Witchy host remains trusted; the guest receives only explicitly bound host capabilities. |
 | `trusted-publisher` | Supported preview | Self-contained publisher application artifact with checked embedded bindings and corruption detection. Embedded digests validate integrity but do not authenticate a publisher. Publisher applications use the ordinary executable-cache policy. |
 | Standard-library APIs used by the supported journey and curated examples | Supported preview | Documentation freshness and executable examples cover this subset. This status does not silently promote every std module. |
@@ -104,7 +105,8 @@ conditions are met:
    independently usable artifact.
 2. Failure behavior is explicit: invalid inputs, missing authority, corruption,
    and boundary escapes are rejected for the intended reason.
-3. Interpreter/WASM parity is executable where both backends apply.
+3. Independent expected results agree with the canonical SafeWIR interpreter and
+   admitted unoptimized Wasm on the accepted path.
 4. The primary documentation and CLI help agree with actual behavior.
 5. At least one small, curated example demonstrates why the feature is useful.
 6. Known limitations and the trusted boundary are stated without global safety

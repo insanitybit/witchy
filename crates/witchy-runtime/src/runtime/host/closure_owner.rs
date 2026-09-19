@@ -1627,7 +1627,7 @@ mod tests {
         let caps = super::super::super::Capabilities {
             print: true, quiet: true, ..super::super::super::Capabilities::none()
         };
-        let vm = runtime.instantiate_module(crate::runtime::WorkerModule::Unadmitted(empty), caps, 1, None)?;
+        let vm = runtime.instantiate_module(crate::runtime::WorkerModule::Unadmitted(empty), caps, 1, None, &[])?;
         let mut store = vm.store;
         // Test-only registration: production has no corresponding import yet.
         let mut linker = wasmtime::Linker::new(&engine);

@@ -47,8 +47,8 @@ pub fn check_console_fixture_test_driver(
         derived_source_digest: *hash.finalize().as_bytes(),
         selected_declaration: selected.to_owned(), declaration_ordinal,
     };
-    // Separate from the held bare recipe: this entry explicitly promises Nil.
-    let mut generated = witchy_syntax::parser::parse_module("fn main() -> Nil:\n    Nil\n")
+    // Separate from the held bare recipe: this entry explicitly promises `()`.
+    let mut generated = witchy_syntax::parser::parse_module("fn main() -> ():\n    ()\n")
         .map_err(|error| refused(format!("invalid compiler Console recipe: {error}")))?;
     let Item::Function(main) = &mut generated.items[0] else {
         return Err(refused("invalid compiler Console recipe entry"));
@@ -83,7 +83,7 @@ pub fn check_console_fixture_test_driver(
         return Err(refused("checked Console recipe target or parameter binding changed"));
     }
     shape.check(&typed, &suite.entry, args, &main.params)?;
-    let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest)?;
+    let mut checked = finish_canonical_source(checked, typed, identity.derived_source_digest, PrecompiledDeclarationEnvironment::default())?;
     let runtime_catalog = Some(checked.runtime_declaration_catalog()?);
     let mut canonical_source = checked.canonical_source.take()
         .ok_or_else(|| refused("Console recipe canonical source missing"))?;

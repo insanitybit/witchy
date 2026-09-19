@@ -104,7 +104,7 @@ use EvidenceFile::{Authority, Backend, Check, Interpreter, Launch, Memory, Owner
 /// Reviewed nested operation census. The declaration generates the comparison
 /// list, not these entries, so a new variant requires a manifest decision.
 pub const OWNER_OPERATION_VARIANTS: &[&str] = &[
-    "Construct", "ReadCapability", "ReadOwner", "ReadSharedPlace", "ReadTag", "ReadCallable", "Clone", "Drop",
+    "Construct", "ReadCapability", "ReadOwner", "ReadSharedPlace", "ReadSharedSliceLength", "ReadTag", "ReadCallable", "Clone", "Drop",
     "CloneEnvironment", "NewList", "ListGet", "ListLength", "CloneList",
     "ListPush", "ListSet", "DropList",
 ];
@@ -143,7 +143,7 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::ConstUnit,
         judgment: "check.rs::check_operation",
-        predicate: "defines only Unit, the sole Nil value; no integer or Bool authority",
+        predicate: "defines only Unit, the sole unit value; no integer or Bool authority",
         interpreter: "execute_operation: binds InterpreterValue::Unit",
         backend: RuleBackend::Receipt(CorrespondenceRule::ScalarConstant),
         admits: &[t(EvidenceFile::UnitBackend, "unit_storage_construct_call_native_oracle")],
@@ -296,6 +296,15 @@ pub const RULES: &[RuleEntry] = &[
             t(Backend, "packed_scalar_collection_oob_guard_traps_in_wasmtime"),
             t(Launch, "admitted_guard_near_misses_trap_exactly_at_the_boundary"),
         ],
+    },
+    RuleEntry {
+        rule: CanonicalRuleId::ReauthenticateRawHeaderExtent,
+        judgment: "check/memory.rs::MemoryChecker::reauthenticate_raw_header_extent",
+        predicate: "rebinds a raw header length to a counted extent only after the current header load, fresh length proof, and dominating bounds proofs are authenticated; stale or missing proofs refuse",
+        interpreter: "execute_operation: proof-only extent reauthentication; no runtime bytes change",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ScalarGuard),
+        admits: &[t(Memory, "reauthenticate_raw_header_extent_requires_current_fresh_proofs_and_rebinds_conservatively")],
+        refuses: &[t(Memory, "reauthenticate_raw_header_extent_requires_current_fresh_proofs_and_rebinds_conservatively")],
     },
     RuleEntry {
         rule: CanonicalRuleId::Alloc,
@@ -598,6 +607,18 @@ pub const RULES: &[RuleEntry] = &[
             t(Check, "indirect_reference_value_argument_is_refused"),
             t(Backend, "variable_call_is_refused_fail_closed"),
             t(Backend, "mutated_scalar_var_call_signature_fails_exact_admission"),
+        ],
+    },
+    RuleEntry {
+        rule: CanonicalRuleId::ExternalCall,
+        judgment: "check.rs::check_external_call",
+        predicate: "a package-authenticated external Wasm identity may receive only scalar value lanes under an exact signed callable contract; it receives no host role, capability, reference, memory, reentrancy, or callback channel",
+        interpreter: "refused unless an authenticated external-library runtime is installed",
+        backend: RuleBackend::Receipt(CorrespondenceRule::ExternalCall),
+        admits: &[t(Check, "external_call_accepts_unit_parameter_and_result_contracts")],
+        refuses: &[
+            t(Check, "external_call_rejects_unknown_import_identity"),
+            t(Check, "external_call_rejects_reference_gc_capability_and_callable_abi"),
         ],
     },
     RuleEntry {
@@ -1064,9 +1085,9 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
     use CanonicalRuleId as R;
     let ordered = [
         R::ConstUnit, R::ConstInt, R::ConstFloat, R::ConstBool, R::ConstSize, R::CapabilityNone, R::CapabilitySome, R::CapabilityIsPresent, R::CapabilityUnwrap, R::Arithmetic, R::Compare, R::NarrowSize, R::WidenSize,
-        R::FloatUnary, R::Guard, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
+        R::FloatUnary, R::Guard, R::ReauthenticateRawHeaderExtent, R::Alloc, R::StaticData, R::Load, R::InitNullableOwned, R::Store, R::ClosureSlot, R::CopyBytes, R::MoveRange,
         R::CloneRange, R::UpdateCount, R::MoveValue, R::MakeInlineAggregate, R::ExtractInlineField, R::CloneRef, R::Retain, R::Release,
-        R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
+        R::DropRef, R::Reclaim, R::FunctionValue, R::Call, R::VarCall, R::ExternalCall, R::HostCall, R::Branch, R::BranchIf, R::Return,
         R::TailCall, R::VarTailCall, R::Trap, R::Unreachable, R::ClosureOwner,
     ];
     for rule in ordered {
@@ -1074,9 +1095,9 @@ pub fn all_rules() -> Vec<CanonicalRuleId> {
         match rule {
             R::ConstUnit | R::ConstInt | R::ConstFloat | R::ConstBool | R::ConstSize | R::CapabilityNone | R::CapabilitySome | R::CapabilityIsPresent | R::CapabilityUnwrap | R::Arithmetic | R::Compare | R::NarrowSize
             | R::WidenSize | R::FloatUnary | R::Guard | R::Alloc | R::StaticData | R::Load | R::InitNullableOwned | R::Store | R::CopyBytes
-            | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::MoveValue | R::MakeInlineAggregate
+            | R::ClosureSlot | R::MoveRange | R::CloneRange | R::UpdateCount | R::ReauthenticateRawHeaderExtent | R::MoveValue | R::MakeInlineAggregate
             | R::ExtractInlineField | R::CloneRef | R::Retain | R::Release | R::DropRef | R::Reclaim | R::FunctionValue
-            | R::Call | R::VarCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
+            | R::Call | R::VarCall | R::ExternalCall | R::HostCall | R::Branch | R::BranchIf | R::Return | R::TailCall | R::VarTailCall
             | R::Trap | R::Unreachable | R::ClosureOwner => {}
         }
     }

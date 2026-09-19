@@ -197,6 +197,49 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0167_lsp_reference_signatures_are_canonical() {
+        let src = "mode opt\n\nfn shared(value: &String) -> &String:\n    value\n\nfn edit(var value: String):\n    value = value + \"!\"\n\nfn main(console: Console):\n    console.print(\"ready\")\n";
+        let uri = "file:///rfc0167-references.witchy";
+        let docs = docs(uri, src);
+        let diagnostics = compute_diagnostics(uri, src, &docs);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let normal = diags(src.strip_prefix("mode opt\n\n").unwrap());
+        assert!(normal.is_empty(), "normal mode keeps immutable views value-correct: {normal:?}");
+        for (line, name, signature) in [
+            (2, "shared", "fn shared(value: &String) -> &String"),
+            (5, "edit", "fn edit(var value: String)"),
+        ] {
+            let hover = hover_at(&docs, uri, src, line, name);
+            let contents = hover["contents"]["value"].as_str().expect("reference hover");
+            assert!(contents.contains(signature), "{contents}");
+            let completions = completion_response(&docs, &json!({ "textDocument": { "uri": uri } }));
+            let item = completions.as_array().unwrap().iter()
+                .find(|item| item["label"] == json!(name)).expect("reference completion");
+            assert!(item["detail"].as_str().unwrap().contains(signature), "{item}");
+        }
+    }
+
+    #[test]
+    fn rfc0167_lsp_rejects_retired_syntax_instead_of_migrating_it() {
+        for (source, spelling) in [
+            ("fn old(value: View(String, 'a)):\n    Nil\n", "View"),
+            ("fn old(value: let('a) String):\n    Nil\n", "let('a)"),
+            ("fn old(let('a) value: String):\n    Nil\n", "let('a)"),
+            ("fn old(var('a) value: String):\n    Nil\n", "var('a)"),
+            ("fn old(value: local unique String):\n    Nil\n", "local unique"),
+            ("comptime fn old() -> TypeSyntax:\n    quote type:\n        View(String, 'a)\n", "View"),
+        ] {
+            for prefix in ["", "mode opt\n\n"] {
+                let diagnostics = diags(&format!("{prefix}{source}"));
+                assert!(diagnostics.iter().any(|diagnostic| {
+                    diagnostic["severity"] == json!(1)
+                        && diagnostic["message"].as_str().unwrap().contains(spelling)
+                }), "{source}: {diagnostics:?}");
+            }
+        }
+    }
+
+    #[test]
     fn rfc0081_lsp_accepts_and_displays_existential_signatures() {
         let src = "trait Render:\n    fn render(let self) -> String\n\nfn render_one(value: dyn Render) -> String:\n    value.render()\n\nfn main(console: Console):\n    console.print(\"ready\")\n";
         let uri = "file:///rfc0081-hover.witchy";
@@ -518,19 +561,9 @@ fn main(console: Console):
     }
 
     #[test]
-    fn region_is_reported_as_an_unstable_warning() {
+    fn accepted_region_surface_has_no_instability_diagnostic() {
         let src = "fn main() -> Int:\n    region:\n        1\n";
-        let diagnostics = diags(src);
-
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        assert_eq!(diagnostics[0]["severity"], json!(2));
-        assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(1));
-        assert!(
-            diagnostics[0]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("`region:` is unstable")),
-            "{diagnostics:?}",
-        );
+        assert_eq!(diags(src), Vec::<Value>::new());
     }
 
     /// (BUG-165) A `mode opt` file whose ownership-relevant parameter carries no
@@ -574,7 +607,7 @@ fn main(console: Console):
 
     #[test]
     fn mode_opt_no_copy_violation_names_the_alias_reason() {
-        let bad = "mode opt\n\nimport dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let snapshot = d\n    d.insert(\"a\", 2)\n    console.print(\"${snapshot.length()}\")\n";
+        let bad = "mode opt\n\nimport dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let snapshot = d\n    let _ = d.insert(\"a\", 2)\n    console.print(\"${snapshot.length()}\")\n";
         let diagnostics = diags(bad);
         assert!(
             diagnostics.iter().any(|diagnostic| {

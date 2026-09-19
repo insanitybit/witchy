@@ -71,9 +71,9 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
     ModuleDigest(hasher.finalize().into())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 6;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v6";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v6";
+const MODULE_SERIALIZATION_VERSION: u32 = 7;
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v7";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v7";
 
 /// Deterministic, tagged serialization for the fields that define a
 /// CanonicalModule's identity. This deliberately does not use `Debug`: a
@@ -472,6 +472,36 @@ impl CanonicalWriter {
                 self.u32(*parameter);
                 self.layout_id(*layout);
             }
+            ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+                self.u8(9);
+                self.u32(*parameter);
+                self.layout_id(*layout);
+                self.bool(projection.is_some());
+                if let Some(field) = projection {
+                    self.u32(*field);
+                }
+            }
+            ResultContract::AliasesOneOfWriteBackParameters { parameters, layout } => {
+                self.u8(10);
+                self.u64(parameters.len() as u64);
+                for parameter in parameters {
+                    self.u32(*parameter);
+                }
+                self.layout_id(*layout);
+            }
+            ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result,
+                parameters,
+                selector_parameter,
+            } => {
+                self.u8(11);
+                self.u32(*carrier_result);
+                self.u64(parameters.len() as u64);
+                for parameter in parameters {
+                    self.u32(*parameter);
+                }
+                self.u32(*selector_parameter);
+            }
             ResultContract::ReallocatesParameter { parameter, layout } => {
                 self.u8(4);
                 self.u32(*parameter);
@@ -542,6 +572,12 @@ impl CanonicalWriter {
                 self.fixed_bytes(identity);
             }
             ImportContractIdentity::Unknown => self.u8(1),
+            ImportContractIdentity::AuthenticatedExternal(identity) => {
+                self.u8(2);
+                self.fixed_bytes(&identity.library_binding_digest);
+                self.fixed_bytes(&identity.wasm_sha256);
+                self.fixed_bytes(&identity.sidecar_sha256);
+            }
         }
         self.bytes(import.module.as_bytes());
         self.bytes(import.name.as_bytes());
@@ -637,6 +673,11 @@ impl CanonicalWriter {
                 self.u8(7);
                 self.value_id(*condition);
                 self.guard_kind(*kind);
+            }
+            Operation::ReauthenticateRawHeaderExtent { object, header } => {
+                self.u8(42);
+                self.value_id(*object);
+                self.value_id(*header);
             }
             Operation::Alloc { destination, layout, extent, class } => {
                 self.u8(8);
@@ -744,6 +785,12 @@ impl CanonicalWriter {
                 self.signature_ref(*signature);
                 self.arguments(arguments);
             }
+            Operation::ExternalCall { destinations, import, arguments } => {
+                self.u8(25);
+                self.value_ids(destinations);
+                self.u32(import.get());
+                self.arguments(arguments);
+            }
             Operation::HostCall { destinations, import, arguments } => {
                 self.u8(23);
                 self.value_ids(destinations);
@@ -770,6 +817,7 @@ impl CanonicalWriter {
             O::ReadOwner { constructor, capture, .. } => (12, Some(*constructor), Some(*capture), None),
             O::ReadTag { family, .. } => (13, None, None, Some(*family)),
             O::ReadSharedPlace { family, .. } => (15, None, None, Some(*family)),
+            O::ReadSharedSliceLength { family, .. } => (16, None, None, Some(*family)),
             O::ReadCallable { family, .. } => (2, None, None, Some(*family)),
             O::Clone { family, .. } => (3, None, None, Some(*family)),
             O::Drop { family, .. } => (4, None, None, Some(*family)),
@@ -864,7 +912,9 @@ impl CanonicalWriter {
                 match qualifier {
                     TypeQual::Frozen => self.u8(0),
                     TypeQual::Unique => self.u8(1),
-                    TypeQual::LocalUnique => self.u8(2),
+                    // Rooted views are their own lifetime-free source identity.
+                    // Do not alias this tag to either historical loan form.
+                    TypeQual::View => self.u8(2),
                     TypeQual::Borrow(lifetime) => { self.u8(3); self.bytes(lifetime.as_bytes()); }
                     TypeQual::LegacyBorrow(lifetime) => { self.u8(4); self.bytes(lifetime.as_bytes()); }
                     TypeQual::BorrowMut(lifetime) => { self.u8(5); self.bytes(lifetime.as_bytes()); }
@@ -1141,6 +1191,24 @@ mod tests {
             module_digest(&candidate(1, false)),
             module_digest(&candidate(1, true))
         );
+    }
+
+    #[test]
+    fn rooted_view_source_identity_is_lifetime_free_and_not_a_loan_alias() {
+        use witchy_syntax::ast::{Type, TypeQual};
+
+        let inner = Type::Named("Int".into(), Vec::new());
+        let encoded = |source| {
+            let mut writer = CanonicalWriter::new(1, b"test/source-type");
+            writer.source_type(&source);
+            writer.finish()
+        };
+        let view = encoded(Type::Qualified(TypeQual::View, Box::new(inner.clone())));
+        let borrow = encoded(Type::Qualified(TypeQual::Borrow("a".into()), Box::new(inner.clone())));
+        let mutable = encoded(Type::Qualified(TypeQual::BorrowMut("a".into()), Box::new(inner)));
+
+        assert_ne!(view, borrow, "a rooted view is not a lifetime-bearing shared loan");
+        assert_ne!(view, mutable, "a rooted view is not a mutable loan");
     }
 
     fn with_static_data(

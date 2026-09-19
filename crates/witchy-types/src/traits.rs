@@ -118,9 +118,11 @@ enum MethodResolution {
 /// parameter would default to i32 in codegen and clash with, e.g., an f64 arg.
 fn method_fn(
     name: String,
+    public: bool,
     pure: bool,
     is_async: bool,
     attributes: Vec<String>,
+    type_params: Vec<String>,
     mut params: Vec<Param>,
     ret: Option<Type>,
     body: Block,
@@ -148,7 +150,7 @@ fn method_fn(
     let ret = ret.map(|t| subst_self(&t, &self_ty));
     Function {
         line: 0,
-        public: true,
+        public,
         pure,
         comptime_only: false,
         // Async-frame identity is compiler-owned transport, not a trait
@@ -157,6 +159,7 @@ fn method_fn(
         // generated mangled name.
         attributes,
         name,
+        type_params,
         params,
         ret,
         body,
@@ -470,9 +473,11 @@ fn lower_with(
                 bounds.extend(method.bounds.iter().cloned());
                 generated.push(method_fn(
                     mangled,
+                    im.trait_name.is_some() || method.public,
                     method.pure,
                     method.is_async,
                     method.attributes.clone(),
+                    method.type_params.clone(),
                     params,
                     ret,
                     method.body.clone(),
@@ -507,9 +512,11 @@ fn lower_with(
             bounds.extend(method.bounds.iter().cloned());
             generated.push(method_fn(
                 mangled,
+                im.trait_name.is_some() || method.public,
                 method.pure,
                 method.is_async,
                 method.attributes.clone(),
+                method.type_params.clone(),
                 params,
                 ret,
                 method.body.clone(),
@@ -552,9 +559,11 @@ fn lower_with(
                         );
                         generated.push(method_fn(
                             mangled,
+                            true,
                             ms.pure,
                             false,
                             Vec::new(),
+                            ms.type_params.clone(),
                             params,
                             ret,
                             body.clone(),
@@ -720,7 +729,12 @@ fn lower_with(
     // fixpoint so each re-annotate sees their signatures, then removed afterwards —
     // they have no runnable generic form (their bounded call can't resolve while
     // generic). Their concrete specializations are what gets emitted.
-    let no_fallback = no_fallback_template_names(&typed.module().items);
+    let mut no_fallback = no_fallback_template_names(&typed.module().items);
+    let rooted_slice_templates = generic_rooted_slice_template_names(&typed.module().items);
+    // Canonical lowering represents a rooted slice as a concrete carrier and
+    // projection. A generic `&[a]` therefore has no runnable fallback: it must
+    // be specialized at each call, just as a bounded generic must be.
+    no_fallback.extend(rooted_slice_templates.iter().cloned());
     let template_body_diag = if no_fallback.is_empty() {
         None
     } else {
@@ -788,6 +802,10 @@ fn lower_with(
         .collect();
     let render_available = templates.contains_key("show.render");
     let mut mono_diags: Vec<String> = Vec::new();
+    // Concrete `where` failures are final at the first specialization site.
+    // Keep them across fixpoint rounds; ordinary mono diagnostics can still be
+    // transient while a newly generated body acquires type facts next round.
+    let mut bound_diags: Vec<String> = Vec::new();
     let mut generic_specializations = std::collections::BTreeMap::new();
     let mut affine_specializations = HashSet::new();
     if !templates.is_empty() {
@@ -828,7 +846,9 @@ fn lower_with(
                         trait_methods: &trait_methods,
                         supertraits: &trait_supertraits,
                         trait_impl_table: &trait_impl_table,
+                        witness_catalog: &witness_catalog,
                         diagnostics: Vec::new(),
+                        bound_diagnostics: &mut bound_diags,
                         ctor_infos: &ctor_infos,
                         record_fields: &record_fields,
                         fn_sigs,
@@ -1025,6 +1045,7 @@ fn lower_with(
             d.extend(discards);
             d.extend(missing_impls.into_inner());
             d.extend(mono_diags);
+            d.extend(bound_diags);
             if let Err(msg) = kw {
                 d.push(msg);
             }
@@ -1041,10 +1062,15 @@ fn bare(name: &str) -> &str {
 
 fn display_type(t: &Type) -> String {
     match t {
-        // (RFC-0083) A borrowed view renders as `View(T, 'a)` in diagnostics, the
-        // same canonical spelling the formatter uses — not the bare `as_str`.
-        Type::Qualified(TypeQual::Borrow(life) | TypeQual::LegacyBorrow(life), inner) => {
-            format!("View({}, '{life})", display_type(inner))
+        Type::Qualified(TypeQual::View, inner) => format!("&{}", display_type(inner)),
+        // Diagnostics are an ordinary-source surface. Drop migration-only
+        // shared lifetime provenance, but never disguise a mutable retired
+        // reference as an immutable rooted view.
+        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_), inner) => {
+            format!("&{}", display_type(inner))
+        }
+        Type::Qualified(TypeQual::BorrowMut(_), inner) => {
+            format!("<retired mutable reference to {}>", display_type(inner))
         }
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), display_type(inner)),
         Type::Named(n, args) if args.is_empty() => bare(n).to_string(),
@@ -1098,6 +1124,14 @@ fn display_type(t: &Type) -> String {
 
 fn unit_type() -> Type {
     Type::Tuple(Vec::new())
+}
+
+fn is_nil_type(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Named(name, args) => name == "Nil" && args.is_empty(),
+        Type::Tuple(items) => items.is_empty(),
+        _ => false,
+    }
 }
 
 pub(crate) fn impl_self_type(im: &ImplDef) -> Type {
@@ -1605,12 +1639,12 @@ struct Ctx<'a> {
     missing_impls: &'a std::cell::RefCell<Vec<String>>,
     /// Self-less impl methods: `Type.name(args)` statics.
     statics: &'a HashMap<(String, String), String>,
-    /// Resolved functions with at least one `var` parameter. Their ordinary
-    /// result may be discarded because write-back is the statement's effect.
+    /// Resolved functions with at least one `var` parameter. This drives the
+    /// write-back rewrite; it does not make a non-Nil result discardable.
     var_calls: &'a HashSet<String>,
     /// (RFC-0043) Resolved function name -> whether it returns `Nil`/nothing.
-    /// A statement-position non-mutator method call whose callee returns a
-    /// non-Nil value is a discard error (the RFC's Failure-2 fix).
+    /// A statement-position call whose callee returns a non-Nil value is a
+    /// discard error, including a call that also performs `var` write-back.
     returns_nil: &'a HashMap<String, bool>,
     /// (RFC-0043) Diagnostics for a discarded non-Nil method result. Kept
     /// SEPARATE from `missing_impls`: the quiet pre-mono pass discards its
@@ -1651,9 +1685,18 @@ fn declared_expr_type(
     type_of: &dyn Fn(&Expr) -> Option<Type>,
 ) -> Option<Type> {
     match e {
-        Expr::Index { base, .. } => match type_of(base)?.unqualified() {
+        Expr::Index { base, index } => match type_of(base)?.unqualified() {
             Type::Named(name, args) if name == "List" && args.len() == 1 => {
-                Some(args[0].clone())
+                // A numeric index projects one element, but a range preserves
+                // the list payload. Mono's declaration fallback reaches this
+                // path when the typed-node table is unavailable; returning the
+                // element there would make `&items[lo..hi]` appear as `&a`
+                // instead of `&[a]` and lose its generic binding evidence.
+                if matches!(index.as_ref(), Expr::Range { .. }) {
+                    Some(Type::Named("List".to_string(), vec![args[0].clone()]))
+                } else {
+                    Some(args[0].clone())
+                }
             }
             _ => None,
         },
@@ -2268,16 +2311,13 @@ impl Ctx<'_> {
                 Stmt::Return(Some(e)) | Stmt::Yield(e) => self.rewrite_expr_vp(e, scope, true),
                 Stmt::Expr(e) => {
                     self.rewrite_expr_vp(e, scope, value_used);
-                    // A discarded non-Nil call is legal only when its resolved
-                    // declaration carries a var write-back. Free and method forms
-                    // use the same convention table.
+                    // A resolved non-Nil result must be consumed, regardless of
+                    // whether the call also writes a `var` argument back.
                     if !value_used {
-                        if let Expr::Call { name, .. } = e {
-                            let returns_nil = self.returns_nil.get(name).copied().unwrap_or(true);
-                            if !returns_nil && !self.var_calls.contains(name) {
-                                let bare = name.rsplit('.').next().unwrap_or(name);
-                                self.discard_errors.borrow_mut().push(discarded_result_msg(bare));
-                            }
+                        if let Some(callee) = self.discarded_statement_call(e, scope) {
+                            self.discard_errors
+                                .borrow_mut()
+                                .push(discarded_result_msg(&callee));
                         }
                         // Preserve the proven RFC-0051 storage paths for common
                         // discarded std mutators only when no later argument can
@@ -2320,9 +2360,9 @@ impl Ctx<'_> {
     ///   write-back rewrite `xs.push(1)` => `list.push(xs, 1)`;
     /// - a mutator on an immutable place / non-place -> a "declare it `var`, or
     ///   bind the result" error;
-    /// - a non-mutator returning `Nil` -> a plain statement (as today);
-    /// - a non-mutator returning non-Nil -> a discarded-result error naming the
-    ///   method (the RFC's Failure-2 fix; `let _ = …` is the discard escape).
+    /// - a call returning `Nil` -> a plain statement (as today);
+    /// - a call returning non-Nil -> a discarded-result error naming the method
+    ///   (including a `var` method; `let _ = …` is the discard escape).
     ///
     /// A call this pass can't resolve to a `Call` (its receiver type isn't known
     /// yet) is left untouched — a later pass (per specialization) resolves and
@@ -2339,27 +2379,51 @@ impl Ctx<'_> {
         // Resolution turns a method call into a `Call { name, args }`. Anything
         // else (still a MethodCall, or a non-call) is left for a later pass /
         // the checker.
-        let Expr::Call { name, .. } = value else { return };
-        let name = name.clone();
+        let Expr::Call { .. } = value else { return };
 
-        if self.var_calls.contains(&name) {
-            // The call itself carries write-back in every expression context.
-            // Statement position only discards its independent ordinary result.
-            return;
-        }
-
-        // Not a mutator. A resolved callee whose DECLARED return is non-Nil and
-        // is thrown away is a discard error (the Failure-2 fix); `let _ = …` is
-        // the explicit-discard escape (parsed as a wildcard `LetPattern`, so it
-        // never reaches this arm). A `Nil`-returning call is a plain side-
-        // effecting statement, as today. A callee NOT in the table (a bare
-        // intrinsic / capability op the resolver produced, never a std/user
-        // function) has no declared return here — leave it a plain statement
-        // rather than risk a false positive.
-        let returns_nil = self.returns_nil.get(&name).copied().unwrap_or(true);
-        if !returns_nil {
+        // A resolved callee whose result is non-Nil must be consumed even when
+        // it carries a `var` write-back. `let _ = …` is the explicit-discard
+        // escape (parsed as a wildcard `LetPattern`, so it never reaches this
+        // arm). A call whose result cannot be resolved remains untouched here.
+        if self.discarded_statement_call(value, scope).is_some() {
             self.discard_errors.borrow_mut().push(discarded_result_msg(&method));
         }
+    }
+
+    /// Return the user-facing callee name when this resolved call has a known
+    /// non-Nil result. Named calls use their resolved declaration; function
+    /// values use their callable type. Unknown results stay outside this
+    /// diagnostic until a later pass resolves them.
+    fn discarded_statement_call(&self, expr: &Expr, scope: &Scope<Type>) -> Option<String> {
+        // `fail` is the built-in diverging trap. Its synthetic result can be
+        // specialized by an enclosing expression, but execution never reaches
+        // a value that could be discarded.
+        if matches!(expr, Expr::Call { name, .. } if name == "fail") {
+            return None;
+        }
+        let result_is_non_nil = match expr {
+            Expr::Call { name, .. } => self
+                .returns_nil
+                .get(name)
+                .map(|returns_nil| !returns_nil)
+                .or_else(|| self.type_ast(expr, scope).map(|ty| !is_nil_type(&ty))),
+            Expr::Apply { .. } | Expr::ExistentialCall { .. } => {
+                self.type_ast(expr, scope).map(|ty| !is_nil_type(&ty))
+            }
+            _ => None,
+        }?;
+        if !result_is_non_nil {
+            return None;
+        }
+        Some(match expr {
+            Expr::Call { name, .. } => name.rsplit('.').next().unwrap_or(name).to_string(),
+            Expr::Apply { func, .. } => match func.as_ref() {
+                Expr::Var(name) => name.clone(),
+                _ => "function value".to_string(),
+            },
+            Expr::ExistentialCall { method, .. } => method.clone(),
+            _ => unreachable!("only call expressions reach discarded_statement_call"),
+        })
     }
 
     /// Rewrite a single expression that occupies statement position but lives in
@@ -2631,6 +2695,22 @@ impl Ctx<'_> {
                         *e = Expr::Call { name: cap_ops::call_name(method), args: call_args };
                         return;
                     }
+                    // Rooted slices deliberately have no public nominal
+                    // `Slice(a)` spelling and no impl block.  They expose a
+                    // tiny compiler-owned inherent surface instead: the
+                    // checked `&[a]` carrier can query its projected length,
+                    // but never mutate its root or extract an arbitrary `a`
+                    // by value.  `&items[i]` remains the explicit element-view
+                    // spelling.
+                    if let Some(func) = rooted_slice_view_method(method, ty) {
+                        let mut call_args = vec![std::mem::replace(
+                            receiver.as_mut(),
+                            Expr::Bool(false),
+                        )];
+                        call_args.append(args);
+                        *e = Expr::Call { name: func.to_string(), args: call_args };
+                        return;
+                    }
                     if let Some(func) = self.std_owner_method_alias(method, ty) {
                         let mut call_args = vec![std::mem::replace(
                             receiver.as_mut(),
@@ -2857,7 +2937,7 @@ impl Ctx<'_> {
                     scrutinee_ty.as_ref(),
                     &mut s,
                 );
-                // A loop evaluates to Nil, so its body's tail value is discarded.
+                // A loop evaluates to unit, so its body's tail value is discarded.
                 self.rewrite_block(body, &mut s, false);
                 merge_refined_outer_ast_types(scope, &s);
             }
@@ -3009,6 +3089,23 @@ fn type_owner_module_ast(ty: &Type) -> Option<&str> {
     type_owner_module_name(nominal_type_name(ty)?)
 }
 
+/// The public rooted-slice spelling is `&[a]`.  Its internal `Slice(a)`
+/// payload is only a carrier representation and must not become a second
+/// nominal API.  Keep this whitelist to pure reads: a view retains a snapshot
+/// root, but grants no mutation capability for that root.
+fn rooted_slice_view_method(method: &str, ty: &Type) -> Option<&'static str> {
+    let Type::Qualified(TypeQual::View, payload) = ty else {
+        return None;
+    };
+    if !matches!(payload.unqualified(), Type::Slice(_)) {
+        return None;
+    }
+    match method {
+        "length" => Some(intrinsics::LIST_LENGTH),
+        _ => None,
+    }
+}
+
 fn is_ambient_owned_ast_type(ty: &Type) -> bool {
     nominal_type_name(ty).is_some_and(|name| !name.contains('.'))
 }
@@ -3021,8 +3118,9 @@ fn is_ambient_std_owned_name(name: &str) -> bool {
     !name.contains('.') && type_owner_module_name(name).is_some()
 }
 
-// A `MethodCall` anywhere means the lowering pass must run (to resolve it via
-// impl/trait/static dispatch or UFCS), even in a module with no traits or impls.
+// A `MethodCall` or a call in statement position means the lowering pass must
+// run, even in a module with no traits or impls: method calls need dispatch
+// resolution, and statement calls need their resolved result checked.
 fn module_needs_lowering(items: &[Item]) -> bool {
     items.iter().any(|it| match it {
         Item::Function(f) => block_needs_lowering(&f.body),
@@ -3036,11 +3134,62 @@ fn block_needs_lowering(b: &Block) -> bool {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::LetPattern { value, .. }
-        | Stmt::Yield(value)
-        | Stmt::Expr(value) => expr_needs_lowering(value),
+        | Stmt::Yield(value) => expr_needs_lowering(value),
+        Stmt::Expr(value) => expr_needs_lowering(value) || expr_contains_call(value),
         Stmt::Return(opt) => opt.as_ref().is_some_and(expr_needs_lowering),
         Stmt::Break | Stmt::Continue => false,
     })
+}
+
+fn expr_contains_call(e: &Expr) -> bool {
+    match e {
+        Expr::Call { .. } | Expr::Apply { .. } | Expr::ExistentialCall { .. } => true,
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) | Expr::TaggedLit { .. } => false,
+        Expr::MethodCall { receiver, args, .. } => {
+            expr_contains_call(receiver) || args.iter().any(expr_contains_call)
+        }
+        Expr::LabeledCall { .. } | Expr::LabeledMethodCall { .. } => true,
+        Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+            args.iter().any(expr_contains_call)
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
+        | Expr::Field { base: expr, .. } => expr_contains_call(expr),
+        Expr::RecordUpdate { base, fields, .. } => {
+            expr_contains_call(base) || fields.iter().any(|(_, value)| expr_contains_call(value))
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().any(|(_, value)| expr_contains_call(value))
+                || spread.as_deref().is_some_and(expr_contains_call)
+        }
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            expr_contains_call(lhs) || expr_contains_call(rhs)
+        }
+        Expr::If { cond, then_block, else_block } => {
+            expr_contains_call(cond)
+                || block_needs_lowering(then_block)
+                || else_block.as_ref().is_some_and(block_needs_lowering)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_contains_call(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_call)
+                        || expr_contains_call(&arm.body)
+                })
+        }
+        Expr::Lambda { body, .. } | Expr::Block(body) => block_needs_lowering(body),
+        Expr::While { cond, body } => expr_contains_call(cond) || block_needs_lowering(body),
+        Expr::WhileLet { scrutinee, body, .. } => {
+            expr_contains_call(scrutinee) || block_needs_lowering(body)
+        }
+        Expr::For { iter, body, .. } => expr_contains_call(iter) || block_needs_lowering(body),
+    }
 }
 
 fn expr_needs_lowering(e: &Expr) -> bool {
@@ -3341,7 +3490,7 @@ fn specialization_type_key(
                 match qualifier {
                     TypeQual::Frozen => key.push_str("qf<"),
                     TypeQual::Unique => key.push_str("qu<"),
-                    TypeQual::LocalUnique => key.push_str("ql<"),
+                    TypeQual::View => key.push_str("qv<"),
                     TypeQual::Borrow(lifetime) | TypeQual::LegacyBorrow(lifetime) => {
                         let id = lifetime_id(lifetimes, lifetime);
                         key.push_str(&format!("qb{id}<"));
@@ -3441,6 +3590,17 @@ fn specialization_type_key(
 #[cfg(test)]
 mod specialization_identity_tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_mark_retired_mutable_references_instead_of_erasing_mutability() {
+        let ty = Type::Qualified(
+            TypeQual::BorrowMut("a".into()),
+            Box::new(Type::Named("String".into(), Vec::new())),
+        );
+        let rendered = display_type(&ty);
+        assert!(rendered.contains("retired mutable reference"), "{rendered}");
+        assert!(!rendered.starts_with('&'), "{rendered}");
+    }
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_string(), Vec::new())
@@ -3562,12 +3722,11 @@ fn mangle_type_key(key: &str) -> String {
     mangled
 }
 
-/// A discarded non-Nil result from a call without write-back. `let _ = …` is
-/// the explicit-discard escape.
+/// A discarded non-Nil result from a call. `let _ = …` is the explicit-discard
+/// escape.
 fn discarded_result_msg(method: &str) -> String {
     format!(
-        "result of `{method}` is discarded — bind it or discard explicitly with `let _ = …`. \
-         A call with a declared `var` write-back may discard its ordinary result directly."
+        "result of `{method}` is discarded — bind it or discard explicitly with `let _ = …`."
     )
 }
 
@@ -3628,7 +3787,16 @@ fn build_owner_methods(items: &[Item]) -> HashSet<String> {
     let mut methods = HashSet::new();
     for item in items {
         let Item::Function(f) = item else { continue };
-        if !f.public {
+        // A lowered method has an unspellable `__` separator. Private methods
+        // still resolve inside their declaring module, whereas a private free
+        // function with a receiver-like first parameter must not become a
+        // method merely because it shares the owner's module prefix.
+        let lowered_method = f
+            .name
+            .rsplit_once('.')
+            .map_or(f.name.as_str(), |(_, local)| local)
+            .contains("__");
+        if !f.public && !lowered_method {
             continue;
         }
         let Some((module, _)) = f.name.rsplit_once('.') else {
@@ -3645,12 +3813,11 @@ fn build_owner_methods(items: &[Item]) -> HashSet<String> {
 }
 
 /// The write-back tables read at a resolved call site:
-/// - `var_calls`: every function with at least one `var` parameter. Its ordinary
-///   result may be discarded because the call still performs write-back.
-/// - `returns_nil`: function name -> whether it returns `Nil`/nothing, so a
-///   statement-position non-mutator method call whose result is non-Nil is a
-///   discard error. A function absent from this map has an unknown (generic or
-///   inferred) return; treated as non-Nil (conservatively an error candidate).
+/// - `var_calls`: every function with at least one `var` parameter, used by the
+///   write-back rewrite.
+/// - `returns_nil`: function name -> whether it returns `Nil`/nothing. A
+///   statement-position call with a known non-Nil result is a discard error;
+///   absent declarations remain unresolved until another pass supplies a type.
 ///
 /// Keyed by the FULLY-QUALIFIED / mangled function name the dispatch pass
 /// resolves a `place.method(args)` to (`list.push`, `Bag.push`'s mangling), so
@@ -3939,6 +4106,23 @@ fn bind_ast_type_vars_inner(
                         bind_ast_type_vars_inner(pattern, concrete, out)
                     })
         }
+        // Qualifiers have already been compared at the caller's boundary;
+        // generic inference matches the retained view payload structurally.
+        // The checker represents a surface slice as `List`, so `&[a]` must
+        // infer `a` from checked `&List(Int)` before canonical lowering.
+        (Type::Slice(pattern), Type::Slice(concrete)) => {
+            bind_ast_type_vars_inner(pattern, concrete, out)
+        }
+        (Type::Slice(pattern), Type::Named(name, arguments))
+            if matches!(name.as_str(), "List" | "Slice") && arguments.len() == 1 =>
+        {
+            bind_ast_type_vars_inner(pattern, &arguments[0], out)
+        }
+        (Type::Named(name, arguments), Type::Slice(concrete))
+            if matches!(name.as_str(), "List" | "Slice") && arguments.len() == 1 =>
+        {
+            bind_ast_type_vars_inner(&arguments[0], concrete, out)
+        }
         (
             Type::Fn(pattern_params, pattern_ret, pattern_conventions, pattern_qualifiers),
             Type::Fn(params, ret, conventions, qualifiers),
@@ -3981,11 +4165,14 @@ fn subst_block_types(b: &mut Block, subst: &HashMap<String, Type>) {
 
 fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
     match e {
-        Expr::Lambda { params, body, .. } => {
+        Expr::Lambda { params, body, ret, .. } => {
             for p in params.iter_mut() {
                 if let Some(t) = &p.ty {
                     p.ty = Some(subst_trait_params(t, subst));
                 }
+            }
+            if let Some(t) = ret {
+                *t = subst_trait_params(t, subst);
             }
             subst_block_types(body, subst);
         }
@@ -4363,6 +4550,67 @@ fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
     names
 }
 
+/// Generic rooted slices have no backend-independent ABI: canonical lowering
+/// carries their concrete element projection together with the authenticated
+/// root. Keep this deliberately narrower than ordinary generic views.
+fn generic_rooted_slice_template_names(items: &[Item]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function)
+                if !crate::typeck::intrinsic(&function.name)
+                    && signature_has_generic_rooted_slice(function) =>
+            {
+                Some(function.name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn signature_has_generic_rooted_slice(function: &Function) -> bool {
+    let vars = signature_type_vars(function);
+    if vars.is_empty() {
+        return false;
+    }
+
+    fn contains_rooted_slice(ty: &Type, vars: &[String]) -> bool {
+        match ty {
+            Type::Qualified(TypeQual::View, payload) => match payload.unqualified() {
+                Type::Slice(element) => {
+                    let mut payload_vars = Vec::new();
+                    collect_type_vars(element, &mut payload_vars);
+                    payload_vars.iter().any(|var| vars.contains(var))
+                        || contains_rooted_slice(element, vars)
+                }
+                _ => contains_rooted_slice(payload, vars),
+            },
+            Type::Qualified(_, inner) | Type::Slice(inner) => contains_rooted_slice(inner, vars),
+            Type::Named(_, arguments) | Type::Dyn(_, arguments) => {
+                arguments.iter().any(|argument| contains_rooted_slice(argument, vars))
+            }
+            Type::Tuple(items) => items.iter().any(|item| contains_rooted_slice(item, vars)),
+            Type::RecordCompose { base, fields } => {
+                contains_rooted_slice(base, vars)
+                    || fields
+                        .iter()
+                        .any(|(_, field)| contains_rooted_slice(field, vars))
+            }
+            Type::Fn(params, result, _, _) => {
+                params.iter().any(|param| contains_rooted_slice(param, vars))
+                    || contains_rooted_slice(result, vars)
+            }
+        }
+    }
+
+    function
+        .params
+        .iter()
+        .filter_map(|param| param.ty.as_ref())
+        .chain(function.ret.iter())
+        .any(|ty| contains_rooted_slice(ty, &vars))
+}
+
 /// The type variables a function is generic over: its `where`-bound variables if
 /// bounded, otherwise the free type variables in its signature.
 /// Rename bare calls per `renames`, recursively — the substitution-directed
@@ -4660,9 +4908,11 @@ pub(crate) fn monomorphic_impl_method_name(
     };
     let template = method_fn(
         base.clone(),
+        true,
         pure,
         provided.is_some_and(|method| method.is_async),
         Vec::new(),
+        provided.map(|method| method.type_params.clone()).unwrap_or_else(|| method.type_params.clone()),
         params,
         ret,
         Block {
@@ -4754,8 +5004,14 @@ struct Mono<'a> {
     /// the methods of `Eq`/`PartialOrd`/`PartialEq` too.
     supertraits: &'a HashMap<String, Vec<String>>,
     trait_impl_table: &'a TraitImplTable,
+    /// The pre-lowering impl universe. Specialization must discharge a generic
+    /// `where` obligation against this catalog before it erases that obligation
+    /// from the generated concrete function.
+    witness_catalog: &'a crate::witness::WitnessCatalog,
     /// Loud failures (an uninferrable bounded call) surfaced as check errors.
     diagnostics: Vec<String>,
+    /// Definite concrete `where` failures, kept across monomorphization rounds.
+    bound_diagnostics: &'a mut Vec<String>,
     ctor_infos: &'a HashMap<String, CtorInfo>,
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
     /// Function -> (param types, return type): the declared signatures behind
@@ -4800,6 +5056,17 @@ struct Mono<'a> {
 #[cfg(test)]
 mod structured_dispatch_tests {
     use super::*;
+
+    #[test]
+    fn diverging_fail_is_not_a_discarded_result() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn probe() -> Int:\n    fail(\"stop\")\n    0\n",
+        )
+        .expect("source syntax");
+        let (lowered, missing, _, _) = lower_with(module, false);
+        assert!(missing.is_empty(), "{missing:?}");
+        crate::typeck::check(&lowered).expect("a diverging trap has no discarded result");
+    }
 
     #[test]
     fn local_callable_results_bootstrap_capability_and_record_methods() {
@@ -4895,6 +5162,60 @@ mod structured_dispatch_tests {
             unbound,
             Some(nominal("Dict", vec![named_type("k"), named_type("v")]))
         );
+    }
+
+    #[test]
+    fn declared_index_type_preserves_range_list_payload() {
+        let mut scope = Scope::new();
+        scope.insert(
+            "items".to_string(),
+            nominal("List", vec![named_type("Int")]),
+        );
+        let range = Expr::Index {
+            base: Box::new(Expr::Var("items".to_string())),
+            index: Box::new(Expr::Range {
+                lo: Box::new(Expr::Int(1)),
+                hi: Box::new(Expr::Int(3)),
+                inclusive: false,
+            }),
+        };
+        let index = Expr::Index {
+            base: Box::new(Expr::Var("items".to_string())),
+            index: Box::new(Expr::Int(1)),
+        };
+        let signatures = HashMap::new();
+        let type_of = |expression: &Expr| match expression {
+            Expr::Var(name) if name == "items" => {
+                Some(nominal("List", vec![named_type("Int")]))
+            }
+            _ => None,
+        };
+
+        assert_eq!(
+            declared_expr_type(&range, &scope, &signatures, &type_of),
+            Some(nominal("List", vec![named_type("Int")])),
+        );
+        assert_eq!(
+            declared_expr_type(&index, &scope, &signatures, &type_of),
+            Some(named_type("Int")),
+        );
+    }
+
+    #[test]
+    fn only_generic_rooted_slice_signatures_require_no_fallback() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn rooted[a](items: &[a]) -> Option(&a):\n    None\n\
+             fn ordinary[a](item: &a) -> &a:\n    item\n\
+             fn concrete[a](items: &[Int]) -> &[Int]:\n    items\n",
+        )
+        .expect("source syntax");
+
+        let mut no_fallback = no_fallback_template_names(&module.items);
+        no_fallback.extend(generic_rooted_slice_template_names(&module.items));
+
+        assert!(no_fallback.contains("rooted"));
+        assert!(!no_fallback.contains("ordinary"));
+        assert!(!no_fallback.contains("concrete"));
     }
 
     #[test]
@@ -5007,6 +5328,30 @@ mod structured_dispatch_tests {
             &mut bindings,
         ));
         assert!(bindings.is_empty(), "a bare container head is incomplete evidence");
+
+        // A checked view can retain either the fallback `List(Int)` payload or
+        // the range-specific nominal `Slice(Int)`, while the declaration keeps
+        // surface `&[a]` syntax. Binding reconstructs that payload evidence
+        // only after the caller's view check.
+        let rooted_slice = Type::Qualified(
+            TypeQual::View,
+            Box::new(Type::Slice(Box::new(named_type("a")))),
+        );
+        let checked_rooted_list = Type::Qualified(
+            TypeQual::View,
+            Box::new(nominal("List", vec![named_type("Int")])),
+        );
+        bindings.clear();
+        assert!(bind_ast_type_vars(&rooted_slice, &checked_rooted_list, &mut bindings));
+        assert_eq!(bindings.get("a"), Some(&named_type("Int")));
+
+        let checked_rooted_slice = Type::Qualified(
+            TypeQual::View,
+            Box::new(nominal("Slice", vec![named_type("Int")])),
+        );
+        bindings.clear();
+        assert!(bind_ast_type_vars(&rooted_slice, &checked_rooted_slice, &mut bindings));
+        assert_eq!(bindings.get("a"), Some(&named_type("Int")));
     }
 
     #[test]
@@ -5084,6 +5429,44 @@ pub fn main() -> Int:
         assert!(!lowered.items.iter().any(|item| matches!(item,
             Item::Function(function) if function.name == "forwarded"
         )));
+    }
+
+    #[test]
+    fn annotated_initializer_specializes_a_bounded_static_result_only_at_its_root() {
+        let source = r#"
+trait Decode:
+    fn decode(input: Int) -> Result(Self, String)
+
+type Count:
+    Count(Int)
+
+impl Decode for Count:
+    fn decode(input: Int) -> Result(Count, String):
+        Ok(Count(input))
+
+fn decode_bounded(input: Int) -> Result(a, String) where a: Decode:
+    a.decode(input)
+
+pub fn main() -> Int:
+    let decoded: Result(Count, String) = decode_bounded(7)
+    match decoded:
+        Ok(Count(value)) -> value
+        Err(_) -> 0
+"#;
+        let module = witchy_syntax::parser::parse_module(source).expect("parse annotated result");
+        let lowered = lower_for_wasm(module);
+        assert!(lowered.items.iter().any(|item| matches!(item,
+            Item::Function(function)
+                if function.name.starts_with("decode_bounded__Count")
+        )));
+
+        let mismatch = source.replace(
+            "let decoded: Result(Count, String)",
+            "let decoded: Result(String, String)",
+        );
+        let module = witchy_syntax::parser::parse_module(&mismatch).expect("parse mismatched result");
+        let error = lower_checked(module).expect_err("mismatched annotation must still satisfy Decode");
+        assert!(error.contains("Decode") && error.contains("String"), "{error}");
     }
 
     #[test]

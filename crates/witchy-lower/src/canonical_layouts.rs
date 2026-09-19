@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
-use witchy_types::canonical_aggregates::{aggregate_key, concrete_aggregate_identity, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
+use witchy_types::canonical_aggregates::{aggregate_key, canonical_owner_aggregate_identity, concrete_aggregate_identity, is_scalar_type, is_v1_list_element_type, scalar_aggregate_shape, shape_from_definition};
 use witchy_syntax::ast::{self, Item, Type, TypeDef};
 use witchy_types::pipeline::CanonicalCheckedSource;
 use witchy_types::typeck;
@@ -30,6 +30,19 @@ pub(crate) struct SharedIntReferenceLayout {
     pub environment: LayoutId,
     pub scalar_root: LayoutId,
     pub list_root: Option<LayoutId>,
+}
+
+/// Canonical storage for an immutable `&[Int]`: a retained list root and its
+/// checked slice projection.  It is deliberately distinct from `&Int` so a
+/// scalar-place reader can never reinterpret a slice carrier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RootedIntSliceLayout {
+    pub environment: LayoutId,
+    pub list_root: LayoutId,
+}
+
+pub(crate) fn rooted_int_slice_owner_type() -> GcTypeId {
+    GcTypeId::new(0xc300_0002)
 }
 
 /// The source-derived storage family for one `fn` signature.  The callable
@@ -81,6 +94,7 @@ pub(crate) enum CanonicalLayoutError {
     NonConcreteExpressionType(String),
     UnsupportedType(String),
     InvalidLayout(String),
+    InvalidCheckedAccessFacts(String),
 }
 
 impl fmt::Display for CanonicalLayoutError {
@@ -99,6 +113,9 @@ impl fmt::Display for CanonicalLayoutError {
                 write!(formatter, "unsupported canonical v1 layout type `{ty}`")
             }
             Self::InvalidLayout(error) => write!(formatter, "canonical layout rejected: {error}"),
+            Self::InvalidCheckedAccessFacts(error) => {
+                write!(formatter, "canonical layout lacks valid checked access facts: {error}")
+            }
         }
     }
 }
@@ -114,7 +131,8 @@ impl std::error::Error for CanonicalLayoutError {}
 pub(crate) fn derive_layout_bundle(
     source: &CanonicalCheckedSource,
 ) -> Result<LayoutBundle, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(bundle, _, _, _)| bundle)
+    source.access_facts().map_err(|error| CanonicalLayoutError::InvalidCheckedAccessFacts(error.to_string()))?;
+    project_layouts(source)?.finish_with_families().map(|(bundle, _, _, _, _)| bundle)
 }
 
 /// The closure layout of every `fn` type the canonical functions reach: a
@@ -137,7 +155,7 @@ pub(crate) fn closure_layouts(
 pub(crate) fn closure_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, ClosureFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, families, _, _)| families)
+    project_layouts(source)?.finish_with_families().map(|(_, families, _, _, _)| families)
 }
 
 /// Derive every aggregate that must use the opaque-owner representation.
@@ -147,13 +165,19 @@ pub(crate) fn closure_families(
 pub(crate) fn opaque_aggregate_families(
     source: &CanonicalCheckedSource,
 ) -> Result<HashMap<Type, OpaqueAggregateFamilyLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, _, families, _)| families)
+    project_layouts(source)?.finish_with_families().map(|(_, _, families, _, _)| families)
 }
 
 pub(crate) fn shared_int_reference_layout(
     source: &CanonicalCheckedSource,
 ) -> Result<Option<SharedIntReferenceLayout>, CanonicalLayoutError> {
-    project_layouts(source)?.finish_with_families().map(|(_, _, _, shared)| shared)
+    project_layouts(source)?.finish_with_families().map(|(_, _, _, shared, _)| shared)
+}
+
+pub(crate) fn rooted_int_slice_layout(
+    source: &CanonicalCheckedSource,
+) -> Result<Option<RootedIntSliceLayout>, CanonicalLayoutError> {
+    project_layouts(source)?.finish_with_families().map(|(_, _, _, _, slice)| slice)
 }
 
 /// The identity of a `fn` type for closure purposes: the declared
@@ -271,6 +295,7 @@ fn project_layouts(
     let capture_variants = closure_capture_variants(source, &definitions)?;
     let mut projection = LayoutProjection {
         roots: Vec::new(),
+        rooted_int_slice_requested: false,
         definitions,
         closures: BTreeMap::new(),
         capture_variants,
@@ -333,6 +358,10 @@ fn project_layouts(
 #[derive(Default)]
 struct LayoutProjection {
     roots: Vec<Type>,
+    /// A rooted slice carrier is authority-bearing, unlike an ordinary
+    /// `List(Int)` layout. Only an explicit checked `&[Int]` source type may
+    /// request it; observing a list alone must never mint the owner family.
+    rooted_int_slice_requested: bool,
     definitions: BTreeMap<String, TypeDef>,
     /// Every `fn` type reached, keyed by its rendering, with its exact
     /// source-witness environment variants.
@@ -369,6 +398,13 @@ impl LayoutProjection {
                 | ast::Expr::Duration(_)
                 | ast::Expr::Bool(_)
                 | ast::Expr::Var(_) => Ok(()),
+                // A range used as an index is projection syntax, not a
+                // separately materialized list. The checker records its
+                // retained bounds and the enclosing index result, but
+                // deliberately gives this syntax-only node no table entry.
+                // A standalone range does have a checked result type and
+                // therefore cannot reach this arm.
+                ast::Expr::Range { .. } => Ok(()),
                 ast::Expr::Str(_) => self.visit_type(&Type::Named("String".into(), Vec::new())),
                 _ => Err(CanonicalLayoutError::MissingCheckedExpressionType(
                     format!("{expression:?}"),
@@ -378,6 +414,17 @@ impl LayoutProjection {
         let source_type = typeck::ty_to_ast(checked).ok_or_else(|| {
             CanonicalLayoutError::NonConcreteExpressionType(checked.to_string())
         })?;
+        // Type checking uses the private `Slice(T)` nominal identity for the
+        // result of a surface `&place[lo..hi]`.  Only the checked borrow
+        // expression may turn that internal identity into slice-carrier
+        // authority; later variable/method uses merely reuse the layout.
+        if matches!(expression, ast::Expr::Unary { op: ast::UnOp::Borrow, .. })
+            && rooted_slice_element(&source_type).is_some_and(|element| {
+                scalar_kind_of(element) == Some(ScalarKind::Int)
+            })
+        {
+            self.rooted_int_slice_requested = true;
+        }
         self.visit_type(&source_type)
     }
 
@@ -386,11 +433,25 @@ impl LayoutProjection {
         // identities. A direct shared scalar reference is the exception: it
         // requires an addressable scalar root even though the unqualified
         // scalar value itself is otherwise carried inline.
-        if let Type::Qualified(ast::TypeQual::Borrow(_), inner) = ty
+        if let Type::Qualified(ast::TypeQual::View | ast::TypeQual::Borrow(_), inner) = ty
             && scalar_kind_of(inner) == Some(ScalarKind::Int)
         {
             self.roots.push(inner.as_ref().clone());
             return Ok(());
+        }
+        if let Type::Qualified(ast::TypeQual::View, inner) = ty
+            && let Some(element) = rooted_slice_element(inner)
+        {
+            if scalar_kind_of(element) == Some(ScalarKind::Int) {
+                self.rooted_int_slice_requested = true;
+            }
+            return self.visit_type(&Type::Named("List".into(), vec![element.clone()]));
+        }
+        // `ty_to_ast` preserves the checker's private `Slice(T)` identity as a
+        // nominal. It is storage backed by `List(T)`, never an independently
+        // constructible public source type and never authority by itself.
+        if let Some(element) = rooted_slice_element(ty) {
+            return self.visit_type(&Type::Named("List".into(), vec![element.clone()]));
         }
         let key = canonical_layout_type(ty, &self.definitions);
         if self.visited.contains(&key) || !self.visiting.insert(key.clone()) {
@@ -512,7 +573,7 @@ impl LayoutProjection {
     }
 
     fn finish(self) -> Result<LayoutBundle, CanonicalLayoutError> {
-        self.finish_with_families().map(|(bundle, _, _, _)| bundle)
+        self.finish_with_families().map(|(bundle, _, _, _, _)| bundle)
     }
 
     fn finish_with_families(self) -> Result<(
@@ -520,6 +581,7 @@ impl LayoutProjection {
         HashMap<Type, ClosureFamilyLayout>,
         HashMap<Type, OpaqueAggregateFamilyLayout>,
         Option<SharedIntReferenceLayout>,
+        Option<RootedIntSliceLayout>,
     ), CanonicalLayoutError> {
         let mut interner = LayoutInterner::new();
         let mut roots = BTreeSet::new();
@@ -707,6 +769,31 @@ impl LayoutProjection {
         } else {
             None
         };
+        let rooted_int_slice = if self.rooted_int_slice_requested {
+            let scalar_type = Type::Named("Int".into(), Vec::new());
+            let list_type = Type::Named("List".into(), vec![scalar_type]);
+            if self.roots.iter().any(|ty| canonical_layout_type(ty, &self.definitions) == list_type) {
+                let list_root = intern_v1_layout(
+                    &mut interner, &list_type, &self.definitions, &recursive_types, &closure_layouts,
+                )?;
+                let tag = interner.intern_scalar(ScalarKind::Int)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                let root = interner.intern_runtime_pointer_value_slot(list_root, PointerSlot::OwnedNullable)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                let start = interner.intern_scalar(ScalarKind::U32)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                let length = interner.intern_scalar(ScalarKind::U32)
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                let environment = interner.intern_packed_record(vec![tag, root, start, length])
+                    .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
+                roots.insert(environment);
+                Some(RootedIntSliceLayout { environment, list_root })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut families = HashMap::new();
         for (signature, variants) in closure_specs {
             let environment = closure_environments[&signature];
@@ -752,7 +839,17 @@ impl LayoutProjection {
         }
         let bundle = LayoutBundle::from_interner(&interner, roots)
             .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?;
-        Ok((bundle, families, aggregate_families, shared_int_reference))
+        Ok((bundle, families, aggregate_families, shared_int_reference, rooted_int_slice))
+    }
+}
+
+fn rooted_slice_element(ty: &Type) -> Option<&Type> {
+    match ty.unqualified() {
+        Type::Slice(element) => Some(element),
+        Type::Named(name, arguments) if name == "Slice" && arguments.len() == 1 => {
+            Some(&arguments[0])
+        }
+        _ => None,
     }
 }
 
@@ -763,6 +860,17 @@ fn type_requires_opaque_owner(
     opaque_aggregates: &HashSet<Type>,
     visiting: &mut HashSet<Type>,
 ) -> bool {
+    // A canonical rooted view is an authenticated GC owner for its backing
+    // root plus projection.  It cannot occupy an ordinary aggregate's linear
+    // field: doing so would erase the retained-root contract.  Keep this
+    // deliberately to the installed direct `&Int` carrier; other view
+    // payloads remain outside canonical v1.
+    if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
+        if matches!(inner.unqualified(), Type::Named(name, arguments)
+            if name == "Int" && arguments.is_empty()))
+    {
+        return true;
+    }
     if witchy_types::canonical_capabilities::representation(ty, definitions).is_some() {
         return true;
     }
@@ -875,6 +983,12 @@ fn opaque_owner_type_for(
     closure_owner_types: &HashMap<Type, GcTypeId>,
     aggregate_owner_types: &HashMap<Type, GcTypeId>,
 ) -> Option<GcTypeId> {
+    if matches!(ty, Type::Qualified(ast::TypeQual::View, inner)
+        if matches!(inner.unqualified(), Type::Named(name, arguments)
+            if name == "Int" && arguments.is_empty()))
+    {
+        return Some(shared_int_reference_owner_type());
+    }
     if matches!(ty.unqualified(), Type::Fn(..)) {
         return closure_owner_types.get(&canonical_closure_key(ty, definitions)).copied();
     }
@@ -1040,9 +1154,15 @@ fn intern_v1_layout_fields(
         && name == "List"
         && arguments.len() == 1
     {
-        let element = intern_v1_layout_checked(
-            interner, &arguments[0], definitions, recursive_types, active, closure_layouts,
-        )?;
+        let element = if let Some(scalar) = scalar_kind_of(&arguments[0]) {
+            interner
+                .intern_scalar(scalar)
+                .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?
+        } else {
+            intern_v1_layout_checked(
+                interner, &arguments[0], definitions, recursive_types, active, closure_layouts,
+            )?
+        };
         let element = if !is_scalar_type(&arguments[0]) {
             interner
                 .intern_runtime_pointer_value_slot(element, PointerSlot::Owned)
@@ -1140,7 +1260,7 @@ pub(crate) fn recursive_nominal_layout_id_for_shape(
 /// become one `main.Stack(Int)` node before cycle detection or nominal hashing.
 /// Non-aggregate types retain their checked structural spelling.
 fn canonical_layout_type(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Type {
-    concrete_aggregate_identity(ty, definitions).unwrap_or_else(|| ty.unqualified().clone())
+    canonical_owner_aggregate_identity(ty, definitions).unwrap_or_else(|| ty.unqualified().clone())
 }
 
 /// Find the reachable user-defined heap types that are actually on a source
@@ -1253,6 +1373,11 @@ fn intern_dictionary_slot(
 
 fn scalar_kind_of(ty: &Type) -> Option<ScalarKind> {
     match ty.unqualified() {
+        // The parser/type checker retain `()` as an empty tuple, while the
+        // canonical value ABI carries it as Unit. Closure and aggregate
+        // environments must use that same scalar lane rather than a distinct
+        // zero-field record layout.
+        Type::Tuple(items) if items.is_empty() => Some(ScalarKind::Unit),
         Type::Named(name, arguments) if arguments.is_empty() => match name.as_str() {
             "Int" => Some(ScalarKind::Int),
             "Float" => Some(ScalarKind::Float),
@@ -1388,7 +1513,7 @@ mod tests {
     use super::{LayoutProjection, Type};
     use witchy_syntax::ast::{CallableQualifiers, Convention, TypeDef, Variant};
     use witchy_wir::canonical_safewir::closure_owner_contract::CaptureStorage;
-    use witchy_wir::layout::{HeaderLayout, LayoutKind, PointerSlot, RcHeader};
+    use witchy_wir::layout::{HeaderLayout, LayoutKind, PointerSlot, RcHeader, ScalarKind};
 
     fn named(name: &str) -> Type {
         Type::Named(name.to_owned(), Vec::new())
@@ -1444,6 +1569,28 @@ mod tests {
         assert_eq!(error, super::CanonicalLayoutError::MissingCheckedExpressionType(format!("{child:?}")));
     }
 
+    #[test]
+    fn rooted_int_slice_layout_requires_explicit_view_slice_request() {
+        let list = Type::Named("List".into(), vec![named("Int")]);
+        let mut ordinary = LayoutProjection::default();
+        ordinary.visit_type(&list).expect("ordinary List(Int) projects");
+        let (_, _, _, _, slice) = ordinary.finish_with_families()
+            .expect("ordinary List(Int) catalog finishes");
+        assert!(slice.is_none(), "an owned List(Int) must not mint a rooted-slice family");
+
+        let view_slice = Type::Qualified(
+            witchy_syntax::ast::TypeQual::View,
+            Box::new(Type::Slice(Box::new(named("Int")))),
+        );
+        let mut explicit = LayoutProjection::default();
+        explicit.visit_type(&view_slice).expect("explicit &[Int] projects");
+        let (bundle, _, _, _, slice) = explicit.finish_with_families()
+            .expect("explicit &[Int] catalog finishes");
+        let slice = slice.expect("only explicit &[Int] mints the rooted-slice layout");
+        assert!(bundle.roots().contains(&slice.environment));
+        assert!(bundle.roots().contains(&slice.list_root));
+    }
+
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
         let mut definition = witchy_types::canonical_aggregates::ScalarAggregateShape {
             name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false,
@@ -1491,7 +1638,7 @@ mod tests {
         for root in roots {
             projection.visit_type(root).expect("opaque aggregate source projects");
         }
-        let (bundle, _, families, _) = projection.finish_with_families()
+        let (bundle, _, families, _, _) = projection.finish_with_families()
             .expect("opaque aggregate layouts finish");
         (bundle, families)
     }
@@ -1516,11 +1663,11 @@ mod tests {
             AuthenticatedModuleOwners::from_loader_assignments(owners).unwrap(),
         ).expect("the actual Task<Tuple> source checks");
         let tuple = Type::Tuple(vec![
-            Type::Named("List".into(), vec![Type::Named("task.Task".into(), vec![named("Nil")])]),
+            Type::Named("List".into(), vec![Type::Named("task.Task".into(), vec![Type::Tuple(Vec::new())])]),
             Type::Named("List".into(), vec![Type::Named("chan.Receiver".into(), vec![named("Int")])]),
         ]);
         let task = Type::Named("task.Task".into(), vec![tuple.clone()]);
-        let (bundle, _, families, _) = super::project_layouts(checked.canonical_source().unwrap())
+        let (bundle, _, families, _, _) = super::project_layouts(checked.canonical_source().unwrap())
             .expect("exact checked Task<Tuple> layouts project")
             .finish_with_families().expect("exact checked catalog finishes");
         let tuple_family = families.get(&tuple).expect("exact concrete tuple owner identity");
@@ -1574,7 +1721,7 @@ mod tests {
         projection.capture_variants.insert(callback_key, vec![(7, vec![named("Console")])]);
         projection.visit_type(&named("Task")).expect("Task reaches its callback family");
 
-        let (_, closures, aggregates, _) = projection.finish_with_families()
+        let (_, closures, aggregates, _, _) = projection.finish_with_families()
             .expect("Task-like family projects");
         assert!(closures.values().any(|family| family.owner_type.is_some()));
         let task = &aggregates[&named("Task")];
@@ -1583,6 +1730,34 @@ mod tests {
         assert_eq!(task.variants[0].storage, vec![CaptureStorage::OwnerField(2)]);
         assert_eq!(task.variants[0].environment_tag, 0);
         assert_eq!(task.variants[1].environment_tag, 1);
+    }
+
+    #[test]
+    fn closure_environment_uses_unit_scalar_for_empty_tuple_capture() {
+        let unit = Type::Tuple(Vec::new());
+        let callback = Type::Fn(
+            Vec::new(),
+            Box::new(unit.clone()),
+            Vec::new(),
+            CallableQualifiers::default(),
+        );
+        let mut projection = LayoutProjection::default();
+        let key = super::canonical_closure_key(&callback, &projection.definitions);
+        projection.capture_variants.insert(key.clone(), vec![(7, vec![unit])]);
+        projection.visit_type(&callback).expect("Unit-capturing closure projects");
+
+        let (bundle, closures, _, _, _) = projection.finish_with_families()
+            .expect("Unit-capturing closure layout finishes");
+        let family = &closures[&key];
+        assert_eq!(family.variants[1].storage, vec![CaptureStorage::EnvironmentField(1)]);
+        let (_, layouts) = witchy_wir::layout::LayoutBundle::decode_canonical(&bundle.canonical_bytes())
+            .expect("closure environment catalog decodes");
+        let body = layouts.nominal_target(family.environment).expect("closure environment is bound");
+        let LayoutKind::PackedRecord { fields } = layouts.get(body).expect("environment descriptor").kind() else {
+            panic!("closure environment is a packed record");
+        };
+        assert!(matches!(layouts.get(fields[1]).expect("Unit capture field").kind(),
+            LayoutKind::Scalar(ScalarKind::Unit)));
     }
 
     #[test]
@@ -1636,7 +1811,7 @@ mod tests {
 
         let mut projection = LayoutProjection::default();
         projection.visit_type(&named("Console")).unwrap();
-        let (bundle, closures, aggregates, _) = projection.finish_with_families().unwrap();
+        let (bundle, closures, aggregates, _, _) = projection.finish_with_families().unwrap();
         assert!(bundle.roots().is_empty(), "a direct capability projects no linear root");
         assert!(closures.is_empty() && aggregates.is_empty());
 
@@ -1683,7 +1858,7 @@ mod tests {
     #[test]
     fn public_projection_is_derived_from_checked_source() {
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![("main".into(), b"type HeldConsole:\n    console: Console\n\nfn use(value: HeldConsole) -> Nil:\n    Nil\n\nfn main(console: Console):\n    use(HeldConsole(console))\n".to_vec())],
+            vec![("main".into(), b"type HeldConsole:\n    console: Console\n\nfn use(value: HeldConsole) -> ():\n    ()\n\nfn main(console: Console):\n    use(HeldConsole(console))\n".to_vec())],
             "main",
             |_, _, _| Ok(Default::default()),
         ).expect("source checks");

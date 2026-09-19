@@ -1107,7 +1107,7 @@ fn check_rejects_programs_the_compiled_backend_cannot_accept() {
     let bad = write(
         &dir,
         "dict_record_key.witchy",
-        "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, console, \"one\")\n    console.print(\"${dict.length(d)}\")\n",
+        "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, console, \"one\")\n    console.print(\"${dict.length(d)}\")\n",
     );
     let out = run(&["check", &bad]);
     assert!(!out.status.success(), "check must fail for a compiled-backend reject");
@@ -1159,7 +1159,7 @@ fn async_and_gen_tests_do_not_silently_pass() {
     write(
         &dir,
         "a.witchy",
-        "import iter\nimport testing\nasync fn test_async_fails() -> Nil:\n    testing.fail_with(\"boom\")\ngen fn test_gen() -> Iter(Int):\n    yield 1\n",
+        "import iter\nimport testing\nasync fn test_async_fails() -> ():\n    testing.fail_with(\"boom\")\ngen fn test_gen() -> Iter(Int):\n    yield 1\n",
     );
     let out = run(&["test", dir.to_str().unwrap()]);
     assert!(!out.status.success(), "the failing async test must fail the run");
@@ -1172,13 +1172,13 @@ fn async_and_gen_tests_do_not_silently_pass() {
 
 #[test]
 fn caps_counts_comptime_emitted_apis() {
-    // BUG-178: a `comptime:` block that emits `pub fn generated(net: Net)` adds a
-    // real capability-bearing API to the footprint.
+    // BUG-178: a `comptime:` block that generates `pub fn generated(net: Net)`
+    // adds a real capability-bearing API to the footprint.
     let dir = workdir("caps-comptime");
     let src = write(
         &dir,
         "c.witchy",
-        "comptime:\n    emit(\"pub fn generated(net: Net, addr: String) -> String:\")\n    emit(\"    net.connect(addr).recv_all()\")\n\nfn main(console: Console):\n    console.print(\"hi\")\n",
+        "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net, addr: String) -> String:\n            net.connect(addr).recv_all()\n    )\n\nfn main(console: Console):\n    console.print(\"hi\")\n",
     );
     let out = run(&["caps", &src]);
     assert!(out.status.success(), "caps should succeed: {}", String::from_utf8_lossy(&out.stderr));
@@ -1194,7 +1194,7 @@ fn doc_counts_comptime_emitted_apis() {
     let src = write(
         &dir,
         "d.witchy",
-        "comptime:\n    emit(\"pub fn generated(net: Net) -> Int:\")\n    emit(\"    7\")\n\npub fn direct() -> Int:\n    0\n",
+        "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net) -> Int:\n            7\n    )\n\npub fn direct() -> Int:\n    0\n",
     );
     let out = run(&["doc", &src]);
     assert!(out.status.success(), "doc should succeed: {}", String::from_utf8_lossy(&out.stderr));

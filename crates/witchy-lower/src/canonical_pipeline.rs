@@ -248,6 +248,108 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn root_unique_own_return_survives_early_and_tail_paths_on_both_modes() {
+        for (mode, return_now) in [("normal", true), ("normal", false), ("opt", true), ("opt", false)] {
+            let source = format!(
+                "{mode_prefix}fn early(own values: unique List(Int), return_now: Bool) -> unique List(Int):\n    if return_now:\n        return values\n    values\n\nfn main() -> Int:\n    let values: unique List(Int) = [1]\n    let result = early(values, {return_now})\n    result[0]\n",
+                mode_prefix = if mode == "opt" { "mode opt\n\n" } else { "" },
+            );
+            let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+                vec![("main".to_string(), source.into_bytes())],
+                "main",
+                |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            )
+            .unwrap_or_else(|error| panic!("{mode} {return_now} checked root unique return: {error}"));
+            let (artifact, interpreted) = admit_checked_module_with_observer(&checked, |validated, artifact| {
+                let entry = artifact.entry().expect("checked main entry").export();
+                let function = witchy_wir::canonical_safewir::FunctionId::new(
+                    entry.strip_prefix('f').expect("canonical function export")
+                        .parse().expect("canonical function id"),
+                );
+                witchy_wir::canonical_interpreter::interpret_entry_program(
+                    validated,
+                    function,
+                    Vec::new(),
+                    &[],
+                    witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+                )
+                .unwrap_or_else(|error| panic!("{mode} {return_now} interpret admitted root unique return: {error}"))
+            })
+            .unwrap_or_else(|error| panic!("{mode} {return_now} admit root unique return: {error}"));
+            assert_eq!(
+                interpreted.results,
+                vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(1)],
+                "{mode} {return_now} admitted canonical interpreter",
+            );
+            assert_eq!(interpreted.leaked_objects, 0, "{mode} {return_now} interpreter leaks");
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm())
+                .unwrap_or_else(|error| panic!("{mode} {return_now} compile canonical Wasm: {error}"));
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = fixture_diagnostic_linker(&engine)
+                .instantiate(&mut store, &module)
+                .unwrap_or_else(|error| panic!("{mode} {return_now} instantiate canonical Wasm: {error}"));
+            let entry = artifact.entry().expect("checked main entry").export();
+            let main = instance
+                .get_typed_func::<(), i64>(&mut store, entry)
+                .expect("typed root unique entry");
+            assert_eq!(
+                main.call(&mut store, ()).expect("run root unique entry"),
+                1,
+                "{mode} {return_now} admitted canonical Wasm",
+            );
+        }
+    }
+
+    #[test]
+    fn console_root_unique_own_early_return_reaches_canonical_admission() {
+        for mode_prefix in ["", "mode opt\n\n"] {
+            let source = format!(
+                "{mode_prefix}fn early(own values: unique List(Int), return_now: Bool) -> unique List(Int):\n    if return_now:\n        return values\n    values\n\nfn main(console: Console):\n    let values: unique List(Int) = [1]\n    let result = early(values, true)\n    console.print(\"${{result[0]}}\")\n",
+            );
+            let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+                vec![("main".to_string(), source.into_bytes())],
+                "main",
+                |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            )
+            .expect("checked Console root unique early return");
+            admit_checked_module(&checked)
+                .expect("the original Console-shaped root unique early return reaches canonical admission");
+        }
+    }
+
+    #[test]
+    fn root_unique_scalar_owner_reaches_admitted_artifact_execution() {
+        let source = "fn round_trip(own value: unique Int) -> unique Int:\n    value\n\nfn main() -> Int:\n    let value: unique Int = 41\n    let result = round_trip(value)\n    result + 1\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked root unique scalar source");
+        let artifact = crate::codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("production root unique scalar artifact admits");
+        let bytes = crate::codegen::compile_checked_module_binary(&checked)
+            .expect_lowered("production root unique scalar entry emits Wasm");
+        assert_eq!(bytes, artifact.wasm());
+
+        wasmparser::validate(&bytes).expect("root unique scalar artifact remains valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &bytes)
+            .expect("compile admitted root unique scalar artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine)
+            .instantiate(&mut store, &module)
+            .expect("instantiate admitted root unique scalar artifact");
+        let entry = artifact.entry().expect("root unique scalar main entry").export();
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, entry)
+            .expect("canonical root unique scalar main export");
+        assert_eq!(main.call(&mut store, ()).expect("run root unique scalar artifact"), 42);
+    }
+
+    #[test]
     fn normal_caller_prepares_owned_value_for_opt_export_without_changing_value_semantics() {
         let api = "mode opt\n\npub fn append(own values: List(Int), value: Int) -> List(Int):\n    values.push(value)\n    values\n";
         let main = "import api\n\nfn main() -> Int:\n    let values = [1, 2]\n    let before = values[0]\n    let extended = api.append(values, 3)\n    extended.length() * 10 + before\n";
@@ -280,6 +382,116 @@ pub(crate) mod tests {
             31,
             "the opt callee receives the owned value while the caller retains only a copied observation"
         );
+    }
+
+    #[test]
+    fn unique_var_write_back_and_fresh_result_keep_separate_owner_lanes() {
+        let worker = "mode opt\n\npub fn split(var values: unique List(Int)) -> unique List(Int):\n    values[0] = 9\n    [7]\n";
+        let api = "mode opt\n\nimport worker\n\npub fn relay(var values: unique List(Int)) -> unique List(Int):\n    worker.split(values)\n";
+        let normal_main = "import api\n\nfn main() -> Int:\n    var values: unique List(Int) = [1]\n    let result = api.relay(values)\n    values[0] * 10 + result[0]\n";
+        let intra_opt = "mode opt\n\nfn split(var values: unique List(Int)) -> unique List(Int):\n    values[0] = 9\n    [7]\n\nfn relay(var values: unique List(Int)) -> unique List(Int):\n    split(values)\n\nfn main() -> Int:\n    var values: unique List(Int) = [1]\n    let result = relay(values)\n    values[0] * 10 + result[0]\n";
+
+        for (label, sources) in [
+            (
+                "normal-to-opt-to-opt",
+                vec![("worker", worker), ("api", api), ("main", normal_main)],
+            ),
+            ("intra-opt", vec![("main", intra_opt)]),
+        ] {
+            let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+                sources
+                    .into_iter()
+                    .map(|(name, source)| (name.to_owned(), source.as_bytes().to_vec()))
+                    .collect(),
+                "main",
+                |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            )
+            .unwrap_or_else(|error| panic!("{label} source checks: {error}"));
+            let (artifact, interpreted) = admit_checked_module_with_observer(&checked, |validated, artifact| {
+                let entry = artifact.entry().expect("checked main entry").export();
+                let function = witchy_wir::canonical_safewir::FunctionId::new(
+                    entry.strip_prefix('f').expect("canonical function export")
+                        .parse().expect("canonical function id"),
+                );
+                witchy_wir::canonical_interpreter::interpret_entry_program(
+                    validated,
+                    function,
+                    Vec::new(),
+                    &[],
+                    witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+                )
+                .unwrap_or_else(|error| panic!("{label} canonical interpreter: {error}"))
+            })
+            .unwrap_or_else(|error| panic!("{label} canonical admission: {error}"));
+            assert_eq!(
+                interpreted.results,
+                vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(97)],
+                "{label} keeps the fresh result separate from write-back",
+            );
+            assert_eq!(interpreted.leaked_objects, 0, "{label} interpreter leaks");
+
+            wasmparser::validate(artifact.wasm())
+                .unwrap_or_else(|error| panic!("{label} admitted Wasm validates: {error}"));
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm())
+                .unwrap_or_else(|error| panic!("{label} compile admitted Wasm: {error}"));
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = fixture_diagnostic_linker(&engine)
+                .instantiate(&mut store, &module)
+                .unwrap_or_else(|error| panic!("{label} instantiate admitted Wasm: {error}"));
+            let entry = artifact.entry().expect("checked main entry").export();
+            let main = instance
+                .get_typed_func::<(), i64>(&mut store, entry)
+                .expect("typed unique write-back main entry");
+            assert_eq!(main.call(&mut store, ()).expect("run admitted Wasm"), 97, "{label} Wasm");
+        }
+    }
+
+    #[test]
+    fn result_unique_ok_carrier_keeps_the_wrapper_and_write_back_unique() {
+        for (succeed, expected) in [(true, 97), (false, 90)] {
+            let source = format!(
+                "mode opt\n\nfn split(var values: unique List(Int), succeed: Bool) -> Result(unique List(Int), String):\n    values[0] = 9\n    if succeed:\n        return Ok([7])\n    Err(\"no result\")\n\nfn main() -> Int:\n    var values: unique List(Int) = [1]\n    match split(values, {succeed}):\n        Ok(result) -> values[0] * 10 + result[0]\n        Err(_) -> values[0] * 10\n"
+            );
+            let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+                vec![("main".to_owned(), source.into_bytes())],
+                "main",
+                |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            )
+            .unwrap_or_else(|error| panic!("Result unique {succeed} source checks: {error}"));
+            let (artifact, interpreted) = admit_checked_module_with_observer(&checked, |validated, artifact| {
+                let entry = artifact.entry().expect("checked main entry").export();
+                let function = witchy_wir::canonical_safewir::FunctionId::new(
+                    entry.strip_prefix('f').expect("canonical function export")
+                        .parse().expect("canonical function id"),
+                );
+                witchy_wir::canonical_interpreter::interpret_entry_program(
+                    validated, function, Vec::new(), &[],
+                    witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+                )
+                .unwrap_or_else(|error| panic!("Result unique {succeed} interpreter: {error}"))
+            })
+            .unwrap_or_else(|error| panic!("Result unique {succeed} admission: {error}"));
+            assert_eq!(
+                interpreted.results,
+                vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(expected)],
+                "Result unique {succeed} interpreter",
+            );
+            assert_eq!(interpreted.leaked_objects, 0, "Result unique {succeed} interpreter leaks");
+
+            wasmparser::validate(artifact.wasm()).expect("Result unique admitted Wasm validates");
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm())
+                .expect("compile Result unique admitted Wasm");
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = fixture_diagnostic_linker(&engine)
+                .instantiate(&mut store, &module)
+                .expect("instantiate Result unique admitted Wasm");
+            let entry = artifact.entry().expect("checked main entry").export();
+            let main = instance.get_typed_func::<(), i64>(&mut store, entry)
+                .expect("typed Result unique main entry");
+            assert_eq!(main.call(&mut store, ()).expect("run Result unique Wasm"), expected);
+        }
     }
 
     #[test]
@@ -712,10 +924,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn unit_var_list_push_reallocates_the_write_back_result() {
+        let source = "fn mutate_values(var xs: List(Int)):\n    xs.push(42)\n\nfn main() -> Int:\n    var xs = [1]\n    mutate_values(xs)\n    xs[1]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked unit var List push source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit unit var List push artifact");
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile unit var List push artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine)
+            .instantiate(&mut store, &module)
+            .expect("instantiate unit var List push artifact");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f1")
+            .expect("canonical unit var List push main export");
+        assert_eq!(main.call(&mut store, ()).expect("run unit var List push main"), 42);
+    }
+
+    #[test]
+    fn mixed_var_list_write_back_origins_fail_closed() {
+        let source = "fn maybe_push(flag: Bool, var xs: List(Int)):\n    if flag:\n        xs.push(42)\n\nfn main() -> Int:\n    var xs = [1]\n    maybe_push(false, xs)\n    xs[0]\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked mixed var List write-back source");
+        assert!(
+            admit_checked_module(&checked).is_err(),
+            "a branch that can return either the entry token or a fresh replacement must not acquire a reallocation contract",
+        );
+    }
+
+    #[test]
     fn branch_local_list_headers_do_not_escape_to_other_writeback_edges() {
         for body in [
-            "    match flag:\n        true ->\n            let first = xs[0]\n            xs = [first + 41]\n        false -> Nil\n",
-            "    if flag:\n        let first = xs[0]\n        xs = [first + 41]\n    else:\n        Nil\n",
+            "    match flag:\n        true ->\n            let first = xs[0]\n            xs = [first + 41]\n        false -> ()\n",
+            "    if flag:\n        let first = xs[0]\n        xs = [first + 41]\n    else:\n        ()\n",
         ] {
             let source = format!("fn update(flag: Bool, var xs: List(Int)):\n{body}\nfn main() -> Int:\n    var a = [1]\n    var b = [2]\n    update(true, a)\n    update(false, b)\n    a[0] + b[0]\n");
             let checked = witchy_types::pipeline::link_checked_from_source_bundle(
@@ -827,19 +1079,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn indirect_var_list_replacements_preserve_caller_aliases() {
+    fn indirect_var_list_callable_is_rejected_until_aggregate_write_back_is_supported() {
         let source = "fn replace(var xs: List(Int), var ys: List(Int)) -> Bool:\n    xs = [42]\n    ys = [7]\n    true\nfn apply(f: fn(var List(Int), var List(Int)) -> Bool, var xs: List(Int), var ys: List(Int)) -> Bool:\n    let changed = f(xs, ys)\n    changed\nfn main() -> Int:\n    var xs = [1]\n    var ys = [2]\n    let old = xs\n    let changed = apply(replace, xs, ys)\n    if changed: old[0] * 100 + xs[0] + ys[0] else: 0\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
             "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).expect("checked indirect var replacements");
-        let artifact = admit_checked_module(&checked).expect("admit indirect var replacements");
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect var replacements");
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate indirect var replacements");
-        let main = instance.get_typed_func::<(), i64>(&mut store, "f2").expect("var replacements main");
-        assert_eq!(main.call(&mut store, ()).expect("run var replacements"), 149);
+        let error = match admit_checked_module(&checked) {
+            Ok(_) => panic!("indirect aggregate var write-back remains outside the admitted RFC-0167 subset"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("UnsupportedIndirectCall"),
+            "the unsupported aggregate callable must fail closed, got {error:?}"
+        );
     }
 
     #[test]
@@ -1075,6 +1328,32 @@ pub(crate) mod tests {
             .expect("canonical main export");
 
         assert_eq!(main.call(&mut store, ()).expect("run canonical main"), 20);
+    }
+
+    #[test]
+    fn anonymous_union_try_widening_reaches_admitted_execution() {
+        // `ParseErr` is a proper subset of `LoadErr`. The `?` must rebuild
+        // the checked destination union rather than treat incompatible
+        // physical aggregate layouts as one `Ref` value.
+        let source = "type ParseErr = .[BadPort(Int) | Missing(String)]\ntype LoadErr = .[NotFound | BadPort(Int) | Missing(String)]\n\nfn parse(kind: Int) -> Result(Int, ParseErr):\n    if kind == 0:\n        Ok(7)\n    else if kind == 1:\n        Err(.BadPort(42))\n    else:\n        Err(.Missing(\"port\"))\n\nfn load(kind: Int) -> Result(Int, LoadErr):\n    let value = parse(kind)?\n    Ok(value)\n\nfn main() -> Int:\n    match load(1):\n        Ok(value) -> value\n        Err(.NotFound) -> -1\n        Err(.BadPort(port)) -> port\n        Err(.Missing(_)) -> -2\n";
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        )
+        .expect("checked anonymous-union widening source");
+        let artifact = admit_checked_module(&checked)
+            .expect("admit canonical anonymous-union widening artifact");
+        wasmparser::validate(artifact.wasm()).expect("anonymous-union artifact is valid Wasm");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm())
+            .expect("compile admitted anonymous-union artifact");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine).instantiate(&mut store, &module)
+            .expect("instantiate anonymous-union artifact");
+        let main = instance.get_typed_func::<(), i64>(&mut store, "f2")
+            .expect("anonymous-union main export");
+        assert_eq!(main.call(&mut store, ()).expect("run anonymous-union main"), 42);
     }
 
     #[test]
@@ -1647,22 +1926,92 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn normal_opt_opt_var_unique_chain_reaches_admitted_execution() {
-        let worker = "mode opt\n\npub fn append(var values: unique List(Int), value: Int) -> Nil:\n    values.push(value)\n";
-        let api = "mode opt\n\nimport worker\n\npub fn extend(var values: unique List(Int), value: Int) -> Nil:\n    worker.append(values, value)\n";
+    fn normal_opt_opt_var_unique_direct_and_indirect_chains_reach_admitted_execution() {
+        let worker = "mode opt\n\npub fn append(var values: unique List(Int), value: Int) -> ():\n    values.push(value)\n";
         let main = "import api\n\nfn main() -> Int:\n    var values = [1, 2]\n    let snapshot = values\n    api.extend(values, 3)\n    values.length() * 100 + snapshot.length() * 10 + values[2]\n";
+        for (route, api) in [
+            (
+                "direct",
+                "mode opt\n\nimport worker\n\npub fn extend(var values: unique List(Int), value: Int) -> ():\n    worker.append(values, value)\n",
+            ),
+            (
+                "indirect",
+                "mode opt\n\nimport worker\n\npub fn extend(var values: unique List(Int), value: Int) -> ():\n    let append = worker.append\n    append(values, value)\n",
+            ),
+        ] {
+            let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+                vec![
+                    ("worker".to_string(), worker.as_bytes().to_vec()),
+                    ("api".to_string(), api.as_bytes().to_vec()),
+                    ("main".to_string(), main.as_bytes().to_vec()),
+                ],
+                "main",
+                |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+            )
+            .expect("checked normal -> opt -> opt var unique source");
+            crate::analysis::try_module_no_copy_misses(checked.module())
+                .expect("checked ownership facts survive the linked graph");
+            let (artifact, interpreted) = admit_checked_module_with_observer(
+                &checked,
+                |validated, artifact| {
+                    let entry = artifact.entry().expect("checked main entry").export();
+                    let function = witchy_wir::canonical_safewir::FunctionId::new(
+                        entry.strip_prefix('f').expect("canonical function export")
+                            .parse().expect("canonical function id"),
+                    );
+                    witchy_wir::canonical_interpreter::interpret_entry_program(
+                        validated,
+                        function,
+                        Vec::new(),
+                        &[],
+                        witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+                    )
+                    .expect("interpret admitted var unique graph")
+                },
+            )
+            .expect("admit normal -> opt -> opt var unique artifact");
+            assert_eq!(
+                interpreted.results,
+                vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(323)],
+                "{route} normal -> opt -> opt chain",
+            );
+            assert_eq!(
+                interpreted.leaked_objects,
+                0,
+                "{route} chain leaks no heap objects"
+            );
+
+            let engine = wasmtime::Engine::default();
+            let module = wasmtime::Module::new(&engine, artifact.wasm())
+                .expect("compile admitted var unique artifact");
+            let mut store = wasmtime::Store::new(&engine, ());
+            let instance = fixture_diagnostic_linker(&engine)
+                .instantiate(&mut store, &module)
+                .expect("instantiate admitted var unique artifact");
+            let entry = artifact.entry().expect("checked main entry").export();
+            let main = instance
+                .get_typed_func::<(), i64>(&mut store, entry)
+                .expect("typed var unique entry");
+            assert_eq!(
+                main.call(&mut store, ()).expect("run var unique entry"),
+                323,
+                "{route} canonical Wasm"
+            );
+        }
+    }
+
+    /// A normal relay may call a `var unique` worker through the ordinary
+    /// copy-repair boundary. This is deliberately direct: it distinguishes the
+    /// normal relay contract from the eta-expanded opt function-value route.
+    #[test]
+    fn normal_relay_to_var_unique_worker_reaches_admitted_execution() {
+        let source = "fn update(var xs: unique List(Int)) -> ():\n    xs.push(3)\n\nfn relay(var xs: List(Int)) -> ():\n    update(xs)\n\nfn main() -> Int:\n    var values = [1, 2]\n    let snapshot = values\n    relay(values)\n    values.length() * 100 + snapshot.length() * 10 + values[2]\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
-            vec![
-                ("worker".to_string(), worker.as_bytes().to_vec()),
-                ("api".to_string(), api.as_bytes().to_vec()),
-                ("main".to_string(), main.as_bytes().to_vec()),
-            ],
+            vec![("main".to_string(), source.as_bytes().to_vec())],
             "main",
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
-        .expect("checked normal -> opt -> opt var unique source");
-        crate::analysis::try_module_no_copy_misses(checked.module())
-            .expect("checked ownership facts survive the linked graph");
+        .expect("checked normal relay to var unique worker");
         let (artifact, interpreted) = admit_checked_module_with_observer(
             &checked,
             |validated, artifact| {
@@ -1678,28 +2027,53 @@ pub(crate) mod tests {
                     &[],
                     witchy_wir::canonical_interpreter::InterpreterConfig::default(),
                 )
-                .expect("interpret admitted var unique graph")
+                .expect("interpret admitted normal relay graph")
             },
         )
-        .expect("admit normal -> opt -> opt var unique artifact");
+        .expect("admit normal relay through var unique repair");
         assert_eq!(
             interpreted.results,
             vec![witchy_wir::canonical_interpreter::InterpreterValue::Int(323)],
+            "normal relay canonical interpreter"
         );
-        assert_eq!(interpreted.leaked_objects, 0);
-
+        assert_eq!(
+            interpreted.leaked_objects,
+            0,
+            "normal relay leaks no heap objects"
+        );
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, artifact.wasm())
-            .expect("compile admitted var unique artifact");
+            .expect("compile admitted normal relay artifact");
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = fixture_diagnostic_linker(&engine)
             .instantiate(&mut store, &module)
-            .expect("instantiate admitted var unique artifact");
+            .expect("instantiate admitted normal relay artifact");
         let entry = artifact.entry().expect("checked main entry").export();
         let main = instance
             .get_typed_func::<(), i64>(&mut store, entry)
-            .expect("typed var unique entry");
-        assert_eq!(main.call(&mut store, ()).expect("run var unique entry"), 323);
+            .expect("typed normal relay entry");
+        assert_eq!(
+            main.call(&mut store, ()).expect("run normal relay entry"),
+            323,
+            "normal relay preserves copy-correct write-back"
+        );
+    }
+
+    #[test]
+    fn shared_callable_cannot_satisfy_unique_function_value_contract() {
+        let source = "mode opt\n\nfn shared(var values: List(Int), value: Int) -> ():\n    values.push(value)\n\nfn apply(callback: fn(var unique List(Int), Int) -> (), var values: unique List(Int)) -> ():\n    callback(values, 3)\n\nfn main() -> Int:\n    var values: unique List(Int) = [1, 2]\n    apply(shared, values)\n    values.length()\n";
+        let error = match witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_string(), source.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ) {
+            Ok(_) => panic!("an ordinary callable must not satisfy var unique callback contract"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("does not preserve Qualifier"),
+            "expected the checker to reject the erased unique callback contract, got {error:?}"
+        );
     }
 
 }

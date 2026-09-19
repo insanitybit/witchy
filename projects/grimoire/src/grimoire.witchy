@@ -19,7 +19,6 @@
 import bytes
 import compiler
 import coven_proto
-import coven_artifact
 import crypto
 import encoding
 import exec
@@ -566,7 +565,7 @@ fn cmd_update(console: Console, net: Net, root: Dir, env: Env, clock: Clock, arg
             else:
                 let cooldown = cooldown_now(env, clock, args)
                 let manifest = if root.exists("witchy.toml"): root.read("witchy.toml") else: ""
-                update_vendored(console, net, root, origin, only, allowed, cooldown, manifest)
+                update_vendored(console, net, root, origin, only, allowed, cooldown, manifest, clock)
 
 fn cmd_install(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     // `--target <triple>` takes a value, so drop the pair before reading positionals
@@ -643,7 +642,7 @@ fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, ar
             Ok(shp) ->
                 let (scheme, host, port) = shp
                 let origin = registry_origin(scheme, host, port)
-                add_pkg_gated(console, net, root, origin, name, req, cooldown_now(env, clock, args), allowed_caps(args), has_flag(args, "--allow-staged"), assume_yes(env, args))
+                add_pkg_gated(console, net, root, origin, name, req, cooldown_now(env, clock, args), allowed_caps(args), has_flag(args, "--allow-staged"), assume_yes(env, args), clock)
 
 pub fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
     if dir.is_empty() || rootpub.is_empty():

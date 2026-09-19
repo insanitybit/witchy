@@ -25,8 +25,9 @@
 #   for every source/profile. The record is the digest input, not a success
 #   marker: it contains every executed route step and its captured effects.
 #
-# The hook is the missing production adapter/interpreter/SafeWIR execution
-# bridge. Until it exists, --freeze refuses to modify the committed manifest.
+# The hook is the missing production adapter into canonical SafeWIR execution
+# and its admitted-Wasm evidence bridge. Until it exists, --freeze refuses to
+# modify the committed manifest.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

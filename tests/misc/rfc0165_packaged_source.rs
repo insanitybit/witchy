@@ -6,9 +6,11 @@ use witchy::trusted_publisher::{self, source_inputs::SourceInputs};
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 const SOURCE: &str = r#"import list
 comptime:
-    emit("fn package_message() -> String:")
-    emit("    \"packaged capture\"")
-fn make(console: Console, text: String) -> fn() -> Nil:
+    emit_item(quote item:
+        fn package_message() -> String:
+            "packaged capture"
+    )
+fn make(console: Console, text: String) -> fn() -> ():
     fn(): console.print(text)
 fn main(console: Console, args: List(String)) -> Int:
     let report = make(console, package_message())

@@ -79,6 +79,30 @@ pub struct Module {
     pub linked_entry: Option<String>,
 }
 
+impl Module {
+    /// Construct the compiler-owned empty opt module used by authenticated
+    /// declaration environments.  Keeping this structural construction in the
+    /// syntax crate avoids a parser round trip for compiler-generated ASTs and
+    /// centralizes the defaults required by later syntax passes.
+    pub fn empty_opt() -> Self {
+        Self {
+            modes: vec!["opt".into()],
+            imports: Vec::new(),
+            from_imports: Vec::new(),
+            items: Vec::new(),
+            import_lines: Vec::new(),
+            item_lines: Vec::new(),
+            compiler_item_syntax: Vec::new(),
+            compiler_expr_syntax: Vec::new(),
+            compiler_type_syntax: Vec::new(),
+            compiler_pattern_syntax: Vec::new(),
+            compiler_stmt_syntax: Vec::new(),
+            compiler_block_syntax: Vec::new(),
+            linked_entry: None,
+        }
+    }
+}
+
 #[cfg_attr(
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
@@ -228,6 +252,11 @@ pub struct MethodSig {
     #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
     pub pure: bool,
     pub name: String,
+    /// Explicit declaration type parameters, written `fn map[a, b](…)`.
+    /// Lifetimes are intentionally not admitted here: RFC-0167 views are
+    /// lifetime-free.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     /// A default body (`fn m(self) -> T { ... }` inside the trait). Impls that
@@ -403,6 +432,10 @@ pub struct Function {
     #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
     pub attributes: Vec<String>,
     pub name: String,
+    /// Explicit declaration type parameters, written `fn first[a](…)`.
+    /// They bind the source variables used by this function's signature.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Option<Type>,
     pub body: Block,
@@ -428,6 +461,7 @@ impl PartialEq for Function {
             && self.comptime_only == other.comptime_only
             && self.attributes == other.attributes
             && self.name == other.name
+            && self.type_params == other.type_params
             && self.params == other.params
             && self.ret == other.ret
             && self.body == other.body
@@ -530,11 +564,12 @@ pub enum Type {
     /// parameter. An empty convention vector is tolerated only for legacy
     /// compiler-generated values and means all-default `let` parameters.
     Fn(Vec<Type>, Box<Type>, Vec<Convention>, CallableQualifiers),
-    /// (RFC-0025/0026/0083) An ownership/immutability qualifier on a type:
-    /// `frozen T`, `unique T`, `local unique T`, or a borrowed view (`let('a) T` /
-    /// `View(T, 'a)`). A compile-time CONTRACT — typeck enforces it (a `frozen`
-    /// value may not be mutated; a `unique` value must be the sole reference; a
-    /// borrowed owner may not be moved/mutated while its view is live) but it
+    /// (RFC-0025/0026/0167) An ownership/immutability qualifier on a type:
+    /// `frozen T`, `unique T`, or an immutable rooted view (`&T`).
+    /// A compile-time CONTRACT — typeck enforces it (a `frozen`
+    /// value may not be mutated; a `unique` value must be the sole reference;
+    /// a rooted view retains its snapshot across later owner mutation, which
+    /// uses copy-on-write when necessary) but it
     /// carries no runtime representation: both backends lower the inner type
     /// identically, so it is invisible to codegen and parity-neutral. Use
     /// [`Type::unqualified`] to see through it where the qualifier is irrelevant.
@@ -657,8 +692,7 @@ fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
 }
 
 /// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,
-/// RFC-0083/RFC-0122 reference access). Not `Copy`: reference qualifiers carry
-/// a lifetime name.
+/// RFC-0167 immutable rooted view access).
 #[cfg_attr(
     not(target_arch = "wasm32"),
     derive(serde::Serialize, serde::Deserialize)
@@ -669,40 +703,43 @@ pub enum TypeQual {
     Frozen,
     /// `unique` — the sole reference; may be returned as `unique`.
     Unique,
-    /// `local unique` — unique within this activation only; may not escape.
-    LocalUnique,
-    /// (RFC-0122) An explicit shared reference, written `&'a T`.
+    /// An immutable rooted view, written `&T` or `&[T]`.
+    ///
+    /// This is the canonical source and AST boundary. Its retained root and
+    /// projection are not represented by a source lifetime.
+    View,
+    /// Migration-only historical RFC-0122 shared-reference syntax, written
+    /// `&'a T`. It is accepted only by `parse_reference_migration`; ordinary
+    /// source and compiler-owned AST construction must never produce it.
     ///
     /// The lifetime name relates a result to the owner input it views. The
     /// runtime transports an owner root plus projection carrier; the checker
     /// controls the read-only capability. Legacy RFC-0083 spellings retain
     /// their compatibility ABI through [`LegacyBorrow`](Self::LegacyBorrow).
     Borrow(String),
-    /// A legacy RFC-0083 borrowed view, written `let('a) T` or `View(T, 'a)`.
+    /// Migration-only representation of retired RFC-0083 borrowed-view syntax.
     ///
-    /// This is intentionally source provenance rather than a distinct language
-    /// relation. During the RFC-0122 migration it preserves the legacy erased
-    /// ABI while [`Borrow`](Self::Borrow) is the executable `&'a T` carrier.
-    /// Type checking treats both as the same shared borrow relation.
+    /// This is source provenance, not a current language relation. It exists
+    /// only so the explicit migration parser can recognize old input.
     LegacyBorrow(String),
-    /// (RFC-0122) An explicit exclusive reference, written `&'a mut T`.
+    /// Migration-only historical RFC-0122 exclusive-reference syntax, written
+    /// `&'a mut T`.
     ///
-    /// Unlike [`Borrow`](Self::Borrow), this is affine and grants mutation of the
-    /// referent. The syntax node is separate even while the initial migration
-    /// shares the existing owner-root representation for shared references.
+    /// It must be rejected or semantically migrated to `var`; it can never be
+    /// emitted as an immutable rooted view.
     BorrowMut(String),
 }
 
 impl TypeQual {
     /// The source keyword(s) for this qualifier — for formatting / reflection.
     /// A [`TypeQual::Borrow`] has no single-keyword spelling (it renders as
-    /// `View(T, 'a)`, which needs the inner type); callers that can meet one
+    /// `&'a T`, which needs the inner type); callers that can meet one
     /// special-case it before reaching here.
     pub fn as_str(&self) -> &'static str {
         match self {
             TypeQual::Frozen => "frozen",
             TypeQual::Unique => "unique",
-            TypeQual::LocalUnique => "local unique",
+            TypeQual::View => "view",
             TypeQual::Borrow(_) => "view",
             TypeQual::LegacyBorrow(_) => "view",
             TypeQual::BorrowMut(_) => "mut view",
@@ -715,7 +752,7 @@ impl TypeQual {
             TypeQual::Borrow(life) => Some(life),
             TypeQual::LegacyBorrow(life) => Some(life),
             TypeQual::BorrowMut(life) => Some(life),
-            _ => None,
+            TypeQual::Frozen | TypeQual::Unique | TypeQual::View => None,
         }
     }
 }
@@ -728,6 +765,54 @@ impl Type {
         match self {
             Type::Qualified(_, inner) => inner.unqualified(),
             other => other,
+        }
+    }
+}
+
+/// The one nested ownership carrier with a canonical v1 ABI: a direct
+/// `Result(unique List|Dict, E)` Ok payload. Both collection arguments and
+/// `E` must be qualifier-free; this is deliberately not a general rule for
+/// erasing qualifiers inside aggregates or callable types.
+pub fn is_direct_unique_result_ok_collection(ty: &Type) -> bool {
+    let Type::Named(name, arguments) = ty else { return false };
+    let [payload, error] = arguments.as_slice() else { return false };
+    name == "Result" && is_direct_unique_collection(payload) && !contains_qualifier(error)
+}
+
+/// The physical type for the one nested ownership carrier accepted above.
+/// Keeping this projection beside its predicate prevents independent lowering
+/// sites from accidentally widening which nested qualifier is erased.
+pub fn direct_unique_result_ok_collection_physical_type(ty: &Type) -> Option<Type> {
+    if !is_direct_unique_result_ok_collection(ty) {
+        return None;
+    }
+    let Type::Named(name, arguments) = ty else { unreachable!("predicate established Result") };
+    let [payload, error] = arguments.as_slice() else { unreachable!("predicate established arity") };
+    Some(Type::Named(
+        name.clone(),
+        vec![payload.unqualified().clone(), error.clone()],
+    ))
+}
+
+fn is_direct_unique_collection(ty: &Type) -> bool {
+    let Type::Qualified(TypeQual::Unique, inner) = ty else { return false };
+    let Type::Named(name, arguments) = inner.as_ref() else { return false };
+    matches!((name.as_str(), arguments.len()), ("List", 1) | ("Dict", 2))
+        && !contains_qualifier(inner)
+}
+
+fn contains_qualifier(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(_, _) => true,
+        Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
+            arguments.iter().any(contains_qualifier)
+        }
+        Type::Slice(inner) => contains_qualifier(inner),
+        Type::RecordCompose { base, fields } => {
+            contains_qualifier(base) || fields.iter().any(|(_, field)| contains_qualifier(field))
+        }
+        Type::Fn(parameters, result, _, _) => {
+            parameters.iter().any(contains_qualifier) || contains_qualifier(result)
         }
     }
 }
@@ -797,7 +882,7 @@ pub enum Stmt {
         value: Expr,
     },
     /// `return e` (or bare `return`) — exit the enclosing function early with a
-    /// value (or Nil).
+    /// value (or unit).
     Return(Option<Expr>),
     /// `break` — exit the innermost enclosing loop.
     Break,
@@ -1026,8 +1111,9 @@ pub enum Expr {
     /// `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). `tag` is an
     /// `comptime fn(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
     /// `parts` are the static
-    /// fragments (`["a", "b"]`); `holes` are each interpolation's SOURCE TEXT
-    /// (`["x"]`); `hole_spans` is each hole's `(line, col)` start position in the
+    /// fragments (`["a", "b"]`); source-spelled holes retain their SOURCE TEXT
+    /// (`["x"]`), while compiler-owned structural tags carry owned expression
+    /// nodes. `hole_spans` is each hole's `(line, col)` start position in the
     /// ORIGINAL source. `crate::tagged::expand` passes the tag an OPAQUE MARKER
     /// (`__witchy_hole_N`) per hole — the tag places markers where the hole's value
     /// goes — runs `tag(parts, markers)` at compile time, receives one typed
@@ -1041,10 +1127,23 @@ pub enum Expr {
     TaggedLit {
         tag: String,
         parts: Vec<String>,
-        holes: Vec<String>,
+        holes: Vec<TaggedHole>,
         hole_spans: Vec<(u32, u32)>,
         line: u32,
     },
+}
+
+/// An interpolation carried by a tagged literal. Parser-created tags preserve
+/// their original source until call-site expansion; compiler-owned tags carry
+/// an already-authenticated AST and must never re-enter a source parser.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaggedHole {
+    Source(String),
+    Owned(Box<Expr>),
 }
 
 #[cfg_attr(

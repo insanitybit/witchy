@@ -279,24 +279,40 @@ type User:
     active: Bool
 
 comptime:
-    let ctor = fn(ty: meta.TypeExpr) -> String:
+    let json_type = meta.type_named(meta.ident("Json"), [])
+    let ctor = fn(ty: meta.TypeExpr) -> meta.Ident:
         match ty:
             meta.TNamed(name, _args) ->
-                if name == "Int": "JsonInt"
-                else if name == "String": "JsonString"
-                else if name == "Bool": "JsonBool"
-                else: "JsonNull"
-            _ -> "JsonNull"
+                if name == "Int": meta.call_site("JsonInt")
+                else if name == "String": meta.call_site("JsonString")
+                else if name == "Bool": meta.call_site("JsonBool")
+                else: meta.call_site("JsonNull")
+            _ -> meta.call_site("JsonNull")
     for t in module_types:
         match t.kind:
             meta.TypeRecord ->
-                emit("fn to_json_${t.name}(v: ${t.name}) -> Json:")
+                let type_name = meta.ident(t.name)
+                let value = meta.expr_name(meta.call_site("v"))
                 var pairs = []
                 for f in t.fields:
-                    list.push(pairs, "(\"" + f.name + "\", " + ctor(f.type_expr) + "(v." + f.name + "))")
-                emit("    JsonObject([" + list.join(pairs, ", ") + "])")
-                emit("")
-            _ -> Nil
+                    let field = meta.ident(f.name)
+                    let encoded = meta.expr_call(
+                        meta.expr_name(ctor(f.type_expr)),
+                        [meta.expr_field(value, field)],
+                    )
+                    list.push(pairs, meta.expr_tuple([meta.expr_string(f.name), encoded]))
+                let body = meta.expr_call(
+                    meta.expr_name(meta.call_site("JsonObject")),
+                    [meta.expr_list(pairs)],
+                )
+                emit_item(meta.function(
+                    true,
+                    meta.ident("to_json_" + t.name),
+                    [meta.param(meta.ident("v"), meta.type_named(type_name, []))],
+                    Some(json_type),
+                    body,
+                ))
+            _ -> ()
 
 fn main(console: Console):
     console.print(json.encode(to_json_Point(Point(1, 2))))

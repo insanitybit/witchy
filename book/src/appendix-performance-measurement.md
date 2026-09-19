@@ -72,9 +72,10 @@ counter line and the workload, not only the number that improved.
 2. **Make a small fixture.** Keep the input deterministic and isolate one
    operation: one accumulation, one overwrite loop, one packed scan, or one
    borrowed result.
-3. **Run the semantic oracle.** Compare interpreter, optimized Wasm, and the
-   forced-copy configuration. Values, writes, drops, traps, and accepted or
-   rejected programs must agree.
+3. **Run the semantic witness.** State the expected result independently, then
+   compare the canonical SafeWIR interpreter, admitted unoptimized Wasm, and
+   the forced-copy configuration. Optimized Wasm is optional corroboration.
+   Values, writes, drops, traps, and accepted or rejected programs must agree.
 4. **Toggle one pass.** Use `WITCHY_OPT=release,-name` and compare counters or
    emitted code. If nothing changes, the pass may not match the shape.
 5. **Measure a paired workload.** Time both versions with the same warm-up and
@@ -114,7 +115,7 @@ fixture:        packed_point_scan
 source:         commit or working-tree identifier
 baseline:       WITCHY_OPT=release,-unbox
 candidate:      WITCHY_OPT=release
-backend:        interpreter + optimized Wasm + forced-copy Wasm
+backend:        canonical SafeWIR interpreter + admitted unoptimized Wasm + forced-copy Wasm
 input:          deterministic point count and seed
 evidence:       packed_alloc_bytes, output, trap/parity result, timings
 result:         improved for this measured workload / no change / regression

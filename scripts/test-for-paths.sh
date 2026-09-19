@@ -463,7 +463,7 @@ for p in "${paths[@]}"; do
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
             path_has_early=1 ;;
         crates/witchy-lower/tests/codegen.rs)
-            add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(=grantful_build_primitives_compile_to_build_imports_only)'"
+            add_early "cargo nextest run -p witchy-lower --test codegen -E 'test(=tests::grantful_build_primitives_compile_to_build_imports_only)'"
             path_has_early=1 ;;
         tests/misc/rfc0165_admitted_launch.rs)
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(rfc0165_admitted_launch::admitted_aggregates_render_structurally_as_the_interpreter_prints_them)'"
@@ -571,7 +571,10 @@ for p in "${paths[@]}"; do
             add "\"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check std/*.witchy" ;;
         README.md)
             corpus_impact=1
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
+            # The legacy documentation sweep still executes the frozen source
+            # interpreter and is deferred until the playground/docs runner uses
+            # admitted Wasm. Keep the gate impact without selecting it here.
+            ;;
         examples/* | book/*)
             corpus_impact=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
@@ -695,12 +698,9 @@ for p in "${paths[@]}"; do
             any_rust=1
             test_name="${p#tests/}"
             test_name="${test_name%.rs}"
-            # Shell `case` globs allow `*` to cross `/`, so a module such as
-            # `tests/rfc0122/migration.rs` reaches this generic arm. Cargo's
-            # integration target is the sibling root `tests/rfc0122.rs`, not
-            # the nonexistent `rfc0122/migration` target. Normalize only when
-            # that root target exists; otherwise retain the fail-safe broad
-            # selection below.
+            # Shell `case` globs allow `*` to cross `/`. Normalize nested
+            # modules only when their sibling root integration target exists;
+            # otherwise retain the fail-safe broad selection below.
             case "$test_name" in
                 */*)
                     root_test_name="${test_name%%/*}"
@@ -810,7 +810,9 @@ for p in "${paths[@]}"; do
             # spec/, and book/src. A spec-only edit cannot change crate
             # tests; running the workspace would only re-prove master.
             add_witchy_test 'example_tests::example_sweeps::documentation_examples_are_valid'
-            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(documentation_examples_are_valid)'" ;;
+            # Do not turn the explicitly deferred source-interpreter parity
+            # sweep into a zero-test admitted command.
+            ;;
         *.md | rfcs/* | bugs/* | wiki/*)
             : ;; # prose only — but book/README witchy blocks are covered above
     esac

@@ -193,7 +193,7 @@ true
 7
 ```
 
-Dynamic values can't retain borrowed views: materialize a view with `.owned()`
+Dynamic values can't retain shared references: materialize a reference with `.owned()`
 before packing it. Capability-requiring methods are excluded from plain
 `dynamic.call`; inspect `dynamic.method_caps` and provide an explicit bundle to
 `dynamic.call_with`. Private or sealed fields remain inaccessible, and unknown

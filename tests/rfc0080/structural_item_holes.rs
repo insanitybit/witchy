@@ -50,9 +50,14 @@ fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
         panic!("expected a compiler-owned function template");
     };
     assert_eq!(generated.name, "generated");
+    let formatted = format::module(&parsed, &[]);
     assert!(
-        format::module(&parsed, &[]).contains("meta.item_join_syntax("),
-        "the formatter must expose only the public typed syntax surface"
+        formatted.contains("quote item:\n        pub fn generated"),
+        "the formatter must preserve canonical colon-and-indent compiler-owned quote syntax: {formatted}"
+    );
+    assert!(
+        !formatted.contains("quote item {"),
+        "brace quote spelling is not Witchy source syntax: {formatted}"
     );
 
     let mut expanded_for_tooling = parsed.clone();

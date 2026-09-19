@@ -78,8 +78,9 @@ allocation" than "waiting on I/O."
 
 `List.pop`, `Dict.insert`, and `Dict.remove` return an ordinary `Option` while
 also writing their final container back through `var`. Their compiled lowering
-threads a hidden ownership/capacity token through the same convention-bearing
-call ABI:
+threads the root-owner proof and the separately checked current capacity state
+through the same convention-bearing call ABI. Carrying current capacity is not
+a source promise that spare capacity exists:
 
 - a proven-unique `List.pop` moves the final leaf out and decrements the length
   without copying the list spine;
@@ -96,19 +97,24 @@ complexities. Their public `var` receivers are typed `unique`: `mode opt`
 rejects a missing proof and reports the statement that aliased, moved, or loaned
 the owner. Normal mode remains value-correct through operation-level
 copy-on-write when storage is shared. Fresh storage, a typed call returning a
-`unique` collection, and `var` parameters typed `unique` / `local unique`
-satisfy the contract; an active reference loan
-never does. A typed `unique` result carries its capacity token as part of the
-compiled result envelope. Fresh list/dict tails and typed `unique` calls
-establish that token; control-flow results spell an explicit `return` on each
-reachable branch. Direct calls, typed function values, typed lambdas, and
-existential witness adapters transport the same ordinary result, `var`
-write-back, and ownership state. The verifier consumes the same
-statement-identity capacity-token kills and loan facts as compiled lowering,
-after typed method resolution, so method/module spelling and discarded/used
-results are one contract.
+`unique` collection, and `var` parameters typed `unique` satisfy the contract;
+an active reference loan never does. A typed `unique` result carries its
+root-owner proof as part of the compiled result envelope; it does not by itself
+prove spare capacity. Fresh list/dict tails, typed `unique` calls, and a directly
+transferred matching `own unique` parameter establish root ownership;
+control-flow results spell an explicit `return` on each reachable branch.
+Direct calls, typed function values, typed lambdas, and existential witness
+adapters transport the same ordinary result, `var` write-back, and ownership
+state. Capacity remains a separate checked fact derived from the concrete
+allocation or operation and is invalidated by growth, unknown calls, aliases,
+loans, and incompatible joins. The verifier consumes the same statement-identity
+ownership/capacity kills and loan facts as compiled lowering, after typed method
+resolution, so method/module spelling and discarded/used results are one
+contract.
 
-`WITCHY_OPT=-inplace` selects the copy-correct differential oracle. `witchy
+Independent expected values are the semantic reference; the canonical SafeWIR
+interpreter is the executable oracle, and admitted Wasm must agree with both.
+The retired source tree walker is not an oracle. `WITCHY_OPT=-inplace` selects the copy-correct differential oracle. `witchy
 stats` exposes `extract_searches`,
 `extract_key_comparisons`, `extract_copied_bytes`, `extract_retains`, and
 `extract_drops` so the no-copy and single-search claims are deterministic test
@@ -144,7 +150,9 @@ lowers to a loop. Recursive depth therefore adds no heap or control-stack work.
 `rc_free_calls`, and `region_rewind_calls`; comparing shallow and deep runs is
 the deterministic resource oracle. Fixed setup outside the kernel may allocate,
 so the contract requires equal counts as depth changes, not zero counts for the
-whole program. The interpreter remains the value oracle only.
+whole program. Independent expected values remain the semantic reference, while
+the canonical SafeWIR interpreter is the executable oracle; the source tree
+walker is not an oracle.
 
 The initial checked class rejects construction, non-final recursion, replacement
 returns, calls to helpers, effects, suspension, indexed input, and region/loop

@@ -13,7 +13,7 @@ pub fn word_counts(text: String) -> Dict(String, Int):
     for raw in text.words():
         let word = normalize(raw)
         if word.length() > 0:
-            dict.update(counts, word, 0, fn(running: Int): running + 1)
+            let _ = dict.update(counts, word, 0, fn(running: Int): running + 1)
     counts
 
 // The `limit` most frequent words, most frequent first, ties broken by spelling

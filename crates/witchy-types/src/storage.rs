@@ -693,7 +693,7 @@ type RecursivePhantom(a):
     Done
 
 type Callback = fn(Int) -> Int
-type CapabilityCallback = fn(File[Read]) -> Nil
+type CapabilityCallback = fn(File[Read]) -> ()
 
 type Mixed:
     Mixed(Callback, Dir[Read])
@@ -714,70 +714,70 @@ type Step:
 type Iter:
     Iter(fn() -> Step(a))
 
-fn direct(x: Dir[Read]) -> Nil:
+fn direct(x: Dir[Read]) -> ():
     nil
 
-fn callable(x: fn(Int) -> Int) -> Nil:
+fn callable(x: fn(Int) -> Int) -> ():
     nil
 
-fn nested(x: List((Int, Callback))) -> Nil:
+fn nested(x: List((Int, Callback))) -> ():
     nil
 
-fn boxed(x: Boxed(fn(Int) -> Int)) -> Nil:
+fn boxed(x: Boxed(fn(Int) -> Int)) -> ():
     nil
 
-fn inferred(x: Inferred(fn(Int) -> Int)) -> Nil:
+fn inferred(x: Inferred(fn(Int) -> Int)) -> ():
     nil
 
-fn recursive(x: Node(fn(Int) -> Int)) -> Nil:
+fn recursive(x: Node(fn(Int) -> Int)) -> ():
     nil
 
-fn evolving(x: Evolve(Int)) -> Nil:
+fn evolving(x: Evolve(Int)) -> ():
     nil
 
-fn forwarded(x: Outer(fn(Int) -> Int)) -> Nil:
+fn forwarded(x: Outer(fn(Int) -> Int)) -> ():
     nil
 
-fn alias_forwarded(x: Forward(fn(Int) -> Int)) -> Nil:
+fn alias_forwarded(x: Forward(fn(Int) -> Int)) -> ():
     nil
 
-fn growing(x: Grow(Int)) -> Nil:
+fn growing(x: Grow(Int)) -> ():
     nil
 
-fn recursive_phantom(x: RecursivePhantom(fn(Int) -> Int)) -> Nil:
+fn recursive_phantom(x: RecursivePhantom(fn(Int) -> Int)) -> ():
     nil
 
-fn phantom(x: Phantom(fn(Int) -> Int)) -> Nil:
+fn phantom(x: Phantom(fn(Int) -> Int)) -> ():
     nil
 
-fn plain(x: List((Int, String))) -> Nil:
+fn plain(x: List((Int, String))) -> ():
     nil
 
-fn mixed(x: Mixed) -> Nil:
+fn mixed(x: Mixed) -> ():
     nil
 
-fn mixed_alias(x: MixedAlias) -> Nil:
+fn mixed_alias(x: MixedAlias) -> ():
     nil
 
-fn recursive_mixed(x: RecursiveMixed(Int)) -> Nil:
+fn recursive_mixed(x: RecursiveMixed(Int)) -> ():
     nil
 
-fn existential(x: dyn Render) -> Nil:
+fn existential(x: dyn Render) -> ():
     nil
 
-fn boxed_existential(x: DynBox) -> Nil:
+fn boxed_existential(x: DynBox) -> ():
     nil
 
-fn capability_callback(x: List(CapabilityCallback)) -> Nil:
+fn capability_callback(x: List(CapabilityCallback)) -> ():
     nil
 
-fn enumerate(x: Iter((Int, a))) -> Nil:
+fn enumerate(x: Iter((Int, a))) -> ():
     nil
 
-fn enumerate_cap(x: Iter((File[Read], a))) -> Nil:
+fn enumerate_cap(x: Iter((File[Read], a))) -> ():
     nil
 
-fn phantom_cap(x: Phantom(File[Read])) -> Nil:
+fn phantom_cap(x: Phantom(File[Read])) -> ():
     nil
 "#,
         )

@@ -1,5 +1,5 @@
-//! Actual HTTP provider traffic is confined to the source/native legs. Both
-//! canonical launch APIs run first, against independent ordered wire fixtures.
+//! Actual HTTP provider traffic is confined to the admitted Wasm leg. Both
+//! canonical launch APIs run first against independent ordered wire fixtures.
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -162,14 +162,12 @@ fn main(console: Console, {parameter}):
                 else { interpret_program(validated, function, args, incomplete) };
             assert!(refused.unwrap_err().to_string().contains("unused transcript"));
         }
-    }).expect_lowered("Fetch source and reachable HTTP/Grimoire operations admit");
-    // The oracle finished before the peer accepts any requests. Source/native
-    // execute sequentially against the same endpoint and exact request script.
-    peer.start(2);
+    }).expect_lowered("Fetch and reachable HTTP/Grimoire operations admit");
+    // The canonical oracle finished before the admitted Wasm leg accepts any
+    // requests; production Wasm executes against the exact request script.
+    peer.start(1);
     let net = if derived { vec![peer.address.clone()] } else { Vec::new() };
     let fetch = if derived { Vec::new() } else { vec![origin.clone()] };
-    let output = witchy::interpreter::run_checked_module_with_fetch_grant(&checked, ".", net.clone(), fetch.clone()).unwrap();
-    assert_eq!(output, expected);
     let mut runtime = Runtime::batch().unwrap();
     let caps = Capabilities { print: true, quiet: true, net_allow: derived.then_some(net), net_connect: derived,
         fetch_grants: if derived { Vec::new() } else { vec![fetch] }, ..Capabilities::none() };
@@ -177,7 +175,7 @@ fn main(console: Console, {parameter}):
     vm.run().unwrap();
     assert_eq!(vm.output(), expected);
     assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    peer.finish(6);
+    peer.finish(3);
 }
 
 #[test]
@@ -206,7 +204,6 @@ fn fetch_provider_denials_are_values_but_missing_roots_and_widening_refuse() {
         let wrong = vec![InterpreterValue::capability(0), InterpreterValue::capability(13)];
         assert!(interpret_entry_program(validated, function, wrong, &[], InterpreterConfig::default()).is_err());
     }).expect_lowered("denied Fetch requests are still admitted computations");
-    assert_eq!(witchy::interpreter::run_checked_module_with_fetch_grant(&checked, ".", Vec::new(), vec!["http://127.0.0.1:1".into(), "http://127.0.0.1:2".into()]).unwrap(), expected);
     let mut runtime = Runtime::batch().unwrap();
     let mut vm = runtime.spawn_admitted(&artifact, Capabilities { print: true, quiet: true,
         fetch_grants: vec![vec!["http://127.0.0.1:1".into(), "http://127.0.0.1:2".into()]], ..Capabilities::none() }, 256).unwrap();
@@ -218,7 +215,7 @@ fn fetch_provider_denials_are_values_but_missing_roots_and_widening_refuse() {
     assert!(vm.output().is_empty());
     // Widening is an admitted computation with a real policy refusal, not a
     // missing-lowering diagnostic. No network fixture or listener is supplied.
-    let only = witchy::resolve_std_only_checked("fn main(fetch: Fetch):\n    let wider = fetch.only(\"http://127.0.0.1:2\")\n    Nil\n").unwrap();
+    let only = witchy::resolve_std_only_checked("fn main(fetch: Fetch):\n    let wider = fetch.only(\"http://127.0.0.1:2\")\n    ()\n").unwrap();
     let (only_artifact, ()) = witchy::codegen::compile_checked_module_artifact_with_observer(&only, |validated, artifact| {
         let entry = artifact.entry().unwrap();
         let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
@@ -231,13 +228,11 @@ fn fetch_provider_denials_are_values_but_missing_roots_and_widening_refuse() {
             assert!(error.to_string().contains("not granted"), "{error}");
         }
     }).expect_lowered("Fetch.only must admit before its policy can refuse widening");
-    let error = witchy::interpreter::run_checked_module_with_fetch_grant(&only, ".", Vec::new(), vec!["http://127.0.0.1:1".into()]).unwrap_err();
-    assert!(error.to_string().contains("not granted"), "{error}");
     let mut vm = runtime.spawn_admitted(&only_artifact, Capabilities {
         fetch_grants: vec![vec!["http://127.0.0.1:1".into()]], ..Capabilities::none()
     }, 256).unwrap();
     let error = format!("{:#}", vm.run().unwrap_err());
     assert!(error.contains("fetch.only") && error.contains("not granted"), "{error}");
     assert!(vm.output().is_empty());
-    assert!(witchy::resolve_std_only_checked("fn main(net: Net[Listen, Tcp]):\n    let fetch = net.fetch(\"http://127.0.0.1:1\")\n    Nil\n").is_err());
+    assert!(witchy::resolve_std_only_checked("fn main(net: Net[Listen, Tcp]):\n    let fetch = net.fetch(\"http://127.0.0.1:1\")\n    ()\n").is_err());
 }

@@ -254,8 +254,8 @@ fn main(console: Console):
     var d: Dict(Int, Int) = dict.new()
     d[1] = 5
     let callback = fn(value: Int): changed(console, value)
-    dict.update(d, 1, default_value(console), callback)
-    dict.update(d, 2, default_value(console), callback)
+    let _ = dict.update(d, 1, default_value(console), callback)
+    let _ = dict.update(d, 2, default_value(console), callback)
     console.print("${dict.at(d, 1)} ${dict.at(d, 2)} ${dict.length(d)}")
 "#;
     let expected = ["default", "callback:5", "default", "callback:100", "6 101 2"];
@@ -275,13 +275,13 @@ fn identity(value: String) -> String:
 fn main(console: Console):
     var d: Dict(String, String) = dict.new()
     d["a"] = "old"
-    dict.update(d, "a", "ignored", append)
+    let _ = dict.update(d, "a", "ignored", append)
     let snapshot = d
     let retained = dict.at(d, "a")
     let callback = fn(value: String): value + retained
-    dict.update(d, "a", "", callback)
-    dict.update(d, "b", "new", callback)
-    dict.update(d, "a", "ignored", identity)
+    let _ = dict.update(d, "a", "", callback)
+    let _ = dict.update(d, "b", "new", callback)
+    let _ = dict.update(d, "a", "ignored", identity)
     console.print(dict.at(snapshot, "a"))
     console.print(retained)
     console.print(dict.at(d, "a"))
@@ -300,7 +300,7 @@ fn hint(console: Console) -> Int:
 fn main(console: Console):
     var d: Dict(Int, Int) = dict.with_capacity(hint(console))
     console.print("${dict.length(d)}")
-    dict.update(d, 4, 40, fn(value: Int): value + 2)
+    let _ = dict.update(d, 4, 40, fn(value: Int): value + 2)
     console.print("${dict.at(d, 4)}")
 "#;
     assert_three_legs(source, &["hint", "0", "42"]);
@@ -334,8 +334,8 @@ fn main(console: Console):
     let removed = dict.remove(d, "b")
     console.print(extracted(dict.remove(d, "missing")))
     let snapshot = d
-    dict.update(d, "a", Entry("unused", 90), bump)
-    dict.update(d, "c", Entry("seed", 4), bump)
+    let _ = dict.update(d, "a", Entry("unused", 90), bump)
+    let _ = dict.update(d, "c", Entry("seed", 4), bump)
     console.print(describe(retained))
     console.print(extracted(replaced))
     console.print(extracted(removed))
@@ -383,9 +383,9 @@ fn main(console: Console):
     let removed = dict.remove(d, "b")
     console.print(extracted(dict.remove(d, "missing")))
     let snapshot = d
-    dict.update(d, "a", [], extend)
-    dict.update(d, "c", [], extend)
-    dict.update(d, "a", [], identity)
+    let _ = dict.update(d, "a", [], extend)
+    let _ = dict.update(d, "c", [], extend)
+    let _ = dict.update(d, "a", [], identity)
     console.print(describe(retained))
     console.print(extracted(replaced))
     console.print(extracted(removed))
@@ -436,9 +436,9 @@ fn main(console: Console):
     let removed = dict.remove(d, "b")
     let missing = dict.remove(d, "missing")
     let snapshot = d
-    dict.update(d, "a", Some("ignored"), revive)
-    dict.update(d, "c", Some("seed"), revive)
-    dict.update(d, "n", None, identity)
+    let _ = dict.update(d, "a", Some("ignored"), revive)
+    let _ = dict.update(d, "c", Some("seed"), revive)
+    let _ = dict.update(d, "n", None, identity)
     console.print(extracted(removed))
     console.print(extracted(missing))
     console.print(describe(retained))

@@ -180,12 +180,13 @@ land through `/land` like anything else.
 ## 7. When docs and reality disagree
 
 Source of truth order: `spec/` + `std/*.witchy` + independent expected results
-(`src/example_tests/`, `tests/misc/semantic_conformance.rs`). The interpreter is
-a source-level oracle, not the spec.
+(`src/example_tests/`, `tests/misc/semantic_conformance.rs`). The canonical
+SafeWIR interpreter and admitted Wasm are the executable checks; the frozen
+source tree walker is retained only for temporary compiler services.
 
 If verifying a doc claim uncovers a compiler defect — a form that should work but
-does not, or worse, one where the interpreter and compiled WASM disagree — **file
+does not, or worse, one where canonical SafeWIR and admitted Wasm disagree — **file
 it in `bugs/` and keep the docs honest.** Do not quietly reshape the
-documentation to match a bug, and do not fix a parity-sensitive compiler defect
-on a docs branch. A silent interpreter/WASM divergence is the most serious class
+documentation to match a bug, and do not fix a conformance-sensitive compiler
+defect on a docs branch. A silent canonical/Wasm divergence is the most serious class
 of bug in this project; `witchy parity <file>` is how you confirm one.

@@ -41,6 +41,119 @@
         check(&module)
     }
 
+    fn check_labeled_source(source: &str) -> Result<(), TypeError> {
+        let mut module = witchy_syntax::parser::parse_module(source).expect("source parses");
+        // Production linking resolves labels before type checking. Exercise that
+        // boundary directly: labels must not leave a statement-call escape hatch.
+        witchy_syntax::keyword_args::resolve(&mut module).expect("labels resolve");
+        check(&module)
+    }
+
+    #[test]
+    fn string_intrinsics_preserve_rooted_view_carriers() {
+        check_source(
+            "fn main() -> Int:\n    let text = \"rooted view\"\n    let view = string.as_str(&text)\n    let slice = string.slice(view, 0, 6)\n    let owned = string.to_string(slice)\n    let length = string.len(slice)\n    owned.length() + length\n",
+        )
+        .expect("string view intrinsics accept and return only rooted view carriers");
+    }
+
+    #[test]
+    fn region_view_escape_tracks_the_backing_root_not_the_handle_scope() {
+        for source in [
+            "mode opt\n\nfn relay(parent: &String) -> &String:\n    region -> &String:\n        parent\n",
+            "mode opt\n\nfn first(parent: &[Int]) -> &Int:\n    region -> &Int:\n        &parent[0]\n",
+        ] {
+            check_source(source).expect("a region-local carrier may retain a parent-owned root");
+        }
+
+        for (label, source, required) in [
+            (
+                "aliased local root",
+                "mode opt\n\nfn bad() -> &String:\n    region:\n        let local = \"region-owned\"\n        let view = &local\n        view\n",
+                "region-born view",
+            ),
+            (
+                "projected local root",
+                "mode opt\n\nfn bad() -> &Int:\n    region:\n        let local = [1]\n        let view = &local[0]\n        view\n",
+                "region-born view",
+            ),
+            (
+                "aggregate without per-field roots",
+                "type Held:\n    Held(&String)\n\nfn bad() -> Held:\n    region:\n        let local = \"region-owned\"\n        Held(&local)\n",
+                "per-field parent-root provenance",
+            ),
+            (
+                "rooted view field without per-field roots",
+                "type Holder:\n    value: &Int\n\nfn bad() -> Holder:\n    region:\n        let local = 7\n        Holder(&local)\n",
+                "per-field parent-root provenance",
+            ),
+        ] {
+            let error = check_source(source).expect_err(label);
+            assert!(error.message.contains(required), "{label}: {error:?}");
+        }
+    }
+
+    #[test]
+    fn discarded_non_nil_var_call_results_require_an_explicit_discard() {
+        for (kind, source, callee) in [
+            (
+                "free function",
+                "fn replace(var value: Int) -> Int:\n    value + 1\n\nfn main():\n    var value = 0\n    replace(value)\n    let _ = value\n",
+                "replace",
+            ),
+            (
+                "inherent method",
+                "type Counter:\n    value: Int\n\nimpl Counter:\n    fn next(var self) -> Int:\n        self.value + 1\n\nfn main():\n    var counter = Counter(1)\n    counter.next()\n    let _ = counter\n",
+                "next",
+            ),
+            (
+                "function value",
+                "fn replace(var value: Int) -> Int:\n    value + 1\n\nfn main():\n    var value = 0\n    let callback: fn(var Int) -> Int = replace\n    callback(value)\n    let _ = value\n",
+                "callback",
+            ),
+            (
+                "generic function",
+                "fn replace(var value: a) -> a:\n    value\n\nfn main():\n    var value = 0\n    replace(value)\n    let _ = value\n",
+                "replace",
+            ),
+            (
+                "existential method",
+                "trait Advance:\n    fn advance(var self) -> Int\n\ntype Counter:\n    value: Int\n\nimpl Advance for Counter:\n    fn advance(var self) -> Int:\n        self.value + 1\n\nfn main():\n    var counter = Counter(1)\n    let dynamic = counter as dyn Advance\n    dynamic.advance()\n    let _ = counter\n",
+                "advance",
+            ),
+        ] {
+            let error = check_source(source).expect_err(kind);
+            assert!(
+                error.message.contains(&format!("result of `{callee}` is discarded")),
+                "{kind}: {error:?}"
+            );
+        }
+
+        check_source(
+            "fn replace(var value: Int) -> Int:\n    value + 1\n\nfn touch(var value: Int):\n    value = value + 1\n\ntype Counter:\n    value: Int\n\nimpl Counter:\n    fn clear(var self):\n        return\n\nfn main():\n    var value = 0\n    let _ = replace(value)\n    touch(value)\n    var counter = Counter(1)\n    counter.clear()\n    let _ = value\n",
+        )
+        .expect("explicitly discarded and Nil-returning var calls remain valid");
+
+        for (kind, source, callee) in [
+            (
+                "labeled free function",
+                "fn replace(var value: Int, amount: Int) -> Int:\n    value + amount\n\nfn main():\n    var value = 0\n    replace(value: value, amount: 1)\n    let _ = value\n",
+                "replace",
+            ),
+            (
+                "labeled inherent method",
+                "type Counter:\n    value: Int\n\nimpl Counter:\n    fn next(var self, amount: Int) -> Int:\n        self.value + amount\n\nfn main():\n    var counter = Counter(1)\n    counter.next(amount: 1)\n    let _ = counter\n",
+                "next",
+            ),
+        ] {
+            let error = check_labeled_source(source).expect_err(kind);
+            assert!(
+                error.message.contains(&format!("result of `{callee}` is discarded")),
+                "{kind}: {error:?}"
+            );
+        }
+    }
+
     #[test]
     fn qualified_and_imported_task_types_unify_at_call_sites() {
         assert!(super::same_builtin_nominal_head("Task", "task.Task"));
@@ -166,7 +279,7 @@
     #[test]
     fn pure_closure_capture_is_not_erased_by_a_later_local_shadow() {
         let shadow_laundering = check_str(
-            "pure fn defer(console: Console) -> fn() -> Nil:\n    fn():\n        console.print(\"hidden\")\n        let console = 0\n",
+            "pure fn defer(console: Console) -> fn() -> ():\n    fn():\n        console.print(\"hidden\")\n        let console = 0\n",
         )
         .expect_err("a later local shadow must not erase an earlier capability capture");
         assert!(shadow_laundering.contains("closure capture `console`"), "{shadow_laundering}");
@@ -215,53 +328,6 @@
         )
         .expect_err("a transformed recursive stored argument must still expose an ordinary callable");
         assert!(transformed.message.contains("ordinary callable with opaque effects"), "{transformed:?}");
-    }
-
-    #[test]
-    fn pure_writeback_rejects_var_parameters_but_allows_shadowing_and_locals() {
-        let writeback = check_source(
-            "pure fn replace(var value: Int):\n    value = value + 1\n",
-        )
-        .expect_err("assignment to a var parameter writes back to the caller");
-        assert!(writeback.message.contains("assign to `var` parameter `value`"), "{writeback:?}");
-
-        let collection_writeback = check_source(
-            "pure fn pop(var values: List(Int)) -> Option(Int):\n    list.__pop_extract(values)\n",
-        )
-        .expect_err("a collection repair cannot write through a pure var parameter");
-        assert!(
-            collection_writeback
-                .message
-                .contains("collection repair writes back to the caller"),
-            "{collection_writeback:?}"
-        );
-
-        let reference_write = check_source(
-            "mode opt\n\npure fn replace(target: &'a mut Int):\n    *target = 1\n",
-        )
-        .expect_err("writing through an explicit reference mutates caller-owned state");
-        assert!(reference_write.message.contains("write through an explicit reference"), "{reference_write:?}");
-
-        let lambda_writeback = check_source(
-            "fn writer() -> pure fn(var Int) -> Nil:\n    pure fn(var value: Int):\n        value = value + 1\n",
-        )
-        .expect_err("pure lambda var parameters obey the same writeback rule");
-        assert!(lambda_writeback.message.contains("assign to `var` parameter `value`"), "{lambda_writeback:?}");
-
-        check_source(
-            "pure fn local(value: Int) -> Int:\n    var result = value\n    result = result + 1\n    result\n",
-        )
-        .expect("a pure body may mutate its own local storage");
-
-        check_source(
-            "pure fn pop_local() -> Option(Int):\n    var values = [1, 2]\n    list.__pop_extract(values)\n",
-        )
-        .expect("collection write-back into a local variable remains pure");
-
-        check_source(
-            "pure fn shadow(var value: Int) -> Int:\n    if true:\n        var value = 1\n        value = value + 1\n        return value\n    0\n",
-        )
-        .expect("binding identity keeps a shadowing local distinct from the var parameter");
     }
 
     #[test]
@@ -319,6 +385,49 @@
     }
 
     #[test]
+    fn loop_backedges_cannot_repeat_must_consume_transfers() {
+        let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\n";
+        for (loop_name, source) in [
+            (
+                "for",
+                format!(
+                    "{prelude}fn main():\n    let ticket = Ticket(1)\n    for _ in 0..2:\n        finish(ticket)\n"
+                ),
+            ),
+            (
+                "while",
+                format!(
+                    "{prelude}fn run(flag: Bool):\n    let ticket = Ticket(1)\n    while flag:\n        finish(ticket)\n"
+                ),
+            ),
+            (
+                "while let",
+                format!(
+                    "{prelude}fn main():\n    let ticket = Ticket(1)\n    let value: Option(Int) = Some(1)\n    while let Some(_) = value:\n        finish(ticket)\n"
+                ),
+            ),
+        ] {
+            let error = check_source(&source)
+                .expect_err("a must-consume transfer cannot be repeated by a loop backedge");
+            assert!(
+                error.message.contains("must-consume value `ticket` is transferred")
+                    && error.message.contains(loop_name),
+                "{error:?}"
+            );
+        }
+
+        check_source(&format!(
+            "{prelude}fn main():\n    var ticket = Ticket(1)\n    for _ in 0..2:\n        finish(ticket)\n        ticket = Ticket(1)\n    finish(ticket)\n"
+        ))
+        .expect("a loop may reinitialize its mutable must binding before its backedge");
+
+        check_source(
+            "fn main():\n    var total = 0\n    for _ in 0..2:\n        total = total + 1\n",
+        )
+        .expect("ordinary copyable loop state remains valid");
+    }
+
+    #[test]
     fn must_consume_question_mark_checks_the_error_return_edge_after_call_effects() {
         let prelude = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn validate() -> Result(Int, String):\n    Err(\"invalid\")\n\nfn finish(own ticket: Ticket) -> Result(Int, String):\n    Err(\"finished\")\n\n";
 
@@ -368,7 +477,7 @@
 
     #[test]
     fn owned_function_values_cannot_erase_must_consume_closure_captures() {
-        let prefix = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn run(own action: fn() -> Nil):\n    action()\n\n";
+        let prefix = "must type Ticket:\n    Ticket(Int)\n\nfn make() -> Ticket:\n    Ticket(1)\n\nfn finish(own ticket: Ticket):\n    let _ = 0\n\nfn run(own action: fn() -> ()):\n    action()\n\n";
         let cases = [
             format!(
                 "{prefix}fn main():\n    let ticket = make()\n    run(fn(): finish(ticket))\n"
@@ -392,11 +501,11 @@
 
         for (source, binding) in [
             (
-                "must type Ticket:\n    Ticket(Int)\n\nfn inspect(let ticket: Ticket):\n    let _ = 0\n\nfn defer(let ticket: Ticket) -> fn() -> Nil:\n    fn(): inspect(ticket)\n",
+                "must type Ticket:\n    Ticket(Int)\n\nfn inspect(let ticket: Ticket):\n    let _ = 0\n\nfn defer(let ticket: Ticket) -> fn() -> ():\n    fn(): inspect(ticket)\n",
                 "ticket",
             ),
             (
-                "must type Ticket:\n    Ticket(Int)\n\ntype Envelope:\n    Envelope(Ticket)\n\nfn inspect(let envelope: Envelope):\n    let _ = 0\n\nfn defer(let envelope: Envelope) -> fn() -> Nil:\n    fn(): inspect(envelope)\n",
+                "must type Ticket:\n    Ticket(Int)\n\ntype Envelope:\n    Envelope(Ticket)\n\nfn inspect(let envelope: Envelope):\n    let _ = 0\n\nfn defer(let envelope: Envelope) -> fn() -> ():\n    fn(): inspect(envelope)\n",
                 "envelope",
             ),
         ] {
@@ -597,6 +706,345 @@
     }
 
     #[test]
+    fn unique_storage_is_affine_through_values_aggregates_and_calls() {
+        let reused_root = check_source(
+            "fn duplicate(value: unique String):\n    let moved = value\n    let copied = value\n",
+        )
+        .expect_err("a unique value transfer consumes its old binding");
+        assert!(
+            reused_root.message.contains("unique value `value`")
+                || reused_root.message.contains("after it was moved"),
+            "{reused_root:?}"
+        );
+
+        for source in [
+            "fn tuple():\n    let value: unique String = \"one\"\n    let pair = (value, 1)\n    let copied = value\n",
+            "fn list():\n    let value: unique String = \"one\"\n    let values = [value]\n    let copied = value\n",
+            "type Holder:\n    value: unique String\n    tag: Int\n\nfn nominal():\n    let holder = Holder(\"one\", 0)\n    let moved = holder\n    let copied = holder\n",
+        ] {
+            let error = check_source(source)
+                .expect_err("a shell containing unique storage cannot be copied");
+            assert!(
+                error.message.contains("unique value") || error.message.contains("after it was moved"),
+                "{error:?}"
+            );
+        }
+
+        let extracted = check_source(
+            "type Holder:\n    Holder(unique String)\n\nfn unpack(own holder: Holder):\n    match holder:\n        Holder(value) ->\n            let moved = value\n            value\n",
+        )
+        .expect_err("constructor extraction retains unique provenance");
+        assert!(
+            extracted.message.contains("unique value `value`")
+                || extracted.message.contains("after it was moved"),
+            "{extracted:?}"
+        );
+
+        let direct = check_source(
+            "fn inspect(value: String) -> Int:\n    0\n\nfn main():\n    let value: unique String = \"one\"\n    let _ = inspect(value)\n    let _ = inspect(value)\n",
+        )
+        .expect_err("weakening a unique handle at an ordinary call consumes it");
+        assert!(direct.message.contains("unique value `value`"), "{direct:?}");
+
+        let indirect = check_source(
+            "fn inspect(value: String) -> Int:\n    0\n\nfn main():\n    let inspect_indirect = inspect\n    let value: unique String = \"one\"\n    let _ = inspect_indirect(value)\n    let _ = inspect_indirect(value)\n",
+        )
+        .expect_err("indirect ordinary calls cannot duplicate unique storage");
+        assert!(indirect.message.contains("unique value `value`"), "{indirect:?}");
+
+        check_source(
+            "fn inspect(value: unique String) -> String:\n    value\n\nfn retain_ordinary() -> String:\n    let ordinary = \"one\"\n    let seen = inspect(ordinary)\n    ordinary\n",
+        )
+        .expect("ordinary copyable input remains usable when a unique callee repairs its alias");
+
+        check_source(
+            "fn replace(own value: unique String) -> String:\n    let moved = value\n    value = \"two\"\n    value\n",
+        )
+        .expect("a transferred unique binding may be reinitialized before reuse");
+
+        check_source(
+            "type Holder:\n    value: unique String\n    tag: Int\n\nfn replace(var holder: Holder):\n    holder.tag = 1\n",
+        )
+        .expect("an ordinary sibling remains writable beside a unique field");
+
+        check_source(
+            "type Holder:\n    value: String\n    tag: Int\n\nfn copy_tag(own holder: unique Holder) -> Int:\n    let first = holder.tag\n    let second = holder.tag\n    first + second\n",
+        )
+        .expect("an outer unique handle does not make unqualified field reads affine");
+
+        check_source(
+            "type Holder:\n    Holder(unique String, Int)\n\nfn copy_sibling(own holder: Holder) -> Int:\n    match holder:\n        Holder(_value, tag) ->\n            let first = tag\n            let second = tag\n            first + second\n",
+        )
+        .expect("constructor extraction keeps an ordinary sibling copyable");
+
+        check_source(
+            "type Inner:\n    Inner(unique String, Int)\n\ntype Holder:\n    Holder(Inner, Int)\n\nfn nested_siblings(own holder: Holder) -> Int:\n    match holder:\n        Holder(Inner(_value, nested_tag), tag) ->\n            let a = nested_tag\n            let b = nested_tag\n            let c = tag\n            let d = tag\n            a + b + c + d\n",
+        )
+        .expect("nested nominal extraction follows only the unique field");
+
+        check_source(
+            "type Holder:\n    Holder((unique String, Int), Int)\n\nfn tuple_sibling(own holder: Holder) -> Int:\n    match holder:\n        Holder((_value, nested_tag), tag) ->\n            nested_tag + nested_tag + tag + tag\n",
+        )
+        .expect("nested tuple extraction leaves ordinary elements copyable");
+
+        check_source(
+            "type Holder:\n    Holder(List(unique String), Int)\n\nfn list_sibling(own holder: Holder) -> Int:\n    match holder:\n        Holder([_value, .._rest], tag) ->\n            tag + tag\n",
+        )
+        .expect("nested list extraction leaves an ordinary nominal sibling copyable");
+
+        let generic_shell = check_source(
+            "type Box(a):\n    Box(a)\n\nfn duplicate(boxed: Box(unique String)):\n    let moved = boxed\n    let copied = boxed\n",
+        )
+        .expect_err("stored generic unique arguments remain affine");
+        assert!(generic_shell.message.contains("unique value `boxed`"), "{generic_shell:?}");
+
+        let generic_extract = check_source(
+            "type Box(a):\n    Box(a)\n\nfn extract(own boxed: Box(unique String)):\n    match boxed:\n        Box(value) ->\n            let moved = value\n            value\n",
+        )
+        .expect_err("generic constructor extraction substitutes unique arguments");
+        assert!(generic_extract.message.contains("unique value `value`"), "{generic_extract:?}");
+
+        let nested_generic_extract = check_source(
+            "type Wrap(a):\n    Wrap(List(a))\n\nfn extract(own wrapped: Wrap(unique String)):\n    match wrapped:\n        Wrap([value]) ->\n            let moved = value\n            value\n",
+        )
+        .expect_err("generic extraction substitutes unique arguments below a list shell");
+        assert!(
+            nested_generic_extract.message.contains("unique value `value`"),
+            "{nested_generic_extract:?}"
+        );
+
+        let inferred_generic_extract = check_source(
+            "type Box(a):\n    Box(a)\n\nfn extract():\n    let source: unique String = \"one\"\n    let boxed = Box(source)\n    match boxed:\n        Box(value) ->\n            let moved = value\n            value\n",
+        )
+        .expect_err("an inferred aggregate retains unique source arguments for extraction");
+        assert!(
+            inferred_generic_extract.message.contains("unique value `value`"),
+            "{inferred_generic_extract:?}"
+        );
+
+        let indexed_unique = check_source(
+            "fn duplicate_index():\n    let xs: List(unique String) = [\"one\"]\n    let first = xs[0]\n    let second = xs[0]\n",
+        )
+        .expect_err("an index projection retains its unique element provenance");
+        assert!(indexed_unique.message.contains("unique value `xs`"), "{indexed_unique:?}");
+
+        let projected_unique = check_source(
+            "type Box(a):\n    value: a\n    tag: Int\n\nfn duplicate_field(own boxed: Box(unique String)):\n    let first = boxed.value\n    let second = boxed.value\n",
+        )
+        .expect_err("a generic field projection retains its unique source argument");
+        assert!(
+            projected_unique.message.contains("unique value `boxed`"),
+            "{projected_unique:?}"
+        );
+
+        check_source(
+            "type Box(a):\n    value: a\n    tag: Int\n\nfn copy_sibling(own boxed: Box(unique String)) -> Int:\n    let first = boxed.tag\n    let second = boxed.tag\n    first + second\n",
+        )
+        .expect("an ordinary field projection stays copyable beside a unique generic field");
+
+        let or_extract = check_source(
+            "type Choice:\n    A(unique String)\n    B(unique String)\n\nfn extract(own choice: Choice):\n    match choice:\n        A(value) | B(value) ->\n            let moved = value\n            value\n",
+        )
+        .expect_err("or-pattern alternatives retain unique extraction provenance");
+        assert!(or_extract.message.contains("unique value `value`"), "{or_extract:?}");
+
+        let anonymous_extract = check_source(
+            "fn extract(own choice: .[Text(unique String) | Count(Int)]):\n    match choice:\n        .Text(value) ->\n            let moved = value\n            value\n        .Count(_) ->\n            \"zero\"\n",
+        )
+        .expect_err("anonymous-union extraction retains unique payload provenance");
+        assert!(
+            anonymous_extract.message.contains("unique value `value`"),
+            "{anonymous_extract:?}"
+        );
+
+        check_source(
+            "fn copy_count(own choice: .[Text(unique String) | Count(Int)]) -> Int:\n    match choice:\n        .Text(_) ->\n            0\n        .Count(value) ->\n            value + value\n",
+        )
+        .expect("anonymous-union extraction keeps an ordinary payload copyable");
+
+        check_source(
+            "type Phantom(a):\n    Phantom\n\nfn copy(value: Phantom(unique String)):\n    let first = value\n    let second = value\n",
+        )
+        .expect("a phantom unique argument does not make its shell affine");
+
+        check_source(
+            "mode opt\n\nfn inspect(value: String) -> Int:\n    0\n\nfn main():\n    let value: unique String = \"one\"\n    let shared = &value\n    let first = inspect(*shared)\n    let second = inspect(*shared)\n    let _ = first + second\n",
+        )
+        .expect("shared loans retain a copyable handle and do not consume unique storage");
+
+        let opt_repair = check_source(
+            "mode opt\n\nfn inspect(value: unique String) -> Int:\n    0\n\nfn main():\n    let ordinary = \"one\"\n    inspect(ordinary)\n",
+        )
+        .expect_err("opt mode may not repair an ordinary alias into a unique owner");
+        assert!(opt_repair.message.contains("cannot repair ordinary storage"), "{opt_repair:?}");
+
+        for mode in ["", "mode opt\n\n"] {
+            let source = format!(
+                "{mode}fn inspect(value: String) -> Int:\n    0\n\nfn main():\n    let value: unique String = \"one\"\n    let _ = inspect(value)\n    let _ = inspect(value)\n"
+            );
+            let error = check_source(&source)
+                .expect_err("both source modes consume a unique value at an ordinary transfer");
+            assert!(error.message.contains("unique value `value`"), "{error:?}");
+        }
+
+        check_source(
+            "fn weaken() -> String:\n    let unique: unique String = \"one\"\n    let ordinary: String = unique\n    let first = ordinary\n    let second = ordinary\n    first\n",
+        )
+        .expect("explicit weakening consumes the unique source but leaves an ordinary destination");
+
+        let weakened_source = check_source(
+            "fn reject_reuse():\n    let unique: unique String = \"one\"\n    let ordinary: String = unique\n    unique\n",
+        )
+        .expect_err("weakening consumes the old unique binding");
+        assert!(weakened_source.message.contains("unique value `unique`"), "{weakened_source:?}");
+
+        check_source(
+            "fn normal_repair() -> String:\n    let ordinary: String = \"one\"\n    let unique: unique String = ordinary\n    ordinary\n",
+        )
+        .expect("normal mode may repair ordinary storage into a unique local");
+
+        let opt_local_repair = check_source(
+            "mode opt\n\nfn reject_repair():\n    let ordinary: String = \"one\"\n    let unique: unique String = ordinary\n",
+        )
+        .expect_err("opt mode may not manufacture a unique local from ordinary storage");
+        assert!(opt_local_repair.message.contains("cannot repair ordinary storage"), "{opt_local_repair:?}");
+
+        check_source(
+            "fn takes_unique(value: unique String) -> Int:\n    0\n\nfn normal_alias_repair() -> String:\n    let f = takes_unique\n    let ordinary = \"one\"\n    let _ = f(ordinary)\n    ordinary\n",
+        )
+        .expect("normal mode may repair ordinary storage through a function alias");
+
+        let opt_alias_repair = check_source(
+            "mode opt\n\nfn takes_unique(value: unique String) -> Int:\n    0\n\nfn reject_alias_repair():\n    let f = takes_unique\n    var ordinary: String = \"one\"\n    let _ = f(ordinary)\n",
+        )
+        .expect_err("opt mode retains unique requirements through a function alias");
+        assert!(
+            opt_alias_repair.message.contains("cannot repair ordinary storage"),
+            "{opt_alias_repair:?}"
+        );
+
+        let opt_lambda_repair = check_source(
+            "mode opt\n\nfn reject_lambda_repair():\n    let f: fn(unique String) -> Int = fn(value: unique String) -> Int:\n        0\n    let ordinary = \"one\"\n    let _ = f(ordinary)\n",
+        )
+        .expect_err("an annotated lambda retains its unique parameter contract");
+        assert!(
+            opt_lambda_repair.message.contains("cannot repair ordinary storage"),
+            "{opt_lambda_repair:?}"
+        );
+
+        for mode in ["", "mode opt\n\n"] {
+            let source = format!(
+                "{mode}fn takes_unique(value: unique String) -> Int:\n    0\n\nfn transfer_alias():\n    let f = takes_unique\n    let value: unique String = \"one\"\n    let _ = f(value)\n    let _ = f(value)\n"
+            );
+            let error = check_source(&source)
+                .expect_err("both modes transfer an existing unique value through an alias");
+            assert!(error.message.contains("unique value `value`"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn opt_unique_local_formation_requires_authenticated_provenance() {
+        for source in [
+            "mode opt\n\nfn ordinary() -> String:\n    \"one\"\n\nfn main():\n    let value: unique String = ordinary()\n",
+            "mode opt\n\nfn ordinary() -> String:\n    \"one\"\n\nfn main():\n    let f = ordinary\n    let value: unique String = f()\n",
+            "mode opt\n\nfn main():\n    var ordinary: String = \"one\"\n    let value: unique String = move ordinary\n",
+            "mode opt\n\nfn select(flag: Bool):\n    var ordinary: String = \"one\"\n    let value: unique String = if flag:\n        ordinary\n    else:\n        \"fresh\"\n",
+            "mode opt\n\nfn ordinary() -> String:\n    \"one\"\n\nfn select(flag: Bool):\n    let f = ordinary\n    let selected = if flag:\n        f\n    else:\n        ordinary\n    let value: unique String = selected()\n",
+            "mode opt\n\nfn fresh() -> unique String:\n    \"fresh\"\n\nfn main():\n    let weakened: String = fresh()\n    let value: unique String = weakened\n",
+            "mode opt\n\nfn takes_unique(value: unique String) -> Int:\n    0\n\nfn select(flag: Bool):\n    var ordinary: String = \"one\"\n    let _ = (if flag: takes_unique else: takes_unique)(ordinary)\n",
+            "mode opt\n\nfn takes_unique(value: unique String) -> Int:\n    0\n\nfn takes_ordinary(value: String) -> Int:\n    0\n\nfn select(flag: Bool):\n    var ordinary: String = \"one\"\n    let _ = (if flag: takes_unique else: takes_ordinary)(ordinary)\n",
+        ] {
+            let error = check_source(source)
+                .expect_err("opt mode must not form unique storage from an ordinary source");
+            assert!(error.message.contains("cannot repair ordinary storage"), "{error:?}");
+        }
+
+        check_source(
+            "mode opt\n\ntype Wrapper:\n    Wrap(String)\n\nfn main():\n    let string: unique String = \"fresh\"\n    let values: unique List(String) = [\"fresh\"]\n    let wrapped: unique Wrapper = Wrap(\"fresh\")\n",
+        )
+        .expect("fresh scalar, list, and constructor expressions establish unique storage");
+
+        check_source(
+            "mode opt\n\nfn fresh() -> unique String:\n    \"fresh\"\n\nfn main() -> Int:\n    let direct: unique String = fresh()\n    let alias = fresh\n    let indirect: unique String = alias()\n    direct.length() + indirect.length()\n",
+        )
+        .expect("declared unique direct and aliased call results establish unique storage");
+
+        check_source(
+            "mode opt\n\nfn main() -> Int:\n    let factory: fn() -> unique String = fn():\n        \"fresh\"\n    let produced: unique String = factory()\n    produced.length()\n",
+        )
+        .expect("an ascribed lambda retains its unique result contract through application");
+
+        check_source(
+            "mode opt\n\nfn select(flag: Bool) -> Int:\n    let factory: fn() -> unique String = fn() -> unique String:\n        \"fresh\"\n    let produced: unique String = (if flag: factory else: factory)()\n    produced.length()\n",
+        )
+        .expect("an Apply expression joins unique callable result contracts across every value path");
+    }
+
+    #[test]
+    fn opt_unique_formation_checks_surviving_callable_paths_and_nested_payloads() {
+        check_source(
+            "mode opt\n\nfn select(flag: Bool) -> Int:\n    let factory: fn() -> unique String = fn() -> unique String:\n        \"fresh\"\n    let selected = if flag:\n        factory\n    else:\n        return 0\n    let produced: unique String = selected()\n    produced.length()\n",
+        )
+        .expect("a diverging callable branch is neutral and retains the completing path contract");
+
+        for source in [
+            "mode opt\n\nfn main():\n    let ordinary = \"ordinary\"\n    let xs: List(unique String) = [ordinary]\n",
+            "mode opt\n\nfn main():\n    let ordinary = \"ordinary\"\n    let pair: (unique String,) = (ordinary,)\n",
+            "mode opt\n\ntype Box(a):\n    Box(a)\n\nfn main():\n    let ordinary = \"ordinary\"\n    let boxed: Box(unique String) = Box(ordinary)\n",
+            "mode opt\n\ntype RecordBox(a):\n    value: a\n\nfn main():\n    let ordinary = \"ordinary\"\n    let boxed: RecordBox(unique String) = RecordBox(value: ordinary)\n",
+        ] {
+            let error = check_source(source)
+                .expect_err("a fresh aggregate shell cannot repair an ordinary unique payload");
+            assert!(error.message.contains("cannot repair ordinary storage"), "{error:?}");
+        }
+
+        check_source(
+            "mode opt\n\ntype Box(a):\n    Box(a)\n\ntype RecordBox(a):\n    value: a\n\nfn main():\n    let shell: unique List(String) = [\"fresh\"]\n    let xs: List(unique String) = [\"fresh\"]\n    let pair: (unique String,) = (\"fresh\",)\n    let boxed: Box(unique String) = Box(\"fresh\")\n    let record: RecordBox(unique String) = RecordBox(value: \"fresh\")\n",
+        )
+        .expect("fresh aggregate payloads prove their recursively declared unique storage");
+    }
+
+    #[test]
+    fn unique_storage_source_proof_checks_record_compose_fields() {
+        let target = ast::Type::RecordCompose {
+            base: Box::new(ast::Type::Named("Base".into(), Vec::new())),
+            fields: vec![(
+                "payload".into(),
+                ast::Type::Qualified(
+                    ast::TypeQual::Unique,
+                    Box::new(ast::Type::Named("String".into(), Vec::new())),
+                ),
+            )],
+        };
+        let ordinary_payload = ast::Type::RecordCompose {
+            base: Box::new(ast::Type::Named("Base".into(), Vec::new())),
+            fields: vec![("payload".into(), ast::Type::Named("String".into(), Vec::new()))],
+        };
+        assert!(
+            !Checker::source_type_proves_unique_storage(&ordinary_payload, &target),
+            "an ordinary composed field cannot prove a declared unique payload"
+        );
+
+        let unique_payload = ast::Type::RecordCompose {
+            base: Box::new(ast::Type::Named("Base".into(), Vec::new())),
+            fields: vec![
+                ("other".into(), ast::Type::Named("Int".into(), Vec::new())),
+                (
+                    "payload".into(),
+                    ast::Type::Qualified(
+                        ast::TypeQual::Unique,
+                        Box::new(ast::Type::Named("String".into(), Vec::new())),
+                    ),
+                ),
+            ],
+        };
+        assert!(
+            Checker::source_type_proves_unique_storage(&unique_payload, &target),
+            "record-compose source fields are matched by name, not position"
+        );
+    }
+
+    #[test]
     fn trait_method_contract_preserves_once_result_consumption() {
         let repeated = check_str(
             "trait Supply:\n    fn supply(self) -> once fn() -> Int\n\ntype Source:\n    Source\n\nimpl Supply for Source:\n    fn supply(self) -> once fn() -> Int:\n        once fn() -> Int: 1\n\nfn main():\n    let callback = Source.supply()\n    let first = callback()\n    let second = callback()\n    let _ = first + second\n",
@@ -614,7 +1062,7 @@
         assert!(
             shared_aliases
                 .message
-                .contains("explicit shared reference to affine once-callable"),
+                .contains("immutable view formation cannot form an immutable view of affine once-callable storage"),
             "{shared_aliases:?}"
         );
 
@@ -623,23 +1071,12 @@
         )
         .expect_err("deref application must not make a reference-rooted once value callable");
         assert!(
-            dereferenced.message.contains("explicit shared reference"),
+            dereferenced.message.contains("immutable view formation cannot form an immutable view of affine once-callable storage"),
             "{dereferenced:?}"
         );
 
-        let exclusive = check_source(
-            "mode opt\n\nfn main():\n    var callback: once fn() -> Int = once fn() -> Int: 1\n    let handle = &mut callback\n    let _ = (*handle)()\n",
-        )
-        .expect_err("exclusive handles also lack referent-consumption state in v1");
-        assert!(
-            exclusive
-                .message
-                .contains("explicit exclusive reference to affine once-callable"),
-            "{exclusive:?}"
-        );
-
         let direct_parameter = check_source(
-            "mode opt\n\nfn inspect(callback: &'a once fn() -> Int) -> Int:\n    0\n",
+            "mode opt\n\nfn inspect(callback: &once fn() -> Int) -> Int:\n    0\n",
         )
         .expect_err("signatures may not admit a reference to a once callable");
         assert!(
@@ -650,7 +1087,7 @@
         );
 
         let nominal_parameter = check_source(
-            "mode opt\n\ntype OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn inspect(boxed: &'a OnceBox) -> Int:\n    0\n",
+            "mode opt\n\ntype OnceBox:\n    OnceBox(once fn() -> Int)\n\nfn inspect(boxed: &OnceBox) -> Int:\n    0\n",
         )
         .expect_err("signatures may not admit a reference to nominal affine storage");
         assert!(
@@ -661,7 +1098,7 @@
         );
 
         let field = check_source(
-            "mode opt\n\ntype RefBox('a):\n    callback: &'a once fn() -> Int\n",
+            "mode opt\n\ntype RefBox:\n    callback: &once fn() -> Int\n",
         )
         .expect_err("nominal fields may not store a reference to a once callable");
         assert!(
@@ -938,6 +1375,32 @@
     }
 
     #[test]
+    fn root_suspension_frame_cannot_capture_a_live_must_obligation() {
+        fn no_comptime(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let main = witchy_syntax::parser::parse_module(
+            "import task\n\nmust type Ticket:\n    Ticket(Int)\n\nfn finish(own ticket: Ticket) -> Int:\n    1\n\nasync fn pause() -> Int:\n    0\n\nasync fn main():\n    let ticket = Ticket(1)\n    let value = pause().await\n    let _ = finish(ticket) + value\n",
+        )
+        .expect("root-suspension fixture parses");
+        let linked = witchy_syntax::linker::link(vec![("main".into(), main)], "main", no_comptime)
+            .expect("root-suspension fixture links with std task");
+        let error = annotate_checked_source(linked)
+            .expect_err("the root task can still be terminated without frame drop cleanup");
+        assert!(
+            error
+                .message
+                .contains("must-consume `ticket` remains live across `await` in the root async fn"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn typed_module_rebuilds_address_keyed_facts_after_structural_rewrite() {
         use witchy_syntax::ast::{Expr, Item, Stmt};
 
@@ -969,6 +1432,72 @@
             typed.table().type_of(tail(typed.module())),
             Some(&Ty::String)
         );
+        assert!(typed.loan_facts().is_ok(), "reannotation must rebuild the retained loan product");
+        assert!(typed.access_facts().is_ok(), "reannotation must rebuild the retained access product");
+    }
+
+    #[test]
+    fn typed_module_retains_exact_direct_indirect_and_projected_access_facts() {
+        let module = witchy_syntax::parser::parse_module(
+            "type State:\n    items: List(Int)\n\n\
+             fn direct(value: Int) -> Int:\n    value\n\n\
+             fn identity(callback: fn(Int) -> Int) -> fn(Int) -> Int:\n    callback\n\n\
+             fn indirect(callback: fn(Int) -> Int) -> Int:\n    identity(callback)(1)\n\n\
+             fn consume(var values: List(Int)):\n    return\n\n\
+             fn main() -> Int:\n    var state = State([1, 2])\n    consume(state.items)\n    direct(1)\n",
+        )
+        .expect("parse retained access fixture");
+        let typed = annotate_checked(module).expect("type-check retained access fixture");
+        let facts = typed.access_facts().expect("typed module retains checked access facts");
+        let direct = facts.declaration("direct").expect("direct declaration contract");
+        let indirect = typed.module().items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == "indirect" => Some(function),
+            _ => None,
+        }).expect("indirect");
+        let indirect_call = match indirect.body.stmts.last().expect("indirect tail") {
+            Stmt::Expr(expression @ Expr::Apply { .. })
+            | Stmt::Return(Some(expression @ Expr::Apply { .. })) => expression,
+            statement => panic!("indirect fixture must retain an apply expression: {statement:?}"),
+        };
+        assert!(facts.call_at(typed.module(), indirect_call).is_some(), "retained graph has indirect call contract");
+        let Expr::Apply { func, .. } = indirect_call else { unreachable!() };
+        let Expr::Call { args: callback_args, .. } = func.as_ref() else { panic!("indirect callee must retain its checked function-producing call") };
+        let callback = callback_args.first().expect("indirect callback argument");
+        assert!(facts.callable_at(typed.module(), callback).is_some(), "retained graph has indirect callable contract");
+        let main = typed.module().items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        }).expect("main");
+        let Stmt::Expr(Expr::Call { args, .. }) = &main.body.stmts[1] else {
+            panic!("main must call consume with a projected place")
+        };
+        let projected = args.first().expect("projected argument");
+        let place = facts.place_at(typed.module(), projected).expect("retained projected place");
+        assert_eq!(place.root(), "state");
+        assert_eq!(place.steps(), &[crate::access::CheckedPlaceStep::Field("items".into())]);
+        let Stmt::Expr(direct_call @ Expr::Call { .. }) = main.body.stmts.last().expect("direct tail") else {
+            panic!("main must retain direct call")
+        };
+        assert_eq!(facts.call_at(typed.module(), direct_call), Some(direct));
+        assert!(facts.call_at(typed.module(), &direct_call.clone()).is_none(), "detached expression has no retained access contract");
+    }
+
+    #[test]
+    fn typed_module_refuses_missing_or_stale_retained_access_facts() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn identity(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+        )
+        .expect("parse access fixture");
+        let mut typed = annotate_checked(module).expect("type-check access fixture");
+        typed.access_facts = None;
+        assert_eq!(typed.access_facts().unwrap_err(), CheckedAccessFactsError::Missing);
+
+        let mut typed = annotate_checked(witchy_syntax::parser::parse_module(
+            "fn identity(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    identity(1)\n",
+        ).expect("parse stale access fixture")).expect("type-check stale access fixture");
+        let facts = typed.access_facts.take().expect("retained access facts");
+        typed.access_facts = Some(RetainedAccessFacts { module: std::ptr::null(), facts: facts.facts });
+        assert_eq!(typed.access_facts().unwrap_err(), CheckedAccessFactsError::Stale);
     }
 
     #[test]
@@ -1059,70 +1588,6 @@
             ..record_reflect
         };
         assert!(!is_compiler_generated_structural_impl(&source_lookalike));
-    }
-
-    #[test]
-    fn imported_borrowed_nominal_container_signature_rejects_before_lowering() {
-        fn no_comptime(
-            _name: &str,
-            _module: &mut witchy_syntax::ast::Module,
-            _siblings: &[(String, witchy_syntax::ast::Module)],
-        ) -> Result<witchy_syntax::origin::OriginTable, String> {
-            Ok(witchy_syntax::origin::OriginTable::default())
-        }
-
-        let views = witchy_syntax::parser::parse_module(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n",
-        )
-        .expect("parse borrowed nominal module");
-        let main = witchy_syntax::parser::parse_module(
-            "mode opt\n\nimport views\n\nfn bad(let owner: let('a) String, let holders: List(views.Holder('a))) -> Int:\n    0\n",
-        )
-        .expect("parse imported borrowed container use");
-        let error = crate::pipeline::link_checked(
-            vec![("views".into(), views), ("main".into(), main)],
-            "main",
-            no_comptime,
-        )
-        .expect_err("cross-module borrowed containers stay behind the descriptor stage");
-        let error = error.to_string();
-        assert!(
-            error.contains("stores a borrowed nominal relation inside `List`")
-                && error.contains("descriptor/root-lowering stage"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn imported_borrowed_nominal_runtime_use_rejects_before_lowering() {
-        fn no_comptime(
-            _name: &str,
-            _module: &mut witchy_syntax::ast::Module,
-            _siblings: &[(String, witchy_syntax::ast::Module)],
-        ) -> Result<witchy_syntax::origin::OriginTable, String> {
-            Ok(witchy_syntax::origin::OriginTable::default())
-        }
-
-        let views = witchy_syntax::parser::parse_module(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n",
-        )
-        .expect("parse borrowed nominal module");
-        let main = witchy_syntax::parser::parse_module(
-            "mode opt\n\nimport views\n\nfn bad(let owner: let('a) String, let cursor: views.Cursor('a)) -> Int:\n    cursor.offset\n",
-        )
-        .expect("parse imported borrowed runtime use");
-        let error = crate::pipeline::link_checked(
-            vec![("views".into(), views), ("main".into(), main)],
-            "main",
-            no_comptime,
-        )
-        .expect_err("cross-module borrowed values stay behind owner-root lowering")
-        .to_string();
-        assert!(
-            error.contains("borrowed nominal type")
-                && error.contains("runtime owner-root lowering"),
-            "{error}"
-        );
     }
 
     #[test]
@@ -1243,7 +1708,7 @@ fn main(console: Console, f: File[Read]):
 
         let src = r#"
 fn main(rand: Rand, net: Net[Listen, Tcp]):
-    rand.rand_u64()
+    let _ = rand.rand_u64()
     let listener = net.listen("127.0.0.1:0")
     listener.serve_pool()
 "#;
@@ -1259,7 +1724,7 @@ fn main(rand: Rand, net: Net[Listen, Tcp]):
                 _ => None,
             })
             .expect("main");
-        let Some(Stmt::Expr(Expr::Call { name: rand_name, .. })) = main.body.stmts.first() else {
+        let Some(Stmt::LetPattern { value: Expr::Call { name: rand_name, .. }, .. }) = main.body.stmts.first() else {
             panic!("expected lowered rand.rand_u64 call");
         };
         assert_eq!(rand_name, "__capop.rand_u64");
@@ -1364,12 +1829,12 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
     #[test]
     fn source_tasks_are_affine_and_await_consumes_their_obligation() {
         let module = witchy_syntax::parser::parse_module(
-            "async fn value() -> Int:\n    41\n\nfn drops() -> Int:\n    value()\n    1\n",
+            "async fn value() -> Int:\n    41\n\nfn drops() -> Int:\n    let _ = value()\n    1\n",
         )
         .expect("source parses");
         let error = check_source_async_contracts(&module)
             .expect_err("a cold task cannot be discarded");
-        assert!(error.message.contains("must-consume expression result cannot be discarded"), "{error:?}");
+        assert!(error.message.contains("must-consume obligation"), "{error:?}");
 
         let module = witchy_syntax::parser::parse_module(
             "async fn value() -> Int:\n    41\n\nasync fn starts_twice() -> Int:\n    let task = value()\n    let first = task.await\n    task.await\n",

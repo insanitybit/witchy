@@ -618,7 +618,7 @@ mod perf_mode {
     #[test]
     fn no_copy_var_contract_explains_alias() {
         insta::assert_snapshot!(mode_diag(
-            "mode opt\n\nimport dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let snapshot = d\n    d.insert(\"a\", 2)\n    console.print(\"${snapshot.length()}\")\n"
+            "mode opt\n\nimport dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let snapshot = d\n    let _ = d.insert(\"a\", 2)\n    console.print(\"${snapshot.length()}\")\n"
         ));
     }
 
@@ -632,7 +632,7 @@ mod perf_mode {
     #[test]
     fn no_copy_indirect_call_still_explains_alias() {
         insta::assert_snapshot!(mode_diag(
-            "mode opt\n\nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\nfn main():\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n"
+            "mode opt\n\nfn take(var xs: unique List(Int)) -> ():\n    return\n\nfn main():\n    var xs = [1]\n    let f = take\n    let alias = xs\n    f(xs)\n    let _ = alias\n"
         ));
     }
 }
@@ -646,7 +646,7 @@ mod lowering {
     #[test]
     fn dict_record_key_not_lowerable() {
         insta::assert_snapshot!(lower_diag(
-            "import dict\n\ntype K:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, K(a: 1, b: 2), \"v\")\n    console.print(\"hi\")\n"
+            "import dict\n\ntype K:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, K(a: 1, b: 2), \"v\")\n    console.print(\"hi\")\n"
         ));
     }
 }
@@ -658,13 +658,12 @@ mod comptime {
     use super::*;
 
     #[test]
-    // Historically BUG-341: a type error in comptime-emitted code reported a
-    // phantom line past EOF. FIXED (commit 7375442) — the error now attributes to
-    // the emitted function's own line 1. This golden locks the fixed behavior so a
-    // regression to a past-EOF phantom line is caught.
+    // Historically BUG-341: a type error in compiler-owned generated code reported
+    // a phantom line past EOF. This golden locks quote-item provenance so a
+    // regression to a past-EOF location is caught.
     fn type_error_in_emitted_code() {
         insta::assert_snapshot!(type_diag(
-            "comptime:\n    emit(\"fn broken() -> Int:\")\n    emit(\"    \\\"nope\\\"\")\n\nfn main(console: Console):\n    console.print(\"${broken()}\")\n"
+            "comptime:\n    emit_item(quote item:\n        fn broken() -> Int:\n            \"nope\"\n    )\n\nfn main(console: Console):\n    console.print(\"${broken()}\")\n"
         ));
     }
 }

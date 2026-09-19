@@ -2,297 +2,27 @@ use super::*;
 use crate::{ast, interpreter, parser, pipeline, typeck};
 
 #[test]
-fn rfc0122_local_exclusive_reference_write_agrees_on_both_backends() {
-    let src = "mode opt\n\nfn main(console: Console):\n    var value = 1\n    let reference = &mut value\n    *reference = 42\n    console.print(\"${value}\")\n    console.print(\"${*reference}\")\n";
-    let want = ["42", "42"];
-    assert_eq!(link_run(src), want, "interpreter writes through the local reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled local reference write updates its owner place");
-}
-
-#[test]
-fn rfc0122_returned_exclusive_reborrow_preserves_the_caller_place_on_both_backends() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn left(pair: &'a mut Pair) -> &'a mut Int:\n    &mut pair.left\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let parent = &mut pair\n    let slot = left(parent)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
-    let want = ["9:2"];
-    assert_eq!(link_run(src), want, "interpreter preserves the returned projected place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend preserves the returned projected place");
-}
-
-/// A conditional tail keeps the selected projection in the returned place
-/// carrier; the source has one callable identity even though each arm selects
-/// a different field.
-#[test]
-fn rfc0122_conditional_tail_preserves_the_selected_reference_place_on_both_backends() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn choose(pair: &'a mut Pair, left: Bool) -> &'a mut Int:\n    let selected = if left:\n        &mut pair.left\n    else:\n        &mut pair.right\n    selected\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let slot = choose(&mut pair, false)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
-    let want = ["1:9"];
-    assert_eq!(link_run(src), want, "interpreter preserves the selected conditional tail place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend preserves the selected conditional tail place");
-}
-
-#[test]
-fn rfc0122_indexed_exclusive_reference_preserves_its_runtime_place_on_both_backends() {
-    let src = "mode opt\n\nimport list\n\nfn second(values: &'a mut List(Int)) -> &'a mut Int:\n    &mut values[1]\n\nfn main(console: Console):\n    var values = [1, 2, 3]\n    let slot = second(&mut values)\n    *slot = 9\n    console.print(\"${values}\")\n    console.print(\"${*slot}\")\n";
-    let want = ["[1, 9, 3]", "9"];
-    assert_eq!(link_run(src), want, "interpreter preserves the indexed reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend preserves the indexed reference place");
-}
-
-#[test]
-fn rfc0122_function_value_indexed_reference_preserves_its_runtime_place_on_both_backends() {
-    let src = "mode opt\n\nimport list\n\nfn second(values: &'a mut List(Int)) -> &'a mut Int:\n    &mut values[1]\n\nfn main(console: Console):\n    var values = [1, 2, 3]\n    let project = second\n    let slot = project(&mut values)\n    *slot = 9\n    console.print(\"${values}\")\n    console.print(\"${*slot}\")\n";
-    let want = ["[1, 9, 3]", "9"];
-    assert_eq!(link_run(src), want, "interpreter preserves the indexed reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled function values preserve the indexed reference place");
-}
-
-#[test]
-fn rfc0122_function_value_returned_reference_preserves_its_projected_place() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn left(pair: &'a mut Pair) -> &'a mut Int:\n    &mut pair.left\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = left\n    let slot = project(&mut pair)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
-    let want = ["9:2"];
-    assert_eq!(link_run(src), want, "interpreter preserves the opaque returned place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled function values preserve returned reference places");
-}
-
-/// Trait dispatch must carry the authenticated reference contract through the
-/// witness call just like a direct or ordinary function-value call.
-#[test]
-fn rfc0122_trait_dispatch_preserves_a_projected_reference_place_on_both_backends() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\ntrait Project:\n    fn project(self: Self, pair: &'a mut Pair) -> &'a mut Int\n\ntype Selector:\n    Selector\n\nimpl Project for Selector:\n    fn project(self: Selector, pair: &'a mut Pair) -> &'a mut Int:\n        &mut pair.right\n\nfn apply(selector: a, pair: &'a mut Pair) -> &'a mut Int where a: Project:\n    selector.project(pair)\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let slot = apply(Selector, &mut pair)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
-    let want = ["1:9"];
-    assert_eq!(link_run(src), want, "interpreter preserves a projected reference through trait dispatch");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend preserves a projected reference through trait dispatch");
-}
-
-/// An opt-mode reference is an executable value, not a source-local place
-/// annotation: an indirect call receives the same mutable carrier.
-#[test]
-fn rfc0122_indirect_exclusive_scalar_reference_uses_a_runtime_carrier() {
-    let src = "mode opt\n\nfn write(value: &'a mut Int) -> Nil:\n    *value = 42\n    return\n\nfn main(console: Console):\n    var value = 1\n    let forward = write\n    forward(&mut value)\n    console.print(\"${value}\")\n";
-    let want = ["42"];
-    assert_eq!(link_run(src), want, "interpreter transports the reference through call_indirect");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled call_indirect transports the executable reference cell");
-}
-
-/// A closure has no statically recoverable function target. Its returned field
-/// reference therefore proves the runtime descriptor, rather than the static
-/// place bridge, selects the aggregate write location.
-#[test]
-fn rfc0122_closure_returned_projected_reference_dispatches_at_runtime() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = fn(pair: &'a mut Pair) -> &'a mut Int:\n        &mut pair.right\n    let slot = project(&mut pair)\n    *slot = 9\n    console.print(\"${pair.left}:${pair.right}\")\n";
-    let want = ["1:9"];
-    assert_eq!(link_run(src), want, "interpreter closure returns the projected place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled closure dispatches the returned place reference");
-}
-
-#[test]
-fn rfc0122_direct_bool_reference_uses_the_typed_scalar_carrier() {
-    let src = "mode opt\n\nfn set(value: &'a mut Bool) -> Nil:\n    *value = true\n\nfn main(console: Console):\n    var value = false\n    set(&mut value)\n    console.print(\"${value}\")\n";
-    let want = ["true"];
-    assert_eq!(link_run(src), want, "interpreter writes through the Bool reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled Bool reference preserves its typed scalar value");
-}
-
-#[test]
-fn rfc0122_direct_float_reference_uses_the_typed_scalar_carrier() {
-    let src = "mode opt\n\nfn set(value: &'a mut Float) -> Nil:\n    *value = 3.5\n\nfn main(console: Console):\n    var value = 1.0\n    set(&mut value)\n    console.print(\"${value}\")\n";
-    let want = ["3.5"];
-    assert_eq!(link_run(src), want, "interpreter writes through the Float reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled Float reference preserves its typed scalar value");
-}
-
-#[test]
-fn rfc0122_function_value_float_reference_uses_the_typed_scalar_carrier() {
-    let src = "mode opt\n\nfn set(value: &'a mut Float) -> Nil:\n    *value = 3.5\n\nfn main(console: Console):\n    var value = 1.0\n    let writer = set\n    writer(&mut value)\n    console.print(\"${value}\")\n";
-    let want = ["3.5"];
-    assert_eq!(link_run(src), want, "interpreter transports a Float reference through a function value");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled function value transports the Float reference carrier");
-}
-
-#[test]
-fn rfc0122_direct_string_reference_uses_the_typed_scalar_carrier() {
-    let src = "mode opt\n\nfn set(value: &'a mut String) -> Nil:\n    *value = \"updated\"\n\nfn main(console: Console):\n    var value = \"initial\"\n    set(&mut value)\n    console.print(value)\n";
-    let want = ["updated"];
-    assert_eq!(link_run(src), want, "interpreter writes through the String reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled String reference preserves its pointer-valued scalar");
-}
-
-/// Projected references are values for reads as well as writes: the descriptor
-/// selects the aggregate slot after an opaque closure returns the handle.
-#[test]
-fn rfc0122_closure_returned_projected_reference_reads_at_runtime() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn read(slot: &'a mut Int) -> Int:\n    *slot\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = fn(pair: &'a mut Pair) -> &'a mut Int:\n        &mut pair.right\n    let slot = project(&mut pair)\n    let seen = read(slot)\n    console.print(\"${seen}\")\n";
-    let want = ["2"];
-    assert_eq!(link_run(src), want, "interpreter reads the projected place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled closure reads the returned place reference");
-}
-
-/// The descriptor dispatch decodes the universal field slot to its declared
-/// type instead of treating every projected reference as an `Int`.
-#[test]
-fn rfc0122_closure_returned_bool_reference_reads_at_runtime() {
-    let src = "mode opt\n\ntype Flags:\n    left: Bool\n    right: Bool\n\nfn read(slot: &'a mut Bool) -> Bool:\n    *slot\n\nfn main(console: Console):\n    var flags = Flags(false, true)\n    let project = fn(flags: &'a mut Flags) -> &'a mut Bool:\n        &mut flags.right\n    let slot = project(&mut flags)\n    console.print(\"${read(slot)}\")\n";
-    let want = ["true"];
-    assert_eq!(link_run(src), want, "interpreter decodes a projected Bool reference");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled closure decodes the projected Bool slot");
-}
-
-#[test]
-fn rfc0122_mutable_exclusive_parameter_writes_back_on_both_backends() {
-    let src = "mode opt\n\nfn replace(var text: &'a mut Int) -> Nil:\n    *text = 42\n\nfn main(console: Console):\n    var value = 1\n    let reference = &mut value\n    replace(reference)\n    console.print(\"${value}\")\n";
-    let want = ["42"];
-    assert_eq!(link_run(src), want, "interpreter writes through a mutable exclusive parameter");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend writes through a mutable exclusive parameter");
-}
-
-#[test]
-fn rfc0122_owned_exclusive_parameter_transfers_its_place_on_both_backends() {
-    let src = "mode opt\n\nfn forward(own text: &'a mut Int) -> &'a mut Int:\n    text\n\nfn main(console: Console):\n    var value = 1\n    let editable = &mut value\n    let returned = forward(editable)\n    *returned = 42\n    console.print(\"${value}\")\n";
-    let want = ["42"];
-    assert_eq!(link_run(src), want, "interpreter transfers an owned exclusive reference place");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend transports the owned exclusive reference place");
-}
-
-#[test]
-fn rfc0122_owned_exclusive_parameter_releases_the_owner_after_mutation_on_both_backends() {
-    let src = "mode opt\n\nfn consume(own text: &'a mut String) -> Nil:\n    *text = \"changed\"\n    return\n\nfn main(console: Console):\n    var value = \"before\"\n    let editable = &mut value\n    consume(editable)\n    console.print(value)\n";
-    let want = ["changed"];
-    assert_eq!(link_run(src), want, "interpreter releases an owned exclusive handle at return");
-    let (compiled, _) = wasm_run_reowns(src);
-    assert_eq!(compiled, want, "compiled backend releases an owned exclusive handle at return");
-}
-
-#[test]
-fn rfc0122_generic_mutable_to_shared_aggregate_resumes_owner_after_final_use_on_all_backends() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn share(value: &'a mut a) -> &'a a:\n    value\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let observed = share(&mut pair)\n    let snapshot = *observed\n    console.print(\"${snapshot.left}\")\n    pair = Pair(3, 4)\n    console.print(\"${pair}\")\n";
-    let want = ["1", "Pair(3, 4)"];
-    assert_eq!(link_run(src), want, "interpreter resumes a generic aggregate owner after shared final use");
-    codegen::set_force_copy_for_tests(None);
-    let optimized = wasm_run_reowns(src).0;
-    codegen::set_force_copy_for_tests(Some(true));
-    let forced_copy = wasm_run_reowns(src).0;
-    codegen::set_force_copy_for_tests(None);
-    assert_eq!(optimized, want, "optimized Wasm resumes a generic aggregate owner after shared final use");
-    assert_eq!(forced_copy, want, "forced-copy Wasm resumes a generic aggregate owner after shared final use");
-}
-
-#[test]
-fn rfc0122_generic_shared_aggregate_function_value_copy_destructure_and_owner_resume_on_all_backends() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn share(value: &'a mut a) -> &'a a:\n    value\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let project = share\n    let observed = project(&mut pair)\n    let copied = observed\n    let snapshot = *copied\n    let Pair(left, right) = snapshot\n    console.print(\"${left}:${right}\")\n    pair = Pair(3, 4)\n    console.print(\"${pair}\")\n";
-    let want = ["1:2", "Pair(3, 4)"];
-    assert_eq!(link_run(src), want, "interpreter preserves generic aggregate function-value copy and destructure");
-    codegen::set_force_copy_for_tests(None);
-    let optimized = wasm_run_reowns(src).0;
-    codegen::set_force_copy_for_tests(Some(true));
-    let forced_copy = wasm_run_reowns(src).0;
-    codegen::set_force_copy_for_tests(None);
-    assert_eq!(optimized, want, "optimized Wasm preserves generic aggregate function-value copy and destructure");
-    assert_eq!(forced_copy, want, "forced-copy Wasm preserves generic aggregate function-value copy and destructure");
-}
-
-#[test]
-fn rfc0122_generic_exclusive_aggregate_function_value_write_and_owner_resume_on_all_backends() {
-    let src = "mode opt\n\ntype Pair:\n    left: Int\n    right: Int\n\nfn identity(value: &'a mut a) -> &'a mut a:\n    value\n\nfn main(console: Console):\n    var pair = Pair(1, 2)\n    let update = identity\n    let selected = update(&mut pair)\n    *selected = Pair(9, 10)\n    console.print(\"${pair}\")\n";
-    let want = ["Pair(9, 10)"];
-    assert_eq!(link_run(src), want, "interpreter writes through a generic aggregate function-value carrier");
-    codegen::set_force_copy_for_tests(None);
-    let optimized = wasm_run_reowns(src).0;
-    codegen::set_force_copy_for_tests(Some(true));
-    let forced_copy = wasm_run_reowns(src).0;
-    codegen::set_force_copy_for_tests(None);
-    assert_eq!(optimized, want, "optimized Wasm writes through a generic aggregate function-value carrier");
-    assert_eq!(forced_copy, want, "forced-copy Wasm writes through a generic aggregate function-value carrier");
-}
-
-    /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
-    /// Materializing the view ends the loan, but the resulting owned snapshot
-    /// must remain independent when the original owner mutates afterward.
-    #[test]
-    fn rfc0083_materialized_view_survives_owner_mutation_on_both_backends() {
-        let src = "mode opt\n\nimport list\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn materialize(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    list.push(xs, 2)\n    let make_view = view\n    let borrowed = make_view(xs)\n    let forwarded = borrowed\n    let snapshot = materialize(forwarded)\n    list.push(xs, 3)\n    console.print(\"${snapshot}\")\n    console.print(\"${xs}\")\n";
-        let want = ["[1, 2]", "[1, 2, 3]"];
-        assert_eq!(link_run(src), want, "interpreter preserves the materialized snapshot");
-        let (compiled, reowns) = wasm_run_reowns(src);
-        assert_eq!(compiled, want, "compiled roots and re-own preserve the snapshot");
-        assert!(reowns >= 1, "opening the view must invalidate the owner's unique token");
-
-        // A transient view consumed by `.owned()` leaves no live loan or runtime
-        // root, but evaluating it still shares the owner and must invalidate the
-        // uniqueness token before the subsequent mutation.
-        let direct = "mode opt\n\nimport borrow\nimport list\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    list.push(xs, 2)\n    let snapshot = view(xs).owned()\n    list.push(xs, 3)\n    console.print(\"${snapshot}\")\n    console.print(\"${xs}\")\n";
-        assert_eq!(link_run(direct), want, "interpreter preserves a direct materialization");
-        let (compiled, reowns) = wasm_run_reowns(direct);
-        assert_eq!(compiled, want, "compiled preserves a direct materialization");
-        assert!(reowns >= 1, "transient materialization must invalidate uniqueness");
-    }
-
-    #[test]
-    fn rfc0112_borrowed_parser_iterator_agrees_on_both_backends() {
-        let src = "mode opt\n\n\
-             type Parser('a):\n    input: View(String, 'a)\n    offset: Int\n\n\
-             type TokenIter('a):\n    input: View(String, 'a)\n    index: Int\n\n\
-             type Token('a):\n    text: View(String, 'a)\n    width: Int\n\n\
-             fn parser(input: let('a) String) -> Parser('a):\n    Parser(input, 2)\n\n\
-             fn tokens(input: let('a) String) -> TokenIter('a):\n    TokenIter(input, 3)\n\n\
-             fn scan(input: let('a) String) -> Int:\n    let p = parser(input)\n    let it = tokens(p.input)\n    let values: List(Token('a)) = [Token(p.input, p.offset), Token(it.input, it.index)]\n    var total = 0\n    for token in values:\n        total = total + token.width\n    total\n\n\
-             fn main(console: Console):\n    console.print(\"${scan(\"source\")}\")\n";
-        let want = ["5"];
-        assert_eq!(link_run(src), want, "interpreter parser/iterator result");
-        let (compiled, _) = wasm_run_reowns(src);
-        assert_eq!(compiled, want, "compiled parser/iterator result");
-    }
-
-    #[test]
-    fn rfc0083_view_may_not_cross_async_suspension_unmaterialized() {
-        let src = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
-        let err = try_link_std(src).expect_err("a borrowed view may not cross an await");
-        assert!(
-            err.contains("async fn `bad`: borrowed value `w` remains live across `await`"),
-            "diagnostic must explain the live view: {}",
-            err,
+fn closure_value_capture_own_calls_preserve_outer_snapshots_on_all_backends() {
+    for mode in ["", "mode opt\n\n"] {
+        let src = format!(
+            "{mode}fn take(own text: String) -> String:\n    text\n\n\
+             fn main(console: Console):\n    let text = \"hello\"\n    let callback = fn() -> String: take(text)\n    let first = callback()\n    let second = callback()\n    console.print(\"${{text.length() + first.length() + second.length()}}\")\n"
         );
-
-        let assigned = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    var slot = \"\"\n    slot = view(text)\n    let _ = task.done(0).await\n    console.print(slot)\n";
-        let err = try_link_std(assigned)
-            .expect_err("assignment may not hide a view across async suspension");
-        assert!(
-            err.contains("async fn `bad`: borrowed value `slot` remains live across `await`"),
-            "{err}"
+        let want = ["15"];
+        assert_eq!(link_run(&src), want, "interpreter preserves the captured snapshot in {mode:?}");
+        assert_eq!(
+            wasm_run_reowns(&src).0,
+            want,
+            "compiled execution preserves the captured snapshot in {mode:?}",
         );
     }
+}
 
-    #[test]
-    fn rfc0083_normal_caller_enforces_opt_module_loan_relation() {
-        let api = parser::parse_module(
-            "mode opt\n\npub fn view(text: let('a) String) -> View(String, 'a):\n    text\n",
-        )
-        .expect("parse opt API");
-        let main = parser::parse_module(
-            "import api\n\nfn main(console: Console):\n    var text = \"original\"\n    let w = api.view(text)\n    text = \"changed\"\n    console.print(w)\n",
-        )
-        .expect("parse normal caller");
-        let err = crate::pipeline::link(
-            vec![("main".into(), main), ("api".into(), api)],
-            "main",
-        )
-        .expect_err("normal callers cannot name a legacy reference-bearing opt export");
-        assert!(err.to_string().contains("reference-bearing opt API `api.view`"), "{err}");
-    }
+// RFC-0167 immutable rooted-view tests replace retired RFC-0122 carrier fixtures.
+
+    // RFC-0167 view tests replace this retired RFC-0083 materialization fixture.
+
+// RFC-0167 immutable views replace retired RFC-0112/RFC-0083 lifetime fixtures.
 
     /// RFC-0122's normal-to-opt boundary exposes only the ordinary access
     /// envelope. The normal caller neither spells nor receives a reference,
@@ -306,7 +36,7 @@ mode opt
 pub fn inspect(let text: String) -> String:
     text + "!"
 
-pub fn normalize(var text: String) -> Nil:
+pub fn normalize(var text: String) -> ():
     text = text.trim()
 
 pub fn consume(own text: String) -> Int:
@@ -351,13 +81,13 @@ fn main(console: Console):
         let api = r#"
 mode opt
 
-pub fn normalize(var text: String) -> Nil:
+pub fn normalize(var text: String) -> ():
     text = text.trim()
 "#;
         let app = r#"
 import api
 
-fn apply(f: fn(var String) -> Nil, var text: String) -> Nil:
+fn apply(f: fn(var String) -> (), var text: String) -> ():
     f(text)
 
 fn main(console: Console):
@@ -428,44 +158,6 @@ fn main(console: Console):
         );
     }
 
-    /// A normal-mode closure has no reference contract to hide, so it may be
-    /// passed through the same opt callback boundary as a named function. The
-    /// runtime descriptor and its conventional `own` argument must agree.
-    #[test]
-    fn rfc0122_normal_closure_through_opt_callback_preserves_value_semantics_on_both_backends() {
-        let api = r#"
-mode opt
-
-pub fn apply(own action: fn(own String) -> String, own text: String) -> String:
-    action(text)
-"#;
-        let app = r#"
-import api
-
-fn main(console: Console):
-    let action = fn(own text: String) -> String:
-        text + "?"
-    console.print(api.apply(action, "hello"))
-"#;
-        let modules = vec![
-            ("api".into(), parser::parse_module(api).expect("parse opt API")),
-            ("app".into(), parser::parse_module(app).expect("parse normal caller")),
-        ];
-        let linked = crate::pipeline::link(modules, "app")
-            .expect("link normal closure through opt callback");
-        typeck::check(&linked).expect("normal closure has no reference contract");
-        let expected = ["hello?"];
-        assert_eq!(
-            interpreter::run_module(linked, ".", Vec::new()).expect("interpreter"),
-            expected,
-            "interpreter preserves a normal closure callback",
-        );
-        assert_eq!(
-            run_linked_on_wasm(&[("api", api), ("app", app)], "app"),
-            expected,
-            "compiled backend preserves a normal closure callback",
-        );
-    }
 
     /// A reference-free trait implementation remains callable across the
     /// normal-to-opt boundary. The normal caller sees only the conventional
@@ -711,7 +403,7 @@ mode opt
 
 import list
 
-pub fn append(var values: unique List(Int)) -> Nil:
+pub fn append(var values: unique List(Int)) -> ():
     values.push(3)
 "#;
         let app = r#"
@@ -759,7 +451,7 @@ mode opt
 
 import list
 
-pub fn append(var values: unique List(Int)) -> Nil:
+pub fn append(var values: unique List(Int)) -> ():
     values.push(3)
 "#;
     let app = r#"
@@ -1080,7 +772,7 @@ impl Eq for CI
 
 fn main(console: Console):
     var d = dict.from_pairs([(CI("a"), 1)])
-    d.insert(CI("A"), 2)
+    let _ = d.insert(CI("A"), 2)
     d.update(CI("a"), 0, fn(n: Int): n + 3)
     let replaced = d.insert(CI("A"), 7)
     let removed = d.remove(CI("a"))
@@ -1218,7 +910,7 @@ fn main(console: Console):
     var inner = dict.from_pairs([("a", 1)])
     var outer = dict.from_pairs([("key", inner)])
     let outer_snapshot = outer
-    inner.insert("b", 2)
+    let _ = inner.insert("b", 2)
     let replaced = outer.insert("key", inner)
     let removed = outer.remove("key")
 
@@ -1324,35 +1016,35 @@ fn main(console: Console):
                 .unwrap_or_else(|| panic!("{case}: invalid `var` place must be rejected"))
                 .message
         };
-        let duplicate = "fn exchange(var a: Int, var b: Int) -> Nil:\n    return\nfn main(console: Console):\n    var n = 1\n    exchange(n, n)\n";
+        let duplicate = "fn exchange(var a: Int, var b: Int) -> ():\n    return\nfn main(console: Console):\n    var n = 1\n    exchange(n, n)\n";
         let message = error("duplicate", duplicate);
         assert!(message.contains("arguments 1 and 2"), "overlap positions: {message}");
         assert!(message.contains("rooted in `n`"), "overlap root: {message}");
 
-        let dynamic = "import list\n\nfn exchange(var a: Int, var b: Int) -> Nil:\n    return\nfn main(console: Console):\n    var xs = [1, 2]\n    var i = 0\n    var j = 1\n    exchange(xs[i], xs[j])\n";
+        let dynamic = "import list\n\nfn exchange(var a: Int, var b: Int) -> ():\n    return\nfn main(console: Console):\n    var xs = [1, 2]\n    var i = 0\n    var j = 1\n    exchange(xs[i], xs[j])\n";
         assert!(error("dynamic", dynamic).contains("overlapping `var` places"));
 
-        let reservation = "fn inner(var n: Int) -> Int:\n    n = n + 1\n    n\nfn outer(var n: Int, snapshot: Int) -> Nil:\n    return\nfn main(console: Console):\n    var n = 0\n    outer(n, inner(n))\n";
+        let reservation = "fn inner(var n: Int) -> Int:\n    n = n + 1\n    n\nfn outer(var n: Int, snapshot: Int) -> ():\n    return\nfn main(console: Console):\n    var n = 0\n    outer(n, inner(n))\n";
         let message = error("reservation", reservation);
         assert!(message.contains("reserves `var` place"), "reservation: {message}");
         assert!(message.contains("written evaluation order"), "reservation order: {message}");
 
-        let moved = "fn bump(var n: Int) -> Nil:\n    return\nfn main(console: Console):\n    var n = 0\n    bump(move n)\n";
+        let moved = "fn bump(var n: Int) -> ():\n    return\nfn main(console: Console):\n    var n = 0\n    bump(move n)\n";
         let message = error("move", moved);
         assert!(message.contains("uses `move`"), "move diagnostic: {message}");
         assert!(message.contains("live mutable place"), "move fix: {message}");
 
-        let temporary = "fn bump(var n: Int) -> Nil:\n    return\nfn main(console: Console):\n    bump(1)\n";
+        let temporary = "fn bump(var n: Int) -> ():\n    return\nfn main(console: Console):\n    bump(1)\n";
         assert!(error("temporary", temporary).contains("must be a mutable place"));
 
-        let immutable = "fn bump(var n: Int) -> Nil:\n    return\nfn test(n: Int) -> Nil:\n    bump(n)\n    return\nfn main(console: Console):\n    test(1)\n";
+        let immutable = "fn bump(var n: Int) -> ():\n    return\nfn test(n: Int) -> ():\n    bump(n)\n    return\nfn main(console: Console):\n    test(1)\n";
         let message = error("immutable", immutable);
         assert!(message.contains("root `n` must be a mutable `var`"), "immutable: {message}");
     }
 
     #[test]
     fn rfc0087_completed_effects_and_proven_disjoint_places_are_legal() {
-        let src = "import list\n\nfn bump(var n: Int) -> Int:\n    n = n + 1\n    n\nfn use_after(value: Int, var target: Int) -> Nil:\n    target = target + value\n    return\nfn exchange(var a: Int, var b: Int) -> Nil:\n    let old = a\n    a = b\n    b = old\n    return\nfn main(console: Console):\n    var n = 1\n    use_after(bump(n), n)\n    console.print(\"${n}\")\n";
+        let src = "import list\n\nfn bump(var n: Int) -> Int:\n    n = n + 1\n    n\nfn use_after(value: Int, var target: Int) -> ():\n    target = target + value\n    return\nfn exchange(var a: Int, var b: Int) -> ():\n    let old = a\n    a = b\n    b = old\n    return\nfn main(console: Console):\n    var n = 1\n    use_after(bump(n), n)\n    console.print(\"${n}\")\n";
         let want = ["4"];
         assert_eq!(link_run(src), want, "interpreter ordered/disjoint calls");
         assert_eq!(wasm_run(src), want, "compiled ordered/disjoint calls");
@@ -1427,7 +1119,7 @@ fn main(console: Console):
 
     #[test]
     fn rfc0087_place_coordinates_are_evaluated_once_on_both_backends() {
-        let src = "import list\n\nfn next_index(var calls: Int) -> Int:\n    calls = calls + 1\n    0\n\nfn bump(var n: Int) -> Nil:\n    n = n + 5\n    return\n\nfn main(console: Console):\n    var calls = 0\n    var rows = [[1, 2]]\n    bump(rows[next_index(calls)][1])\n    if calls == 1 && list.at(list.at(rows, 0), 1) == 7:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
+        let src = "import list\n\nfn next_index(var calls: Int) -> Int:\n    calls = calls + 1\n    0\n\nfn bump(var n: Int) -> ():\n    n = n + 5\n    return\n\nfn main(console: Console):\n    var calls = 0\n    var rows = [[1, 2]]\n    bump(rows[next_index(calls)][1])\n    if calls == 1 && list.at(list.at(rows, 0), 1) == 7:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
         let want = ["ok"];
         assert_eq!(link_run(src), want, "interpreter captures coordinates once");
         assert_eq!(wasm_run(src), want, "compiled backend captures coordinates once");
@@ -1452,16 +1144,4 @@ fn main(console: Console):
         let want = ["ok"];
         assert_eq!(link_run(src), want, "interpreter dict place write-back");
         assert_eq!(wasm_run(src), want, "compiled dict place write-back");
-    }
-
-    /// A first-class reference carries its evaluated projection, not the source
-    /// spelling of a fixed index. The value must therefore keep selecting the
-    /// same slot after a direct call returns.
-    #[test]
-    fn rfc0122_dynamic_indexed_exclusive_reference_preserves_its_runtime_place_on_both_backends() {
-        let src = "mode opt\n\nimport list\n\nfn at(values: &'a mut List(Int), index: Int) -> &'a mut Int:\n    &mut values[index]\n\nfn main(console: Console):\n    var values = [1, 2, 3]\n    let index = 1\n    let slot = at(&mut values, index)\n    *slot = 9\n    console.print(\"${values}\")\n    console.print(\"${*slot}\")\n";
-        let want = ["[1, 9, 3]", "9"];
-        assert_eq!(link_run(src), want, "interpreter preserves the dynamic indexed reference place");
-        let (compiled, _) = wasm_run_reowns(src);
-        assert_eq!(compiled, want, "compiled backend preserves the dynamic indexed reference place");
     }

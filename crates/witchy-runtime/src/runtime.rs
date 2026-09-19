@@ -9,6 +9,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use std::collections::BTreeMap;
 
 use wasmtime::{
     bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, ExternRef, Linker, Memory,
@@ -18,6 +19,7 @@ use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
 use witchy_wir::{
     AdmittedCanonicalArtifact, CanonicalEntry, CanonicalEntryCapability, CanonicalEntryResult,
 };
+use witchy_wir::canonical_safewir::ExternalWasmIdentity;
 use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_POLICY_SECTION};
 use witchy_wir::wir_prelude::abi_import_info;
 
@@ -2082,6 +2084,53 @@ pub struct Runtime {
     compiler_services: Arc<dyn compiler::CompilerServices>,
 }
 
+/// Verified bytes of one separately compiled scalar-only Wasm library.
+///
+/// The caller artifact selects this value by the complete identity triple,
+/// never by `module`/`export` text.  Construction recomputes the Wasm digest;
+/// the package loader is separately responsible for deriving the binding and
+/// sidecar commitments from its signed manifest and bounded declaration bundle.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedExternalLibrary {
+    identity: ExternalWasmIdentity,
+    wasm: Vec<u8>,
+}
+
+impl AuthenticatedExternalLibrary {
+    pub fn from_verified_bytes(
+        identity: ExternalWasmIdentity,
+        wasm: Vec<u8>,
+    ) -> Result<Self> {
+        if sha256(&wasm) != identity.wasm_sha256 {
+            bail!("external Wasm bytes differ from authenticated library identity");
+        }
+        validate_closed_external_wasm(&wasm)?;
+        Ok(Self { identity, wasm })
+    }
+
+    pub fn identity(&self) -> ExternalWasmIdentity { self.identity }
+}
+
+fn validate_closed_external_wasm(wasm: &[u8]) -> Result<()> {
+    if !wasm.starts_with(b"\0asm") {
+        bail!("external library must be binary Wasm");
+    }
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        match payload.map_err(|error| Error::msg(format!("invalid external Wasm: {error}")))? {
+            wasmparser::Payload::ImportSection(reader) => {
+                if reader.count() != 0 {
+                    bail!("external scalar library imports are unsupported");
+                }
+            }
+            wasmparser::Payload::StartSection { .. } => {
+                bail!("external scalar library start functions are unsupported");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl Runtime {
     /// A runtime whose VMs can be preempted by the scheduler advancing the
     /// engine epoch. Epoch interruption makes the JIT insert a check at
@@ -2281,7 +2330,7 @@ impl Runtime {
         // every hit and miss still enters Wasmtime through safe `Module::new`.
         let module = build_module(&self.engine, wasm, self.executable_cache)?;
 
-        self.instantiate_module(WorkerModule::Unadmitted(module), caps, memory_pages_max, None)
+        self.instantiate_module(WorkerModule::Unadmitted(module), caps, memory_pages_max, None, &[])
     }
 
     /// Spawn a VM from an admitted canonical SafeWIR artifact.
@@ -2297,7 +2346,21 @@ impl Runtime {
         memory_pages_max: usize,
     ) -> Result<Vm> {
         let module = WorkerModule::from_admitted(&self.engine, artifact)?;
-        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned())
+        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), &[])
+    }
+
+    /// Spawn an admitted caller with exact separately compiled scalar Wasm
+    /// libraries. The library list is neither ambient nor name-selected: it
+    /// must cover exactly the identities retained in the admitted artifact.
+    pub fn spawn_admitted_with_external_libraries(
+        &mut self,
+        artifact: &AdmittedCanonicalArtifact,
+        caps: Capabilities,
+        memory_pages_max: usize,
+        libraries: &[AuthenticatedExternalLibrary],
+    ) -> Result<Vm> {
+        let module = WorkerModule::from_admitted(&self.engine, artifact)?;
+        self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), libraries)
     }
 
     fn instantiate_module(
@@ -2306,6 +2369,7 @@ impl Runtime {
         caps: Capabilities,
         memory_pages_max: usize,
         entry: Option<CanonicalEntry>,
+        external_libraries: &[AuthenticatedExternalLibrary],
     ) -> Result<Vm> {
         let id = self.next_id;
 
@@ -2337,6 +2401,15 @@ impl Runtime {
         link_capability_imports(&mut linker, &caps)?;
         if let WorkerModule::Admitted(program) = &module {
             host::closure_owner::register(&mut linker, &program.artifact)?;
+            link_authenticated_external_imports(
+                &mut linker,
+                &mut store,
+                &self.engine,
+                &program.artifact,
+                external_libraries,
+            )?;
+        } else if !external_libraries.is_empty() {
+            bail!("raw Wasm cannot receive authenticated external libraries");
         }
 
         // Ungranted capability imports are rejected here.
@@ -2483,6 +2556,60 @@ impl Runtime {
 /// Register the capability host imports a grant entitles a VM to. Only granted
 /// families are defined; a module compiled against an ungranted operation cannot
 /// even instantiate.
+fn link_authenticated_external_imports(
+    linker: &mut Linker<VmState>,
+    store: &mut Store<VmState>,
+    engine: &Engine,
+    artifact: &AdmittedCanonicalArtifact,
+    libraries: &[AuthenticatedExternalLibrary],
+) -> Result<()> {
+    let mut supplied = BTreeMap::new();
+    for library in libraries {
+        library.verify()?;
+        if supplied.insert(library.identity, library).is_some() {
+            bail!("duplicate authenticated external library identity");
+        }
+    }
+    let mut expected = BTreeMap::new();
+    for import in artifact.external_imports() {
+        expected.insert(import.identity(), ());
+    }
+    if supplied.len() != expected.len() || !supplied.keys().all(|identity| expected.contains_key(identity)) {
+        bail!("external library set does not exactly match admitted artifact identities");
+    }
+
+    let mut instances = BTreeMap::new();
+    for identity in expected.keys() {
+        let library = supplied.get(identity).expect("identity set checked");
+        let module = Module::new(engine, &library.wasm)
+            .map_err(|error| Error::msg(format!("authenticated external Wasm failed Wasmtime validation: {error}")))?;
+        let empty: Linker<VmState> = Linker::new(engine);
+        let instance = empty.instantiate(&mut *store, &module)
+            .map_err(|error| Error::msg(format!("authenticated external Wasm did not instantiate: {error}")))?;
+        instances.insert(*identity, instance);
+    }
+    for import in artifact.external_imports() {
+        let instance = instances.get(&import.identity()).expect("identity set checked");
+        let function = instance.get_func(&mut *store, import.name()).ok_or_else(|| {
+            Error::msg(format!("authenticated external library lacks required export `{}`", import.name()))
+        })?;
+        // Identity selected the instance above. Module/name here only select
+        // the already-authenticated import slot and export; they are never a
+        // lookup key for a supplied library.
+        linker.define(&mut *store, import.module(), import.name(), function)?;
+    }
+    Ok(())
+}
+
+impl AuthenticatedExternalLibrary {
+    fn verify(&self) -> Result<()> {
+        if sha256(&self.wasm) != self.identity.wasm_sha256 {
+            bail!("external Wasm bytes changed after authenticated-library construction");
+        }
+        validate_closed_external_wasm(&self.wasm)
+    }
+}
+
 pub(crate) fn link_capability_imports(
     linker: &mut Linker<VmState>,
     caps: &Capabilities,
@@ -2568,20 +2695,24 @@ pub(crate) fn link_capability_imports(
         host::filesystem::link_exec(linker)?;
     }
     let net = caps.net_allow.is_some() || !caps.net_grants.is_empty();
+    // The admitted canonical Net ABI authenticates an opaque capability token
+    // at each call, so its registration is not authority.  It must be present
+    // even when an unreachable public helper mentions Net but `main` does not:
+    // Wasmtime resolves all imports before it can start the admitted entry.
+    host::network::link_canonical(linker)?;
     // (RFC-0005 Stage 3) The `run` wrapper mints each root `Net` param as an
     // `externref` via `mint_net`; only reachable when a Net grant exists.
     if net {
         host::network::link_mint(linker)?;
     }
-    // The Net family, linked per VERB right. Socket I/O carries no authority
-    // of its own (a socket is only obtainable through a granted connect or
-    // accept), so it is linked under either verb.
+    // The legacy Net family remains linked per VERB right. Socket I/O carries
+    // no authority of its own (a socket is only obtainable through a granted
+    // connect or accept), so it is linked under either verb.
     if net && caps.net_connect {
         host::network::link_connect(linker)?;
     }
     if net && caps.net_listen {
         host::network::link_listen(linker)?;
-        host::vm_worker::link_serve_pool(linker)?;
     }
     if net && (caps.net_connect || caps.net_listen) {
         host::network::link_socket_io(linker)?;

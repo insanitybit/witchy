@@ -935,7 +935,7 @@ mod tests {
     fn fixture_inputs() -> SourceInputs {
         use source_inputs::SourceFile;
         SourceInputs::captured("src/main.witchy".into(), Vec::new(), vec![
-            SourceFile { path: "src/main.witchy".into(), contents: Some("fn main() -> Nil:\n    Nil\n".into()) },
+            SourceFile { path: "src/main.witchy".into(), contents: Some("fn main() -> ():\n    ()\n".into()) },
             SourceFile { path: "witchy.toml".into(), contents: Some("[rune]\nname = \"fixture\"\nversion = \"1\"\n".into()) },
         ], "witchy.toml".into())
     }

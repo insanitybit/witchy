@@ -1,8 +1,8 @@
     use super::*;
     use std::borrow::Cow;
     use wasm_encoder::{
-        CustomSection, EntityType, ImportSection, Module as WasmModule, Section as _,
-        TypeSection, ValType,
+        CodeSection, CustomSection, EntityType, Function, FunctionSection, ImportSection,
+        Instruction, Module as WasmModule, Section as _, StartSection, TypeSection, ValType,
     };
     use witchy_wir::layout::{LayoutBundle, LayoutInterner};
 
@@ -63,7 +63,7 @@
             .expect("the exact admitted-byte path performs structural validation");
         let mut runtime = runtime;
         let mut vm = runtime
-            .instantiate_module(crate::runtime::WorkerModule::Unadmitted(module), Capabilities::none(), 4, None)
+            .instantiate_module(crate::runtime::WorkerModule::Unadmitted(module), Capabilities::none(), 4, None, &[])
             .expect("the exact admitted-byte path uses the normal capability instantiation");
         vm.run().expect("the exact admitted bytes execute without rewriting");
     }
@@ -77,6 +77,67 @@
         module.section(&types);
         module.section(&imports);
         module.finish()
+    }
+
+    fn external_identity(wasm: &[u8]) -> ExternalWasmIdentity {
+        ExternalWasmIdentity {
+            library_binding_digest: [7; 32],
+            wasm_sha256: sha256(wasm),
+            sidecar_sha256: [9; 32],
+        }
+    }
+
+    fn wasm_with_external_import() -> Vec<u8> {
+        let mut types = TypeSection::new();
+        types.ty().function([], []);
+        let mut imports = ImportSection::new();
+        imports.import("other", "call", EntityType::Function(0));
+        let mut module = WasmModule::new();
+        module.section(&types);
+        module.section(&imports);
+        module.finish()
+    }
+
+    fn wasm_with_start_function() -> Vec<u8> {
+        let mut types = TypeSection::new();
+        types.ty().function([], []);
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        let mut body = Function::new(Vec::new());
+        body.instruction(&Instruction::End);
+        let mut code = CodeSection::new();
+        code.function(&body);
+        let mut module = WasmModule::new();
+        module.section(&types);
+        module.section(&functions);
+        module.section(&StartSection { function_index: 0 });
+        module.section(&code);
+        module.finish()
+    }
+
+    #[test]
+    fn authenticated_external_library_rejects_tampering_imports_and_start() {
+        let closed = WasmModule::new().finish();
+        assert!(AuthenticatedExternalLibrary::from_verified_bytes(
+            external_identity(&closed), closed.clone(),
+        ).is_ok());
+
+        let closed_identity = external_identity(&closed);
+        let mut tampered = closed;
+        tampered.push(0);
+        assert!(AuthenticatedExternalLibrary::from_verified_bytes(
+            closed_identity, tampered,
+        ).unwrap_err().to_string().contains("differ"));
+
+        let imported = wasm_with_external_import();
+        assert!(AuthenticatedExternalLibrary::from_verified_bytes(
+            external_identity(&imported), imported,
+        ).unwrap_err().to_string().contains("imports are unsupported"));
+
+        let started = wasm_with_start_function();
+        assert!(AuthenticatedExternalLibrary::from_verified_bytes(
+            external_identity(&started), started,
+        ).unwrap_err().to_string().contains("start functions are unsupported"));
     }
 
     #[test]

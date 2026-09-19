@@ -10,7 +10,8 @@ Use `--files` when reviewing ownership or a proposed deletion.
 - Crate unit tests localize parser, formatter, type-checker, WIR, interpreter,
   runtime, and lowering contracts.
 - `src/example_tests/` supplies independently expected semantics and compares
-  the interpreter with compiled Wasm. Parity tells you the two backends agree.
+  canonical SafeWIR with admitted Wasm. Agreement tells you the two canonical
+  executors agree.
   It can't tell you they're right - for that you need an oracle that doesn't
   come from either one. [RFC-0135](../rfcs/0135-stable-semantics-converge.md)
   requires that independent expected result at support; experimental runtime
@@ -75,7 +76,7 @@ The completed deletion audit retained the following authorities after review:
 - ABI, WIR, ownership, region, allocation, and runtime-shape tests;
 - malformed-input, Unicode, URL, typed-error, source-location, and historical
   regression diagnostics;
-- interpreter/Wasm parity with explicit expected values, plus the independent
+- canonical SafeWIR/admitted-Wasm conformance with explicit expected values, plus the independent
   `semantic_conformance` and mutation/fault-injection oracles;
 - JSON, concurrency, traits, RFC-0080, RFC-0081, package-manager, testkit,
   test-host, merge-queue, runnable-book, and end-to-end security layers.

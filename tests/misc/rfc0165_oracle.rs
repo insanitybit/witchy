@@ -1,6 +1,6 @@
 //! RFC-0135/RFC-0165 execution oracle: every admitted program runs through
 //! the executable SafeWIR interpreter (the checker's semantics) and through
-//! the admitted Wasm; both must match the checked source interpreter's output,
+//! the admitted Wasm; both must match explicit fixture expectations,
 //! and neither may end with a live reference-counted object. The oracle catches an
 //! encoder defect the plan mirror faithfully reproduces (the destructor
 //! scratch-slot leak was one).
@@ -18,7 +18,7 @@ mod exec;
 #[test]
 fn admitted_observer_preserves_exact_artifact_and_execution() {
     let source = r#"
-fn make(console: Console, text: String) -> fn() -> Nil:
+fn make(console: Console, text: String) -> fn() -> ():
     fn(): console.print(text)
 
 fn main(console: Console):
@@ -35,7 +35,7 @@ fn main(console: Console):
         &checked, |validated, artifact| {
             calls += 1;
             assert!(artifact == &ordinary, "complete artifact equality inside observer");
-            oracle_validated(&checked, validated, artifact, "observed owner capture")
+            oracle_validated(validated, artifact, "observed owner capture")
         },
     ).expect_lowered("observed admission");
     assert_eq!(calls, 1);
@@ -105,9 +105,6 @@ fn main(console: Console):
     console.print(choose(false) ?? default_value(console))
 "#;
     let expected = ["value!", "default", "fallback!"].map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("Result coalescing source checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source Result coalescing"), expected);
     assert_eq!(oracle(source, "lazy Result coalescing and payload cleanup"), expected);
 }
 
@@ -126,13 +123,7 @@ fn main(console: Console):
     for (flag, traps) in [("true", false), ("false", true)] {
         let source = template.replace("FLAG", flag);
         let checked = witchy::resolve_std_only_checked(&source).expect("tail fail source checks");
-        let source_run = witchy::interpreter::run_checked_module(&checked, ".", Vec::new());
         let expected = ["before", "after"].map(str::to_owned).to_vec();
-        if traps {
-            assert!(source_run.is_err(), "source fail must abort");
-        } else {
-            assert_eq!(source_run.expect("source execution"), expected);
-        }
         let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("a tail trap is a complete block terminator");
         let entry = artifact.entry().unwrap();
@@ -174,21 +165,21 @@ fn main(console: Console):
 #[test]
 fn indirect_unit_parameters_and_results_three_legs() {
     let source = r#"
-fn number(value: Nil) -> Int:
+fn number(value: ()) -> Int:
     7
 
-fn identity(value: Nil) -> Nil:
+fn identity(value: ()) -> ():
     value
 
-fn tail_apply(f: fn(Nil) -> Int) -> Int:
-    f(Nil)
+fn tail_apply(f: fn(()) -> Int) -> Int:
+    f(())
 
-fn call_apply(f: fn(Nil) -> Int) -> Int:
-    let result = f(Nil)
+fn call_apply(f: fn(()) -> Int) -> Int:
+    let result = f(())
     result + 1
 
-fn tail_unit(f: fn(Nil) -> Nil) -> Nil:
-    f(Nil)
+fn tail_unit(f: fn(()) -> ()) -> ():
+    f(())
 
 fn main(console: Console):
     console.print("${tail_apply(number)} ${call_apply(number)}")
@@ -196,31 +187,25 @@ fn main(console: Console):
     console.print("unit")
 "#;
     let expected = ["7 8", "unit"].map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("Unit call source checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter"), expected);
     assert_eq!(oracle(source, "Unit arguments and results through indirect calls"), expected);
 }
 
 #[test]
 fn unit_capture_with_capability_three_legs() {
     let source = r#"
-fn consume(value: Nil) -> Int:
+fn consume(value: ()) -> Int:
     7
 
-fn make(console: Console, value: Nil) -> fn() -> Int:
+fn make(console: Console, value: ()) -> fn() -> Int:
     fn():
         console.print("tick")
         consume(value)
 
 fn main(console: Console):
-    let log = make(console, Nil)
+    let log = make(console, ())
     console.print("${log()}")
 "#;
     let expected = ["tick", "7"].map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("Unit capture checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("Unit capture source execution"), expected);
     assert_eq!(oracle(source, "Unit and capability closure capture"), expected);
 }
 
@@ -230,24 +215,24 @@ fn unit_payload_storage_calls_and_effects_three_legs() {
 type Payload(a):
     Payload(a, Int)
 
-fn unit(console: Console) -> Nil:
+fn unit(console: Console) -> ():
     console.print("effect")
-    Nil
+    ()
 
-fn forward(value: Payload(Nil)) -> Payload(Nil):
+fn forward(value: Payload(())) -> Payload(()):
     value
 
-fn consume(value: Nil, marker: Int) -> Int:
+fn consume(value: (), marker: Int) -> Int:
     marker
 
-fn observe(value: Payload(Nil)) -> Int:
+fn observe(value: Payload(())) -> Int:
     match value:
         Payload(item, marker) -> consume(item, marker)
 
-fn optional(present: Bool) -> Option(Nil):
-    if present: Some(Nil) else: None
+fn optional(present: Bool) -> Option(()):
+    if present: Some(()) else: None
 
-fn inspect(value: Option(Nil)) -> Int:
+fn inspect(value: Option(())) -> Int:
     match value:
         Some(item) -> consume(item, 7)
         None -> 3
@@ -255,15 +240,12 @@ fn inspect(value: Option(Nil)) -> Int:
 fn main(console: Console):
     let wrapped = forward(Payload(unit(console), 41))
     console.print("${observe(wrapped)}")
-    var values = [Nil, Nil]
-    values.push(Nil)
+    var values = [(), ()]
+    values.push(())
     console.print("${consume(values[2], values.length())}")
     console.print("${inspect(optional(true))} ${inspect(optional(false))}")
 "#;
     let expected = ["effect", "41", "3", "7 3"].map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("unit payload source checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter"), expected);
     assert_eq!(oracle(source, "unit payload storage, calls, and effects"), expected);
 }
 
@@ -282,9 +264,6 @@ fn main(console: Console):
 "#;
     let expected = vec!["held".to_owned(); 3];
     let checked = witchy::resolve_std_only_checked(source).expect("source checks after capture reuse");
-    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter");
-    assert_eq!(source_output, expected);
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("existing canonical authority accepts by-value capture");
     let entry = artifact.entry().unwrap();
@@ -325,9 +304,6 @@ fn main(console: Console):
     console.print("${callback(9)}")
 "#;
     let expected = vec!["42".to_owned(), "10".to_owned()];
-    let checked = witchy::resolve_std_only_checked(source).expect("pattern callable source checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter"), expected);
     assert_eq!(oracle(source, "pattern callable capture"), expected);
 }
 
@@ -355,9 +331,6 @@ fn main(console: Console):
 "#;
     let expected = ["9 2 8 3", "1 2 3", "none new tail 3", "held none tail"]
         .map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("indexed update source checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter"), expected);
     assert_eq!(oracle(source, "indexed replacement preserves owned values"), expected);
 }
 
@@ -366,7 +339,6 @@ fn list_indexed_update_rejects_negative_length_and_empty_indices_three_legs() {
     for (initial, index) in [("[1]", -1), ("[1]", 1), ("[]", 0)] {
         let source = format!("fn main(console: Console):\n    var values: List(Int) = {initial}\n    values[{index}] = 7\n    console.print(\"unreachable\")\n");
         let checked = witchy::resolve_std_only_checked(&source).expect("index is a runtime obligation");
-        assert!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new()).is_err());
         let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("checked failing index admits");
         let entry = artifact.entry().unwrap();
         let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
@@ -395,9 +367,6 @@ fn dynamic_reflection_example_expected_output_three_legs() {
     ];
     let checked = witchy::resolve_std_only_checked(source).expect("actual Dynamic example checks");
     assert!(checked.canonical_source().unwrap().dynamic_runtime_plan().is_some());
-    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("authenticated source interpreter");
-    assert_eq!(source_output, expected);
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("closed Dynamic source admits through the canonical route");
     let entry = artifact.entry().unwrap();
@@ -443,10 +412,6 @@ fn main(console: Console):
     console.print("${choose(true)} ${choose(false)}")
 "#;
     let expected = vec!["4 9".to_owned()];
-    let checked = witchy::resolve_std_only_checked(source).expect("source checks");
-    let source_output = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter");
-    assert_eq!(source_output, expected);
     assert_eq!(oracle(source, "all-terminal if flow value"), expected);
 }
 
@@ -482,9 +447,6 @@ fn main(console: Console):
 "#;
     let expected = ["held", "fresh", "held", "held", "empty", "held"]
         .map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("source checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter"), expected);
     assert_eq!(oracle(source, "loop return preserves owned tokens"), expected);
 }
 
@@ -502,9 +464,6 @@ fn generators_and_pascal_expected_output_three_legs() {
     ];
     for (label, source, expected) in cases {
         let expected = expected.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
-        let checked = witchy::resolve_std_only_checked(source).expect("example checks");
-        assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-            .expect("source interpreter"), expected, "{label}: specified output");
         assert_eq!(oracle(source, label), expected, "{label}: admitted execution");
     }
 }
@@ -524,34 +483,29 @@ fn main(console: Console):
     receiver(console).print(message(console))
 "#;
     let expected = ["receiver", "message", "payload"].map(str::to_owned).to_vec();
-    let checked = witchy::resolve_std_only_checked(source).expect("Console expression checks");
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
-        .expect("source interpreter"), expected);
     assert_eq!(oracle(source, "actual Console receiver and effect order"), expected);
 }
 
 fn oracle(source: &str, label: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source).unwrap_or_else(|e| panic!("{label}: {e}"));
     let (_, output) = codegen::compile_checked_module_artifact_with_observer(
-        &checked, |validated, artifact| oracle_validated(&checked, validated, artifact, label),
+        &checked, |validated, artifact| oracle_validated(validated, artifact, label),
     )
         .expect_lowered(&format!("{label}: the foundation subset admits this program"));
     output
 }
 
 fn oracle_validated(
-    checked: &witchy_types::pipeline::CheckedModule,
     validated: &ValidatedSafeWir,
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     label: &str,
 ) -> Vec<String> {
-    oracle_validated_profiled(checked, validated, artifact, label, None)
+    oracle_validated_profiled(validated, artifact, label, None)
 }
 
 #[derive(Default)]
 struct OraclePhaseTiming {
     canonical_interpret: Duration,
-    source_interpret: Duration,
     runtime_setup: Duration,
     spawn_admitted: Duration,
     wasm_run: Duration,
@@ -559,14 +513,13 @@ struct OraclePhaseTiming {
 }
 
 fn oracle_validated_profiled(
-    checked: &witchy_types::pipeline::CheckedModule,
     validated: &ValidatedSafeWir,
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     label: &str,
     mut timing: Option<&mut OraclePhaseTiming>,
 ) -> Vec<String> {
-    // Each nextest shard has its own process. Do not rely on an earlier
-    // source-interpreter run to install the compiled compiler-service vtable.
+    // Each nextest shard has its own process; install compiler-service natives
+    // before running the canonical interpreter.
     witchy_interp::compiler_natives::install();
     let entry = artifact.entry().unwrap_or_else(|| panic!("{label}: a program has an entry"));
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
@@ -591,26 +544,6 @@ fn oracle_validated_profiled(
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
         timing.canonical_interpret = started.elapsed();
     }
-
-    // Use the same authenticated checked source, not reconstructed raw AST.
-    // This is an independent output leg, not an assertion of complete host
-    // trace or exit-code equivalence. In particular, source main -> Int sets
-    // an exit code rather than printing its result; a silent main -> Float
-    // surfaces its result as output.
-    let phase_started = timing.as_ref().map(|_| Instant::now());
-    let source_output = witchy::interpreter::run_checked_module(checked, ".", Vec::new())
-        .unwrap_or_else(|e| panic!("{label}: source interpreter refused: {e}"));
-    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), phase_started) {
-        timing.source_interpret = started.elapsed();
-    }
-    let mut oracle_source_output = run.output.clone();
-    if oracle_source_output.is_empty()
-        && let Some(InterpreterValue::FloatBits(bits)) = run.results.first()
-    {
-        oracle_source_output.push(witchy_syntax::fmt::render_float(f64::from_bits(*bits)));
-    }
-    assert_eq!(source_output, oracle_source_output,
-        "{label}: printed lines differ between source and oracle");
 
     let phase_started = timing.as_ref().map(|_| Instant::now());
     // This corpus checks observable equivalence, admission, and heap ownership;
@@ -712,12 +645,7 @@ fn main(console: Console):
 "#;
     let expected = ["a!", "c.", "a!", "b!", "c!", "1"]
         .into_iter().map(str::to_owned).collect::<Vec<_>>();
-    let checked = witchy::resolve_std_only_checked(source).expect("extent result source checks");
-    let source_output = witchy::interpreter::run_module_args(
-        checked.module().clone(), ".", Vec::new(), Vec::new(),
-    ).expect("extent result source interpreter");
-    assert_eq!(source_output, expected);
-    oracle(source, "nested and multiarm extent results");
+    assert_eq!(oracle(source, "nested and multiarm extent results"), expected);
 }
 
 #[test]
@@ -856,7 +784,6 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
                 let observer_started = emit_timing.then(Instant::now);
                 let mut phases = OraclePhaseTiming::default();
                 oracle_validated_profiled(
-                    &checked,
                     validated,
                     artifact,
                     &format!("examples/{name}"),
@@ -876,11 +803,10 @@ fn oracle_examples_shard(shard: usize, shards: usize) {
             let production_lowering_admission = admission.saturating_sub(observer_elapsed);
             let total = total_started.map_or(Duration::ZERO, |started| started.elapsed());
             eprintln!(
-                "WITCHY_ORACLE_TIMING\texample={name}\tcheck_ms={:.3}\tproduction_lowering_admission_ms={:.3}\tcanonical_interpret_ms={:.3}\tsource_interpret_ms={:.3}\truntime_setup_ms={:.3}\tspawn_admitted_ms={:.3}\twasm_run_ms={:.3}\theap_audit_ms={:.3}\ttotal_ms={:.3}",
+                "WITCHY_ORACLE_TIMING\texample={name}\tcheck_ms={:.3}\tproduction_lowering_admission_ms={:.3}\tcanonical_interpret_ms={:.3}\truntime_setup_ms={:.3}\tspawn_admitted_ms={:.3}\twasm_run_ms={:.3}\theap_audit_ms={:.3}\ttotal_ms={:.3}",
                 check.as_secs_f64() * 1_000.0,
                 production_lowering_admission.as_secs_f64() * 1_000.0,
                 phases.canonical_interpret.as_secs_f64() * 1_000.0,
-                phases.source_interpret.as_secs_f64() * 1_000.0,
                 phases.runtime_setup.as_secs_f64() * 1_000.0,
                 phases.spawn_admitted.as_secs_f64() * 1_000.0,
                 phases.wasm_run.as_secs_f64() * 1_000.0,
@@ -901,7 +827,6 @@ fn assert_opaque_closure_three_legs(source: &str, expected: &[&str]) {
 fn assert_opaque_closure_three_legs_with_caps(source: &str, expected: &[&str], caps: Capabilities) {
     let checked = witchy::resolve_std_only_checked(source).expect("opaque closure source checks");
     let expected = expected.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
-    assert_eq!(witchy::interpreter::run_checked_module(&checked, ".", Vec::new()).expect("source execution"), expected);
     let artifact = codegen::compile_checked_module_artifact(&checked).expect_lowered("opaque closure canonical kernel");
     let entry = artifact.entry().expect("entry");
     let function = FunctionId::new(entry.export().strip_prefix('f').unwrap().parse().unwrap());
@@ -943,7 +868,7 @@ fn opaque_closure_mixed_string_console_list_after_original_cleanup_three_legs() 
 fn prefix(n: Int) -> String:
     "log: " + "${n}"
 
-fn make(own text: String, console: Console) -> fn(String) -> Nil:
+fn make(own text: String, console: Console) -> fn(String) -> ():
     let log = fn(message: String): console.print(text + message)
     console.print(text)
     log
@@ -982,7 +907,7 @@ fn opaque_closure_mixed_string_console_after_original_cleanup_three_legs() {
 fn prefix(n: Int) -> String:
     "log: " + "${n}"
 
-fn make(own text: String, console: Console) -> fn(String) -> Nil:
+fn make(own text: String, console: Console) -> fn(String) -> ():
     let log = fn(message: String): console.print(text + message)
     console.print(text)
     log

@@ -264,11 +264,11 @@ fn alias_field(rr: R) -> String:\n\
 \x20   b\n\
 fn dict_inserted(d: Dict(String, Int), key: String, value: Int) -> Dict(String, Int):\n\
 \x20   var out = d\n\
-\x20   dict.insert(out, key, value)\n\
+\x20   let _ = dict.insert(out, key, value)\n\
 \x20   out\n\
 fn dict_removed(d: Dict(String, Int), key: String) -> Dict(String, Int):\n\
 \x20   var out = d\n\
-\x20   dict.remove(out, key)\n\
+\x20   let _ = dict.remove(out, key)\n\
 \x20   out\n\
 fn shape_area(sh: Shape) -> Int:\n\
 \x20   match sh:\n\
@@ -713,14 +713,14 @@ fn gen_async_program(seed: u64) -> String {
     format!(
         "import chan\n\
          from chan import Sender, Receiver\n\n\
-         async fn produce(tx: Sender(Int), n: Int, start: Int, step: Int) -> Nil:\n\
+         async fn produce(tx: Sender(Int), n: Int, start: Int, step: Int) -> ():\n\
          \x20   var i = 0\n\
          \x20   var next = start\n\
          \x20   while i < n:\n\
          \x20       chan.send(tx, next).await\n\
          \x20       i = i + 1\n\
          \x20       next = next + step\n\n\
-         async fn fold(console: Console, rx: Receiver(Int), bias: Int, n: Int) -> Nil:\n\
+         async fn fold(console: Console, rx: Receiver(Int), bias: Int, n: Int) -> ():\n\
          \x20   var sum = bias\n\
          \x20   for _i in 0..n:\n\
          \x20       let value = chan.recv(rx).await\n\
@@ -1421,11 +1421,11 @@ fn sorted(xs: List(Int)) -> List(Int):\n\
 \x20   out\n\
 fn dict_inserted(d: Dict(String, Int), key: String, value: Int) -> Dict(String, Int):\n\
 \x20   var out = d\n\
-\x20   dict.insert(out, key, value)\n\
+\x20   let _ = dict.insert(out, key, value)\n\
 \x20   out\n\
 fn dict_removed(d: Dict(String, Int), key: String) -> Dict(String, Int):\n\
 \x20   var out = d\n\
-\x20   dict.remove(out, key)\n\
+\x20   let _ = dict.remove(out, key)\n\
 \x20   out\n";
     format!(
         "import list\nimport string\nimport dict\nimport bytes\nimport set\n\n{helpers}\nfn main(console: Console):\n\

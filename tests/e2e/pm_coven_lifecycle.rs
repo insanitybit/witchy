@@ -220,6 +220,63 @@ fn full_lifecycle_publish_promote_add_use() {
     assert!(stdout(&out).contains("released"), "list: {}", stdout(&out));
 }
 
+/// RFC-0167 package lifecycle: an explicitly declared precompiled dependency
+/// uses the normal add flow, not a raw artifact command. The package name and
+/// exact version come from resolution/lock; the manifest selects only the
+/// admitted kind and logical module. The fixture's bytes are deliberately not
+/// executable Wasm: this test owns the package authentication boundary, while
+/// the compiler's scalar external-call suite owns execution/ABI admission.
+#[test]
+fn precompiled_library_add_materializes_signed_cache_and_verifies_offline() {
+    let server = RegistryServer::start();
+    let fe = FrontEnd::new(&server, "precompiled-library");
+    let app = fe.new_app();
+    let lib = fe.lib("acme/extern", "0.1.0", "pub fn source_marker() -> Int:\n    1\n");
+    let wasm = "not-wasm";
+    let sidecar = "sealed-sidecar";
+    let manifest = format!(
+        r#"{{"version":3,"artifacts":{{}},"libraries":{{"src/extern":{{"kind":"precompiled","wasm_sha256":"{}","wasm_size":{},"opt_callable_export_sha256":"{}","opt_callable_export_size":{}}}}}}}"#,
+        sha256_hex(wasm), wasm.len(), sha256_hex(sidecar), sidecar.len()
+    );
+    std::fs::create_dir_all(lib.join("artifacts/src")).unwrap();
+    std::fs::write(lib.join("artifact.json"), manifest).unwrap();
+    std::fs::write(lib.join("artifacts/src/extern.wasm"), wasm).unwrap();
+    std::fs::write(lib.join("artifacts/src/extern.opt"), sidecar).unwrap();
+    fe.publish_promote(&lib, "acme/extern", "0.1.0");
+
+    // Selection is explicit in the ordinary consumer manifest. There is no
+    // package/version shadow coordinate in this inline declaration.
+    let app_manifest = app.join("witchy.toml");
+    let old = std::fs::read_to_string(&app_manifest).unwrap();
+    std::fs::write(
+        &app_manifest,
+        format!("{old}\n[dependencies]\n\"extern\" = {{ version = \"^0.1.0\", kind = \"precompiled\", module = \"src/extern\" }}\n"),
+    )
+    .unwrap();
+    let out = fe.pm(&app, &["add", "acme/extern"], None);
+    assert!(out.status.success(), "precompiled add failed: {}\n{}", stderr(&out), stdout(&out));
+
+    let vendor = app.join("vendor/extern");
+    assert!(vendor.join("coven.json").exists() && vendor.join("coven-artifact.json").exists(), "signed receipts must be materialized");
+    assert_eq!(std::fs::read(vendor.join("artifacts/src/extern.wasm")).unwrap(), wasm.as_bytes());
+    assert_eq!(std::fs::read(vendor.join("artifacts/src/extern.opt")).unwrap(), sidecar.as_bytes());
+    assert!(!vendor.join("src").exists() && !vendor.join("witchy.toml").exists(), "source/precompiled layout overlap must not be created");
+
+    let lock = std::fs::read_to_string(app.join("witchy.lock")).unwrap();
+    assert!(lock.contains("kind = \"precompiled\"") && lock.contains("module = \"src/extern\""), "lock must retain the authenticated selector: {lock}");
+    assert!(!lock.contains("hash ="), "precompiled lock must not claim a source hash: {lock}");
+
+    let out = fe.pm(&app, &["verify", "."], None);
+    assert!(out.status.success(), "offline authenticated precompiled verify failed: {}\n{}", stderr(&out), stdout(&out));
+
+    // Local cache metadata is not trust: same-size byte tampering fails the
+    // independent record -> artifact -> decoded-byte verification on the next
+    // offline package command.
+    std::fs::write(vendor.join("artifacts/src/extern.wasm"), b"bad-wasm").unwrap();
+    let out = fe.pm(&app, &["verify", "."], None);
+    assert!(!out.status.success() && stdout(&out).contains("precompiled Wasm bytes"), "tampered cache must fail closed: {}\n{}", stderr(&out), stdout(&out));
+}
+
 /// The registry recomputes a rune's footprint server-side and refuses an
 /// under-declared publish (400): a library that demands `Net` but declares only
 /// `Console` is rejected — the under-declaration a supply-chain attacker relies

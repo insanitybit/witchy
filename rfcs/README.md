@@ -2,9 +2,9 @@
 
 Start with [RFC-0167: Witchy syntax and semantics](0167-witchy-language-contract.md).
 It is the single target language contract, replacing the separate language
-capstones. Its choices are explicit; its status is **proposed**, not implemented.
-The [acceptance ledger](0167-acceptance-ledger.md) records the remaining adoption
-and compiler work. Optimization expansion is deferred.
+capstones. Its choices are **accepted**, not fully implemented. The
+[acceptance ledger](0167-acceptance-ledger.md) records the remaining compiler
+and evidence work. Optimization expansion is deferred.
 
 ## Authority
 
@@ -24,11 +24,17 @@ are not weakened by the source-language consolidation.
 
 ## Consolidation policy
 
-At the user's request, the 2026-09-16 cleanup removes 54 obsolete language RFC
+At the user's request, the 2026-09-16 cleanup removes 55 obsolete language RFC
 and roadmap bodies instead of leaving conflicting proposals beside the new
 contract. [The retirement index](retired-rfcs.md) maps every removed file to its
 replacement and names the Git revision that recovers its exact old contents.
 No retired RFC number is reused.
+
+[The retained-contract audit](retained-contract-audit.md) identifies remaining
+historical syntax, scoped supersessions, and deferred competing proposals.
+Retained examples and old acceptance labels describe their recorded revisions;
+they do not restore retired syntax or override RFC-0167. Preserve their evidence,
+but migrate fixtures to the selected contract before using them for new acceptance.
 
 This explicitly amends RFC-0001's frozen-file policy: superseded bodies may be
 deleted during an authorized consolidation once their surviving decisions,

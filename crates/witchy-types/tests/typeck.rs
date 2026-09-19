@@ -297,6 +297,55 @@ mod tests {
     }
 
     #[test]
+    fn public_non_unit_returns_require_source_annotations() {
+        let assert_annotation_error = |source: &str, callable: &str| {
+            let error = check_str(source).expect_err("public non-unit result must be declared");
+            assert!(
+                error.contains("public function")
+                    && error.contains(callable)
+                    && error.contains("inferred non-unit")
+                    && error.contains("->"),
+                "{error}"
+            );
+        };
+
+        for mode in ["", "mode opt\n\n"] {
+            assert_annotation_error(
+                &format!("{mode}pub fn exported():\n    1\n"),
+                "exported",
+            );
+            check_str(&format!("{mode}pub fn effect():\n    ()\n"))
+                .expect("a public unit result may omit its annotation");
+            check_str(&format!(
+                "{mode}pub fn relay():\n    later()\n\npub fn later():\n    ()\n"
+            ))
+            .expect("a public unit wrapper may resolve through a later declaration");
+            check_str(&format!("{mode}fn private_value():\n    1\n"))
+                .expect("a private non-unit helper retains return inference");
+        }
+
+        for mode in ["", "mode opt\n\n"] {
+            assert_annotation_error(
+                &format!(
+                    "{mode}type Meter:\n    Meter(Int)\n\nimpl Meter:\n    pub fn zero():\n        Meter(0)\n"
+                ),
+                "Meter.zero",
+            );
+            assert_annotation_error(
+                &format!(
+                    "{mode}type Meter:\n    Meter(Int)\n\nimpl Meter:\n    pub fn value(self):\n        1\n"
+                ),
+                "Meter.value",
+            );
+        }
+
+        check_str(
+            "type Meter:\n    Meter(Int)\n\nimpl Meter:\n    fn private_value(self):\n        1\n\nfn use_private(meter: Meter):\n    meter.private_value()\n",
+        )
+        .expect("private methods retain inferred returns and local dispatch");
+    }
+
+    #[test]
     fn packed_list_can_cross_a_direct_or_stored_boundary() {
         // (RFC-0111 stage 2) closed direct signatures and ordinary record fields
         // carry the exact canonical packed layout. Trait/first-class boundaries
@@ -313,36 +362,25 @@ mod tests {
     }
 
     #[test]
-    fn frozen_value_cannot_be_declared_mutable() {
-        // (RFC-0025) `frozen` is deeply immutable, so it cannot also be `var`/`own`.
-        let var_let = check_str(
-            "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    console.print(\"hi\")\n",
+    fn frozen_value_handles_may_be_mutable_or_consumed() {
+        // RFC-0167 freezes the payload, not the value handle. `var` replaces
+        // the whole value and `own` transfers it; deep mutation remains checked
+        // at its projection/dereference site.
+        check_str(
+            "fn main(console: Console):\n    var x: frozen List(Int) = [1, 2]\n    x = [3]\n    console.print(\"hi\")\n",
         )
-        .unwrap_err();
-        assert!(
-            var_let.contains("frozen") && var_let.contains("var"),
-            "{var_let}"
-        );
-
-        // A mutator shape (`var` first + self-typed return) so RFC-0064's row-3
-        // check passes and the frozen/convention conflict is what surfaces.
-        let var_param =
-            check_str("fn f(var xs: frozen List(Int)) -> List(Int):\n    xs\n").unwrap_err();
-        assert!(
-            var_param.contains("frozen") && var_param.contains("mutable"),
-            "{var_param}"
-        );
-
-        let own_param =
-            check_str("fn f(own xs: frozen List(Int)) -> Int:\n    list.length(xs)\n").unwrap_err();
-        assert!(own_param.contains("frozen"), "{own_param}");
+        .expect("a mutable frozen binding may be replaced");
+        check_str("fn f(var xs: frozen List(Int)) -> frozen List(Int):\n    xs = [1]\n    xs\n")
+            .expect("a var frozen parameter may replace its write-back value");
+        check_str("fn f(own xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
+            .expect("an own frozen parameter transfers its value handle");
 
         // A `let`-bound frozen value and a read-only frozen parameter are valid.
         check_str("fn f(xs: frozen List(Int)) -> Int:\n    list.length(xs)\n")
             .expect("a read-only frozen parameter is valid");
         check_str("fn main(console: Console):\n    let x: frozen List(Int) = [1, 2]\n    console.print(\"${list.length(x)}\")\n")
             .expect("a let-bound frozen value is valid");
-        // `unique`/`local unique` are compatible with mutation (FBIP) — `var` is
+        // `unique` is compatible with mutation (FBIP) - `var` is
         // fine. A mutator shape (self-typed return) satisfies RFC-0064's row-3
         // rule (a `var` receiver must be a mutator or a procedure).
         check_str("fn f(var xs: unique List(Int)) -> List(Int):\n    xs\n")
@@ -350,427 +388,206 @@ mod tests {
     }
 
     #[test]
-    fn explicit_let_may_return_a_lifetime_related_view() {
+    fn immutable_views_use_one_surface_without_named_lifetimes() {
         check_str(
-            "mode opt\n\nfn view(let xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n",
+            "fn view(xs: &Int) -> &Int:\n    xs\n",
         )
-        .expect("the output lifetime makes the explicit borrow escape safe");
+        .expect("an immutable rooted view may be returned without naming a lifetime");
 
         let unrelated = check_str(
-            "mode opt\n\nfn bad(let xs: let('a) List(Int)) -> View(List(Int), 'b):\n    xs\n",
+            "fn bad(xs: &Int) -> String:\n    xs\n",
         )
-        .expect_err("an unrelated output lifetime must not permit the escape");
-        assert!(
-            unrelated.contains("cannot be returned") || unrelated.contains("no parameter"),
-            "{unrelated}"
-        );
+        .expect_err("a view must not implicitly coerce to its payload type");
+        assert!(unrelated.contains("expected `String`") || unrelated.contains("found `&Int`"), "{unrelated}");
 
-        let owned = check_str("fn bad(let xs: List(Int)) -> List(Int):\n    xs\n")
-            .expect_err("an ordinary explicit borrow still cannot escape");
-        assert!(owned.contains("cannot be returned"), "{owned}");
+        check_str("mode opt\n\nfn view(xs: &Int) -> &Int:\n    xs\n")
+            .expect("the same immutable view syntax works in opt mode");
     }
 
     #[test]
     fn borrowed_nominal_lifetime_parameters_kind_check_in_opt_mode() {
         check_str(
-            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n    offset: Int\n\nfn inspect(let parser: let('a) Parser('a)) -> Int:\n    0\n",
+            "mode opt\n\ntype Parser:\n    input: &Bytes\n    offset: Int\n\nfn inspect(parser: Parser) -> Int:\n    parser.offset\n",
         )
-        .expect("named-field borrowed nominal and related signature check");
+        .expect("named-field aggregate views and related signature check");
         check_str(
-            "mode opt\n\ntype Pair(a, 'left, 'right):\n    Pair(View(a, 'left), View(a, 'right))\n\nfn inspect(let pair: let('left) Pair(Int, 'left, 'right), let owner: let('right) Int) -> Int:\n    0\n",
+            "mode opt\n\nfn inspect[a](pair: &a, owner: &Int) -> Int:\n    0\n",
         )
-        .expect("single positional borrowed nominal preserves mixed type/lifetime kinds");
-        check_str("mode opt\n\ntype SameSpelling(a, 'a):\n    first: a\n    second: View(a, 'a)\n")
-            .expect("ordinary `a` and lifetime `'a` occupy distinct kinds");
+        .expect("generic and concrete immutable views share one syntax");
+        check_str("mode opt\n\ntype Pair:\n    first: &Int\n    second: &String\n")
+            .expect("aggregate fields carry immutable views without lifetime parameters");
     }
 
     #[test]
-    fn borrowed_nominal_declaration_rejections_are_precise() {
-        let outside_opt = check_str("type Parser('a):\n    input: View(Bytes, 'a)\n")
-            .expect_err("borrowed nominal declarations require mode opt");
-        assert!(
-            outside_opt.contains("explicit references and lifetime parameters")
-                && outside_opt.contains("only in `mode opt` files"),
-            "{outside_opt}"
-        );
-
-        let duplicate = check_str("mode opt\n\ntype Parser('a, 'a):\n    input: View(Bytes, 'a)\n")
-            .expect_err("duplicate lifetime parameters reject");
-        assert!(
-            duplicate
-                .contains("lifetime parameter `'a` is declared more than once in type `Parser`")
-                && duplicate.contains("lifetime parameter names must be unique"),
-            "{duplicate}"
-        );
-
-        let unbound_field =
-            check_str("mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'other)\n")
-                .expect_err("field lifetime must be declared by the nominal head");
-        assert!(
-            unbound_field.contains("type `Parser` uses lifetime `'other` but does not declare it")
-                && unbound_field.contains("add `'other` to the nominal type parameters"),
-            "{unbound_field}"
-        );
-
-        let missing_head = check_str("mode opt\n\ntype Parser:\n    input: View(Bytes, 'a)\n")
-            .expect_err("a field lifetime cannot exist without a nominal binder");
-        assert!(
-            missing_head.contains("type `Parser` uses lifetime `'a` but does not declare it"),
-            "{missing_head}"
-        );
-
-        let unused = check_str("mode opt\n\ntype Parser('a):\n    offset: Int\n")
-            .expect_err("declared lifetimes must relate a field");
-        assert!(
-            unused.contains("declares lifetime parameter `'a` but no field uses it"),
-            "{unused}"
-        );
-
-        let sum = check_str(
-            "mode opt\n\ntype MaybeParser('a):\n    Empty\n    Parser(View(Bytes, 'a))\n",
-        )
-        .expect_err("borrowed sums are outside the fixed-shell stage");
-        assert!(
-            sum.contains("borrowed nominal type `MaybeParser` has 2 variants")
-                && sum.contains("single-variant positional types only"),
-            "{sum}"
-        );
-    }
-
-    #[test]
-    fn normal_mode_rejects_every_explicit_reference_surface_before_loan_analysis() {
+    fn retired_reference_surfaces_fail_closed_before_loan_analysis() {
         let cases = [
             (
-                "reference parameter",
+                "explicit reference lifetime",
                 "fn read(value: &'a String) -> Int:\n    value.length()\n",
             ),
             (
-                "reference result",
-                "fn first(value: String) -> &'a String:\n    &value\n",
+                "mutable reference",
+                "fn read(value: &mut String) -> Int:\n    value.length()\n",
             ),
             (
-                "local reference annotation",
-                "fn main():\n    let value = \"text\"\n    let view: &'a String = &value\n    view\n",
-            ),
-            (
-                "borrow expression",
-                "fn main():\n    let value = \"text\"\n    let view = &value\n    view\n",
-            ),
-            (
-                "mutable borrow expression",
-                "fn main():\n    var value = \"text\"\n    let view = &mut value\n    *view = \"next\"\n",
-            ),
-            (
-                "reference-bearing container",
-                "fn read(values: List(&'a String)) -> Int:\n    0\n",
-            ),
-            (
-                "legacy borrowed-view parameter",
-                "fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n",
-            ),
-            (
-                "nominal lifetime declaration",
-                "type Parser('a):\n    input: &'a String\n",
+                "legacy View carrier",
+                "fn read(value: View(String, 'a)) -> Int:\n    0\n",
             ),
         ];
 
         for (surface, source) in cases {
             let error = check_str(source).expect_err(surface);
             assert!(
-                error.contains("explicit references") && error.contains("mode opt"),
-                "{surface} leaked past the normal-mode boundary: {error}"
+                error.contains("retired") || error.contains("lifetime"),
+                "{surface} was not rejected fail-closed: {error}"
             );
         }
+
+        check_str("fn read(value: &String) -> String:\n    *value\n")
+            .expect("the lifetime-free immutable view syntax remains available");
     }
 
     #[test]
     fn borrowed_nominal_type_arguments_are_kind_checked_and_bound() {
-        let ordinary_slot = check_str(
-            "mode opt\n\nfn bad(let owner: let('a) Int, values: List('a)) -> Int:\n    0\n",
+        check_str(
+            "mode opt\n\nfn identity[a](value: &a) -> &a:\n    value\n\nfn use_it(value: &Int) -> Int:\n    *identity(value)\n",
         )
-        .expect_err("a lifetime cannot instantiate List's type parameter");
-        assert!(
-            ordinary_slot.contains(
-                "lifetime argument `'a` cannot be used in ordinary type position 1 of `List`"
-            ) || ordinary_slot
-                .contains("lifetime argument `'a` cannot be used for ordinary type parameter"),
-            "{ordinary_slot}"
-        );
-
-        let lifetime_slot = check_str(
-            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n\nfn bad(parser: Parser(Int)) -> Int:\n    0\n",
+        .expect("generic view carriers bind ordinary type arguments directly");
+        check_str(
+            "mode opt\n\ntype Holder:\n    value: &Int\n\nfn store(value: &Int) -> Holder:\n    Holder(value)\n",
         )
-        .expect_err("an ordinary type cannot instantiate a lifetime parameter");
-        assert!(
-            lifetime_slot.contains(
-                "type `Parser` expects a lifetime argument for parameter `'a` at position 1"
-            ) && lifetime_slot.contains("got ordinary type `Int`"),
-            "{lifetime_slot}"
-        );
-
-        let unbound_use = check_str(
-            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n\nfn bad(parser: Parser('missing)) -> Int:\n    0\n",
-        )
-        .expect_err("a borrowed nominal application needs an input lifetime binder");
-        assert!(
-            unbound_use.contains("callable `bad` uses lifetime argument `'missing`")
-                && unbound_use.contains("no parameter binds that lifetime"),
-            "{unbound_use}"
-        );
+        .expect("aggregate view carriers do not require lifetime arguments");
     }
 
     #[test]
     fn borrowed_nominal_lifetime_relations_are_not_erased_by_type_unification() {
-        let error = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn relabel(let left: let('left) String, let right: let('right) String, holder: Holder('left)) -> Holder('right):\n    holder\n",
+        check_str(
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn relay(holder: Holder) -> Holder:\n    holder\n",
         )
-        .expect_err("a borrowed nominal lifetime cannot be relabeled");
-        assert!(
-            error.contains("function `relabel` body")
-                && error.contains("expected `'right`, found `'left`"),
-            "{error}"
-        );
+        .expect("aggregate view roots are retained without relational lifetime syntax");
     }
 
     #[test]
     fn borrowed_nominal_construction_is_checked_with_owner_root_lowering() {
         check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn hold(let input: let('a) String) -> Holder('a):\n    Holder(input)\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn hold(input: &String) -> Holder:\n    Holder(input)\n",
         )
-        .expect("a fixed borrowed constructor publishes owner-root loan facts");
+        .expect("a fixed view constructor publishes owner-root facts");
     }
 
     #[test]
     fn explicit_reference_nominal_can_cross_nullable_option() {
         check_str(
-            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\nfn choose(left: &'a mut String, right: &'b mut String) -> Option(Pair('a, 'b)):\n    Some(Pair(left, right))\n",
+            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Option(Pair):\n    Some(Pair(left, right))\n",
         )
-        .expect("an explicit-reference nominal can cross an Option carrier");
+        .expect("an immutable-view nominal can cross an Option carrier");
     }
 
     #[test]
     fn explicit_reference_nominal_can_cross_nullable_option_list_carrier() {
         check_str(
-            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\nfn choose(left: &'a mut String, right: &'b mut String) -> Option(List(Pair('a, 'b))):\n    Some([Pair(left, right)])\n",
+            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Option(List(Pair)):\n    Some([Pair(left, right)])\n",
         )
-        .expect("an explicit-reference nominal can cross an Option list carrier");
+        .expect("an immutable-view nominal may be nested in an Option list carrier");
     }
 
     #[test]
     fn explicit_reference_nominal_can_cross_result_carrier() {
         check_str(
-            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\nfn choose(left: &'a mut String, right: &'b mut String) -> Result(Pair('a, 'b), String):\n    Ok(Pair(left, right))\n",
+            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Result(Pair, String):\n    Ok(Pair(left, right))\n",
         )
-        .expect("an explicit-reference nominal can cross a Result carrier");
+        .expect("an immutable-view nominal can cross a Result carrier");
     }
 
     #[test]
     fn explicit_reference_nominal_can_cross_result_list_carrier() {
         check_str(
-            "mode opt\n\ntype Pair('a, 'b):\n    left: &'a mut String\n    right: &'b mut String\n\nfn choose(left: &'a mut String, right: &'b mut String) -> Result(List(Pair('a, 'b)), String):\n    Ok([Pair(left, right)])\n",
+            "mode opt\n\ntype Pair:\n    left: &String\n    right: &String\n\nfn choose(left: &String, right: &String) -> Result(List(Pair), String):\n    Ok([Pair(left, right)])\n",
         )
-        .expect("an explicit-reference nominal can cross a Result list carrier");
+        .expect("an immutable-view nominal may be nested in a Result list carrier");
     }
 
     #[test]
-    fn borrowed_nominals_reject_owned_container_storage_before_descriptors() {
-        let error = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Bag('a):\n    holders: List(Holder('a))\n",
+    fn borrowed_nominals_keep_aggregate_view_storage_typed() {
+        check_str(
+            "mode opt\n\ntype Holder:\n    view: &String\n\ntype Bag:\n    holders: List(Holder)\n",
         )
-        .expect_err("borrowed container storage belongs to RFC-0112 stage 5");
-        assert!(
-            error.contains("type `Bag` stores a borrowed nominal relation inside `List`")
-                && error.contains("descriptor/root-lowering stage"),
-            "{error}"
-        );
+        .expect("aggregate view storage remains type-checked rather than erased");
     }
 
     #[test]
     fn nested_function_lifetime_does_not_satisfy_an_outer_nominal_binder() {
-        let error =
-            check_str("mode opt\n\ntype Phantom('a):\n    callback: fn(View(String, 'a)) -> Int\n")
-                .expect_err("nested callable lifetimes are independently quantified");
-        assert!(
-            error.contains("type `Phantom` declares lifetime parameter `'a` but no field uses it"),
-            "{error}"
-        );
+        check_str("mode opt\n\ntype Phantom:\n    callback: fn(&String) -> Int\n")
+            .expect("nested callable view signatures are self-contained");
     }
 
     #[test]
-    fn borrowed_nominal_containers_reject_on_every_callable_surface() {
+    fn borrowed_nominal_containers_are_checked_on_every_callable_surface() {
         let cases = [
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n    0\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntrait Bad:\n    fn inspect(let owner: let('a) String, let holders: List(Holder('a))) -> Int\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntype Subject:\n    Subject\n\ntrait Inspect:\n    fn inspect(self) -> Int\n\nimpl Inspect for Subject:\n    fn inspect(self, let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n        0\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn outer() -> Int:\n    let bad = fn(let owner: let('a) String, let holders: List(Holder('a))) -> Int:\n        0\n    0\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let callback: fn(View(String, 'a), List(Holder('a))) -> Int) -> Int:\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn bad(owner: &String, holders: List(Holder)) -> Int:\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\ntrait Bad:\n    fn inspect(owner: &String, holders: List(Holder)) -> Int\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\ntype Subject:\n    Subject\n\ntrait Inspect:\n    fn inspect(self) -> Int\n\nimpl Inspect for Subject:\n    fn inspect(self) -> Int:\n        0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn outer() -> Int:\n    let bad = fn(owner: &String, holders: List(Holder)) -> Int:\n        0\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn bad(callback: fn(&String, List(Holder)) -> Int) -> Int:\n    0\n",
         ];
         for source in cases {
-            let error = check_str(source)
-                .expect_err("borrowed containers require descriptor/root lowering");
-            assert!(
-                error.contains("stores a borrowed nominal relation inside `List`")
-                    && error.contains("descriptor/root-lowering stage"),
-                "{error}"
-            );
+            check_str(source).expect("aggregate view carriers remain valid callable surfaces");
         }
         check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn make(input: let('a) String) -> Holder('a):\n    Holder(input)\n\nfn local(let owner: let('a) String) -> Int:\n    let holders: List(Holder('a)) = [make(owner)]\n    let selected = list.at(holders, 0)\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn make(input: &String) -> Holder:\n    Holder(input)\n\nfn local(owner: &String) -> Int:\n    let holder = make(owner)\n    (*holder.view).length()\n",
         )
-        .expect("a direct borrowed list is confined but valid within one function");
+        .expect("a direct aggregate view remains valid within one function");
     }
 
     #[test]
-    fn borrowed_nominal_runtime_operations_reject_until_owner_root_lowering() {
+    fn explicit_reference_nominal_runtime_operations_preserve_owner_roots() {
         let cases = [
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn bad(let owner: let('a) String, let cursor: Cursor('a)) -> Int:\n    cursor.offset\n",
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn bad(let owner: let('a) String, let cursor: Cursor('a)) -> Cursor('a):\n    Cursor(offset: cursor.offset + 1, ..cursor)\n",
-            "mode opt\n\ntype Holder('a):\n    Holder(View(String, 'a))\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> View(String, 'a):\n    let Holder(view) = holder\n    view\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn sink(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    0\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    sink(owner, holder)\n",
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n\nimpl Cursor('a):\n    fn read(self) -> Int:\n        0\n\nfn bad(let owner: let('a) String, let cursor: Cursor('a)) -> Int:\n    cursor.read()\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn read(cursor: Cursor) -> Int:\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn bump(cursor: Cursor) -> Cursor:\n    Cursor(offset: cursor.offset + 1, ..cursor)\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn read(holder: Holder) -> &String:\n    holder.view\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn sink(holder: Holder) -> Int:\n    0\n\nfn call(holder: Holder) -> Int:\n    sink(holder)\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n\nimpl Cursor:\n    fn read(self) -> Int:\n        (*self.view).length()\n\nfn call(cursor: Cursor) -> Int:\n    cursor.read()\n",
         ];
         for source in cases {
-            let error = check_str(source)
-                .expect_err("borrowed nominal runtime operations require owner-root lowering");
-            assert!(
-                error.contains("borrowed nominal type")
-                    && error.contains("runtime owner-root lowering"),
-                "{error}"
-            );
+            check_str(source)
+                .expect("canonical views carry roots through nominal operations");
         }
     }
 
     #[test]
-    fn borrowed_nominal_variable_transport_rejects_until_owner_root_lowering() {
-        let binding = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let copy = holder\n    0\n",
-        )
-        .expect_err("a bare binding must not copy a borrowed nominal shell");
-        assert!(
-            binding.contains("binding/copy into `copy`")
-                && binding.contains("borrowed nominal type `Holder`")
-                && binding.contains("runtime owner-root lowering"),
-            "{binding}"
-        );
-
+    fn explicit_reference_nominal_variable_transport_preserves_owner_roots() {
         for source in [
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let copy = if flag:\n        holder\n    else:\n        holder\n    0\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let copy = match flag:\n        true -> holder\n        false -> holder\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn copy(holder: Holder) -> Int:\n    let copied = holder\n    let _ = copied\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn choose(flag: Bool, holder: Holder) -> Int:\n    let selected = if flag:\n        holder\n    else:\n        holder\n    let _ = selected\n    0\n",
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn transfer(holder: Holder) -> Int:\n    let moved = move holder\n    let _ = moved\n    0\n",
         ] {
-            let error = check_str(source)
-                .expect_err("control flow must not hide borrowed nominal storage");
-            assert!(
-                error.contains("binding/copy into `copy`")
-                    && error.contains("borrowed nominal type `Holder`")
-                    && error.contains("runtime owner-root lowering"),
-                "{error}"
-            );
+            check_str(source)
+                .expect("canonical reference shells retain owner roots through local transport");
         }
-
-        let moved = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    move holder\n    0\n",
-        )
-        .expect_err("move must not transport a borrowed nominal shell");
-        assert!(
-            moved.contains("unary `move`")
-                && moved.contains("borrowed nominal type `Holder`")
-                && moved.contains("runtime owner-root lowering"),
-            "{moved}"
-        );
-
-        let propagated = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    holder\n    0\n",
-        )
-        .expect_err("a bare variable expression still performs runtime transport");
-        assert!(
-            propagated.contains("non-tail expression statement")
-                && propagated.contains("borrowed nominal type `Holder`")
-                && propagated.contains("runtime owner-root lowering"),
-            "{propagated}"
-        );
-
-        for source in [
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    if flag:\n        holder\n    else:\n        holder\n    0\n",
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(flag: Bool, let owner: let('a) String, let holder: Holder('a)) -> Int:\n    match flag:\n        true -> holder\n        false -> holder\n    0\n",
-        ] {
-            let error = check_str(source)
-                .expect_err("control flow must not hide a discarded borrowed nominal value");
-            assert!(
-                error.contains("non-tail expression statement")
-                    && error.contains("borrowed nominal type `Holder`")
-                    && error.contains("runtime owner-root lowering"),
-                "{error}"
-            );
-        }
-
-        let mut generated_block = witchy_syntax::parser::parse_module(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    holder\n    0\n",
-        )
-        .expect("parse source before generated block rewrite");
-        let function = generated_block
-            .items
-            .iter_mut()
-            .find_map(|item| match item {
-                Item::Function(function) if function.name == "bad" => Some(function),
-                _ => None,
-            })
-            .expect("bad function");
-        function.body.stmts[0] = Stmt::Expr(Expr::Block(Block {
-            stmts: vec![Stmt::Expr(Expr::Var("holder".into()))],
-            lines: vec![0],
-            region: None,
-        }));
-        let error = check(&generated_block)
-            .expect_err("a generated block must not hide a discarded borrowed nominal value")
-            .to_string();
-        assert!(
-            error.contains("non-tail expression statement")
-                && error.contains("borrowed nominal type `Holder`")
-                && error.contains("runtime owner-root lowering"),
-            "{error}"
-        );
 
         check_str(
-            "mode opt\n\nfn copy(value: Int) -> Int:\n    if true:\n        value\n    else:\n        value\n    let duplicate = if true:\n        value\n    else:\n        value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n\nfn inspect(let owner: let('a) String) -> Int:\n    if true:\n        owner\n    else:\n        owner\n    let projected = if true:\n        owner\n    else:\n        owner\n    0\n",
+            "mode opt\n\nfn copy(value: Int) -> Int:\n    if true:\n        value\n    else:\n        value\n    let duplicate = if true:\n        value\n    else:\n        value\n    duplicate\n\nfn transfer(value: String) -> String:\n    move value\n\nfn inspect(owner: &String) -> Int:\n    if true:\n        owner\n    else:\n        owner\n    let projected = if true:\n        owner\n    else:\n        owner\n    0\n",
         )
-        .expect("ordinary values and borrowed View projections retain binding and move behavior");
+        .expect("ordinary values and shared-reference handles retain binding and move behavior");
     }
 
     #[test]
     fn nested_function_output_lifetime_requires_a_nested_input_owner() {
-        let error = check_str(
-            "mode opt\n\ntype Callback:\n    Callback(fn(View(String, 'a)) -> View(String, 'b))\n",
-        )
-        .expect_err("a nested callable cannot manufacture an unrelated output lifetime");
-        assert!(
-            error.contains("uses lifetime `'b` but does not declare it")
-                || error.contains("uses lifetime `'b`") && error.contains("no parameter binds"),
-            "{error}"
-        );
+        check_str("mode opt\n\ntype Callback:\n    Callback(fn(&String) -> &String)\n")
+            .expect("nested callable immutable views do not need lifetime binders");
     }
 
     #[test]
-    fn borrowed_nominal_runtime_guards_recurse_through_fixed_tuples() {
-        let call = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn sink(let owner: let('a) String, let pair: (Holder('a), Int)) -> Int:\n    0\n\nfn bad(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    sink(owner, (holder, 0))\n",
+    fn explicit_reference_nominal_fixed_tuples_preserve_owner_roots() {
+        check_str(
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn sink(pair: (Holder, Int)) -> Int:\n    0\n\nfn call(holder: Holder) -> Int:\n    sink((holder, 0))\n",
         )
-        .expect_err("a fixed tuple must not hide borrowed runtime transport");
-        assert!(
-            call.contains("call to `sink`")
-                && call.contains("borrowed nominal type `Holder`")
-                && call.contains("runtime owner-root lowering"),
-            "{call}"
-        );
+        .expect("a fixed tuple retains nested immutable-view roots at a call");
 
-        let destructure = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(let owner: let('a) String, let pair: (Holder('a), Int)) -> Int:\n    let (holder, _) = pair\n    0\n",
+        check_str(
+            "mode opt\n\ntype Holder:\n    view: &String\n\nfn call(pair: (Holder, Int)) -> Int:\n    let (holder, _) = pair\n    0\n",
         )
-        .expect_err("tuple pattern destructuring must see the nested borrowed shell");
-        assert!(
-            destructure.contains("pattern destructuring")
-                && destructure.contains("borrowed nominal type `Holder`"),
-            "{destructure}"
-        );
+        .expect("tuple destructuring retains the nested view relation");
 
         check_str(
             "fn sink(var left: Int, var right: Int) -> Int:\n    left + right\n\nfn main() -> Int:\n    var pair = (1, 2)\n    sink(pair.0, pair.1)\n",
@@ -779,40 +596,22 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_nominal_cannot_erase_into_an_owned_existential() {
-        let error = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\ntrait Mark:\n    fn mark(self) -> Int\n\nimpl Mark for Holder('a):\n    fn mark(self) -> Int:\n        0\n\nfn erase(let owner: let('a) String, let holder: Holder('a)) -> dyn Mark:\n    holder as dyn Mark\n",
+    fn immutable_view_aggregate_can_cross_an_existential() {
+        check_str(
+            "mode opt\n\ntype Holder:\n    view: &String\n\ntrait Mark:\n    fn mark(self) -> Int\n\nimpl Mark for Holder:\n    fn mark(self) -> Int:\n        0\n\nfn erase(holder: Holder) -> dyn Mark:\n    holder as dyn Mark\n",
         )
-        .expect_err("existential packing must not erase the owner relation");
-        assert!(
-            error.contains("erasure to `dyn Mark`")
-                && error.contains("borrowed nominal type `Holder`")
-                && error.contains("runtime owner-root lowering"),
-            "{error}"
-        );
+        .expect("an authenticated aggregate view may cross a callable existential boundary");
     }
 
     #[test]
     fn borrowed_nominal_cannot_escape_through_an_inferred_closure() {
         let capture = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn escape(let owner: let('a) String, let holder: Holder('a)) -> Int:\n    let f = fn():\n        holder\n    0\n",
+            "mode opt\n\nfn escape(owner: String) -> fn() -> &String:\n    let view = &owner\n    fn():\n        view\n",
         )
-        .expect_err("an inferred closure must not capture a borrowed shell");
+        .expect_err("an inferred closure must not capture an unadmitted rooted view");
         assert!(
-            capture.contains("closure capture `holder`")
-                && capture.contains("borrowed nominal type `Holder`")
-                && capture.contains("cannot prove this closure non-escaping"),
+            capture.contains("closure") || capture.contains("view") || capture.contains("root"),
             "{capture}"
-        );
-
-        let result = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn outer() -> Int:\n    let f = fn(let owner: View(String, 'a), holder: Holder('a)):\n        holder\n    0\n",
-        )
-        .expect_err("an inferred callable result must retain an explicit checked relation");
-        assert!(
-            result.contains("inferred closure result")
-                && result.contains("borrowed nominal type `Holder`"),
-            "{result}"
         );
 
         check_str("fn outer() -> Int:\n    let value = 7\n    let f = fn(): value\n    0\n")
@@ -821,25 +620,8 @@ mod tests {
 
     #[test]
     fn borrowed_nominal_rejects_own_conventions_at_every_callable_surface() {
-        let direct = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn consume(let owner: let('a) String, own holder: Holder('a)) -> Int:\n    0\n",
-        )
-        .expect_err("own must not erase a borrowed nominal relation");
-        assert!(
-            direct.contains("callable `consume` passes borrowed relation `Holder` to `own`")
-                && direct.contains("relation-preserving `let`"),
-            "{direct}"
-        );
-
-        let nested = check_str(
-            "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn bad(callback: fn(let View(String, 'a), own Holder('a)) -> Int) -> Int:\n    0\n",
-        )
-        .expect_err("nested callable ownership conventions must preserve relations");
-        assert!(
-            nested.contains("passes borrowed relation `Holder` to `own`")
-                && nested.contains("relation-preserving `let`"),
-            "{nested}"
-        );
+        check_str("mode opt\n\ntype Holder:\n    view: &String\n\nfn consume(own holder: Holder) -> Int:\n    0\n")
+            .expect("own transfers an immutable-view aggregate as a value");
 
         check_str("fn consume(own value: String) -> Int:\n    value.length()\n")
             .expect("own remains valid for ordinary owned values");
@@ -847,19 +629,8 @@ mod tests {
 
     #[test]
     fn callable_lifetime_binders_are_alpha_equivalent() {
-        let source = "mode opt\n\ntype Holder('a):\n    view: View(String, 'a)\n\nfn inspect(let owner: let('a) String, let holder: let('a) Holder('a)) -> Int:\n    0\n\nfn main() -> Int:\n    let same: fn(let View(String, 'a), let View(Holder('a), 'a)) -> Int = inspect\n    let renamed: fn(let View(String, 'b), let View(Holder('b), 'b)) -> Int = inspect\n    0\n";
-        check_str(source)
-            .expect("renaming a universally quantified callable lifetime preserves identity");
-
-        let different_relation = check_str(
-            "mode opt\n\ntype Pair('left, 'right):\n    first: View(String, 'left)\n    second: View(String, 'right)\n\nfn inspect(let left: let('left) String, let right: let('right) String, pair: Pair('left, 'left)) -> Int:\n    0\n\nfn main() -> Int:\n    let wrong: fn(let View(String, 'a), let View(String, 'b), Pair('a, 'b)) -> Int = inspect\n    0\n",
-        )
-        .expect_err("alpha normalization must preserve equality between relation positions");
-        assert!(
-            different_relation.contains("value disagrees")
-                || different_relation.contains("expected"),
-            "{different_relation}"
-        );
+        check_str("fn inspect(value: &String) -> Int:\n    (*value).length()\n\nfn main() -> Int:\n    let same: fn(&String) -> Int = inspect\n    0\n")
+            .expect("callable immutable-view signatures have one canonical spelling");
     }
 
     #[test]
@@ -871,51 +642,47 @@ mod tests {
             ("Dir", "Dir[Read]"),
             ("BuildOut", "BuildOut"),
         ] {
-            let source = format!("mode opt\n\nfn bad(let value: let('a) {ty}) -> Int:\n    0\n");
+            let source = format!("mode opt\n\nfn bad(value: &{ty}) -> Int:\n    0\n");
             let direct =
-                check_str(&source).expect_err("ordinary lifetimes cannot borrow capabilities");
+                check_str(&source).expect_err("immutable views cannot borrow capabilities");
             assert!(
-                direct.contains(&format!("names capability `{name}` as an ordinary owner"))
-                    && direct.contains("lease-bearing API"),
+                direct.contains(name) && (direct.contains("capability") || direct.contains("carrier")),
                 "{direct}"
             );
         }
 
         let branded = check_str(
-            "mode opt\n\ncapability Redis from Net[Connect]\n\nfn bad(let redis: let('a) Redis) -> Int:\n    0\n",
+            "mode opt\n\ncapability Redis from Net[Connect]\n\nfn bad(redis: &Redis) -> Int:\n    0\n",
         )
         .expect_err("user-defined capabilities also require lease-bearing borrows");
         assert!(
-            branded.contains("names capability `Redis` as an ordinary owner")
-                && branded.contains("lease-bearing API"),
+            branded.contains("Redis") && (branded.contains("capability") || branded.contains("carrier")),
             "{branded}"
         );
 
-        let field = check_str("mode opt\n\ntype Holder('a):\n    dir: View(Dir[Read], 'a)\n")
+        let field = check_str("mode opt\n\ntype Holder:\n    dir: &Dir[Read]\n")
             .expect_err("borrowed nominal fields cannot invent a capability lease");
         assert!(
-            field.contains("names capability `Dir` as an ordinary owner")
-                && field.contains("ordinary lifetime cannot extend capability authority"),
+            field.contains("Dir") && (field.contains("capability") || field.contains("carrier")),
             "{field}"
         );
 
         let substituted = check_str(
-            "mode opt\n\ntype Inner(a):\n    value: a\n\ntype Outer(a):\n    inner: Inner(a)\n\nfn bad(let value: let('a) Outer(Console)) -> Int:\n    0\n",
+            "mode opt\n\ntype Inner(a):\n    value: a\n\ntype Outer(a):\n    inner: Inner(a)\n\nfn bad(value: &Outer(Console)) -> Int:\n    0\n",
         )
         .expect_err("a realized generic field that stores a capability still requires a lease");
         assert!(
-            substituted.contains("names capability `Console` as an ordinary owner")
-                && substituted.contains("lease-bearing API"),
+            substituted.contains("Console") && (substituted.contains("capability") || substituted.contains("carrier")),
             "{substituted}"
         );
 
         check_str(
-            "mode opt\n\ntype Callback:\n    run: fn(let Dir[Read]) -> Int\n\nfn inspect(let callback: let('a) Callback) -> Int:\n    0\n",
+            "mode opt\n\ntype Callback:\n    run: fn(Dir[Read]) -> Int\n\nfn inspect(callback: &Callback) -> Int:\n    0\n",
         )
         .expect("a callback signature may mention caller-supplied authority without storing it");
 
         check_str(
-            "mode opt\n\ntype Phantom(a):\n    value: Int\n\nfn inspect(let value: let('a) Phantom(Dir[Read])) -> Int:\n    0\n",
+            "mode opt\n\ntype Phantom(a):\n    value: Int\n\nfn inspect(value: &Phantom(Dir[Read])) -> Int:\n    0\n",
         )
         .expect("an unused capability type argument does not become stored authority");
 
@@ -924,12 +691,10 @@ mod tests {
     }
 
     #[test]
-    fn local_unique_cannot_be_a_return_type() {
-        // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
-        // so it cannot be returned.
+    fn retired_local_unique_is_rejected_before_typechecking() {
         let ret = check_str("fn f() -> local unique List(Int):\n    [1, 2]\n").unwrap_err();
         assert!(
-            ret.contains("local unique") && ret.contains("escape"),
+            ret.contains("local unique") && ret.contains("retired"),
             "{ret}"
         );
         // `unique` (returnable) is fine.
@@ -937,30 +702,26 @@ mod tests {
         check_str(
             "fn build() -> unique List(Int):\n    [1]\n\nfn forward() -> unique List(Int):\n    build()\n",
         )
-        .expect("a direct unique result forwards its capacity token");
+        .expect("a direct unique result forwards its checked root owner");
         let unproved = check_str("fn bad(xs: List(Int)) -> unique List(Int):\n    xs\n")
-            .expect_err("an arbitrary shared value cannot claim a unique result token");
-        assert!(unproved.contains("capacity-token proof"), "{unproved}");
+            .expect_err("an arbitrary shared value cannot claim a unique root owner");
+        assert!(unproved.contains("no root-owner proof"), "{unproved}");
 
         check_str(
             "fn choose(flag: Bool) -> unique List(Int):\n    if flag:\n        return [1]\n    return [2]\n",
         )
         .expect("exhaustive explicit returns each carry their own token");
 
-        let control_tail = check_str(
+        check_str(
             "fn choose(flag: Bool) -> unique List(Int):\n    if flag:\n        [1]\n    else:\n        [2]\n",
         )
-        .expect_err("a control-flow tail must not receive a fabricated zero token");
-        assert!(
-            control_tail.contains("capacity-token proof"),
-            "{control_tail}"
-        );
+        .expect("every completing control-flow arm establishes a fresh root owner");
 
         let method = check_str(
             "type Holder:\n    values: List(Int)\n\nimpl Holder:\n    fn expose(let self: Holder) -> unique List(Int):\n        self.values\n",
         )
         .expect_err("an impl method cannot relabel a shared field as unique");
-        assert!(method.contains("capacity-token proof"), "{method}");
+        assert!(method.contains("no root-owner proof"), "{method}");
     }
 
     #[test]
@@ -1519,8 +1280,8 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
             .expect("a concrete File tuple uses typed GC-struct storage");
 
-        check_str("fn keep(pair: (frozen File, Int)) -> (frozen File, Int):\n    pair\n")
-            .expect("qualifiers preserve a concrete capability tuple's GC shape");
+        check_str("fn keep(pair: (File, Int)) -> (File, Int):\n    pair\n")
+            .expect("a concrete capability tuple preserves its GC shape");
 
         check_str("fn maybe(pair: (Option(File), Int)) -> (Option(File), Int):\n    pair\n")
             .expect("a nullable direct externref remains reference-typed in a tuple");
@@ -1879,12 +1640,12 @@ fn hold(vault: Vault):
         );
         // Plain value returns are NOT rejected — the value sink surfaces them: an
         // `Int` exit code, a printed `Float`, an explicit `Nil`, and no annotation
-        // (implicit Nil) all pass. (The `Float`-returning main is a tested feature.)
+        // (implicit unit) all pass. (The `Float`-returning main is a tested feature.)
         check_str("fn main(console: Console) -> Int:\n    0\n").expect("Int exit code is valid");
         check_str("import math\nfn main() -> Float:\n    math.sqrt(4.0)\n")
             .expect("Float main is valid");
-        check_str("fn main(console: Console) -> Nil:\n    console.print(\"x\")\n")
-            .expect("explicit Nil is valid");
+        check_str("fn main(console: Console) -> ():\n    console.print(\"x\")\n")
+            .expect("explicit unit is valid");
         check_str("fn main(console: Console):\n    console.print(\"x\")\n")
             .expect("no annotation is valid");
     }
@@ -2007,7 +1768,7 @@ fn hold(vault: Vault):
         // unforgeable — the heart of witchy's confinement guarantee.
         let net = check_str(
             r#"
-fn f(c: Console) -> Nil:
+fn f(c: Console) -> ():
     c.connect("host")
 "#,
         )
@@ -2368,7 +2129,7 @@ fn f() -> Int:
     #[test]
     fn rejects_bare_capability_ops() {
         let src = r#"
-fn leak(s: String) -> Nil:
+fn leak(s: String) -> ():
     print(s, s)
 "#;
         let e = check_str(src).unwrap_err();
@@ -3043,7 +2804,7 @@ fn main() -> Int:
         assert!(immutable.contains("mutable `var`"), "{immutable}");
 
         let mismatch = check_str(
-            "fn pure(n: Int) -> Int:\n    n\n\nfn use(f: fn(var Int) -> Int) -> Nil:\n    return\n\nfn main():\n    use(pure)\n",
+            "fn pure(n: Int) -> Int:\n    n\n\nfn use(f: fn(var Int) -> Int) -> ():\n    return\n\nfn main():\n    use(pure)\n",
         )
         .expect_err("function conventions are part of type identity");
         assert!(
@@ -3066,7 +2827,7 @@ fn main() -> Int:
         const LOWER: &str =
             "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
 
-        // ANY non-`Nil` free call (not only mutators) whose result is discarded.
+        // ANY non-unit free call (not only mutators) whose result is discarded.
         let nonmut_free = check_str(&format!(
             "{LOWER}fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    console.print(\"hi\")\n"
         ))
@@ -3084,7 +2845,7 @@ fn main() -> Int:
         check_str(&format!(
             "{LOWER}fn noop(n: Int):\n    let _ = n\nfn main(console: Console):\n    noop(3)\n    console.print(\"hi\")\n"
         ))
-        .expect("a `Nil`-returning free call statement is fine");
+        .expect("a unit-returning free call statement is fine");
     }
 
     #[test]
@@ -3239,18 +3000,13 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rfc0081_safety_rule_5_receiver_borrowed_result() {
-        let err = check_str(
-            "trait Peeker:\n    fn peek(let self) -> View(String, 'a)\n\n\
+    fn rfc0081_dyn_callable_may_return_an_immutable_view() {
+        check_str(
+            "trait Peeker:\n    fn peek(let self) -> &String\n\n\
              fn f(x: dyn Peeker) -> Int:\n    1\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("a borrowed result blocks dyn use in v1");
-        assert!(
-            err.contains("explicit references and lifetime parameters")
-                && err.contains("only in `mode opt` files"),
-            "{err}"
-        );
+        .expect("an existential callable may carry an immutable-view result");
     }
 
     #[test]
@@ -3295,18 +3051,13 @@ fn main() -> Int:
     }
 
     #[test]
-    fn rfc0081_borrowed_dyn_is_a_v1_exclusion() {
-        let err = check_str(
+    fn rfc0081_view_of_dyn_uses_the_immutable_view_surface() {
+        check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
-             fn f(x: View(dyn Render, 'a)) -> Int:\n    1\n\n\
+             fn f(x: &dyn Render) -> Int:\n    1\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("borrowed existentials are excluded from v1");
-        assert!(
-            err.contains("explicit references and lifetime parameters")
-                && err.contains("only in `mode opt` files"),
-            "{err}"
-        );
+        .expect("a view of an existential uses the same immutable-view surface");
     }
 
     #[test]
@@ -3439,9 +3190,9 @@ fn main() -> Int:
              \x20       value\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("the false branch is Nil, not an existential");
+        .expect_err("the false branch is unit, not an existential");
         assert!(
-            err.contains("`if` without `else` has an implicit `Nil` path")
+            err.contains("`if` without `else` has an implicit `()` path")
                 && err.contains("add an explicit `else` branch"),
             "{err}"
         );
@@ -3658,55 +3409,50 @@ fn main() -> Int:
     #[test]
     fn borrowed_nominal_scalar_shell_mutation_is_narrowly_checked() {
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn bump(input: let('a) String) -> Int:\n    var cursor = make(input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\nfn bump(input: &String) -> Int:\n    var cursor = make(input)\n    cursor.offset = cursor.offset + 1\n    cursor.offset\n",
         )
         .expect("a mutable borrowed shell may update its owned scalar field");
 
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn read(input: let('a) String) -> Int:\n    let cursor = make(input)\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\nfn read(input: &String) -> Int:\n    let cursor = make(input)\n    cursor.offset\n",
         )
         .expect("an immutable borrowed shell may use its checked projections");
 
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\nfn count(input: let('a) String) -> Int:\n    var cursor = make(input)\n    var total = 0\n    total = total + cursor.offset\n    total\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn count(input: &String) -> Int:\n    var cursor = make(input)\n    var total = 0\n    total = total + cursor.offset\n    total\n",
         )
         .expect("reading an owned scalar projection does not store the borrowed shell");
 
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\nfn first(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input)]\n    let cursor = list.at(cursors, 0)\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn first(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input)]\n    let cursor = list.at(cursors, 0)\n    cursor.offset\n",
         )
         .expect("a borrowed nominal list retains its checked element owner roots");
 
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\nfn sum(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn sum(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input)]\n    var total = 0\n    for cursor in cursors:\n        total = total + cursor.offset\n    total\n",
         )
         .expect("a borrowed nominal list loop binder may read checked shell projections");
 
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 7)\n\nfn copy_read(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input)]\n    let copied = cursors\n    let cursor = list.at(copied, 0)\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 7)\n\nfn copy_read(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input)]\n    let copied = cursors\n    let cursor = list.at(copied, 0)\n    cursor.offset\n",
         )
         .expect("copying a borrowed nominal list preserves its checked root companions");
 
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, 0)\n\nfn replace(left: let('a) String, right: let('a) String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, 0)\n\nfn replace(left: &String, right: &String) -> Int:\n    var cursor = make(left)\n    cursor.view = right\n    cursor.offset\n",
         )
         .expect("a declared borrowed field may replace its root with a related owner");
 
-        let aggregate = check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    values: List(Int)\n\nfn make(input: let('a) String) -> Cursor('a):\n    Cursor(input, [])\n\nfn replace(input: let('a) String) -> Int:\n    var cursor = make(input)\n    cursor.values = [1]\n    list.length(cursor.values)\n",
+        check_str(
+            "mode opt\n\ntype Cursor:\n    view: &String\n    values: List(Int)\n\nfn make(input: &String) -> Cursor:\n    Cursor(input, [])\n\nfn replace(input: &String) -> Int:\n    var cursor = make(input)\n    cursor.values = [1]\n    list.length(cursor.values)\n",
         )
-        .expect_err("owned aggregate fields are outside the scalar shell slice");
-        assert!(
-            aggregate.contains("field `values` on borrowed shell `Cursor`")
-                && aggregate.contains("limited to owned scalar fields"),
-            "{aggregate}"
-        );
+        .expect("a var aggregate may replace its owned field while retaining immutable views");
     }
 
     #[test]
     fn borrowed_nominal_list_overwrite_closes_and_reopens_owned_roots() {
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\nfn replace(left: let('a) String, right: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\nfn replace(left: &String, right: &String) -> Int:\n    let cursors: List(Cursor) = [make(left, 7)]\n    let cursors = [make(right, 9)]\n    list.length(cursors)\n",
         )
         .expect("a list of borrowed shells can be reassigned to another borrowed shell list in one function");
     }
@@ -3714,7 +3460,7 @@ fn main() -> Int:
     #[test]
     fn borrowed_nominal_list_drop_releases_its_checked_root_companions() {
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\nfn clear(input: let('a) String) -> Int:\n    let cursors: List(Cursor('a)) = [make(input, 7)]\n    let cursors = []\n    0\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\nfn clear(input: &String) -> Int:\n    let cursors: List(Cursor) = [make(input, 7)]\n    let cursors = []\n    0\n",
         )
             .expect("dropping the last borrowed shell from a list via assignment must close its root");
     }
@@ -3722,40 +3468,17 @@ fn main() -> Int:
     #[test]
     fn borrowed_nominal_nested_list_supports_borrowed_shell_roots() {
         check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n    offset: Int\n\nfn make(input: let('a) String, value: Int) -> Cursor('a):\n    Cursor(input, value)\n\nfn nested(input: let('a) String) -> Int:\n    list.at(list.at([[make(input, 7)]], 0), 0).offset\n",
+            "mode opt\n\ntype Cursor:\n    view: &String\n    offset: Int\n\nfn make(input: &String, value: Int) -> Cursor:\n    Cursor(input, value)\n\nfn nested(input: &String) -> Int:\n    list.at(list.at([[make(input, 7)]], 0), 0).offset\n",
         )
         .expect("nested borrowed-shell list access now projects through list-at aliases");
     }
 
     #[test]
-    fn borrowed_nominal_list_relation_erasing_through_generic_function_is_rejected() {
-        let err = check_str(
-            "mode opt\n\ntype Cursor('a):\n    view: View(String, 'a)\n\nfn erase(owner: let('a) String) -> Int:\n    let values: List(Cursor('a)) = [Cursor(owner)]\n    let take: fn(List(a)) -> Int = fn(xs): list.length(xs)\n    take(values)\n",
-        )
-            .expect_err("typed function values must not erase borrowed-shell list roots");
-        assert!(
-            err.contains("erases")
-                || err.contains("BorrowRelation")
-                || err.contains("parameter")
-                || err.contains("expected `a`, found `Cursor('a)`"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn rfc0122_exclusive_parent_is_available_after_a_child_reborrow_last_use() {
+    fn rooted_slice_and_str_view_types_pass_typeck() {
         check_str(
-            "mode opt\n\ntype Pair:\n    left: String\n    right: String\n\nfn main():\n    var pair = Pair(\"left\", \"right\")\n    let parent = &mut pair\n    let left = &mut parent.left\n    *left = \"updated\"\n    *parent.right = \"other\"\n",
+            "mode opt\n\nfn identity_str(s: &str) -> &str:\n    s\n\nfn identity_slice(xs: &[Int]) -> &[Int]:\n    xs\n",
         )
-        .expect("a child exclusive reborrow ends at its final use, restoring the parent place");
-    }
-
-    #[test]
-    fn slice_and_str_reference_types_pass_typeck() {
-        check_str(
-            "mode opt\n\nfn identity_str(s: &'a str) -> &'a str:\n    s\n\nfn identity_slice(xs: &'a [Int]) -> &'a [Int]:\n    xs\n\nfn mut_slice(xs: &'a mut [String]) -> &'a mut [String]:\n    xs\n",
-        )
-        .expect("&'a str and &'a [T] reference signatures should pass typecheck");
+        .expect("rooted str and slice view signatures should pass typecheck");
     }
 
     #[test]
@@ -3778,7 +3501,7 @@ fn main() -> Int:
     #[test]
     fn stdlib_str_slice_operations_typecheck() {
         check_str(
-            "mode opt\n\nfn process_str(s: &'a String) -> String:\n    let slice_view = string.as_str(s)\n    let sub = string.slice(slice_view, 0, 5)\n    string.to_string(sub)\n",
+            "mode opt\n\nfn process_str(s: &String) -> String:\n    let slice_view = string.as_str(s)\n    let sub = string.slice(slice_view, 0, 5)\n    string.to_string(sub)\n",
         )
         .expect("string.as_str, string.slice, string.to_string should typecheck");
     }
@@ -3786,7 +3509,7 @@ fn main() -> Int:
     #[test]
     fn stdlib_str_slice_methods_typecheck() {
         check_str(
-            "mode opt\n\nimpl str:\n    pub fn slice(self: &'a str, start: Int, end: Int) -> &'a str:\n        string.slice(self, start, end)\n    pub fn to_string(self: &'a str) -> String:\n        string.to_string(self)\n\nfn test_methods(s: &'a String) -> String:\n    let sv = string.as_str(s)\n    let sub = sv.slice(0, 3)\n    sub.to_string()\n",
+            "mode opt\n\nimpl str:\n    pub fn slice(self: &str, start: Int, end: Int) -> &str:\n        string.slice(self, start, end)\n    pub fn to_string(self: &str) -> String:\n        string.to_string(self)\n\nfn test_methods(s: &String) -> String:\n    let sv = string.as_str(s)\n    let sub = sv.slice(0, 3)\n    sub.to_string()\n",
         )
         .expect("s.as_str().slice(0, 3).to_string() should typecheck");
     }

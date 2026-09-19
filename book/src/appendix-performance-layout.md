@@ -152,7 +152,8 @@ Before choosing a layout or lifetime feature, answer:
    storage?
 3. Does the result outlive the region or owner that created it?
 4. Which counter or generated-code artifact proves the intended path fired?
-5. Does the interpreter, ordinary Wasm, and forced-copy configuration agree?
+5. Does the independent expectation agree with the canonical SafeWIR
+   interpreter, admitted unoptimized Wasm, and forced-copy configuration?
 
 If any answer is uncertain, keep the ordinary representation and measure the
 next concrete bottleneck. The safe fallback is part of the design.

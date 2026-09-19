@@ -21,7 +21,7 @@ from json import Json
 from semver import Version, Req
 from toml import Toml
 from gm_core import BuildOptions, FootprintError, LockIntegrityError, LockPinError, RecordFootprintError, RegistryRootKeyError, TufError, VendoredRecordError, VersionResolveError
-from gm_core import add_unique, arg, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
+from gm_core import add_unique, arg, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
 
 pub fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
     if options.target == "trusted-publisher":
@@ -68,6 +68,9 @@ pub fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: Str
                     if steps.0 != 0:
                         steps.0
                     else:
+                        // `run-source --manifest` performs the distinct compiler-side
+                        // precompiled selection. No source --dep is emitted for that
+                        // alias here, so it cannot fall back to vendor/src.
                         compile_then_run(console, runner, root, bin, dir, entry, steps.1, app_args)
 
 // `build`/`run` use a lock on every project path. A path-only development project
@@ -75,7 +78,7 @@ pub fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: Str
 // lock" contract. Registry dependencies can only be locked by `add`, because that
 // operation obtains the signed record and trust pins; never synthesize a weaker
 // registry lock during a build.
-pub fn ensure_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityError):
+pub fn ensure_lock_integrity(root: Dir, dir: String) -> Result((), LockIntegrityError):
     let lockpath = join_path(dir, "witchy.lock")
     if !root.exists(lockpath):
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -101,7 +104,7 @@ pub fn ensure_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrit
 //
 // No network state participates. Online TUF freshness is the optional second
 // phase of `verify --online`.
-pub fn verify_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityError):
+pub fn verify_lock_integrity(root: Dir, dir: String) -> Result((), LockIntegrityError):
     let lockpath = join_path(dir, "witchy.lock")
     if !root.exists(lockpath):
         Err(LockMissing)
@@ -113,7 +116,7 @@ pub fn verify_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrit
         else:
             verify_registry_lock_entries(root, dir, lock)
 
-pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(Nil, LockIntegrityError):
+pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result((), LockIntegrityError):
     let rootpub: String = match pinned_registry_trust(lock):
         Err(e) -> return Err(LockEntryMalformed(e.show()))
         Ok(None) -> ""
@@ -126,7 +129,6 @@ pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Res
                 if source == "coven":
                     let name = required_lock_field(entry, "name")?
                     let version = required_lock_field(entry, "version")?
-                    let hash = required_lock_field(entry, "hash")?
                     let alias = entry_alias(entry)
                     if alias.is_empty():
                         return Err(LockEntryMalformed("registry entry `${name}` has no local alias"))
@@ -139,12 +141,10 @@ pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Res
                     let record_path = join_path(rune_dir, "coven.json")
                     if !root.exists(record_path):
                         return Err(LockVendorMissing(alias))
-                    else if !root.exists(join_path(rune_dir, "witchy.toml")):
-                        return Err(LockVendorManifestMissing(alias))
                     let record_text = root.read(record_path)
-                    match verify_record_signature(rootpub, record_text):
+                    let record_doc = match verify_record_signature(rootpub, record_text):
                         Err(e) -> return Err(LockRecordInvalid(alias, e.show()))
-                        Ok(_doc) -> Nil
+                        Ok(doc) -> doc
 
                     let record = match parse_vendored_record(record_text):
                         Err(e) -> return Err(LockRecordInvalid(alias, e.show()))
@@ -154,10 +154,19 @@ pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Res
                         return Err(LockRecordCoordinateMismatch(alias, "name", name, record.name))
                     else if record.version != version:
                         return Err(LockRecordCoordinateMismatch(alias, "version", version, record.version))
-                    else if record.hash != hash:
-                        return Err(LockRecordCoordinateMismatch(alias, "hash", hash, record.hash))
-                    else if rune_hash(root, rune_dir) != hash:
-                        return Err(LockSourceHashMismatch(alias))
+                    let kind = optional_lock_string(entry, "kind", "")
+                    if kind == "precompiled":
+                        verify_precompiled_lock_entry(root, rune_dir, alias, entry, record_doc)?
+                    else if !kind.is_empty():
+                        return Err(LockEntryMalformed("registry entry `${alias}` has unsupported kind `${kind}`"))
+                    else:
+                        let hash = required_lock_field(entry, "hash")?
+                        if !root.exists(join_path(rune_dir, "witchy.toml")):
+                            return Err(LockVendorManifestMissing(alias))
+                        else if record.hash != hash:
+                            return Err(LockRecordCoordinateMismatch(alias, "hash", hash, record.hash))
+                        else if rune_hash(root, rune_dir) != hash:
+                            return Err(LockSourceHashMismatch(alias))
                 else if source.starts_with("path:"):
                     let name = required_lock_field(entry, "name")?
                     if !is_locked_path_dependency(root, dir, name):
@@ -165,7 +174,45 @@ pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Res
                 else:
                     return Err(LockEntryMalformed("unsupported dependency source `${source}`"))
             None -> return Err(LockEntryMalformed("a [[rune]] entry has no `source` field"))
-    Ok(Nil)
+    Ok(())
+
+// Verify the locally materialized external library from the same signed record
+// and artifact manifest on every offline build/run. No cache metadata is trusted:
+// the lock selects alias/module, the record signs the manifest digest, and the
+// manifest signs exact decoded byte sizes and hashes.
+fn verify_precompiled_lock_entry(root: Dir, rune_dir: String, alias: String, entry: Toml, record: Json) -> Result((), LockIntegrityError):
+    let module = required_lock_field(entry, "module")?
+    let locked_manifest = required_lock_field(entry, "artifact_digest")?
+    if !coven_artifact.valid_library_module(module):
+        Err(LockEntryMalformed("precompiled entry `${alias}` has an invalid module selector"))
+    else if root.exists(join_path(rune_dir, "src")) || root.exists(join_path(rune_dir, "witchy.toml")):
+        Err(LockPrecompiledArtifactInvalid(alias, "source and precompiled layouts coexist"))
+    else if !root.exists(join_path(rune_dir, "coven-artifact.json")):
+        Err(LockPrecompiledManifestMissing(alias))
+    else if jget(record, "artifact_digest") != locked_manifest:
+        Err(LockPrecompiledArtifactInvalid(alias, "signed record artifact_digest differs from witchy.lock"))
+    else:
+        let text = root.read(join_path(rune_dir, "coven-artifact.json"))
+        match coven_artifact.parse(text):
+            Err(error) -> Err(LockPrecompiledArtifactInvalid(alias, coven_artifact.artifact_error_message(error)))
+            Ok(manifest) ->
+                if coven_artifact.manifest_digest(manifest) != locked_manifest:
+                    Err(LockPrecompiledArtifactInvalid(alias, "artifact manifest digest differs from signed record"))
+                else:
+                    match coven_artifact.select_precompiled_library(manifest, module):
+                        None -> Err(LockPrecompiledArtifactInvalid(alias, "manifest has no admitted precompiled module `${module}`"))
+                        Some(library) ->
+                            let base = join_path(join_path(rune_dir, "artifacts"), module)
+                            let wasm = base + ".wasm"
+                            let sidecar = base + ".opt"
+                            if !root.exists(wasm) || !root.exists(sidecar):
+                                Err(LockPrecompiledArtifactInvalid(alias, "materialized Wasm or sidecar is missing"))
+                            else if bytes.length(root.read_bytes(wasm)) != library.wasm_size || crypto.sha256_bytes(root.read_bytes(wasm)) != library.wasm_sha256:
+                                Err(LockPrecompiledByteMismatch(alias, "Wasm"))
+                            else if bytes.length(root.read_bytes(sidecar)) != library.opt_callable_export_size || crypto.sha256_bytes(root.read_bytes(sidecar)) != library.opt_callable_export_sha256:
+                                Err(LockPrecompiledByteMismatch(alias, "sidecar"))
+                            else:
+                                Ok(())
 
 pub fn is_locked_path_dependency(root: Dir, dir: String, name: String) -> Bool:
     for dep_name, _dep_dir in path_closure(root, dir):
@@ -630,9 +677,23 @@ pub fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manif
 pub fn upload_artifacts(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, artifact: Option(String)) -> Int:
     match artifact:
         None -> 0
-        Some(_m) -> upload_artifact_dir(console, net, root, dir, manifest, origin)
+        Some(text) ->
+            // Never discover application artifacts by walking `artifacts/`: a
+            // v3 library module is a nested directory there, not an application
+            // target.  The signed manifest is the sole application selection.
+            match coven_artifact.parse(text):
+                Err(error) ->
+                    console.print("  artifact manifest rejected locally: ${coven_artifact.artifact_error_message(error)}")
+                    1
+                Ok(parsed) ->
+                    let application = upload_artifact_dir(console, net, root, dir, manifest, origin, coven_artifact.targets(parsed))
+                    let libraries = upload_precompiled_libraries(console, net, root, dir, manifest, origin, text)
+                    if application != 0 || libraries != 0:
+                        1
+                    else:
+                        0
 
-pub fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String) -> Int:
+pub fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, targets: List(String)) -> Int:
     let art_dir = join_path(dir, "artifacts")
     if !root.exists(art_dir):
         0
@@ -640,7 +701,7 @@ pub fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, m
         let name = field(manifest, "rune.name")
         let version = field(manifest, "rune.version")
         var failed = 0
-        for target in root.subtree(art_dir).list():
+        for target in targets:
             let data = root.read_bytes(join_path(art_dir, target))
             let resp = upload_artifact_chunked(net, origin, name, version, target, data)
             let st = http.status(resp)
@@ -650,6 +711,73 @@ pub fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, m
                 console.print("  artifact ${target}: ${st} error=${resp_field(http.body(resp), "error")}")
                 failed = 1
         failed
+
+// The external library ABI has two independently committed blobs. Uploading one
+// without the other does not make a dependency usable; the consumer verifies
+// both again before materialization. The local publisher checks signed exact
+// sizes and hashes before transport, so a bad build never reaches the registry.
+pub fn upload_precompiled_libraries(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, artifact: String) -> Int:
+    match coven_artifact.parse(artifact):
+        Err(e) ->
+            console.print("  precompiled libraries: invalid manifest ${coven_artifact.artifact_error_message(e)}")
+            1
+        Ok(parsed) ->
+            let name = field(manifest, "rune.name")
+            let version = field(manifest, "rune.version")
+            var failed = 0
+            for module in coven_artifact.library_modules(parsed):
+                match coven_artifact.select_precompiled_library(parsed, module):
+                    None -> ()
+                    Some(entry) ->
+                        let base = join_path(join_path(dir, "artifacts"), module)
+                        let wasm = base + ".wasm"
+                        let sidecar = base + ".opt"
+                        if !root.exists(wasm) || !root.exists(sidecar):
+                            console.print("  precompiled ${module}: missing .wasm or .opt")
+                            failed = 1
+                        else:
+                            let wasm_bytes = root.read_bytes(wasm)
+                            let sidecar_bytes = root.read_bytes(sidecar)
+                            if bytes.length(wasm_bytes) != entry.wasm_size || crypto.sha256_bytes(wasm_bytes) != entry.wasm_sha256:
+                                console.print("  precompiled ${module}: Wasm does not match signed size/digest")
+                                failed = 1
+                            else if bytes.length(sidecar_bytes) != entry.opt_callable_export_size || crypto.sha256_bytes(sidecar_bytes) != entry.opt_callable_export_sha256:
+                                console.print("  precompiled ${module}: sidecar does not match signed size/digest")
+                                failed = 1
+                            else:
+                                let wasm_response = upload_precompiled_blob_chunked(net, origin, name, version, module, true, wasm_bytes)
+                                let sidecar_response = upload_precompiled_blob_chunked(net, origin, name, version, module, false, sidecar_bytes)
+                                if http.status(wasm_response) < 200 || http.status(wasm_response) >= 300 || http.status(sidecar_response) < 200 || http.status(sidecar_response) >= 300:
+                                    console.print("  precompiled ${module}: upload rejected")
+                                    failed = 1
+                                else:
+                                    console.print("  precompiled ${module}: uploaded")
+            failed
+
+fn upload_precompiled_blob_chunked(net: Net, origin: String, name: String, version: String, module: String, wasm: Bool, data: Bytes) -> Response:
+    let chunk = 6291456
+    let total = bytes.length(data)
+    let n = if total <= chunk: 1 else: (total + chunk - 1) / chunk
+    // Keep the branch-local endpoint literal at the recursive call.  A computed
+    // owned String endpoint used as a tail-call argument currently reaches the
+    // canonical release placer without a transfer token; this explicit shape
+    // matches the established artifact upload path and preserves ownership.
+    if wasm:
+        upload_precompiled_blob_seq(net, origin, "/coven/library/wasm", name, version, module, data, chunk, total, n, 0)
+    else:
+        upload_precompiled_blob_seq(net, origin, "/coven/library/opt", name, version, module, data, chunk, total, n, 0)
+
+fn upload_precompiled_blob_seq(net: Net, origin: String, endpoint: String, name: String, version: String, module: String, data: Bytes, chunk: Int, total: Int, n: Int, i: Int) -> Response:
+    let off = i * chunk
+    let end = if off + chunk > total: total else: off + chunk
+    let piece = encoding.base64_encode_bytes(bytes.slice(data, off, end))
+    let last = i >= n - 1
+    let path = "${endpoint}?name=${wire(name)}&version=${version}&module=${wire(module)}&kind=precompiled&seq=${i}&last=${last}"
+    let response = registry_post(net, origin, path, piece)
+    if last || http.status(response) < 200 || http.status(response) >= 300:
+        response
+    else:
+        upload_precompiled_blob_seq(net, origin, endpoint, name, version, module, data, chunk, total, n, i + 1)
 
 // (RFC-0095) Upload one target's bytes in BYTE ranges: each chunk's bytes are
 // base64-ed on their own (never the whole blob — that would exceed the runtime's
@@ -952,7 +1080,7 @@ pub fn staged_lock_pins(root: Dir, lock_rel: String) -> List((String, String)):
     var out = []
     if root.exists(lock_rel):
         match lock_rune_entries(root.read(lock_rel)):
-            Err(_e) -> Nil
+            Err(_e) -> ()
             Ok(entries) ->
                 for entry in entries:
                     if optional_lock_string(entry, "staged", "") == "true":
@@ -1057,13 +1185,13 @@ pub fn rune_hash(root: Dir, dir: String) -> String:
 // that moved (verifying signature + hash), then regenerates `witchy.lock`. With a
 // `name` argument only that rune is updated; the others stay pinned at their
 // vendored version. Run from a project directory (cwd is the project Dir).
-pub fn update_vendored(console: Console, net: Net, root: Dir, origin: String, only: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> Int:
+pub fn update_vendored(console: Console, net: Net, root: Dir, origin: String, only: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String, clock: Clock) -> Int:
     var changed = 0
     var blocked = false
     var failed = false
     for entry in root.subtree("vendor").list():
         if only.is_empty() || entry == only:
-            let outcome = update_one(console, net, root, origin, entry, allowed, cooldown, manifest)
+            let outcome = update_one(console, net, root, origin, entry, allowed, cooldown, manifest, clock)
             changed = changed + outcome.0
             if outcome.1:
                 blocked = true
@@ -1138,7 +1266,7 @@ pub fn update_closure_gate(console: Console, root: Dir, allowed: List(String)) -
 // (the gate), `failed` is true if resolution, fetch, or verification failed. The
 // target version is resolved WITHIN the consumer's declared requirement (BUG-092)
 // and past the staging cooldown (BUG-090).
-pub fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String) -> (Int, Bool, Bool):
+pub fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String, clock: Clock) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
     if !root.exists(join_path(rune_dir, "coven.json")):
         (0, false, false)
@@ -1148,6 +1276,12 @@ pub fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: 
                 console.print("BLOCK: cannot update `${entry}` — ${e.show()}")
                 return (0, false, true)
             Ok(record) -> record
+
+        let module = match precompiled_module_in_manifest(manifest, entry):
+            Err(reason) ->
+                console.print("BLOCK: cannot update `${entry}` — ${reason}")
+                return (0, false, true)
+            Ok(selection) -> selection
 
         let fullname = vendored.name
         let current = vendored.version
@@ -1165,13 +1299,13 @@ pub fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: 
                 if latest.is_empty() || latest == current:
                     (0, false, false)
                 else:
-                    gated_refetch(console, net, root, origin, fullname, current, latest, vendored.runtime_footprint, allowed, cooldown)
+                    gated_refetch(console, net, root, origin, fullname, current, latest, vendored.runtime_footprint, allowed, cooldown, module, clock)
 
 // The capability gate: compare the incoming version's declared footprint (from its
 // signed registry record) against the vendored baseline ∪ the consented caps. Any
 // capability the baseline doesn't already admit is a widening of authority — BLOCK.
 // Only on a clean (non-widening) upgrade do we re-fetch.
-pub fn gated_refetch(console: Console, net: Net, root: Dir, origin: String, fullname: String, current: String, latest: String, baseline_footprint: List(String), allowed: List(String), cooldown: (Int, Int, Bool)) -> (Int, Bool, Bool):
+pub fn gated_refetch(console: Console, net: Net, root: Dir, origin: String, fullname: String, current: String, latest: String, baseline_footprint: List(String), allowed: List(String), cooldown: (Int, Int, Bool), module: Option(String), clock: Clock) -> (Int, Bool, Bool):
     let baseline = union_all(baseline_footprint, allowed)
     // BUG-232: the widening gate must diff against a VERIFIED footprint, not a raw
     // `/coven/record` body. A hostile mirror could otherwise serve an under-declared
@@ -1189,7 +1323,14 @@ pub fn gated_refetch(console: Console, net: Net, root: Dir, origin: String, full
                 console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent")
                 (0, true, false)
             else:
-                refetch(console, net, root, origin, fullname, latest, current, cooldown, allowed)
+                match module:
+                    Some(selected) ->
+                        let code = materialize_precompiled_library(console, net, root, clock, origin, basename(fullname), fullname, latest, selected)
+                        if code == 0:
+                            (1, false, false)
+                        else:
+                            (0, false, true)
+                    None -> refetch(console, net, root, origin, fullname, latest, current, cooldown, allowed)
 
 // The runtime footprint a registry version declares, read from its signed record at
 // `/coven/record` ONLY AFTER the record is verified against the registry root key
@@ -1362,6 +1503,131 @@ pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clo
         console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
         0
 
+// Materialize one explicitly selected RFC-0167 external library. This is a
+// package artifact boundary, not a source dependency: a vendor directory that
+// already has src/ or witchy.toml is rejected rather than allowing the loader to
+// choose between source and precompiled meanings. The retained coven.json and
+// coven-artifact.json are evidence only; every future compiler consumer must
+// re-verify them and both bytes before constructing its sealed library input.
+pub fn materialize_precompiled_library(console: Console, net: Net, root: Dir, clock: Clock, origin: String, alias: String, name: String, version: String, module: String) -> Int:
+    if alias.is_empty() || !coven_artifact.valid_library_module(module):
+        console.print("BLOCK: invalid precompiled dependency selection")
+        1
+    else:
+        let vendor = join_path("vendor", alias)
+        if root.exists(join_path(vendor, "src")) || root.exists(join_path(vendor, "witchy.toml")):
+            console.print("BLOCK: `${alias}` cannot be both a source and precompiled dependency")
+            1
+        else:
+            match verified_precompiled_record(net, root, origin, name, version):
+                Err(reason) ->
+                    console.print("BLOCK: cannot verify precompiled ${name}@${version}: ${reason}")
+                    1
+                Ok(record) ->
+                    match verified_precompiled_manifest(net, origin, name, version, record.1, module):
+                        Err(reason) ->
+                            console.print("BLOCK: cannot verify precompiled manifest for ${name}@${version}: ${reason}")
+                            1
+                        Ok(selected) ->
+                            let (manifest, entry) = selected
+                            match materialize_precompiled_blobs(net, root, clock, origin, vendor, name, version, module, entry):
+                                Err(reason) ->
+                                    console.print("BLOCK: cannot materialize precompiled ${module}: ${reason}")
+                                    1
+                                Ok(_) ->
+                                    // Commit receipts last. A consumer seeing a partial
+                                    // materialization cannot use it: it requires both
+                                    // blobs and independently rechecks their digests.
+                                    root.write(join_path(vendor, "coven-artifact.json"), manifest)
+                                    root.write(join_path(vendor, "coven.json"), record.0)
+                                    console.print("materialized precompiled ${name}@${version} ${module} -> ${vendor}")
+                                    0
+
+// Keep the exact signed record bytes for the materialized receipt; Json alone
+// is not a signature carrier. This mirrors install_verified_record but does not
+// discard the authenticated envelope after projection.
+fn verified_precompiled_record(net: Net, root: Dir, origin: String, name: String, version: String) -> Result((String, Json), String):
+    let rootpub = fetch_registry_rootpub(net, origin).map_err(fn(e: RegistryRootKeyError): "${e}")?
+    let pinned = pinned_registry_rootpub(root).map_err(fn(e: LockPinError): "${e}")?
+    if pinned != "" && pinned != rootpub:
+        Err("registry root key does not match the key pinned in witchy.lock")
+    else:
+        let response = registry_get(net, origin, "/coven/record?name=${wire(name)}&version=${version}")
+        if http.status(response) != 200:
+            Err("registry has no record")
+        else:
+            let text = http.body(response)
+            match verify_record_signature(rootpub, text):
+                Err(error) -> Err(error.show())
+                Ok(doc) ->
+                    if jget(doc, "name") != name || jget(doc, "version") != version:
+                        Err("record coordinate mismatch")
+                    else if jget(doc, "state") != "released":
+                        Err("record is not released")
+                    else:
+                        Ok((text, doc))
+
+fn verified_precompiled_manifest(net: Net, origin: String, name: String, version: String, record: Json, module: String) -> Result((String, coven_artifact.LibraryEntry), String):
+    let digest = jget(record, "artifact_digest")
+    if digest.is_empty():
+        Err("record is source-only")
+    else:
+        let response = registry_get(net, origin, "/coven/artifact?name=${wire(name)}&version=${version}")
+        if http.status(response) != 200:
+            Err("registry has no artifact manifest")
+        else:
+            let text = http.body(response)
+            match coven_artifact.parse(text):
+                Err(error) -> Err(coven_artifact.artifact_error_message(error))
+                Ok(manifest) ->
+                    if coven_artifact.manifest_digest(manifest) != digest:
+                        Err("artifact manifest digest does not match signed record")
+                    else:
+                        match coven_artifact.select_precompiled_library(manifest, module):
+                            None -> Err("no admitted precompiled library for the selected module")
+                            Some(entry) -> Ok((text, entry))
+
+fn materialize_precompiled_blobs(net: Net, root: Dir, clock: Clock, origin: String, vendor: String, name: String, version: String, module: String, entry: coven_artifact.LibraryEntry) -> Result((), String):
+    let base = join_path(join_path(vendor, "artifacts"), module)
+    let wasm = base + ".wasm"
+    let sidecar = base + ".opt"
+    fs.ensure_dir(root, fs.parent_dir(wasm) ?? "")
+    download_precompiled_blob(net, root, clock, origin, name, version, module, "/coven/library/wasm", wasm, entry.wasm_size, entry.wasm_sha256)?
+    download_precompiled_blob(net, root, clock, origin, name, version, module, "/coven/library/opt", sidecar, entry.opt_callable_export_size, entry.opt_callable_export_sha256)
+
+fn download_precompiled_blob(net: Net, root: Dir, clock: Clock, origin: String, name: String, version: String, module: String, endpoint: String, destination: String, expected_size: Int, expected_sha256: String) -> Result((), String):
+    // A failed retry may leave an untrusted partial file. This fixed private
+    // staging name is replaced before every attempt, and the final identity is
+    // still published only by rename after size + digest verification.
+    let staged = destination + ".stage"
+    root.replace(staged, "")
+    let downloaded = download_precompiled_blob_chunks(net, root, origin, name, version, module, endpoint, staged, expected_size, 0, 0)
+    if downloaded != expected_size:
+        Err("downloaded byte count does not match the signed size")
+    else if crypto.sha256_bytes(root.read_bytes(staged)) != expected_sha256:
+        Err("downloaded bytes do not match the signed digest")
+    else:
+        root.rename(staged, destination)
+        Ok(())
+
+fn download_precompiled_blob_chunks(net: Net, root: Dir, origin: String, name: String, version: String, module: String, endpoint: String, staged: String, expected_size: Int, index: Int, written: Int) -> Int:
+    let response = registry_get(net, origin, "${endpoint}?name=${wire(name)}&version=${version}&module=${wire(module)}&kind=precompiled&chunk=${index}")
+    if http.status(response) != 200:
+        -1
+    else:
+        let body = http.body(response)
+        if body.length() == 0:
+            written
+        else:
+            match encoding.base64_decode_bytes_string(body):
+                Err(_error) -> -1
+                Ok(chunk) ->
+                    if written + bytes.length(chunk) > expected_size:
+                        -1
+                    else:
+                        root.append_bytes(staged, chunk)
+                        download_precompiled_blob_chunks(net, root, origin, name, version, module, endpoint, staged, expected_size, index + 1, written + bytes.length(chunk))
+
 // Whether a staged-install prompt should be auto-confirmed (RFC-0120): the
 // `--yes` flag, or `PM_ASSUME_YES=1`/`true` in the environment. In CI a prompt
 // must never hang, so `--allow-staged` there is paired with one of these; without
@@ -1380,7 +1646,7 @@ pub fn assume_yes(env: Env, args: List(String)) -> Bool:
 // what the lock already records ∪ the caps the consumer consented to with `--allow-cap`),
 // the add is BLOCKED. A registry record's footprint is single-rune, so the direct gate
 // alone would miss a transitive dep's capabilities; we re-gate the whole vendored closure.
-pub fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool, yes: Bool) -> Int:
+pub fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool, yes: Bool, clock: Clock) -> Int:
     // RFC-0120: `--allow-staged` opts into installing an unreleased (staged) version.
     // It requires an EXACT version, prompts for confirmation, and refuses yanked. The
     // released-only default path (no flag / any range) is unchanged.
@@ -1399,18 +1665,18 @@ pub fn add_pkg_gated(console: Console, net: Net, root: Dir, origin: String, name
                 else:
                     if is_staged:
                         console.print("! installing STAGED ${name}@${chosen} (unreleased, accepted via --allow-staged --yes)")
-                    add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, is_staged)
+                    add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, is_staged, clock)
     else:
         match resolve_version(net, origin, name, req, cooldown):
             Err(e) ->
                 console.print("${name}: ${e.show()}")
                 1
             Ok(chosen) ->
-                add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, false)
+                add_pkg_after_resolve(console, net, root, origin, name, req, chosen, cooldown, allowed, false, clock)
 
 // The capability-widening gate + finalize, shared by the released and staged
 // resolution paths. BUG-232: gate on a VERIFIED, coordinate-bound record footprint.
-pub fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool) -> Int:
+pub fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), allowed: List(String), allow_staged: Bool, clock: Clock) -> Int:
     match project_baseline(root):
         Err(e) ->
             console.print("BLOCK: cannot read witchy.lock — ${e.show()}")
@@ -1422,9 +1688,9 @@ pub fn add_pkg_after_resolve(console: Console, net: Net, root: Dir, origin: Stri
                     console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${e.show()}")
                     2
                 Ok(incoming) ->
-                    add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming), allow_staged)
+                    add_pkg_gate_widen(console, net, root, origin, name, req, chosen, cooldown, baseline, rights.uncovered(baseline, incoming), allow_staged, clock)
 
-pub fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String), allow_staged: Bool) -> Int:
+pub fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, chosen: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String), allow_staged: Bool, clock: Clock) -> Int:
     if list.length(widened) > 0:
         console.print("BLOCKED: adding `${name}` would widen your project's capability footprint: ${list.join(widened, ", ")}")
         console.print("  re-run with --allow-cap ${list.join(widened, " --allow-cap ")} to consent")
@@ -1434,42 +1700,83 @@ pub fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String,
         // the `staged` state; a normal add re-resolves `req` against released
         // versions. Either way the dependency closure that follows is released-only —
         // `--allow-staged` opts in only the one version the user named.
-        let code = if allow_staged: fetch_then_deps(console, net, root, origin, name, chosen, "vendor", cooldown, [], true) else: add_rune(console, net, root, origin, name, req, "vendor", cooldown, [])
-        if code != 0:
-            code
-        else:
-            // SEC-006: re-gate on the FULL vendored closure now on disk — a
-            // transitive dep can carry a capability the direct rune's footprint
-            // never showed. Blocked here, the files stay vendored but unpinned;
-            // re-running with `--allow-cap` consents and completes the add.
-            match closure_widening(root, baseline):
-                Err(e) ->
-                    console.print("BLOCKED: a dependency of `${name}` has no trustworthy capability footprint: ${e.show()}")
-                    2
-                Ok(closure_widened) ->
-                    if list.length(closure_widened) > 0:
-                        console.print("BLOCKED: a dependency of `${name}` would widen your project's capability footprint: ${list.join(closure_widened, ", ")}")
-                        console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
-                        2
-                    else:
-                        // The manifest records the REQUIREMENT (the lock pins the
-                        // exact version). A bare `add` (`req == "*"`) records a caret
-                        // of the resolved version — cargo's `add` behavior: it
-                        // documents the version added while still letting `update`
-                        // move within the compatible range. An explicit `@<req>`
-                        // is recorded verbatim.
-                        let constraint = if req == "*": "^${chosen}" else: req
-                        add_pkg_finalize(console, net, root, origin, name, constraint)
+        match selected_precompiled_module(root, basename(name)):
+            Err(reason) ->
+                console.print("BLOCK: ${reason}")
+                2
+            Ok(module) ->
+                let code = match module:
+                    Some(selected) -> materialize_precompiled_library(console, net, root, clock, origin, basename(name), name, chosen, selected)
+                    None -> if allow_staged: fetch_then_deps(console, net, root, origin, name, chosen, "vendor", cooldown, [], true) else: add_rune(console, net, root, origin, name, req, "vendor", cooldown, [])
+                if code != 0:
+                    code
+                else:
+                    // SEC-006: re-gate on the FULL vendored closure now on disk — a
+                    // transitive dep can carry a capability the direct rune's footprint
+                    // never showed. Blocked here, the files stay vendored but unpinned;
+                    // re-running with `--allow-cap` consents and completes the add.
+                    match module:
+                        Some(selected) ->
+                            let constraint = if req == "*": "^${chosen}" else: req
+                            add_pkg_finalize(console, net, root, origin, name, constraint, Some(selected))
+                        None -> match closure_widening(root, baseline):
+                            Err(e) ->
+                                console.print("BLOCKED: a dependency of `${name}` has no trustworthy capability footprint: ${e.show()}")
+                                2
+                            Ok(closure_widened) ->
+                                if list.length(closure_widened) > 0:
+                                    console.print("BLOCKED: a dependency of `${name}` would widen your project's capability footprint: ${list.join(closure_widened, ", ")}")
+                                    console.print("  re-run with --allow-cap ${list.join(closure_widened, " --allow-cap ")} to consent to the whole dependency tree")
+                                    2
+                                else:
+                                    // The manifest records the REQUIREMENT (the lock pins the
+                                    // exact version). A bare `add` (`req == "*"`) records a caret
+                                    // of the resolved version — cargo's `add` behavior: it
+                                    // documents the version added while still letting `update`
+                                    // move within the compatible range. An explicit `@<req>`
+                                    // is recorded verbatim.
+                                    let constraint = if req == "*": "^${chosen}" else: req
+                                    add_pkg_finalize(console, net, root, origin, name, constraint, None)
+
+// Resolve the *selection* from the consumer manifest only. The ordinary add
+// argument and resolver/lock supply package identity and exact version; a
+// precompiled inline must never smuggle a second package/version coordinate.
+// Partial selectors and source/path coexistence are errors, not a source fallback.
+fn selected_precompiled_module(root: Dir, alias: String) -> Result(Option(String), String):
+    if !root.exists("witchy.toml"):
+        Ok(None)
+    else:
+        precompiled_module_in_manifest(root.read("witchy.toml"), alias)
+
+fn precompiled_module_in_manifest(manifest: String, alias: String) -> Result(Option(String), String):
+    for pair in toml.table(manifest, "dependencies"):
+        let (name, inline) = pair
+        if name == alias:
+            let path = toml.inline_get(inline, "path")
+            let kind = toml.inline_get(inline, "kind") ?? ""
+            let module = toml.inline_get(inline, "module") ?? ""
+            if path.is_some():
+                if !kind.is_empty() || !module.is_empty():
+                    return Err("dependency `${alias}` cannot combine path/source and precompiled selectors")
+                else:
+                    return Ok(None)
+            else if kind.is_empty() && module.is_empty():
+                return Ok(None)
+            else if kind != "precompiled" || !coven_artifact.valid_library_module(module):
+                return Err("dependency `${alias}` needs exactly kind = \"precompiled\" and a valid module = \"src/...\" selector")
+            else:
+                return Ok(Some(module))
+    Ok(None)
 
 // Complete a gated `add`: pin the registry metadata into `witchy.lock`, and — only
 // once locking succeeds — record the dependency in the project manifest's
 // `[dependencies]` so the manifest-reading commands (`tree`/`why`/`outdated`) see
 // it (RFC-0117 Lane A). Ordering it after the lock means a failed pin never leaves
 // a manifest entry with no matching lock pin.
-pub fn add_pkg_finalize(console: Console, net: Net, root: Dir, origin: String, name: String, constraint: String) -> Int:
+pub fn add_pkg_finalize(console: Console, net: Net, root: Dir, origin: String, name: String, constraint: String, module: Option(String)) -> Int:
     let code = pin_lock(console, net, root, origin, name)
     if code == 0:
-        record_manifest_dep(root, name, constraint)
+        record_manifest_dep(root, name, constraint, module)
     code
 
 // Record a registry dependency in the project manifest's `[dependencies]` table, in
@@ -1482,9 +1789,14 @@ pub fn add_pkg_finalize(console: Console, net: Net, root: Dir, origin: String, n
 // authority" story works for registry deps. Idempotent (a re-add replaces the
 // entry, never duplicates). With no project manifest there is nothing to record
 // against, so it is a no-op.
-pub fn record_manifest_dep(root: Dir, name: String, version: String):
+pub fn record_manifest_dep(root: Dir, name: String, version: String, module: Option(String)):
     if root.exists("witchy.toml"):
-        root.write("witchy.toml", manifest_upsert_dep(root.read("witchy.toml"), basename(name), version))
+        let old = root.read("witchy.toml")
+        let next = match module:
+            Some(selected) -> manifest_upsert_precompiled_dep(old, basename(name), version, selected)
+            None -> manifest_upsert_dep(old, basename(name), version)
+
+        root.write("witchy.toml", next)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -1496,8 +1808,14 @@ pub fn project_baseline(root: Dir) -> Result(List(String), LockIntegrityError):
         for c in declared_caps(root.read("witchy.toml")):
             out = add_unique(out, c)
     if root.exists("witchy.lock"):
-        out = union_all(out, lock_baseline(root.read("witchy.lock"))?)
-    Ok(out)
+        // Keep the fallible lock decode in an explicit branch.  The compact
+        // `?` assignment leaves the owned accumulator's release placement
+        // ambiguous in canonical lowering when the error enum carries strings.
+        match lock_baseline(root.read("witchy.lock")):
+            Err(error) -> Err(error)
+            Ok(locked) -> Ok(union_all(out, locked))
+    else:
+        Ok(out)
 
 // Record the resolved dependency in the project's `witchy.lock`: a `[[rune]]`
 // entry pinning the vendored rune's name, resolved version, source (coven), and
@@ -1587,7 +1905,29 @@ pub fn vendor_lock_entry(root: Dir, alias: String, rune_dir: String) -> Result(S
     // `pm publish` can refuse it. The marker self-heals: once the version is released,
     // a re-vendor rewrites the record's state and this line disappears.
     let staged_marker = if record.state == "staged": "staged = \"true\"\n" else: ""
-    Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nhash = \"" + record.hash + "\"\n" + staged_marker + "runtime_footprint = [" + fp + "]\n")
+    if root.exists(join_path(rune_dir, "witchy.toml")):
+        Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nhash = \"" + record.hash + "\"\n" + staged_marker + "runtime_footprint = [" + fp + "]\n")
+    else:
+        let module = selected_precompiled_module(root, alias).map_err(fn(reason: String): VendoredRecordPrecompiled(reason))?
+        match module:
+            None -> Err(VendoredRecordPrecompiled("vendor/${alias} has no source tree and no explicit precompiled selector"))
+            Some(selected) ->
+                let artifact_path = join_path(rune_dir, "coven-artifact.json")
+                if !root.exists(artifact_path):
+                    Err(VendoredRecordPrecompiled("vendor/${alias} has no coven-artifact.json"))
+                else:
+                    let record_doc = json.decode(root.read(join_path(rune_dir, "coven.json"))).map_err(fn(_e): VendoredRecordPrecompiled("coven.json is not JSON"))?
+                    let digest = jget(record_doc, "artifact_digest")
+                    if digest.is_empty():
+                        Err(VendoredRecordPrecompiled("signed record has no artifact_digest"))
+                    else:
+                        let artifact = coven_artifact.parse(root.read(artifact_path)).map_err(fn(e): VendoredRecordPrecompiled(coven_artifact.artifact_error_message(e)))?
+                        if coven_artifact.manifest_digest(artifact) != digest:
+                            Err(VendoredRecordPrecompiled("artifact manifest digest differs from coven.json"))
+                        else:
+                            match coven_artifact.select_precompiled_library(artifact, selected):
+                                None -> Err(VendoredRecordPrecompiled("artifact manifest has no admitted module `${selected}`"))
+                                Some(_library) -> Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nkind = \"precompiled\"\nmodule = \"" + selected + "\"\nartifact_digest = \"" + digest + "\"\n" + staged_marker + "runtime_footprint = [" + fp + "]\n")
 
 // Resolve + fetch one rune and its transitive deps. Already-vendored runes (their
 // coven.json is present) are skipped — the dedup + cycle break. But a rune already

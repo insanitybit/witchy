@@ -23,8 +23,11 @@ related:
 
 Capabilities are part of Witchy's type and call model. Host authority enters a
 program only through typed root parameters or explicitly checked host bindings.
-Code exercises authority only by receiving a capability value whose rights and
-scope authorize the operation.
+Code exercises authority only through values it receives: a capability whose
+rights and scope authorize an operation, or an opaque callable delegating a
+specific authorized behavior. Receiving that callable does not expose its
+captured root capabilities or imply purity. [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension)
+owns the callable and effect distinction; the security obligations here remain.
 
 This is Witchy's central effect system. It is not an optional security library,
 an ambient permission lookup, or a convention layered on ordinary handles.

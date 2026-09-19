@@ -154,7 +154,7 @@ use crate::{codegen, interpreter, parser, typeck};
     /// conversion.)
     #[test]
     fn to_string_of_builtin_call_results_agrees() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${\"hello\".contains(\"ell\")}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    let _ = dict.insert(d, \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${\"hello\".contains(\"ell\")}\")\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -692,8 +692,8 @@ fn main(console: Console):
     console.print("${(1, "two", true)}")
     console.print("${[Circle(2), Dot]}")
     var d = dict.new()
-    dict.insert(d, "a", 1)
-    dict.insert(d, "b", 2)
+    let _ = dict.insert(d, "a", 1)
+    let _ = dict.insert(d, "b", 2)
     console.print("${d}")
     let tc = ([1, 2], (3, 4))          // a let-bound tuple whose slots are compound
     console.print("${tc}")
@@ -793,9 +793,9 @@ fn main(console: Console):
     console.print("abc".replace("z", "Q"))
     console.print("café".replace("é", "e"))
     var d = dict.new()
-    dict.insert(d, 1, 100)
-    dict.insert(d, 2, 200)
-    dict.insert(d, 1, 111)
+    let _ = dict.insert(d, 1, 100)
+    let _ = dict.insert(d, 2, 200)
+    let _ = dict.insert(d, 1, 111)
     console.print("${dict.get_or(d, 1, 0)}")
     console.print("${dict.get_or(d, 2, 0)}")
     console.print("${dict.length(d)}")
@@ -945,8 +945,8 @@ fn main(console: Console):
     #[test]
     fn dict_string_key_through_helpers_backends_agree() {
         let src = r#"
-fn put(var d: Dict(String, Int), k: String, v: Int) -> Nil:
-    dict.insert(d, k, v)
+fn put(var d: Dict(String, Int), k: String, v: Int) -> ():
+    let _ = dict.insert(d, k, v)
     return
 
 fn lookup(d: Dict(String, Int), k: String) -> Int:

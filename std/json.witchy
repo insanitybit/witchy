@@ -659,6 +659,41 @@ fn array_value(j: Json) -> Option(List(Json)):
 trait Deserialize:
     fn from_json(j: Json) -> Result(Self, DeserializeError)
 
+// Primitive and standard-container implementations make the bound emitted by
+// `derive(Deserialize)` useful when a generic field is instantiated with a
+// scalar, list, or optional value. Records remain compiler-derived; these
+// implementations reuse the same conversions and error behavior as generated
+// record fields.
+impl Deserialize for Int:
+    fn from_json(j: Json) -> Result(Int, DeserializeError):
+        j.int_of()
+
+impl Deserialize for Float:
+    fn from_json(j: Json) -> Result(Float, DeserializeError):
+        j.float_of()
+
+impl Deserialize for Bool:
+    fn from_json(j: Json) -> Result(Bool, DeserializeError):
+        j.bool_of()
+
+impl Deserialize for String:
+    fn from_json(j: Json) -> Result(String, DeserializeError):
+        j.string_of()
+
+impl Deserialize for List(a) where a: Deserialize:
+    fn from_json(j: Json) -> Result(List(a), DeserializeError):
+        let values = j.array_of()?
+        let decoded = list.map(values, fn(value: Json) -> Result(a, DeserializeError):
+            let decoded: Result(a, DeserializeError) = a.from_json(value)
+            decoded)
+        result.all(decoded)
+
+impl Deserialize for Option(a) where a: Deserialize:
+    fn from_json(j: Json) -> Result(Option(a), DeserializeError):
+        optional(Some(j), fn(value: Json) -> Result(a, DeserializeError):
+            let decoded: Result(a, DeserializeError) = a.from_json(value)
+            decoded)
+
 // Decode an optional field: an absent key or an explicit `null` is `None`;
 // otherwise the value is decoded via `each`. Used for `Option(_)` fields.
 pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, e)) -> Result(Option(a), e):

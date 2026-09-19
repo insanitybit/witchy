@@ -21,7 +21,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     /// `Dict(k, v)`.
     #[test]
     fn dict_equality_satisfies_protocol_bounds_on_both_backends() {
-        let src = "import cmp\nimport dict\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Val derive(Show, Eq):\n    label: String\n    noise: Int\n\nimpl PartialEq for Val:\n    fn eq(self, other: Val) -> Bool:\n        self.label == other.label\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn make_left() -> Dict(Key, Val):\n    var d = dict.new()\n    dict.insert(d, Key(1, 10), Val(\"one\", 100))\n    dict.insert(d, Key(2, 20), Val(\"two\", 200))\n    d\n\nfn make_right() -> Dict(Key, Val):\n    var d = dict.new()\n    dict.insert(d, Key(2, 99), Val(\"two\", 999))\n    dict.insert(d, Key(1, 42), Val(\"one\", 111))\n    d\n\nfn main(console: Console):\n    let left = make_left()\n    let right = make_right()\n    console.print(\"${left == right}\")\n    console.print(\"${same(left, right)}\")\n    console.print(\"${total_same(left, right)}\")\n    testing.assert_value_eq(left, right)\n";
+        let src = "import cmp\nimport dict\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Val derive(Show, Eq):\n    label: String\n    noise: Int\n\nimpl PartialEq for Val:\n    fn eq(self, other: Val) -> Bool:\n        self.label == other.label\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn make_left() -> Dict(Key, Val):\n    var d = dict.new()\n    let _ = dict.insert(d, Key(1, 10), Val(\"one\", 100))\n    let _ = dict.insert(d, Key(2, 20), Val(\"two\", 200))\n    d\n\nfn make_right() -> Dict(Key, Val):\n    var d = dict.new()\n    let _ = dict.insert(d, Key(2, 99), Val(\"two\", 999))\n    let _ = dict.insert(d, Key(1, 42), Val(\"one\", 111))\n    d\n\nfn main(console: Console):\n    let left = make_left()\n    let right = make_right()\n    console.print(\"${left == right}\")\n    console.print(\"${same(left, right)}\")\n    console.print(\"${total_same(left, right)}\")\n    testing.assert_value_eq(left, right)\n";
         let expected = ["true", "true", "true"];
         assert_eq!(link_run(src), expected, "interp: dict PartialEq bounds");
         assert_eq!(
@@ -125,7 +125,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     /// pointer-compare and return None.
     #[test]
     fn runtime_built_dict_keys_compare_by_content() {
-        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"  host  \".trim(), \"localhost\")\n    let parts = \"port=8080\".split(\"=\")\n    dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match d.get(\"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match d.get(\"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
+        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"  host  \".trim(), \"localhost\")\n    let parts = \"port=8080\".split(\"=\")\n    let _ = dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    let _ = dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match d.get(\"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match d.get(\"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
         let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
             .iter()
             .map(|s| s.to_string())
@@ -156,7 +156,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     /// functions still exist and remain the in-place backend target.
     #[test]
     fn std_dict_set_impl_methods_and_free_functions_coexist_on_both_backends() {
-        let src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 20:\n        bag.counts.update(\"hit\", 0, inc)\n        bag.seen.insert(\"k${i}\")\n        i = i + 1\n    bag.counts.insert(\"extra\", 7)\n    bag.counts.remove(\"extra\")\n    bag.seen.remove(\"k0\")\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${dict.length(bag.counts)}\")\n    console.print(\"${set.length(bag.seen)}\")\n    console.print(\"${set.contains(bag.seen, \"k0\")}\")\n\n    var d = dict.new()\n    dict.insert(d, \"x\", 1)\n    dict.remove(d, \"missing\")\n    var s = set.new()\n    set.insert(s, \"x\")\n    set.remove(s, \"missing\")\n    console.print(\"${dict.get_or(d, \"x\", 0)}\")\n    console.print(\"${set.contains(s, \"x\")}\")\n";
+        let src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 20:\n        let _ = bag.counts.update(\"hit\", 0, inc)\n        let _ = bag.seen.insert(\"k${i}\")\n        i = i + 1\n    let _ = bag.counts.insert(\"extra\", 7)\n    let _ = bag.counts.remove(\"extra\")\n    let _ = bag.seen.remove(\"k0\")\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${dict.length(bag.counts)}\")\n    console.print(\"${set.length(bag.seen)}\")\n    console.print(\"${set.contains(bag.seen, \"k0\")}\")\n\n    var d = dict.new()\n    let _ = dict.insert(d, \"x\", 1)\n    let _ = dict.remove(d, \"missing\")\n    var s = set.new()\n    let _ = set.insert(s, \"x\")\n    let _ = set.remove(s, \"missing\")\n    console.print(\"${dict.get_or(d, \"x\", 0)}\")\n    console.print(\"${set.contains(s, \"x\")}\")\n";
         let expected = vec![
             "20".to_string(),
             "1".to_string(),
@@ -174,7 +174,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     /// present afterward. Method and free-function forms agree across backends.
     #[test]
     fn std_dict_get_or_insert_agrees_on_both_backends() {
-        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${d.get_or_insert(\"a\", 99)}\")\n    console.print(\"${d.get_or_insert(\"b\", 7)}\")\n    console.print(\"${d.get_or_insert(\"b\", 100)}\")\n    console.print(\"${dict.get_or(d, \"b\", 0)}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or_insert(d, \"c\", 5)}\")\n    console.print(\"${dict.contains_key(d, \"c\")}\")\n";
+        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    console.print(\"${d.get_or_insert(\"a\", 99)}\")\n    console.print(\"${d.get_or_insert(\"b\", 7)}\")\n    console.print(\"${d.get_or_insert(\"b\", 100)}\")\n    console.print(\"${dict.get_or(d, \"b\", 0)}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or_insert(d, \"c\", 5)}\")\n    console.print(\"${dict.contains_key(d, \"c\")}\")\n";
         let expected = vec![
             "1".to_string(),
             "7".to_string(),
@@ -221,7 +221,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
     /// growth), and a missing-key probe all agree with the interpreter.
     #[test]
     fn dict_hash_index_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        dict.insert(d, \"k\" + \"${i}\", i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, \"k2999\", 0 - 1)}\")\n    console.print(\"${dict.get_or(d, \"absent\", 0 - 1)}\")\n    console.print(\"${dict.contains_key(d, \"k1500\")}\")\n    dict.remove(d, \"k0\")\n    console.print(\"${dict.length(d)}\")\n    dict.insert(d, \"again\", 7)\n    console.print(\"${dict.get_or(d, \"again\", 0 - 1)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        let _ = dict.insert(d, \"k\" + \"${i}\", i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, \"k2999\", 0 - 1)}\")\n    console.print(\"${dict.get_or(d, \"absent\", 0 - 1)}\")\n    console.print(\"${dict.contains_key(d, \"k1500\")}\")\n    let _ = dict.remove(d, \"k0\")\n    console.print(\"${dict.length(d)}\")\n    let _ = dict.insert(d, \"again\", 7)\n    console.print(\"${dict.get_or(d, \"again\", 0 - 1)}\")\n";
         let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
             .iter()
             .map(|s| s.to_string())
@@ -237,11 +237,11 @@ import dict
 fn main(console: Console):
     var d = dict.new()
     for i in 0..40:
-        dict.insert(d, i, i * 3)
+        let _ = dict.insert(d, i, i * 3)
     console.print("${dict.get_or(d, 17, -1)}")
     console.print("${dict.contains_key(d, 39)}")
-    dict.remove(d, 17)
-    dict.insert(d, 17, 99)
+    let _ = dict.remove(d, 17)
+    let _ = dict.insert(d, 17, 99)
     console.print("${dict.get_or(d, 17, -1)}")
     console.print("${list.length(dict.keys(d))}")
 "#;
@@ -256,9 +256,9 @@ import dict
 fn main(console: Console):
     var d = dict.new()
     for i in 0..64:
-        dict.insert(d, i, i + 1000)
-    dict.remove(d, 7)
-    dict.insert(d, 7, 7007)
+        let _ = dict.insert(d, i, i + 1000)
+    let _ = dict.remove(d, 7)
+    let _ = dict.insert(d, 7, 7007)
     let ks = dict.keys(d)
     let vs = dict.values(d)
     console.print("${list.at(ks, 0)}")
@@ -278,7 +278,7 @@ import dict
 fn main(console: Console):
     var d = dict.with_capacity(64)
     for i in 0..64:
-        dict.insert(d, i, i * 2)
+        let _ = dict.insert(d, i, i * 2)
     console.print("${dict.get_or(d, 37, -1)}")
     console.print("${dict.length(d)}")
     console.print("${list.at(dict.keys(d), 63)}")
@@ -341,23 +341,23 @@ fn main(console: Console):
     /// error teaches the standard escapes (a scaled Int, or a String rendering).
     #[test]
     fn dict_float_keys_are_a_compile_error() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, 1.5, \"a\")\n    console.print(dict.get_or(d, 1.5, \"?\"))\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, 1.5, \"a\")\n    console.print(dict.get_or(d, 1.5, \"?\"))\n";
         let e = typeck::check(&resolve_std_src(src))
             .expect_err("a Float-keyed dict must be rejected")
             .to_string();
         assert!(
-            e.contains("not a valid `Dict` key") && e.contains("Eq"),
+            e.contains("requires `Float: Eq`") && e.contains("dict.insert"),
             "teaching error naming the Eq requirement, got: {e}"
         );
         // The NaN case (the original hole) is rejected by the same type rule,
         // before any runtime lookup can silently miss.
-        let nan = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, 0.0 / 0.0, \"nan\")\n    console.print(dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
+        let nan = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, 0.0 / 0.0, \"nan\")\n    console.print(dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
         assert!(
-            typeck::check(&resolve_std_src(nan)).expect_err("a NaN Float key must be rejected").to_string().contains("not a valid `Dict` key"),
+            typeck::check(&resolve_std_src(nan)).expect_err("a NaN Float key must be rejected").to_string().contains("requires `Float: Eq`"),
             "the NaN-key hole is closed by the type rule"
         );
         // An Int-keyed dict (the suggested escape) still works on both backends.
-        let ok = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, 3, \"a\")\n    console.print(dict.get_or(d, 3, \"?\"))\n";
+        let ok = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, 3, \"a\")\n    console.print(dict.get_or(d, 3, \"?\"))\n";
         assert_eq!(interp(ok), vec!["a"], "interpreter (Int key)");
         assert_eq!(run_on_wasm(ok), vec!["a"], "compiled WASM (Int key)");
     }
@@ -367,10 +367,10 @@ fn main(console: Console):
     /// makes it true.
     #[test]
     fn set_float_members_are_a_compile_error() {
-        let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    set.insert(s, 1.5)\n    console.print(\"${set.length(s)}\")\n";
+        let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    let _ = set.insert(s, 1.5)\n    console.print(\"${set.length(s)}\")\n";
         let linked = resolve_std_src(src);
         let e = typeck::check(&linked).expect_err("a Float-membered set must be rejected").to_string();
-        assert!(e.contains("not a valid `Set` member") && e.contains("Eq"), "teaching error, got: {e}");
+        assert!(e.contains("requires `Float: Eq`") && e.contains("Set__insert"), "teaching error, got: {e}");
     }
 
     /// (RFC-0047) A CUSTOM `PartialEq` impl is honored at EVERY depth — top level
@@ -382,7 +382,7 @@ fn main(console: Console):
     /// a structural memcmp of differing fields would yield `false` — the tell.)
     #[test]
     fn custom_partial_eq_is_honored_at_every_depth() {
-        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    console.print(\"${P(1) == P(2)}\")\n    console.print(\"${[P(1)] == [P(2)]}\")\n    console.print(\"${Some(P(1)) == Some(P(2))}\")\n    console.print(\"${(P(1), 0) == (P(2), 0)}\")\n    var a = dict.new()\n    dict.insert(a, 1, P(1))\n    var b = dict.new()\n    dict.insert(b, 1, P(2))\n    console.print(\"${a == b}\")\n";
+        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    console.print(\"${P(1) == P(2)}\")\n    console.print(\"${[P(1)] == [P(2)]}\")\n    console.print(\"${Some(P(1)) == Some(P(2))}\")\n    console.print(\"${(P(1), 0) == (P(2), 0)}\")\n    var a = dict.new()\n    let _ = dict.insert(a, 1, P(1))\n    var b = dict.new()\n    let _ = dict.insert(b, 1, P(2))\n    console.print(\"${a == b}\")\n";
         let want = vec![
             "true".to_string(), // top-level impl (as before)
             "true".to_string(), // inside a List — NEW: was false
@@ -401,7 +401,7 @@ fn main(console: Console):
     /// (Closes the former loud-error gaps.)
     #[test]
     fn option_and_dict_equality_agree_on_both_backends() {
-        let src = "import option\n\nfn pair(a: Int, b: Int) -> Dict(String, Int):\n    var d = dict.new()\n    dict.insert(d, \"k\", a)\n    dict.insert(d, \"j\", b)\n    d\n\nfn main(console: Console):\n    let none_i: Option(Int) = None\n    console.print(\"${Some(5) == Some(5)}\")\n    console.print(\"${Some(5) == Some(6)}\")\n    console.print(\"${Some(5) == None}\")\n    console.print(\"${none_i == None}\")\n    console.print(\"${Some(\"a\") == Some(\"a\")}\")\n    console.print(\"${Some(\"a\") == Some(\"b\")}\")\n    let a = pair(1, 2)\n    let b = pair(1, 2)\n    let c = pair(1, 9)\n    var rev = dict.new()\n    dict.insert(rev, \"j\", 2)\n    dict.insert(rev, \"k\", 1)\n    console.print(\"${a == b}\")\n    console.print(\"${a == c}\")\n    console.print(\"${a == rev}\")\n";
+        let src = "import option\n\nfn pair(a: Int, b: Int) -> Dict(String, Int):\n    var d = dict.new()\n    let _ = dict.insert(d, \"k\", a)\n    let _ = dict.insert(d, \"j\", b)\n    d\n\nfn main(console: Console):\n    let none_i: Option(Int) = None\n    console.print(\"${Some(5) == Some(5)}\")\n    console.print(\"${Some(5) == Some(6)}\")\n    console.print(\"${Some(5) == None}\")\n    console.print(\"${none_i == None}\")\n    console.print(\"${Some(\"a\") == Some(\"a\")}\")\n    console.print(\"${Some(\"a\") == Some(\"b\")}\")\n    let a = pair(1, 2)\n    let b = pair(1, 2)\n    let c = pair(1, 9)\n    var rev = dict.new()\n    let _ = dict.insert(rev, \"j\", 2)\n    let _ = dict.insert(rev, \"k\", 1)\n    console.print(\"${a == b}\")\n    console.print(\"${a == c}\")\n    console.print(\"${a == rev}\")\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -462,7 +462,7 @@ fn main(console: Console):
             ),
             (
                 "match-hidden reassignment",
-                "fn main(console: Console):\n    let xs = [111]\n    var i = 0\n    while i < xs.length():\n        match i:\n            0 -> i = 1\n            _ -> Nil\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
+                "fn main(console: Console):\n    let xs = [111]\n    var i = 0\n    while i < xs.length():\n        match i:\n            0 -> i = 1\n            _ -> ()\n        console.print(\"${xs[i]}\")\n        i = i + 1\n",
             ),
             (
                 "branch facts do not flow into sibling paths",
@@ -486,15 +486,15 @@ fn main(console: Console):
             ),
             (
                 "byte index hidden below zero",
-                "import bytes\n\nfn main(console: Console):\n    let xs = bytes.from_string(\"x\")\n    var i = 0\n    while i < bytes.length(xs):\n        match i:\n            0 -> i = 0 - 1\n            _ -> Nil\n        console.print(\"${bytes.at(xs, i)}\")\n        i = i + 3\n",
+                "import bytes\n\nfn main(console: Console):\n    let xs = bytes.from_string(\"x\")\n    var i = 0\n    while i < bytes.length(xs):\n        match i:\n            0 -> i = 0 - 1\n            _ -> ()\n        console.print(\"${bytes.at(xs, i)}\")\n        i = i + 3\n",
             ),
             (
                 "out-of-bounds store after hidden reassignment",
-                "fn main(console: Console):\n    var xs = [111]\n    var i = 0\n    while i < xs.length():\n        match i:\n            0 -> i = 1\n            _ -> Nil\n        xs[i] = 222\n        i = i + 1\n    console.print(\"unreachable\")\n",
+                "fn main(console: Console):\n    var xs = [111]\n    var i = 0\n    while i < xs.length():\n        match i:\n            0 -> i = 1\n            _ -> ()\n        xs[i] = 222\n        i = i + 1\n    console.print(\"unreachable\")\n",
             ),
             (
                 "wide store index must not narrow before its check",
-                "fn main(console: Console):\n    var xs = [111]\n    var i = 0 - 4294967296\n    while i < 1:\n        xs[i] = 222\n        console.print(\"${xs[0]}\")\n        return Nil\n        i = i + 1\n",
+                "fn main(console: Console):\n    var xs = [111]\n    var i = 0 - 4294967296\n    while i < 1:\n        xs[i] = 222\n        console.print(\"${xs[0]}\")\n        return ()\n        i = i + 1\n",
             ),
             (
                 "saved length invalidated before loop",
@@ -514,11 +514,11 @@ fn main(console: Console):
             ),
             (
                 "capability-free dependency corrupts caller path",
-                "fn slice(text: String) -> String:\n    let padding = [0]\n    var scratch = [text]\n    var i = 0\n    while i < scratch.length():\n        match i:\n            0 -> i = 0 - 5\n            _ -> Nil\n        scratch[i] = \"evil.json\"\n        i = i + 7\n    if padding.length() == 0:\n        return \"unreachable\"\n    text\n\nfn main(console: Console):\n    let publisher_path = [\"safe.json\"]\n    let _ignored = slice(\"input\")\n    console.print(publisher_path[0])\n",
+                "fn slice(text: String) -> String:\n    let padding = [0]\n    var scratch = [text]\n    var i = 0\n    while i < scratch.length():\n        match i:\n            0 -> i = 0 - 5\n            _ -> ()\n        scratch[i] = \"evil.json\"\n        i = i + 7\n    if padding.length() == 0:\n        return \"unreachable\"\n    text\n\nfn main(console: Console):\n    let publisher_path = [\"safe.json\"]\n    let _ignored = slice(\"input\")\n    console.print(publisher_path[0])\n",
             ),
             (
                 "wrapping addition invalidates nonnegative fact",
-                "fn main(console: Console):\n    let xs = [111]\n    var i = 9223372036854775807\n    i = i + 9223372032559808513\n    while i < xs.length():\n        console.print(\"${xs[i]}\")\n        return Nil\n        i = i + 1\n",
+                "fn main(console: Console):\n    let xs = [111]\n    var i = 9223372036854775807\n    i = i + 9223372032559808513\n    while i < xs.length():\n        console.print(\"${xs[i]}\")\n        return ()\n        i = i + 1\n",
             ),
             (
                 "local facts do not cross function units",
@@ -572,7 +572,7 @@ fn main(console: Console):
     /// interpreter-only dict-upsert gap.)
     #[test]
     fn dict_update_upsert_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    dict.update(d, \"c\", 100, fn(x: Int): x + 1)\n    console.print(\"${dict.get_or(d, \"a\", -1)}\")\n    console.print(\"${dict.get_or(d, \"b\", -1)}\")\n    console.print(\"${dict.get_or(d, \"c\", -1)}\")\n    console.print(\"${dict.length(d)}\")\n    var counts = dict.new()\n    dict.update(counts, \"hit\", 0, fn(n: Int): n + 1)\n    dict.update(counts, \"hit\", 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, \"hit\", -1)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, \"a\", 1)\n    let _ = dict.insert(d, \"b\", 2)\n    let _ = dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    let _ = dict.update(d, \"c\", 100, fn(x: Int): x + 1)\n    console.print(\"${dict.get_or(d, \"a\", -1)}\")\n    console.print(\"${dict.get_or(d, \"b\", -1)}\")\n    console.print(\"${dict.get_or(d, \"c\", -1)}\")\n    console.print(\"${dict.length(d)}\")\n    var counts = dict.new()\n    let _ = dict.update(counts, \"hit\", 0, fn(n: Int): n + 1)\n    let _ = dict.update(counts, \"hit\", 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, \"hit\", -1)}\")\n";
         let want = vec![
             "11".to_string(),
             "2".to_string(),
@@ -831,7 +831,7 @@ fn main(console: Console):
     /// (`set.from_list(iter.collect(...))`) — identical on both backends.
     #[test]
     fn std_set_type_iteration_and_collect_agree() {
-        let client = "import set\nimport iter\nimport show\n\nfn main(console: Console):\n    var s = set.from_list([3, 1, 2, 3, 1])\n    console.print(\"${set.length(s)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    var total = 0\n    for x in s:\n        total = (total + x)\n    console.print(\"${total}\")\n    set.remove(s, 2)\n    console.print(show(s))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    console.print(show(cs))\n";
+        let client = "import set\nimport iter\nimport show\n\nfn main(console: Console):\n    var s = set.from_list([3, 1, 2, 3, 1])\n    console.print(\"${set.length(s)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    var total = 0\n    for x in s:\n        total = (total + x)\n    console.print(\"${total}\")\n    let _ = set.remove(s, 2)\n    console.print(show(s))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    console.print(show(cs))\n";
         let sources = [
             ("cmp", crate::bundled_module("cmp").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
@@ -1043,14 +1043,14 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    dict.insert(d, console, 5)
+    let _ = dict.insert(d, console, 5)
     console.print("${dict.length(d)}")
 "#;
         let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("the generic Dict surface remains type-checkable");
-        let err = codegen::compile_module_binary(&linked).expect_rejected("should reject");
+        let err = typeck::check(&linked).expect_err("a capability has no Eq dictionary-key contract");
         assert!(
-            err.to_string().contains("Dict key type"),
+            err.to_string().contains("requires `Console: Eq`")
+                && err.to_string().contains("dict.insert"),
             "unexpected error: {err}"
         );
     }
@@ -1062,24 +1062,24 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    dict.insert(d, "a", 1)
-    dict.insert(d, "b", 2)
-    dict.insert(d, "c", 3)
+    let _ = dict.insert(d, "a", 1)
+    let _ = dict.insert(d, "b", 2)
+    let _ = dict.insert(d, "c", 3)
     var d2 = d
-    dict.remove(d2, "b")
+    let _ = dict.remove(d2, "b")
     console.print("${dict.length(d2)}")
     console.print("${if dict.contains_key(d2, "b"): 1 else: 0}")
     console.print("${dict.get_or(d2, "a", 0)}")
     console.print("${dict.get_or(d2, "c", 0)}")
     var d3 = d
-    dict.remove(d3, "missing")
+    let _ = dict.remove(d3, "missing")
     console.print("${dict.length(d3)}")
     console.print("${dict.length(d)}")
     var nums = dict.new()
-    dict.insert(nums, 10, 100)
-    dict.insert(nums, 20, 200)
+    let _ = dict.insert(nums, 10, 100)
+    let _ = dict.insert(nums, 20, 200)
     var nums2 = nums
-    dict.remove(nums2, 10)
+    let _ = dict.remove(nums2, 10)
     console.print("${dict.length(nums2)}")
     console.print("${dict.get_or(nums2, 20, 0)}")
 "#;
@@ -1103,9 +1103,9 @@ fn main(console: Console):
 import dict
 fn main(console: Console):
     var b = dict.new()
-    dict.insert(b, "x", 1)
-    dict.remove(b, "x")
-    dict.insert(b, "x", 5)
+    let _ = dict.insert(b, "x", 1)
+    let _ = dict.remove(b, "x")
+    let _ = dict.insert(b, "x", 5)
     console.print("${dict.get_or(b, "x", -1)}")
     console.print("${list.length(dict.keys(b))}")
     console.print("${dict.get_or(b, "x", -1)}")
@@ -1153,11 +1153,11 @@ fn main(console: Console):
     console.print("${(7 % (0 - 2))}")
     console.print("${((0 - 7) / (0 - 2))}")
     var d = dict.new()
-    dict.insert(d, "k", 1)
-    dict.insert(d, "k", 2)
+    let _ = dict.insert(d, "k", 1)
+    let _ = dict.insert(d, "k", 2)
     console.print("${dict.get_or(d, "k", 0)}")
     console.print("${dict.length(d)}")
-    dict.remove(d, "missing")
+    let _ = dict.remove(d, "missing")
     console.print("${dict.length(d)}")
     console.print("${dict.get_or(d, "absent", 99)}")
 "#;

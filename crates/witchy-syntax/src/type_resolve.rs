@@ -571,7 +571,7 @@ impl World {
 
 fn type_mentions_reference(ty: &Type) -> bool {
     match ty {
-        Type::Qualified(TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
+        Type::Qualified(TypeQual::View | TypeQual::Borrow(_) | TypeQual::LegacyBorrow(_) | TypeQual::BorrowMut(_), _) => true,
         Type::Qualified(_, inner) => type_mentions_reference(inner),
         Type::Slice(elem) => type_mentions_reference(elem),
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
@@ -1917,7 +1917,7 @@ fn resolve_residual_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_module;
+    use crate::parser::{parse_module, parse_reference_migration};
 
     /// Run the per-module type/constructor resolution over a set of `(name, src)`
     /// modules — the linker's `type_resolve::resolve` step in isolation.
@@ -1934,11 +1934,20 @@ mod tests {
         Ok(modules)
     }
 
+    fn resolved_migration_src(mods: &[(&str, &str)]) -> Result<Vec<(String, Module)>, LinkError> {
+        let mut modules: Vec<(String, Module)> = mods
+            .iter()
+            .map(|(n, s)| (n.to_string(), parse_reference_migration(s).expect("parse migration")))
+            .collect();
+        resolve(&mut modules)?;
+        Ok(modules)
+    }
+
     #[test]
     fn nominal_lifetime_arguments_are_relations_not_resolvable_type_names() {
-        let modules = resolved_src(&[(
+        let modules = resolved_migration_src(&[(
             "views",
-            "mode opt\n\ntype Parser('a):\n    input: View(Bytes, 'a)\n\npub fn keep(let parser: let('a) Parser('a)) -> Parser('a):\n    parser\n",
+            "mode opt\n\ntype Parser('a):\n    input: &'a Bytes\n\npub fn keep(let parser: &'a Parser('a)) -> Parser('a):\n    parser\n",
         )])
         .expect("lifetime arguments survive declaration resolution");
         let module = &modules[0].1;
@@ -1963,37 +1972,35 @@ mod tests {
                    type View('a):\n    value: &'a String\n\n\
                    trait Inspect:\n    fn inspect(let self, text: &'a String) -> &'a String\n";
 
-        let err = resolve_src(&[
-            ("api", api),
-            ("normal", "from api import View\n\nfn main():\n    Nil\n"),
-        ])
+        let mut modules = vec![
+            ("api".into(), parse_reference_migration(api).expect("parse migration api")),
+            ("normal".into(), parse_module("from api import View\n\nfn main():\n    ()\n").expect("parse normal")),
+        ];
+        let err = resolve(&mut modules)
         .expect_err("normal source must not import a reference-bearing opt type");
         assert!(err.message.contains("reference-bearing opt type `api.View`"), "{}", err.message);
 
-        let err = resolve_src(&[
-            ("api", api),
-            (
-                "normal",
-                "import api\n\nfn use(value: api.View) -> Nil:\n    Nil\n",
-            ),
-        ])
+        let mut modules = vec![
+            ("api".into(), parse_reference_migration(api).expect("parse migration api")),
+            ("normal".into(), parse_module("import api\n\nfn use(value: api.View) -> ():\n    ()\n").expect("parse normal")),
+        ];
+        let err = resolve(&mut modules)
         .expect_err("normal source must not name a reference-bearing opt type");
         assert!(err.message.contains("reference-bearing opt type `api.View`"), "{}", err.message);
 
-        let err = resolve_src(&[
-            ("api", api),
-            ("normal", "from api import Inspect\n\nfn main():\n    Nil\n"),
-        ])
+        let mut modules = vec![
+            ("api".into(), parse_reference_migration(api).expect("parse migration api")),
+            ("normal".into(), parse_module("from api import Inspect\n\nfn main():\n    ()\n").expect("parse normal")),
+        ];
+        let err = resolve(&mut modules)
         .expect_err("normal source must not import a reference-bearing opt trait");
         assert!(err.message.contains("reference-bearing opt trait `api.Inspect`"), "{}", err.message);
 
-        let err = resolve_src(&[
-            ("api", api),
-            (
-                "normal",
-                "import api\n\nfn use(value: dyn Inspect) -> Nil:\n    Nil\n",
-            ),
-        ])
+        let mut modules = vec![
+            ("api".into(), parse_reference_migration(api).expect("parse migration api")),
+            ("normal".into(), parse_module("import api\n\nfn use(value: dyn Inspect) -> ():\n    ()\n").expect("parse normal")),
+        ];
+        let err = resolve(&mut modules)
         .expect_err("plain imports must not put a reference-bearing opt trait in normal scope");
         assert!(err.message.contains("reference-bearing opt trait `api.Inspect`"), "{}", err.message);
 
@@ -2001,7 +2008,7 @@ mod tests {
             ("api", "mode opt\n\ntype Token:\n    value: Int\n"),
             (
                 "normal",
-                "from api import Token\n\nfn use(value: Token) -> Nil:\n    Nil\n",
+                "from api import Token\n\nfn use(value: Token) -> ():\n    ()\n",
             ),
         ])
         .expect("normal modules retain conventional opt type interfaces");

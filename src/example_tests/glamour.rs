@@ -15,10 +15,10 @@ use crate::{codegen, interpreter, parser, typeck};
                    import meta\n\
                    \n\
                    comptime fn twice(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
-                   \x20   let a = list.at(parts, 0)\n\
-                   \x20   let b = list.at(parts, 1)\n\
-                   \x20   let h = list.at(holes, 0)\n\
-                   \x20   meta.expr_raw(\"\\\"\" + a + \"\\\" + \" + h + \" + \" + h + \" + \\\"\" + b + \"\\\"\")\n\
+                   \x20   let a = meta.expr_string(list.at(parts, 0))\n\
+                   \x20   let b = meta.expr_string(list.at(parts, 1))\n\
+                   \x20   let h = meta.expr_tag_hole(list.at(holes, 0))\n\
+                   \x20   meta.expr_binary(\"+\", meta.expr_binary(\"+\", meta.expr_binary(\"+\", a, h), h), b)\n\
                    \n\
                    fn main(console: Console):\n\
                    \x20   let v = \"X\"\n\
@@ -38,7 +38,7 @@ use crate::{codegen, interpreter, parser, typeck};
         let src = "import meta\n\
                    \n\
                    comptime fn located(parts: List(String), holes: List(String), origin: String) -> meta.ExprSyntax:\n\
-                   \x20   meta.expr_raw(\"\\\"\" + origin + \"\\\"\")\n\
+                   \x20   meta.expr_string(origin)\n\
                    \n\
                    fn main(console: Console):\n\
                    \x20   console.print(located\"here\")\n";
@@ -1400,10 +1400,9 @@ fn main(console: Console):
                    \n\
                    fn main(console: Console):\n\
                    \x20   let app = glamour.simple_program(0, update_simple, view_simple)\n\
-                   \x20   let (model, cmd, sub, ui) = glamour.program_update(app, Nil, 0, Inc)\n\
+                   \x20   let (model, cmd, sub, ui) = glamour.program_update(app, (), 0, Inc)\n\
                    \x20   console.print(\"after Inc: ${model}\")\n\
                    \x20   console.print(glamour.to_html(glamour.ui_node(ui)))\n";
         let out = glamour_run_both(src);
         assert_eq!(out, vec!["after Inc: 1".to_string(), "<div>count: 1</div>".to_string()]);
     }
-

@@ -13,14 +13,13 @@ There is one user-program run path: the compiled WASM backend. `witchy <file>`,
 `witchy run`, and `witchy sandbox` all compile to a wasm binary and execute it
 under wasmtime, so dev == deploy by construction.
 
-The tree-walking interpreter is **not** a user run path. It's the parity oracle
-(`witchy parity`), the `comptime:` const-evaluator, the in-language test runner,
-and the effectful build-step executor. Because `comptime` blocks are evaluated at
-compile time through the interpreter (`interpreter::run_module_budgeted`, called
-from `linker::link`), the evaluator is a compile-time dependency of every build
-that compiles witchy - including the wasm32 playground build - not a strippable
-oracle-only component. The CLI/oracle-only entry points are unreferenced from the
-wasm library and dropped by `wasm-opt`, but the core evaluator stays linked.
+The tree-walking interpreter is **not** a user run path. The canonical SafeWIR
+interpreter is the executable oracle (`witchy parity`), while `witchy test` executes
+admitted Wasm. The source tree walker is frozen and retained temporarily only for
+`comptime:` evaluation and effectful build-step compatibility. Because comptime
+blocks still use `interpreter::run_module_budgeted` from `linker::link`, that
+compatibility evaluator remains a compile-time dependency, including in the
+wasm32 playground build, until comptime itself moves to canonical lowering.
 
 ## Distribution: two trust models
 
@@ -107,9 +106,10 @@ dependencies still receive authority only when the root passes a capability.
 
 ## Invariants
 
-- **Two independent semantics + the parity gate.** The interpreter oracle is the
-  independent check on the hand-written codegen; it's never replaced by running
-  the same wasm on a second engine.
+- **Independent expectation + canonical executors.** Tests state an independent
+  expected result, then check the canonical SafeWIR interpreter and admitted
+  Wasm. Agreement between the two executors is necessary but not sufficient;
+  running the same Wasm on a second engine is not an independent expectation.
 - **One confinement implementation, shared.** The `Dir`/`Net` escape checks
   (`resolve`/`resolve_write`) live in one module,
   `crates/witchy-runtime/src/confine.rs`, used by the wasmtime sandbox and the
