@@ -158,6 +158,38 @@ clone_target() { # clone_target <src-target> <dest-target>
     done
 }
 
+# The checker's persistent verdict store (see
+# crates/witchy-wir/src/canonical_safewir/check/cache.rs). A fresh worktree
+# starts with an empty one, so every test process in it re-establishes the
+# expensive standard-library verdicts. Measured 2026-09-20: one `witchy check`
+# of an async program takes 12s cold and 5s with the store warm, because the
+# async executor's verdict alone costs 5.9s to establish; a fresh worktree
+# seeded from the gate's store replayed 2 verdicts on its first async test
+# with 0 stores. The entries are keyed by a digest of the checker's own
+# sources, so a changed checker never reads an older checker's verdicts, and
+# each file carries an integrity digest — a stale or truncated entry is a
+# miss, never a wrong verdict. Best effort: no store, or a failed copy, just
+# means the worktree establishes them itself.
+clone_verdict_cache() { # clone_verdict_cache <main> <dest>
+    local src="$1/state/safewir-check-cache" dst="$2/state/safewir-check-cache"
+    [[ -d "$src" ]] || return 0
+    [[ -e "$dst" ]] && return 0
+    mkdir -p "$2/state" 2>/dev/null || return 0
+    copy_path "$src" "$dst" 2>/dev/null || return 0
+    printf 'worktree-warm: seeded %s (%s verdicts)\n' "$dst" "$(ls "$dst" 2>/dev/null | wc -l | tr -d ' ')"
+}
+
+# The gate compiles master continuously, so its store is the richest one on
+# the machine; fall back to the main checkout's.
+seed_verdict_cache_from_best_source() { # <main> <dest-root>
+    local main="$1" dest="$2" gate="$1/.claude/worktrees/merge-gate"
+    if [[ -d "$gate/state/safewir-check-cache" ]]; then
+        clone_verdict_cache "$gate" "$dest"
+    else
+        clone_verdict_cache "$main" "$dest"
+    fi
+}
+
 gate_seed_source() { # gate_seed_source <main-worktree>
     local main="$1" qdir selected="target"
     [[ "${WITCHY_WORKTREE_WARM_GATE_LOCKED:-}" == 1 ]] || return 1
@@ -213,6 +245,7 @@ if [[ "${1:-}" == "--target-dir" ]]; then
         exit 0
     fi
     clone_or_gate_fallback "$root/target" "$dest" "$main" "$@"
+    seed_verdict_cache_from_best_source "$main" "$root"
     exit $?
 fi
 
@@ -232,3 +265,4 @@ if [[ -e "$dest/target" ]]; then
 fi
 clone_testcache=0
 clone_or_gate_fallback "$main/target" "$dest/target" "$main" "$@"
+seed_verdict_cache_from_best_source "$main" "$dest"
