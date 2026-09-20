@@ -5,6 +5,20 @@ use witchy::runtime::{Capabilities, Runtime};
 use witchy_wir::canonical_interpreter::{interpret_program, InterpreterConfig, InterpreterValue};
 use witchy_wir::canonical_safewir::FunctionId;
 
+/// (RFC-0167 §4) In `mode opt` a proven owner that was aliased by an ordinary
+/// binding is demoted; a later `unique`-requiring mutation is refused rather
+/// than repaired by a hidden copy. The normal-mode leg keeps proving the
+/// snapshot semantics; the opt leg pins the refusal.
+fn assert_opt_refuses_mutation_after_alias(source: &str) {
+    let error = witchy::resolve_std_only_checked(&format!("mode opt\n{source}"))
+        .expect_err("opt mode refuses mutating an aliased owner")
+        .to_string();
+    assert!(
+        error.contains("cannot repair ordinary storage into a `unique` parameter"),
+        "{error}"
+    );
+}
+
 fn assert_three_legs(source: &str, expected: &[&str]) {
     let checked = witchy::resolve_std_only_checked(source).expect("dictionary source checks");
     assert_checked_three_legs(&checked, expected);
@@ -555,5 +569,5 @@ fn main(console: Console):
 "#;
     let expected = ["2048 17 17", "48 -1 16", "0 2047 0 6141", "6288384"];
     assert_three_legs(source, &expected);
-    assert_three_legs(&format!("mode opt\n{source}"), &expected);
+    assert_opt_refuses_mutation_after_alias(source);
 }

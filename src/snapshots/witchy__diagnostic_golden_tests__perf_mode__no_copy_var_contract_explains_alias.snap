@@ -2,4 +2,4 @@
 source: src/diagnostic_golden_tests.rs
 expression: "mode_diag(\"mode opt\\n\\nimport dict\\n\\nfn main(console: Console):\\n    var d = dict.new()\\n    let _ = d.insert(\\\"a\\\", 1)\\n    let snapshot = d\\n    let _ = d.insert(\\\"a\\\", 2)\\n    console.print(\\\"${snapshot.length()}\\\")\\n\")"
 ---
-checked ownership/access analysis failed: type error: `main`, line 7: argument 1 to `dict.insert__String__Int` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner
+checked ownership/access analysis failed: type error: `main`, line 9: argument 1 to `dict.insert__String__Int` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner

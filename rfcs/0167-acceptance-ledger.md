@@ -198,7 +198,7 @@ track restores it; the tests themselves are unchanged and run under `--full`.
 
 | debt | tests | restoring track |
 |---|---|---|
-| dictionary values through owned storage stopped admitting / answering | `rfc0165_dictionary_mutation` ×7, `rfc0165_recursive_generic` ×2, `rfc0165_recursive_render` ×2 | non-`Int`, nested, and broader immutable-view carriers (dictionary owner lanes) |
+| ~~dictionary values through owned storage stopped admitting / answering~~ **restored 2026-09-20**: type checking now infers fresh-allocator results (`dict.new`, `dict.with_capacity`, `list.with_capacity`, and wrappers) as opt-mode owners, keeps the proof through place assignments and self-updates, and demotes rather than consumes an inferred owner on an ordinary alias (RFC-0167 §4); two snapshot tests' opt legs now pin the required refusal | `rfc0165_dictionary_mutation` ×7, `rfc0165_recursive_generic` ×2, `rfc0165_recursive_render` ×2 — back in the default gate | — |
 | corpus `018-string_pushes_in_arms_and_across_loops_keep_the_prefix` refused (`MissingBoundsGuard`) | `rfc0165_corpus`, `rfc0165_admitted_launch::admitted_string_pushes…` | loop-carried string header lanes (same family as BUG-635 projected loops) |
 | ownership row F unoptimized lowering (`UnsupportedIndirectCall`) | `rfc0167_ownership_parity` | indirect aggregate-`var` callable transport |
 | canonical Net host fixtures | `rfc0165_net` ×2, `canonical_net_fixture` | capability host calls on the canonical route |
@@ -207,4 +207,4 @@ track restores it; the tests themselves are unchanged and run under `--full`.
 | `own unique` FIP entry deferred | `rfc0089_fip_contract` ×10 | FIP re-admission |
 | retired `View(T,'a)` callable relations | `tests/rfc0112.rs` ×2 | delete with the relation machinery |
 | RFC-0087 census tool crashes on `benchmarks/select_fanin.witchy` (private intrinsic leak) | `rfc0087_migration_census` | fix the census tool or retire the proof |
-| opt mode refuses `dict.new()` as a fresh `unique` owner, so opt-mode dictionary mutation is refused outright (lists are admitted) | `lsp::tests::mode_opt_no_copy_violation_names_the_alias_reason` | dictionary owner lanes (with the first row) |
+| ~~opt mode refuses `dict.new()` as a fresh `unique` owner~~ **restored 2026-09-20** (same change) | `lsp::tests::mode_opt_no_copy_violation_names_the_alias_reason` — back in the default gate | — |

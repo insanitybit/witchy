@@ -571,6 +571,64 @@ fn is_frozen_value_type(t: &ast::Type) -> bool {
 /// Whether this declaration qualifies the value handle itself as `unique`.
 /// A qualifier below an explicit reference belongs to the referent, so the
 /// (copyable) reference handle does not become affine.
+/// (RFC-0167) Whether `expression` always evaluates to freshly allocated
+/// storage: a literal or constructed aggregate, a fresh-allocator intrinsic
+/// (`dict.new`, `dict.with_capacity`, `list.with_capacity`), a call to a
+/// function already inferred fresh, or a branch whose every arm is fresh.
+fn expr_yields_fresh_storage(expression: &Expr, fresh: &HashSet<String>) -> bool {
+    match expression {
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => true,
+        Expr::List(_) | Expr::Tuple(_) | Expr::Ctor { .. } | Expr::AnonCtor { .. } => true,
+        Expr::Record { spread: None, .. } => true,
+        Expr::Call { name, .. } => {
+            matches!(
+                name.as_str(),
+                intrinsics::DICT_NEW | intrinsics::DICT_WITH_CAPACITY | intrinsics::LIST_WITH_CAPACITY
+            ) || fresh.contains(name)
+        }
+        Expr::Block(block) => block_yields_fresh_storage(block, fresh),
+        Expr::If { then_block, else_block: Some(else_block), .. } => {
+            block_yields_fresh_storage(then_block, fresh) && block_yields_fresh_storage(else_block, fresh)
+        }
+        Expr::Match { arms, .. } => {
+            !arms.is_empty() && arms.iter().all(|arm| expr_yields_fresh_storage(&arm.body, fresh))
+        }
+        _ => false,
+    }
+}
+
+/// A block yields fresh storage when its tail expression does and every
+/// early `return` inside it does too.
+fn block_yields_fresh_storage(block: &Block, fresh: &HashSet<String>) -> bool {
+    let Some(Stmt::Expr(tail)) = block.stmts.last() else { return false };
+    expr_yields_fresh_storage(tail, fresh) && returns_yield_fresh_storage(block, fresh)
+}
+
+fn returns_yield_fresh_storage(block: &Block, fresh: &HashSet<String>) -> bool {
+    fn in_expr(expression: &Expr, fresh: &HashSet<String>) -> bool {
+        match expression {
+            Expr::Block(block) => returns_yield_fresh_storage(block, fresh),
+            Expr::If { then_block, else_block, .. } => {
+                returns_yield_fresh_storage(then_block, fresh)
+                    && else_block.as_ref().is_none_or(|block| returns_yield_fresh_storage(block, fresh))
+            }
+            Expr::Match { arms, .. } => arms.iter().all(|arm| in_expr(&arm.body, fresh)),
+            Expr::While { body, .. } | Expr::For { body, .. } | Expr::WhileLet { body, .. } => {
+                returns_yield_fresh_storage(body, fresh)
+            }
+            _ => true,
+        }
+    }
+    block.stmts.iter().all(|stmt| match stmt {
+        Stmt::Return(value) => value.as_ref().is_some_and(|value| expr_yields_fresh_storage(value, fresh)),
+        Stmt::Expr(value) | Stmt::Yield(value) => in_expr(value, fresh),
+        Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
+            in_expr(value, fresh)
+        }
+        Stmt::Break | Stmt::Continue => true,
+    })
+}
+
 fn is_unique_value_type(t: &ast::Type) -> bool {
     match t {
         ast::Type::Qualified(ast::TypeQual::Unique, _) => true,
@@ -4613,6 +4671,13 @@ struct Checker {
     /// Source callable contracts for named functions. Callable identity remains
     /// erased at runtime, so this is checker-only provenance.
     fn_unique_contracts: HashMap<String, UniqueCallableContract>,
+    /// (RFC-0167) Named functions whose every result is freshly allocated
+    /// storage, inferred from their bodies by `infer_fresh_result_fns`. A
+    /// `unique` result cannot be declared on the canonical route yet, so
+    /// `dict.new()` is typed `Dict(k, v)` while its value is a fresh owner;
+    /// binding it with `var` may hand it to a `unique` parameter in `mode opt`.
+    /// Checker-only provenance: lowering never reads it.
+    fresh_result_fns: HashSet<String>,
     /// Named function origins retained from the linker mode markers.  This is
     /// signature/source metadata, never inferred from an implementation body.
     fn_opt_provenance: HashMap<String, OptCallableContract>,
@@ -6696,9 +6761,15 @@ impl Checker {
                 self.expression_carries_unique_storage(base, &self.fresh_for_unique_probe(base))
                     || fields.iter().any(|(_, value)| self.expression_carries_unique_storage(value, &self.fresh_for_unique_probe(value)))
             }
-            Expr::Call { name, .. } => self
-                .callable_unique_contract(name)
-                .is_some_and(|contract| contract.unique_result),
+            // (RFC-0167 §6) A fresh-allocator result is a proven owner only
+            // where a proof is required; normal code keeps its copy-correct
+            // fallback and the binding stays copyable.
+            Expr::Call { name, .. } => {
+                (self.opt_mode && self.fresh_result_fns.contains(name))
+                    || self
+                        .callable_unique_contract(name)
+                        .is_some_and(|contract| contract.unique_result)
+            }
             Expr::Apply { func, .. } => self
                 .callable_unique_contract_for_expr(func)
                 .is_some_and(|contract| contract.unique_result),
@@ -6733,9 +6804,12 @@ impl Checker {
             Expr::List(_) | Expr::Tuple(_) | Expr::Ctor { .. } | Expr::AnonCtor { .. } => true,
             Expr::Record { spread: None, .. } => true,
             Expr::Record { spread: Some(_), .. } | Expr::RecordUpdate { .. } => false,
-            Expr::Call { name, .. } => self
-                .callable_unique_contract(name)
-                .is_some_and(|contract| contract.unique_result),
+            Expr::Call { name, .. } => {
+                (self.opt_mode && self.fresh_result_fns.contains(name))
+                    || self
+                        .callable_unique_contract(name)
+                        .is_some_and(|contract| contract.unique_result)
+            }
             Expr::Apply { func, .. } => self
                 .callable_unique_contract_for_expr(func)
                 .is_some_and(|contract| contract.unique_result),
@@ -7022,6 +7096,20 @@ impl Checker {
         ty: &Ty,
         context: &str,
     ) -> Result<(), TypeError> {
+        let into_unique = self.ty_carries_unique_storage(ty);
+        self.transfer_unique_value_into(expression, ty, into_unique, context)
+    }
+
+    /// `into_unique` says whether the receiving position is itself declared
+    /// `unique`. `Ty` erases source qualifiers, so an argument site that knows
+    /// the callee's contract passes the flag explicitly.
+    fn transfer_unique_value_into(
+        &mut self,
+        expression: &Expr,
+        ty: &Ty,
+        into_unique: bool,
+        context: &str,
+    ) -> Result<(), TypeError> {
         if !self.expression_carries_unique_storage(expression, ty) {
             return Ok(());
         }
@@ -7033,7 +7121,21 @@ impl Checker {
                 "use of unique value `{root}` after it was transferred ({context})"
             ));
         }
-        self.mark_consumed_binding(&root);
+        // (RFC-0167 §4) A declared `unique` value is affine: transferring it
+        // consumes the binding. An owner that is only *proven* fresh (an
+        // inferred allocator result) instead demotes: coercing it into an
+        // ordinary position gives up the guarantee, and ordinary copies may
+        // be made afterward — a later `unique`-requiring use is what fails.
+        if self.is_unique_value_binding(&root) || into_unique {
+            self.mark_consumed_binding(&root);
+        } else if let Some(bindings) = self
+            .unique_storage_bindings
+            .iter_mut()
+            .rev()
+            .find(|bindings| bindings.contains(&root))
+        {
+            bindings.remove(&root);
+        }
         Ok(())
     }
 
@@ -9870,7 +9972,15 @@ impl Checker {
                     if decl.as_ref().map_or_else(
                         || self.expression_carries_unique_storage(value, &binding_ty)
                             || self.ty_carries_unique_storage(&binding_ty),
-                        |ty| self.declared_type_carries_unique_storage(ty),
+                        |ty| {
+                            self.declared_type_carries_unique_storage(ty)
+                                // (RFC-0167) `var d: Dict(k, v) = dict.new()` — the
+                                // annotation is a unification constraint, not an
+                                // `as` coercion; a fresh owner keeps its proof.
+                                || (self.opt_mode
+                                    && matches!(value, Expr::Call { .. })
+                                    && self.expression_carries_unique_storage(value, &binding_ty))
+                        },
                     )
                     {
                         self.authorize_unique_storage_binding(name.clone());
@@ -10026,7 +10136,20 @@ impl Checker {
                         self.unify(&existing, &vt)?;
                     }
                     self.reinitialize_binding(name); // reassignment re-initializes
-                    if !self.is_unique_value_binding(name) {
+                    // Only a whole-binding reassignment replaces the root's
+                    // storage. Assigning into a place (`d[k] = v`, `r.f = v`)
+                    // mutates the storage the binding already owns, so its
+                    // owner proof survives (RFC-0167 §4).
+                    // A self-update `x = f(x, …)` (the place-assignment
+                    // desugar, `x = dict.__insert(x, k, v)`) threads the
+                    // binding's own storage through the call, so its owner
+                    // proof survives too.
+                    let self_update = matches!(
+                        value,
+                        Expr::Call { args, .. }
+                            if args.first().is_some_and(|arg| matches!(arg, Expr::Var(root) if root == name))
+                    );
+                    if *place_depth == 0 && !self_update && !self.is_unique_value_binding(name) {
                         if let Some(bindings) = self
                             .unique_storage_bindings
                             .iter_mut()
@@ -11134,9 +11257,14 @@ impl Checker {
                     // native-lowering time by Rust's borrow checker).
                     Convention::Let => {
                         if let Some(parameter) = params.get(i) {
-                            self.transfer_unique_value(
+                            let into_unique = self
+                                .callable_unique_contract(name)
+                                .and_then(|contract| contract.unique_params.get(i).copied())
+                                .unwrap_or(false);
+                            self.transfer_unique_value_into(
                                 arg,
                                 parameter,
+                                into_unique,
                                 &format!("argument {} to `{name}`", i + 1),
                             )?;
                         }
@@ -11310,9 +11438,14 @@ impl Checker {
                 }
                 Convention::Let => {
                     if let Some(parameter) = parameter_types.get(index) {
-                        self.transfer_unique_value(
+                        let into_unique = self
+                            .callable_unique_contract(name)
+                            .and_then(|contract| contract.unique_params.get(index).copied())
+                            .unwrap_or(false);
+                        self.transfer_unique_value_into(
                             arg,
                             parameter,
+                            into_unique,
                             &format!("argument {} to function value `{name}`", index + 1),
                         )?;
                     }
@@ -16479,6 +16612,7 @@ fn run_check_selected(
         fn_exclusive_reference_params: HashMap::new(),
         fn_frozen_value_params: HashMap::new(),
         fn_unique_contracts: HashMap::new(),
+        fresh_result_fns: HashSet::new(),
         fn_opt_provenance: HashMap::new(),
         frozen_record_fields: HashMap::new(),
         unique_record_fields: HashMap::new(),
@@ -16884,6 +17018,26 @@ fn run_check_selected(
             // Desugared to functions by `traits::lower` and constants inlined by
             // `witchy_syntax::consts` before this point.
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+        }
+    }
+    // (RFC-0167) Fresh-storage results are inferred by fixpoint over bodies:
+    // a wrapper around a fresh allocator is itself a fresh allocator.
+    let mut rounds = 0;
+    loop {
+        let mut changed = false;
+        for item in &module.items {
+            let Item::Function(f) = item else { continue };
+            if c.fresh_result_fns.contains(&f.name) {
+                continue;
+            }
+            if block_yields_fresh_storage(&f.body, &c.fresh_result_fns) {
+                c.fresh_result_fns.insert(f.name.clone());
+                changed = true;
+            }
+        }
+        rounds += 1;
+        if !changed || rounds > 8 {
+            break;
         }
     }
     for item in &module.items {

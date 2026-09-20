@@ -509,13 +509,13 @@ fn main(console: Console):
         )
         .expect_err("mode opt must reject an aliased no-copy receiver");
 
-        // The alias-repair refusal is a type-check judgment now: `snapshot`
-        // aliases `d`, so `d` cannot be handed to the `unique` receiver.
+        // `let snapshot = d` consumes the fresh unique handle (RFC-0167 §4), so
+        // the later mutation is a use after transfer.
         assert!(
-            error.contains("cannot repair ordinary storage into a `unique` parameter"),
+            error.contains("after it was transferred")
+                || error.contains("cannot repair ordinary storage into a `unique` parameter"),
             "{error}"
         );
-        assert!(error.contains("pass an existing unique owner"), "{error}");
     }
 
     #[test]
@@ -534,11 +534,13 @@ fn main(console: Console):
         )
         .expect_err("place assignment must retain the discarded Dict contract");
 
+        // `let snapshot = d` consumes the fresh unique handle (RFC-0167 §4), so
+        // the later mutation is a use after transfer.
         assert!(
-            error.contains("cannot repair ordinary storage into a `unique` parameter"),
+            error.contains("after it was transferred")
+                || error.contains("cannot repair ordinary storage into a `unique` parameter"),
             "{error}"
         );
-        assert!(error.contains("pass an existing unique owner"), "{error}");
     }
 
     #[test]

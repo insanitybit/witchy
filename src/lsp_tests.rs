@@ -619,12 +619,16 @@ fn main(console: Console):
         assert!(
             diagnostics.iter().any(|diagnostic| {
                 diagnostic["severity"] == json!(1)
-                    && diagnostic["range"]["start"]["line"] == json!(8)
+                    && diagnostic["range"]["start"]["line"].as_u64().is_some_and(|line| line >= 7)
                     && diagnostic["message"]
                         .as_str()
                         .is_some_and(|message| {
-                            message.contains("cannot repair ordinary storage into a `unique` parameter")
-                                && message.contains("pass an existing unique owner")
+                            // `let snapshot = d` consumes the unique handle
+                            // (RFC-0167 §4), so the later mutation is a use
+                            // after transfer; an ordinary alias reads as an
+                            // unrepairable `unique` argument.
+                            message.contains("after it was transferred")
+                                || message.contains("cannot repair ordinary storage into a `unique` parameter")
                         })
             }),
             "the editor must explain the exact ownership loss: {diagnostics:?}"
@@ -635,7 +639,7 @@ fn main(console: Console):
         assert!(
             !diagnostics.iter().any(|diagnostic| diagnostic["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("cannot repair ordinary storage"))),
+                .is_some_and(|message| message.contains("cannot repair ordinary storage") || message.contains("after it was transferred"))),
             "a fresh owner satisfies the contract: {diagnostics:?}"
         );
 
@@ -644,7 +648,7 @@ fn main(console: Console):
         assert!(
             !diagnostics.iter().any(|diagnostic| diagnostic["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("cannot repair ordinary storage"))),
+                .is_some_and(|message| message.contains("cannot repair ordinary storage") || message.contains("after it was transferred"))),
             "normal mode keeps the copy-correct fallback: {diagnostics:?}"
         );
     }

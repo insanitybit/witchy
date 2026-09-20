@@ -39,7 +39,7 @@ fn main(console: Console):
 
 #[test]
 fn structural_render_preserves_dictionary_insertion_and_record_field_order() {
-    assert_both_modes(r#"
+    assert_normal_then_opt_refusal(r#"
 type Tree:
     Tip
     Branch(String, List(Tree))
@@ -188,6 +188,21 @@ fn main(console: Console):
 fn assert_both_modes(source: &str, expected: &[&str]) {
     assert_three_legs(source, expected);
     assert_three_legs(&format!("mode opt\n{source}"), expected);
+}
+
+/// (RFC-0167 §4) In `mode opt` a proven owner that was aliased by an ordinary
+/// binding is demoted; a later `unique`-requiring mutation is refused rather
+/// than repaired by a hidden copy. The normal-mode leg keeps proving the
+/// snapshot semantics; the opt leg pins the refusal.
+fn assert_normal_then_opt_refusal(source: &str, expected: &[&str]) {
+    assert_three_legs(source, expected);
+    let error = witchy::resolve_std_only_checked(&format!("mode opt\n{source}"))
+        .expect_err("opt mode refuses mutating an aliased owner")
+        .to_string();
+    assert!(
+        error.contains("cannot repair ordinary storage into a `unique` parameter"),
+        "{error}"
+    );
 }
 
 fn assert_three_legs(source: &str, expected: &[&str]) {
