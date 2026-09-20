@@ -59,6 +59,17 @@ def ns_to_s(value):
     return (value or 0) / 1e9
 
 
+def incremental_count(report, bypasses):
+    # Both formats file a compilation kept incremental (MBX_INCREMENTAL=1,
+    # the shim's edit mode) under the `incremental` bypass reason. v5 adds a
+    # top-level count of compilations that consulted the cache first and had
+    # their result withheld; those sit under miss/unconsulted, never here.
+    withheld = report.get("incremental_compilations")
+    if isinstance(withheld, dict):
+        withheld = withheld.get("invocations") or sum(v for v in withheld.values() if isinstance(v, int))
+    return bypasses.get("incremental", 0) + (withheld if isinstance(withheld, int) else 0)
+
+
 def collect(directory, since):
     cutoff = dt.datetime.now(dt.timezone.utc) - since
     rows = []
@@ -74,6 +85,8 @@ def collect(directory, since):
         except (OSError, ValueError):
             continue
         bypasses = report.get("bypasses") or {}
+        if not isinstance(bypasses, dict):
+            bypasses = {}
         rows.append({
             "when": when,
             "day": when.strftime("%Y-%m-%d"),
@@ -84,7 +97,13 @@ def collect(directory, since):
             "hits": report.get("hits", 0),
             "misses": report.get("misses", 0),
             "unconsulted": report.get("unconsulted", 0),
-            "bypassed": sum(bypasses.values()) if isinstance(bypasses, dict) else 0,
+            # Report v4 (mbx <= 1.12) filed incremental compilations under
+            # bypasses; v5 (mbx 1.13+) buckets them under their lookup outcome
+            # and reports the withheld results separately. Count them once,
+            # in their own column, under both formats.
+            "bypassed": sum(n for reason, n in bypasses.items() if reason != "incremental"),
+            "incremental": incremental_count(report, bypasses),
+            "format": report.get("version"),
             "avoided_s": ns_to_s(report.get("estimated_compiler_duration_avoided_ns")),
             "spent_s": ns_to_s(((report.get("compiler") or {}).get("bypass") or {}).get("duration_ns"))
             + sum(ns_to_s(item.get("duration_ns")) for item in report.get("slow_compilations") or []),
@@ -102,6 +121,8 @@ def summarize(rows):
         "misses": sum(r["misses"] for r in rows),
         "unconsulted": sum(r["unconsulted"] for r in rows),
         "bypassed": sum(r["bypassed"] for r in rows),
+        "incremental": sum(r["incremental"] for r in rows),
+        "formats": sorted({r["format"] for r in rows if r["format"] is not None}),
         "avoided_s": sum(r["avoided_s"] for r in rows),
         "spent_s": sum(r["spent_s"] for r in rows),
         "reflinked_mb": sum(r["reflinked_mb"] for r in rows),
@@ -120,7 +141,7 @@ def group(rows, key):
 
 def fmt_row(name, s, width):
     return (
-        f"{name:<{width}} {s['builds']:>6} {s['hits']:>6} {s['misses']:>6} {s['bypassed']:>7} "
+        f"{name:<{width}} {s['builds']:>6} {s['hits']:>6} {s['misses']:>6} {s['incremental']:>6} {s['bypassed']:>7} "
         f"{100 * s['hit_rate']:>6.0f}% {s['avoided_s'] / 60:>8.1f} {s['spent_s'] / 60:>8.1f} {s['wall_s'] / 60:>8.1f}"
     )
 
@@ -147,12 +168,16 @@ def main():
 
     print(f"mbx build reports, last {args.since}: {total['builds']} builds "
           f"({total['wall_s'] / 60:.1f} min wall), hit rate {100 * total['hit_rate']:.0f}% "
-          f"({total['hits']} hits / {total['misses']} misses / {total['unconsulted']} first-seen / {total['bypassed']} bypassed)")
+          f"({total['hits']} hits / {total['misses']} misses / {total['unconsulted']} first-seen / "
+          f"{total['incremental']} incremental / {total['bypassed']} bypassed)")
+    if len(total["formats"]) > 1:
+        print(f"note: reports span formats {total['formats']}; v5 counts a miss per compilation, "
+              f"v4 per key probe, so the miss column mixes two definitions")
     print(f"compiler time: {total['avoided_s'] / 60:.1f} min avoided (estimated) vs {total['spent_s'] / 60:.1f} min spent; "
           f"{total['reflinked_mb'] / 1000:.2f} GB restored by reflink")
     print()
     width = max(12, *(len(k) for k in group(rows, args.by)))
-    print(f"{args.by:<{width}} {'builds':>6} {'hits':>6} {'misses':>6} {'bypass':>7} {'hit%':>7} {'avoid_m':>8} {'spent_m':>8} {'wall_m':>8}")
+    print(f"{args.by:<{width}} {'builds':>6} {'hits':>6} {'misses':>6} {'incr':>6} {'bypass':>7} {'hit%':>7} {'avoid_m':>8} {'spent_m':>8} {'wall_m':>8}")
     for name, s in group(rows, args.by).items():
         print(fmt_row(name, s, width))
 

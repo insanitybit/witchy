@@ -1,0 +1,12 @@
+# mbx build-cache policy for this repository (scripts/bin/cargo routes builds
+# through mbx; scripts/mbx-install.sh pins the version). Environment variables
+# still win over anything here.
+#
+# Many worktrees of this one repository build against one shared store. A
+# workspace crate that recompiles in a new checkout records that checkout's
+# path in its artifact, and every crate above it then misses however little it
+# read itself. Remapping the workspace root makes the rebuilt crate
+# byte-identical across checkouts so its dependents keep hitting. The price is
+# literal source paths in debug information, file!() and panic locations,
+# which the gate does not depend on.
+share_workspace_root = true

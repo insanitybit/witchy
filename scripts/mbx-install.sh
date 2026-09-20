@@ -16,12 +16,18 @@
 #   ./scripts/mbx-install.sh --check    # report status, exit 1 if not installed
 #   ./scripts/mbx-install.sh --force    # re-download and re-verify
 #
-# Upgrading: bump MBX_VERSION below and add the new SHA256SUMS lines. A new
-# version gets its own store directory (scripts/bin/cargo keys the store on the
-# version), so the old cache is simply left for gc to remove.
+# Upgrading: bump MBX_VERSION below; the release's SHA256SUMS is downloaded and
+# verified, nothing is pinned here. A new version gets its own store directory
+# (scripts/bin/cargo keys the store on the version), so the first build after
+# an upgrade is cold and the old store is dead weight to delete once no
+# session still links the old binary. The binary and the bin/mbx link are
+# shared by every worktree: an older worktree whose installer pins the previous
+# version flips the link back on its next SessionStart, and a newer one flips
+# it forward again. Each flip only re-downloads; builds already running keep
+# their binary and store.
 set -euo pipefail
 
-MBX_VERSION="1.12.0"
+MBX_VERSION="1.14.0"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # Install under the MAIN checkout's state/ so every worktree shares one binary

@@ -46,3 +46,4 @@ dist/
 # reference; commit the markdown notes/index, not the binaries
 *.pdf
 scripts/rfc0165-dev/status/
+__pycache__/

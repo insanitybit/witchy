@@ -131,7 +131,9 @@ Compiler outputs are shared across worktrees and target dirs by the
 **mr-boxington (`mbx`) build cache**. `scripts/mbx-install.sh` (run by the
 SessionStart hook) installs the pinned binary under `state/mbx/`;
 `scripts/bin/cargo` is a `cargo` shim that routes build subcommands through it
-with the store at `state/mbx/store-<version>`. `agent-check.sh` and the
+with the store at `state/mbx/store-<version>`; the checked-in `.mbx.toml`
+carries the build policy (workspace-root remapping, so a crate rebuilt in one
+worktree still hits in the others). `agent-check.sh` and the
 scripts it drives already use the shim; for ad hoc commands put
 `scripts/bin` first on `PATH` or call `./scripts/bin/cargo build ...`. The
 gate (`WITCHY_GATE_SCOPE`) always uses plain cargo. `WITCHY_BUILD_CACHE=off`
