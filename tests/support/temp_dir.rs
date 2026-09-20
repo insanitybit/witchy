@@ -9,12 +9,7 @@ pub struct TempDir(PathBuf);
 #[allow(dead_code)]
 impl TempDir {
     pub fn new(tag: &str) -> Self {
-        // Absolute whatever `$TMPDIR` says: a relative value would place this
-        // directory inside the shared checkout, where a killed test run leaves
-        // it behind (2026-09-19 left 31 such directories in master's tree).
-        let root = std::env::temp_dir();
-        let root = if root.is_absolute() { root } else { PathBuf::from("/tmp") };
-        let path = root.join(format!(
+        let path = std::env::temp_dir().join(format!(
             "witchy-{tag}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),

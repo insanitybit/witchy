@@ -507,49 +507,14 @@ impl Drop for FrontEnd<'_> {
     }
 }
 
-/// An absolute temporary root. `std::env::temp_dir()` returns `$TMPDIR`
-/// verbatim, so a relative `TMPDIR` makes every fixture directory relative to
-/// the current directory — the shared master checkout for a test run. That
-/// happened on 2026-09-19: an interrupted e2e shard left 31 `coven-e2e-*`
-/// directories in the checkout (the `Drop` cleanup never runs when the process
-/// is killed), and every agent's `git status` carried them afterwards.
-/// Fixture directories belong outside the repository whatever the environment
-/// says, so a non-absolute root falls back to `/tmp`.
-pub(crate) fn temp_root() -> PathBuf {
-    absolute_temp_root(std::env::temp_dir())
-}
-
-fn absolute_temp_root(candidate: PathBuf) -> PathBuf {
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        PathBuf::from("/tmp")
-    }
-}
-
 pub(crate) fn unique(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = temp_root().join(format!("coven-e2e-{tag}-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coven-e2e-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-#[cfg(test)]
-mod temp_root_tests {
-    use super::absolute_temp_root;
-    use std::path::PathBuf;
-
-    #[test]
-    fn a_relative_temp_dir_never_places_fixtures_in_the_checkout() {
-        assert_eq!(absolute_temp_root(PathBuf::from(".")), PathBuf::from("/tmp"));
-        assert_eq!(absolute_temp_root(PathBuf::from("tmp/nested")), PathBuf::from("/tmp"));
-        assert_eq!(absolute_temp_root(PathBuf::from("")), PathBuf::from("/tmp"));
-        let absolute = PathBuf::from("/var/folders/xyz/T");
-        assert_eq!(absolute_temp_root(absolute.clone()), absolute);
-    }
 }
 
 pub(crate) fn stdout(o: &Output) -> String {

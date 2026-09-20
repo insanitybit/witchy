@@ -259,6 +259,7 @@ fn check_candidate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     catalog: Option<&CanonicalAbiCatalog>,
 ) -> Result<(), InitialCheckError> {
+
     let (_, layouts) =
         crate::layout::LayoutBundle::decode_canonical(&candidate.layouts().canonical_bytes())
             .map_err(|error| InitialCheckError::InvalidLayoutBundle(error.to_string()))?;
