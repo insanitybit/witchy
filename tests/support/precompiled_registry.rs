@@ -128,7 +128,11 @@ pub fn unique_dir(name: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
+    // Absolute for the reason in `coven::temp_root`: a relative `TMPDIR`
+    // would place registry fixtures inside the shared checkout.
+    let root = std::env::temp_dir();
+    let root = if root.is_absolute() { root } else { PathBuf::from("/tmp") };
+    root.join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
