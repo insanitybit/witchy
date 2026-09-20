@@ -37,11 +37,64 @@ impl<'a> CallableDefinitions<'a> {
     }
 }
 
+/// A set of `MemoryEffect`s held as bits rather than a tree.
+///
+/// `MemoryEffect` has five variants, so a `BTreeSet` here was a heap-allocated
+/// B-tree per handful of bits -- and contract derivation rebuilds every
+/// function's summary on each of up to `MAX_CONTRACT_ITERATIONS` rounds, so
+/// those allocations dominated the pass (19.2% of an async-compile profile on
+/// 2026-09-20, almost all of it inside BTreeMap/BTreeSet code).
+///
+/// `iter` yields variants in declaration order, which is exactly the derived
+/// `Ord` order the `BTreeSet` iterated in, so every consumer sees the same
+/// sequence it saw before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EffectSet(u8);
+
+impl EffectSet {
+    const ALL: [MemoryEffect; 5] = [
+        MemoryEffect::Read,
+        MemoryEffect::Write,
+        MemoryEffect::Retain,
+        MemoryEffect::Release,
+        MemoryEffect::Reclaim,
+    ];
+
+    const fn bit(effect: MemoryEffect) -> u8 { 1u8 << (effect as u8) }
+
+    fn insert(&mut self, effect: MemoryEffect) { self.0 |= Self::bit(effect); }
+
+    const fn contains(self, effect: MemoryEffect) -> bool { self.0 & Self::bit(effect) != 0 }
+
+    fn iter(self) -> impl Iterator<Item = MemoryEffect> {
+        Self::ALL.into_iter().filter(move |effect| self.contains(*effect))
+    }
+
+    /// Add every effect of `other`, the union `BTreeSet::extend` performed.
+    fn union_with(&mut self, other: Self) { self.0 |= other.0; }
+
+    const fn is_subset(self, other: Self) -> bool { self.0 & !other.0 == 0 }
+}
+
+impl Extend<MemoryEffect> for EffectSet {
+    fn extend<T: IntoIterator<Item = MemoryEffect>>(&mut self, effects: T) {
+        for effect in effects { self.insert(effect); }
+    }
+}
+
+impl FromIterator<MemoryEffect> for EffectSet {
+    fn from_iter<T: IntoIterator<Item = MemoryEffect>>(effects: T) -> Self {
+        let mut set = Self::default();
+        set.extend(effects);
+        set
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BodySummary {
-    needs: Vec<BTreeSet<MemoryEffect>>,
+    needs: Vec<EffectSet>,
     results: Vec<DerivedResult>,
-    effects: BTreeMap<u32, BTreeSet<MemoryEffect>>,
+    effects: BTreeMap<u32, EffectSet>,
     escaped_parameters: BTreeSet<u32>,
 }
 
@@ -311,7 +364,7 @@ fn initial_summary(
         .copied()
         .ok_or(InitialCheckError::MissingSignature(function.signature))?;
     Ok(BodySummary {
-        needs: vec![BTreeSet::new(); signature.parameters.len()],
+        needs: vec![EffectSet::default(); signature.parameters.len()],
         results: signature
             .results
             .iter()
@@ -1363,10 +1416,10 @@ fn join_body_summary(left: &mut BodySummary, right: &BodySummary) {
         left.join(right.clone());
     }
     for (left, right) in left.needs.iter_mut().zip(&right.needs) {
-        left.extend(right);
+        left.union_with(*right);
     }
     for (parameter, effects) in &right.effects {
-        left.effects.entry(*parameter).or_default().extend(effects);
+        left.effects.entry(*parameter).or_default().union_with(*effects);
     }
     left.escaped_parameters.extend(&right.escaped_parameters);
 }
@@ -1476,7 +1529,7 @@ fn derive_call_needs(
             .needs
             .get_mut(parameter as usize)
             .ok_or_else(|| contract_mismatch(functions[&callee].signature, "argument origin names a parameter beyond the caller's needs"))?;
-        slot.extend(need.iter().copied());
+        slot.union_with(*need);
     }
     Ok(())
 }
@@ -1845,14 +1898,14 @@ fn check_declaration(signature: &FunctionSignature, summary: &BodySummary) -> Re
     }
     for (index, need) in summary.needs.iter().enumerate() {
         let parameter = &signature.contract.parameters[index];
-        let declared = signature.contract.parameter_effects.get(&(index as u32)).cloned().unwrap_or_default().into_iter().collect::<BTreeSet<_>>();
-        let derived = summary.effects.get(&(index as u32)).cloned().unwrap_or_default();
-        if !derived.is_subset(&declared) || !ownership_supports(parameter, need) { return Err(contract_mismatch(signature.id, "contracts.rs site 10")); }
+        let declared = signature.contract.parameter_effects.get(&(index as u32)).map(|effects| effects.iter().copied().collect::<EffectSet>()).unwrap_or_default();
+        let derived = summary.effects.get(&(index as u32)).copied().unwrap_or_default();
+        if !derived.is_subset(declared) || !ownership_supports(parameter, *need) { return Err(contract_mismatch(signature.id, "contracts.rs site 10")); }
     }
     Ok(())
 }
 
-fn ownership_supports(parameter: &ParameterContract, needs: &BTreeSet<MemoryEffect>) -> bool {
+fn ownership_supports(parameter: &ParameterContract, needs: EffectSet) -> bool {
     needs.iter().all(|need| match (parameter.ownership, need) {
         (ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::WriteBack, _) => true,
         (ParameterOwnership::Shared, MemoryEffect::Read | MemoryEffect::Retain | MemoryEffect::Release) => true,
