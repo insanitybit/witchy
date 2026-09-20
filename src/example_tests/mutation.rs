@@ -12,8 +12,16 @@ use crate::{codegen, interpreter, parser, typeck};
             |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         )
         .expect("checked canonical source");
-        let artifact = codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("the production canonical path admits this program");
+        let (artifact, oracle) = codegen::compile_checked_module_artifact_with_observer(&checked, |validated, artifact| {
+            let entry = artifact.entry().expect("entry");
+            let function = witchy_wir::canonical_safewir::FunctionId::new(entry.export().strip_prefix('f').expect("function export").parse().expect("function id"));
+            let arguments = entry.capabilities().iter().copied()
+                .map(witchy_wir::canonical_interpreter::InterpreterValue::entry_capability).collect();
+            witchy_wir::canonical_interpreter::interpret_entry_program(
+                validated, function, arguments, &[],
+                witchy_wir::canonical_interpreter::InterpreterConfig::default(),
+            ).expect("canonical oracle")
+        }).expect_lowered("observer admission");
         let mut runtime = crate::runtime::Runtime::new().expect("preemptible runtime");
         let mut actor = runtime
             .spawn_admitted(
@@ -21,21 +29,15 @@ use crate::{codegen, interpreter, parser, typeck};
                 Capabilities {
                     print: true,
                     print_int: true,
-                    clock: true,
-                    env: true,
-                    dir_root: Some(std::path::PathBuf::from(".")),
-                    dir_read: true,
-                    dir_write: true,
-                    net_allow: Some(Vec::new()),
-                    net_connect: true,
-                    net_listen: true,
                     ..Default::default()
                 },
                 4,
             )
             .expect("spawn");
         runtime.run_with_budget(&mut actor, budget).expect("run within budget");
-        actor.output()
+        let output = actor.output();
+        assert_eq!(oracle.output, output, "canonical oracle and admitted wasm");
+        output
     }
 
     fn wasm_run_with_budget(src: &str, budget: std::time::Duration) -> Vec<String> {
@@ -94,6 +96,27 @@ use crate::{codegen, interpreter, parser, typeck};
             projected_expected,
             "raw projected collection supplemental",
         );
+        // Projected-list loop ownership is still open. The same call outside
+        // the loop admits, so this is a residual loop-carrier limitation, not
+        // an unsupported callee. Legacy output is only supplemental evidence.
+        let projected_direct = projected_collection.replace(
+            "    while let Some(value) = take(holder.values):\n        total = total + value\n",
+            "    let value = take(holder.values)\n",
+        );
+        assert_ne!(projected_direct, projected_collection);
+        assert_eq!(
+            admitted_wasm_run_with_budget(&projected_direct, std::time::Duration::from_secs(1)),
+            ["0", "2"],
+            "direct projected write-back on both canonical runtime legs",
+        );
+        let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+            vec![("main".to_owned(), projected_collection.as_bytes().to_vec())],
+            "main",
+            |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
+        ).expect("checked projected collection source");
+        let error = codegen::compile_checked_module_artifact(&checked)
+            .expect_rejected("projected loop ownership remains an open production limitation");
+        assert!(format!("{error:?}").contains("InvalidOwnership"), "{error:?}");
 
         let boolean_condition = "fn more(var cursor: Int) -> Bool:\n    cursor = cursor + 1\n    cursor <= 3\n\nfn main(console: Console):\n    var cursor = 0\n    var total = 0\n    while more(cursor):\n        total = total + cursor\n    console.print(\"${total}\")\n    console.print(\"${cursor}\")\n";
         let boolean_expected = ["6", "4"];
