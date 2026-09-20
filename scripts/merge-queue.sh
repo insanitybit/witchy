@@ -103,6 +103,18 @@
 # override with MERGE_QUEUE_GATE_CMD (e.g. "./scripts/check.sh --full").
 set -euo pipefail
 
+# A relative or empty TMPDIR makes every `mktemp` below — and every child
+# process's temporary file, including the Rust test helpers' fixture roots —
+# land in the CURRENT directory, which for a gate or presubmit run is the
+# shared master checkout. A killed run then leaves them there and every
+# agent's `git status --short` carries them (2026-09-19: 31 such directories).
+case "${TMPDIR:-}" in
+    /*) ;;
+    *) TMPDIR=/tmp ;;
+esac
+export TMPDIR
+
+
 # All state lives under the MAIN worktree, no matter which worktree this script
 # is invoked from. MERGE_QUEUE_STATE_DIR / MERGE_QUEUE_GATE_WT exist so tests
 # can run against throwaway state without touching the live queue.
