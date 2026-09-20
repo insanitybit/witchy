@@ -5545,17 +5545,21 @@ impl FunctionLowerer<'_> {
         let scrutinee_type = self.expression_type(scrutinee)?;
         let value = self.lower_expr(scrutinee)?;
         let condition = self.match_pattern_condition(value, pattern, &scrutinee_type)?;
+        // A `var` call in the header has already rebound its caller place.
+        // Both header exits must receive that repaired state, not the entry
+        // phi values captured before the scrutinee was evaluated.
+        let header_state = self.loop_edge_arguments(&names, &list_names)?;
         // The body sees the scrutinee through its own lane: the edge renames
         // a lane value to the body's parameter, and a fresh value (a call
         // result) travels as one more lane rather than crossing the edge
         // unrenamed.
-        let lane_position = header_values.iter().position(|lane| *lane == value);
+        let lane_position = header_state.iter().position(|lane| *lane == value);
         let mut body_types = state_types.clone();
         if lane_position.is_none() {
             body_types.push(self.values[&value]);
         }
         let body_id = self.new_block(&body_types)?;
-        let mut body_arguments = header_values.clone();
+        let mut body_arguments = header_state.clone();
         if lane_position.is_none() {
             body_arguments.push(value);
         }
@@ -5565,7 +5569,7 @@ impl FunctionLowerer<'_> {
                 then_target: body_id,
                 then_arguments: body_arguments,
                 else_target: exit,
-                else_arguments: header_values.clone(),
+                else_arguments: header_state.clone(),
             })?,
             None => self.finish_current(Terminator::Branch { target: body_id, arguments: body_arguments })?,
         }
@@ -5629,7 +5633,7 @@ impl FunctionLowerer<'_> {
         // binding keeps its value (and its token) across the loop, as in
         // `lower_for`, so an inner loop never renames what an outer loop
         // does not carry.
-        let rebound = self.loop_rebindings_with_write_backs(None, body);
+        let rebound = self.loop_rebindings_with_write_backs(Some(condition), body);
         let mut names = loop_lane_names(&outer, &rebound);
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
@@ -5717,12 +5721,15 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
         }
         let exit_parameters = self.blocks[exit.get() as usize].parameters.clone();
+        // The condition may contain a `var` call.  Its write-back belongs to
+        // both the body edge and the false exit edge.
+        let header_state = self.loop_edge_arguments(&names, &list_names)?;
         self.finish_current(Terminator::BranchIf {
             condition,
             then_target: body_id,
-            then_arguments: header_values.clone(),
+            then_arguments: header_state.clone(),
             else_target: exit,
-            else_arguments: header_values.clone(),
+            else_arguments: header_state,
         })?;
         let body_parameters = self.blocks[body_id.get() as usize].parameters.clone();
         let body_values = body_parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
