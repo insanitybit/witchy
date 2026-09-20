@@ -77,6 +77,39 @@ run_edit_checks() {
     if [ "$explicit_paths" -eq 0 ] || explicit_paths_cover_tip "$@"; then
         ./scripts/record-shard-receipt.sh edit "$((SECONDS - started_at))" || true
     fi
+    # Advisory only: never let the notice change this command's outcome.
+    report_bounded_edit_gap "$@" || true
+}
+
+# The edit loop is deliberately bounded so iteration stays fast (see the
+# sentinel assertions in tools/merge-queue-tests). That makes it a weaker
+# signal than the gate, and the difference is measurable: over the last 150
+# queue attempts a branch carrying a green `edit` receipt went red 44.8% of
+# the time, against 15.0% for branches with no receipt at all, and 13 of the
+# 21 identified failures were in the `witchy::misc` binary -- which the
+# bounded plan does not run in full. Say so once, here, where the agent is
+# looking, rather than letting a green edit loop read as gate-ready.
+report_bounded_edit_gap() {
+    local plan
+    plan="$(./scripts/test-for-paths.sh --edit-loop "$@" 2>/dev/null)" || return 0
+    case "$plan" in
+        *"check.sh --fast"*) return 0 ;;
+    esac
+    # Only when a semantics file is in the diff: everything else is served by
+    # its own focused tests.
+    # `git` fails outside a repository (the agent-check QoS fixture runs this
+    # script from a temporary directory), and a failing command substitution
+    # is fatal under `set -e`. Swallow it: no diff means nothing to say.
+    local changed
+    changed="$( { git diff --name-only master...HEAD 2>/dev/null; git diff --name-only 2>/dev/null; } || true )"
+    printf '%s\n' "$changed" | grep -qE '^crates/witchy-(types/src/(typeck|traits)|lower/src/(canonical_lower|analysis)|wir/src/canonical_safewir/check)' || return 0
+    # ... and only when the bounded plan did not already run that binary whole.
+    case "$plan" in
+        *"--test misc"*)
+            printf '%s\n' "$plan" | grep -qE -- "--test misc( |$)" && return 0 ;;
+    esac
+    printf '\n\033[1;33mbounded edit loop\033[0m: this change touches language semantics, and the gate also runs the whole `witchy::misc` binary (~271s), which this plan does not.\n'
+    printf '  before submitting: ./scripts/nextest-admitted.sh witchy -- cargo nextest run -p witchy --features witchy-wir/native --test misc\n'
 }
 
 ensure_agent_target() {

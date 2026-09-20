@@ -1852,3 +1852,48 @@ fn canonical_native_reuse_helper_changes_run_the_mocked_workflow() {
         assert!(gate.contains("test_for_paths"), "missing landing regression: {gate}");
     }
 }
+
+/// The edit loop is deliberately bounded (see the sentinel assertions above),
+/// so it is a weaker signal than the gate. Measured 2026-09-20 over the last
+/// 150 queue attempts: a branch carrying a green `edit` receipt went red
+/// 44.8% of the time against 15.0% for branches with no receipt at all, and
+/// 13 of the 21 identified failures were in `witchy::misc`, which the bounded
+/// plan does not run whole. agent-check says so rather than letting a green
+/// edit loop read as gate-ready.
+#[test]
+fn a_bounded_edit_loop_names_the_binary_it_did_not_run() {
+    let script = workspace_root().join("scripts/agent-check.sh");
+    let body = fs::read_to_string(&script).expect("read agent-check.sh");
+    let function = body
+        .split_once("report_bounded_edit_gap() {")
+        .expect("agent-check defines report_bounded_edit_gap")
+        .1;
+    let function = format!(
+        "report_bounded_edit_gap() {{{}",
+        &function[..function.find("\n}\n").expect("function ends") + 3]
+    );
+
+    let fired = |plan: &str, changed: &str| -> bool {
+        let script = format!(
+            "set -u\n{function}\n./scripts/test-for-paths.sh() {{ printf '%s' \"{plan}\"; }}\n             git() {{ printf '%s' \"{changed}\"; }}\nreport_bounded_edit_gap\n"
+        );
+        let output = Command::new("bash")
+            .current_dir(workspace_root())
+            .args(["-c", &script])
+            .output()
+            .expect("run the gap probe");
+        String::from_utf8_lossy(&output.stdout).contains("bounded edit loop")
+    };
+
+    let semantics = "crates/witchy-types/src/typeck.rs\n";
+    assert!(fired("  cargo nextest run -p witchy-types\n", semantics), "bounded semantics plan must name the gap");
+    assert!(!fired("  ./scripts/check.sh --fast\n", semantics), "the fast gate already runs it");
+    assert!(
+        !fired(
+            "  ./scripts/nextest-admitted.sh witchy -- cargo nextest run -p witchy --features witchy-wir/native --test misc\n",
+            semantics,
+        ),
+        "a whole-binary run already covers it",
+    );
+    assert!(!fired("  cargo nextest run -p witchy-types\n", "std/list.witchy\n"), "non-semantics paths must stay quiet");
+}
