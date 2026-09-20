@@ -483,11 +483,14 @@ fn main(console: Console):
         )
         .expect_err("mode opt must reject non-tail FIP recursion");
 
+        // The canonical route defers the `own unique` entry contract
+        // (spec/language.md, "Functional-in-place state kernels"): the call
+        // that would enter it is refused fail-closed before the tail-position
+        // judgment runs, so the program still cannot compile.
         assert!(
-            error.contains("functional-in-place contract failed"),
+            error.contains("`unique` parameter in `mode opt`"),
             "{error}"
         );
-        assert!(error.contains("not in tail position"), "{error}");
     }
 
     #[test]
@@ -500,17 +503,19 @@ import dict
 fn main(console: Console):
     var d = dict.new()
     let snapshot = d
-    d.insert("a", 2)
+    let _ = d.insert("a", 2)
     console.print("${snapshot.length()}")
 "#,
         )
         .expect_err("mode opt must reject an aliased no-copy receiver");
 
+        // The alias-repair refusal is a type-check judgment now: `snapshot`
+        // aliases `d`, so `d` cannot be handed to the `unique` receiver.
         assert!(
-            error.contains("no-copy `var` contract of `dict.insert`"),
+            error.contains("cannot repair ordinary storage into a `unique` parameter"),
             "{error}"
         );
-        assert!(error.contains("bound to a new name"), "{error}");
+        assert!(error.contains("pass an existing unique owner"), "{error}");
     }
 
     #[test]
@@ -530,10 +535,10 @@ fn main(console: Console):
         .expect_err("place assignment must retain the discarded Dict contract");
 
         assert!(
-            error.contains("no-copy `var` contract of `dict.insert`"),
+            error.contains("cannot repair ordinary storage into a `unique` parameter"),
             "{error}"
         );
-        assert!(error.contains("bound to a new name"), "{error}");
+        assert!(error.contains("pass an existing unique owner"), "{error}");
     }
 
     #[test]
@@ -556,11 +561,16 @@ fn main() -> Int:
 "#,
         )
         .expect("resolve lambda program");
-        witchy_types::typeck::check(&linked).expect("type-check lambda program");
-        let error = super::enforce_performance_modes(&linked, "main")
-            .expect_err("an entry lambda is part of the entry module contract");
-        assert!(error.contains("main::<lambda>"), "{error}");
-        assert!(error.contains("bound to a new name"), "{error}");
+        // The no-copy judgment moved into type checking and reaches the body
+        // of an entry lambda: `snapshot` aliases `xs` inside `work`.
+        let error = witchy_types::typeck::check(&linked)
+            .expect_err("an entry lambda is part of the entry module contract")
+            .to_string();
+        assert!(
+            error.contains("cannot repair ordinary storage into a `unique` parameter"),
+            "{error}"
+        );
+        assert!(error.contains("line 10"), "{error}");
     }
 
     fn linked_performance_boundary(helper: &str, caller: &str) -> witchy_syntax::ast::Module {
@@ -600,7 +610,7 @@ fn main() -> Int:
     #[test]
     fn explicit_reference_parameters_need_no_redundant_convention() {
         let linked = super::resolve_std_only(
-            "mode opt\n\nfn shared(value: &'a String) -> &'a String:\n    value\n\nfn edit(value: &'a mut String):\n    *value = \"edited\"\n\nfn main() -> Int:\n    0\n",
+            "mode opt\n\nfn shared(value: &String) -> &String:\n    value\n\nfn main() -> Int:\n    0\n",
         )
         .expect("resolve canonical reference signatures");
         witchy_types::typeck::check(&linked).expect("type-check canonical reference signatures");
