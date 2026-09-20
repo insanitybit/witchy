@@ -1234,6 +1234,16 @@ group_is_busy() { # group_is_busy <pgid>
     awk -v c="$total" 'BEGIN { exit !(c > 20) }'
 }
 
+# Paths that NO gate stage reads: documentation, plus the agent-instruction
+# files that steer how agents work but that no test, build, or lint consumes
+# (CLAUDE.md and the .claude/ and .codex/ trees -- skills, settings, hooks).
+# Verified by grep: the only Rust mentions of CLAUDE.md and .claude/ are prose
+# comments and a worktree fixture that builds its own temporary paths.
+# Measured: a gate for an agent-skill edit ran the whole 4880-test suite for
+# 235s and could not have observed the diff. Keep the classifier comment in
+# check.sh in sync.
+GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$)'
+
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
 # Empty input is not docs-safe (fail closed). rfcs/0167-witchy-language-contract.md is
 # excluded because example_tests reads it. docs/ is the agent playbook —
@@ -1241,7 +1251,7 @@ group_is_busy() { # group_is_busy <pgid>
 diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
     local paths="$1" unsafe
     [ -n "$paths" ] || return 1
-    unsafe="$(printf '%s\n' "$paths" | grep -vE '^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' || true)"
+    unsafe="$(printf '%s\n' "$paths" | grep -vE "$GATE_NO_TEST_PATHS" || true)"
     [ -z "$unsafe" ] || return 1
     if printf '%s\n' "$paths" | grep -cx 'rfcs/0167-witchy-language-contract\.md' >/dev/null; then
         return 1
@@ -2122,7 +2132,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     census_proof_ready=0
     pre_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$rb_base..HEAD" 2>/dev/null || true)"
     [ -n "$pre_diff" ] || return 0
-    unsafe="$(printf '%s\n' "$pre_diff" | grep -vE '^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' || true)"
+    unsafe="$(printf '%s\n' "$pre_diff" | grep -vE "$GATE_NO_TEST_PATHS" || true)"
     if [ -z "$unsafe" ] \
         && ! printf '%s\n' "$pre_diff" | grep -cx 'rfcs/0087-migration-census\.tsv' >/dev/null; then
         return 0
@@ -2619,11 +2629,6 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # one grep construct with divergent exit semantics across implementations,
     # e.g. a ugrep-shimmed PATH — and this decision gates merges.)
     local gate_scope="all"
-    local unsafe_paths=""
-    if [ -n "$changed" ]; then
-        unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' || true)"
-    fi
-
     # Preparation already ran the exact RFC-0087 freshness proof. Reuse it
     # only when the proof protocol itself is unchanged in this candidate; the
     # candidate SHA is checked again inside check.sh. Missing or doubtful proof
@@ -2767,7 +2772,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local non_queue_core=""
     if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
         non_queue_core="$(printf '%s\n' "$changed" \
-            | grep -vE '^(scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|scripts/MERGE-QUEUE\.md|tools/merge-queue-tests/|rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/)' \
+            | grep -vE "^(scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|scripts/MERGE-QUEUE\.md|tools/merge-queue-tests/)|${GATE_NO_TEST_PATHS#^}" \
             || true)"
         if [ -z "$non_queue_core" ] \
             && printf '%s\n' "$changed" \

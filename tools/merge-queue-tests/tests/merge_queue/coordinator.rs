@@ -233,6 +233,55 @@ fn docs_dir_landing_is_docs_safe() {
     );
 }
 
+/// Agent-instruction files steer how agents work; no test, build, or lint
+/// reads them. Before GATE_NO_TEST_PATHS covered them, an edit to a skill
+/// under `.claude/` ran the whole 4880-test product suite -- 235s that could
+/// not observe the diff -- and took the full-gate lock while doing it.
+#[test]
+fn agent_instruction_landing_is_docs_safe() {
+    for path in [".claude/skills/land/SKILL.md", "CLAUDE.md", ".codex/notes.md"] {
+        let fixture = QueueFixture::stack(&[path]);
+        fixture.mq_ok(&["submit", "a"], "true");
+        let env_log = fixture._temp.path().join("gate-env");
+        let gate = format!(
+            "printf 'scope=%s\\n' \"${{WITCHY_GATE_SCOPE:-}}\" >{}",
+            env_log.display(),
+        );
+        let output = fixture.mq_ok(&["run", "--once"], &gate);
+        let env = fs::read_to_string(&env_log).expect("read classified gate env");
+        assert!(
+            env.contains("scope=docs"),
+            "{path} batch was not classified WITCHY_GATE_SCOPE=docs: {env}",
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("docs-safe"),
+            "{path} landing did not skip the full-gate lock: {stderr}",
+        );
+    }
+}
+
+/// The classifier fails closed: one product path in the batch retains the
+/// complete gate however much agent prose rides along with it.
+#[test]
+fn agent_instruction_paths_do_not_excuse_a_product_change() {
+    // `stack` gives one branch per file; branch "b" carries both commits, so
+    // its diff against master is agent prose plus a compiler source edit.
+    let fixture = QueueFixture::stack(&["CLAUDE.md", "crates/witchy-lower/src/analysis.rs"]);
+    fixture.mq_ok(&["submit", "b"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s\\n' \"${{WITCHY_GATE_SCOPE:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified gate env");
+    assert!(
+        env.contains("scope=all"),
+        "a batch carrying a compiler source edit was not fully gated: {env}",
+    );
+}
+
 #[test]
 fn docs_only_master_move_does_not_regate_a_green_code_candidate() {
     let fixture = QueueFixture::stack(&["code.txt"]);
