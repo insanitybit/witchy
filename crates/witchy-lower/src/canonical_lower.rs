@@ -16489,6 +16489,28 @@ pub fn take_int(var xs: unique List(Int)) -> Option(Int):
     }
 
     #[test]
+    fn opt_string_repeat_static_accumulator_reaches_admission() {
+        use witchy_wir::canonical_interpreter::{interpret_entry_program, InterpreterConfig, InterpreterValue};
+        use witchy_wir::canonical_safewir::FunctionId;
+
+        let checked = checked("mode opt\n\nfn main(console: Console):\n    console.print(\"ab\".repeat(3))\n");
+        let (artifact, run) = crate::codegen::compile_checked_module_artifact_with_observer(
+            &checked,
+            |validated, artifact| {
+                let entry = artifact.entry().expect("String.repeat entry");
+                let function = FunctionId::new(entry.export().strip_prefix('f')
+                    .expect("function export").parse().expect("function id"));
+                let arguments = entry.capabilities().iter().copied()
+                    .map(InterpreterValue::entry_capability).collect();
+                interpret_entry_program(validated, function, arguments, &[], InterpreterConfig::default())
+                    .expect("canonical String.repeat execution")
+            },
+        ).expect_lowered("static String.repeat accumulator reaches production admission");
+        assert_eq!(run.output, ["ababab"]);
+        assert!(!artifact.wasm().is_empty());
+    }
+
+    #[test]
     fn opaque_console_and_string_captures_use_owned_typed_storage() {
         use super::{CaptureStorage, OwnerOperation};
 
