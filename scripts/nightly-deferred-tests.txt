@@ -157,3 +157,6 @@ rfc0077_integration_grants::source_integration_async_recipe_drives_body_instead_
 rfc0087_migration_census::repository_census_matches_the_checked_in_type_resolved_snapshot
 callable_shapes_share_one_exact_structural_owner_identity
 relation_changing_callable_ascription_is_rejected
+# opt mode refuses `dict.new()` as a fresh unique owner (every opt-mode dictionary
+# mutation is refused); same dictionary-owner-lane track as the rows above.
+lsp::tests::mode_opt_no_copy_violation_names_the_alias_reason

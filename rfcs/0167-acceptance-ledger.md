@@ -207,3 +207,4 @@ track restores it; the tests themselves are unchanged and run under `--full`.
 | `own unique` FIP entry deferred | `rfc0089_fip_contract` ×10 | FIP re-admission |
 | retired `View(T,'a)` callable relations | `tests/rfc0112.rs` ×2 | delete with the relation machinery |
 | RFC-0087 census tool crashes on `benchmarks/select_fanin.witchy` (private intrinsic leak) | `rfc0087_migration_census` | fix the census tool or retire the proof |
+| opt mode refuses `dict.new()` as a fresh `unique` owner, so opt-mode dictionary mutation is refused outright (lists are admitted) | `lsp::tests::mode_opt_no_copy_violation_names_the_alias_reason` | dictionary owner lanes (with the first row) |
