@@ -890,11 +890,15 @@ if [ -n "$shard" ]; then
     case "$shard" in
         e2e)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --e2e requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace --features witchy-wir/native -E 'binary(e2e)'
+            # The shard honours the RFC-0165 deferred list exactly like the default
+            # gate above; only --full (the push gate) clears it. Without this, an
+            # edit presubmit that selects --e2e runs the ~90 deferred e2e tests the
+            # landing gate never runs and can never record a green receipt.
+            cargo nextest run --workspace --features witchy-wir/native -E "binary(e2e)${deferred_excl:+ and $deferred_excl}"
             ;;
         examples)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace --features witchy-wir/native -E 'test(/^example_tests::/)'
+            cargo nextest run --workspace --features witchy-wir/native -E "test(/^example_tests::/)${deferred_excl:+ and $deferred_excl}"
             ;;
         wasm)
             "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
