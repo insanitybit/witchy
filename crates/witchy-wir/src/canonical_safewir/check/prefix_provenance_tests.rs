@@ -411,7 +411,7 @@ fn move_value_preserves_prefix_only_through_actual_allocation_identity() {
         let mut unrelated = checker.state.objects[&SOURCE].clone();
         unrelated.identity = ALIAS;
         checker.state.objects.insert(ALIAS, unrelated);
-        let origins = BTreeSet::from([SOURCE, ALIAS]);
+        let origins = crate::canonical_safewir::check::sorted::SortedSet::from([SOURCE, ALIAS]);
         checker.state.shared_phi_origins.extend([(SOURCE, origins.clone()), (ALIAS, origins)]);
         reload(checker, ALIAS, COUNT, LOADED_CAPACITY);
         assert!(checker.promote_header_extent(ALIAS).is_err(),
@@ -482,7 +482,7 @@ fn shared_retirement_does_not_preserve_proof_through_phi_origin_overlap() {
         let mut unrelated = checker.state.objects[&SOURCE].clone();
         unrelated.identity = ALIAS;
         checker.state.objects.insert(ALIAS, unrelated);
-        let origins = BTreeSet::from([SOURCE, ALIAS]);
+        let origins = crate::canonical_safewir::check::sorted::SortedSet::from([SOURCE, ALIAS]);
         checker.state.shared_phi_origins.extend([(SOURCE, origins.clone()), (ALIAS, origins)]);
         reload(checker, SOURCE, COUNT, LOADED_CAPACITY);
         checker.promote_header_extent(SOURCE).unwrap();

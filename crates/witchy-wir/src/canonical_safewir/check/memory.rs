@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -15,6 +14,9 @@ use crate::layout::{
     RcHeader, ScalarKind,
 };
 
+use std::collections::BTreeMap;
+
+use super::sorted::{SortedMap, SortedSet};
 use super::{InitialCheckError, value_type};
 
 #[cfg(test)]
@@ -158,13 +160,13 @@ impl<T: Clone> DerefMut for CowFacts<T> {
 // Keep the receiver's two-phase borrow at the wrapper boundary: callers may
 // read existing facts while computing the key/value before mutation starts.
 // A DerefMut-only insert would acquire mutable access before those arguments.
-impl<K: Ord + Clone, V: Clone> CowFacts<BTreeMap<K, V>> {
+impl<K: Ord + Clone, V: Clone> CowFacts<SortedMap<K, V>> {
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         Arc::make_mut(&mut self.0).insert(key, value)
     }
 }
 
-impl<T: Ord + Clone> CowFacts<BTreeSet<T>> {
+impl<T: Ord + Clone> CowFacts<SortedSet<T>> {
     fn insert(&mut self, value: T) -> bool {
         Arc::make_mut(&mut self.0).insert(value)
     }
@@ -195,42 +197,42 @@ impl<T: Clone + IntoIterator> IntoIterator for CowFacts<T> {
 /// or ownership fact to an edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryState {
-    objects: CowFacts<BTreeMap<ValueId, ObjectState>>,
+    objects: CowFacts<SortedMap<ValueId, ObjectState>>,
     /// Physical identities that a Shared phi may select at runtime. The phi
     /// value is the SSA identity used by subsequent operations; this side
     /// relation prevents the checker from pretending distinct allocations
     /// became one allocation merely because control flow joined.
-    shared_phi_origins: CowFacts<BTreeMap<ValueId, BTreeSet<ValueId>>>,
-    stored_objects: CowFacts<BTreeMap<(ValueId, SlotIdentity), ObjectState>>,
+    shared_phi_origins: CowFacts<SortedMap<ValueId, SortedSet<ValueId>>>,
+    stored_objects: CowFacts<SortedMap<(ValueId, SlotIdentity), ObjectState>>,
     /// Explicitly initialized nullable fixed slots that contain absence. This
     /// is distinct from an uninitialized slot and from a live stored edge.
-    nullable_absent_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
-    range_states: CowFacts<BTreeMap<RangeIdentity, RangeState>>,
+    nullable_absent_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
+    range_states: CowFacts<SortedMap<RangeIdentity, RangeState>>,
     /// Count/capacity SSA values authenticated by the current generation of
     /// the owner from which they were read or carried.
-    bound_generations: CowFacts<BTreeMap<ValueId, BTreeSet<OwnerGeneration>>>,
+    bound_generations: CowFacts<SortedMap<ValueId, SortedSet<OwnerGeneration>>>,
     /// Bounds guards retain the owner generations of their operands.  A
     /// mutation, move, consume, unknown call, or disagreeing join cannot
     /// reuse the old guard for the next generation.
-    guard_generations: CowFacts<BTreeMap<(ComparisonOperator, ValueId, ValueId), BTreeSet<OwnerGeneration>>>,
+    guard_generations: CowFacts<SortedMap<(ComparisonOperator, ValueId, ValueId), SortedSet<OwnerGeneration>>>,
     /// A scalar loaded from a dynamic object's length header on this owner
     /// generation.  It is not a usable extent by itself: only the exact,
     /// allocation-checked bounds guard below may promote it to one.
-    fresh_header_lengths: CowFacts<BTreeMap<ValueId, BTreeSet<OwnerGeneration>>>,
+    fresh_header_lengths: CowFacts<SortedMap<ValueId, SortedSet<OwnerGeneration>>>,
     /// This exact live range covered its allocation's entire current logical
     /// prefix on every predecessor. This relates storage to its current count,
     /// not two scalar SSA values, and grants no child ownership authority.
-    full_current_prefixes: CowFacts<BTreeSet<RangeIdentity>>,
-    constants: CowFacts<BTreeMap<ValueId, u64>>,
-    exact_additions: CowFacts<BTreeMap<ValueId, (ValueId, ValueId)>>,
-    comparisons: CowFacts<BTreeMap<ValueId, Comparison>>,
-    guards: CowFacts<BTreeSet<(ComparisonOperator, ValueId, ValueId)>>,
-    header_values: CowFacts<BTreeMap<(ValueId, HeaderField), ValueId>>,
-    static_data_objects: CowFacts<BTreeSet<ValueId>>,
+    full_current_prefixes: CowFacts<SortedSet<RangeIdentity>>,
+    constants: CowFacts<SortedMap<ValueId, u64>>,
+    exact_additions: CowFacts<SortedMap<ValueId, (ValueId, ValueId)>>,
+    comparisons: CowFacts<SortedMap<ValueId, Comparison>>,
+    guards: CowFacts<SortedSet<(ComparisonOperator, ValueId, ValueId)>>,
+    header_values: CowFacts<SortedMap<(ValueId, HeaderField), ValueId>>,
+    static_data_objects: CowFacts<SortedSet<ValueId>>,
     /// Scalar lanes a Store has initialized, by container value and slot.
     /// Fresh storage has no entries. A record or collection that arrived from
     /// outside is summarized complete by initialized_owned_slots.
-    initialized_scalar_slots: CowFacts<BTreeSet<(ValueId, SlotIdentity)>>,
+    initialized_scalar_slots: CowFacts<SortedSet<(ValueId, SlotIdentity)>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -267,22 +269,22 @@ impl<'a> MemoryChecker<'a> {
             layouts,
             closure_layouts,
             state: MemoryState {
-                objects: BTreeMap::new().into(),
-                shared_phi_origins: BTreeMap::new().into(),
-                stored_objects: BTreeMap::new().into(),
-                nullable_absent_slots: BTreeSet::new().into(),
-                range_states: BTreeMap::new().into(),
-                bound_generations: BTreeMap::new().into(),
-                guard_generations: BTreeMap::new().into(),
-                fresh_header_lengths: BTreeMap::new().into(),
-                full_current_prefixes: BTreeSet::new().into(),
-                constants: BTreeMap::new().into(),
-                exact_additions: BTreeMap::new().into(),
-                comparisons: BTreeMap::new().into(),
-                guards: BTreeSet::new().into(),
-                header_values: BTreeMap::new().into(),
-                static_data_objects: BTreeSet::new().into(),
-                initialized_scalar_slots: BTreeSet::new().into(),
+                objects: SortedMap::new().into(),
+                shared_phi_origins: SortedMap::new().into(),
+                stored_objects: SortedMap::new().into(),
+                nullable_absent_slots: SortedSet::new().into(),
+                range_states: SortedMap::new().into(),
+                bound_generations: SortedMap::new().into(),
+                guard_generations: SortedMap::new().into(),
+                fresh_header_lengths: SortedMap::new().into(),
+                full_current_prefixes: SortedSet::new().into(),
+                constants: SortedMap::new().into(),
+                exact_additions: SortedMap::new().into(),
+                comparisons: SortedMap::new().into(),
+                guards: SortedSet::new().into(),
+                header_values: SortedMap::new().into(),
+                static_data_objects: SortedSet::new().into(),
+                initialized_scalar_slots: SortedSet::new().into(),
             },
         };
         checker.initialize_parameters(signature)?;
@@ -335,7 +337,7 @@ impl<'a> MemoryChecker<'a> {
         // derives lazily from the header loads already in this state. Derive
         // it now from the same facts; a promotion the facts do not justify is
         // left alone and the extent rule below reports it.
-        let mut prefix_candidates = BTreeSet::new();
+        let mut prefix_candidates = SortedSet::new();
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
             if matches!(parameter.ownership, Some(Ownership::Shared | Ownership::Unique))
                 && self.state.objects.contains_key(argument)
@@ -364,9 +366,9 @@ impl<'a> MemoryChecker<'a> {
         for value in complete_prefixes {
             self.state.objects.get_mut(&value).expect("candidate exists").initialized_owned_slots = true;
         }
-        let mut renames = BTreeMap::new();
-        let mut unique_phi_rebases = BTreeMap::new();
-        let mut shared_phi_rebases = BTreeMap::new();
+        let mut renames = SortedMap::new();
+        let mut unique_phi_rebases = SortedMap::new();
+        let mut shared_phi_rebases = SortedMap::new();
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
             if parameter.ownership == Some(Ownership::Unique) {
                 if !matches!(parameter.value_type, ValueType::Ref(_)) {
@@ -482,12 +484,12 @@ impl<'a> MemoryChecker<'a> {
         // fail-closed. Multiple Unique candidates remain invalid: a unique
         // physical allocation cannot be represented by more than one live
         // token.
-        let mut owner_identity_candidates = BTreeMap::<ValueId, (BTreeSet<ValueId>, bool)>::new();
+        let mut owner_identity_candidates = SortedMap::<ValueId, (SortedSet<ValueId>, bool)>::new();
         for (argument, parameter) in &unique_phi_rebases {
             let identity = self.state.objects[argument].identity;
             let entry = owner_identity_candidates
                 .entry(identity)
-                .or_insert_with(|| (BTreeSet::new(), false));
+                .or_insert_with(|| (SortedSet::new(), false));
             entry.0.insert(*parameter);
             entry.1 = true;
         }
@@ -495,11 +497,11 @@ impl<'a> MemoryChecker<'a> {
             let identity = self.state.objects[argument].identity;
             owner_identity_candidates
                 .entry(identity)
-                .or_insert_with(|| (BTreeSet::new(), false))
+                .or_insert_with(|| (SortedSet::new(), false))
                 .0
                 .insert(*parameter);
         }
-        let mut owner_identity_rebases = BTreeMap::new();
+        let mut owner_identity_rebases = SortedMap::new();
         for (identity, (candidates, has_unique_candidate)) in owner_identity_candidates {
             let direct = remap_value(&renames, identity);
             if candidates.len() != 1 && has_unique_candidate {
@@ -522,7 +524,7 @@ impl<'a> MemoryChecker<'a> {
             };
             owner_identity_rebases.insert(identity, rebase);
         }
-        let mut objects = BTreeMap::new();
+        let mut objects = SortedMap::new();
         for (value, state) in &self.state.objects {
             let original_value = *value;
             let mut state = state.clone();
@@ -592,7 +594,7 @@ impl<'a> MemoryChecker<'a> {
                     Some(Extent::HeaderPrefix { .. })
                 )
             })
-            .collect::<BTreeSet<_>>();
+            .collect::<SortedSet<_>>();
         // A counted shared phi has an explicit two-lane transport contract.
         // Its predecessor bounds cannot name the rebased owner generation,
         // but the exact count and capacity lanes themselves may do so.  Keep
@@ -622,7 +624,7 @@ impl<'a> MemoryChecker<'a> {
         let canonical_identities = objects
             .iter()
             .map(|(value, state)| (*value, state.identity))
-            .collect::<BTreeMap<_, _>>();
+            .collect::<SortedMap<_, _>>();
         let remap_owner_identity = |identity| {
             let token = owner_identity_rebases
                 .get(&identity)
@@ -649,14 +651,14 @@ impl<'a> MemoryChecker<'a> {
             .shared_phi_origins
             .iter()
             .map(|(value, origins)| (remap_value(&renames, *value), origins.clone()))
-            .collect::<BTreeMap<_, _>>();
+            .collect::<SortedMap<_, _>>();
         for (argument, parameter) in &shared_phi_rebases {
             let origins = self
                 .state
                 .shared_phi_origins
                 .get(argument)
                 .cloned()
-                .unwrap_or_else(|| BTreeSet::from([self.state.objects[argument].identity]));
+                .unwrap_or_else(|| SortedSet::from([self.state.objects[argument].identity]));
             shared_phi_origins
                 .entry(*parameter)
                 .or_default()
@@ -827,12 +829,12 @@ impl<'a> MemoryChecker<'a> {
             .iter()
             .chain(shared_counted_phi_lanes.iter().map(|(value, _, _, _)| value))
             .copied()
-            .collect::<BTreeSet<_>>();
+            .collect::<SortedSet<_>>();
         if !shared_rebased_phi_values.is_empty() {
             let shared_rebased_identities = shared_rebased_phi_values
                 .iter()
                 .filter_map(|value| edge.objects.get(value).map(|state| state.identity))
-                .collect::<BTreeSet<_>>();
+                .collect::<SortedSet<_>>();
             edge.header_values.retain(|(object, _), _| !shared_rebased_phi_values.contains(object));
             edge.range_states.retain(|identity, _| !shared_rebased_phi_values.contains(&identity.object));
             edge.full_current_prefixes.retain(|identity| !shared_rebased_phi_values.contains(&identity.object));
@@ -882,7 +884,7 @@ impl<'a> MemoryChecker<'a> {
         existing: &MemoryState,
         incoming: &MemoryState,
     ) -> Result<MemoryState, InitialCheckError> {
-        let mut objects = BTreeMap::new();
+        let mut objects = SortedMap::new();
         // A conditional mutation may advance only the owner's epoch while
         // both edges transport the exact same counted-extent lanes.  Those
         // lanes remain facts about the one physical allocation; a subsequent
@@ -1131,12 +1133,12 @@ impl<'a> MemoryChecker<'a> {
     fn synchronize_joined_full_prefixes(
         &self,
         block: &BasicBlock,
-        objects: &BTreeMap<ValueId, ObjectState>,
-        ranges: &mut BTreeMap<RangeIdentity, RangeState>,
-        full_prefixes: &mut BTreeSet<RangeIdentity>,
+        objects: &SortedMap<ValueId, ObjectState>,
+        ranges: &mut SortedMap<RangeIdentity, RangeState>,
+        full_prefixes: &mut SortedSet<RangeIdentity>,
     ) -> Result<(), InitialCheckError> {
         let mut replacements = Vec::new();
-        let mut allocations = BTreeSet::new();
+        let mut allocations = SortedSet::new();
         for old in full_prefixes.iter().copied() {
             let error = || InitialCheckError::IncompatibleMemoryJoin {
                 function: self.function.id, block: block.id, object: old.object,
@@ -1324,7 +1326,7 @@ impl<'a> MemoryChecker<'a> {
     /// Return only live current generations established by an exact Length
     /// header load. The scalar lane alone is never enough: its header object
     /// must still be live and at the generation recorded at the load.
-    fn fresh_header_generations(&self, bound: ValueId) -> BTreeSet<OwnerGeneration> {
+    fn fresh_header_generations(&self, bound: ValueId) -> SortedSet<OwnerGeneration> {
         self.state.fresh_header_lengths.get(&bound).into_iter()
             .flat_map(|facts| facts.iter().copied())
             .filter(|generation| self.state.header_values.iter().any(|((object, field), header)| {
@@ -1375,7 +1377,7 @@ impl<'a> MemoryChecker<'a> {
         for state in self.state.objects.values_mut().filter(|state| state.identity == identity) {
             state.owner_generation = next;
         }
-        let rebase = |facts: &mut BTreeSet<OwnerGeneration>| {
+        let rebase = |facts: &mut SortedSet<OwnerGeneration>| {
             if facts.iter().any(|fact| fact.identity == identity) {
                 facts.retain(|fact| fact.identity != identity);
                 facts.insert(OwnerGeneration { identity, epoch: next });
@@ -1637,7 +1639,7 @@ impl<'a> MemoryChecker<'a> {
                             .filter_map(|(value, candidate)| {
                                 (candidate.identity == identity).then_some(*value)
                             })
-                            .collect::<BTreeSet<_>>();
+                            .collect::<SortedSet<_>>();
                         self.state
                             .initialized_scalar_slots
                             .retain(|(container, _)| !aliases.contains(container));
@@ -1899,7 +1901,7 @@ impl<'a> MemoryChecker<'a> {
         values: &[ValueId],
         results: &[ResultContract],
     ) -> Result<(), InitialCheckError> {
-        let mut transferred = BTreeSet::new();
+        let mut transferred = SortedSet::new();
         for (result_index, (value, result)) in values.iter().zip(results).enumerate() {
             // Each result lane transfers one token. Repeating an SSA reference
             // does not execute CloneRef, even when both lanes claim Shared.
@@ -2076,7 +2078,7 @@ impl<'a> MemoryChecker<'a> {
                         });
                         let rebound_exact_identity = disjunctive_hidden_lane
                             && self.state.shared_phi_origins.get(value)
-                                == Some(&BTreeSet::from([parameter_value]));
+                                == Some(&SortedSet::from([parameter_value]));
                         if *layout != alias_layout
                             || contract.ownership != ParameterOwnership::WriteBack
                             || contract.value_type != ValueType::Ref(*layout)
@@ -2194,7 +2196,7 @@ impl<'a> MemoryChecker<'a> {
                     // the only authority that can recover those roots: it
                     // must be exactly the declaration's authenticated
                     // candidate set, never merely overlap it.
-                    let mut candidate_identities = BTreeSet::new();
+                    let mut candidate_identities = SortedSet::new();
                     let candidates_match = candidates.iter().all(|parameter| {
                         let Ok(index) = usize::try_from(*parameter) else { return false };
                         let Some(ParameterContract {
@@ -2753,7 +2755,7 @@ impl<'a> MemoryChecker<'a> {
             let initialized = self.state.initialized_scalar_slots.iter().filter_map(|(container, slot)| match slot {
                 SlotIdentity::Constant(index) if index < length && self.same_allocation(object, *container) => Some(*index),
                 _ => None,
-            }).collect::<BTreeSet<_>>();
+            }).collect::<SortedSet<_>>();
             if initialized.len() as u64 == *length {
                 return true;
             }
@@ -2778,7 +2780,7 @@ impl<'a> MemoryChecker<'a> {
                 }
                 _ => None,
             },
-        ).collect::<BTreeSet<_>>();
+        ).collect::<SortedSet<_>>();
         let mut prefix = 0;
         while initialized_constants.remove(&prefix) {
             prefix += 1;
@@ -3157,7 +3159,7 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported(operation);
         };
         let pointee = self.owned_pointer_slot_pointee(element)?;
-        let mut initialized_slots = BTreeSet::new();
+        let mut initialized_slots = SortedSet::new();
         for ((stored_object, slot), stored) in &self.state.stored_objects {
             if !self.state.objects.get(stored_object)
                 .is_some_and(|candidate| candidate.identity == allocation_identity)
@@ -3854,7 +3856,7 @@ impl<'a> MemoryChecker<'a> {
                         .chain(self.state.bound_generations.get(&comparison.right))
                         .flat_map(|facts| facts.iter().copied())
                         .chain(self.fresh_header_generations(comparison.right))
-                        .collect::<BTreeSet<_>>();
+                        .collect::<SortedSet<_>>();
                     self.state.guard_generations.insert(
                         (comparison.operator, comparison.left, comparison.right),
                         generations,
@@ -4176,7 +4178,7 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("TakeLast(element type)");
         }
         let containers = self.state.objects.iter().filter_map(|(value, candidate)|
-            (candidate.identity == state.identity).then_some(*value)).collect::<BTreeSet<_>>();
+            (candidate.identity == state.identity).then_some(*value)).collect::<SortedSet<_>>();
         self.state.stored_objects.retain(|(container, _), _| !containers.contains(container));
         self.state.range_states.retain(|range, _| !containers.contains(&range.object));
         self.state.initialized_scalar_slots.retain(|(container, _)| !containers.contains(container));
@@ -5213,7 +5215,7 @@ impl<'a> MemoryChecker<'a> {
                 .objects
                 .iter()
                 .filter_map(|(value, candidate)| (candidate.identity == state.identity).then_some(*value))
-                .collect::<BTreeSet<_>>();
+                .collect::<SortedSet<_>>();
             self.state
                 .initialized_scalar_slots
                 .retain(|(container, _)| !aliases.contains(container));
@@ -5626,7 +5628,7 @@ impl<'a> MemoryChecker<'a> {
                 object,
             });
         }
-        if !drop_ref_layout_supported(self.layouts, layout, &mut BTreeSet::new()) {
+        if !drop_ref_layout_supported(self.layouts, layout, &mut SortedSet::new()) {
             return self.unsupported("DropRef(pointer-bearing recursive destructor)");
         }
         self.state.objects
@@ -5754,7 +5756,7 @@ impl<'a> MemoryChecker<'a> {
     /// worklist, the full-prefix scan over objects) build it once instead of
     /// rescanning every header load per question, which made a straight-line
     /// program with many string temporaries take minutes to check.
-    fn header_length_pairs(facts: &MemoryState) -> BTreeSet<(ValueId, ValueId)> {
+    fn header_length_pairs(facts: &MemoryState) -> SortedSet<(ValueId, ValueId)> {
         #[cfg(test)]
         HEADER_LENGTH_PAIR_SCANS.with(|scans| scans.set(scans.get() + 1));
         facts
@@ -5775,7 +5777,7 @@ impl<'a> MemoryChecker<'a> {
     /// `same_scalar_in` with the header-length pairs already collected.
     fn same_scalar_with(
         facts: &MemoryState,
-        header_lengths: &BTreeSet<(ValueId, ValueId)>,
+        header_lengths: &SortedSet<(ValueId, ValueId)>,
         left: ValueId,
         right: ValueId,
     ) -> bool {
@@ -5894,7 +5896,7 @@ impl<'a> MemoryChecker<'a> {
         // repeated work; the cached set preserves the same fail-closed facts.
         let header_lengths = Self::header_length_pairs(&self.state);
         let mut pending = vec![left];
-        let mut visited = BTreeSet::new();
+        let mut visited = SortedSet::new();
         while let Some(value) = pending.pop() {
             if !visited.insert(value) {
                 continue;
@@ -5934,7 +5936,7 @@ impl<'a> MemoryChecker<'a> {
         // guard and addition it walks past.
         let header_lengths = Self::header_length_pairs(facts);
         let mut pending = vec![left];
-        let mut visited = BTreeSet::new();
+        let mut visited = SortedSet::new();
         while let Some(value) = pending.pop() {
             if !visited.insert(value) {
                 continue;
@@ -6410,7 +6412,7 @@ fn write_back_hidden_lane(
 fn drop_ref_layout_supported(
     layouts: &LayoutInterner,
     layout: crate::layout::LayoutId,
-    visited: &mut BTreeSet<crate::layout::LayoutId>,
+    visited: &mut SortedSet<crate::layout::LayoutId>,
 ) -> bool {
     let mut pending = vec![layout];
     while let Some(layout) = pending.pop() {
@@ -6453,22 +6455,22 @@ fn recursive_drop_layout_graph_requires_bound_supported_children() {
     let nominal = layouts.intern_opaque_nominal([23; 32]).unwrap();
     let child = layouts.intern_runtime_pointer_value_slot(nominal, PointerSlot::OwnedNullable).unwrap();
     let physical = layouts.intern_packed_record(vec![child]).unwrap();
-    assert!(!drop_ref_layout_supported(&layouts, nominal, &mut BTreeSet::new()));
+    assert!(!drop_ref_layout_supported(&layouts, nominal, &mut SortedSet::new()));
     layouts.bind_nominal(nominal, physical).unwrap();
-    assert!(drop_ref_layout_supported(&layouts, nominal, &mut BTreeSet::new()));
+    assert!(drop_ref_layout_supported(&layouts, nominal, &mut SortedSet::new()));
     let missing = layouts.intern_opaque_nominal([24; 32]).unwrap();
     let missing_child = layouts.intern_runtime_pointer_value_slot(missing, PointerSlot::Owned).unwrap();
     let with_missing = layouts.intern_packed_record(vec![missing_child, child]).unwrap();
-    assert!(!drop_ref_layout_supported(&layouts, with_missing, &mut BTreeSet::new()), "a closed recursive edge must not hide another unbound child");
+    assert!(!drop_ref_layout_supported(&layouts, with_missing, &mut SortedSet::new()), "a closed recursive edge must not hide another unbound child");
     let nullable_list = layouts.intern_packed_list(child, crate::layout::RcHeader::Required).unwrap();
-    assert!(!drop_ref_layout_supported(&layouts, nullable_list, &mut BTreeSet::new()), "nullable collection slots remain unsupported");
+    assert!(!drop_ref_layout_supported(&layouts, nullable_list, &mut SortedSet::new()), "nullable collection slots remain unsupported");
 }
 
-fn remap_value(renames: &BTreeMap<ValueId, ValueId>, value: ValueId) -> ValueId {
+fn remap_value(renames: &SortedMap<ValueId, ValueId>, value: ValueId) -> ValueId {
     renames.get(&value).copied().unwrap_or(value)
 }
 
-fn remap_extent(renames: &BTreeMap<ValueId, ValueId>, extent: &Extent) -> Extent {
+fn remap_extent(renames: &SortedMap<ValueId, ValueId>, extent: &Extent) -> Extent {
     match extent {
         Extent::FixedBytes(bytes) => Extent::FixedBytes(*bytes),
         Extent::HeaderPrefix { minimum_bytes } => Extent::HeaderPrefix {
@@ -6621,8 +6623,8 @@ fn exact_carried_counted_extent(left: &ObjectState, right: &ObjectState) -> Opti
 /// difference is the difference between `n log m` scattered lookups and
 /// `n + m` sequential steps.
 fn all_entries_survive<K: Ord, V: PartialEq>(
-    left: &BTreeMap<K, V>,
-    right: &BTreeMap<K, V>,
+    left: &SortedMap<K, V>,
+    right: &SortedMap<K, V>,
 ) -> bool {
     // `right` may hold keys `left` does not; those simply are not in the
     // intersection of `left` with it, so they are skipped rather than refused.
@@ -6648,7 +6650,7 @@ fn all_entries_survive<K: Ord, V: PartialEq>(
     true
 }
 
-fn all_elements_survive<T: Ord>(left: &BTreeSet<T>, right: &BTreeSet<T>) -> bool {
+fn all_elements_survive<T: Ord>(left: &SortedSet<T>, right: &SortedSet<T>) -> bool {
     let mut candidates = right.iter().peekable();
     for element in left {
         loop {
@@ -6664,9 +6666,9 @@ fn all_elements_survive<T: Ord>(left: &BTreeSet<T>, right: &BTreeSet<T>) -> bool
 }
 
 fn meet_map<K: Ord + Copy, V: Clone + PartialEq>(
-    left: &CowFacts<BTreeMap<K, V>>,
-    right: &CowFacts<BTreeMap<K, V>>,
-) -> CowFacts<BTreeMap<K, V>> {
+    left: &CowFacts<SortedMap<K, V>>,
+    right: &CowFacts<SortedMap<K, V>>,
+) -> CowFacts<SortedMap<K, V>> {
     // Decide first, allocate second. An intersection can only REMOVE entries
     // from `left`, so if every one of them survives the result is `left`
     // itself -- and that is the overwhelmingly common case (4,109,563 of
@@ -6678,9 +6680,9 @@ fn meet_map<K: Ord + Copy, V: Clone + PartialEq>(
 }
 
 fn meet_set<T: Ord + Copy>(
-    left: &CowFacts<BTreeSet<T>>,
-    right: &CowFacts<BTreeSet<T>>,
-) -> CowFacts<BTreeSet<T>> {
+    left: &CowFacts<SortedSet<T>>,
+    right: &CowFacts<SortedSet<T>>,
+) -> CowFacts<SortedSet<T>> {
     if all_elements_survive(left, right) {
         return left.clone();
     }
@@ -6688,9 +6690,9 @@ fn meet_set<T: Ord + Copy>(
 }
 
 fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(
-    left: &BTreeMap<K, V>,
-    right: &BTreeMap<K, V>,
-) -> BTreeMap<K, V> {
+    left: &SortedMap<K, V>,
+    right: &SortedMap<K, V>,
+) -> SortedMap<K, V> {
     left
         .iter()
         .filter_map(|(key, value)| (right.get(key) == Some(value)).then(|| (*key, value.clone())))
@@ -6700,7 +6702,7 @@ fn intersect_map<K: Ord + Copy, V: Clone + PartialEq>(
 fn meet_shared_phi_origins(
     left: &MemoryState,
     right: &MemoryState,
-) -> BTreeMap<ValueId, BTreeSet<ValueId>> {
+) -> SortedMap<ValueId, SortedSet<ValueId>> {
     left.shared_phi_origins
         .iter()
         .filter_map(|(value, left_origins)| {
@@ -6718,7 +6720,7 @@ fn meet_shared_phi_origins(
 fn meet_range_states(
     existing: &MemoryState,
     incoming: &MemoryState,
-) -> BTreeMap<RangeIdentity, RangeState> {
+) -> SortedMap<RangeIdentity, RangeState> {
     existing
         .range_states
         .iter()
@@ -6825,8 +6827,8 @@ fn range_is_full_current_prefix(
 fn meet_full_current_prefixes(
     existing: &MemoryState,
     incoming: &MemoryState,
-    ranges: &BTreeMap<RangeIdentity, RangeState>,
-) -> BTreeSet<RangeIdentity> {
+    ranges: &SortedMap<RangeIdentity, RangeState>,
+) -> SortedSet<RangeIdentity> {
     ranges.keys().filter_map(|identity| {
         let current = existing.range_states.get(identity)?;
         if !range_is_full_current_prefix(existing, identity, current) {
@@ -6886,7 +6888,7 @@ fn returned_extent_matches(actual: &Extent, expected: &ReturnedExtent) -> bool {
 mod tests {
     use super::*;
     use crate::canonical_safewir::MemoryEffect;
-    use std::collections::BTreeMap;
+    use super::super::sorted::SortedMap;
 
     const COUNT: ValueId = ValueId::new(0);
     const CAPACITY: ValueId = ValueId::new(1);
@@ -7118,7 +7120,7 @@ mod tests {
             }
         }
         let clones = Arc::new(AtomicUsize::new(0));
-        let original: CowFacts<BTreeMap<u32, CountedClone>> = (0..64)
+        let original: CowFacts<SortedMap<u32, CountedClone>> = (0..64)
             .map(|key| (key, CountedClone(Arc::clone(&clones)))).collect();
         let mut fork = original.clone();
         assert_eq!(clones.load(Ordering::Relaxed), 0, "snapshot must not clone map elements");
@@ -7132,7 +7134,7 @@ mod tests {
 
     #[test]
     fn cow_fact_map_and_set_keep_btree_behavior_and_nested_isolation() {
-        let original = BTreeMap::from([(3, BTreeSet::from([30])), (1, BTreeSet::from([10]))]);
+        let original = SortedMap::from([(3, SortedSet::from([30])), (1, SortedSet::from([10]))]);
         let mut actual: CowFacts<_> = original.clone().into();
         let snapshot = actual.clone();
         let mut expected = original.clone();
@@ -7147,7 +7149,7 @@ mod tests {
         assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
         assert_eq!(actual.clone().into_iter().collect::<Vec<_>>(), expected.into_iter().collect::<Vec<_>>());
 
-        let mut set: CowFacts<BTreeSet<u32>> = [3, 1, 2].into_iter().collect();
+        let mut set: CowFacts<SortedSet<u32>> = [3, 1, 2].into_iter().collect();
         let saved = set.clone();
         set.remove(&3);
         set.insert(4);
@@ -7156,7 +7158,7 @@ mod tests {
         assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec![0, 1, 4, 7]);
         assert_eq!(saved.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(set.intersection(&saved).copied().collect::<Vec<_>>(), vec![1]);
-        let same_values: CowFacts<BTreeSet<_>> = set.iter().copied().collect();
+        let same_values: CowFacts<SortedSet<_>> = set.iter().copied().collect();
         assert!(!Arc::ptr_eq(&set.0, &same_values.0));
         assert_eq!(set, same_values, "separate allocations must compare by value");
         set.clear();
@@ -7165,17 +7167,17 @@ mod tests {
 
     #[test]
     fn cow_fact_insert_preserves_two_phase_argument_reads() {
-        let mut map: CowFacts<BTreeMap<u32, u32>> = BTreeMap::from([(1, 10)]).into();
+        let mut map: CowFacts<SortedMap<u32, u32>> = SortedMap::from([(1, 10)]).into();
         let saved_map = map.clone();
         map.insert(2, map[&1] + 1);
         assert_eq!(map[&2], 11);
-        assert_eq!(&*saved_map, &BTreeMap::from([(1, 10)]));
+        assert_eq!(&*saved_map, &SortedMap::from([(1, 10)]));
 
-        let mut set: CowFacts<BTreeSet<u32>> = BTreeSet::from([1]).into();
+        let mut set: CowFacts<SortedSet<u32>> = SortedSet::from([1]).into();
         let saved_set = set.clone();
         set.insert(*set.first().unwrap() + 1);
-        assert_eq!(&*set, &BTreeSet::from([1, 2]));
-        assert_eq!(&*saved_set, &BTreeSet::from([1]));
+        assert_eq!(&*set, &SortedSet::from([1, 2]));
+        assert_eq!(&*saved_set, &SortedSet::from([1]));
     }
 
     fn with_header_promotion_checker(
@@ -7488,7 +7490,7 @@ mod tests {
             }
             let guard = (ComparisonOperator::LessEqualUnsigned, value, COUNT);
             checker.state.guards.insert(guard);
-            checker.state.guard_generations.insert(guard, BTreeSet::from([OwnerGeneration {
+            checker.state.guard_generations.insert(guard, SortedSet::from([OwnerGeneration {
                 identity: SOURCE,
                 epoch: 0,
             }]));
@@ -8012,7 +8014,7 @@ mod tests {
                 match mismatch {
                     0 => {
                         alias.identity = DESTINATION;
-                        checker.state.shared_phi_origins.insert(DESTINATION, BTreeSet::from([SOURCE, DESTINATION]));
+                        checker.state.shared_phi_origins.insert(DESTINATION, SortedSet::from([SOURCE, DESTINATION]));
                     }
                     1 => alias.layout = checker.layouts.get(list).unwrap().kind().packed_element_layout().unwrap(),
                     2 => alias.allocation_class = Some(AllocationClass::Bump),
@@ -11215,7 +11217,7 @@ mod tests {
             .insert((ComparisonOperator::LessEqualUnsigned, END, CAPACITY));
         checker.state.guard_generations.insert(
             (ComparisonOperator::LessEqualUnsigned, END, CAPACITY),
-            BTreeSet::from([checker.current_generation(DESTINATION).unwrap()]),
+            SortedSet::from([checker.current_generation(DESTINATION).unwrap()]),
         );
         let destination_only = checker.snapshot();
         assert!(matches!(
@@ -11229,7 +11231,7 @@ mod tests {
             .insert((ComparisonOperator::LessEqualUnsigned, END, COUNT));
         checker.state.guard_generations.insert(
             (ComparisonOperator::LessEqualUnsigned, END, COUNT),
-            BTreeSet::from([checker.current_generation(SOURCE).unwrap()]),
+            SortedSet::from([checker.current_generation(SOURCE).unwrap()]),
         );
         checker.state.range_states.insert(
             RangeIdentity { object: SOURCE, start: START, length: LENGTH },

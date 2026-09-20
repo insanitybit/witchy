@@ -12,6 +12,7 @@ use super::{
 
 mod cache;
 mod memory;
+mod sorted;
 use memory::MemoryChecker;
 mod contracts;
 mod host;
