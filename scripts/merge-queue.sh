@@ -1817,6 +1817,20 @@ cmd_submit() {
         note "queued $branch as $change_id ($fname)"
     fi
     release_change_lock
+    # The coordinator refuses to gate against a dirty shared checkout and just
+    # requeues, with a backoff, forever. That policy is right, but the only
+    # signals were the coordinator's own log and `doctor`, which nobody reads
+    # while submitting: the journal carries 1294 requeues on this cause since
+    # 2026-07-24, and on 2026-09-20 one uncommitted file stalled every
+    # candidate for about an hour. Tell the submitter at the moment they are
+    # standing here, since they are the one agent certain to care.
+    local blocked_now; blocked_now="$(main_worktree_block_reason)"
+    if [ -n "$blocked_now" ]; then
+        note "WARNING: the queue CANNOT gate until the shared checkout is clean"
+        note "  $blocked_now"
+        note "  Whoever owns that edit must commit it to a branch. Do not revert"
+        note "  it: salvage it (worktree + git apply + submit) if it is not yours."
+    fi
     local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
     if [ -n "$cpid" ]; then
         note "coordinator (pid $cpid) will gate + merge it"

@@ -1318,6 +1318,41 @@ fn queue_core_only_change_runs_the_hermetic_shard_instead_of_the_product_gate() 
         .success());
 }
 
+/// The coordinator's refusal to gate against a dirty shared checkout was only
+/// visible in its own log and in `doctor`. The submitter is the one agent
+/// certain to care, and is standing right there, so `submit` says it too.
+#[test]
+fn submit_warns_that_a_dirty_main_checkout_blocks_the_queue() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fs::write(fixture.root.join("base.txt"), "locally edited\n")
+        .expect("dirty the main master checkout");
+
+    let output = fixture.mq_ok(&["submit", "a"], "true");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("CANNOT gate until the shared checkout is clean"),
+        "submit did not warn about the dirty shared checkout: {stderr}",
+    );
+    assert!(
+        stderr.contains("base.txt"),
+        "the warning did not name the blocking file: {stderr}",
+    );
+    assert_eq!(fixture.change("a")["state"], "queued", "the warning must not block submission");
+}
+
+/// ...and stays quiet when the checkout is clean, so the warning keeps meaning
+/// something.
+#[test]
+fn submit_is_quiet_about_the_checkout_when_it_is_clean() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let output = fixture.mq_ok(&["submit", "a"], "true");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("CANNOT gate"),
+        "submit warned about a clean checkout: {stderr}",
+    );
+}
+
 #[test]
 fn dirty_main_master_defers_the_queue_before_running_the_gate() {
     let fixture = QueueFixture::stack(&["a.txt"]);
