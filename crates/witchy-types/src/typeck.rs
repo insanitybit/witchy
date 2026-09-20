@@ -577,7 +577,8 @@ fn is_frozen_value_type(t: &ast::Type) -> bool {
 /// function already inferred fresh, or a branch whose every arm is fresh.
 fn expr_yields_fresh_storage(expression: &Expr, fresh: &HashSet<String>) -> bool {
     match expression {
-        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_) => true,
+        // Literals are static data (a string literal carries no RC token),
+        // never freshly allocated owner storage; only allocating shapes count.
         Expr::List(_) | Expr::Tuple(_) | Expr::Ctor { .. } | Expr::AnonCtor { .. } => true,
         Expr::Record { spread: None, .. } => true,
         Expr::Call { name, .. } => {
@@ -4678,6 +4679,10 @@ struct Checker {
     /// binding it with `var` may hand it to a `unique` parameter in `mode opt`.
     /// Checker-only provenance: lowering never reads it.
     fresh_result_fns: HashSet<String>,
+    /// Bindings whose owner proof came from `fresh_result_fns` rather than a
+    /// declared `unique` type. Only these demote on an ordinary alias; a
+    /// declared unique value stays affine (RFC-0167 §4).
+    inferred_owner_bindings: Vec<HashSet<String>>,
     /// Named function origins retained from the linker mode markers.  This is
     /// signature/source metadata, never inferred from an implementation body.
     fn_opt_provenance: HashMap<String, OptCallableContract>,
@@ -6610,6 +6615,33 @@ impl Checker {
             .any(|bindings| bindings.contains(name))
     }
 
+    fn is_inferred_owner_binding(&self, name: &str) -> bool {
+        self.inferred_owner_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
+    }
+
+    /// Whether `value` is a call whose result is inferred fresh without a
+    /// declared `unique` result: the only shape that yields an inferred owner.
+    fn call_yields_inferred_owner(&self, value: &Expr) -> bool {
+        self.opt_mode
+            && matches!(value, Expr::Call { name, .. }
+                if self.fresh_result_fns.contains(name)
+                    && !self.callable_unique_contract(name).is_some_and(|contract| contract.unique_result))
+    }
+
+    fn forget_inferred_owner_binding(&mut self, name: &str) {
+        if let Some(bindings) = self
+            .inferred_owner_bindings
+            .iter_mut()
+            .rev()
+            .find(|bindings| bindings.contains(name))
+        {
+            bindings.remove(name);
+        }
+    }
+
     fn declared_type_carries_unique_storage(&self, t: &ast::Type) -> bool {
         match t {
             ast::Type::Qualified(ast::TypeQual::Unique, _) => true,
@@ -7126,15 +7158,18 @@ impl Checker {
         // inferred allocator result) instead demotes: coercing it into an
         // ordinary position gives up the guarantee, and ordinary copies may
         // be made afterward — a later `unique`-requiring use is what fails.
-        if self.is_unique_value_binding(&root) || into_unique {
+        if self.is_unique_value_binding(&root) || into_unique || !self.is_inferred_owner_binding(&root) {
             self.mark_consumed_binding(&root);
-        } else if let Some(bindings) = self
-            .unique_storage_bindings
-            .iter_mut()
-            .rev()
-            .find(|bindings| bindings.contains(&root))
-        {
-            bindings.remove(&root);
+        } else {
+            if let Some(bindings) = self
+                .unique_storage_bindings
+                .iter_mut()
+                .rev()
+                .find(|bindings| bindings.contains(&root))
+            {
+                bindings.remove(&root);
+            }
+            self.forget_inferred_owner_binding(&root);
         }
         Ok(())
     }
@@ -7795,6 +7830,7 @@ impl Checker {
         self.frozen_bindings.push(HashSet::new());
         self.unique_value_bindings.push(HashSet::new());
         self.unique_storage_bindings.push(HashSet::new());
+        self.inferred_owner_bindings.push(HashSet::new());
         self.unique_binding_types.push(HashMap::new());
         self.callable_unique_contracts.push(HashMap::new());
         self.callable_opt_provenance.push(HashMap::new());
@@ -7817,6 +7853,7 @@ impl Checker {
         self.frozen_bindings.pop();
         self.unique_value_bindings.pop();
         self.unique_storage_bindings.pop();
+        self.inferred_owner_bindings.pop();
         self.unique_binding_types.pop();
         self.callable_unique_contracts.pop();
         self.callable_opt_provenance.pop();
@@ -9974,16 +10011,25 @@ impl Checker {
                             || self.ty_carries_unique_storage(&binding_ty),
                         |ty| {
                             self.declared_type_carries_unique_storage(ty)
-                                // (RFC-0167) `var d: Dict(k, v) = dict.new()` — the
-                                // annotation is a unification constraint, not an
-                                // `as` coercion; a fresh owner keeps its proof.
-                                || (self.opt_mode
-                                    && matches!(value, Expr::Call { .. })
-                                    && self.expression_carries_unique_storage(value, &binding_ty))
+                                // (RFC-0167) `var d: Dict(k, v) = dict.new()` — an
+                                // ordinary annotation on an inferred-fresh result is
+                                // the unification constraint the spec describes, not
+                                // an `as` coercion. Annotating a declared `unique`
+                                // result with an ordinary type is a weakening and
+                                // drops the proof.
+                                || self.call_yields_inferred_owner(value)
                         },
                     )
                     {
                         self.authorize_unique_storage_binding(name.clone());
+                        if self.call_yields_inferred_owner(value)
+                            && !decl.as_ref().is_some_and(|ty| self.declared_type_carries_unique_storage(ty))
+                        {
+                            self.inferred_owner_bindings
+                                .last_mut()
+                                .expect("inferred owner bindings track type scopes")
+                                .insert(name.clone());
+                        }
                         if let Some(declared) = decl {
                             self.remember_unique_binding_type(name.clone(), declared.clone());
                         } else if let Some(source_type) =
@@ -10158,10 +10204,17 @@ impl Checker {
                         {
                             bindings.remove(name);
                         }
+                        self.forget_inferred_owner_binding(name);
                         if self.expression_carries_unique_storage(value, &vt)
                             || self.ty_carries_unique_storage(&existing)
                         {
                             self.authorize_unique_storage_binding(name.clone());
+                            if self.call_yields_inferred_owner(value) {
+                                self.inferred_owner_bindings
+                                    .last_mut()
+                                    .expect("inferred owner bindings track type scopes")
+                                    .insert(name.clone());
+                            }
                         }
                     }
                     if self.ty_carries_must_consume(&existing)
@@ -14312,6 +14365,7 @@ impl Checker {
         self.frozen_bindings = vec![HashSet::new()];
         self.unique_value_bindings = vec![HashSet::new()];
         self.unique_storage_bindings = vec![HashSet::new()];
+        self.inferred_owner_bindings = vec![HashSet::new()];
         self.unique_binding_types = vec![HashMap::new()];
         self.callable_unique_contracts = vec![HashMap::new()];
         self.callable_opt_provenance = vec![HashMap::new()];
@@ -16613,6 +16667,7 @@ fn run_check_selected(
         fn_frozen_value_params: HashMap::new(),
         fn_unique_contracts: HashMap::new(),
         fresh_result_fns: HashSet::new(),
+        inferred_owner_bindings: vec![HashSet::new()],
         fn_opt_provenance: HashMap::new(),
         frozen_record_fields: HashMap::new(),
         unique_record_fields: HashMap::new(),
