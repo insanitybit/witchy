@@ -1671,8 +1671,15 @@ fn staged_change_is_discovered_without_explicit_paths() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("router output is UTF-8");
+    // The README route no longer selects the nightly-deferred documentation
+    // sweep (it executes the frozen source interpreter), so a staged README
+    // is routed as a prose-only change. What this test proves is discovery:
+    // the staged path was seen and classified, not reported as "no changed
+    // files".
     assert!(
-        stdout.contains("documentation_examples_are_valid") || stdout.contains("example_tests"),
+        stdout.contains("prose-only change")
+            || stdout.contains("documentation_examples_are_valid")
+            || stdout.contains("example_tests"),
         "staged README route: {stdout}"
     );
     assert!(!stdout.contains("no changed files"), "staged README was missed: {stdout}");
