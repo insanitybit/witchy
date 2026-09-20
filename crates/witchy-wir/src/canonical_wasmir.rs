@@ -7418,12 +7418,17 @@ fn expected_metadata_prefix(
     }
     let signature_indices: BTreeMap<_, _> = source.signatures().iter().enumerate()
         .map(|(index, signature)| (signature.id, index as u32)).collect();
+    // Both maps are functions of the module. Built inside the loop they made
+    // this quadratic in the module's imports and signatures: every signature
+    // was cloned once per import, and each contract came from a linear scan.
+    let signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
+        .map(|signature| (signature.id, signature.clone())).collect();
+    let contracts_by_id: BTreeMap<_, _> = source.imports().iter()
+        .map(|contract| (contract.id, contract)).collect();
     let mut import_type_indices = BTreeMap::new();
     for (index, import) in target.imports.iter().enumerate() {
-        let contract = source.imports().iter().find(|candidate| candidate.id == import.id)
+        let contract = *contracts_by_id.get(&import.id)
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-        let signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
-            .map(|signature| (signature.id, signature.clone())).collect();
         let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), contract, &signatures_by_id)
             .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
         let type_index = u32::try_from(source.signatures().len() + index)
@@ -7543,15 +7548,21 @@ fn decode_and_match_plan(
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter()
         .map(|segment| (segment.id, segment.offset))
         .collect();
+    // Both of these are functions of the module, not of one function in it.
+    // Built inside the per-function closure they were quadratic: the import
+    // map cloned every ImportContract (two Strings and two Vecs each) once per
+    // function, and the signature came from a linear scan of every signature.
+    let imports_by_id: BTreeMap<_, _> = source.imports().iter()
+        .map(|import| (import.id, import.clone())).collect();
+    let signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
+        .map(|signature| (signature.id, signature)).collect();
     let mut expected = source.functions().iter()
         .map(|function| {
-            let signature = source.signatures().iter()
-                .find(|signature| signature.id == function.signature)
+            let signature = *signatures_by_id.get(&function.signature)
                 .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
             let local = local_layout(function, signature, &layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             let locals = local.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
-            let imports = source.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
-            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)?))
+            Ok((locals, expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports_by_id, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)?))
         })
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(bridge) = owner_cleanup_bridge {
