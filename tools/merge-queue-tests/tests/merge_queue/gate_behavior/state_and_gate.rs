@@ -1448,3 +1448,47 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
         "a failing generator incorrectly authorized census-proof reuse",
     );
 }
+
+/// A gate starved by another cargo's package-cache lock produced a bare
+/// `timeout` and was re-diagnosed as a bad candidate: measured over 2,390
+/// gate logs, 93 runs show the signature and 49 of them were recorded
+/// `timeout` or `red`. The coordinator now names it in the attempt's reason.
+#[test]
+fn a_gate_starved_by_the_cargo_lock_is_named_in_the_timeout_reason() {
+    fn note(log_body: &str) -> String {
+        let temp = TempDir::new();
+        let log = temp.path().join("gate.log");
+        fs::write(&log, log_body).expect("write gate log fixture");
+        let output = Command::new("bash")
+            .args([
+                "-c",
+                r#"eval "$(sed -n '/^cargo_lock_starvation_note()/,/^}/p' "$1")"; cargo_lock_starvation_note "$2""#,
+                "starvation-test",
+            ])
+            .arg(workspace_root().join("scripts/merge-queue.sh"))
+            .arg(&log)
+            .output()
+            .expect("run the starvation probe");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8(output.stdout).expect("note is utf8")
+    }
+
+    let starved = format!(
+        "{}\n    Blocking waiting for file lock on build directory\nTerminated: 15\n",
+        "    Blocking waiting for file lock on package cache\n".repeat(4),
+    );
+    let named = note(&starved);
+    assert!(named.contains("cargo lock starvation"), "{named}");
+    assert!(named.contains("5 lock waits"), "{named}");
+
+    // A stage that waited once and then ran is ordinary: hundreds of real
+    // output lines follow, so the run is not starved and gets no note.
+    let ran = format!(
+        "    Blocking waiting for file lock on package cache\n{}",
+        (0..200).map(|i| format!("        PASS [   0.0{i:02}s] witchy::misc case_{i}\n")).collect::<String>(),
+    );
+    assert_eq!(note(&ran), "", "a stage that ran must not be called starved");
+
+    // No lock contention at all: nothing to say.
+    assert_eq!(note("     Summary [ 12.0s] 10 tests run: 10 passed\n"), "");
+}

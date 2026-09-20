@@ -1226,6 +1226,29 @@ main_worktree_block_reason() {
 # the gate is compiling or running tests, not hung — used to distinguish a silent
 # WORKING gate from a silent WEDGED one. Fails safe: if ps yields nothing (group
 # already gone, or an unexpected ps), returns false so the stall path proceeds.
+# A gate that never produced output because another cargo held the package-cache
+# or build-directory lock looks exactly like a slow or wedged candidate: the log
+# is a handful of `Blocking waiting for file lock` lines and nothing else, and
+# the attempt is recorded as a bare timeout. Measured 2026-09-20 over 2,390
+# gates: 93 runs show that signature and 49 of them were recorded `timeout` or
+# `red`, which is ~2% of all gates re-diagnosed as bad candidates. The stall
+# itself is cargo's design and is NOT a median cost (recent stalled gates run
+# ~9s slower than clean ones); naming it is what saves the next operator the
+# misdiagnosis. Empty when the log does not carry the signature.
+cargo_lock_starvation_note() { # cargo_lock_starvation_note <log>
+    local log="$1" stalls signal
+    [ -r "$log" ] || { printf ''; return 0; }
+    stalls="$(grep -cF 'Blocking waiting for file lock' "$log" 2>/dev/null || true)"
+    [ "${stalls:-0}" -gt 0 ] || { printf ''; return 0; }
+    # "Signal" is every line that is not a lock-wait, a cargo progress line, or
+    # blank: a starved stage has almost none, while a stage that merely waited
+    # once and then ran has hundreds.
+    signal="$(grep -vE 'Blocking waiting for file lock|^ *(Compiling|Downloading|Updating|Finished|Blocking)|^ *$' "$log" 2>/dev/null | grep -c . || true)"
+    [ "${signal:-0}" -lt 60 ] || { printf ''; return 0; }
+    printf 'cargo lock starvation: %s lock waits and only %s other output lines — another cargo held the package-cache/build lock for this stage' \
+        "$stalls" "$signal"
+}
+
 group_is_busy() { # group_is_busy <pgid>
     local total
     total="$(ps -g "$1" -o %cpu= 2>/dev/null | awk '{s+=$1} END {print s+0}')"
@@ -1436,6 +1459,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
                     local test_elapsed=$((t - test_stage_start))
                     if [ "$test_elapsed" -gt "$workspace_test_budget" ]; then
                         why="workspace-test stage exceeded ${workspace_test_budget}s (MERGE_QUEUE_WORKSPACE_TEST_BUDGET)"
+                        local starved; starved="$(cargo_lock_starvation_note "$log")"
+                        [ -n "$starved" ] && why="$why — $starved"
                         break
                     fi
                 fi
@@ -1458,6 +1483,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
         local age=$((t - last_real_time))
         if [ "$gate_timeout" -gt 0 ] && [ "$elapsed" -gt "$gate_timeout" ]; then
             why="gate exceeded ${gate_timeout}s (MERGE_QUEUE_GATE_TIMEOUT)"
+            local starved; starved="$(cargo_lock_starvation_note "$log")"
+            [ -n "$starved" ] && why="$why — $starved"
             break
         fi
         # Real-output silence alone is NOT a hang. The gate legitimately goes
