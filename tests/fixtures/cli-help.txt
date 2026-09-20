@@ -1,13 +1,13 @@
-witchy — a capability-secure language with twin interpreter and WASM backends
+witchy — a capability-secure language with canonical SafeWIR execution
 
 USAGE:
     witchy [--net <host:port>]... [--fetch <origin>]... <file.witchy>
                                                   run a program
     witchy check    <file.witchy>                 check + verify compiled acceptance without running
-    witchy parity   <file.witchy>                 run on both backends, confirm identical output
+    witchy parity   <file.witchy>                 compare canonical SafeWIR interpretation with admitted Wasm
                                                   (a verify-the-compiler tool, not a workflow step)
-    witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
-                                                  run zero-authority fixture tests on one or both backends, or explicit integration tests
+    witchy test [--fixtures <plan.json>] [--backend wasm] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
+                                                  run zero-authority fixture tests on admitted Wasm, or explicit integration tests
     witchy new --web <directory>                  create a capability-safe Glamour project
     witchy test --web [directory]                 validate a Glamour project and optimized browser artifact
     witchy build --web [--out <directory>] [directory]
