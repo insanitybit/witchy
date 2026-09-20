@@ -162,8 +162,8 @@ impl Error for InitialCheckError {}
 pub fn check_initial(
     mut candidate: CanonicalModule<LoweredCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    install_body_derived_result_contracts(&mut candidate)?;
-    check_candidate(&candidate, candidate.abi_catalog())?;
+    let summaries = install_body_derived_result_contracts(&mut candidate)?;
+    check_candidate(&candidate, candidate.abi_catalog(), summaries.as_ref())?;
     Ok(candidate.into_initial_valid())
 }
 
@@ -172,14 +172,20 @@ pub(crate) fn check_initial_with_catalog(
     mut candidate: CanonicalModule<LoweredCandidate>,
     catalog: &CanonicalAbiCatalog,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    install_body_derived_result_contracts(&mut candidate)?;
-    check_candidate(&candidate, Some(catalog))?;
+    let summaries = install_body_derived_result_contracts(&mut candidate)?;
+    check_candidate(&candidate, Some(catalog), summaries.as_ref())?;
     Ok(candidate.into_initial_valid())
 }
 
+/// Install body-derived result contracts, and hand back the summaries when
+/// this phase left every contract alone -- they are then still exactly what
+/// `check_all` would re-derive, and it can skip the fixpoint. Measured on an
+/// async module: `derive_all` is 17.1% of a warm compile and ran three times
+/// on byte-identical input, because it is module-level and the per-function
+/// verdict memo never covers it.
 fn install_body_derived_result_contracts(
     candidate: &mut CanonicalModule<LoweredCandidate>,
-) -> Result<(), InitialCheckError> {
+) -> Result<Option<contracts::Summaries>, InitialCheckError> {
     let signatures = index_signatures(candidate.signatures())?;
     for signature in signatures.values() {
         if signature.parameters.iter().chain(&signature.results).any(|value| matches!(value, ValueType::InlineAggregate(_))) {
@@ -187,7 +193,12 @@ fn install_body_derived_result_contracts(
         }
     }
     let functions = index_functions(candidate.functions())?;
-    let derived = contracts::derive_result_contracts(&functions, &signatures)?;
+    let (derived, summaries) = contracts::derive_result_contracts(&functions, &signatures)?;
+    // A summary depends on the signatures' contracts, so it survives this
+    // phase only if the phase leaves every contract alone. That is the common
+    // case: the loop below only rewrites `BodyDerived` placeholders, and a
+    // module without them is untouched here.
+    let mut rewrote_a_contract = false;
     for signature in &mut candidate.signatures {
         if let Some(results) = derived.get(&signature.id) {
             if signature.contract.results.len() != results.len() {
@@ -206,6 +217,7 @@ fn install_body_derived_result_contracts(
                     super::ResultContract::BodyDerived(declared_type)
                         if declared_type == value_type =>
                     {
+                        rewrote_a_contract = true;
                         declared.clone_from(derived);
                     }
                     super::ResultContract::BodyDerived(_) => {
@@ -237,13 +249,13 @@ fn install_body_derived_result_contracts(
             }
         }
     }
-    Ok(())
+    Ok((!rewrote_a_contract).then_some(summaries))
 }
 
 pub(crate) fn recheck_final(
     candidate: &CanonicalModule<InitialValid>,
 ) -> Result<(), InitialCheckError> {
-    check_candidate(candidate, candidate.abi_catalog())
+    check_candidate(candidate, candidate.abi_catalog(), None)
 }
 
 /// Re-establish every canonical invariant over an optimizer-produced graph.
@@ -251,13 +263,14 @@ pub(crate) fn recheck_final(
 pub(super) fn check_optimization_candidate(
     candidate: CanonicalModule<OptimizationCandidate>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    check_candidate(&candidate, candidate.abi_catalog())?;
+    check_candidate(&candidate, candidate.abi_catalog(), None)?;
     Ok(candidate.into_stage())
 }
 
 fn check_candidate<S: ModuleStage>(
     candidate: &CanonicalModule<S>,
     catalog: Option<&CanonicalAbiCatalog>,
+    derived: Option<&contracts::Summaries>,
 ) -> Result<(), InitialCheckError> {
 
     let (_, layouts) =
@@ -272,7 +285,7 @@ fn check_candidate<S: ModuleStage>(
     let signatures = index_signatures(candidate.signatures())?;
     let imports = index_imports(candidate.imports())?;
     let functions = index_functions(candidate.functions())?;
-    contracts::check_all(&functions, &signatures)?;
+    contracts::check_all(&functions, &signatures, derived)?;
     let owners = owners::Registry::new(candidate)?;
     for function in candidate.functions() {
         owners::check(function, &owners)?;

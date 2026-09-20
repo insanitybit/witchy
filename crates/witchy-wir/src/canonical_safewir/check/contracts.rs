@@ -91,7 +91,7 @@ impl FromIterator<MemoryEffect> for EffectSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BodySummary {
+pub(super) struct BodySummary {
     needs: Vec<EffectSet>,
     results: Vec<DerivedResult>,
     effects: BTreeMap<u32, EffectSet>,
@@ -279,16 +279,31 @@ impl Origin {
     }
 }
 
+/// The derived body summaries for every function in a module, as produced by
+/// one `derive_all` fixpoint. Opaque to callers: they only ever hand it back.
+pub(super) type Summaries = BTreeMap<FunctionId, BodySummary>;
+
 pub(super) fn check_all(
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
+    derived: Option<&Summaries>,
 ) -> Result<(), InitialCheckError> {
     for signature in signatures.values() {
         if signature.contract.results.iter().any(|result| matches!(result, ResultContract::CheckedValue { .. })) {
             return Err(contract_mismatch(signature.id, "CheckedValue memory result"));
         }
     }
-    let summaries = derive_all(functions, signatures)?;
+    // A summary is a function of the bodies and the signatures' contracts.
+    // When the caller has already derived them from inputs it knows are
+    // unchanged, re-running the fixpoint reproduces them exactly.
+    let owned;
+    let summaries = match derived {
+        Some(summaries) => summaries,
+        None => {
+            owned = derive_all(functions, signatures)?;
+            &owned
+        }
+    };
     for function in functions.values() {
         let signature = signatures
             .get(&function.signature)
@@ -302,7 +317,7 @@ pub(super) fn check_all(
 pub(super) fn derive_result_contracts(
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-) -> Result<BTreeMap<FunctionSignatureId, Vec<ResultContract>>, InitialCheckError> {
+) -> Result<(BTreeMap<FunctionSignatureId, Vec<ResultContract>>, Summaries), InitialCheckError> {
     let summaries = derive_all(functions, signatures)?;
     let mut contracts = BTreeMap::new();
     for function in functions.values() {
@@ -317,7 +332,7 @@ pub(super) fn derive_result_contracts(
             }
         }
     }
-    Ok(contracts)
+    Ok((contracts, summaries))
 }
 
 fn derive_all(
@@ -2541,7 +2556,7 @@ mod tests {
             .into_iter()
             .collect();
 
-        assert!(check_all(&functions, &signatures).is_ok());
+        assert!(check_all(&functions, &signatures, None).is_ok());
     }
 
     #[test]
@@ -2615,7 +2630,7 @@ mod tests {
             .collect();
 
         assert!(matches!(
-            check_all(&functions, &signatures),
+            check_all(&functions, &signatures, None),
             Err(InitialCheckError::UnsupportedIndirectCall { function }) if function == FunctionId::new(0)
         ));
     }
@@ -2627,9 +2642,9 @@ mod tests {
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::StaticData { destination: object, layout, extent: Extent::FixedBytes(4), data: StaticDataId::new(0) }], terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
-        assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+        assert!(matches!(check_all(&functions, &signatures, None), Err(InitialCheckError::CallableContractMismatch { .. })));
         assert_eq!(
-            derive_result_contracts(&functions, &signatures).unwrap()[&FunctionSignatureId::new(0)],
+            derive_result_contracts(&functions, &signatures).unwrap().0[&FunctionSignatureId::new(0)],
             vec![ResultContract::StaticData { layout }]
         );
     }
@@ -2641,7 +2656,7 @@ mod tests {
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::Alloc { destination: object, layout, extent: Extent::FixedBytes(4), class: AllocationClass::Bump }], terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
-        assert!(check_all(&functions, &signatures).is_ok());
+        assert!(check_all(&functions, &signatures, None).is_ok());
     }
 
     #[test]
@@ -2651,7 +2666,7 @@ mod tests {
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: Vec::new(), operations: vec![Operation::Alloc { destination: object, layout, extent: Extent::FixedBytes(4), class: AllocationClass::Bump }], terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: Vec::new(), results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
-        assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+        assert!(matches!(check_all(&functions, &signatures, None), Err(InitialCheckError::CallableContractMismatch { .. })));
     }
 
     #[test]
@@ -2721,9 +2736,9 @@ mod tests {
         };
         let (functions, signatures) = maps(function, signature);
 
-        assert!(check_all(&functions, &signatures).is_ok());
+        assert!(check_all(&functions, &signatures, None).is_ok());
         assert_eq!(
-            derive_result_contracts(&functions, &signatures).unwrap()
+            derive_result_contracts(&functions, &signatures).unwrap().0
                 [&FunctionSignatureId::new(0)],
             vec![ResultContract::Shared { layout: element_layout }]
         );
@@ -2762,7 +2777,7 @@ mod tests {
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Shared) }], operations: Vec::new(), terminator: Terminator::Return { values: vec![object] } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: vec![ValueType::Ref(layout)], contract };
         let (functions, signatures) = maps(function, signature);
-        assert!(check_all(&functions, &signatures).is_ok());
+        assert!(check_all(&functions, &signatures, None).is_ok());
     }
 
     #[test]
@@ -2822,7 +2837,7 @@ mod tests {
             contract,
         };
         let (functions, signatures) = maps(function, signature);
-        assert!(check_all(&functions, &signatures).is_ok());
+        assert!(check_all(&functions, &signatures, None).is_ok());
     }
 
     #[test]
@@ -2832,7 +2847,7 @@ mod tests {
         let function = Function { id: FunctionId::new(0), signature: FunctionSignatureId::new(0), entry: ENTRY, value_types: [(object, ValueType::Ref(layout))].into_iter().collect(), blocks: vec![BasicBlock { id: ENTRY, parameters: vec![BlockParameter { value: object, value_type: ValueType::Ref(layout), ownership: Some(Ownership::Unique) }], operations: vec![Operation::Reclaim { object }], terminator: Terminator::Return { values: Vec::new() } }] };
         let signature = FunctionSignature { id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(layout)], results: Vec::new(), contract };
         let (functions, signatures) = maps(function, signature);
-        assert!(matches!(check_all(&functions, &signatures), Err(InitialCheckError::CallableContractMismatch { .. })));
+        assert!(matches!(check_all(&functions, &signatures, None), Err(InitialCheckError::CallableContractMismatch { .. })));
     }
 
 }
