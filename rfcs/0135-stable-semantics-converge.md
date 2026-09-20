@@ -10,10 +10,44 @@ related:
   - "0115 (agent contributor workflow)"
   - "0122 (Wasm-first carrier iteration as the first instance)"
   - "oracle-only-migration.md (interpreter is not a user run path)"
+  - "0167 (canonical runtime supersedes the dual source-runtime policy; 2026-09-19 amendment below)"
 tracking: "Implemented 2026-08-20: witchy-dev section 0, playbook, spec/architecture.md, spec/language.md, spec/test-footprint.md, CONTRIBUTING.md. RFC-0058 harness rules unchanged."
 ---
 
 # RFC-0135: Stable observable semantics converge before support
+
+> 2026-09-19: **Amendment — the source interpreter is no longer a requirement.**
+> User decision: dual implementation ("always implement everything twice")
+> consistently slowed development, so the interpreter is dropped as a
+> requirement; it may be revisited later if a need appears. RFC-0167 and
+> `docs/agile-agent-playbook.md` ("Canonical runtime policy") define the
+> evidence chain that replaces the dual-backend rule below: an independently
+> derived expected result or diagnostic → the canonical SafeWIR interpreter
+> (`crates/witchy-wir`) → admitted unoptimized Wasm.
+>
+> Withdrawn from the design below: the "Interpreter: implement" cells of the
+> six-bucket table; interpreter agreement as a condition of support
+> ("Independent expected results are required at support", item 2); the
+> interpreter debt ledger and its convergence milestone; and focused
+> `witchy parity` as an inner-loop check. A missing or disagreeing source-
+> interpreter path is no longer a blocker or acceptance evidence.
+>
+> Still in force: independent expected results adjudicate correctness, and
+> agreement between implementations only proves they match; disagreement is a
+> loud error, never a different answer — now between the canonical interpreter
+> and admitted Wasm; pure optimizations are checked against the unoptimized
+> canonical result; capability, confinement, and ABI security stay fail-closed
+> on the canonical route; RFC-0058's harness-integrity rules govern whatever
+> differential corpus runs.
+>
+> The source tree walker (`crates/witchy-interp`) is *frozen*, not deleted: it
+> keeps its compiler-service duties (`comptime`, tagged literals, effectful
+> build steps, `witchy test --backend interpreter`, `witchy parity`) until
+> those lower through the canonical route, receives no new syntax or runtime
+> behaviour, and its output is not acceptance evidence. Removing it is a
+> separate, later decision. The remainder of this document is the original
+> design record; the agent-facing documents it lists are being re-stated by
+> RFC-0167's migration.
 
 The briefing still tells agents that every feature must land on both backends
 in the same change. That sentence is the wrong inner-loop rule. The playbook,
