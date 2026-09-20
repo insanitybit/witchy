@@ -37,6 +37,28 @@ while [ "$#" -gt 0 ]; do
 done
 
 policy="$(./scripts/rfc0165-deferred-filter.sh scripts/rfc0165-deferred-tests.txt "$package")"
+
+# The landing gate excludes TWO lists, so a wrapper that applies only the
+# RFC-0165 one does not match it. Measured 2026-09-20: a focused
+# `--test misc` run through this wrapper reported 8 failures on a clean
+# master, and all 8 were nightly-deferred names the gate never runs. A
+# focused check that fails on tests the gate ignores trains agents to submit
+# through red output, which is the opposite of what this wrapper is for.
+# The list is the same single source of truth check.sh reads.
+nightly_deferred_file="${WITCHY_GATE_DEFERRED_NIGHTLY:-scripts/nightly-deferred-tests.txt}"
+if [ -r "$nightly_deferred_file" ]; then
+    nightly_names=""
+    while IFS= read -r nightly_line || [ -n "$nightly_line" ]; do
+        case "$nightly_line" in
+            ''|'#'*) continue ;;
+        esac
+        nightly_names="${nightly_names:+$nightly_names|}^${nightly_line}\$"
+    done < "$nightly_deferred_file"
+    if [ -n "$nightly_names" ]; then
+        policy="($policy) and not (test(/${nightly_names}/))"
+    fi
+fi
+
 if [ -n "$selection" ]; then
     policy="($selection) and ($policy)"
 fi
