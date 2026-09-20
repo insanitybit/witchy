@@ -188,3 +188,22 @@ mutation, control-flow, effect-count, frame-shape, and scaling evidence.
 | 5 adapters and collection parity | **PROVEN** | `rfc0130_adapter_collection::rfc0130_row_5_iterator_adapters_and_from_iterator_collections_agree_on_both_backends` composes representative lazy adapters, selects `List`, `Dict`, `Set`, and `String` collection through expected-type `FromIterator` dispatch, bounds an infinite adapter pipeline, and short-circuits an infinite `find` identically on the interpreter and compiled Wasm. |
 | 6 syntax preservation | **PROVEN** | `rfc0130_surface::rfc0130_row_6_formatter_reflection_docs_and_editor_surfaces_preserve_generators`, `web/witchy-runtime/witchy-highlight.test.mjs`, and the Zed extension's pinned Tree-sitter revision preserve `gen fn`/`yield` through formatting, AST and quoted-item reflection, generated docs, and editor highlighting. |
 | 7 clean installed example | **PROVEN** | `scripts/release-smoke.sh`, invoked by the release workflow on every supported native archive, creates a fresh project through the installed public CLI and executes both `finite(4)` and `naturals().take(5)` with an isolated HOME, cache, working directory, and PATH containing only the extracted toolchain. |
+
+## Foundation landing debt (2026-09-20)
+
+Landed with the user's explicit authorization that master may regress before
+release. Each row is a test the default gate excludes (`scripts/nightly-deferred-tests.txt`
+and the RFC-0089 block of `scripts/rfc0165-deferred-tests.txt`) until the named
+track restores it; the tests themselves are unchanged and run under `--full`.
+
+| debt | tests | restoring track |
+|---|---|---|
+| dictionary values through owned storage stopped admitting / answering | `rfc0165_dictionary_mutation` ×7, `rfc0165_recursive_generic` ×2, `rfc0165_recursive_render` ×2 | non-`Int`, nested, and broader immutable-view carriers (dictionary owner lanes) |
+| corpus `018-string_pushes_in_arms_and_across_loops_keep_the_prefix` refused (`MissingBoundsGuard`) | `rfc0165_corpus`, `rfc0165_admitted_launch::admitted_string_pushes…` | loop-carried string header lanes (same family as BUG-635 projected loops) |
+| ownership row F unoptimized lowering (`UnsupportedIndirectCall`) | `rfc0167_ownership_parity` | indirect aggregate-`var` callable transport |
+| canonical Net host fixtures | `rfc0165_net` ×2, `canonical_net_fixture` | capability host calls on the canonical route |
+| opt caller of `list.pop` no-copy miss refusal | `rfc0165_reference_list_patterns` | early-`?`/no-copy refusal surface |
+| async recipe body drive (timeout) | `rfc0077_integration_grants` | suspension frames over owned carriers |
+| `own unique` FIP entry deferred | `rfc0089_fip_contract` ×10 | FIP re-admission |
+| retired `View(T,'a)` callable relations | `tests/rfc0112.rs` ×2 | delete with the relation machinery |
+| RFC-0087 census tool crashes on `benchmarks/select_fanin.witchy` (private intrinsic leak) | `rfc0087_migration_census` | fix the census tool or retire the proof |

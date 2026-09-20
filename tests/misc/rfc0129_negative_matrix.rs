@@ -23,7 +23,7 @@ fn rfc0129_acceptance_row_5_rejects_invalid_concurrency_sources_before_lowering(
             source: r#"
 mode opt
 
-fn view(text: &'a String) -> &'a String:
+fn view(text: &String) -> &String:
     text
 
 async fn main(console: Console):

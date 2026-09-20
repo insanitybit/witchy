@@ -591,8 +591,15 @@ fn main(console: Console):
         // the explicit `let`/`own`/`var` protocol in a mode file.
         let qualified = bad.replace("xs: List(Int)", "xs: unique List(Int)");
         let d = diags(&qualified);
+        // Type checking now refuses the call site (the argument cannot repair
+        // ordinary storage into a `unique` parameter) before the convention
+        // rule reports; either message proves the qualifier hid nothing.
         assert!(
-            d.iter().any(|x| x["message"].as_str().unwrap().contains("ownership convention")),
+            d.iter().any(|x| {
+                let message = x["message"].as_str().unwrap();
+                message.contains("ownership convention")
+                    || message.contains("cannot repair ordinary storage into a `unique` parameter")
+            }),
             "a qualifier must not hide a missing convention: {d:?}"
         );
 
@@ -616,8 +623,8 @@ fn main(console: Console):
                     && diagnostic["message"]
                         .as_str()
                         .is_some_and(|message| {
-                            message.contains("no-copy `var` contract")
-                                && message.contains("bound to a new name")
+                            message.contains("cannot repair ordinary storage into a `unique` parameter")
+                                && message.contains("pass an existing unique owner")
                         })
             }),
             "the editor must explain the exact ownership loss: {diagnostics:?}"
@@ -628,7 +635,7 @@ fn main(console: Console):
         assert!(
             !diagnostics.iter().any(|diagnostic| diagnostic["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("no-copy `var` contract"))),
+                .is_some_and(|message| message.contains("cannot repair ordinary storage"))),
             "a fresh owner satisfies the contract: {diagnostics:?}"
         );
 
@@ -637,7 +644,7 @@ fn main(console: Console):
         assert!(
             !diagnostics.iter().any(|diagnostic| diagnostic["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("no-copy `var` contract"))),
+                .is_some_and(|message| message.contains("cannot repair ordinary storage"))),
             "normal mode keeps the copy-correct fallback: {diagnostics:?}"
         );
     }
@@ -652,8 +659,10 @@ fn main(console: Console):
                     && diagnostic["message"]
                         .as_str()
                         .is_some_and(|message| {
-                            message.contains("functional-in-place contract failed")
-                                && message.contains("not in tail position")
+                            // The canonical route defers the `own unique` entry
+                            // contract, so the call is refused before the
+                            // tail-position proof runs.
+                            message.contains("`unique` parameter in `mode opt`")
                         })
             }),
             "the editor must surface the FIP proof failure: {diagnostics:?}"

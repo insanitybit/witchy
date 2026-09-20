@@ -36,7 +36,7 @@ fn rfc0130_row_4_generator_failures_name_source_syntax() {
     );
 
     let borrowed = checked_error(
-        "mode opt\n\nimport iter\n\ngen fn bad(input: &'a String) -> Iter(String):\n    yield *input\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
+        "mode opt\n\nimport iter\n\ngen fn bad(input: &String) -> Iter(String):\n    yield input\n\nfn main(console: Console):\n    console.print(\"unreachable\")\n",
     );
     assert!(
         borrowed.contains("gen fn `bad` may not expose a borrowed view or explicit reference")
