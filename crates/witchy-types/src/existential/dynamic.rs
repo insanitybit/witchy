@@ -358,7 +358,6 @@ pub(super) fn collect_dynamic_types(
             _ => {}
         }
     }
-    drop(collect);
     // Derive(Reflect) installs `__dynamic_descriptor_id` in a compiler-owned
     // impl body, before that method is materialized as a callable function.
     // Include only an impl for a concrete type already requested by an
