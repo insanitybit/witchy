@@ -685,14 +685,17 @@ impl Deserialize for List(a) where a: Deserialize:
         let values = j.array_of()?
         let decoded = list.map(values, fn(value: Json) -> Result(a, DeserializeError):
             let decoded: Result(a, DeserializeError) = a.from_json(value)
-            decoded)
+            decoded
+        )
+
         result.all(decoded)
 
 impl Deserialize for Option(a) where a: Deserialize:
     fn from_json(j: Json) -> Result(Option(a), DeserializeError):
         optional(Some(j), fn(value: Json) -> Result(a, DeserializeError):
             let decoded: Result(a, DeserializeError) = a.from_json(value)
-            decoded)
+            decoded
+        )
 
 // Decode an optional field: an absent key or an explicit `null` is `None`;
 // otherwise the value is decoded via `each`. Used for `Option(_)` fields.

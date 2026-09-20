@@ -792,7 +792,7 @@ pub fn derive_show(t: TypeInfo) -> ItemSyntax:
                 let rendered = show_ctor_expr(v.name, vals)
                 arms.push(match_arm(pat, rendered))
             expr_match(self_expr, arms)
-    let method = function(false, ident("show"), [param(ident("self"), type_expr(TNamed(t.name, type_params(t.params))) )], Some(type_named(ident("String"), [])), body)
+    let method = function(false, ident("show"), [param(ident("self"), type_expr(TNamed(t.name, type_params(t.params))))], Some(type_named(ident("String"), [])), body)
     impl_block_where(type_named(ident("Show"), []), type_expr(TNamed(t.name, type_params(t.params))), bound_list(t.params, "Show"), [method])
 
 fn type_params(params: List(String)) -> List(TypeExpr):
@@ -992,30 +992,30 @@ fn reflect_call(ty: TypeExpr, value: String) -> String:
 pub fn derive_reflect(t: TypeInfo) -> ItemSyntax:
     let target = type_expr(TNamed(t.name, type_params(t.params)))
     let self_expr = expr_name(ident("self"))
-    let reflect_body = match t.kind:
-        TypeRecord ->
-            var pairs: List(ExprSyntax) = []
-            for f in t.fields:
-                pairs.push(expr_tuple([expr_string(f.name), reflect_call_expr(f.type_expr, expr_field(self_expr, ident(f.name)))]))
-            qualified_call("reflect", "MRecord", [expr_string(t.name), expr_list(pairs)])
-        _ ->
-            var arms: List(MatchArmSyntax) = []
-            for v in t.variants:
-                var pats: List(PatternSyntax) = []
-                var vals: List(ExprSyntax) = []
-                var i = 0
-                for ft in v.field_type_exprs:
-                    let p = fresh("p")
-                    pats.push(pattern_var(p))
-                    vals.push(reflect_call_expr(ft, expr_name(p)))
-                    i = i + 1
-                let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
-                arms.push(match_arm(pat, qualified_call("reflect", "MVariant", [expr_string(t.name), expr_string(v.name), expr_list(vals)])))
-            expr_match(self_expr, arms)
+    let reflect_body = if let TypeRecord = t.kind:
+        var pairs: List(ExprSyntax) = []
+        for f in t.fields:
+            pairs.push(expr_tuple([expr_string(f.name), reflect_call_expr(f.type_expr, expr_field(self_expr, ident(f.name)))]))
+        qualified_call("reflect", "MRecord", [expr_string(t.name), expr_list(pairs)])
+    else:
+        var arms: List(MatchArmSyntax) = []
+        for v in t.variants:
+            var pats: List(PatternSyntax) = []
+            var vals: List(ExprSyntax) = []
+            var i = 0
+            for ft in v.field_type_exprs:
+                let p = fresh("p")
+                pats.push(pattern_var(p))
+                vals.push(reflect_call_expr(ft, expr_name(p)))
+                i = i + 1
+            let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
+            arms.push(match_arm(pat, qualified_call("reflect", "MVariant", [expr_string(t.name), expr_string(v.name), expr_list(vals)])))
+        expr_match(self_expr, arms)
     let reflect_method = function(false, ident("reflect"), [param(ident("self"), target)], Some(type_qualified(ident("reflect"), ident("Mirror"), [])), reflect_body)
     let methods = match t.kind:
         TypeRecord -> [reflect_method, function(false, internal_ident("__dynamic_field"), [param(ident("self"), target), param(internal_ident("__name"), type_named(ident("String"), []))], Some(type_named(ident("Option"), [type_qualified(ident("reflect"), ident("DynamicFieldValue"), [])])), dynamic_field_expr(t.fields, self_expr, 0))]
         _ -> [reflect_method]
+
     impl_block_where(type_named(ident("Reflect"), []), target, bound_list(t.params, "Reflect"), methods)
 
 fn dynamic_field_expr(fields: List(FieldInfo), self_expr: ExprSyntax, index: Int) -> ExprSyntax:
@@ -1034,9 +1034,12 @@ fn qualified_call(module: String, name: String, args: List(ExprSyntax)) -> ExprS
 fn reflect_call_expr(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
     match ty:
         TNamed(name, _) ->
-            if name == "List": qualified_call("reflect", "reflect_list", [value])
-            else if name == "Option": qualified_call("reflect", "reflect_option", [value])
-            else: qualified_call("reflect", "reflect_one", [value])
+            if name == "List":
+                qualified_call("reflect", "reflect_list", [value])
+            else if name == "Option":
+                qualified_call("reflect", "reflect_option", [value])
+            else:
+                qualified_call("reflect", "reflect_one", [value])
         _ -> qualified_call("reflect", "reflect_one", [value])
 
 // `derive(PublicState)` proves a value can cross a public/resumable boundary.
@@ -1046,27 +1049,26 @@ fn reflect_call_expr(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
 pub fn derive_public_state(t: TypeInfo) -> ItemSyntax:
     let target = type_expr(TNamed(t.name, type_params(t.params)))
     let self_expr = expr_name(ident("self"))
-    let body = match t.kind:
-        TypeRecord ->
+    let body = if let TypeRecord = t.kind:
+        var stmts: List(StmtSyntax) = []
+        for f in t.fields:
+            stmts.push(stmt_expr(qualified_call("public_state", "check", [expr_field(self_expr, ident(f.name))])))
+        block(stmts, Some(expr_tuple([])))
+    else:
+        var arms: List(MatchArmSyntax) = []
+        for v in t.variants:
+            var pats: List(PatternSyntax) = []
             var stmts: List(StmtSyntax) = []
-            for f in t.fields:
-                stmts.push(stmt_expr(qualified_call("public_state", "check", [expr_field(self_expr, ident(f.name))])))
-            block(stmts, Some(expr_tuple([])))
-        _ ->
-            var arms: List(MatchArmSyntax) = []
-            for v in t.variants:
-                var pats: List(PatternSyntax) = []
-                var stmts: List(StmtSyntax) = []
-                var i = 0
-                for _ft in v.field_type_exprs:
-                    let p = fresh("p")
-                    pats.push(pattern_var(p))
-                    stmts.push(stmt_expr(qualified_call("public_state", "check", [expr_name(p)])))
-                    i = i + 1
-                let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
-                let arm_body = expr_block(block(stmts, Some(expr_tuple([]))))
-                arms.push(match_arm(pat, arm_body))
-            function_body_block(expr_match(self_expr, arms))
+            var i = 0
+            for _ft in v.field_type_exprs:
+                let p = fresh("p")
+                pats.push(pattern_var(p))
+                stmts.push(stmt_expr(qualified_call("public_state", "check", [expr_name(p)])))
+                i = i + 1
+            let pat = if list.is_empty(pats): pattern_ctor(ident(v.name), []) else: pattern_ctor(ident(v.name), pats)
+            let arm_body = expr_block(block(stmts, Some(expr_tuple([]))))
+            arms.push(match_arm(pat, arm_body))
+        function_body_block(expr_match(self_expr, arms))
     let method = function_block(false, ident("public_state_proof"), [param(ident("self"), target)], None, body)
     impl_block_where(type_named(ident("PublicState"), []), target, bound_list(t.params, "PublicState"), [method])
 
@@ -1099,11 +1101,7 @@ fn ord_lexicographic_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_
         let f = list.at(fields, index)
         let compared = expr_method_call(expr_field(self_expr, ident(f.name)), ident("compare"), [expr_field(other_expr, ident(f.name))])
         let equal = ord_lexicographic_expr(fields, self_expr, other_expr, index + 1)
-        expr_match(compared, [
-            match_arm(pattern_ctor(ident("Less"), []), expr_name(ident("Less"))),
-            match_arm(pattern_ctor(ident("Greater"), []), expr_name(ident("Greater"))),
-            match_arm(pattern_ctor(ident("Equal"), []), equal),
-        ])
+        expr_match(compared, [match_arm(pattern_ctor(ident("Less"), []), expr_name(ident("Less"))), match_arm(pattern_ctor(ident("Greater"), []), expr_name(ident("Greater"))), match_arm(pattern_ctor(ident("Equal"), []), equal)])
 
 fn partial_ord_lexicographic_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_expr: ExprSyntax, index: Int) -> ExprSyntax:
     if index >= list.length(fields):
@@ -1112,12 +1110,7 @@ fn partial_ord_lexicographic_expr(fields: List(FieldInfo), self_expr: ExprSyntax
         let f = list.at(fields, index)
         let compared = expr_method_call(expr_field(self_expr, ident(f.name)), ident("partial_compare"), [expr_field(other_expr, ident(f.name))])
         let equal = partial_ord_lexicographic_expr(fields, self_expr, other_expr, index + 1)
-        expr_match(compared, [
-            match_arm(pattern_ctor(ident("None"), []), expr_name(ident("None"))),
-            match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Less"), [])]), expr_call(expr_name(ident("Some")), [expr_name(ident("Less"))])),
-            match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Greater"), [])]), expr_call(expr_name(ident("Some")), [expr_name(ident("Greater"))])),
-            match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Equal"), [])]), equal),
-        ])
+        expr_match(compared, [match_arm(pattern_ctor(ident("None"), []), expr_name(ident("None"))), match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Less"), [])]), expr_call(expr_name(ident("Some")), [expr_name(ident("Less"))])), match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Greater"), [])]), expr_call(expr_name(ident("Some")), [expr_name(ident("Greater"))])), match_arm(pattern_ctor(ident("Some"), [pattern_ctor(ident("Equal"), [])]), equal)])
 
 // A `Result`-producing decode of a `Json` value already in hand (recursive).
 // Every node is built as compiler-owned syntax; in particular the postfix try
@@ -1143,10 +1136,8 @@ fn json_decode_value(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
                 let element_ty = type_qualified(ident("json"), ident("Json"), [])
                 let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
                 let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
-                let decode = expr_lambda(
-                    [param(element, element_ty)],
-                    Some(result_ty),
-                    json_decode_value(elem, expr_name(element)))
+                let decode = expr_lambda([param(element, element_ty)], Some(result_ty), json_decode_value(elem, expr_name(element)))
+
                 let array = expr_try(qualified_call("json", "array_of", [value]))
                 let mapped = qualified_call("list", "map", [array, decode])
                 qualified_call("result", "all", [mapped])
@@ -1156,10 +1147,8 @@ fn json_decode_value(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
                 let element_ty = type_qualified(ident("json"), ident("Json"), [])
                 let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
                 let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
-                let decode = expr_lambda(
-                    [param(element, element_ty)],
-                    Some(result_ty),
-                    json_decode_value(elem, expr_name(element)))
+                let decode = expr_lambda([param(element, element_ty)], Some(result_ty), json_decode_value(elem, expr_name(element)))
+
                 let some = expr_call(expr_name(ident("Some")), [value])
                 qualified_call("json", "optional", [some, decode])
             else:
@@ -1176,28 +1165,22 @@ fn nominal_path(name: String) -> List(Ident):
 // Decode one record field from `object`: an Option reads with `get` (absent
 // allowed), everything else with `require`. Trails a `?` so it's a `let` initializer.
 fn json_decode_field(ty: TypeExpr, object: ExprSyntax, key: String) -> ExprSyntax:
-    match ty:
-        TNamed(name, args) ->
-            if name == "Option" && list.length(args) == 1:
-                let elem = list.at(args, 0)
-                let element = fresh("element")
-                let element_ty = type_qualified(ident("json"), ident("Json"), [])
-                let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
-                let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
-                let decode = expr_lambda(
-                    [param(element, element_ty)],
-                    Some(result_ty),
-                    json_decode_value(elem, expr_name(element)))
-                expr_try(qualified_call("json", "optional", [
-                    qualified_call("json", "get", [object, expr_string(key)]),
-                    decode,
-                ]))
-            else:
-                let required = expr_try(qualified_call("json", "require", [object, expr_string(key)]))
-                expr_try(json_decode_value(ty, required))
-        _ ->
+    if let TNamed(name, args) = ty:
+        if name == "Option" && list.length(args) == 1:
+            let elem = list.at(args, 0)
+            let element = fresh("element")
+            let element_ty = type_qualified(ident("json"), ident("Json"), [])
+            let error_ty = type_qualified(ident("json"), ident("DeserializeError"), [])
+            let result_ty = type_named(ident("Result"), [type_expr(elem), error_ty])
+            let decode = expr_lambda([param(element, element_ty)], Some(result_ty), json_decode_value(elem, expr_name(element)))
+
+            expr_try(qualified_call("json", "optional", [qualified_call("json", "get", [object, expr_string(key)]), decode]))
+        else:
             let required = expr_try(qualified_call("json", "require", [object, expr_string(key)]))
             expr_try(json_decode_value(ty, required))
+    else:
+        let required = expr_try(qualified_call("json", "require", [object, expr_string(key)]))
+        expr_try(json_decode_value(ty, required))
 
 // `derive(Deserialize)` generates `from_json` for a record (the caller validates the
 // shape). It decodes and coerces each field, returning on the first error. There is
@@ -1219,17 +1202,10 @@ pub fn derive_deserialize(t: TypeInfo) -> ItemSyntax:
     let constructed = expr_call(expr_name(ident(t.name)), names)
     let success = expr_call(expr_name(ident("Ok")), [constructed])
     let body = block(statements, Some(success))
-    let method = function_block(
-        false,
-        ident("from_json"),
-        [param(input, json_ty)],
-        Some(result_ty),
-        body)
-    let implementation = impl_block_where(
-        type_named(ident("Deserialize"), []),
-        target,
-        bound_list(t.params, "Deserialize"),
-        [method])
+    let method = function_block(false, ident("from_json"), [param(input, json_ty)], Some(result_ty), body)
+
+    let implementation = impl_block_where(type_named(ident("Deserialize"), []), target, bound_list(t.params, "Deserialize"), [method])
+
     // The generated item makes module-qualified calls, so retain their
     // standard-module imports in the compiler-owned module fragment.
     item_with_imports(["json", "list", "result"], implementation)
