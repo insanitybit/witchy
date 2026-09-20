@@ -21,7 +21,11 @@ repeat the rules; consult it when you're working inside one of these areas.
   `scripts/worktree-create.sh`, which creates the worktree AND seeds it. That
   hook REPLACES the built-in creation — it must print the new worktree's path as
   its **only** stdout; everything else goes to stderr. When your worktree's work
-  is merged, remove the worktree (its multi-GB `target/` goes with it).
+  is merged, remove the worktree (its multi-GB `target/` goes with it). What
+  gets left behind is abandoned checkouts, not merged ones (569 registered on
+  2026-09-19, 362 untouched for two weeks): `scripts/worktree-status.sh
+  --prune-stale --dry-run` lists them and `--prune-stale` removes them,
+  WIP-committing a dirty tree first so the branch keeps every edit.
 - **Reclaiming disk: use `scripts/reclaim-build-caches.sh`, not `du | sort | rm`.**
   It is a dry run by default. Two traps it already knows: a worktree's plain
   `target` is an APFS **CoW clone** of the origin, so `du` reports its full size

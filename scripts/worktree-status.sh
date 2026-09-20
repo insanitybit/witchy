@@ -8,10 +8,29 @@
 #   ./scripts/worktree-status.sh --equivalent # classify rebased patches (slow)
 #   ./scripts/worktree-status.sh --prune    # remove fully-merged CLEAN worktrees
 #   ./scripts/worktree-status.sh --branches # also delete merged local branches
+#   ./scripts/worktree-status.sh --prune-stale[=DAYS] [--dry-run]
+#                                           # remove abandoned worktrees (below)
+#
+# --prune only removes worktrees the merge queue journaled as merged, and the
+# coordinator already sweeps those on landing, so in practice it finds nothing.
+# What accumulates is everything else: 569 registered worktrees on 2026-09-19,
+# 362 of them untouched for over two weeks, 2 with a live process. --prune-stale
+# removes a worktree when no process has it as its working directory, its
+# branch is not queued, and one of these holds:
+#   - landed: master contains its tip, or every commit is on master as a
+#     rebased copy (patch-equivalent), and the tree is clean;
+#   - stale + clean: its last commit is older than DAYS (default 14). The
+#     branch ref keeps every commit; re-add a worktree from it to resume;
+#   - stale + dirty: as above, but the working tree is first committed as a
+#     `wip:` commit on the branch so no edit is lost. A tree carrying more than
+#     50 MB of untracked files is left alone and reported.
+# Detached worktrees are never removed (nothing would keep their commits).
 set -euo pipefail
 
 prune=0
 prune_branches=0
+prune_stale=""
+dry_run=0
 show_disk=0
 show_equivalent=0
 for arg in "$@"; do
@@ -19,6 +38,9 @@ for arg in "$@"; do
         --disk) show_disk=1 ;;
         --equivalent) show_equivalent=1 ;;
         --prune) prune=1 ;;
+        --prune-stale) prune_stale=14 ;;
+        --prune-stale=*) prune_stale="${arg#*=}"; [[ "$prune_stale" =~ ^[0-9]+$ ]] || { echo "worktree-status: --prune-stale expects a day count" >&2; exit 2; } ;;
+        --dry-run) dry_run=1 ;;
         --branches) prune_branches=1 ;;
         -h|--help) sed -n '2,/^set -euo pipefail$/{ /^set -euo pipefail$/d; s/^# \{0,1\}//; p; }' "$0"; exit 0 ;;
         *) echo "worktree-status: unknown arg '$arg'" >&2; exit 2 ;;
@@ -142,6 +164,61 @@ if [ "$prune" -eq 1 ]; then
         [ "$n" -eq 0 ] || { printf '  SKIP %s (dirty, %s files)\n' "$wt" "$n"; continue; }
         printf '  REMOVE %s (%s)\n' "$wt" "$branch"
         git -C "$root" worktree remove "$wt" 2>&1 | sed 's/^/    /'
+    done
+fi
+
+if [ -n "$prune_stale" ]; then
+    echo
+    if [ "$dry_run" -eq 1 ]; then
+        echo "abandoned worktrees (last commit over $prune_stale days ago, or landed) -- dry run:"
+    else
+        echo "removing abandoned worktrees (last commit over $prune_stale days ago, or landed):"
+    fi
+    # One lsof call: the working directory of every live process. A worktree
+    # that is some process's cwd belongs to a running session.
+    live_cwds="$(lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' || true)"
+    is_live() { [ -n "$live_cwds" ] && grep -Fq -- "$1" <<<"$live_cwds"; }
+    now="$(date +%s)"
+    git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r wt; do
+        [ "$wt" = "$root" ] && continue
+        case "$wt" in */merge-gate) continue ;; esac
+        if ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+            printf '  SKIP %s (prunable metadata; run git worktree prune)\n' "$wt"; continue
+        fi
+        branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+        [ "$branch" = "HEAD" ] && { printf '  SKIP %s (detached)\n' "$wt"; continue; }
+        is_queued "$branch" && { printf '  SKIP %s (%s is queued)\n' "$wt" "$branch"; continue; }
+        is_live "$wt" && { printf '  SKIP %s (a live process has it as cwd)\n' "$wt"; continue; }
+        head_sha="$(git -C "$wt" rev-parse HEAD)"
+        committed_at="$(git -C "$wt" log -1 --format=%ct 2>/dev/null || echo "$now")"
+        age_days=$(( (now - committed_at) / 86400 ))
+        n="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        landed=0
+        if git -C "$root" merge-base --is-ancestor "$head_sha" master 2>/dev/null || patch_equivalent_to_master "$head_sha"; then
+            landed=1
+        fi
+        if [ "$landed" -eq 1 ] && [ "$n" -eq 0 ]; then
+            why="landed"
+        elif [ "$age_days" -gt "$prune_stale" ] && [ "$n" -eq 0 ]; then
+            why="stale ${age_days}d, clean; commits stay on $branch"
+        elif [ "$age_days" -gt "$prune_stale" ]; then
+            untracked_kb="$(git -C "$wt" ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 du -ck 2>/dev/null | tail -1 | awk '{print $1}')"
+            if [ "${untracked_kb:-0}" -gt 51200 ]; then
+                printf '  SKIP %s (stale but %s MB untracked; decide by hand)\n' "$wt" $(( untracked_kb / 1024 )); continue
+            fi
+            why="stale ${age_days}d, $n dirty files committed as wip on $branch"
+            if [ "$dry_run" -eq 0 ]; then
+                git -C "$wt" add -A
+                git -C "$wt" commit -q -m "wip: preserve uncommitted edits before worktree prune" \
+                    -m "Automated by scripts/worktree-status.sh --prune-stale: the worktree's last commit was ${age_days} days old and the checkout is being removed. Every edit that was in the tree is in this commit." \
+                    || { printf '  SKIP %s (wip commit failed)\n' "$wt"; continue; }
+                [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || { printf '  SKIP %s (still dirty after wip commit)\n' "$wt"; continue; }
+            fi
+        else
+            continue
+        fi
+        printf '  REMOVE %s (%s: %s)\n' "$wt" "$branch" "$why"
+        [ "$dry_run" -eq 1 ] || git -C "$root" worktree remove --force "$wt" 2>&1 | sed 's/^/    /'
     done
 fi
 
