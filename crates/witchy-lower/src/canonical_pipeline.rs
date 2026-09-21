@@ -1079,20 +1079,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn indirect_var_list_callable_is_rejected_until_aggregate_write_back_is_supported() {
+    fn indirect_var_list_callable_writes_back_through_every_parameter() {
         let source = "fn replace(var xs: List(Int), var ys: List(Int)) -> Bool:\n    xs = [42]\n    ys = [7]\n    true\nfn apply(f: fn(var List(Int), var List(Int)) -> Bool, var xs: List(Int), var ys: List(Int)) -> Bool:\n    let changed = f(xs, ys)\n    changed\nfn main() -> Int:\n    var xs = [1]\n    var ys = [2]\n    let old = xs\n    let changed = apply(replace, xs, ys)\n    if changed: old[0] * 100 + xs[0] + ys[0] else: 0\n";
         let checked = witchy_types::pipeline::link_checked_from_source_bundle(
             vec![("main".to_string(), source.as_bytes().to_vec())],
             "main", |_, _, _| Ok(witchy_syntax::origin::OriginTable::default()),
         ).expect("checked indirect var replacements");
-        let error = match admit_checked_module(&checked) {
-            Ok(_) => panic!("indirect aggregate var write-back remains outside the admitted RFC-0167 subset"),
-            Err(error) => error,
-        };
-        assert!(
-            format!("{error:?}").contains("UnsupportedIndirectCall"),
-            "the unsupported aggregate callable must fail closed, got {error:?}"
-        );
+        // Both `var` parameters are written back through one indirect call.
+        // Independent expectation: `old` still holds the pre-call `[1]`, and
+        // the two write-backs deliver 42 and 7, so 1*100 + 42 + 7.
+        let artifact = admit_checked_module(&checked).expect("admit indirect var write-back");
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile indirect var write-back");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = fixture_diagnostic_linker(&engine)
+            .instantiate(&mut store, &module)
+            .expect("instantiate indirect var write-back");
+        let main = instance
+            .get_typed_func::<(), i64>(&mut store, "f2")
+            .expect("indirect var write-back main export");
+        assert_eq!(main.call(&mut store, ()).expect("run indirect var write-back"), 149);
     }
 
     #[test]

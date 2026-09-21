@@ -7159,13 +7159,45 @@ mod checked_codegen_boundary_tests {
         authenticated_checked_result(source)
     }
 
-    fn assert_select_frame_private_intrinsic_refusal(source: &str, intrinsic: &str) {
-        let error = authenticated_select_frame_fixture(source)
+    /// The privacy boundary is about what SOURCE may name, not about what the
+    /// `select` desugar emits on the program's behalf. These two assertions
+    /// are the whole contract: an ordinary `select` program compiles, and a
+    /// hand-written frame bridge in the same application is refused.
+    fn assert_select_frame_private_intrinsic_refusal(
+        ordinary: &str,
+        forged: &str,
+        intrinsic: &str,
+    ) {
+        authenticated_select_frame_fixture(ordinary)
+            .expect("an ordinary select program is not a private-intrinsic reference");
+        let error = authenticated_select_frame_fixture(forged)
             .expect_err("an opt application must not invoke a compiler-private select frame intrinsic");
         let message = error.to_string();
         assert!(message.contains(intrinsic), "the rejected intrinsic must retain its exact source spelling: {message}");
         assert!(message.contains("compiler-private intrinsic"), "the rejection must identify the private compiler boundary: {message}");
         assert!(message.contains("std/chan or std/task"), "the rejection must retain the owning stdlib provenance: {message}");
+    }
+
+    /// A source-written frame bridge at `arity`, for the refusal side above.
+    fn forged_select_frame_source(arity: usize, intrinsic: &str) -> String {
+        let mut source = String::from("mode opt
+
+async fn main(console: Console):
+");
+        for index in 0..arity {
+            source.push_str(&format!("    let (tx{index}, rx{index}) = chan.channel(3).await
+"));
+            source.push_str(&format!("    chan.send(tx{index}, {index}).await
+"));
+        }
+        let receivers = (0..arity).map(|index| format!("rx{index}")).collect::<Vec<_>>().join(", ");
+        let select = if arity == 2 { "select".to_string() } else { format!("select{arity}") };
+        source.push_str(&format!("    let selected = chan.{select}({receivers}).await
+"));
+        source.push_str(&format!("    let forged = chan.{intrinsic}(selected)
+"));
+        source.push_str("    console.print(\"${forged ?? 0}\")\n");
+        source
     }
 
     #[test]
@@ -7446,6 +7478,7 @@ mod checked_codegen_boundary_tests {
     fn two_way_select_frame_rejects_private_intrinsic_from_opt_application() {
         assert_select_frame_private_intrinsic_refusal(
             include_str!("../../../../benchmarks/select_fanin.witchy"),
+            &forged_select_frame_source(2, "select2_frame_payload"),
             "select2_frame_payload",
         );
     }
@@ -7484,6 +7517,7 @@ mod checked_codegen_boundary_tests {
     fn three_way_select_frame_rejects_private_intrinsic_from_opt_application() {
         assert_select_frame_private_intrinsic_refusal(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    var seen = 0\n    while seen < 3:\n        let selected = chan.select3(a_rx, b_rx, c_rx).await\n        match selected:\n            First3(value) -> seen = seen + value - value + 1\n            Second3(value) -> seen = seen + value - value + 1\n            Third3(value) -> seen = seen + value - value + 1\n            Closed3 -> seen = 3\n    console.print(\"seen=${seen}\")\n",
+            &forged_select_frame_source(3, "select3_frame_payload"),
             "select3_frame_payload",
         );
     }
@@ -7492,6 +7526,7 @@ mod checked_codegen_boundary_tests {
     fn four_way_select_frame_rejects_private_intrinsic_from_opt_application() {
         assert_select_frame_private_intrinsic_refusal(
             "mode opt\n\nasync fn main(console: Console):\n    let (a_tx, a_rx) = chan.channel(3).await\n    let (b_tx, b_rx) = chan.channel(3).await\n    let (c_tx, c_rx) = chan.channel(3).await\n    let (d_tx, d_rx) = chan.channel(3).await\n    chan.send(a_tx, 1).await\n    chan.send(b_tx, 2).await\n    chan.send(c_tx, 3).await\n    chan.send(d_tx, 4).await\n    var seen = 0\n    while seen < 4:\n        let selected = chan.select4(a_rx, b_rx, c_rx, d_rx).await\n        match selected:\n            First4(value) -> seen = seen + value - value + 1\n            Second4(value) -> seen = seen + value - value + 1\n            Third4(value) -> seen = seen + value - value + 1\n            Fourth4(value) -> seen = seen + value - value + 1\n            Closed4 -> seen = 4\n    console.print(\"seen=${seen}\")\n",
+            &forged_select_frame_source(4, "select4_frame_payload"),
             "select4_frame_payload",
         );
     }

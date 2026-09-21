@@ -2013,6 +2013,14 @@ fn is_indirect_result(result: &DerivedResult) -> bool {
             | DerivedResult::Shared(_)
             | DerivedResult::Unique(_)
             | DerivedResult::AliasesParameter { .. }
+            // A `var` parameter's write-back. The argument side already admits
+            // `ParameterOwnership::WriteBack` and `result_origin` already maps
+            // this to `Origin::ReallocatesParameter`; only this gate was
+            // missing. It stays closed for a disagreeing call site, because
+            // `indirect_target_summary` joins every function sharing the
+            // signature and `DerivedResult::join` collapses unequal results to
+            // `Unknown`, which is not admitted here.
+            | DerivedResult::ReallocatesParameter { .. }
             | DerivedResult::Unseen
     )
 }

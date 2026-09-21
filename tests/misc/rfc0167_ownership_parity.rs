@@ -526,3 +526,72 @@ fn bad() -> unique List(unique String):
         "ordinary nested storage must not satisfy the recursive owner proof: {error}"
     );
 }
+
+/// An indirect call may carry a `var` write-back only when every candidate
+/// callee writes back the same way.
+///
+/// Row F takes a function value of a callable with a `var` parameter. The
+/// indirect-call check refused it because the target's write-back result is
+/// `DerivedResult::ReallocatesParameter`, which the admitted-result list did
+/// not carry. The gate stays closed rather than becoming a blanket allowance:
+/// `indirect_target_summary` joins every function sharing the signature, and
+/// two callees whose results differ collapse to `Unknown`, which is still
+/// refused. This pins both directions.
+#[test]
+fn an_indirect_write_back_needs_every_candidate_callee_to_agree() {
+    let agreeing = r#"
+fn replace(var values: frozen List(Int)) -> frozen List(Int):
+    values = [3]
+    values
+
+fn swap(var values: frozen List(Int)) -> frozen List(Int):
+    values = [4]
+    values
+
+fn main(console: Console):
+    var values: frozen List(Int) = [1]
+    let action = if values[0] == 1: replace else: swap
+    let result = action(values)
+    console.print("${values[0]}:${result[0]}")
+"#;
+    let checked = witchy::resolve_std_only_checked(agreeing)
+        .expect("callees that write back identically admit");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("indirect write-back lowers");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(
+            &artifact,
+            witchy::runtime::Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn indirect write-back");
+    vm.run().expect("run indirect write-back");
+    // Independent expectation: `values[0] == 1` selects `replace`, which
+    // writes `[3]` back through the `var` parameter and returns that storage.
+    assert_eq!(vm.output(), ["3:3"]);
+
+    let disagreeing = r#"
+fn replace(var values: frozen List(Int)) -> frozen List(Int):
+    values = [3]
+    values
+
+fn keep(var values: frozen List(Int)) -> frozen List(Int):
+    values
+
+fn main(console: Console):
+    var values: frozen List(Int) = [1]
+    let action = if values[0] == 1: replace else: keep
+    let result = action(values)
+    console.print("${values[0]}:${result[0]}")
+"#;
+    let checked = witchy::resolve_std_only_checked(disagreeing)
+        .expect("the disagreement is a lowering refusal, not a type error");
+    assert!(
+        !matches!(
+            witchy::codegen::compile_checked_module_artifact(&checked),
+            witchy::codegen::LoweringOutcome::Lowered(_)
+        ),
+        "callees whose write-back results differ must not share one indirect call"
+    );
+}
