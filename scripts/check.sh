@@ -560,6 +560,37 @@ if cargo nextest --version >/dev/null 2>&1; then
             nextest_cmd+=(--features witchy-wir/native)
             ;;
     esac
+    # `glamour-tests` is a NON-DEFAULT feature, so `tests/glamour.rs` carries
+    # `required-features` and cargo does not merely skip an unmet target -- it
+    # FAILS the whole invocation:
+    #
+    #   error: target `glamour` in package `witchy` requires the features:
+    #   `glamour-tests`
+    #
+    # Three mapper rules still name that target (`web/witchy-runtime/glamour-*.mjs`,
+    # `web/witchy-runtime/witchy-runtime.mjs`, `tests/glamour/dom.rs`), and the
+    # coordinator's ungated classifier keys on a DIFFERENT path set -- only
+    # `web/`, `projects/glamour`, `projects/coven-web` and `dist/` count as a
+    # glamour surface. So `tests/glamour/dom.rs` alone selects `--test glamour`
+    # while the family is still listed as skipped, which is precisely the
+    # combination that errors. The feature therefore follows the SELECTION, not
+    # the ungated list: if anything in this invocation names a glamour target,
+    # enable it. Naming the target is what makes cargo demand the feature.
+    case " ${nextest_sel[*]} " in
+        *" --test glamour "*)
+            nextest_cmd+=(--features glamour-tests)
+            ;;
+        *)
+            # No glamour target named. The family may still be RUN by
+            # expression (`--workspace` plus an unskipped ungated set), and
+            # those tests only exist when the feature is compiled in, so
+            # enable it whenever the family is not being skipped outright.
+            case " $gate_ungated " in
+                *" glamour "*) ;;
+                *) nextest_cmd+=(--features glamour-tests) ;;
+            esac
+            ;;
+    esac
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
     # above) because those fixtures run in their own isolated shard. So a diff
     # whose entire selection IS merge_queue -- any change to the standalone
