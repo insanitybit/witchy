@@ -118,3 +118,62 @@ fn a_written_let_convention_carries_a_view_in_both_modes() {
         79,
     );
 }
+
+fn assert_bundle_canonical_and_wasm(sources: Vec<(&str, &str)>, expected: i64) {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+
+    let checked = witchy_types::pipeline::link_checked_from_source_bundle(
+        sources.into_iter().map(|(name, src)| (name.to_owned(), src.as_bytes().to_vec())).collect(),
+        "main",
+        witchy_interp::comptime::expand_compile_time,
+    )
+    .expect("cross-mode bundle checks");
+    let (artifact, oracle) = codegen::compile_checked_module_artifact_with_observer(
+        &checked,
+        |validated, artifact| {
+            let entry = artifact.entry().expect("canonical entry");
+            let function = witchy_wir::canonical_safewir::FunctionId::new(
+                entry.export().strip_prefix('f').expect("numeric entry export")
+                    .parse().expect("numeric entry function"),
+            );
+            let tokens = entry.capabilities().iter().copied()
+                .map(InterpreterValue::entry_capability).collect();
+            interpret_entry_program(validated, function, tokens, &[], Default::default())
+                .expect("canonical SafeWIR execution")
+        },
+    )
+    .expect_lowered("canonical SafeWIR admission");
+    assert_eq!(oracle.results, vec![InterpreterValue::Int(expected)]);
+    assert_eq!(oracle.leaked_objects, 0);
+
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime
+        .spawn_admitted(&artifact,
+            Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec![expected.to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+/// Trait-mediated transport: the view crosses a trait method and comes back.
+#[test]
+fn a_view_crosses_a_trait_boundary() {
+    assert_canonical_and_wasm(
+        "trait Reader:\n    fn project(self: Self, value: &Int) -> &Int\n\ntype Identity:\n    Identity\n\nimpl Reader for Identity:\n    fn project(self: Identity, value: &Int) -> &Int:\n        value\n\nfn main() -> Int:\n    let n = 79\n    (*Identity.project(&n))\n",
+        79,
+    );
+}
+
+/// Cross-mode transport: an ordinary caller hands a view to an opt callee.
+#[test]
+fn a_view_crosses_a_mode_boundary() {
+    assert_bundle_canonical_and_wasm(
+        vec![
+            ("helper", "mode opt\n\npub fn read(value: &Int) -> Int:\n    (*value)\n"),
+            ("main", "import helper\n\nfn main() -> Int:\n    let n = 79\n    helper.read(&n)\n"),
+        ],
+        79,
+    );
+}
