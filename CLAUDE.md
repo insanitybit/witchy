@@ -99,7 +99,10 @@ grow the shape tables.
 
 - **The compiler is the priority (decided 2026-09-21).** glamour, coven,
   coven-web and grimoire are consumers of witchy and are not being supported
-  right now. The merge gate neither builds nor runs their tests (the
+  right now. The book and its glamour-built docs site are deprioritized with
+  them until the compiler work is done: do not spend effort on book chapters,
+  runnable-book validation or the docs site unless asked. RFC-0168 plans the
+  split that takes these out of the compiler. The merge gate neither builds nor runs their tests (the
   `glamour-tests` / `coven-tests` features are off by default; `./scripts/check.sh
   --glamour` / `--grimoire` run them on demand). Do not spend effort keeping
   them green unless asked.
