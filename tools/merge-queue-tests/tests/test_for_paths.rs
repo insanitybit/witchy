@@ -824,10 +824,28 @@ fn canonical_wasmir_landing_keeps_the_deferred_mutation_tests() {
         output.lines().next().is_some_and(|line| line.contains("-p witchy-wir")),
         "canonical WasmIR landing did not retain the full WIR package: {output}",
     );
-    assert!(
-        !output.contains("--test rfc0165_route_gate") && !output.contains("--lib"),
-        "canonical WasmIR landing was narrowed away from the package-wide assertions: {output}",
-    );
+    // Package-wide means EVERY witchy-wir target, not "no target flags". The
+    // gate now names every target of every selected package (target filters
+    // union, so that keeps the exact test set while skipping unneeded root
+    // binaries). What must never happen is naming a SUBSET: either no target
+    // flags at all, or `--lib` plus every integration target on disk.
+    let selection = output.lines().next().unwrap_or_default();
+    if selection.contains("--lib") || selection.contains("--test ") {
+        assert!(selection.contains("--lib"), "WIR unit tests dropped: {output}");
+        let tests = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/witchy-wir/tests");
+        for entry in std::fs::read_dir(tests).expect("list witchy-wir tests") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                assert!(
+                    selection.split_whitespace().collect::<Vec<_>>().windows(2)
+                        .any(|pair| pair == ["--test", name.as_str()]),
+                    "canonical WasmIR landing was narrowed away from `{name}`: {output}",
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -2117,4 +2135,76 @@ fn every_e2e_consumer_enables_the_feature_that_compiles_it() {
         ci.contains("cargo test --release --quiet --features e2e-tests"),
         "CI's from-scratch acceptance run would silently stop covering e2e",
     );
+}
+
+
+#[test]
+fn gate_names_every_target_of_every_selected_package() {
+    // `--test` is a GLOBAL target filter, so naming only the root binaries an
+    // expression needs silently drops each crate package's own tests (803 ->
+    // 160, reported green). Naming EVERY target of every selected package is
+    // sound because filters union. This pins the complete set for a typeck
+    // change against the filesystem, so a new integration test file cannot be
+    // left out of the gate by a stale list.
+    let output = gate_nextest(&["crates/witchy-types/src/typeck.rs"]);
+    let selection = output.lines().next().unwrap_or_default();
+    let words: Vec<&str> = selection.split_whitespace().collect();
+    let named = |target: &str| words.windows(2).any(|pair| pair == ["--test", target]);
+    assert!(words.contains(&"--lib"), "unit tests dropped: {output}");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (dir, keep) in [("crates/witchy-types/tests", "" ), ("tests", "rfc0")] {
+        for entry in std::fs::read_dir(root.join(dir)).expect("list tests") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|extension| extension != "rs") { continue; }
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if !name.starts_with(keep) { continue; }
+            assert!(named(&name), "{dir}/{name}.rs is not built by the gate: {output}");
+        }
+    }
+    assert!(named("misc"), "semantic_conformance lives in misc: {output}");
+    assert!(!named("glamour") && !named("e2e"), "feature-gated targets named: {output}");
+}
+
+#[test]
+fn a_crate_with_a_binary_keeps_the_whole_package_form() {
+    // `--lib` plus `tests/*.rs` would miss a bin target's unit tests. Check
+    // EVERY crate that has one (or explicit targets) rather than one path that
+    // happens to route elsewhere: whatever route the mapper takes for it, it
+    // must never emit the narrowed `--lib` form.
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(root.join("crates")).expect("list crates") {
+        let dir = entry.expect("dir entry").path();
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+        let has_bin = dir.join("src/main.rs").exists() || dir.join("src/bin").is_dir()
+            || manifest.lines().any(|line| line.starts_with("[[") || line.starts_with("autotests") || line.starts_with("autobins"));
+        if !has_bin || !dir.join("src/lib.rs").exists() { continue; }
+        checked += 1;
+        let path = format!("crates/{}/src/lib.rs", dir.file_name().unwrap().to_string_lossy());
+        let output = gate_nextest(&[path.as_str(), "crates/witchy-types/src/typeck.rs"]);
+        let selection = output.lines().next().unwrap_or_default();
+        assert!(
+            !selection.contains("--lib"),
+            "{path} has a bin or explicit targets but the gate narrowed to named targets: {output}",
+        );
+    }
+    assert!(checked > 0, "no bin-bearing crate found; this test no longer checks anything");
+}
+
+#[test]
+fn compiler_change_mixed_with_queue_scripts_names_no_foreign_target() {
+    // The queue binaries live in merge-queue-tests, which the workspace stage
+    // never selects. Naming them next to `-p witchy-types -p witchy` makes
+    // cargo reject the whole run before building anything.
+    for queue_path in ["scripts/merge-queue.sh", "scripts/test-for-paths.sh", "tools/merge-queue-tests/tests/test_for_paths.rs"] {
+        let output = gate_nextest(&["crates/witchy-types/src/typeck.rs", queue_path]);
+        let selection = output.lines().next().unwrap_or_default();
+        let words: Vec<&str> = selection.split_whitespace().collect();
+        for foreign in ["merge_queue", "test_for_paths"] {
+            assert!(
+                !words.windows(2).any(|pair| pair == ["--test", foreign]),
+                "{queue_path}: names --test {foreign}, which no selected package has: {output}",
+            );
+        }
+    }
 }

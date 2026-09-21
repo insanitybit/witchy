@@ -246,6 +246,76 @@ emit_gate_nextest() {
              || [ "${#gate_witchy_tests[@]}" -gt 0 ]; }; then
         args="$args --bin witchy"
     fi
+    # NAME EVERY TARGET instead of building whole packages.
+    #
+    # `-p witchy` builds every root test binary even when the expression runs
+    # a handful of them. Narrowing with `--test` alone is UNSOUND -- target
+    # filters are global, so `--test misc` also drops each crate package's own
+    # lib and integration tests (measured: 803 listed tests fell to 160 and
+    # still reported green). But the filters UNION: naming every needed target
+    # across every selected package keeps the exact set. Measured 2026-09-21 on
+    # a typeck change: 803 listed tests either way, nothing missing, and the
+    # build 60.6 -> 50.8 CPU s (-16%), best of 3 alternating.
+    #
+    # Fail SAFE to the whole-package form whenever the target set is not
+    # provably complete from the filesystem:
+    #   - the bin target is needed (example_tests, stdlib docs, `--bin`)
+    #   - a crate has a bin or explicit [[test]]/[[bin]]/auto* targets, which
+    #     `--lib` + `tests/*.rs` would silently miss
+    #   - a package directory cannot be resolved
+    local name_targets=0 targets="" pkg dir file
+    if [ "$need_witchy" -eq 1 ] && [ "${#gate_pkgs[@]}" -gt 0 ] \
+        && [ "$gate_need_examples" -eq 0 ] \
+        && [ "${#gate_example_mods[@]}" -eq 0 ] \
+        && [ "$gate_need_stdlib_docs" -eq 0 ] \
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ] \
+        && [[ " $args " != *" --bin "* ]]; then
+        name_targets=1
+        for pkg in "${gate_pkgs[@]}"; do
+            dir="crates/$pkg"
+            if [ ! -f "$dir/Cargo.toml" ] || [ -e "$dir/src/main.rs" ] || [ -d "$dir/src/bin" ] \
+                || grep -qE '^\[\[(test|bin|bench|example)\]\]|^auto(tests|bins)' "$dir/Cargo.toml"; then
+                name_targets=0
+                break
+            fi
+            for file in "$dir"/tests/*.rs; do
+                [ -f "$file" ] || continue
+                file="${file##*/}"
+                targets="$targets --test ${file%.rs}"
+            done
+        done
+    fi
+    if [ "$name_targets" -eq 1 ]; then
+        # Name only targets that exist in a SELECTED package. Cargo rejects the
+        # whole invocation for an unknown one ("no test target named ..."),
+        # which is how a branch touching typeck.rs and scripts/merge-queue.sh
+        # would have gone red. The queue binaries live in merge-queue-tests,
+        # which this stage never selects and already excludes (they run in the
+        # isolated queue-infra shard), so they are skipped. Anything else that
+        # is not a root `tests/<name>.rs` falls back to the whole-package form.
+        for t in ${gate_tests[0]+"${gate_tests[@]}"}; do
+            case "$t" in
+                merge_queue | test_for_paths) continue ;;
+            esac
+            if [ -f "tests/$t.rs" ]; then
+                targets="$targets --test $t"
+            else
+                name_targets=0
+                break
+            fi
+        done
+    fi
+    if [ "$name_targets" -eq 1 ]; then
+        if [ "$gate_need_conformance" -eq 1 ]; then
+            targets="$targets --test misc"
+            for file in tests/rfc0*.rs; do
+                [ -f "$file" ] || continue
+                file="${file##*/}"
+                targets="$targets --test ${file%.rs}"
+            done
+        fi
+        args="$args --lib$targets"
+    fi
     [ -n "$args" ] || { printf 'WORKSPACE\n'; return 0; }
     printf '%s\n' "$args"
     [ -n "$expr" ] && printf '%s\n' "$expr"
