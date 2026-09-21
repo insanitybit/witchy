@@ -664,16 +664,22 @@ const MAX_VIEW_CARRIER_DEPTH: usize = 8;
 /// its own opaque owner whose carrier fields are the next owner inward, so a
 /// view is never stored in linear memory.
 pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    view_carrier_at(ty, definitions, 0)
+    may_carry_view(ty, definitions) && view_carrier_at(ty, definitions, 0)
 }
 
 /// [`is_rooted_int_view_carrier`] minus the bare view: an aggregate owner.
 pub fn is_rooted_int_view_aggregate(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
-    view_aggregate_at(ty, definitions, 0)
+    may_carry_view(ty, definitions) && view_aggregate_at(ty, definitions, 0)
 }
 
 fn view_carrier_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
     is_direct_rooted_int_view(ty) || view_aggregate_at(ty, definitions, depth)
+}
+
+/// Every layout identity asks this question, and almost no type holds a
+/// view. Answer those with one syntactic walk before expanding any shape.
+fn may_carry_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    contains_view(ty, definitions, &mut BTreeSet::new())
 }
 
 fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
@@ -686,11 +692,13 @@ fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: 
     if shape.packed { return false; }
     let mut carriers = 0usize;
     let admitted = shape.fields.iter().all(|field| {
-        if view_carrier_at(field, definitions, depth + 1) {
+        if !may_carry_view(field, definitions) {
+            true
+        } else if view_carrier_at(field, definitions, depth + 1) {
             carriers += 1;
             true
         } else {
-            !contains_view(field, definitions, &mut BTreeSet::new())
+            false
         }
     });
     admitted && carriers > 0
