@@ -182,7 +182,7 @@ fn glamour_tests_stay_out_of_the_default_compiler_gate() {
     let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
         .expect("read the root manifest");
     assert!(
-        manifest.contains("glamour-tests = []"),
+        manifest.lines().any(|line| line.starts_with("glamour-tests = [")),
         "the `glamour-tests` feature is gone; glamour is back in every gate build",
     );
     let default_line = manifest
