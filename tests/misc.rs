@@ -203,5 +203,7 @@ mod rfc0167_reference_contract_matrix;
 mod rfc0167_resource_composition;
 #[path = "misc/rfc0167_unique_writeback_matrix.rs"]
 mod rfc0167_unique_writeback_matrix;
+#[path = "misc/rfc0167_frozen_view_matrix.rs"]
+mod rfc0167_frozen_view_matrix;
 #[path = "misc/rfc0167_view_witnesses.rs"]
 mod rfc0167_view_witnesses;
