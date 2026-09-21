@@ -1,9 +1,6 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	9	expression-position-mutator	dict.insert__Int__Int	-	-
 benchmarks/rfc0153_std_show_dict.witchy	11	expression-position-mutator	dict.insert__String__Int	-	-
-book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
-book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-
-book/src/mutating-methods.md#block-1	13	expression-position-mutator	dict.insert__String__Int	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
 examples/maze/src/maze.witchy	80	expression-position-mutator	dict.insert__Int__Int	-	-
 examples/maze/src/maze.witchy	84	expression-position-mutator	dict.insert__Int__Int	-	-
@@ -28,8 +25,10 @@ std/prng.witchy	52	expression-position-mutator	prng.advance	-	-
 std/prng.witchy	97	auxiliary-result-discard	prng.choice	-	-
 std/prng.witchy	76	auxiliary-result-discard	prng.advance	-	-
 std/prng.witchy	88	auxiliary-result-discard	prng.draw_below	-	-
-book/src/cookbook-collections.md#block-2	9	auxiliary-result-discard	Set__insert__String	-	-
+book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
+book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/mutating-methods.md#block-1	13	expression-position-mutator	dict.insert__String__Int	-	-
 book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
 book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
 book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__String__Int	-	-
@@ -38,16 +37,12 @@ spec/language.md#block-17	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	9
 markdown-blocks	51
-checked	58
-rejected	2
+checked	60
+rejected	0
 var-declarations	23
 resolved-var-calls	198
 mechanical-self-reassignment	0
-expression-position-mutator	22
+expression-position-mutator	25
 immutable-var-argument	0
 temporary-var-argument	0
-auxiliary-result-discard	11
-
-compiler-rejections
-book/src/cookbook-collections.md#block-2: type error: result of `insert` is discarded — bind it or discard explicitly with `let _ = …`.
-book/src/mutating-methods.md#block-1: type error: result of `insert` is discarded — bind it or discard explicitly with `let _ = …`.
+auxiliary-result-discard	10
