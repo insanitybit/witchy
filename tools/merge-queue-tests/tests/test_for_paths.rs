@@ -1821,6 +1821,24 @@ fn gate_nextest_compiler_stage_changes_select_rfc_conformance_binaries() {
     }
 }
 
+/// Deleting an integration test must not select the binary it removed.
+/// Naming `--test <gone>` fails the whole plan; the root-integration budget
+/// census is what a deletion can actually invalidate.
+#[test]
+fn a_deleted_integration_test_selects_the_budget_census_not_its_own_binary() {
+    let commands = selected(&["--edit-loop", "tests/definitely_not_a_real_test_file.rs"]);
+    assert!(
+        commands.iter().all(|command| !command.contains("--test definitely_not_a_real_test_file")),
+        "selected the binary of a file that is not there: {commands:?}"
+    );
+    assert!(
+        commands.iter().any(|command| {
+            command.contains("root_integration_test_binaries_stay_within_budget")
+        }),
+        "a deletion must still re-check the root-integration budget: {commands:?}"
+    );
+}
+
 /// `semantic_conformance` carries independent expected results, which is the
 /// adjudication a backend-agreement test cannot give. It is a module of
 /// `witchy::misc`, so a single-crate selection never reaches it: before this,

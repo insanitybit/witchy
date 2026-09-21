@@ -706,6 +706,15 @@ for p in "${paths[@]}"; do
             any_rust=1
             test_name="${p#tests/}"
             test_name="${test_name%.rs}"
+            # A DELETED integration test has no binary left to run, and
+            # selecting one by name fails the whole plan. What a deletion can
+            # actually invalidate is the root-integration budget census, so
+            # run that instead.
+            if [ ! -f "$p" ]; then
+                add_early "cargo nextest run --test misc -E 'test(architecture::root_integration_test_binaries_stay_within_budget)'"
+                path_has_early=1
+                continue
+            fi
             # Shell `case` globs allow `*` to cross `/`. Normalize nested
             # modules only when their sibling root integration target exists;
             # otherwise retain the fail-safe broad selection below.
