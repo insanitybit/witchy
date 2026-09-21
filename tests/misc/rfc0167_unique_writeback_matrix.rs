@@ -153,3 +153,58 @@ fn main():
         "function-value result must remain fail-closed: {error}"
     );
 }
+
+/// A self-referential field update on an owned `unique` record is ordinary
+/// code, not a transfer.
+///
+/// `c.offset = c.offset + 1` desugars to `c = Cursor(offset: c.offset + 1, ..c)`.
+/// Inferring that spread used to consume the base BEFORE the field expressions
+/// were checked, so the field expression read a binding already marked
+/// transferred and every such update was refused. Written evaluation order
+/// evaluates the fields first and only then consumes the base.
+#[test]
+fn a_self_referential_field_update_on_an_owned_unique_record_is_accepted() {
+    let source = r#"
+type Cursor:
+    offset: Int
+    width: Int
+
+fn step(own cursor: unique Cursor) -> unique Cursor:
+    cursor.offset = cursor.offset + 1
+    cursor.width = cursor.offset + 2
+    cursor
+
+fn main(console: Console):
+    let moved = step(Cursor(0, 0))
+    console.print("${moved.offset}:${moved.width}")
+"#;
+    check(source).expect("a field update that reads the same record is not a transfer");
+}
+
+/// The affine rule is unchanged, only its order: a field expression that
+/// itself consumes the base still leaves nothing for the spread to consume.
+#[test]
+fn a_field_expression_that_consumes_the_base_is_still_rejected() {
+    let source = r#"
+type Cursor:
+    offset: Int
+
+fn take(own c: unique Cursor) -> Int:
+    c.offset
+
+fn step(own cursor: unique Cursor) -> unique Cursor:
+    cursor.offset = take(cursor) + 1
+    cursor
+
+fn main(console: Console):
+    console.print("${step(Cursor(0)).offset}")
+"#;
+    let error = match check(source) {
+        Ok(_) => panic!("consuming the base inside a field expression must be rejected"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("use of unique value `cursor` after it was transferred"),
+        "{error}"
+    );
+}

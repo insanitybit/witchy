@@ -315,13 +315,3 @@ witchy::rfc0130_generator while_let_cfg::while_let_bindings_and_effects_resume_o
 # RFC-0167 foundation (2026-09-20): the canonical route defers the `own unique`
 # FIP entry contract, so the RFC-0089 kernel catalog cannot be exercised until
 # that track re-admits it. Re-admit with the track, never silently.
-witchy::misc rfc0089_fip_contract::canonical_kernel_is_accepted_and_correct_at_depth
-witchy::misc rfc0089_fip_contract::heap_valued_auxiliary_parameter_is_rejected
-witchy::misc rfc0089_fip_contract::heap_valued_record_field_is_rejected
-witchy::misc rfc0089_fip_contract::helper_call_inside_the_kernel_is_rejected
-witchy::misc rfc0089_fip_contract::loops_inside_the_kernel_are_rejected
-witchy::misc rfc0089_fip_contract::non_recursive_owner_shape_is_not_a_candidate
-witchy::misc rfc0089_fip_contract::non_tail_recursion_is_rejected
-witchy::misc rfc0089_fip_contract::owner_escape_is_rejected
-witchy::misc rfc0089_fip_contract::replacement_exit_is_rejected
-witchy::misc rfc0089_fip_contract::result_wrapped_owner_shape_is_not_a_candidate

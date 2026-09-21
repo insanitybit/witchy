@@ -13034,7 +13034,12 @@ impl Checker {
             Expr::RecordUpdate { name, base, fields } => {
                 let bt = self.infer(base)?;
                 self.reject_implicit_once_copy(base, &bt, "record spread/update")?;
-                self.transfer_unique_value(base, &bt, "record spread/update")?;
+                // The base is consumed to build the replacement, but that
+                // happens AFTER the field expressions are evaluated. Consuming
+                // it here refused `c.field = c.field + 1` on an owned `unique`
+                // record — the place-assignment desugar is
+                // `c = C(field: c.field + 1, ..c)`, so the field expression
+                // read a binding this had already marked transferred.
                 let borrowed_shell = self.is_authorized_borrowed_shell_update(base, &bt);
                 if !borrowed_shell {
                     self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
@@ -13110,6 +13115,10 @@ impl Checker {
                         })?;
                     }
                 }
+                // Now the fields are evaluated, the base is consumed. A field
+                // expression that itself consumed the base still fails here,
+                // which is the affine rule in written evaluation order.
+                self.transfer_unique_value(base, &bt, "record spread/update")?;
                 Ok(Ty::Named(tyname.into(), base_args))
             }
             Expr::Try(inner) => {

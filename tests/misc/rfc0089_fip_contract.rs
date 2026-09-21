@@ -38,6 +38,20 @@ fn assert_fip_miss(source: &str, function: &str, reason_fragment: &str) {
     );
 }
 
+/// Assert the program does not typecheck, with `reason_fragment` in the error.
+/// Used where RFC-0167's affine rule refuses a shape the FIP analysis used to
+/// classify: a stronger, earlier refusal than a contract miss.
+fn assert_type_error(source: &str, reason_fragment: &str) {
+    let parsed = parser::parse_module(source).expect("parse FIP program");
+    let linked = pipeline::link(vec![("main".into(), parsed)], "main").expect("link FIP program");
+    let error = typeck::check(&linked).expect_err("the checker must refuse this shape");
+    assert!(
+        error.message.contains(reason_fragment),
+        "expected a refusal mentioning {reason_fragment:?}, got: {}",
+        error.message
+    );
+}
+
 fn assert_no_fip_miss(source: &str) {
     let misses = analysis::module_fip_misses(&linked(source));
     assert!(misses.is_empty(), "expected no FIP misses, got: {misses:?}");
@@ -160,7 +174,12 @@ fn scan(own cursor: unique Cursor, n: Int) -> unique Cursor:
 fn main(console: Console):
     console.print("${scan(Cursor(0), 2).offset}")
 "#;
-    assert_fip_miss(source, "scan", "escapes outside a field read or tail return");
+    // RFC-0167 refuses this before the FIP analysis ever sees it: `let alias =
+    // cursor` transfers the unique owner, so the later `cursor.offset` write is
+    // a use after transfer. That is the same escape the FIP contract names,
+    // caught earlier and by the language rule rather than by a kernel-shape
+    // analysis, so this pins the refusal where it now happens.
+    assert_type_error(source, "use of unique value `cursor` after it was transferred");
 }
 
 // Loops and ranges are outside the initial kernel shape.
