@@ -922,7 +922,11 @@ if [ -n "$shard" ]; then
             # working on glamour or coven-web — the queue will not catch a
             # regression there for you.
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --glamour requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace --features witchy-wir/native -E "$ungated_filter_glamour"
+            # `glamour-tests` is a NON-DEFAULT feature: without it the glamour
+            # example module and the `glamour` test binary are not compiled at
+            # all, which is the point (they cost every gate a build they never
+            # ran). This shard is the only place that turns them back on.
+            cargo nextest run --workspace --features witchy-wir/native,glamour-tests -E "$ungated_filter_glamour"
             ;;
         grimoire)
             # Likewise for grimoire/coven. Run this while working on the package

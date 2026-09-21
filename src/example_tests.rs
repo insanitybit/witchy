@@ -414,6 +414,9 @@
     mod func_values;
     mod rc_corpus;
     mod crypto_jwt_oauth;
+    // glamour is an experimental consumer of witchy; see the `glamour-tests`
+    // feature in Cargo.toml. `./scripts/check.sh --glamour` compiles and runs it.
+    #[cfg(feature = "glamour-tests")]
     mod glamour;
     mod rfc0046_dispatch;
     mod gen_async;

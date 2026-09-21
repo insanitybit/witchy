@@ -60,11 +60,22 @@ name = "witchy"
 path = "src/main.rs"
 required-features = ["native"]
 
+[[test]]
+name = "glamour"
+required-features = ["glamour-tests"]
+
 [features]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
 native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "dep:mimalloc", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+# glamour is an EXPERIMENTAL CONSUMER of witchy, not the language the gate
+# guards. Its tests were compiled into the compiler's own test binaries on
+# every gate even though the coordinator skips running them on ~90% of gates
+# (`WITCHY_GATE_UNGATED`). Measured 2026-09-21: they cost 12.1 CPU s of the
+# final test-binary build, on EVERY gate, for tests that mostly never run.
+# `./scripts/check.sh --glamour` turns them back on.
+glamour-tests = []
 # Shared deterministic fixture sessions for the opaque-frame browser host.
 # Kept out of ordinary library builds; the playground/docs builder enables it.
 browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testkit"]

@@ -167,3 +167,42 @@ fn only_one_glamour_driver_reads_the_real_book() {
          `ungated_filter_glamour_book` or it will stop being gated on book edits.",
     );
 }
+
+/// glamour is an experimental CONSUMER of witchy, not the language the merge
+/// gate guards. Its tests used to compile into the compiler's own test binaries
+/// on every gate even though the coordinator skips RUNNING them on roughly 90%
+/// of gates, which bought nothing and cost every queued branch behind it.
+///
+/// They now sit behind the non-default `glamour-tests` feature, so the default
+/// gate does not build them at all. `./scripts/check.sh --glamour` is the one
+/// place that turns them back on. This pins both halves of that arrangement:
+/// the feature exists and is NOT in `default`, and the shard still enables it.
+#[test]
+fn glamour_tests_stay_out_of_the_default_compiler_gate() {
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("read the root manifest");
+    assert!(
+        manifest.contains("glamour-tests = []"),
+        "the `glamour-tests` feature is gone; glamour is back in every gate build",
+    );
+    let default_line = manifest
+        .lines()
+        .find(|line| line.starts_with("default = ["))
+        .expect("the manifest declares a default feature set");
+    assert!(
+        !default_line.contains("glamour-tests"),
+        "`glamour-tests` is in the DEFAULT feature set, so every gate builds it again: {default_line}",
+    );
+    assert!(
+        manifest.contains("required-features = [\"glamour-tests\"]"),
+        "the `glamour` test binary lost its required-features guard",
+    );
+
+    let check = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/check.sh"))
+        .expect("read check.sh");
+    assert!(
+        check.contains("witchy-wir/native,glamour-tests"),
+        "`check.sh --glamour` no longer enables the feature, so the shard runs ZERO glamour tests \
+         and nothing covers glamour at all",
+    );
+}
