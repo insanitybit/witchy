@@ -151,3 +151,53 @@ fn bad() -> Option(Option(&Int)):
         .expect_err("a nested Option view retains its region-born root");
     assert!(error.to_string().contains("region"), "{error}");
 }
+
+/// A record field is no laundering path either: an `Option` view field over a
+/// region-born root cannot leave the region inside the record.
+#[test]
+fn a_region_born_root_cannot_escape_in_a_record_option_field() {
+    let source = r#"
+mode opt
+
+type Mixed:
+    direct: &Int
+    nested: Option(&Int)
+
+fn bad(outer: &Int) -> Mixed:
+    region -> Mixed:
+        let values = [10, 20]
+        Mixed(direct: outer, nested: Some(&values[0]))
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .expect_err("the record's Option view field retains its region-born root");
+    assert!(error.to_string().contains("region"), "{error}");
+}
+
+/// A direct view field authorizes only admitted carriers beside it: a field
+/// with no carrier contract (`List(&Int)`) still fails closed.
+#[test]
+fn a_direct_view_field_cannot_admit_an_uncarried_list_of_views() {
+    let source = r#"
+mode opt
+
+type Decoy:
+    direct: &Int
+    many: List(&Int)
+
+fn relay(own decoy: Decoy) -> Decoy:
+    decoy
+
+fn main() -> Int:
+    let a = 4
+    let b = 9
+    let decoy = Decoy(direct: &a, many: [&b])
+    let _ = relay(move decoy)
+    0
+"#;
+    let Ok(checked) = witchy::resolve_std_only_checked(source) else { return };
+    assert!(
+        !matches!(witchy::codegen::compile_checked_module_artifact(&checked),
+            witchy::codegen::LoweringOutcome::Lowered(_)),
+        "a List(&Int) field has no admitted carrier and must not ride on the direct view",
+    );
+}

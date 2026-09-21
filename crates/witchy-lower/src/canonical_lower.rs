@@ -2838,7 +2838,7 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
         // has no carrier payload at all. Do not treat the payload as a linear
         // scalar or synthesize an inactive value.
         Type::Named(name, arguments) if name == "Option" && arguments.len() == 1 => {
-            is_option_rooted_int_view_carrier(&arguments[0])
+            is_view_or_option_view_carrier(&arguments[0])
         }
         // `Result` has an owned tagged shell.  This bounded carrier admits
         // only the checked `Ok` tuple of direct shared roots; a mutable,
@@ -2855,10 +2855,10 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
 
 /// `&Int`, or an `Option` nesting of it: each shell is one tagged owner whose
 /// `Some` field is the next carrier inward.
-fn is_option_rooted_int_view_carrier(ty: &Type) -> bool {
+fn is_view_or_option_view_carrier(ty: &Type) -> bool {
     rooted_view_inner(ty).is_some_and(is_direct_shared_int)
         || matches!(ty.unqualified(), Type::Named(name, arguments)
-            if name == "Option" && matches!(arguments.as_slice(), [payload] if is_option_rooted_int_view_carrier(payload)))
+            if name == "Option" && matches!(arguments.as_slice(), [payload] if is_view_or_option_view_carrier(payload)))
 }
 
 /// An aggregate with a direct immutable `&Int` field is represented by its
@@ -2879,7 +2879,7 @@ fn is_direct_rooted_int_view_aggregate_carrier(
         let mut seen_direct_view = false;
         let mut active_definitions = BTreeSet::new();
         shape.fields.iter().all(|field| {
-            if is_option_rooted_int_view_carrier(field) {
+            if is_view_or_option_view_carrier(field) {
                 seen_direct_view = true;
                 true
             } else {
