@@ -17,7 +17,9 @@ fn main(console: Console):
     console.print(snapshot[1])
 "#;
 
-fn checked_opt_pop_boundary(opt_caller: bool) -> witchy_types::pipeline::CheckedModule {
+fn link_opt_pop_boundary(
+    opt_caller: bool,
+) -> Result<witchy_types::pipeline::CheckedModule, String> {
     let caller = if opt_caller {
         format!("mode opt\n\n{OPT_POP_CALLER}")
     } else {
@@ -30,7 +32,11 @@ fn checked_opt_pop_boundary(opt_caller: bool) -> witchy_types::pipeline::Checked
         ],
         "main",
         witchy_interp::comptime::expand_compile_time,
-    ).expect("fresh checked raw-source normal/opt graph")
+    ).map_err(|error| error.to_string())
+}
+
+fn checked_opt_pop_boundary(opt_caller: bool) -> witchy_types::pipeline::CheckedModule {
+    link_opt_pop_boundary(opt_caller).expect("fresh checked raw-source normal/opt graph")
 }
 
 #[test]
@@ -77,11 +83,21 @@ fn normal_opt_pop_retains_snapshot_across_three_legs() {
 
 #[test]
 fn normal_opt_pop_aliased_opt_caller_refuses_no_copy_miss() {
-    let checked = checked_opt_pop_boundary(true);
-    let error = witchy::enforce_performance_modes(checked.module(), "main")
-        .expect_err("an opt caller cannot silently prepare the aliased argument");
-    assert!(error.contains("no-copy `var` contract"), "{error}");
+    // Same contract, refused one stage earlier than it used to be: checking
+    // now rejects the aliased argument outright, so the graph never becomes a
+    // checked module for `enforce_performance_modes` to judge. The refusal
+    // still has to name the callee whose no-copy `var` contract it protects.
+    let error = link_opt_pop_boundary(true)
+        .err()
+        .expect("an opt caller cannot silently prepare the aliased argument");
+    assert!(
+        error.contains("cannot repair ordinary storage into a `unique` parameter in `mode opt`"),
+        "{error}"
+    );
     assert!(error.contains("helper.take"), "{error}");
+    // The normal caller is the control: the same source without `mode opt`
+    // still links and still repairs at the boundary.
+    assert!(link_opt_pop_boundary(false).is_ok(), "the normal caller may still repair");
 }
 
 #[test]
