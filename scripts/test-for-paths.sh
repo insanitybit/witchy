@@ -681,6 +681,19 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_early "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(=rfc0167_mode_interop::reference_free_normal_opt_chain_preserves_modes_and_aliased_snapshot_without_opts)'"
             path_has_early=1 ;;
+        tests/support/*.rs)
+            # The shared test-helper module. `mod support;` is declared by
+            # EXACTLY three integration binaries -- e2e, rfc0092, worktree --
+            # so a change here cannot reach any other target, and falling
+            # through to the whole workspace charged it for all of them: one
+            # such presubmit on 2026-09-21 ran the workspace-minus-e2e stage
+            # for 2,604s. Verify the consumer list before narrowing further:
+            #   grep -rn "mod support" --include='*.rs' tests/ | grep -v "^tests/support/"
+            broad_e2e=1
+            add "./scripts/check.sh --e2e"
+            add_gate_test rfc0092
+            add_gate_test worktree
+            add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test rfc0092 --test worktree" ;;
         tests/e2e.rs)
             gate_workspace=1
             broad_e2e=1

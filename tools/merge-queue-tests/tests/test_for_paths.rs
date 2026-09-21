@@ -221,6 +221,26 @@ fn gate_nextest_docs_only_builds_the_bin_target() {
     }
 }
 
+/// `tests/support/` is the shared test-helper module. Exactly three
+/// integration binaries declare `mod support;` -- e2e, rfc0092, worktree --
+/// so a change there cannot reach another target. It used to fall through to
+/// the whole workspace: one presubmit ran the workspace-minus-e2e stage for
+/// 2,604s for a two-line helper change.
+#[test]
+fn gate_nextest_test_support_selects_only_its_consumers() {
+    for path in ["tests/support/coven.rs", "tests/support/mod.rs"] {
+        let output = gate_nextest(&[path]);
+        assert!(
+            output.contains("--test rfc0092") && output.contains("--test worktree"),
+            "{path} did not select the binaries that compile it: {output}",
+        );
+        assert!(
+            !output.contains("WORKSPACE"),
+            "{path} still fell through to the whole workspace: {output}",
+        );
+    }
+}
+
 #[test]
 fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
     let output = gate_nextest(&[
