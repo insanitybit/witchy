@@ -1571,12 +1571,12 @@ impl<'a> Ctx<'a> {
             step_stmts.extend(rewritten);
         } else {
             let selected_expr = call(
-                match arity {
-                    2 => "chan.select2_frame_decode",
-                    3 => "chan.select3_frame_decode",
-                    4 => "chan.select4_frame_decode",
+                &crate::linker::definition_site_name("chan", match arity {
+                    2 => "select2_frame_decode",
+                    3 => "select3_frame_decode",
+                    4 => "select4_frame_decode",
                     _ => unreachable!("fixed arity was validated above"),
-                },
+                }),
                 vec![Expr::Var(tag.clone()), Expr::Var(option.clone())],
             );
             step_stmts.push(Stmt::Let { name: selected.clone(), ty: None, mutable: false, value: selected_expr });
@@ -2574,7 +2574,8 @@ fn rewrite_local_select_match(
     };
     Some(Expr::Match {
         scrutinee: Box::new(if uses_payload {
-            call("chan.select2_frame_payload", vec![Expr::Var(option.into())])
+            call(&crate::linker::definition_site_name("chan", "select2_frame_payload"),
+                vec![Expr::Var(option.into())])
         } else {
             Expr::Var(option.into())
         }),
@@ -2722,7 +2723,8 @@ fn rewrite_local_select3_match(
     };
     Some(Expr::Match {
         scrutinee: Box::new(if uses_payload {
-            call("chan.select3_frame_payload", vec![Expr::Var(option.into())])
+            call(&crate::linker::definition_site_name("chan", "select3_frame_payload"),
+                vec![Expr::Var(option.into())])
         } else {
             Expr::Var(option.into())
         }),
@@ -2878,7 +2880,8 @@ fn rewrite_local_select4_match(
     );
     Some(Expr::Match {
         scrutinee: Box::new(if uses_payload {
-            call("chan.select4_frame_payload", vec![Expr::Var(option.into())])
+            call(&crate::linker::definition_site_name("chan", "select4_frame_payload"),
+                vec![Expr::Var(option.into())])
         } else {
             Expr::Var(option.into())
         }),

@@ -143,15 +143,19 @@ async fn main(console: Console):
     console.print("seen=${seen}")
 "#;
 
+/// Run the program the way the product does: an admitted canonical artifact,
+/// not a raw Wasm binary. The canonical route refuses a raw module ("raw Wasm
+/// cannot claim canonical admission"), which is why every test through this
+/// helper had stopped running.
 fn run_compiled(source: &str) -> Vec<String> {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0152 select3 frame contract must check");
-    let wasm = codegen::compile_checked_module_binary(&checked)
+    let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("compile RFC-0152 select3 frame contract");
     let mut runtime = Runtime::batch().expect("create RFC-0152 select3 frame runtime");
     let mut actor = runtime
-        .spawn(
-            &wasm,
+        .spawn_admitted(
+            &artifact,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -248,4 +252,38 @@ fn rfc0152_payload_free_receive_frame_uses_the_sole_live_ready_entry() {
         wat.contains("call $chan.recv_frame_loop"),
         "payload-free receive loops must retain the compiler-owned frame bridge"
     );
+}
+
+/// A `select` whose match is a VALUE, inside a loop, links and runs.
+///
+/// Arms that only act take the direct-result path; a match feeding a binding
+/// makes the desugar emit `chan.selectN_frame_payload`/`_decode` into the
+/// user's own module. The scheduler-bridge privacy rule — which exists to stop
+/// SOURCE from forging scheduler authority — was rejecting that compiler
+/// output, so the shape did not link at all (BUG-639). This runs in the
+/// default gate: a documented feature failing to compile is not nightly news.
+const SELECT_VALUE_MATCH_IN_A_LOOP: &str = r#"
+async fn main(console: Console):
+    let (a_tx, a_rx) = chan.channel(2).await
+    let (b_tx, b_rx) = chan.channel(2).await
+    chan.send(a_tx, 1).await
+    chan.send(b_tx, 100).await
+    var seen = 0
+    var total = 0
+    while seen < 2:
+        let selected = chan.select(a_rx, b_rx).await
+        let (got, value) = match selected:
+            First(x) -> (1, x)
+            Second(y) -> (1, y)
+            Closed -> (0, 0)
+        total = total + value
+        seen = seen + got
+    console.print("total=${total}")
+"#;
+
+#[test]
+fn a_select_match_bound_to_a_value_links_and_runs_inside_a_loop() {
+    // The independent expected result: both buffered values are taken once,
+    // so the loop ends having added 1 and 100.
+    assert_eq!(run_compiled(SELECT_VALUE_MATCH_IN_A_LOOP), ["total=101"]);
 }

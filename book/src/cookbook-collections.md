@@ -48,7 +48,8 @@ fn main(console: Console):
     let text = "the cat the dog THE bird a cat"
     var seen: Set(String) = set.new()
     for w in text.split(" "):
-        seen.insert(w.to_lower())
+        // `insert` reports whether the word was new; this count does not need it.
+        let _ = seen.insert(w.to_lower())
     console.print("distinct words: ${seen.length()}")
 
     // Build a set straight from an iterator pipeline.

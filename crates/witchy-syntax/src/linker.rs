@@ -298,6 +298,16 @@ pub(crate) fn call_site_expr_target(name: &str) -> Option<&str> {
     name.strip_prefix(CALL_SITE_PREFIX)
 }
 
+/// Name `module.function` with definition-site authority, for a call a desugar
+/// emits into a module that could not have written it itself.
+///
+/// Source cannot spell the `@` prefix, so this is not forgeable: it says "the
+/// compiler generated this", which is what the scheduler-bridge privacy rules
+/// need to distinguish from a source-written reference.
+pub fn definition_site_name(module: &str, function: &str) -> String {
+    format!("{DEFINITION_SITE_PREFIX}{module}.{function}")
+}
+
 /// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
 #[derive(Clone)]
 struct EtaSig {

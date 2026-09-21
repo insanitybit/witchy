@@ -1,6 +1,9 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	9	expression-position-mutator	dict.insert__Int__Int	-	-
 benchmarks/rfc0153_std_show_dict.witchy	11	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
+book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/mutating-methods.md#block-1	13	expression-position-mutator	dict.insert__String__Int	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
 examples/maze/src/maze.witchy	80	expression-position-mutator	dict.insert__Int__Int	-	-
 examples/maze/src/maze.witchy	84	expression-position-mutator	dict.insert__Int__Int	-	-

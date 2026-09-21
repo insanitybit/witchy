@@ -19,15 +19,17 @@ fn main(console: Console):
     console.print("${last ?? 0}")
 
     var tally = dict.new()
-    tally.insert("a", 1)
-    tally.insert("b", 2)
+    let _ = tally.insert("a", 1)
+    let _ = tally.insert("b", 2)
     console.print("${tally.get_or("a", 0)}")
 ```
 
 The method call is the idiom; its module-qualified alias `list.push(xs, 3)`
-resolves to the same `var`-declared operation. Statement position may discard a
-`var` call's independent result because the write-back is already an effect. A
-non-`var`, non-`()` result still requires a binding or `let _ =`.
+resolves to the same `var`-declared operation. A `var` call writes back through
+its receiver, so an operation returning `()`, like `push`, stands alone as a
+statement. One that also returns a value does not: `insert` hands back the
+entry it replaced, and like any other call that result must be bound or
+discarded with `let _ =`.
 
 An immutable binding or temporary can't be a write-back target:
 
