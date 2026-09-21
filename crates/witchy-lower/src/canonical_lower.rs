@@ -19830,33 +19830,40 @@ mod tests {
     }
 
     #[test]
-    fn rooted_view_aggregate_carrier_is_shallow_and_rejects_decoy_descendants() {
-        assert!(rooted_view_aggregate_carrier(
-            "type Holder:\n    value: &Int\n    count: Int\n",
-            "Holder",
-        ), "a direct &Int field may share an aggregate owner with scalar fields");
+    fn rooted_view_aggregate_carrier_nests_only_through_carrier_fields() {
+        for (name, source) in [
+            ("Holder", "type Holder:\n    value: &Int\n    count: Int\n"),
+            ("OptionField", "type OptionField:\n    direct: &Int\n    nested: Option(&Int)\n"),
+            ("NominalField", "type Inner:\n    value: &Int\n\ntype NominalField:\n    direct: &Int\n    nested: Inner\n"),
+            ("GenericField", "type Box(a):\n    value: a\n\ntype GenericField:\n    direct: &Int\n    nested: Box(&Int)\n"),
+        ] {
+            assert!(
+                rooted_view_aggregate_carrier(source, name),
+                "every view-bearing field of {name} is itself a carrier owner",
+            );
+        }
 
         for (name, source) in [
-            (
-                "OptionDecoy",
-                "type OptionDecoy:\n    direct: &Int\n    hidden: Option(&Int)\n",
-            ),
-            (
-                "NominalDecoy",
-                "type Inner:\n    value: &Int\n\ntype NominalDecoy:\n    direct: &Int\n    hidden: Inner\n",
-            ),
             (
                 "CallableDecoy",
                 "type CallableDecoy:\n    direct: &Int\n    hidden: fn() -> &Int\n",
             ),
             (
-                "GenericDecoy",
-                "type Box(a):\n    value: a\n\ntype GenericDecoy:\n    direct: &Int\n    hidden: Box(&Int)\n",
+                "ListDecoy",
+                "type ListDecoy:\n    direct: &Int\n    hidden: List(&Int)\n",
+            ),
+            (
+                "SliceDecoy",
+                "type SliceDecoy:\n    direct: &Int\n    hidden: &[Int]\n",
+            ),
+            (
+                "DeepDecoy",
+                "type Inner:\n    value: &Int\n    hidden: List(&Int)\n\ntype DeepDecoy:\n    direct: &Int\n    nested: Inner\n",
             ),
         ] {
             assert!(
                 !rooted_view_aggregate_carrier(source, name),
-                "a direct field must not authorize a nested rooted view in {name}",
+                "a direct field must not authorize an uncarried view in {name}",
             );
         }
     }

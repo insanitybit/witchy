@@ -288,3 +288,27 @@ fn main() -> Int:
     ((*o.inner.view) + o.inner.bias) * 100 + o.tag * 10 + slot
 "#, 775);
 }
+
+/// A generic record instantiated at a view is a carrier like any other shell.
+#[test]
+fn a_generic_record_instantiated_at_a_view_is_a_carrier() {
+    assert_canonical_and_wasm(r#"
+mode opt
+
+type Box(a):
+    value: a
+
+type Pair:
+    direct: &Int
+    boxed: Box(&Int)
+
+fn make(a: &Int, b: &Int) -> Pair:
+    Pair(direct: a, boxed: Box(value: b))
+
+fn main() -> Int:
+    let x = 3
+    let y = 4
+    let p = make(&x, &y)
+    (*p.direct) * 10 + (*p.boxed.value)
+"#, 34);
+}
