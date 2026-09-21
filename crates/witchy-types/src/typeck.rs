@@ -222,6 +222,9 @@ impl fmt::Display for Ty {
                 }
                 write!(f, ")")
             }
+            // RFC-0167: `&[T]` is the only source spelling of a slice view;
+            // the internal `Slice` name never reaches a diagnostic.
+            Ty::Named(n, args) if n.as_ref() == "Slice" && args.len() == 1 => write!(f, "&[{}]", args[0]),
             Ty::Named(n, args) => {
                 write!(f, "{n}")?;
                 if !args.is_empty() {
