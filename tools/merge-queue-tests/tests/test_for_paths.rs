@@ -1528,7 +1528,7 @@ fn complete_e2e_shard_subsumes_a_nested_module_probe() {
 #[test]
 fn router_changes_run_router_regressions() {
     let output = route(&["scripts/test-for-paths.sh"]);
-    assert!(output.contains("for f in scripts/*.sh; do bash -n"));
+    assert!(output.contains("for f in scripts/*.sh scripts/bin/*; do bash -n"));
     assert!(output.contains("cargo nextest run -p merge-queue-tests --test test_for_paths"));
     assert!(output.contains("./scripts/check.sh --queue-infra"));
 }
@@ -1539,7 +1539,7 @@ fn agent_check_changes_verify_utility_qos_without_a_rust_build() {
         assert_eq!(
             selected(&[path]),
             [
-                "for f in scripts/*.sh; do bash -n \"$f\"; done",
+                "for f in scripts/*.sh scripts/bin/*; do bash -n \"$f\"; done",
                 "./scripts/test-agent-check-qos.sh",
             ],
             "{path}"
@@ -1560,7 +1560,7 @@ fn queue_substrate_changes_use_the_hermetic_queue_shard() {
     assert_eq!(
         selected(&["scripts/merge-queue.sh"]),
         [
-            "for f in scripts/*.sh; do bash -n \"$f\"; done",
+            "for f in scripts/*.sh scripts/bin/*; do bash -n \"$f\"; done",
             "./scripts/check.sh --queue-infra",
         ]
     );
@@ -1655,7 +1655,7 @@ fn worktree_module_and_script_route_to_the_real_integration_binary() {
 #[test]
 fn spec_freshness_script_runs_its_behavior_check() {
     let output = route(&["scripts/check-spec-freshness.sh"]);
-    assert!(output.contains("for f in scripts/*.sh; do bash -n"));
+    assert!(output.contains("for f in scripts/*.sh scripts/bin/*; do bash -n"));
     assert!(output.contains("./scripts/check-spec-freshness.sh"));
 }
 
@@ -1958,4 +1958,33 @@ fn a_bounded_edit_loop_names_the_binary_it_did_not_run() {
         "a whole-binary run already covers it",
     );
     assert!(!fired("  cargo nextest run -p witchy-types\n", "std/list.witchy\n"), "non-semantics paths must stay quiet");
+}
+
+#[test]
+fn extensionless_script_shims_are_syntax_checked() {
+    // `scripts/bin/cargo` and `scripts/bin/witchy` have no suffix, so the
+    // `scripts/*.sh` rule never matched them: adding one used to classify as a
+    // prose-only change and nothing ran `bash -n` over it.
+    for path in ["scripts/bin/cargo", "scripts/bin/witchy"] {
+        let commands = selected(&[path]);
+        assert!(
+            commands.iter().any(|command| command.contains("bash -n")),
+            "{path} selected no syntax check: {commands:?}",
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.contains("scripts/bin/*")),
+            "{path}'s syntax check does not cover the shims themselves: {commands:?}",
+        );
+    }
+    // The existing rule still covers ordinary scripts, and now covers the
+    // shims too.
+    let commands = selected(&["scripts/worktree-warm.sh"]);
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.contains("scripts/*.sh scripts/bin/*")),
+        "ordinary scripts lost or narrowed their syntax check: {commands:?}",
+    );
 }

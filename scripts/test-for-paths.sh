@@ -758,12 +758,12 @@ for p in "${paths[@]}"; do
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows"
             add "./scripts/workflow-isolation-check.py .github/workflows" ;;
         scripts/zizmor.sh | scripts/workflow-isolation-check.py)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows"
             add "./scripts/workflow-isolation-check.py .github/workflows" ;;
         scripts/nextest-list-wrapper.sh | scripts/test-nextest-list-wrapper.sh)
             gate_workspace=1
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-nextest-list-wrapper.sh"
             add "./scripts/check.sh --queue-infra" ;;
         .config/nextest.toml)
@@ -778,24 +778,24 @@ for p in "${paths[@]}"; do
         scripts/merge-queue.sh | \
         scripts/state-paths.sh)
             add_gate_test merge_queue
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-status.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/rfc-status.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree" ;;
         scripts/worktree-warm.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-create.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree" ;;
         scripts/check-spec-freshness.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/check-spec-freshness.sh" ;;
         scripts/gate-test-cost.py | scripts/test-gate-test-cost.py)
             add "python3 scripts/test-gate-test-cost.py" ;;
@@ -803,10 +803,10 @@ for p in "${paths[@]}"; do
             add_early "python3 scripts/check-stage-dependencies.py"
             path_has_early=1 ;;
         scripts/agent-check.sh | scripts/test-agent-check-qos.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-agent-check-qos.sh" ;;
         scripts/submit-with-presubmit.sh | scripts/test-submit-with-presubmit.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-submit-with-presubmit.sh" ;;
         scripts/canonical-native-edit.sh | scripts/test-canonical-native-edit.sh)
             add_gate_test test_for_paths
@@ -816,13 +816,18 @@ for p in "${paths[@]}"; do
         scripts/nextest-admitted.sh | scripts/test-nextest-admitted.sh)
             add_gate_test test_for_paths
             add_gate_test merge_queue
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-path-receipts.sh"
             add "./scripts/test-nextest-admitted.sh"
             add "cargo nextest run -p merge-queue-tests --test test_for_paths"
             add "./scripts/check.sh --queue-infra" ;;
+        scripts/bin/*)
+            # Extensionless shims (`cargo`, `witchy`). They have no suffix, so
+            # the scripts/*.sh rule below never matched them and nothing
+            # syntax-checked them at all.
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done" ;;
         scripts/*.sh)
-            add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
+            add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done" ;;
         justfile)
             add "just --list" ;;
         spec/wasm-abi.md)
