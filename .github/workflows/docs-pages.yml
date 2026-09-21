@@ -28,7 +28,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Build Witchy (release)
-        run: cargo build --release
+        run: cargo build --release --features web
       - name: Build browser-playground Wasm
         run: cargo build --release --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
       - name: Build deployable docs bundle

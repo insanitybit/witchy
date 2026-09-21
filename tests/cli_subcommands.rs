@@ -258,6 +258,8 @@ fn cli_help_version_and_bare_invocation_are_stable() {
     assert!(out.stderr.is_empty());
 }
 
+// Drives `witchy ... --web`, which needs the optional `web` feature.
+#[cfg(feature = "web")]
 #[test]
 fn web_commands_route_natively_and_complete_clean_clone_flow() {
     let dir = workdir("web-flow");
@@ -326,6 +328,8 @@ fn web_commands_route_natively_and_complete_clean_clone_flow() {
     assert!(String::from_utf8_lossy(&dev_usage.stderr).contains("1..=65535"));
 }
 
+// Drives `witchy ... --web`, which needs the optional `web` feature.
+#[cfg(feature = "web")]
 #[test]
 fn static_web_flow_needs_no_client_scaffold_or_browser_runtime() {
     let project = workdir("static-web-flow");
@@ -406,6 +410,8 @@ pub fn web() -> Site:
         .any(|check| check["id"] == "runtime" && check["status"] == "pass"));
 }
 
+// Drives `witchy ... --web`, which needs the optional `web` feature.
+#[cfg(feature = "web")]
 #[test]
 fn web_doctor_deployment_headers_check_declared_route_policy() {
     let project = workdir("web-deployed-header-probe");

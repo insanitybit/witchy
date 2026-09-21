@@ -44,6 +44,9 @@ if [ -z "$BIN" ]; then
   if [ -x "$td/release/witchy" ]; then BIN="$td/release/witchy"; else BIN="$td/debug/witchy"; fi
 fi
 
+# The web commands are an optional feature (RFC-0168): the binary must be
+# built with `cargo build --features web`, or `build --web` refuses with that
+# instruction.
 # Build all 62 routes, the counter island, manifests, runtime graph, CSS, SBOM,
 # headers, and reports through the production static publisher.
 "$BIN" build --web --out "$OUT" projects/docs

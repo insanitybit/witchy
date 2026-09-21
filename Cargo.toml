@@ -79,12 +79,16 @@ native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json",
 # (`WITCHY_GATE_UNGATED`). Measured 2026-09-21: they cost 12.1 CPU s of the
 # final test-binary build, on EVERY gate, for tests that mostly never run.
 # `./scripts/check.sh --glamour` turns them back on.
-glamour-tests = []
+glamour-tests = ["web"]
 # coven (registry) and grimoire (package manager) are CONSUMERS of witchy,
 # deprioritized 2026-09-21 so compiler work moves faster. Their tests compile
 # only with this feature; `./scripts/check.sh --grimoire` enables it. The
 # merge gate never does.
 coven-tests = []
+# The web/static-site commands (glamour, the docs site). Optional since
+# 2026-09-21: they are ~28% of the root crate and every build paid for them.
+# `glamour-tests` enables it because those tests drive `witchy build --web`.
+web = []
 # The end-to-end acceptance binary (coven/grimoire publish + install flows).
 # The default gate EXCLUDES `binary(e2e)` from the workspace stage, but it
 # still COMPILED all 7,619 lines of it on every gate: measured 2026-09-21,
