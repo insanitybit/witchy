@@ -618,15 +618,17 @@ mod shape_memo {
 /// aggregate with a direct `&Int` field is the bounded exception: that field
 /// carries the authenticated rooted-view owner, so erasing the nested `View`
 /// qualifier would change the carrier into linear storage.  Preserve the
-/// qualifier only at direct aggregate arguments; nested carriers remain
-/// outside this ABI until they have their own provenance contract.
+/// qualifier at direct aggregate arguments and through `Option` nesting of
+/// such a carrier (`Option(Option(&Int))`), whose every shell is itself an
+/// opaque owner; other nested carriers remain outside this ABI until they
+/// have their own provenance contract.
 pub fn canonical_owner_aggregate_identity(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<Type> {
     let identity = concrete_aggregate_identity(ty, definitions)?;
     let carries_direct_rooted_view = scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
-        !shape.packed && shape.fields.iter().any(is_direct_rooted_int_view)
+        !shape.packed && shape.fields.iter().any(is_rooted_int_view_option_carrier)
     });
     if !carries_direct_rooted_view {
         return Some(identity);
@@ -636,12 +638,12 @@ pub fn canonical_owner_aggregate_identity(
             if source_arguments.len() == arguments.len() =>
         {
             Some(Type::Named(name, source_arguments.iter().zip(arguments).map(|(source, identity)| {
-                if is_direct_rooted_int_view(source) { source.clone() } else { identity }
+                if is_rooted_int_view_option_carrier(source) { source.clone() } else { identity }
             }).collect()))
         }
         (Type::Tuple(source_items), Type::Tuple(items)) if source_items.len() == items.len() => {
             Some(Type::Tuple(source_items.iter().zip(items).map(|(source, identity)| {
-                if is_direct_rooted_int_view(source) { source.clone() } else { identity }
+                if is_rooted_int_view_option_carrier(source) { source.clone() } else { identity }
             }).collect()))
         }
         // A nominal declaration can carry a direct rooted view in one of its
@@ -649,6 +651,13 @@ pub fn canonical_owner_aggregate_identity(
         // normalized declaration identity is already exact in that case.
         (_, identity) => Some(identity),
     }
+}
+
+/// `&Int`, or `Option` wrapped around such a carrier to any depth.
+fn is_rooted_int_view_option_carrier(ty: &Type) -> bool {
+    is_direct_rooted_int_view(ty)
+        || matches!(ty.unqualified(), Type::Named(name, arguments)
+            if name == "Option" && matches!(arguments.as_slice(), [payload] if is_rooted_int_view_option_carrier(payload)))
 }
 
 fn is_direct_rooted_int_view(ty: &Type) -> bool {

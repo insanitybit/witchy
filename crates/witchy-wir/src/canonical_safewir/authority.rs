@@ -1629,6 +1629,7 @@ fn is_aggregate_reference_carrier(source: &witchy_syntax::ast::Type) -> bool {
             if name == "Option" && arguments.len() == 1 =>
         {
             is_direct_rooted_view_int(&arguments[0])
+                || is_option_rooted_int_view_carrier(&arguments[0])
         }
         _ => false,
     }
@@ -1650,7 +1651,7 @@ fn is_direct_rooted_view_aggregate_carrier(
             let mut seen_direct_view = false;
             let mut active_definitions = BTreeSet::new();
             shape.fields.iter().all(|field| {
-                if is_direct_rooted_view_int(field) {
+                if is_direct_rooted_view_int(field) || is_option_rooted_int_view_carrier(field) {
                     seen_direct_view = true;
                     true
                 } else {
@@ -2478,17 +2479,38 @@ fn option_rooted_int_view_result_relation_is_checked(
     declaration: &witchy_syntax::ast::Function,
     access: &witchy_types::access::AccessSignature,
 ) -> bool {
-    use witchy_types::access::OwnershipStateClass;
-
-    declaration.ret.as_ref().is_some_and(is_option_rooted_int_view_carrier)
-        && matches!(access.result().ownership_output(),
-            Some(OwnershipStateClass::LayoutDependent { children })
-                if matches!(children.as_slice(), [Some(OwnershipStateClass::RootedViewCarrier)]))
+    declaration.ret.as_ref().is_some_and(|result| {
+        is_option_rooted_int_view_carrier(result)
+            && access.result().ownership_output().is_some_and(|class| {
+                option_rooted_view_ownership_matches(result, class)
+            })
+    })
 }
 
+/// The checker's ownership tree for an `Option` view carrier mirrors its
+/// source nesting exactly: each `Option` shell is one layout-dependent node
+/// with a single payload child, and the innermost leaf is the authenticated
+/// `&Int` owner. Any other child shape rejects.
+fn option_rooted_view_ownership_matches(
+    source: &witchy_syntax::ast::Type,
+    class: &witchy_types::access::OwnershipStateClass,
+) -> bool {
+    use witchy_types::access::OwnershipStateClass;
+
+    if is_direct_rooted_view_int(source) {
+        return matches!(class, OwnershipStateClass::RootedViewCarrier);
+    }
+    let witchy_syntax::ast::Type::Named(name, arguments) = source.unqualified() else { return false };
+    let (true, [payload]) = (name == "Option", arguments.as_slice()) else { return false };
+    matches!(class, OwnershipStateClass::LayoutDependent { children }
+        if matches!(children.as_slice(), [Some(child)] if option_rooted_view_ownership_matches(payload, child)))
+}
+
+/// `Option(&Int)`, or an `Option` of such a carrier nested to any depth.
 fn is_option_rooted_int_view_carrier(source: &witchy_syntax::ast::Type) -> bool {
     matches!(source.unqualified(), witchy_syntax::ast::Type::Named(name, arguments)
-        if name == "Option" && matches!(arguments.as_slice(), [payload] if is_direct_rooted_view_int(payload)))
+        if name == "Option" && matches!(arguments.as_slice(), [payload]
+            if is_direct_rooted_view_int(payload) || is_option_rooted_int_view_carrier(payload)))
 }
 
 /// Match the complete, ordered leaf-to-owner relation product for one tuple

@@ -77,32 +77,3 @@ fn bad() -> Held:
         "region-owned aggregate rejection should retain a fail-closed diagnostic: {error}"
     );
 }
-
-#[test]
-fn decoy_direct_view_cannot_admit_a_nested_option_view_through_an_own_relay() {
-    let source = r#"
-mode opt
-
-type Mixed:
-    direct: &Int
-    nested: Option(&Int)
-
-fn relay(own mixed: Mixed) -> Mixed:
-    mixed
-
-fn main() -> Int:
-    let direct = 4
-    let nested = 9
-    let mixed = Mixed(direct: &direct, nested: Some(&nested))
-    let _ = relay(move mixed)
-    0
-"#;
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("the nested-view bypass reaches canonical lowering");
-    let refusal = witchy::codegen::compile_checked_module_artifact(&checked)
-        .expect_rejected("a direct view field must not authorize Option(&Int) in the same aggregate");
-    assert!(
-        refusal.to_string().contains("CandidateSignatureMismatch"),
-        "canonical admission must fail closed instead of erasing the nested owner: {refusal}",
-    );
-}

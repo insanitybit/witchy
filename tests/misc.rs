@@ -207,6 +207,8 @@ mod rfc0167_unique_writeback_matrix;
 mod rfc0167_unit_discard_matrix;
 #[path = "misc/rfc0167_view_carrier_transport.rs"]
 mod rfc0167_view_carrier_transport;
+#[path = "misc/rfc0167_nested_option_view.rs"]
+mod rfc0167_nested_option_view;
 #[path = "misc/rfc0167_own_view_consumption.rs"]
 mod rfc0167_own_view_consumption;
 #[path = "misc/rfc0167_frozen_view_matrix.rs"]

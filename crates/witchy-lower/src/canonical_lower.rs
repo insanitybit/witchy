@@ -2838,7 +2838,7 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
         // has no carrier payload at all. Do not treat the payload as a linear
         // scalar or synthesize an inactive value.
         Type::Named(name, arguments) if name == "Option" && arguments.len() == 1 => {
-            rooted_view_inner(&arguments[0]).is_some_and(is_direct_shared_int)
+            is_option_rooted_int_view_carrier(&arguments[0])
         }
         // `Result` has an owned tagged shell.  This bounded carrier admits
         // only the checked `Ok` tuple of direct shared roots; a mutable,
@@ -2851,6 +2851,14 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+/// `&Int`, or an `Option` nesting of it: each shell is one tagged owner whose
+/// `Some` field is the next carrier inward.
+fn is_option_rooted_int_view_carrier(ty: &Type) -> bool {
+    rooted_view_inner(ty).is_some_and(is_direct_shared_int)
+        || matches!(ty.unqualified(), Type::Named(name, arguments)
+            if name == "Option" && matches!(arguments.as_slice(), [payload] if is_option_rooted_int_view_carrier(payload)))
 }
 
 /// An aggregate with a direct immutable `&Int` field is represented by its
@@ -2871,7 +2879,7 @@ fn is_direct_rooted_int_view_aggregate_carrier(
         let mut seen_direct_view = false;
         let mut active_definitions = BTreeSet::new();
         shape.fields.iter().all(|field| {
-            if rooted_view_inner(field).is_some_and(is_direct_shared_int) {
+            if is_option_rooted_int_view_carrier(field) {
                 seen_direct_view = true;
                 true
             } else {
@@ -7550,7 +7558,12 @@ impl FunctionLowerer<'_> {
                     return Ok(Some(tag_test));
                 }
                 if matches!(self.values[&scrutinee], ValueType::Gc(_)) {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("opaque aggregate nested literal pattern"));
+                    // An opaque owner's payload is read through its owner
+                    // family, exactly as the binding path reads it.
+                    let source = scrutinee_type.clone();
+                    return Ok(Some(self.short_circuit_and(tag_test, |this| {
+                        this.opaque_payload_pattern_conditions(scrutinee, &source, index, first_field, &fields, &refutable)
+                    })?));
                 }
                 // A refutable payload pattern tests its slot only once the tag
                 // test has selected the variant: another variant's slot is
@@ -7730,6 +7743,35 @@ impl FunctionLowerer<'_> {
         }
         Ok(Some(self.short_circuit_and(test, |this| {
             this.payload_pattern_conditions(scrutinee, first_field, fields, rest)
+        })?))
+    }
+
+    fn opaque_payload_pattern_conditions(
+        &mut self,
+        scrutinee: ValueId,
+        scrutinee_type: &Type,
+        variant_index: usize,
+        first_field: usize,
+        fields: &[Type],
+        refutable: &[(usize, &Pattern)],
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let Some(((offset, argument), rest)) = refutable.split_first() else {
+            return Ok(None);
+        };
+        let slot = first_field + offset;
+        let field_type = fields[slot].clone();
+        let value_type = self.field_value_type(&field_type)?;
+        let payload = self.load_source_aggregate_field(
+            scrutinee, scrutinee_type, variant_index, *offset, slot, value_type,
+        )?;
+        let Some(test) = self.match_pattern_condition(payload, argument, &field_type)? else {
+            return self.opaque_payload_pattern_conditions(scrutinee, scrutinee_type, variant_index, first_field, fields, rest);
+        };
+        if rest.is_empty() {
+            return Ok(Some(test));
+        }
+        Ok(Some(self.short_circuit_and(test, |this| {
+            this.opaque_payload_pattern_conditions(scrutinee, scrutinee_type, variant_index, first_field, fields, rest)
         })?))
     }
 
