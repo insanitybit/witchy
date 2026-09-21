@@ -781,17 +781,21 @@ for p in "${paths[@]}"; do
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-status.sh)
+            add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/rfc-status.sh)
+            add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree" ;;
         scripts/worktree-warm.sh)
+            add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-create.sh)
+            add_gate_test worktree
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree" ;;
         scripts/check-spec-freshness.sh)
@@ -803,9 +807,11 @@ for p in "${paths[@]}"; do
             add_early "python3 scripts/check-stage-dependencies.py"
             path_has_early=1 ;;
         scripts/agent-check.sh | scripts/test-agent-check-qos.sh)
+            add_gate_test merge_queue
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-agent-check-qos.sh" ;;
         scripts/submit-with-presubmit.sh | scripts/test-submit-with-presubmit.sh)
+            add_gate_test merge_queue
             add "for f in scripts/*.sh scripts/bin/*; do bash -n \"\$f\"; done"
             add "./scripts/test-submit-with-presubmit.sh" ;;
         scripts/canonical-native-edit.sh | scripts/test-canonical-native-edit.sh)

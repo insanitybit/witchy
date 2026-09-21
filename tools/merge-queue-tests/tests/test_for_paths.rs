@@ -1988,3 +1988,39 @@ fn extensionless_script_shims_are_syntax_checked() {
         "ordinary scripts lost or narrowed their syntax check: {commands:?}",
     );
 }
+
+#[test]
+fn script_rules_gate_on_the_binary_their_focused_check_names() {
+    // These rules already knew which binary covers them: each ran
+    // `cargo nextest run --test worktree` (or the queue-infra shard) as a
+    // focused check. But none of them called `add_gate_test`, so the GATE
+    // selection stayed empty and fell through to WORKSPACE -- a full
+    // 4,000-test workspace build and run to validate a shell edit. Replaying
+    // the mapper over 200 merged commits, `scripts/` paths were the single
+    // biggest driver of WORKSPACE fallback.
+    //
+    // The covering binary is a checkable fact, not a guess:
+    // tests/worktree/{status,warm,create,rfc_status}.rs reference the four
+    // worktree scripts, and tools/merge-queue-tests/tests/merge_queue/
+    // coordinator.rs references agent-check.sh and submit-with-presubmit.sh.
+    for (path, binary) in [
+        ("scripts/worktree-status.sh", "worktree"),
+        ("scripts/worktree-warm.sh", "worktree"),
+        ("scripts/worktree-create.sh", "worktree"),
+        ("scripts/rfc-status.sh", "worktree"),
+        ("scripts/agent-check.sh", "merge_queue"),
+        ("scripts/test-agent-check-qos.sh", "merge_queue"),
+        ("scripts/submit-with-presubmit.sh", "merge_queue"),
+        ("scripts/test-submit-with-presubmit.sh", "merge_queue"),
+    ] {
+        let output = gate_nextest(&[path]);
+        assert!(
+            !output.contains("WORKSPACE"),
+            "{path} still falls through to the whole workspace: {output}",
+        );
+        assert!(
+            output.contains(&format!("--test {binary}")),
+            "{path} did not select {binary}, the binary that covers it: {output}",
+        );
+    }
+}
