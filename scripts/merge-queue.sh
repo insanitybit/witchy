@@ -1265,7 +1265,14 @@ group_is_busy() { # group_is_busy <pgid>
 # Measured: a gate for an agent-skill edit ran the whole 4880-test suite for
 # 235s and could not have observed the diff. Keep the classifier comment in
 # check.sh in sync.
-GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$)'
+# glamour and coven/grimoire tests (deprioritized 2026-09-21) are compiled
+# only under the non-default `glamour-tests`/`coven-tests` features, so the
+# default gate can neither build nor run them: a batch touching only those
+# files, or coven-web (not embedded in the CLI), cannot change any stage.
+# NOT here: projects/{glamour,coven,grimoire}/ -- eighteen of those files are
+# include_str!'d into the witchy binary, so deleting or renaming one breaks
+# the build and must still be gated.
+GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$|tests/glamour\.rs$|tests/glamour/|src/example_tests/glamour\.rs$|src/example_tests/pm_coven\.rs$|src/source/package_inputs/registry_replay_tests\.rs$|src/commands/project_resolver_tests\.rs$|projects/coven-web/)'
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
 # Empty input is not docs-safe (fail closed). rfcs/0167-witchy-language-contract.md is
@@ -2774,23 +2781,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             ;;
     esac
 
-    local ungated=""
-    # `book/` used to pull in the WHOLE glamour family, because one test renders
-    # the real book. Measured: that is 56 tests and 752s of CPU (16% of the
-    # suite) for the 162s test that can actually observe a markdown edit -- on
-    # every branch that touches a page. Split the trigger: a real glamour
-    # surface runs everything, `book/` alone runs only the book-consuming test.
-    # Order matters -- a batch touching BOTH must run the whole family.
-    if echo "$changed" | grep -qE '^(web/|projects/glamour|projects/coven-web|dist/)'; then
-        : # a glamour surface itself changed: gate the family in full
-    elif echo "$changed" | grep -qE '^book/'; then
-        ungated="$ungated glamour-nonbook"
-    else
-        ungated="$ungated glamour"
-    fi
-    echo "$changed" | grep -qE '^projects/(grimoire|coven)' \
-        || ungated="$ungated grimoire"
-    ungated="${ungated# }"
+    # glamour and coven/grimoire are CONSUMERS of witchy, not the compiler
+    # the gate protects, and were deprioritized 2026-09-21 so compiler work
+    # moves faster. The gate skips both families unconditionally -- even when
+    # a batch touches `web/`, `projects/glamour`, `projects/coven*`,
+    # `projects/grimoire` or `book/`. Their tests are also not COMPILED by
+    # default (`glamour-tests` / `coven-tests` features). Run them explicitly
+    # with `./scripts/check.sh --glamour` / `--grimoire`.
+    local ungated="glamour grimoire"
 
     # Queue fixtures manipulate process groups, detached daemons, file locks,
     # and nested Git repositories. Run that binary in check.sh's isolated,

@@ -80,6 +80,11 @@ native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json",
 # final test-binary build, on EVERY gate, for tests that mostly never run.
 # `./scripts/check.sh --glamour` turns them back on.
 glamour-tests = []
+# coven (registry) and grimoire (package manager) are CONSUMERS of witchy,
+# deprioritized 2026-09-21 so compiler work moves faster. Their tests compile
+# only with this feature; `./scripts/check.sh --grimoire` enables it. The
+# merge gate never does.
+coven-tests = []
 # The end-to-end acceptance binary (coven/grimoire publish + install flows).
 # The default gate EXCLUDES `binary(e2e)` from the workspace stage, but it
 # still COMPILED all 7,619 lines of it on every gate: measured 2026-09-21,

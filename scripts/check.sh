@@ -280,7 +280,7 @@ ungated_filter_glamour='binary(glamour) or test(/^commands::web::/) or test(/^ex
 # warranted work, on every branch that edits a markdown page.
 ungated_filter_glamour_book='test(/glamour_docs_bundle_renders_the_real_book/)'
 ungated_filter_glamour_nonbook="($ungated_filter_glamour) and not ($ungated_filter_glamour_book)"
-ungated_filter_grimoire='test(/^example_tests::pm_coven::/)'
+ungated_filter_grimoire='test(/^example_tests::pm_coven::/) or test(/^source::package_inputs::registry_replay_tests::/) or test(/^commands::embedded_pm::project_resolver_tests::/)'
 
 # CORPUS SWEEPS -------------------------------------------------------------
 # The corpus sweeps walk every example, every std module and every ```witchy
@@ -599,6 +599,12 @@ if cargo nextest --version >/dev/null 2>&1; then
                 *) nextest_cmd+=(--features glamour-tests) ;;
             esac
             ;;
+    esac
+    # Same for coven/grimoire: `--full` (empty ungated set) means everything,
+    # and those modules only exist with `coven-tests` compiled in.
+    case " $gate_ungated " in
+        *" grimoire "*) ;;
+        *) nextest_cmd+=(--features coven-tests) ;;
     esac
     # The workspace stage ALWAYS excludes `binary(merge_queue)` (see $excl
     # above) because those fixtures run in their own isolated shard. So a diff
@@ -974,7 +980,9 @@ if [ -n "$shard" ]; then
             # Likewise for grimoire/coven. Run this while working on the package
             # manager or the registry; the queue will not catch it for you.
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --grimoire requires cargo-nextest" >&2; exit 2; }
-            cargo nextest run --workspace --features witchy-wir/native -E "$ungated_filter_grimoire"
+            # `coven-tests` is NON-DEFAULT: without it these modules are not
+            # compiled and this shard would run zero tests green.
+            cargo nextest run --workspace --features witchy-wir/native,coven-tests -E "$ungated_filter_grimoire"
             ;;
     esac
     record_shard_receipt "$shard"

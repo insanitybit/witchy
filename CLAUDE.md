@@ -97,6 +97,13 @@ grow the shape tables.
 
 ## Work selection
 
+- **The compiler is the priority (decided 2026-09-21).** glamour, coven,
+  coven-web and grimoire are consumers of witchy and are not being supported
+  right now. The merge gate neither builds nor runs their tests (the
+  `glamour-tests` / `coven-tests` features are off by default; `./scripts/check.sh
+  --glamour` / `--grimoire` run them on demand). Do not spend effort keeping
+  them green unless asked.
+
 - For 0.1 release work, [`RELEASE-READINESS.md`](RELEASE-READINESS.md) is the
   tracked evidence ledger; recheck its claims against current `master`,
   `./scripts/merge-queue.sh status`, and the exact candidate gate before

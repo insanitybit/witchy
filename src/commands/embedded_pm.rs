@@ -357,6 +357,7 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-#[cfg(test)]
+// Compiles coven's own sources as fixtures: behind `coven-tests`.
+#[cfg(all(test, feature = "coven-tests"))]
 #[path = "project_resolver_tests.rs"]
 mod project_resolver_tests;

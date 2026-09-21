@@ -10,7 +10,8 @@ mod generated;
 
 mod registry;
 
-#[cfg(test)]
+// coven registry replay: behind `coven-tests`, see Cargo.toml.
+#[cfg(all(test, feature = "coven-tests"))]
 mod registry_replay_tests;
 
 #[cfg(test)]

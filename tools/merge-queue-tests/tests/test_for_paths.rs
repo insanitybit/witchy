@@ -2044,41 +2044,43 @@ fn script_rules_gate_on_the_binary_their_focused_check_names() {
 }
 
 #[test]
-fn every_mapper_rule_that_names_the_glamour_binary_gets_its_feature() {
-    // `tests/glamour.rs` carries `required-features = ["glamour-tests"]`, and
-    // cargo does not skip an unmet target -- it FAILS the invocation:
-    //
-    //   error: target `glamour` in package `witchy` requires the features:
-    //   `glamour-tests`
-    //
-    // So any gate selection naming that target without the feature reds the
-    // gate. The coordinator's ungated classifier is NOT a safe proxy: it counts
-    // only `web/`, `projects/glamour`, `projects/coven-web` and `dist/` as a
-    // glamour surface, while `tests/glamour/dom.rs` selects `--test glamour`
-    // and is not in that set. That combination is the one that errors.
+fn the_gate_never_selects_glamour_or_coven_tests() {
+    // glamour and coven/grimoire were deprioritized 2026-09-21: the compiler
+    // gate neither builds nor runs their tests, whatever a batch touches. The
+    // mapper used to select `--test glamour` for three paths; with the
+    // feature off that is a hard cargo error, so it must never come back.
     for path in [
         "tests/glamour/dom.rs",
         "web/witchy-runtime/glamour-dom.mjs",
         "web/witchy-runtime/witchy-runtime.mjs",
+        "projects/glamour/src/glamour.witchy",
+        "src/source/package_inputs/registry.rs",
+        "projects/coven/src/coven_proto.witchy",
     ] {
         let output = gate_nextest(&[path]);
-        if !output.contains("--test glamour") {
-            continue;
+        let words: Vec<&str> = output.split_whitespace().collect();
+        assert!(
+            !words.windows(2).any(|pair| pair == ["--test", "glamour"]),
+            "{path} selects the glamour binary for the compiler gate: {output}",
+        );
+        for module in ["pm_coven", "registry_replay_tests", "project_resolver_tests", "example_tests::glamour"] {
+            assert!(!output.contains(module), "{path} selects {module}: {output}");
         }
-        let check = std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/check.sh"),
-        )
-        .expect("read check.sh");
-        assert!(
-            check.contains("*\" --test glamour \"*)"),
-            "{path} selects --test glamour but check.sh no longer enables glamour-tests for a \
-             selection that names the target, so the gate fails with `requires the features`",
-        );
-        assert!(
-            check.contains("nextest_cmd+=(--features glamour-tests)"),
-            "{path} selects --test glamour but check.sh never adds the feature: {output}",
-        );
     }
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |relative: &str| std::fs::read_to_string(repo.join(relative)).expect(relative);
+    let queue = read("scripts/merge-queue.sh");
+    assert!(
+        queue.contains("    local ungated=\"glamour grimoire\""),
+        "the coordinator no longer skips BOTH families unconditionally",
+    );
+    let manifest = read("Cargo.toml");
+    let default_line = manifest.lines().find(|line| line.starts_with("default = [")).expect("default");
+    assert!(manifest.contains("coven-tests = []") && !default_line.contains("coven-tests"));
+    assert!(
+        read("scripts/check.sh").contains("witchy-wir/native,coven-tests"),
+        "`check.sh --grimoire` must compile the coven modules or it runs zero tests green",
+    );
 }
 
 #[test]

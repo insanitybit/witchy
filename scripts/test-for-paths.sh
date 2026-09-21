@@ -670,7 +670,6 @@ for p in "${paths[@]}"; do
         web/witchy-runtime/heap-reset.test.mjs | \
         web/witchy-runtime/highlighter.test.mjs | \
         web/witchy-runtime/user-cap-export.test.mjs)
-            add_gate_test glamour
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test glamour -E 'test(/^dom::/)'" ;;
         web/witchy-runtime/abort-message.test.mjs | \
         web/witchy-runtime/playground-examples.test.mjs | \
@@ -691,7 +690,6 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
         web/witchy-runtime/witchy-runtime.mjs)
             add_gate_test browser
-            add_gate_test glamour
             add_gate_test misc
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
         web/*)
@@ -717,7 +715,6 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test worktree" ;;
         tests/glamour/dom.rs)
             any_rust=1
-            add_gate_test glamour
             add "cargo nextest run --test glamour -E 'test(=dom::every_node_test_driver_is_wired_to_a_rust_test)'" ;;
         tests/misc/url_components.rs)
             any_rust=1
@@ -1050,7 +1047,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$registry_replay" -eq 1 ] \
     cmds=(
         "cargo nextest run --test misc -E 'test(=rfc0165_packaged_source::packaged_source_rejects_custom_owner_and_unsafe_input_paths)'"
         "cargo nextest run --test cli_subcommands -E 'test(=compile_accepts_complete_authenticated_package_owners)'"
-        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(=source::package_inputs::registry_replay_tests::pinned_vendor_package_replays_and_executes_after_original_sources_are_removed) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_project_owner_flags_are_assertions_not_registry_authority) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_valid_source_b_with_wasm_a_rejects_rehashed_envelope_before_execution) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_explicit_path_dependency_wins_over_registry_lock_and_directory_name) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_offline_replay_uses_locked_version_without_manifest_reresolution)'"
+        "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features coven-tests --bin witchy -E 'test(=source::package_inputs::registry_replay_tests::pinned_vendor_package_replays_and_executes_after_original_sources_are_removed) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_replay_rejects_substituted_record_source_pin_and_coordinate) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_project_owner_flags_are_assertions_not_registry_authority) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_valid_source_b_with_wasm_a_rejects_rehashed_envelope_before_execution) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_explicit_path_dependency_wins_over_registry_lock_and_directory_name) or test(=source::package_inputs::registry_replay_tests::pinned_vendor_offline_replay_uses_locked_version_without_manifest_reresolution)'"
     )
 elif [ "$edit_loop" -eq 1 ] && [ "$canonical_fixture_rewrite" -eq 1 ] \
     && [ "$canonical_fixture_rewrite_paths_only" -eq 1 ]; then

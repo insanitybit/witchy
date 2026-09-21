@@ -406,6 +406,8 @@
     mod crypto;
     mod toml;
     mod bigint;
+    // coven/grimoire examples: behind `coven-tests`, see Cargo.toml.
+    #[cfg(feature = "coven-tests")]
     mod pm_coven;
     mod capability_narrowing;
     mod cli_std_modules;
