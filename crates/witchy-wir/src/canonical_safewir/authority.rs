@@ -1987,7 +1987,12 @@ fn candidate_signature_matches_source_inner(
             return root_unique_parameter_ownership_matches(actual.value_type, actual.ownership);
         }
         match (actual.value_type, convention) {
-            (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
+            // `Borrow` is the explicitly written `let` convention; `Let` is the
+            // default one. Both are non-owning reads of the same GC-carried
+            // value, so they take the same Shared ownership. Without `Borrow`
+            // here a `let value: &Int` parameter fell through to the `Value`
+            // arm and its signature was refused as a mismatch.
+            (super::ValueType::Gc(_), witchy_syntax::ast::Convention::Let | witchy_syntax::ast::Convention::Borrow | witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (super::ValueType::Gc(_), _) => false,
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::ParameterOwnership::Shared),
             (super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var)

@@ -99,3 +99,22 @@ fn a_capture_cannot_carry_an_unadmitted_payload() {
     .to_string();
     assert!(error.contains("no admitted carrier"), "{error}");
 }
+
+/// The explicitly written `let` convention on a view parameter, in both modes.
+///
+/// `Convention::Borrow` is the written `let`; `Convention::Let` is the default
+/// one. Both are non-owning reads of the same GC-carried view, but only the
+/// latter was listed in the ABI's ownership rule, so `fn read(let value: &Int)`
+/// was refused as a signature mismatch - in ordinary mode as well as `mode opt`,
+/// which is why this was never the opt-mode blocker it was recorded as.
+#[test]
+fn a_written_let_convention_carries_a_view_in_both_modes() {
+    assert_canonical_and_wasm(
+        "fn read(let value: &Int) -> Int:\n    (*value)\n\nfn main() -> Int:\n    let n = 79\n    read(&n)\n",
+        79,
+    );
+    assert_canonical_and_wasm(
+        "mode opt\n\nfn read(let value: &Int) -> Int:\n    (*value)\n\nfn main() -> Int:\n    let n = 79\n    read(&n)\n",
+        79,
+    );
+}
