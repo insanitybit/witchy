@@ -203,6 +203,8 @@ mod rfc0167_reference_contract_matrix;
 mod rfc0167_resource_composition;
 #[path = "misc/rfc0167_unique_writeback_matrix.rs"]
 mod rfc0167_unique_writeback_matrix;
+#[path = "misc/rfc0167_unit_discard_matrix.rs"]
+mod rfc0167_unit_discard_matrix;
 #[path = "misc/rfc0167_view_carrier_transport.rs"]
 mod rfc0167_view_carrier_transport;
 #[path = "misc/rfc0167_own_view_consumption.rs"]
