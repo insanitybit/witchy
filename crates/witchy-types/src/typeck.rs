@@ -77,6 +77,13 @@ fn type_is_exclusive_reference(ty: &ast::Type) -> bool {
     }
 }
 
+/// The one view payload with an admitted canonical carrier today. Row G of the
+/// RFC-0167 acceptance ledger records this boundary and the `&Float` refusal
+/// that shares it.
+fn is_admitted_view_carrier(payload: &Ty) -> bool {
+    matches!(payload, Ty::Int)
+}
+
 fn type_is_explicit_reference(ty: &ast::Type) -> bool {
     match ty {
         ast::Type::Qualified(
@@ -12432,14 +12439,30 @@ impl Checker {
                             }
                         }
                     }
+                    // RFC-0167 §views: "a view is a value-semantic snapshot handle,
+                    // not a lexical loan ... may be returned, stored in an aggregate,
+                    // transported through a generic, and captured by a callable
+                    // without naming a lifetime", because the carrier retains the
+                    // root while any copy of the view is live. So capture is not a
+                    // loan escape, and the blanket refusal that stood here reasoned
+                    // in the model that section retires.
+                    //
+                    // What a capture still must not do is carry a payload the ABI has
+                    // no carrier for past the boundary that would refuse it, so the
+                    // refusal is kept for exactly that. Row G of the acceptance ledger
+                    // records the admitted carrier and the matching `&Float` refusal.
                     if self
                         .explicit_reference_bindings
                         .iter()
                         .rev()
                         .any(|bindings| bindings.contains(&capture))
+                        && !matches!(
+                            self.resolve(&captured_ty),
+                            Ty::View(ref payload) if is_admitted_view_carrier(payload)
+                        )
                     {
                         return terr(format!(
-                            "closure capture `{capture}` carries an explicit reference, but a closure may escape its loan scope — materialize an owned value before capturing it"
+                            "closure capture `{capture}` carries a view whose payload has no admitted carrier; only the canonical scalar carrier crosses a callable boundary"
                         ));
                     }
                     if let Some(borrowed) = self.borrowed_nominal_name(&captured_ty) {

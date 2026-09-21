@@ -1132,10 +1132,12 @@
             "mode opt\n\nfn bad(input: &'a String) -> fn() -> String:\n    fn():\n        *input\n\nfn main(console: Console):\n    let text = \"value\"\n    let action = bad(&text)\n    console.print(action())\n",
         )
         .expect_err("an escaping closure cannot retain a shared reference");
+        // The refusal reason changed with RFC-0167: capture is no longer a loan
+        // escape (a view retains its root), so what is refused here is the
+        // payload having no admitted carrier.
         assert!(
-            err.message.contains("closure")
-                && err.message.contains("reference")
-                && err.message.contains("owned"),
+            err.message.contains("closure capture")
+                && err.message.contains("no admitted carrier"),
             "{err}"
         );
 
@@ -1143,10 +1145,12 @@
             "mode opt\n\nfn main(console: Console):\n    let make = fn(input: &'a String) -> fn() -> String:\n        fn():\n            *input\n    let text = \"value\"\n    let action = make(&text)\n    console.print(action())\n",
         )
         .expect_err("an escaping nested closure cannot retain a shared reference parameter");
+        // The refusal reason changed with RFC-0167: capture is no longer a loan
+        // escape (a view retains its root), so what is refused here is the
+        // payload having no admitted carrier.
         assert!(
-            err.message.contains("closure")
-                && err.message.contains("reference")
-                && err.message.contains("owned"),
+            err.message.contains("closure capture")
+                && err.message.contains("no admitted carrier"),
             "{err}"
         );
     }
@@ -1157,10 +1161,12 @@
             "mode opt\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = &text\n    let action = fn() -> String:\n        *observed\n    console.print(action())\n",
         )
         .expect_err("an escaping closure cannot retain a local shared reference");
+        // The refusal reason changed with RFC-0167: capture is no longer a loan
+        // escape (a view retains its root), so what is refused here is the
+        // payload having no admitted carrier.
         assert!(
-            err.message.contains("closure")
-                && err.message.contains("reference")
-                && err.message.contains("owned"),
+            err.message.contains("closure capture")
+                && err.message.contains("no admitted carrier"),
             "{err}"
         );
     }
@@ -1171,10 +1177,12 @@
             "mode opt\n\nfn main(console: Console):\n    let text = \"value\"\n    let observed = &text\n    let copied = observed\n    let action = fn() -> String:\n        *copied\n    console.print(action())\n",
         )
         .expect_err("a copied reference cannot escape through a closure");
+        // The refusal reason changed with RFC-0167: capture is no longer a loan
+        // escape (a view retains its root), so what is refused here is the
+        // payload having no admitted carrier.
         assert!(
-            err.message.contains("closure")
-                && err.message.contains("reference")
-                && err.message.contains("owned"),
+            err.message.contains("closure capture")
+                && err.message.contains("no admitted carrier"),
             "{err}"
         );
     }
@@ -1185,9 +1193,11 @@
             "mode opt\n\nfn main(console: Console):\n    var text = \"hi\"\n    let editable = &mut text\n    let later = fn(): editable\n    console.print(text)\n",
         )
         .expect_err("an exclusive reference captured by a closure escapes its owner");
+        // Refused for the carrier, not for a loan escape: RFC-0167 retired both
+        // `&mut` and the lexical-loan reading of capture.
         assert!(
-            closure.contains("closure capture `editable` carries an explicit reference")
-                && closure.contains("materialize an owned value"),
+            closure.contains("closure capture `editable`")
+                && closure.contains("no admitted carrier"),
             "{closure}"
         );
     }

@@ -2557,7 +2557,9 @@ impl Reflect for Counter:
         )
         .expect_err("borrowed closure capture must not enter the v1 witness");
         assert!(error.to_string().contains("closure capture"), "{error}");
-        assert!(error.to_string().contains("explicit reference"), "{error}");
+        // `&List(Int)` has no admitted carrier; that, not a loan escape, is why
+        // this capture cannot enter the witness (RFC-0167).
+        assert!(error.to_string().contains("no admitted carrier"), "{error}");
     }
 
     #[test]

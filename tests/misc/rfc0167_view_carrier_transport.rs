@@ -74,22 +74,28 @@ fn a_view_crosses_nominal_alias_and_generic_boundaries() {
     );
 }
 
-// NOT YET A WITNESS: callable capture. RFC-0167 permits it explicitly ("a view
-// ... may be ... captured by a callable without naming a lifetime", and "not a
-// lexical loan"), and removing the `typeck` guard that refuses it makes the
-// program below check, lower, and run correctly end to end:
-//
-//     fn main() -> Int:
-//         let n = 79
-//         let view = &n
-//         let f = fn() -> Int: (*view)
-//         f()
-//
-// The guard cannot simply be deleted, because two tests rely on it to refuse an
-// UNADMITTED carrier crossing a callable boundary
-// (`typeck::borrowed_nominal_cannot_escape_through_an_inferred_closure` and
-// `pipeline::canonical_closure_witness_rejects_borrowed_capture_authentication`,
-// both `&String`). Narrowing it by payload is the fix, but `Ty` at that point is
-// not the bare payload - a `&Int` binding does not resolve to `Ty::Int` there -
-// so the narrowing needs the declared reference type, not the resolved `Ty`.
-// Row J records this with the reproduction.
+/// Callable capture, which RFC-0167 permits in as many words: a view "may be
+/// returned, stored in an aggregate, transported through a generic, and
+/// captured by a callable without naming a lifetime", because the carrier
+/// retains the root while any copy of the view is live.
+#[test]
+fn a_callable_captures_a_view_without_naming_a_lifetime() {
+    assert_canonical_and_wasm(
+        "fn main() -> Int:\n    let n = 79\n    let view = &n\n    let f = fn() -> Int: (*view)\n    f()\n",
+        79,
+    );
+}
+
+/// The capture boundary that remains: a payload with no admitted carrier is
+/// still refused, so widening the carrier family stays row G's decision rather
+/// than something a closure can take for itself.
+#[test]
+fn a_capture_cannot_carry_an_unadmitted_payload() {
+    let error = witchy::resolve_std_only_checked(
+        "mode opt\n\nfn escape(owner: String) -> fn() -> &String:\n    let view = &owner\n    fn():\n        view\n",
+    )
+    .err()
+    .expect("an unadmitted view payload cannot cross a callable boundary")
+    .to_string();
+    assert!(error.contains("no admitted carrier"), "{error}");
+}
