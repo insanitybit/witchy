@@ -2167,3 +2167,16 @@ fn f():
     let formatted = crate::format::reformat(source).expect("format provenance fixture");
     assert_eq!(statements, body(&formatted));
 }
+
+#[test]
+fn a_line_leading_view_or_deref_starts_a_new_expression() {
+    // `&local` and `*view` at the start of a line are prefix forms, not a
+    // bitwise-and or multiplication continuing the line above.
+    let module = parse_module("fn f() -> &Int:\n    let local = 5\n    &local\n\nfn g(v: &Int) -> Int:\n    let n = 2\n    *v\n")
+        .expect("line-leading view and deref parse");
+    let rendered = format!("{module:?}");
+    assert!(!rendered.contains("BitAnd"), "{rendered}");
+    assert!(!rendered.contains("Mul"), "{rendered}");
+    // An operator at the END of a line still continues the expression.
+    parse_module("fn h(a: Int, b: Int) -> Int:\n    a &\n        b\n").expect("trailing infix continues");
+}

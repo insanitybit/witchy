@@ -1937,6 +1937,16 @@ impl Parser {
             {
                 break;
             }
+            // `&` and `*` are also prefix operators. At the start of a line they
+            // begin a view (`&place`) or a read through one (`*view`), never a
+            // bitwise-and or multiplication continuing the previous line; a
+            // multi-line infix expression keeps the operator at the line end.
+            if matches!(self.kind(), Tok::Amp | Tok::Star)
+                && self.pos > 0
+                && self.cur().line > self.toks[self.pos - 1].end_line
+            {
+                break;
+            }
             // Inside a match-arm body, a `-` that starts a new line is the next
             // arm's negative pattern, not a continuation of this expression.
             if self.in_match_arm
