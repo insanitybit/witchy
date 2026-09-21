@@ -1628,83 +1628,22 @@ fn is_aggregate_reference_carrier(source: &witchy_syntax::ast::Type) -> bool {
         witchy_syntax::ast::Type::Named(name, arguments)
             if name == "Option" && arguments.len() == 1 =>
         {
-            is_direct_rooted_view_int(&arguments[0])
-                || is_option_rooted_int_view_carrier(&arguments[0])
+            witchy_types::canonical_aggregates::is_rooted_int_view_carrier(&arguments[0], &BTreeMap::new())
         }
         _ => false,
     }
 }
 
-/// A non-packed scalar aggregate can carry the installed lifetime-free
-/// `&Int` owner directly in a tuple, builtin sum, or nominal field. This is
-/// deliberately shallow: a nested aggregate does not acquire this ABI merely
-/// because one of its descendants has a view. The opaque aggregate family and
-/// constructor are revalidated independently; this predicate only prevents
-/// source correspondence from erasing the exact checked aggregate identity.
+/// A non-packed aggregate that carries `&Int` views as nested opaque owners
+/// (see `canonical_aggregates::is_rooted_int_view_aggregate`). The opaque
+/// aggregate family and constructor are revalidated independently; this
+/// predicate only prevents source correspondence from erasing the exact
+/// checked aggregate identity.
 fn is_direct_rooted_view_aggregate_carrier(
     source: &witchy_syntax::ast::Type,
     records: &ScalarRecordFields,
 ) -> bool {
-    matches!(source.unqualified(), witchy_syntax::ast::Type::Named(..) | witchy_syntax::ast::Type::Tuple(_))
-        && witchy_types::canonical_aggregates::scalar_aggregate_shape(source, records).is_some_and(|shape| {
-            if shape.packed { return false; }
-            let mut seen_direct_view = false;
-            let mut active_definitions = BTreeSet::new();
-            shape.fields.iter().all(|field| {
-                if is_direct_rooted_view_int(field) || is_option_rooted_int_view_carrier(field) {
-                    seen_direct_view = true;
-                    true
-                } else {
-                    !contains_rooted_view_descendant(field, records, &mut active_definitions)
-                }
-            }) && seen_direct_view
-        })
-}
-
-/// This is intentionally stricter than scalar aggregate layout formation.
-/// A direct authenticated `&Int` field does not authorize a second view hidden
-/// in an aggregate, generic argument, or callable field; those need their own
-/// carrier contract. Ordinary non-view scalar descendants remain valid.
-fn contains_rooted_view_descendant(
-    source: &witchy_syntax::ast::Type,
-    records: &ScalarRecordFields,
-    active_definitions: &mut BTreeSet<String>,
-) -> bool {
-    match source {
-        witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::View, _) => true,
-        witchy_syntax::ast::Type::Qualified(_, inner) | witchy_syntax::ast::Type::Slice(inner) => {
-            contains_rooted_view_descendant(inner, records, active_definitions)
-        }
-        witchy_syntax::ast::Type::Named(name, arguments)
-        | witchy_syntax::ast::Type::Dyn(name, arguments) => {
-            arguments.iter().any(|argument| {
-                contains_rooted_view_descendant(argument, records, active_definitions)
-            }) || records.get(name).is_some_and(|definition| {
-                if !active_definitions.insert(name.clone()) { return false; }
-                let contains = definition.variants.iter().any(|variant| {
-                    variant.fields.iter().any(|field| {
-                        contains_rooted_view_descendant(field, records, active_definitions)
-                    })
-                });
-                active_definitions.remove(name);
-                contains
-            })
-        }
-        witchy_syntax::ast::Type::Tuple(items) => items.iter().any(|item| {
-            contains_rooted_view_descendant(item, records, active_definitions)
-        }),
-        witchy_syntax::ast::Type::RecordCompose { base, fields } => {
-            contains_rooted_view_descendant(base, records, active_definitions)
-                || fields.iter().any(|(_, field)| {
-                    contains_rooted_view_descendant(field, records, active_definitions)
-                })
-        }
-        witchy_syntax::ast::Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(|parameter| {
-                contains_rooted_view_descendant(parameter, records, active_definitions)
-            }) || contains_rooted_view_descendant(result, records, active_definitions)
-        }
-    }
+    witchy_types::canonical_aggregates::is_rooted_int_view_aggregate(source, records)
 }
 
 fn is_shared_reference_tuple_carrier(source: &witchy_syntax::ast::Type) -> bool {

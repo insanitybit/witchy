@@ -201,3 +201,90 @@ fn main() -> Int:
         "a List(&Int) field has no admitted carrier and must not ride on the direct view",
     );
 }
+
+/// Any non-packed shell nests a carrier, not only `Option`: a tuple inside an
+/// `Option`, a `Result` inside an `Option`, an `Option` inside a tuple and a
+/// `Result`, a user sum, and a record inside a record.
+#[test]
+fn a_tuple_view_carrier_nests_inside_an_option() {
+    assert_canonical_and_wasm(r#"
+fn wrap(r: &Int) -> Option((&Int, Int)):
+    Some((r, 2))
+
+fn main() -> Int:
+    let x = 6
+    match wrap(&x):
+        Some((v, n)) -> (*v) * 10 + n
+        None -> 0
+"#, 62);
+}
+
+#[test]
+fn a_result_view_carrier_nests_inside_an_option() {
+    assert_canonical_and_wasm(r#"
+fn wrap(r: &Int, ok: Bool) -> Option(Result(&Int, String)):
+    if ok: Some(Ok(r)) else: Some(Err("four"))
+
+fn score(o: Option(Result(&Int, String))) -> Int:
+    match o:
+        Some(Ok(v)) -> (*v)
+        Some(Err(e)) -> e.length() * 100
+        None -> 0
+
+fn main() -> Int:
+    let x = 3
+    score(wrap(&x, true)) + score(wrap(&x, false))
+"#, 403);
+}
+
+#[test]
+fn an_option_view_carrier_nests_inside_a_tuple_and_a_result() {
+    assert_canonical_and_wasm(r#"
+fn pair(r: &Int) -> (Option(&Int), Int):
+    (Some(r), 5)
+
+fn lift(r: &Int) -> Result(Option(&Int), String):
+    Ok(Some(r))
+
+fn main() -> Int:
+    let x = 3
+    let (o, n) = pair(&x)
+    let a = match o:
+        Some(v) -> (*v) * 10 + n
+        None -> 0
+    let b = match lift(&x):
+        Ok(Some(v)) -> (*v)
+        _ -> 0
+    a * 10 + b
+"#, 353);
+}
+
+#[test]
+fn a_record_carrier_nests_inside_a_record_and_a_user_sum() {
+    assert_canonical_and_wasm(r#"
+mode opt
+
+type Inner:
+    view: &Int
+    bias: Int
+
+type Outer:
+    inner: Inner
+    tag: Int
+
+type Slot:
+    Full(&Int)
+    Empty
+
+fn build(r: &Int) -> Outer:
+    Outer(inner: Inner(view: r, bias: 2), tag: 7)
+
+fn main() -> Int:
+    let x = 5
+    let o = build(&x)
+    let slot = match Full(&x):
+        Full(v) -> (*v)
+        Empty -> 0
+    ((*o.inner.view) + o.inner.bias) * 100 + o.tag * 10 + slot
+"#, 775);
+}

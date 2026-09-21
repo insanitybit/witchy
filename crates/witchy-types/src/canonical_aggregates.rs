@@ -628,7 +628,7 @@ pub fn canonical_owner_aggregate_identity(
 ) -> Option<Type> {
     let identity = concrete_aggregate_identity(ty, definitions)?;
     let carries_direct_rooted_view = scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
-        !shape.packed && shape.fields.iter().any(is_rooted_int_view_option_carrier)
+        !shape.packed && shape.fields.iter().any(|field| is_rooted_int_view_carrier(field, definitions))
     });
     if !carries_direct_rooted_view {
         return Some(identity);
@@ -638,12 +638,12 @@ pub fn canonical_owner_aggregate_identity(
             if source_arguments.len() == arguments.len() =>
         {
             Some(Type::Named(name, source_arguments.iter().zip(arguments).map(|(source, identity)| {
-                if is_rooted_int_view_option_carrier(source) { source.clone() } else { identity }
+                if is_rooted_int_view_carrier(source, definitions) { source.clone() } else { identity }
             }).collect()))
         }
         (Type::Tuple(source_items), Type::Tuple(items)) if source_items.len() == items.len() => {
             Some(Type::Tuple(source_items.iter().zip(items).map(|(source, identity)| {
-                if is_rooted_int_view_option_carrier(source) { source.clone() } else { identity }
+                if is_rooted_int_view_carrier(source, definitions) { source.clone() } else { identity }
             }).collect()))
         }
         // A nominal declaration can carry a direct rooted view in one of its
@@ -653,11 +653,73 @@ pub fn canonical_owner_aggregate_identity(
     }
 }
 
-/// `&Int`, or `Option` wrapped around such a carrier to any depth.
-fn is_rooted_int_view_option_carrier(ty: &Type) -> bool {
-    is_direct_rooted_int_view(ty)
-        || matches!(ty.unqualified(), Type::Named(name, arguments)
-            if name == "Option" && matches!(arguments.as_slice(), [payload] if is_rooted_int_view_option_carrier(payload)))
+/// Nesting bound for view carriers. A recursive nominal cannot make the
+/// carrier judgment diverge; anything deeper simply is not a carrier.
+const MAX_VIEW_CARRIER_DEPTH: usize = 8;
+
+/// A value that carries authenticated `&Int` views as opaque owners: the
+/// direct view itself, or a non-packed aggregate (tuple, record, sum,
+/// `Option`, `Result`) each of whose fields is either such a carrier or holds
+/// no view at all, with at least one carrier field. Every shell on the path is
+/// its own opaque owner whose carrier fields are the next owner inward, so a
+/// view is never stored in linear memory.
+pub fn is_rooted_int_view_carrier(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    view_carrier_at(ty, definitions, 0)
+}
+
+/// [`is_rooted_int_view_carrier`] minus the bare view: an aggregate owner.
+pub fn is_rooted_int_view_aggregate(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> bool {
+    view_aggregate_at(ty, definitions, 0)
+}
+
+fn view_carrier_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
+    is_direct_rooted_int_view(ty) || view_aggregate_at(ty, definitions, depth)
+}
+
+fn view_aggregate_at(ty: &Type, definitions: &BTreeMap<String, TypeDef>, depth: usize) -> bool {
+    if depth >= MAX_VIEW_CARRIER_DEPTH
+        || !matches!(ty.unqualified(), Type::Named(..) | Type::Tuple(_))
+    {
+        return false;
+    }
+    let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return false };
+    if shape.packed { return false; }
+    let mut carriers = 0usize;
+    let admitted = shape.fields.iter().all(|field| {
+        if view_carrier_at(field, definitions, depth + 1) {
+            carriers += 1;
+            true
+        } else {
+            !contains_view(field, definitions, &mut BTreeSet::new())
+        }
+    });
+    admitted && carriers > 0
+}
+
+/// Whether any view hides in `ty`, through generic arguments, tuples, named
+/// declarations, and callable signatures.
+fn contains_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>, active: &mut BTreeSet<String>) -> bool {
+    match ty {
+        Type::Qualified(witchy_syntax::ast::TypeQual::View, _) => true,
+        Type::Qualified(_, inner) | Type::Slice(inner) => contains_view(inner, definitions, active),
+        Type::Named(name, arguments) | Type::Dyn(name, arguments) => {
+            arguments.iter().any(|argument| contains_view(argument, definitions, active))
+                || definitions.get(name).is_some_and(|definition| {
+                    if !active.insert(name.clone()) { return false; }
+                    let found = definition.variants.iter().any(|variant| {
+                        variant.fields.iter().any(|field| contains_view(field, definitions, active))
+                    });
+                    active.remove(name);
+                    found
+                })
+        }
+        Type::Tuple(items) => items.iter().any(|item| contains_view(item, definitions, active)),
+        Type::RecordCompose { base, fields } => contains_view(base, definitions, active)
+            || fields.iter().any(|(_, field)| contains_view(field, definitions, active)),
+        Type::Fn(parameters, result, _, _) => parameters.iter().any(|parameter| contains_view(parameter, definitions, active))
+            || contains_view(result, definitions, active),
+        _ => false,
+    }
 }
 
 fn is_direct_rooted_int_view(ty: &Type) -> bool {

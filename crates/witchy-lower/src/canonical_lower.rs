@@ -2853,86 +2853,24 @@ fn is_aggregate_reference_carrier(ty: &Type) -> bool {
     }
 }
 
-/// `&Int`, or an `Option` nesting of it: each shell is one tagged owner whose
-/// `Some` field is the next carrier inward.
+/// `&Int`, or an aggregate whose carrier fields nest it; see
+/// `canonical_aggregates::is_rooted_int_view_carrier`. Definition-free: used
+/// only where a builtin shell (`Option`) names its payload directly.
 fn is_view_or_option_view_carrier(ty: &Type) -> bool {
-    rooted_view_inner(ty).is_some_and(is_direct_shared_int)
-        || matches!(ty.unqualified(), Type::Named(name, arguments)
-            if name == "Option" && matches!(arguments.as_slice(), [payload] if is_view_or_option_view_carrier(payload)))
+    witchy_types::canonical_aggregates::is_rooted_int_view_carrier(ty, &BTreeMap::new())
 }
 
-/// An aggregate with a direct immutable `&Int` field is represented by its
-/// source-derived opaque owner family.  The checked callable ABI erases view
-/// fields to their scalar payloads, so declaration sites must recover this
-/// exact source shape before accepting the aggregate as a `Gc` value.
-///
-/// Deliberately do not recurse through nested aggregates here.  This first
-/// carrier slice admits only fields whose root/projection contract is the
-/// installed direct `&Int` family; a nested carrier needs its own source
-/// provenance and stays fail-closed rather than inheriting this ABI rewrite.
+/// An aggregate that carries `&Int` views is represented by its
+/// source-derived opaque owner family, one owner per shell. The checked
+/// callable ABI erases view fields to their scalar payloads, so declaration
+/// sites must recover this exact source shape before accepting the aggregate
+/// as a `Gc` value. A field holding a view outside that recursive carrier
+/// shape keeps the whole aggregate fail-closed.
 fn is_direct_rooted_int_view_aggregate_carrier(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> bool {
-    scalar_aggregate_shape(ty, definitions).is_some_and(|shape| {
-        if shape.packed { return false; }
-        let mut seen_direct_view = false;
-        let mut active_definitions = BTreeSet::new();
-        shape.fields.iter().all(|field| {
-            if is_view_or_option_view_carrier(field) {
-                seen_direct_view = true;
-                true
-            } else {
-                !contains_rooted_view_descendant(field, definitions, &mut active_definitions)
-            }
-        }) && seen_direct_view
-    })
-}
-
-/// A shallow aggregate carrier may contain ordinary scalar fields beside its
-/// immediate authenticated `&Int` fields, but no nested type can inherit that
-/// carrier merely by containing a view.  Walk named definitions as well as
-/// generic arguments: a decoy direct field must not authorize `Inner`,
-/// `Option(&Int)`, or `fn() -> &Int` elsewhere in the same aggregate.
-fn contains_rooted_view_descendant(
-    ty: &Type,
-    definitions: &BTreeMap<String, TypeDef>,
-    active_definitions: &mut BTreeSet<String>,
-) -> bool {
-    match ty {
-        Type::Qualified(TypeQual::View, _) => true,
-        Type::Qualified(_, inner) | Type::Slice(inner) => {
-            contains_rooted_view_descendant(inner, definitions, active_definitions)
-        }
-        Type::Named(name, arguments) | Type::Dyn(name, arguments) => {
-            arguments.iter().any(|argument| {
-                contains_rooted_view_descendant(argument, definitions, active_definitions)
-            }) || definitions.get(name).is_some_and(|definition| {
-                if !active_definitions.insert(name.clone()) { return false; }
-                let contains = definition.variants.iter().any(|variant| {
-                    variant.fields.iter().any(|field| {
-                        contains_rooted_view_descendant(field, definitions, active_definitions)
-                    })
-                });
-                active_definitions.remove(name);
-                contains
-            })
-        }
-        Type::Tuple(items) => items.iter().any(|item| {
-            contains_rooted_view_descendant(item, definitions, active_definitions)
-        }),
-        Type::RecordCompose { base, fields } => {
-            contains_rooted_view_descendant(base, definitions, active_definitions)
-                || fields.iter().any(|(_, field)| {
-                    contains_rooted_view_descendant(field, definitions, active_definitions)
-                })
-        }
-        Type::Fn(parameters, result, _, _) => {
-            parameters.iter().any(|parameter| {
-                contains_rooted_view_descendant(parameter, definitions, active_definitions)
-            }) || contains_rooted_view_descendant(result, definitions, active_definitions)
-        }
-    }
+    witchy_types::canonical_aggregates::is_rooted_int_view_aggregate(ty, definitions)
 }
 
 fn is_shared_reference_tuple_carrier(ty: &Type) -> bool {
