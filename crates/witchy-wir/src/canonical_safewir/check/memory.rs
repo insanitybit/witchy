@@ -1121,7 +1121,15 @@ impl<'a> MemoryChecker<'a> {
         // prefix's Shared child status merely because its old count ID dies.
         let mut full_current_prefixes = meet_full_current_prefixes(existing, incoming, &range_states);
         self.synchronize_joined_full_prefixes(block, &objects, &mut range_states, &mut full_current_prefixes)?;
-        let mut bound_generations = intersect_map(&existing.bound_generations, &incoming.bound_generations);
+        // The met objects already carry the joined epoch, so proofs naming a
+        // predecessor's concrete epoch for one of those identities are talking
+        // about that same joined owner.
+        let joined_identities: SortedSet<ValueId> = objects
+            .values()
+            .filter(|state| state.owner_generation == JOINED_OWNER_GENERATION)
+            .map(|state| state.identity)
+            .collect();
+        let mut bound_generations = meet_generation_facts(&existing.bound_generations, &incoming.bound_generations);
         for (count, capacity, generation) in reauthenticated_joined_extents {
             bound_generations.entry(count).or_default().insert(generation);
             bound_generations.entry(capacity).or_default().insert(generation);
@@ -1130,8 +1138,16 @@ impl<'a> MemoryChecker<'a> {
             objects: objects.into(),
             shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
             bound_generations: bound_generations.into(),
-            guard_generations: meet_map(&existing.guard_generations, &incoming.guard_generations),
-            fresh_header_lengths: meet_map(&existing.fresh_header_lengths, &incoming.fresh_header_lengths),
+            guard_generations: meet_generation_facts(
+                &existing.guard_generations, &incoming.guard_generations,
+            ).into(),
+            // Only the fresh-header observations rebase into the joined epoch;
+            // see `rebase_joined_generations` for why the derived proofs above
+            // must keep their concrete epochs.
+            fresh_header_lengths: meet_generation_facts(
+                &rebase_joined_generations(&existing.fresh_header_lengths, &joined_identities),
+                &rebase_joined_generations(&incoming.fresh_header_lengths, &joined_identities),
+            ).into(),
             stored_objects: meet_map(&existing.stored_objects, &incoming.stored_objects),
             nullable_absent_slots: meet_set(&existing.nullable_absent_slots, &incoming.nullable_absent_slots),
             initialized_scalar_slots: meet_set(&existing.initialized_scalar_slots, &incoming.initialized_scalar_slots),
@@ -6648,6 +6664,87 @@ fn exact_carried_counted_extent(left: &ObjectState, right: &ObjectState) -> Opti
 /// these meets carry 65-256 entries and another fifth carry 17-64, so the
 /// difference is the difference between `n log m` scattered lookups and
 /// `n + m` sequential steps.
+/// Join two tables of owner-generation proofs.
+///
+/// Each entry says "this scalar is an authenticated observation of its owner
+/// at these generations". A join keeps what BOTH predecessors proved, which is
+/// the intersection of the two generation sets — not, as the generic meet
+/// does, only entries whose sets are exactly equal. Requiring equality is
+/// sound but discards the generation the predecessors agreed on whenever one
+/// of them happens to have proved another alongside it.
+fn meet_generation_facts<K: Ord + Copy>(
+    left: &SortedMap<K, SortedSet<OwnerGeneration>>,
+    right: &SortedMap<K, SortedSet<OwnerGeneration>>,
+) -> SortedMap<K, SortedSet<OwnerGeneration>> {
+    if all_entries_survive(left, right) {
+        return left.clone();
+    }
+    left.iter()
+        .filter_map(|(key, ours)| {
+            let theirs = right.get(key)?;
+            let shared: SortedSet<OwnerGeneration> = ours.intersection(theirs).copied().collect();
+            (!shared.is_empty()).then(|| (*key, shared))
+        })
+        .collect()
+}
+
+/// Carry a *fresh header observation* about a concrete owner epoch into the
+/// joined epoch its owner is about to have.
+///
+/// [`JOINED_OWNER_GENERATION`] is the dataflow top for an identity: the merge
+/// of paths with different concrete mutation histories. An entry in
+/// `fresh_header_lengths` says "this SSA value is an exact Length header load
+/// of that owner". A predecessor that recorded the load at epoch 1 and one
+/// that recorded the same load at the top are making the same claim about the
+/// same value — on whichever path control arrived, that load was the current
+/// length — so the merged observation is about the merged epoch. Left alone,
+/// the two sets share no member and the intersection throws the claim away.
+///
+/// That is how a list built in an inner loop and pushed into an outer
+/// accumulator lost its length: both predecessors named the same SSA value as
+/// the list's length lane, one at epoch 1 and one at the top, so the counted
+/// copy was left with a bound it could not authenticate (RFC-0167 foundation
+/// debt, corpus `018`).
+///
+/// This applies to `fresh_header_lengths` and to nothing else. `bound_generations`
+/// and `guard_generations` hold *derived* proofs — "this guard established
+/// `start < count`" — which a predecessor may have established BEFORE a
+/// mutation that the other predecessor performed. There the concrete epoch is
+/// the whole point, and rebasing both sides into the top would revive a guard
+/// the mutation retired; `bounds_guards_name_the_current_owner_generation`
+/// pins that refusal.
+fn rebase_joined_generations<'a, K: Ord + Copy>(
+    facts: &'a SortedMap<K, SortedSet<OwnerGeneration>>,
+    joined: &SortedSet<ValueId>,
+) -> std::borrow::Cow<'a, SortedMap<K, SortedSet<OwnerGeneration>>> {
+    let affected = |set: &SortedSet<OwnerGeneration>| {
+        set.iter().any(|fact| {
+            fact.epoch != JOINED_OWNER_GENERATION && joined.contains(&fact.identity)
+        })
+    };
+    if !facts.values().any(affected) {
+        return std::borrow::Cow::Borrowed(facts);
+    }
+    std::borrow::Cow::Owned(
+        facts
+            .iter()
+            .map(|(key, set)| {
+                let rebased = set
+                    .iter()
+                    .map(|fact| {
+                        if joined.contains(&fact.identity) {
+                            OwnerGeneration { identity: fact.identity, epoch: JOINED_OWNER_GENERATION }
+                        } else {
+                            *fact
+                        }
+                    })
+                    .collect();
+                (*key, rebased)
+            })
+            .collect(),
+    )
+}
+
 fn all_entries_survive<K: Ord, V: PartialEq>(
     left: &SortedMap<K, V>,
     right: &SortedMap<K, V>,
@@ -6915,6 +7012,84 @@ mod tests {
     use super::*;
     use crate::canonical_safewir::MemoryEffect;
     use super::super::sorted::SortedMap;
+
+    /// A join keeps the generation both predecessors proved. The generic meet
+    /// kept an entry only when the two sets were identical, which threw the
+    /// shared proof away whenever one side had proved another alongside it.
+    #[test]
+    fn joining_generation_proofs_keeps_what_both_sides_proved() {
+        let owner = ValueId::new(9);
+        let bound = ValueId::new(92);
+        let first = OwnerGeneration { identity: owner, epoch: 1 };
+        let second = OwnerGeneration { identity: owner, epoch: 2 };
+        let left: SortedMap<ValueId, SortedSet<OwnerGeneration>> =
+            [(bound, [first, second].into_iter().collect())].into_iter().collect();
+        let right: SortedMap<ValueId, SortedSet<OwnerGeneration>> =
+            [(bound, [second].into_iter().collect())].into_iter().collect();
+        let met = meet_generation_facts(&left, &right);
+        assert_eq!(met.get(&bound).map(|facts| facts.iter().copied().collect::<Vec<_>>()),
+            Some(vec![second]), "the shared generation survives the join");
+
+        let disjoint: SortedMap<ValueId, SortedSet<OwnerGeneration>> =
+            [(bound, [first].into_iter().collect())].into_iter().collect();
+        let other: SortedMap<ValueId, SortedSet<OwnerGeneration>> =
+            [(bound, [second].into_iter().collect())].into_iter().collect();
+        assert_eq!(meet_generation_facts(&disjoint, &other).get(&bound), None,
+            "sharing no generation still proves nothing");
+    }
+
+    /// Corpus `018`: a list built in an inner loop and pushed into an outer
+    /// accumulator. Both predecessors name the same SSA value as the list's
+    /// length lane, one at a concrete epoch and one at the joined top. They are
+    /// the same claim about the same owner, so the join must keep it — before
+    /// this the sets shared no member and the counted copy was left with a
+    /// bound it could not authenticate.
+    #[test]
+    fn a_concrete_epoch_rebases_into_the_joined_epoch_it_merges_into() {
+        let owner = ValueId::new(9);
+        let bound = ValueId::new(92);
+        let concrete = OwnerGeneration { identity: owner, epoch: 1 };
+        let joined_fact = OwnerGeneration { identity: owner, epoch: JOINED_OWNER_GENERATION };
+        let left: SortedMap<ValueId, SortedSet<OwnerGeneration>> =
+            [(bound, [concrete].into_iter().collect())].into_iter().collect();
+        let right: SortedMap<ValueId, SortedSet<OwnerGeneration>> =
+            [(bound, [joined_fact].into_iter().collect())].into_iter().collect();
+        let joined: SortedSet<ValueId> = [owner].into_iter().collect();
+
+        assert_eq!(meet_generation_facts(&left, &right).get(&bound), None,
+            "without the rebase the two epochs annihilate");
+
+        let met = meet_generation_facts(
+            &rebase_joined_generations(&left, &joined),
+            &rebase_joined_generations(&right, &joined),
+        );
+        assert_eq!(met.get(&bound).map(|facts| facts.iter().copied().collect::<Vec<_>>()),
+            Some(vec![joined_fact]), "the proof survives into the joined epoch");
+    }
+
+    /// An identity that did not join keeps its concrete epoch, so the rebase
+    /// cannot launder a proof about some other owner.
+    #[test]
+    fn rebasing_leaves_an_owner_that_did_not_join_alone() {
+        let joined_owner = ValueId::new(9);
+        let untouched_owner = ValueId::new(11);
+        let bound = ValueId::new(92);
+        let facts: SortedMap<ValueId, SortedSet<OwnerGeneration>> = [(
+            bound,
+            [
+                OwnerGeneration { identity: joined_owner, epoch: 1 },
+                OwnerGeneration { identity: untouched_owner, epoch: 1 },
+            ].into_iter().collect(),
+        )].into_iter().collect();
+        let joined: SortedSet<ValueId> = [joined_owner].into_iter().collect();
+        let rebased = rebase_joined_generations(&facts, &joined);
+        assert_eq!(rebased.get(&bound).map(|set| set.iter().copied().collect::<Vec<_>>()), Some(vec![
+            OwnerGeneration { identity: joined_owner, epoch: JOINED_OWNER_GENERATION },
+            OwnerGeneration { identity: untouched_owner, epoch: 1 },
+        ]));
+        assert!(matches!(rebase_joined_generations(&facts, &SortedSet::new()),
+            std::borrow::Cow::Borrowed(_)), "nothing to rebase does not copy the table");
+    }
 
     const COUNT: ValueId = ValueId::new(0);
     const CAPACITY: ValueId = ValueId::new(1);
