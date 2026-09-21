@@ -5243,32 +5243,71 @@ impl Checker {
     // (hashes for free) rather than the type it's bound to, so a miss costs
     // nothing beyond what resolving would have cost anyway.
     fn resolve(&self, t: &Ty) -> Ty {
+        self.resolved_if_changed(t).unwrap_or_else(|| t.clone())
+    }
+
+    /// `Some` only when resolution actually substituted something.
+    ///
+    /// Resolution rebuilt the whole type on every call: a `Named`, `Tuple` or
+    /// `Fn` allocated a fresh `Rc<[Ty]>` for its arguments even when no
+    /// variable inside it was bound and the answer was the type it started
+    /// with. Profiled on a real 1,824-line program, `Ty::allocate_for_slice`
+    /// under `resolve` was 6.7% of the compile, inside a type-check that is
+    /// 85% of it and three quarters allocator traffic.
+    ///
+    /// Reporting "unchanged" upward lets every level keep the `Rc` it already
+    /// holds, so an unchanged subtree costs a refcount bump instead of a
+    /// rebuild. The result is identical either way: this only chooses between
+    /// a fresh structure and the equal one already in hand.
+    fn resolved_if_changed(&self, t: &Ty) -> Option<Ty> {
         match t {
             Ty::Var(v) => {
                 if let Some(cached) = self.resolve_cache.borrow().get(v) {
-                    return cached.clone();
+                    return (cached != t).then(|| cached.clone());
                 }
                 let result = match self.subst.get(v) {
                     Some(bound) => self.resolve(bound),
                     None => t.clone(),
                 };
                 self.resolve_cache.borrow_mut().insert(*v, result.clone());
-                result
+                (result != *t).then_some(result)
             }
-            Ty::List(e) => Ty::List(Rc::new(self.resolve(e))),
-            Ty::View(payload) => Ty::View(Rc::new(self.resolve(payload))),
-            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
-            Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
-            Ty::Dyn(n, args) => Ty::Dyn(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
-            Ty::Fn(params, ret, conventions, reference_params, qualifiers) => Ty::Fn(
-                params.iter().map(|t| self.resolve(t)).collect(),
-                Rc::new(self.resolve(ret)),
-                conventions.clone(),
-                reference_params.clone(),
-                *qualifiers,
-            ),
-            _ => t.clone(),
+            Ty::List(e) => self.resolved_if_changed(e).map(|e| Ty::List(Rc::new(e))),
+            Ty::View(payload) => self.resolved_if_changed(payload).map(|p| Ty::View(Rc::new(p))),
+            Ty::Tuple(ts) => self.resolved_slice(ts).map(Ty::Tuple),
+            Ty::Named(n, args) => self.resolved_slice(args).map(|args| Ty::Named(n.clone(), args)),
+            Ty::Dyn(n, args) => self.resolved_slice(args).map(|args| Ty::Dyn(n.clone(), args)),
+            Ty::Fn(params, ret, conventions, reference_params, qualifiers) => {
+                let resolved_params = self.resolved_slice(params);
+                let resolved_ret = self.resolved_if_changed(ret);
+                if resolved_params.is_none() && resolved_ret.is_none() {
+                    return None;
+                }
+                Some(Ty::Fn(
+                    resolved_params.unwrap_or_else(|| params.clone()),
+                    resolved_ret.map_or_else(|| ret.clone(), Rc::new),
+                    conventions.clone(),
+                    reference_params.clone(),
+                    *qualifiers,
+                ))
+            }
+            _ => None,
         }
+    }
+
+    /// `Some` only when at least one element resolved to something else.
+    fn resolved_slice(&self, types: &Rc<[Ty]>) -> Option<Rc<[Ty]>> {
+        let first_change = types
+            .iter()
+            .position(|t| self.resolved_if_changed(t).is_some())?;
+        let resolved = types
+            .iter()
+            .enumerate()
+            .map(|(index, t)| {
+                if index < first_change { t.clone() } else { self.resolve(t) }
+            })
+            .collect();
+        Some(resolved)
     }
 
     /// The only two ways `self.subst` may change: bind one more variable, or
