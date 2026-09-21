@@ -161,6 +161,15 @@ disables memoization; the store is keyed under a digest of `witchy-wir`'s
 sources, so an edited checker never replays old verdicts. Design and trust
 boundary: `crates/witchy-wir/src/canonical_safewir/check/cache.rs`.
 
+`scripts/bin/witchy` is the same idea for ad-hoc compiler runs: the store is
+opt-in, and a bare shell `witchy` is deliberately left out, but that taxes the
+loop you actually wait on. Measured on a five-line async program, twice each:
+**29.3s CPU without the store, 8.6s with it** -- anything touching async
+re-checks the std executor from scratch otherwise. Using the shim IS the
+opt-in, exactly as `scripts/bin/cargo` is for the build cache; the first run
+pays to populate the store and every later one collects. A `witchy` invoked
+from outside the repo keeps the untouched default.
+
 `./scripts/check.sh` in the shared `target/` tree is still authoritative, but
 coordinate before running it there. While another agent is active, prefer
 `CARGO_TARGET_DIR=target-<agent> ./scripts/check.sh --fast`.

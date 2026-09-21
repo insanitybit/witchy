@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Repo-local `witchy` that opts ad-hoc runs into the SafeWIR verdict store.
+#
+# The store (crates/witchy-wir/src/canonical_safewir/check/cache.rs) is
+# deliberately OPT-IN: `.cargo/config.toml` turns it on for every
+# cargo/nextest-launched process, because tests are de facto trusted, and a
+# bare shell `witchy` is left out. That boundary is right, but it taxes the
+# one loop a human or agent actually waits on. Measured on a five-line async
+# program, twice each:
+#
+#     without the store   29.3s CPU
+#     with the store       8.6s CPU     -> 3.4x
+#
+# Anything touching async pays that, because the std executor is re-checked
+# from scratch every run. This shim is the explicit opt-in: using it IS the
+# consent, exactly as `scripts/bin/cargo` is for the build cache. A `witchy`
+# invoked from anywhere else still gets the untouched default.
+#
+# Replaying a verdict can never admit stale code: the store is keyed under a
+# digest of `witchy-wir`'s own sources (build.rs), so an edited checker reads
+# a different namespace and re-derives everything.
+#
+# Usage: put scripts/bin first on PATH, or call ./scripts/bin/witchy directly.
+#   WITCHY_SAFEWIR_CHECK_CACHE=off   disables memoization entirely
+#   WITCHY_SAFEWIR_CHECK_CACHE_DIR   set it yourself and the shim defers
+set -u
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$self_dir/../.." && pwd)"
+
+# Share ONE store across every worktree of this repository, the way the cargo
+# shim shares one build-cache store: `--git-common-dir` is the main `.git` for
+# a linked worktree, so a worktree does not get a private, always-cold store.
+state_root="$repo_root"
+if common="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    state_root="$(dirname "$common")"
+fi
+
+# Resolve the real witchy: the first PATH entry that is not this shim's own
+# directory, else the debug binary this checkout builds. Never re-exec self.
+real_witchy=""
+IFS=':' read -r -a path_entries <<< "${PATH:-}"
+for dir in "${path_entries[@]}"; do
+    [ -n "$dir" ] || continue
+    case "$(cd "$dir" 2>/dev/null && pwd)" in "$self_dir") continue ;; esac
+    if [ -x "$dir/witchy" ] && [ ! -d "$dir/witchy" ]; then
+        real_witchy="$dir/witchy"
+        break
+    fi
+done
+if [ -z "$real_witchy" ]; then
+    for candidate in "$repo_root/target/debug/witchy" "$repo_root/target/release/witchy"; do
+        [ -x "$candidate" ] && { real_witchy="$candidate"; break; }
+    done
+fi
+[ -n "$real_witchy" ] || {
+    echo "scripts/bin/witchy: no witchy binary found (build one: ./scripts/bin/cargo build -p witchy)" >&2
+    exit 127
+}
+
+# Absolute: the spawned compiler may run with any working directory, and a
+# relative store path would land wherever that happens to be.
+export WITCHY_SAFEWIR_CHECK_CACHE_DIR="${WITCHY_SAFEWIR_CHECK_CACHE_DIR:-$state_root/state/safewir-check-cache}"
+
+exec "$real_witchy" "$@"
