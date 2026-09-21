@@ -2096,6 +2096,8 @@ fn rfc0167_rejects_retired_reference_surface_with_targeted_diagnostics() {
     for (source, diagnostic) in [
         ("fn f(x: &'a Int):\n    x\n", "explicit reference lifetimes are retired"),
         ("fn f(x: &mut Int):\n    x\n", "`&mut` is retired"),
+        ("fn f<'a>(x: &Int):\n    x\n", "lifetime parameters are retired"),
+        ("fn f<a>(x: a):\n    x\n", "written in brackets"),
         ("fn f(x: View(Int, 'a)):\n    x\n", "`View(T, 'a)` is retired"),
         ("fn f(let('a) x: Int):\n    x\n", "`let('a)` is retired"),
         ("fn f(var('a) x: Int):\n    x\n", "`var('a)` is retired"),

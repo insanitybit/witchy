@@ -1285,6 +1285,14 @@ impl Parser {
     /// never admits lifetime tokens: rooted immutable views carry no lifetime
     /// relation in normal source.
     fn function_type_params(&mut self) -> Result<Vec<String>, ParseError> {
+        if self.at(&Tok::Lt) {
+            if matches!(self.toks.get(self.pos + 1).map(|token| &token.kind), Some(Tok::Lifetime(_))) {
+                return Err(self.error(
+                    "lifetime parameters are retired; immutable views do not name lifetimes",
+                ));
+            }
+            return Err(self.error("function type parameters are written in brackets: `fn f[a](x: a)`"));
+        }
         if !self.eat(&Tok::LBracket) {
             return Ok(Vec::new());
         }
