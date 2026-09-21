@@ -1475,6 +1475,14 @@ fn expr(e: &Expr) -> String {
             // `await` is POSTFIX: `e.await` (binds at postfix precedence).
             format!("{}.await", operand(inner, POSTFIX_PREC, false))
         }
+        Expr::Unary { op: UnOp::Deref, expr: inner } => {
+            // Always parenthesized. The off-side layout continues a line whose
+            // next line starts with `*` as a multiplication, so a bare `*value`
+            // beginning a statement or block tail would reparse as a different
+            // program and the formatter's own semantics guard would refuse the
+            // file. `(*value)` is also the spelling every RFC-0167 witness uses.
+            format!("(*{})", operand(inner, UNARY_PREC, false))
+        }
         Expr::Unary { op, expr: inner } => {
             format!("{}{}", unary_prefix(*op), operand(inner, UNARY_PREC, false))
         }
@@ -1701,7 +1709,10 @@ fn unary_prefix(op: UnOp) -> &'static str {
         UnOp::BitNot => "~",
         UnOp::Borrow => "&",
         UnOp::BorrowMut => panic!("cannot format a migration-only mutable borrow as canonical source"),
-        UnOp::Deref => panic!("cannot format a migration-only dereference as canonical source"),
+        // Reading through a view is canonical RFC-0167 source (`(*value)`); only a
+        // write-through dereference is retired, and the parser rejects that form
+        // before anything reaches the formatter.
+        UnOp::Deref => "*",
         UnOp::Move => "move ",
         UnOp::Await => "await ",
     }
@@ -2958,7 +2969,10 @@ fn block_has_unary_legacy_mutation(block: &Block) -> bool {
 
 fn expr_has_unary_legacy_mutation(expression: &Expr) -> bool {
     match expression {
-        Expr::Unary { op: UnOp::BorrowMut | UnOp::Deref, .. } => true,
+        // A read through a view (`*value`) is canonical RFC-0167 source; only the
+        // mutable borrow is a legacy spelling. Write-through deref is an assignment
+        // target the parser already rejects, so it never reaches this walk.
+        Expr::Unary { op: UnOp::BorrowMut, .. } => true,
         Expr::Unary { expr, .. } | Expr::Try(expr) => expr_has_unary_legacy_mutation(expr),
         Expr::List(items) | Expr::Tuple(items) | Expr::Call { args: items, .. }
         | Expr::Ctor { args: items, .. } | Expr::AnonCtor { args: items, .. } => {

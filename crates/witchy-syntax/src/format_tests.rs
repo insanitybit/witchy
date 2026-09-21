@@ -53,6 +53,25 @@
     }
 
     #[test]
+    fn reading_through_a_view_formats_as_canonical_source() {
+        // (RFC-0167) `(*value)` is how a view is read, and it is canonical source:
+        // only a WRITE through a dereference is retired. The formatter used to
+        // panic on it ("migration-only dereference") and, once that was lifted,
+        // to refuse the file because it classed every deref as legacy mutation.
+        let src = "type Holder:\n    value: &Int\n\nfn read(let value: &Int) -> Int:\n    (*value)\n\nfn main() -> Int:\n    let n = 79\n    let h = Holder(&n)\n    (*h.value) + read(&n) - 79\n";
+        let out = reformat(src).expect("canonical view reads round-trip");
+        assert_eq!(out, src, "already-canonical source is left alone");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+
+        // A bare deref beginning a line would continue the previous line as a
+        // multiplication, so the printer always parenthesizes one; a bare deref
+        // mid-expression is normalized to the same spelling.
+        let bare = "fn main() -> Int:\n    let n = 79\n    let r = &n\n    let v = *r + 1\n    v - 1\n";
+        let normalized = reformat(bare).expect("bare mid-expression deref formats");
+        assert!(normalized.contains("let v = (*r) + 1"), "{normalized}");
+    }
+
+    #[test]
     fn must_consume_declarations_survive_formatting() {
         let source = "must type Transaction:\n    Transaction(Int)\n\nmust sealed type Guard:\n    Guard(Int)\n\nmust capability Session:\n    token: String\n";
         let formatted = reformat(source).expect("must-consume declarations round-trip");
