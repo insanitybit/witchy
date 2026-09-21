@@ -4933,9 +4933,19 @@ fn encode_checked(checked: &CheckedWasmIr) -> Result<Vec<u8>, EncodeError> {
     for segment in &target.static_data {
         data.active(0, &ConstExpr::i32_const(segment.offset as i32), segment.bytes.clone());
     }
+    // Indexed once rather than scanned per function. Both lookups are
+    // functions of the module, so inside the loop they were O(functions^2)
+    // and O(functions x signatures). Function count measures linear today
+    // (3200 functions, 2026-09-20), so this is a latent scaling defect
+    // rather than a cost anyone is paying yet -- the same shape already
+    // fixed in the plan mirror by 83b00f1de.
+    let source_functions_by_id: BTreeMap<_, _> = source.functions().iter()
+        .map(|function| (function.id, function)).collect();
+    let source_signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
+        .map(|signature| (signature.id, signature)).collect();
     for target_function in &target.functions {
-        let source_function = source.functions().iter().find(|function| function.id == target_function.id).ok_or(EncodeError::MissingFunction(target_function.id))?;
-        let signature = source.signatures().iter().find(|signature| signature.id == source_function.signature).ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
+        let source_function = *source_functions_by_id.get(&target_function.id).ok_or(EncodeError::MissingFunction(target_function.id))?;
+        let signature = *source_signatures_by_id.get(&source_function.signature).ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
@@ -7456,7 +7466,9 @@ fn expected_metadata_prefix(
     for import in &target.imports {
         let type_index = import_type_indices.get(&import.id).copied()
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-        let contract = source.imports().iter().find(|candidate| candidate.id == import.id)
+        // `contracts_by_id` above already indexes exactly this; scanning
+        // here was the O(imports^2) half of the same lookup.
+        let contract = *contracts_by_id.get(&import.id)
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
         imports.import(&contract.module, &contract.name, EntityType::Function(type_index));
     }
