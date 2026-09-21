@@ -1821,6 +1821,26 @@ fn gate_nextest_compiler_stage_changes_select_rfc_conformance_binaries() {
     }
 }
 
+/// `semantic_conformance` carries independent expected results, which is the
+/// adjudication a backend-agreement test cannot give. It is a module of
+/// `witchy::misc`, so a single-crate selection never reaches it: before this,
+/// a canonical-checker change gated green without ever running the suite that
+/// says what the programs it admits should do.
+#[test]
+fn gate_nextest_compiler_stage_changes_select_semantic_conformance() {
+    for path in [
+        "crates/witchy-wir/src/canonical_safewir/check/memory.rs",
+        "crates/witchy-types/src/typeck.rs",
+        "crates/witchy-lower/src/codegen/mod.rs",
+    ] {
+        let out = gate_nextest(&[path]);
+        assert!(
+            out.contains("test(/^semantic_conformance::/)"),
+            "{path} did not select the independent expected results:\n{out}"
+        );
+    }
+}
+
 /// The converse: a change that cannot affect compiler semantics must NOT drag
 /// the conformance suites in, or the selection stops being a selection.
 #[test]
@@ -1829,6 +1849,10 @@ fn gate_nextest_queue_scripts_do_not_select_rfc_conformance_binaries() {
     assert!(
         !out.contains("binary_id(/^witchy::rfc0/)"),
         "a queue-script change pulled in the conformance suites:\n{out}"
+    );
+    assert!(
+        !out.contains("test(/^semantic_conformance::/)"),
+        "a queue-script change pulled in the independent expected results:\n{out}"
     );
 }
 

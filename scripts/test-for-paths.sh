@@ -185,6 +185,14 @@ emit_gate_nextest() {
     if [ "$gate_need_conformance" -eq 1 ]; then
         need_witchy=1
         expr="${expr:+$expr or }binary_id(/^witchy::rfc0/)"
+        # Same argument, one binary further. `semantic_conformance` holds
+        # independent expected results -- the adjudication a backend-agreement
+        # test cannot give -- but it is a module of `witchy::misc`, which a
+        # single-crate selection never reaches. A canonical-checker change
+        # therefore gated green without it: the component that decides whether
+        # every program is admitted was judged without the suite that says what
+        # the programs should do. Four tests.
+        expr="${expr:+$expr or }test(/^semantic_conformance::/)"
     fi
     if [ "$gate_need_stdlib_docs" -eq 1 ]; then
         need_witchy=1
