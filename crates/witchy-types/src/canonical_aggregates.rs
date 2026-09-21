@@ -273,8 +273,17 @@ fn definition_fields_ok(
     }
     // Validate arguments before cloning/rendering a key: memo lookup must not
     // bypass the depth and work limits for an oversized generic argument.
-    let instantiated = Type::Named(definition.name.clone(), arguments.to_vec());
-    let Some(key) = aggregate_key(&instantiated) else { return false };
+    // `aggregate_key` on a `Type::Named` is exactly `render_type` of it, so
+    // build the key straight from the parts instead of materializing a
+    // `Type::Named` (a name clone plus a copy of every argument) that nothing
+    // else reads.
+    let key = {
+        let mut key = String::new();
+        if !render_named_into(&definition.name, arguments, &mut key) {
+            return false;
+        }
+        key
+    };
     // This recognizes a finite source shape graph, not allocation authority.
     // Recursive occurrences need an owned nominal binding in the layout layer;
     // an inline packed occurrence cannot close the graph this way.
@@ -302,7 +311,12 @@ fn definition_fields_ok(
         return true;
     }
     active.insert(key.clone());
-    let substitutions = parameters.into_iter().zip(arguments.iter().cloned()).collect();
+    // Borrow the parameters and arguments instead of cloning every argument's
+    // whole type tree into the map. `substitute_type` still clones the one
+    // argument it actually substitutes, which is the only copy that has to
+    // exist; building the map no longer copies arguments a field never names.
+    let substitutions: BTreeMap<&str, &Type> =
+        parameters.iter().map(String::as_str).zip(arguments.iter()).collect();
     let valid = definition.variants.iter().all(|variant| {
         variant.fields.iter().all(|field| {
             let Some(nodes) = substituted_node_count(field, &substitutions, *budget) else { return false };
@@ -338,10 +352,10 @@ fn consume_shape_nodes(budget: &mut usize, nodes: usize) -> bool {
 
 /// Count the result of substitution without constructing it. `None` means the
 /// result exceeds the remaining global work budget or arithmetic overflowed.
-fn substituted_node_count(ty: &Type, substitutions: &BTreeMap<String, Type>, limit: usize) -> Option<usize> {
+fn substituted_node_count(ty: &Type, substitutions: &BTreeMap<&str, &Type>, limit: usize) -> Option<usize> {
     let count = match ty {
-        Type::Named(name, arguments) if arguments.is_empty() && substitutions.contains_key(name) => {
-            type_node_count(&substitutions[name], limit)?
+        Type::Named(name, arguments) if arguments.is_empty() && substitutions.contains_key(name.as_str()) => {
+            type_node_count(substitutions[name.as_str()], limit)?
         }
         Type::Named(_, arguments) | Type::Tuple(arguments) | Type::Dyn(_, arguments) => {
             arguments.iter().try_fold(1usize, |count, argument| {
@@ -370,10 +384,10 @@ fn type_node_count(ty: &Type, limit: usize) -> Option<usize> {
 /// Substitute a declaration's type parameters through the whole source type.
 /// An unbound parameter is left intact so the normal field recognizer rejects
 /// it as an unknown concrete aggregate rather than inventing a representation.
-fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Option<Type> {
+fn substitute_type(ty: &Type, substitutions: &BTreeMap<&str, &Type>) -> Option<Type> {
     match ty {
-        Type::Named(name, arguments) if arguments.is_empty() && substitutions.contains_key(name) => {
-            Some(substitutions[name].clone())
+        Type::Named(name, arguments) if arguments.is_empty() && substitutions.contains_key(name.as_str()) => {
+            Some(substitutions[name.as_str()].clone())
         }
         Type::Named(name, arguments) => Some(Type::Named(
             name.clone(),
@@ -402,35 +416,68 @@ fn substitute_type(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Option<
 }
 
 fn render_type(ty: &Type) -> Option<String> {
+    let mut rendered = String::new();
+    render_into(ty, &mut rendered).then_some(rendered)
+}
+
+/// Render into ONE buffer instead of returning a fresh `String` per node.
+///
+/// The recursive form allocated a `String` for every nested argument, pushed
+/// it into its parent and dropped it immediately. On an async `check` that
+/// showed up as the dominant allocator traffic under
+/// `field_type_ok_at_with_dependencies`, which is itself the hottest frame in
+/// the initial SafeWIR check. The bytes produced are identical -- these keys
+/// are compared against memo entries written by the same code, so they must
+/// not drift.
+///
+/// A refused node leaves partial text in the buffer. Every caller discards the
+/// buffer on `false`, so no partial key can reach a memo.
+fn render_into(ty: &Type, out: &mut String) -> bool {
     match ty.unqualified() {
         Type::Tuple(items) => {
-            let mut rendered = String::from("(");
+            out.push('(');
             for (index, item) in items.iter().enumerate() {
                 if index > 0 {
-                    rendered.push_str(", ");
+                    out.push_str(", ");
                 }
-                rendered.push_str(&render_type(item)?);
-            }
-            rendered.push(')');
-            Some(rendered)
-        }
-        Type::Named(name, arguments) if arguments.is_empty() => Some(name.clone()),
-        Type::Named(name, arguments) => {
-            let mut rendered = format!("{name}(");
-            for (index, argument) in arguments.iter().enumerate() {
-                if index > 0 {
-                    rendered.push_str(", ");
+                if !render_into(item, out) {
+                    return false;
                 }
-                rendered.push_str(&render_type(argument)?);
             }
-            rendered.push(')');
-            Some(rendered)
+            out.push(')');
+            true
         }
+        Type::Named(name, arguments) => render_named_into(name, arguments, out),
         // Keep the complete checked signature in generic-instantiation keys,
         // including conventions and qualifiers, rather than an erased Fn name.
-        Type::Fn(..) => Some(format!("{:?}", ty.unqualified())),
-        _ => None,
+        Type::Fn(..) => {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{:?}", ty.unqualified());
+            true
+        }
+        _ => false,
     }
+}
+
+/// Render a named type from its parts, so a caller holding a name and an
+/// argument slice does not have to build a `Type::Named` (cloning the name and
+/// the whole argument vector) purely to produce a memo key.
+fn render_named_into(name: &str, arguments: &[Type], out: &mut String) -> bool {
+    out.push_str(name);
+    if arguments.is_empty() {
+        return true;
+    }
+    out.push('(');
+    for (index, argument) in arguments.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        if !render_into(argument, out) {
+            return false;
+        }
+    }
+    out.push(')');
+    true
 }
 
 fn int_type() -> Type {
@@ -758,7 +805,9 @@ fn shape_from_instantiation(
     ) {
         return None;
     }
-    let substitutions = effective_type_def_params(definition).into_iter().zip(arguments.iter().cloned()).collect();
+    let parameters = effective_type_def_params(definition);
+    let substitutions: BTreeMap<&str, &Type> =
+        parameters.iter().map(String::as_str).zip(arguments.iter()).collect();
     let name = definition.name.rsplit('.').next().unwrap_or(&definition.name).to_owned();
     if definition.variants.len() == 1 {
         let variant = &definition.variants[0];
