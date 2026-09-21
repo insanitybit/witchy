@@ -14,7 +14,9 @@ use crate::layout::{
     RcHeader, ScalarKind,
 };
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use super::sorted::{SortedMap, SortedSet};
 use super::{InitialCheckError, value_type};
@@ -249,8 +251,21 @@ pub(super) struct MemoryChecker<'a> {
     /// closure layout carries. It is the only source of a callable lane's
     /// value type, so a layout missing from it has no readable lane.
     closure_layouts: &'a BTreeMap<crate::layout::LayoutId, FunctionSignatureId>,
+    /// Which fields of a fixed layout carry owned pointers.
+    ///
+    /// This is a pure function of the layout graph, but consolidation asks it
+    /// after every store, and re-deriving it allocated a fresh `Vec` each
+    /// time — the checker's single largest source of allocator traffic
+    /// (BUG-640: 30% of the allocation band, nearly all of it `Vec` growth,
+    /// because the filtered collect has no size hint). Derived once per
+    /// layout, a repeat ask is a refcount bump. Shared with the scratch
+    /// checkers forked off this one, which ask about the same layouts.
+    pointer_fields: PointerFieldCache,
     state: MemoryState,
 }
+
+type PointerFieldCache =
+    Rc<RefCell<BTreeMap<crate::layout::LayoutId, Rc<[(u64, crate::layout::LayoutId)]>>>>;
 
 impl<'a> MemoryChecker<'a> {
     pub(super) const fn layouts(&self) -> &'a LayoutInterner {
@@ -268,6 +283,7 @@ impl<'a> MemoryChecker<'a> {
             signature,
             layouts,
             closure_layouts,
+            pointer_fields: PointerFieldCache::default(),
             state: MemoryState {
                 objects: SortedMap::new().into(),
                 shared_phi_origins: SortedMap::new().into(),
@@ -1199,7 +1215,7 @@ impl<'a> MemoryChecker<'a> {
         if needs_prefix {
             // Managed/Unit consolidation can change range/slot facts and can
             // fail. Keep its existing transactional scratch path intact.
-            let mut scratch = MemoryChecker { function: self.function, signature: self.signature, layouts: self.layouts, closure_layouts: self.closure_layouts, state: state.clone() };
+            let mut scratch = MemoryChecker { function: self.function, signature: self.signature, layouts: self.layouts, closure_layouts: self.closure_layouts, pointer_fields: Rc::clone(&self.pointer_fields), state: state.clone() };
             scratch.promote_header_extent(object).ok()?;
             return scratch.state.objects.get(&object).cloned();
         }
@@ -4350,9 +4366,9 @@ impl<'a> MemoryChecker<'a> {
                     }
                     let pointee = self
                         .fixed_pointer_fields(state.layout)?
-                        .into_iter()
+                        .iter()
                         .find(|(field, _)| *field == u64::from(*index))
-                        .map(|(_, pointee)| pointee)
+                        .map(|(_, pointee)| *pointee)
                         .ok_or_else(|| InitialCheckError::InvalidProjection {
                             function: self.function.id,
                             object: place.object(),
@@ -4683,12 +4699,22 @@ impl<'a> MemoryChecker<'a> {
     }
 
     /// The owned pointer fields of a fixed layout: `(field index, pointee)`.
-    fn fixed_pointer_fields(&self, layout: crate::layout::LayoutId) -> Result<Vec<(u64, crate::layout::LayoutId)>, InitialCheckError> {
+    fn fixed_pointer_fields(&self, layout: crate::layout::LayoutId) -> Result<Rc<[(u64, crate::layout::LayoutId)]>, InitialCheckError> {
+        if let Some(derived) = self.pointer_fields.borrow().get(&layout) {
+            return Ok(Rc::clone(derived));
+        }
+        let derived = self.derive_fixed_pointer_fields(layout)?;
+        self.pointer_fields.borrow_mut().insert(layout, Rc::clone(&derived));
+        Ok(derived)
+    }
+
+    fn derive_fixed_pointer_fields(&self, layout: crate::layout::LayoutId) -> Result<Rc<[(u64, crate::layout::LayoutId)]>, InitialCheckError> {
         let descriptor = self.descriptor(layout)?;
         if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. } | LayoutKind::Tuple { .. }) {
-            return Ok(Vec::new());
+            return Ok(Rc::from([]));
         }
-        Ok(descriptor
+        let mut derived = Vec::with_capacity(descriptor.fields().len());
+        derived.extend(descriptor
             .fields()
             .iter()
             .enumerate()
@@ -4701,8 +4727,8 @@ impl<'a> MemoryChecker<'a> {
                     _ => None,
                 },
                 _ => None,
-            })
-            .collect())
+            }));
+        Ok(Rc::from(derived))
     }
 
     /// Whether every value-bearing field of a fixed record or tuple has been
@@ -4799,7 +4825,7 @@ impl<'a> MemoryChecker<'a> {
         if !self.fixed_value_fields_initialized(object, layout)? {
             return Ok(());
         }
-        for (index, _) in &pointer_fields {
+        for (index, _) in pointer_fields.iter() {
             self.state.stored_objects.remove(&(object, SlotIdentity::Constant(*index)));
         }
         self.state.objects.get_mut(&object).expect("live object exists").initialized_owned_slots = true;
@@ -7245,7 +7271,8 @@ mod tests {
         let edge = checker.snapshot();
         let mut scratch = MemoryChecker {
             function: checker.function, signature: checker.signature, layouts: checker.layouts,
-            closure_layouts: checker.closure_layouts, state: edge.clone(),
+            closure_layouts: checker.closure_layouts,
+            pointer_fields: Rc::clone(&checker.pointer_fields), state: edge.clone(),
         };
         let old_result = scratch.promote_header_extent(SOURCE).ok()
             .and_then(|()| scratch.state.objects.get(&SOURCE).cloned());
