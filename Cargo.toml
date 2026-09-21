@@ -64,6 +64,10 @@ required-features = ["native"]
 name = "glamour"
 required-features = ["glamour-tests"]
 
+[[test]]
+name = "e2e"
+required-features = ["e2e-tests"]
+
 [features]
 # The full native toolchain (wasmtime sandbox, package manager, LSP). On by
 # default; the wasm playground builds the library alone with it OFF.
@@ -76,6 +80,13 @@ native = ["dep:wasmtime", "dep:wasmprinter", "dep:lsp-server", "dep:serde_json",
 # final test-binary build, on EVERY gate, for tests that mostly never run.
 # `./scripts/check.sh --glamour` turns them back on.
 glamour-tests = []
+# The end-to-end acceptance binary (coven/grimoire publish + install flows).
+# The default gate EXCLUDES `binary(e2e)` from the workspace stage, but it
+# still COMPILED all 7,619 lines of it on every gate: measured 2026-09-21,
+# alternating arms, min of 3, that is 9.0 CPU s of every gate's final build
+# for tests the gate does not run. `--e2e`, `--full`, the focused check and
+# CI's e2e-full.sh all enable this.
+e2e-tests = []
 # Shared deterministic fixture sessions for the opaque-frame browser host.
 # Kept out of ordinary library builds; the playground/docs builder enables it.
 browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testkit"]

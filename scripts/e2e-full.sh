@@ -59,7 +59,10 @@ ok "release build"
 
 if [ "$QUICK" = 0 ]; then
     stage "1. The Rust test suites (unit + package-manager e2e)"
-    cargo test --release --quiet >/dev/null
+    # `e2e-tests` is NON-DEFAULT, and a workspace `cargo test` SKIPS a target
+    # whose required features are unmet rather than failing, so without this
+    # the from-scratch acceptance run would quietly stop covering e2e.
+    cargo test --release --quiet --features e2e-tests >/dev/null
     ok "cargo test"
 else
     stage "1. (skipped: --quick) Rust test suites"

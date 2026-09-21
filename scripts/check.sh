@@ -576,6 +576,15 @@ if cargo nextest --version >/dev/null 2>&1; then
     # combination that errors. The feature therefore follows the SELECTION, not
     # the ungated list: if anything in this invocation names a glamour target,
     # enable it. Naming the target is what makes cargo demand the feature.
+    # Same rule for the e2e acceptance binary, for the same reason: naming a
+    # target whose required features are unmet is a hard cargo error, and a
+    # WORKSPACE run with them unmet silently drops the binary instead. So
+    # enable it when the selection names it, and when `--full` is about to
+    # stop excluding `binary(e2e)` (check.sh's $excl above).
+    case " ${nextest_sel[*]} " in
+        *" --test e2e "*) nextest_cmd+=(--features e2e-tests) ;;
+        *) [ "$full" -eq 1 ] && nextest_cmd+=(--features e2e-tests) ;;
+    esac
     case " ${nextest_sel[*]} " in
         *" --test glamour "*)
             nextest_cmd+=(--features glamour-tests)
@@ -927,7 +936,9 @@ if [ -n "$shard" ]; then
             # gate above; only --full (the push gate) clears it. Without this, an
             # edit presubmit that selects --e2e runs the ~90 deferred e2e tests the
             # landing gate never runs and can never record a green receipt.
-            cargo nextest run --workspace --features witchy-wir/native -E "binary(e2e)${deferred_excl:+ and $deferred_excl}"
+            # `e2e-tests` is NON-DEFAULT: without it this shard compiles no
+            # e2e binary and runs ZERO tests while reporting green.
+            cargo nextest run --workspace --features witchy-wir/native,e2e-tests -E "binary(e2e)${deferred_excl:+ and $deferred_excl}"
             ;;
         examples)
             cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --examples requires cargo-nextest" >&2; exit 2; }

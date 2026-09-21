@@ -1495,7 +1495,7 @@ fn broad_compiler_change_subsumes_the_native_cli_entrypoint_shard() {
 fn e2e_integration_test_keeps_its_dedicated_shard() {
     let output = route(&["tests/e2e.rs"]);
     assert!(output.contains("./scripts/check.sh --e2e"));
-    assert!(!output.contains("cargo nextest run --test e2e"));
+    assert!(!output.contains("--test e2e -E"));
     assert!(!output.contains("./scripts/check.sh --fast"));
 }
 
@@ -1503,7 +1503,7 @@ fn e2e_integration_test_keeps_its_dedicated_shard() {
 fn nested_e2e_module_uses_the_real_cargo_target_and_module_filter() {
     assert_eq!(
         selected(&["--edit-loop", "tests/e2e/sandbox_grants.rs"]),
-        ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --test e2e -E 'test(/^sandbox_grants::/)'"],
+        ["./scripts/nextest-admitted.sh witchy -- cargo nextest run --features e2e-tests --test e2e -E 'test(/^sandbox_grants::/)'"],
     );
 }
 
@@ -2061,4 +2061,60 @@ fn every_mapper_rule_that_names_the_glamour_binary_gets_its_feature() {
             "{path} selects --test glamour but check.sh never adds the feature: {output}",
         );
     }
+}
+
+#[test]
+fn every_e2e_consumer_enables_the_feature_that_compiles_it() {
+    // `tests/e2e.rs` sits behind the non-default `e2e-tests` feature, because
+    // the default gate excludes `binary(e2e)` from the workspace stage yet
+    // still compiled all 7,619 lines of it on every gate -- 9.0 CPU s of every
+    // gate's final build for tests it does not run.
+    //
+    // Every consumer must turn it back on, and MOST of them fail SILENTLY if
+    // they do not: naming the target with the feature unmet is a hard cargo
+    // error, but a workspace-wide run just drops the binary and reports green.
+    // So this pins each site by name rather than trusting one general rule.
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |relative: &str| {
+        std::fs::read_to_string(repo.join(relative)).unwrap_or_else(|_| panic!("read {relative}"))
+    };
+
+    let manifest = read("Cargo.toml");
+    assert!(manifest.contains("e2e-tests = []"), "the e2e-tests feature is gone");
+    let default_line = manifest
+        .lines()
+        .find(|line| line.starts_with("default = ["))
+        .expect("a default feature set");
+    assert!(
+        !default_line.contains("e2e-tests"),
+        "e2e-tests is in `default`, so every gate compiles the e2e binary again: {default_line}",
+    );
+
+    let check = read("scripts/check.sh");
+    assert!(
+        check.contains("*\" --test e2e \"*) nextest_cmd+=(--features e2e-tests) ;;"),
+        "the workspace stage no longer enables e2e-tests for a selection that NAMES the target, \
+         so such a gate fails with `requires the features`",
+    );
+    assert!(
+        check.contains("[ \"$full\" -eq 1 ] && nextest_cmd+=(--features e2e-tests)"),
+        "--full stops excluding binary(e2e) but no longer compiles it, so the full gate would \
+         run ZERO e2e tests and still report green",
+    );
+    assert!(
+        check.contains("witchy-wir/native,e2e-tests"),
+        "`check.sh --e2e` no longer enables the feature, so the shard runs zero tests green",
+    );
+
+    let mapper = read("scripts/test-for-paths.sh");
+    assert!(
+        mapper.contains("cargo nextest run --features e2e-tests --test e2e"),
+        "the focused e2e check names the target without the feature, which is a hard error",
+    );
+
+    let ci = read("scripts/e2e-full.sh");
+    assert!(
+        ci.contains("cargo test --release --quiet --features e2e-tests"),
+        "CI's from-scratch acceptance run would silently stop covering e2e",
+    );
 }

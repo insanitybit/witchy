@@ -708,7 +708,7 @@ for p in "${paths[@]}"; do
                     broad_e2e=1
                     add "./scripts/check.sh --e2e" ;;
                 *)
-                    add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test e2e -E 'test(/^${test_name}::/)'" ;;
+                    add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features e2e-tests --test e2e -E 'test(/^${test_name}::/)'" ;;
             esac
             ;;
         tests/misc.rs | tests/misc/*)
@@ -916,7 +916,11 @@ if [ "$broad_e2e" -eq 1 ]; then
     remaining=()
     for c in ${cmds[0]+"${cmds[@]}"}; do
         case "$c" in
-            *"cargo nextest run --test e2e -E 'test(/^"*) ;;
+            # Match on the target and filter, NOT on the whole prefix: the
+            # command also carries `--features e2e-tests` (the e2e binary is
+            # behind a non-default feature), and pinning the old exact prefix
+            # here silently stopped subsuming it.
+            *"--test e2e -E 'test(/^"*) ;;
             *) remaining+=("$c") ;;
         esac
     done
