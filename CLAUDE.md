@@ -165,6 +165,25 @@ boundary: `crates/witchy-wir/src/canonical_safewir/check/cache.rs`.
 coordinate before running it there. While another agent is active, prefer
 `CARGO_TARGET_DIR=target-<agent> ./scripts/check.sh --fast`.
 
+## Measuring the compiler
+
+`scripts/compile-bench.sh` is the one way to time `witchy` itself, the way
+`scripts/gate-bench.sh` is for gate wall time. It runs a deliberate SPREAD of
+workloads because a single benchmark misleads: a 2026-09-20/21 perf session
+tuned six changes against the async boundary test (an 11k-block generated
+executor, 10-15% typeck) before one profile of a real 1.8k-line program showed
+85% typeck and ~70% allocator traffic. The next change, found only there, was
+worth 17% -- more than everything the async benchmark had produced.
+
+    ./scripts/compile-bench.sh                  # baseline, all workloads
+    ./scripts/compile-bench.sh --against master # alternating A/B vs a ref
+
+It reports CPU seconds (robust to this box's 10x load swings), takes the best
+of N, alternates against the ref IN ONE WINDOW, prints the load with the
+result, and REFUSES an A/B on a dirty tree -- the swap would silently destroy
+the uncommitted change and measure a ref against itself. Read its header
+before hand-rolling a measurement; every trap in it was hit in practice.
+
 ## Merge queue: operational specifics
 
 **Full operator's guide: `scripts/MERGE-QUEUE.md`** — architecture, command
