@@ -12,6 +12,7 @@ tracking: |
   `witchy` + `witchyc` binaries — the split is logical (TCB vs. front-end), not
   packaged. The trusted-publishing IdP minting (`coven-gen-issuer`/`coven-mint-token`)
   remains a Rust test helper in `src/idp.rs` (per §7).
+  Amended by RFC-0168 (2026-09-21), which completes the packaged split.
 ---
 
 # RFC-0004: Self-hosting the `witchy` CLI over a `witchyc` compiler
