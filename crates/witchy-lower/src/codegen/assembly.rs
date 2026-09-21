@@ -7474,6 +7474,62 @@ async fn main(console: Console):
             "outer selected-value and_then must be absent from fused state: {calls:?}");
     }
 
+    fn assert_desugared_select_frame_links(source: &str) {
+        // The other half of the privacy contract. When a select match feeds a
+        // binding, the desugar emits `chan.selectN_frame_payload`/`_decode`
+        // into the USER's module; those calls carry the linker's
+        // `@definition_site:` prefix, which source cannot spell, so they
+        // resolve with std's authority instead of tripping the
+        // scheduler-bridge rule. Without this, a regression that stops
+        // emitting the prefix reads as a green suite: the refusal tests above
+        // only pin the forged spelling, which stays rejected either way.
+        // BUG-639 was exactly that regression, and it reached master.
+        if let Err(error) = authenticated_select_frame_fixture(source) {
+            panic!("the compiler's own select frame bridges must link: {error}");
+        }
+    }
+
+    fn desugared_select_frame_source(arity: usize) -> String {
+        let mut source = String::from("mode opt\n\nasync fn main(console: Console):\n");
+        for index in 0..arity {
+            source.push_str(&format!("    let (tx{index}, rx{index}) = chan.channel(3).await\n"));
+            source.push_str(&format!("    chan.send(tx{index}, {index}).await\n"));
+        }
+        let receivers = (0..arity).map(|index| format!("rx{index}")).collect::<Vec<_>>().join(", ");
+        let select = if arity == 2 { "select".to_string() } else { format!("select{arity}") };
+        source.push_str("    var seen = 0\n");
+        source.push_str(&format!("    while seen < {arity}:\n"));
+        source.push_str(&format!("        let selected = chan.{select}({receivers}).await\n"));
+        source.push_str("        match selected:\n");
+        // Every arm binds its payload, which is what drives the desugar onto
+        // the frame-payload path rather than the direct-result path.
+        let ordinals = ["First", "Second", "Third", "Fourth"];
+        let suffix = if arity == 2 { String::new() } else { arity.to_string() };
+        for ordinal in ordinals.iter().take(arity) {
+            source.push_str(&format!(
+                "            {ordinal}{suffix}(value) -> seen = seen + value - value + 1\n"
+            ));
+        }
+        source.push_str(&format!("            Closed{suffix} -> seen = {arity}\n"));
+        source.push_str("    console.print(\"seen=${seen}\")\n");
+        source
+    }
+
+    #[test]
+    fn two_way_desugared_select_frame_links_from_opt_application() {
+        assert_desugared_select_frame_links(&desugared_select_frame_source(2));
+    }
+
+    #[test]
+    fn three_way_desugared_select_frame_links_from_opt_application() {
+        assert_desugared_select_frame_links(&desugared_select_frame_source(3));
+    }
+
+    #[test]
+    fn four_way_desugared_select_frame_links_from_opt_application() {
+        assert_desugared_select_frame_links(&desugared_select_frame_source(4));
+    }
+
     #[test]
     fn two_way_select_frame_rejects_private_intrinsic_from_opt_application() {
         assert_select_frame_private_intrinsic_refusal(
