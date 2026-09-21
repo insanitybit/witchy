@@ -135,6 +135,3 @@ rfc0081_same_spelled_traits_dispatch_independently_on_both_backends
 # census whose tool now crashes on benchmarks/select_fanin.witchy. Each is a
 # named row in rfcs/0167-acceptance-ledger.md ("Foundation landing debt") and
 # comes back to the default gate with the track that restores it.
-rfc0165_net::canonical_net_recv_all_fetch_real_socket_and_explicit_oracle_policy
-rfc0165_net::host_net_rejects_missing_authority_wrong_refs_and_invalid_input_slices
-canonical_net_fixture::source_program::full_source_net_program_agrees_with_admitted_wasm_and_independent_oracle

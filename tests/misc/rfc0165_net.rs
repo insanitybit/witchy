@@ -72,6 +72,20 @@ fn module(address: &str, body: &str) -> String {
         {body}))"#)
 }
 
+/// The same raw fixture with the canonical dial import, for the verb-right
+/// assertions that need to call `connect` rather than `listen`.
+fn connect_module(address: &str, body: &str) -> String {
+    module(address, body).replace(
+        r#"(import "witchy" "net_accept" (func $accept (param externref) (result externref)))"#,
+        concat!(
+            r#"(import "witchy" "net_accept" (func $accept (param externref) (result externref)))"#,
+            "
+      ",
+            r#"(import "witchy" "net_connect_at" (func $connect (param externref i32 i32) (result externref)))"#,
+        ),
+    )
+}
+
 fn raw(wat: String, capabilities: Capabilities) -> Result<(), String> {
     let mut runtime = Runtime::batch().map_err(|error| error.to_string())?;
     let mut vm = runtime.spawn(&wat, capabilities, 16).map_err(|error| error.to_string())?;
@@ -122,6 +136,22 @@ fn host_net_rejects_missing_authority_wrong_refs_and_invalid_input_slices() {
     connect_only.net_listen = false;
     connect_only.net_connect = true;
     assert!(raw(module(address, &listen), connect_only).is_err(), "Connect cannot bind");
+    // The converse, so neither verb can stand in for the other (SEC-097). The
+    // canonical adapters are registered unconditionally, so the right is
+    // checked where the token is authenticated rather than at registration.
+    let connect = format!(
+        "(drop (call $connect (call $mint (i32.const 0)) (i32.const 0) (i32.const {})))",
+        address.len()
+    );
+    let mut listen_only = caps(address);
+    listen_only.net_listen = true;
+    listen_only.net_connect = false;
+    let refusal = raw(connect_module(address, &connect), listen_only)
+        .expect_err("Listen cannot dial");
+    assert!(
+        refusal.contains("Connect right"),
+        "the refusal must name the missing verb right, not an incidental dial failure: {refusal}"
+    );
     assert!(raw(module(address, &listen), caps("192.0.2.1:0")).is_err(), "grant cannot escape its address");
     let mut denied = caps(address);
     denied.net_allow = Some(vec![address.into(), format!("!{address}")]);
@@ -454,7 +484,10 @@ fn main(console: Console, net: Net[Connect, Tcp]):
         grants.print = true;
         grants.net_connect = true;
         grants.net_listen = false;
-        let expected = if grants.net_allow.is_none() { "unknown import" } else { "not permitted" };
+        // Without any Net grant the canonical entry has no token to mint, so
+        // `main` is refused before it runs; with an allowlist that excludes the
+        // endpoint the program runs and the dial itself is denied.
+        let expected = if grants.net_allow.is_none() { "Net capability" } else { "not permitted" };
         let mut runtime = Runtime::batch().unwrap();
         let error = match runtime.spawn_admitted(&artifact, grants, 256) {
             Ok(mut vm) => vm.run().expect_err("recv_all cannot confer connect authority"),

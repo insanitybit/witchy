@@ -7,8 +7,23 @@ pub(super) fn link_connect(linker: &mut Linker<VmState>) -> Result<()> {
     Ok(())
 }
 
+/// The canonical adapters are registered unconditionally, because Wasmtime
+/// resolves every import before the admitted entry starts - including one
+/// reachable only from a helper `main` never calls. Registration therefore
+/// cannot carry the Connect/Listen split the legacy families get from their
+/// conditional `link_*`, so each verb checks its own right here, where the
+/// token is authenticated (SEC-097).
+fn require_net_right(caller: &Caller<'_, VmState>, granted: bool, verb: &str) -> Result<()> {
+    if granted {
+        return Ok(());
+    }
+    let _ = caller;
+    bail!("Net grant does not carry the {verb} right")
+}
+
 fn connect_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     let net = net_authority_ref(&caller, token)?;
+    require_net_right(&caller, caller.data().caps.net_connect, "Connect")?;
     let memory = memory_of(&mut caller)?;
     let address = read_slice_str(memory.data(&caller), ptr, len)?;
     connect_address(caller, net, address)
@@ -30,6 +45,7 @@ pub(super) fn link_socket_io(linker: &mut Linker<VmState>) -> Result<()> {
 
 fn listen_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     let net = net_authority_ref(&caller, token)?;
+    require_net_right(&caller, caller.data().caps.net_listen, "Listen")?;
     let memory = memory_of(&mut caller)?;
     let address = read_slice_str(memory.data(&caller), ptr, len)?;
     let (listener, tls) = match caller.data().worker_listener.clone() {

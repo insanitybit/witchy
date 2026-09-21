@@ -536,8 +536,16 @@ fn main(console: Console, net: Net[Connect, Tcp]):
             net_allow: (!allowed.is_empty()).then_some(allowed), ..Default::default()
         }, 256);
         if missing {
-            let error = spawned.err().expect("ungranted Net imports must not link").to_string();
-            assert!(error.contains("witchy::net_"), "{error}");
+            // The canonical Net ABI authenticates an opaque capability token at
+            // every call, so registering its imports confers nothing (see
+            // `host::network::link_canonical`, which must resolve even when an
+            // unreachable helper mentions Net). The refusal is the entry check:
+            // `main` needs a Net token that was never minted, so it never runs
+            // and produces nothing.
+            let mut vm = spawned.expect("canonical Net imports resolve without conferring authority");
+            let error = vm.run().expect_err("an ungranted Net entry cannot run").to_string();
+            assert!(error.contains("Net capability"), "{error}");
+            assert!(vm.output().is_empty(), "a refused launch cannot produce output");
         } else {
             let mut vm = spawned.unwrap();
             assert!(vm.run().is_err());
