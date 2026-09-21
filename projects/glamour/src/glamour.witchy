@@ -1933,7 +1933,7 @@ type Cmd(msg):
 // `Ui` is a nominal wrapper around the compatibility VNode tree. Keeping the
 // wrapper nominal lets the implementation change from a full tree to a static
 // template plan without changing every application's Program signature.
-// (`&'a T` is already Witchy's borrowed-view type.)
+// (`&T` is already Witchy's immutable view type.)
 // ---------------------------------------------------------------------------
 type Ui(msg):
     Ui(VNode(msg))
