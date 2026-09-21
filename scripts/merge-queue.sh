@@ -2729,15 +2729,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         skip_sweeps=1
     fi
 
-    # Runnable-book (browser) walks book/ examples and the web shim. A batch
-    # that cannot change those inputs cannot change the validator's answer;
-    # --full and post-merge CI still run it. Fail-safe: empty/errored diff
-    # keeps the pass.
-    local skip_book=0
-    if [ -n "$changed" ] \
-        && ! echo "$changed" | grep -cE '^(book/|examples/|web/|scripts/validate_book_examples\.mjs|scripts/audit-browser-runnable\.mjs)' >/dev/null; then
-        skip_book=1
-    fi
+    # The runnable-book validator and the wasm playground build (below) serve
+    # the docs site and the browser playground, not the compiler. Decided
+    # 2026-09-21: the compiler is the only thing gated. `--full`, CI and the
+    # explicit `./scripts/check.sh --wasm` still run both.
+    local skip_book=1
 
     # RFC-0111 rust-class, workspace check/clippy, and the wasm playground
     # only move when their own surfaces move. example_tests is compiled by
@@ -2750,9 +2746,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     if [ -n "$changed" ] && [ -z "$(diff_rust_class_surface "$changed")" ]; then
         skip_rust_class=1
     fi
-    if [ -n "$changed" ] && [ -z "$(diff_wasm_surface "$changed")" ]; then
-        skip_wasm=1
-    fi
+    # Browser playground build: docs-site surface, never gated (see skip_book).
+    skip_wasm=1
     local skip_fmt=0
     if [ -n "$changed" ] && [ -z "$(diff_fmt_surface "$changed")" ]; then
         skip_fmt=1

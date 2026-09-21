@@ -560,21 +560,21 @@ for p in "${paths[@]}"; do
             add_pkg witchy-lower
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower --features witchy-wir/native"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
-            add "./scripts/check.sh --wasm" ;;
+            ;;
         crates/witchy-wir/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-wir
             add "cargo nextest run -p witchy-wir --features witchy-wir/native"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --features witchy-wir/native -E 'test(/^example_tests::/)'"
-            add "./scripts/check.sh --wasm" ;;
+            ;;
         crates/witchy-runtime/*)
             any_rust=1
             gate_need_conformance=1
             add_pkg witchy-runtime
             add "cargo nextest run -p witchy-runtime"
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
-            add "./scripts/check.sh --wasm" ;;
+            ;;
         crates/witchy-syntax/*)
             any_rust=1
             gate_need_conformance=1
@@ -656,12 +656,7 @@ for p in "${paths[@]}"; do
         examples/* | book/*)
             corpus_impact=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
-            # A book/example change can flip a block's browser-runnability (e.g.
-            # add a Console-only-footprint program that uses std/vm's worker ops —
-            # runnable on native, but the browser shim can't instantiate it). The
-            # --wasm shard rebuilds the browser wasm and runs the runnable-book
-            # validator, catching that false Run button pre-submit.
-            add "./scripts/check.sh --wasm" ;;
+            ;;
         projects/grimoire/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
             add "find projects -type f -path '*/src/*.witchy' -exec \"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check {} +"
             broad_e2e=1

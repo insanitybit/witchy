@@ -710,10 +710,10 @@ fn edit_loop_stops_after_named_cheap_probes_when_available() {
 
     let focused = selected(&["--focused", "crates/witchy-wir/src/wir_prelude.rs"]);
     assert!(
-        focused
+        !focused
             .iter()
             .any(|command| command.contains("check.sh --wasm")),
-        "{focused:?}"
+        "the browser build is docs-site work and no longer rides on compiler edits: {focused:?}"
     );
 
     let mixed = selected(&[
@@ -1732,11 +1732,24 @@ fn rust_path_drops_nextest_checks_covered_by_fast() {
 }
 
 #[test]
-fn lower_path_keeps_wasm_but_drops_covered_nextest_checks() {
-    assert_eq!(
-        selected(&["crates/witchy-lower/src/lib.rs"]),
-        ["./scripts/check.sh --fast", "./scripts/check.sh --wasm"]
-    );
+fn lower_path_drops_covered_nextest_checks_and_the_browser_build() {
+    // The `--wasm` shard cross-compiles the compiler for the browser
+    // playground and validates the runnable book: docs-site work. It used to
+    // ride along on every witchy-lower/-wir/-runtime edit at a 908s presubmit
+    // median. Decided 2026-09-21: only the compiler is gated.
+    assert_eq!(selected(&["crates/witchy-lower/src/lib.rs"]), ["./scripts/check.sh --fast"]);
+    for path in [
+        "crates/witchy-wir/src/lib.rs",
+        "crates/witchy-runtime/src/lib.rs",
+        "book/src/intro.md",
+        "examples/hello/src/main.witchy",
+    ] {
+        let commands = selected(&[path]);
+        assert!(
+            !commands.iter().any(|command| command.contains("check.sh --wasm")),
+            "{path} still adds the browser build to the dev loop: {commands:?}",
+        );
+    }
 }
 
 #[test]

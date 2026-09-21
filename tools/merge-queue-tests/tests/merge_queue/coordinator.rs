@@ -643,11 +643,13 @@ fn lower_and_syntax_batches_skip_rust_class_and_wasm() {
 }
 
 #[test]
-fn runtime_batch_skips_rust_class_but_keeps_wasm() {
+fn runtime_batch_skips_rust_class_and_the_browser_build() {
+    // The wasm playground build is docs-site work and is never gated
+    // (decided 2026-09-21); the compile check still runs.
     let (env, _) = classify_crate_skips("crates/witchy-runtime/src/lib.rs");
     assert!(
-        env.contains("skip_rust=1") && env.contains("skip_wasm=0") && env.contains("skip_compile=0"),
-        "runtime-only should skip rust-class, keep wasm/compile: {env}",
+        env.contains("skip_rust=1") && env.contains("skip_wasm=1") && env.contains("skip_compile=0"),
+        "runtime-only should skip rust-class and the browser build, keep compile: {env}",
     );
     assert!(
         !env.contains("nextest=[--workspace"),

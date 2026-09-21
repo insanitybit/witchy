@@ -26,8 +26,7 @@ green *focused shard*, a submission, and a watched outcome.
 |---|---|
 | Rust in `crates/` or `src/` | `./scripts/check.sh --fast` (always, for any code change) |
 | `projects/grimoire`, `projects/coven`, server/registry/publish code | also `./scripts/check.sh --e2e` |
-| `examples/`, `book/`, `std/*.witchy` | also `./scripts/check.sh --examples` |
-| codegen / lowering / anything wasm-shaped | also `./scripts/check.sh --wasm` |
+| `examples/`, `std/*.witchy` | also `./scripts/check.sh --examples` |
 | docs/markdown only (no code, no executed ```witchy blocks) | no shard needed |
 
 A green shard qualifies the branch for the queue; it does not replace the full
