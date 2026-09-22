@@ -47,7 +47,7 @@ fn main(console: Console):
     announce(console)
     console.print(show((*view).x * 10 + (*view).y))
     console.print(show(label_length(&name)))
-    let big: Int = if (*sv) > 2.0: 1 else: 0
+    let big = if (*sv) > 2.0: 1 else: 0
     console.print(show(big))
     console.print(show((*before).length() * 10 + xs.length()))
     console.print(show(f(100)))
