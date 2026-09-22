@@ -267,9 +267,12 @@ fn gate_nextest_docs_plus_integration_test_keeps_both_target_kinds() {
 #[test]
 fn gate_nextest_does_not_narrow_past_the_bin_target() {
     // A crate package plus the rfc0* conformance binaries.
+    // It may name `--bin witchy` (for `example_tests::rfc0*`) only inside the
+    // explicit union of every target: `--lib` plus each test binary.
     let compiler = gate_nextest(&["crates/witchy-lower/src/codegen/mod.rs"]);
     assert!(
-        !compiler.contains("--bin witchy"),
+        !compiler.contains("--bin witchy")
+            || (compiler.contains(" --lib") && compiler.contains("--test misc")),
         "a compiler-stage change narrowed away its crate and conformance tests: {compiler}",
     );
     // A free-form witchy test filter that is not an `example_tests` name.
@@ -348,7 +351,7 @@ fn gate_nextest_types_only_is_not_unfiltered_workspace() {
         "types-only gate mapping dropped the crate filter: {output}",
     );
     assert!(
-        !output.contains("example_tests"),
+        !output.contains("test(/^example_tests::/)"),
         "types-only crate mapping still auto-attached the example_tests matrix: {output}",
     );
     assert!(
@@ -365,7 +368,7 @@ fn gate_nextest_crate_only_interp_does_not_attach_example_tests_matrix() {
         "interp-only mapping dropped the crate: {output}",
     );
     assert!(
-        !output.contains("example_tests"),
+        !output.contains("test(/^example_tests::/)"),
         "interp-only crate mapping still auto-attached the example_tests matrix: {output}",
     );
     assert!(
@@ -386,7 +389,7 @@ fn gate_nextest_lower_only_does_not_attach_wir_or_runtime() {
         "lower-only mapping still attached wir/runtime: {output}",
     );
     assert!(
-        !output.contains("example_tests") && !output.contains("WORKSPACE"),
+        !output.contains("test(/^example_tests::/)") && !output.contains("WORKSPACE"),
         "lower-only mapping was not crate-scoped: {output}",
     );
 }
@@ -2243,5 +2246,31 @@ fn a_compiler_crate_change_runs_its_downstream_compiler_crates_tests() {
                 "{changed} does not run {crate_name}'s tests: {output}",
             );
         }
+    }
+}
+
+/// The RFC-pinned example modules (`example_tests::rfc0*`) are language
+/// contracts -- what an RFC admits and refuses -- living in the `witchy` bin.
+/// A compiler-stage change must run them at the gate and in the edit loop:
+/// two view-carrier changes gated green without them and left master red on
+/// two refusal pins (2026-09-22).
+#[test]
+fn compiler_stage_changes_run_the_rfc_pinned_example_modules() {
+    for changed in [
+        "crates/witchy-types/src/pipeline.rs",
+        "crates/witchy-lower/src/canonical_lower.rs",
+        "crates/witchy-wir/src/canonical_wasmir.rs",
+    ] {
+        let output = gate_nextest(&[changed]);
+        assert!(
+            output.contains("test(/^example_tests::rfc0/)") || output.contains("test(/^example_tests::/)"),
+            "{changed} gates without the RFC-pinned example modules: {output}",
+        );
+        let commands = selected(&["--edit-loop", changed]);
+        assert!(
+            commands.iter().any(|command| command.contains("example_tests::rfc0")
+                || command.contains("test(/^example_tests::/)")),
+            "{changed} presubmits without the RFC-pinned example modules: {commands:?}",
+        );
     }
 }
