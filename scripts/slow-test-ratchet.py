@@ -39,19 +39,30 @@ def isolated_seconds(binary_id, test, features):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--junit", required=True)
+    # nextest does not always write under $CARGO_TARGET_DIR: in the merge gate
+    # (CARGO_TARGET_DIR=target-prewarm) it wrote <worktree>/target/nextest/...
+    # Accept every plausible location and use the newest file written during
+    # THIS run (--since), never a stale one from an earlier gate.
+    ap.add_argument("--junit", action="append", required=True)
+    ap.add_argument("--since", type=float, default=0.0,
+                    help="epoch seconds; ignore JUnit files older than this")
     ap.add_argument("--detect", type=float, default=5.0)
     ap.add_argument("--confirm", type=float, default=3.0)
     ap.add_argument("--features", default="witchy-wir/native")
     ap.add_argument("--exempt", action="append",
                     default=["scripts/nightly-deferred-tests.txt", "scripts/slow-test-debt.txt"])
     a = ap.parse_args()
-    if not os.path.exists(a.junit):
-        print(f"slow-test-ratchet: no {a.junit}; nothing to check")
+    fresh = [p for p in a.junit if os.path.exists(p) and os.path.getmtime(p) >= a.since]
+    if not fresh:
+        print("slow-test-ratchet: WARNING -- no JUnit written during this run at any of "
+              + ", ".join(a.junit) + "; the ratchet checked NOTHING")
         return 0
+    junit = max(fresh, key=os.path.getmtime)
     exempt = set().union(*(names(p) for p in a.exempt))
     candidates = []
-    for case in ET.parse(a.junit).getroot().iter("testcase"):
+    cases = list(ET.parse(junit).getroot().iter("testcase"))
+    print(f"slow-test-ratchet: {len(cases)} tests in {junit}")
+    for case in cases:
         name, binary = case.get("name", ""), case.get("classname", "")
         seconds = float(case.get("time") or 0)
         if seconds > a.detect and name not in exempt:

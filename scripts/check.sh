@@ -1372,13 +1372,16 @@ fi
 if [ "${#preflight_cmd[@]}" -gt 0 ]; then
     run_watched "preflight (tests that red the last attempt)" "${preflight_cmd[@]}"
 fi
+ratchet_since="$(date +%s)"
 run_watched "tests (workspace)"        "${test_cmd[@]}"
 # The 2-second-per-test target, enforced as a ratchet: a test over 5s in this
 # run that is not nightly-deferred or on scripts/slow-test-debt.txt is re-run
 # ALONE, and the gate fails only if it is still over 3s. See the script.
 if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$gate_scope" = "all" ] && [ "$full" -eq 0 ]; then
     run_watched "slow-test ratchet" python3 scripts/slow-test-ratchet.py \
-        --junit "${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml"
+        --since "$ratchet_since" \
+        --junit "${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml" \
+        --junit target/nextest/default/junit.xml
 fi
 if [ "$gate_skip_fmt" -eq 1 ]; then
     printf 'check.sh: skipping witchy fmt (WITCHY_GATE_SKIP_FMT=1; --full/CI still run it)\n'
