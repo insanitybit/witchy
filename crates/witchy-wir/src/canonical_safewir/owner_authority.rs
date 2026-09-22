@@ -100,12 +100,18 @@ pub(super) fn validate<S: ModuleStage>(
                     CaptureStorage::EnvironmentField(field)
                 };
                 if capture.transfer != *transfer || capture.storage != expected_storage || !type_matches
-                    // A view carrier has the existing admitted opaque-owner
-                    // representation.  Its sole legal capture transfer is a
-                    // retain; legacy Borrow/BorrowMut types never reach this
-                    // arm because the source witness is required to be View.
+                    // A view capture takes its carrier's own representation:
+                    // the `&Int` opaque owner is retained into an owner field,
+                    // a token-carried view (`&String`, a record, a scalar
+                    // List) is retained into a managed environment field, and a
+                    // scalar-value view is copied. `type_matches` above has
+                    // already bound the exact source type to that value type.
+                    // Legacy Borrow/BorrowMut types never reach this arm
+                    // because the source witness is required to be View.
                     || rooted_view && !matches!((capture.value_type, capture.storage, capture.transfer),
-                        (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged))
+                        (ValueType::Gc(_), CaptureStorage::OwnerField(_), CaptureTransfer::CloneManaged)
+                        | (ValueType::Ref(_), CaptureStorage::EnvironmentField(_), CaptureTransfer::CloneManaged)
+                        | (ValueType::Int | ValueType::Float | ValueType::Bool, CaptureStorage::EnvironmentField(_), _))
                 { return Err(refuse()); }
             }
         }

@@ -84,6 +84,19 @@ impl BorrowedShellCatalog {
         catalog
     }
 
+    /// An async parameter or result that exposes a retired borrow or a
+    /// lifetime-bearing shell. A direct RFC-0167 view (`&T` over a payload that
+    /// holds no further borrow) is not one: it retains its own root, so a task
+    /// cannot outlive anything it depends on. Whether the view has an
+    /// authenticated carrier across suspension is decided downstream, where a
+    /// view with no carrier is refused rather than erased.
+    fn exposes_retired_borrow(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Qualified(TypeQual::View, inner) => self.type_is_borrowed(inner),
+            _ => self.type_is_borrowed(ty),
+        }
+    }
+
     fn type_is_borrowed(&self, ty: &Type) -> bool {
         match ty {
             Type::Qualified(
@@ -357,13 +370,12 @@ fn validate_async_source(
         .params
         .iter()
         .filter_map(|param| resolved_async_parameter_type(param, self_ty))
-        .any(|ty| borrowed_shells.type_is_borrowed(ty))
-        || declared_ret.is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+        .any(|ty| borrowed_shells.exposes_retired_borrow(ty))
+        || declared_ret.is_some_and(|ty| borrowed_shells.exposes_retired_borrow(ty))
     {
         return Err(format!(
-            "async fn `{}` may not expose a borrowed view or lifetime-bearing shell as a \
-             parameter or result because its task \
-             can outlive the caller's loan — pass/return an owned value",
+            "async fn `{}` may not expose a retired borrow or lifetime-bearing shell as a \
+             parameter or result — pass/return an owned value or an immutable view",
             function.name,
         ));
     }
@@ -2047,15 +2059,14 @@ fn lower_async_fn_with(
     if f.params
         .iter()
         .filter_map(|param| resolved_async_parameter_type(param, self_ty.as_ref()))
-        .any(|ty| borrowed_shells.type_is_borrowed(ty))
+        .any(|ty| borrowed_shells.exposes_retired_borrow(ty))
         || declared_ret
             .as_ref()
-            .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty))
+            .is_some_and(|ty| borrowed_shells.exposes_retired_borrow(ty))
     {
         return Err(format!(
-            "async fn `{}` may not expose a borrowed view or lifetime-bearing shell as a \
-             parameter or result because its task \
-             can outlive the caller's loan — pass/return an owned value",
+            "async fn `{}` may not expose a retired borrow or lifetime-bearing shell as a \
+             parameter or result — pass/return an owned value or an immutable view",
             f.name,
         ));
     }
@@ -2105,7 +2116,7 @@ fn lower_async_fn_with(
                 source_binding: Some(u32::try_from(parameter).expect("async parameter count exceeds u32")),
                 borrowed_view: ty
                     .as_ref()
-                    .is_some_and(|ty| borrowed_shells.type_is_borrowed(ty)),
+                    .is_some_and(|ty| borrowed_shells.exposes_retired_borrow(ty)),
                 returns_view: ty
                     .as_ref()
                     .is_some_and(|ty| type_is_view_callable(ty, borrowed_shells)),
