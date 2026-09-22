@@ -2167,7 +2167,10 @@ impl Parser {
                 }
                 let member_line = self.cur().line;
                 let member = self.ident()?;
-                if self.at(&Tok::LParen) {
+                // As for a plain call, the argument list must open on the
+                // method name's line: a line-leading `(` starts the next
+                // expression (`let v = &p.y` then `(*v) + 1`).
+                if self.at(&Tok::LParen) && self.on_same_line_as_prev() {
                     if let Expr::Var(module) = &e {
                         if self.imports.contains(module)
                             && member.chars().next().is_some_and(|c| c.is_uppercase())

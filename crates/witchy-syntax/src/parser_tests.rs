@@ -2180,3 +2180,16 @@ fn a_line_leading_view_or_deref_starts_a_new_expression() {
     // An operator at the END of a line still continues the expression.
     parse_module("fn h(a: Int, b: Int) -> Int:\n    a &\n        b\n").expect("trailing infix continues");
 }
+
+#[test]
+fn a_line_leading_paren_does_not_become_method_call_arguments() {
+    // `p.y` then a line `(*v)` is a field read followed by a new expression,
+    // not the call `p.y(*v)`.
+    let module = parse_module("fn f(p: P, v: &Int) -> Int:\n    let w = p.y\n    (*v) + w\n")
+        .expect("field read then parenthesized expression");
+    let rendered = format!("{module:?}");
+    assert!(!rendered.contains("MethodCall"), "{rendered}");
+    // A same-line argument list is still a method call.
+    let call = parse_module("fn g(xs: List(Int)) -> Int:\n    xs.length()\n").expect("method call");
+    assert!(format!("{call:?}").contains("MethodCall"));
+}
